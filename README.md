@@ -1,7 +1,5 @@
 
-# Train Ticket：A Benchmark Microservice System
-# <img src="./image/logo.png">
-
+# Augmented-TrainTicket：A Benchmark Microservice System
 
 The project is a train ticket booking system based on microservice architecture which contains 41 microservices. The programming languages and frameworks it used are as below.
 - Java - Spring Boot, Spring Cloud
@@ -10,7 +8,7 @@ The project is a train ticket booking system based on microservice architecture 
 - Go - Webgo
 - DB - Mongo、MySQL
 
-You can get more details at [Wiki Pages](https://github.com/FudanSELab/train-ticket/wiki).
+This Augmented-Train Ticket is open-sourced by submited FSE 2023 paper Nezha
 
 ## Service Architecture Graph
 ![architecture](./image/2.png)

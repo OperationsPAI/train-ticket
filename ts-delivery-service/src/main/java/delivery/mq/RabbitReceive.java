@@ -34,6 +34,7 @@ public class RabbitReceive {
 
     @RabbitListener(queues = Queues.queueName)
     public void process(String payload) {
+        logger.info("[process][Delivery service]");
         Delivery delivery = JsonUtils.json2Object(payload, Delivery.class);
 
         if (delivery == null) {

@@ -1,7 +1,7 @@
 # Codewisdom Train-Ticket system
 
-Repo=codewisdom
-Tag=latest
+Repo=registry.cn-shenzhen.aliyuncs.com/trainticket
+Tag=1.0
 Namespace="default"
 DeployArgs=""
 

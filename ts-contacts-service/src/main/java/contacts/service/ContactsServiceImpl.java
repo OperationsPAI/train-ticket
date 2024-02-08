@@ -31,6 +31,7 @@ public class ContactsServiceImpl implements ContactsService {
         LOGGER.info("FIND CONTACTS BY ID: " + id);
         Contacts contacts = contactsRepository.findById(id).orElse(null);
         if (contacts != null) {
+            LOGGER.info("[findContactsById][contactsRepository.findById][Find contacts]");
             return new Response<>(1, success, contacts);
         } else {
             LOGGER.error("[findContactsById][contactsRepository.findById][No contacts according to contactsId][contactsId: {}]", id);

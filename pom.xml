@@ -143,9 +143,14 @@
             <version>1.2.3</version>
         </dependency>
         <dependency>
-            <groupId>org.apache.skywalking</groupId>
-            <artifactId>apm-toolkit-logback-1.x</artifactId>
-            <version>8.6.0</version>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-logback-mdc-1.0</artifactId>
+            <version>1.21.0-alpha</version>
+        </dependency>
+	<dependency>
+	    <groupId>ch.qos.logback</groupId>
+	    <artifactId>logback-access</artifactId>
+	    <version>1.2.3</version>
         </dependency>
     </dependencies>
 

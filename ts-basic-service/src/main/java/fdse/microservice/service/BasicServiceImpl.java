@@ -38,7 +38,6 @@ public class BasicServiceImpl implements BasicService {
 
     @Override
     public Response queryForTravel(Travel info, HttpHeaders headers) {
-
         Response response = new Response<>();
         TravelResult result = new TravelResult();
         result.setStatus(true);
@@ -98,6 +97,7 @@ public class BasicServiceImpl implements BasicService {
         PriceConfig priceConfig = queryPriceConfigByRouteIdAndTrainType(routeId, trainType.getName(), headers);
         HashMap<String, String> prices = new HashMap<>();
         try {
+            BasicServiceImpl.LOGGER.info("[queryForTravel][calculate price]");
             int distance = 0;
             distance = route.getDistances().get(indexEnd) - route.getDistances().get(indexStart);
             /**
@@ -108,6 +108,7 @@ public class BasicServiceImpl implements BasicService {
             prices.put("economyClass", "" + priceForEconomyClass);
             prices.put("confortClass", "" + priceForConfortClass);
         }catch (Exception e){
+                BasicServiceImpl.LOGGER.error("[queryForTravel][catch price exception]");
                 prices.put("economyClass", "95.0");
                 prices.put("confortClass", "120.0");
         }
@@ -401,7 +402,7 @@ public class BasicServiceImpl implements BasicService {
     }
 
     private List<Route> getRoutesByRouteIds(List<String> routeIds, HttpHeaders headers) {
-        BasicServiceImpl.LOGGER.info("[getRoutesByRouteIds][Get Route By Ids][Route IDs：{}]", routeIds);
+        BasicServiceImpl.LOGGER.info("[getRoutesByRouteIds][Get Route By Ids][Route IDs: {}]", routeIds);
         HttpEntity requestEntity = new HttpEntity(routeIds, null);
         String route_service_url=getServiceUrl("ts-route-service");
         ResponseEntity<Response> re = restTemplate.exchange(
@@ -421,7 +422,7 @@ public class BasicServiceImpl implements BasicService {
     }
 
     private Route getRouteByRouteId(String routeId, HttpHeaders headers) {
-        BasicServiceImpl.LOGGER.info("[getRouteByRouteId][Get Route By Id][Route ID：{}]", routeId);
+        BasicServiceImpl.LOGGER.info("[getRouteByRouteId][Get Route By Id][Route ID: {}]", routeId);
         HttpEntity requestEntity = new HttpEntity(null);
         String route_service_url=getServiceUrl("ts-route-service");
         ResponseEntity<Response> re = restTemplate.exchange(

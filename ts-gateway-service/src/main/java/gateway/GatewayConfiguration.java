@@ -77,7 +77,7 @@ public class GatewayConfiguration {
 //        initBlockHandlers();
 
         System.out.println("===== begin to do flow control");
-        System.out.println("only 20 requests per second can pass");
+        System.out.println("only 100 requests per second can pass");
     }
 
     /**
@@ -111,7 +111,7 @@ public class GatewayConfiguration {
         // qps 超过 20 直接拒绝
         rules.add(new GatewayFlowRule("admin-basic-info") //资源名称，对应路由 id
                 .setControlBehavior(RuleConstant.CONTROL_BEHAVIOR_DEFAULT)
-                .setCount(20) // 限流qps阈值
+                .setCount(100) // 限流qps阈值
                 .setIntervalSec(1) // 统计时间窗口，单位是秒，默认是 1 秒
         );
 

@@ -11,16 +11,55 @@ spec:
     metadata:
       labels:
         app: ts-admin-basic-info-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-admin-basic-info-service
-          image: codewisdom/ts-admin-basic-info-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-admin-basic-info-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -33,12 +72,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18767
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18767
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -53,16 +92,56 @@ spec:
     metadata:
       labels:
         app: ts-admin-order-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-admin-order-service
-          image: codewisdom/ts-admin-order-service:1.0.1
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-admin-order-service:1.0
           imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -75,12 +154,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16112
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16112
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -95,16 +174,55 @@ spec:
     metadata:
       labels:
         app: ts-admin-route-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-admin-route-service
-          image: codewisdom/ts-admin-route-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-admin-route-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -117,12 +235,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16113
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16113
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -137,16 +255,55 @@ spec:
     metadata:
       labels:
         app: ts-admin-travel-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-admin-travel-service
-          image: codewisdom/ts-admin-travel-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-admin-travel-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -159,12 +316,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16114
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16114
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -179,16 +336,55 @@ spec:
     metadata:
       labels:
         app: ts-admin-user-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-admin-user-service
-          image: codewisdom/ts-admin-user-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-admin-user-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -201,12 +397,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16115
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16115
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -221,16 +417,55 @@ spec:
     metadata:
       labels:
         app: ts-assurance-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-assurance-service
-          image: codewisdom/ts-assurance-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-assurance-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-assurance-mysql
@@ -245,12 +480,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18888
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18888
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -265,16 +500,55 @@ spec:
     metadata:
       labels:
         app: ts-auth-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-auth-service
-          image: codewisdom/ts-auth-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-auth-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-auth-mysql
@@ -289,12 +563,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12340
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12340
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -309,10 +583,12 @@ spec:
     metadata:
       labels:
         app: ts-avatar-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
       containers:
         - name: ts-avatar-service
-          image: codewisdom/ts-avatar-service:0.2.0
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-avatar-service:1.0 # registry.cn-shenzhen.aliyuncs.com/trainticket/ts-avatar-service:0.2.0
           imagePullPolicy: IfNotPresent
           env:
             - name: NODE_IP
@@ -331,12 +607,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 17001
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 17001
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -351,16 +627,55 @@ spec:
     metadata:
       labels:
         app: ts-basic-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-basic-service
-          image: codewisdom/ts-basic-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-basic-service:fault
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -373,12 +688,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 15680
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 15680
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -393,16 +708,55 @@ spec:
     metadata:
       labels:
         app: ts-cancel-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-cancel-service
-          image: codewisdom/ts-cancel-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-cancel-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -415,12 +769,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18885
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18885
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -435,16 +789,55 @@ spec:
     metadata:
       labels:
         app: ts-config-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-config-service
-          image: codewisdom/ts-config-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-config-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-config-mysql
@@ -459,12 +852,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 15679
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 15679
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -479,16 +872,55 @@ spec:
     metadata:
       labels:
         app: ts-consign-price-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-consign-price-service
-          image: codewisdom/ts-consign-price-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-consign-price-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-consign-price-mysql
@@ -503,12 +935,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16110
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16110
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -523,16 +955,55 @@ spec:
     metadata:
       labels:
         app: ts-consign-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-consign-service
-          image: codewisdom/ts-consign-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-consign-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-consign-mysql
@@ -547,12 +1018,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16111
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16111
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -567,16 +1038,55 @@ spec:
     metadata:
       labels:
         app: ts-contacts-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-contacts-service
-          image: codewisdom/ts-contacts-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-contacts-service:fault
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-contacts-mysql
@@ -591,12 +1101,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12347
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12347
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -611,16 +1121,55 @@ spec:
     metadata:
       labels:
         app: ts-delivery-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-delivery-service
-          image: codewisdom/ts-delivery-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-delivery-service:fault
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-delivery-mysql
@@ -637,12 +1186,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18808
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18808
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -657,16 +1206,55 @@ spec:
     metadata:
       labels:
         app: ts-execute-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-execute-service
-          image: codewisdom/ts-execute-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server 
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-execute-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -679,12 +1267,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12386
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12386
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -699,16 +1287,55 @@ spec:
     metadata:
       labels:
         app: ts-food-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-food-service
-          image: codewisdom/ts-food-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-food-service:fault
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -725,12 +1352,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18856
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18856
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -745,16 +1372,55 @@ spec:
     metadata:
       labels:
         app: ts-food-delivery-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-food-delivery-service
-          image: codewisdom/ts-food-delivery-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-food-delivery-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-food-delivery-mysql
@@ -769,12 +1435,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18957
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18957
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -789,16 +1455,55 @@ spec:
     metadata:
       labels:
         app: ts-gateway-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-gateway-service
-          image: codewisdom/ts-gateway-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-gateway-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -811,12 +1516,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18888
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18888
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -831,16 +1536,55 @@ spec:
     metadata:
       labels:
         app: ts-inside-payment-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-inside-payment-service
-          image: codewisdom/ts-inside-payment-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-inside-payment-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-inside-payment-mysql
@@ -855,12 +1599,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18673
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18673
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -875,10 +1619,12 @@ spec:
     metadata:
       labels:
         app: ts-news-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
       containers:
-        - name: ts-news-service
-          image: codewisdom/ts-news-service:1.0.0
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-news-service:1.0
           imagePullPolicy: IfNotPresent
           env:
             - name: NODE_IP
@@ -917,16 +1663,55 @@ spec:
     metadata:
       labels:
         app: ts-notification-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-notification-service
-          image: codewisdom/ts-notification-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-notification-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-notification-mysql
@@ -943,12 +1728,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 17853
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 17853
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -963,16 +1748,55 @@ spec:
     metadata:
       labels:
         app: ts-order-other-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-order-other-service
-          image: codewisdom/ts-order-other-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-order-other-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-order-other-mysql
@@ -989,12 +1813,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12032
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12032
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1009,16 +1833,55 @@ spec:
     metadata:
       labels:
         app: ts-order-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-order-service
-          image: codewisdom/ts-order-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-order-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-order-mysql
@@ -1035,12 +1898,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12031
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12031
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1055,16 +1918,55 @@ spec:
     metadata:
       labels:
         app: ts-payment-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-payment-service
-          image: codewisdom/ts-payment-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-payment-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-payment-mysql
@@ -1079,12 +1981,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 19001
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 19001
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1099,16 +2001,55 @@ spec:
     metadata:
       labels:
         app: ts-preserve-other-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-preserve-other-service
-          image: codewisdom/ts-preserve-other-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-preserve-other-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1123,12 +2064,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 14569
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 14569
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1143,16 +2084,55 @@ spec:
     metadata:
       labels:
         app: ts-preserve-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-preserve-service
-          image: codewisdom/ts-preserve-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-preserve-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1167,12 +2147,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 14568
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 14568
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1187,16 +2167,55 @@ spec:
     metadata:
       labels:
         app: ts-price-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-price-service
-          image: codewisdom/ts-price-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-price-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-price-mysql
@@ -1211,12 +2230,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16579
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16579
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1231,16 +2250,55 @@ spec:
     metadata:
       labels:
         app: ts-rebook-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-rebook-service
-          image: codewisdom/ts-rebook-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-rebook-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1255,12 +2313,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18886
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18886
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1275,16 +2333,55 @@ spec:
     metadata:
       labels:
         app: ts-route-plan-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-route-plan-service
-          image: codewisdom/ts-route-plan-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-route-plan-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1317,16 +2414,55 @@ spec:
     metadata:
       labels:
         app: ts-route-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-route-service
-          image: codewisdom/ts-route-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-route-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-route-mysql
@@ -1341,12 +2477,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 11178
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 11178
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1361,16 +2497,55 @@ spec:
     metadata:
       labels:
         app: ts-seat-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-seat-service
-          image: codewisdom/ts-seat-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-seat-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1383,12 +2558,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18898
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18898
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1403,16 +2578,55 @@ spec:
     metadata:
       labels:
         app: ts-security-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
         - name: ts-security-service
-          image: codewisdom/ts-security-service:1.0.0
-          imagePullPolicy: IfNotPresent
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-security-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-security-mysql
@@ -1427,12 +2641,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 11188
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 11188
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1447,16 +2661,55 @@ spec:
     metadata:
       labels:
         app: ts-station-food-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-station-food-service
-          image: codewisdom/ts-station-food-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-station-food-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-station-food-mysql
@@ -1471,12 +2724,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 18855
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 18855
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1491,16 +2744,55 @@ spec:
     metadata:
       labels:
         app: ts-station-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-station-service
-          image: codewisdom/ts-station-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-station-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-station-mysql
@@ -1515,12 +2807,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12345
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12345
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1535,16 +2827,55 @@ spec:
     metadata:
       labels:
         app: ts-ticket-office-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-ticket-office-service
-          image: codewisdom/ts-ticket-office-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-ticket-office-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-ticket-office-mysql
@@ -1559,12 +2890,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16108
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16108
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1579,16 +2910,55 @@ spec:
     metadata:
       labels:
         app: ts-train-food-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-train-food-service
-          image: codewisdom/ts-train-food-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-train-food-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-train-food-mysql
@@ -1603,12 +2973,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 19999
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 19999
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1623,16 +2993,55 @@ spec:
     metadata:
       labels:
         app: ts-train-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-train-service
-          image: codewisdom/ts-train-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-train-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-train-mysql
@@ -1647,12 +3056,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 14567
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 14567
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1667,16 +3076,55 @@ spec:
     metadata:
       labels:
         app: ts-travel-plan-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-travel-plan-service
-          image: codewisdom/ts-travel-plan-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-travel-plan-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1689,12 +3137,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 14322
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 14322
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1709,16 +3157,55 @@ spec:
     metadata:
       labels:
         app: ts-travel-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-travel-service
-          image: codewisdom/ts-travel-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-travel-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-travel-mysql
@@ -1733,12 +3220,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12346
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12346
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1753,16 +3240,55 @@ spec:
     metadata:
       labels:
         app: ts-travel2-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-travel2-service
-          image: codewisdom/ts-travel2-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-travel2-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-travel2-mysql
@@ -1777,12 +3303,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16346
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16346
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1797,16 +3323,55 @@ spec:
     metadata:
       labels:
         app: ts-user-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-user-service
-          image: codewisdom/ts-user-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-user-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-user-mysql
@@ -1821,12 +3386,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 12342
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 12342
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1841,16 +3406,55 @@ spec:
     metadata:
       labels:
         app: ts-verification-code-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-verification-code-service
-          image: codewisdom/ts-verification-code-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-verification-code-service:fault
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - configMapRef:
                 name: nacos
@@ -1863,12 +3467,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 15678
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 15678
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1883,16 +3487,55 @@ spec:
     metadata:
       labels:
         app: ts-voucher-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-voucher-service
-          image: codewisdom/ts-voucher-service:1.0.0
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-voucher-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-voucher-mysql
@@ -1907,12 +3550,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 16101
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 16101
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1927,16 +3570,55 @@ spec:
     metadata:
       labels:
         app: ts-wait-order-service
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
+      volumes:
+        - name: opentelemetry-agent
+          emptyDir: {}
+      initContainers:
+        - name: agent-container
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/opentelemetry-javaagent:1.19
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
+          command: [ "/bin/sh" ]
+          args: [ "-c", "cp /opentelemetry/opentelemetry-javaagent.jar /tmp" ]
       containers:
-        - name: ts-wait-order-service
-          image: codewisdom/ts-wait-order-service:1.0.1
-          imagePullPolicy: IfNotPresent
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-wait-order-service:1.0
+          imagePullPolicy: Always #IfNotPresent
+          volumeMounts:
+            - name: opentelemetry-agent
+              mountPath: /tmp
           env:
-            - name: NODE_IP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/tmp/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4317"
+            - name: OTEL_SERVICE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  apiVersion: v1
+                  fieldPath: "metadata.labels['app']"
+            - name: OTEL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: OTEL_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: OTEL_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.name=$(OTEL_SERVICE_NAME),k8s.namespace.name=$(OTEL_K8S_NAMESPACE),k8s.node.name=$(OTEL_K8S_NODE_NAME),k8s.pod.name=$(OTEL_K8S_POD_NAME)
           envFrom:
             - secretRef:
                 name: ts-wait-order-mysql
@@ -1951,12 +3633,12 @@ spec:
             limits:
               cpu: 500m
               memory: 2000Mi
-          readinessProbe:
-            tcpSocket:
-              port: 17525
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+          # readinessProbe:
+          #   tcpSocket:
+          #     port: 17525
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 10
+          #   timeoutSeconds: 5
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1971,10 +3653,12 @@ spec:
     metadata:
       labels:
         app: ts-ui-dashboard
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
     spec:
       containers:
-        - name: ts-ui-dashboard
-          image: codewisdom/ts-ui-dashboard:1.0.1
+        - name: server
+          image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-ui-dashboard:1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -1985,3 +3669,52 @@ spec:
             limits:
               cpu: 500m
               memory: 500Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-loadgenerator
+spec:
+  selector:
+    matchLabels:
+      app: ts-loadgenerator
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ts-loadgenerator
+      annotations:
+        sidecar.istio.io/extraStatTags: client_pod
+    spec:
+      terminationGracePeriodSeconds: 5
+      restartPolicy: Always
+      containers:
+      - name: main
+        image: registry.cn-shenzhen.aliyuncs.com/trainticket/ts-loadgenerator:1.0
+        imagePullPolicy: Always
+        env:
+        - name: FRONTEND_ADDR
+          value: "http://33.33.33.223:32677"
+        - name: USERS
+          value: "5"
+        resources:
+          requests:
+            cpu: 300m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-loadgenerator
+spec:
+  type: NodePort #ClusterIP
+  selector:
+    app: ts-loadgenerator
+  ports:
+  - name: http
+    port: 8089
+    targetPort: 8089
+    nodePort: 32115
