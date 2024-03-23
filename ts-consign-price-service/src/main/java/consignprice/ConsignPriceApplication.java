@@ -5,8 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.web.client.RestTemplateBuilder;
-import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
-import org.springframework.cloud.client.loadbalancer.LoadBalanced;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.integration.annotation.IntegrationComponentScan;
@@ -24,7 +22,6 @@ import java.util.Date;
 @EnableAsync
 @IntegrationComponentScan
 @EnableSwagger2
-@EnableDiscoveryClient
 public class ConsignPriceApplication {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConsignPriceApplication.class);
@@ -34,7 +31,6 @@ public class ConsignPriceApplication {
         SpringApplication.run(ConsignPriceApplication.class, args);
     }
 
-    @LoadBalanced
     @Bean
     public RestTemplate restTemplate(RestTemplateBuilder builder) {
         return builder.build();

@@ -1,8 +1,4 @@
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:nacos-0.nacos-headless.default.svc.cluster.local,nacos-1.nacos-headless.default.svc.cluster.local,nacos-2.nacos-headless.default.svc.cluster.local}
   application:
     name: ts-config-service
   datasource:
@@ -16,11 +12,7 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.MySQL5Dialect
-
-
-# HTTP Server
 server:
-  port: 15679  # HTTP (Tomcat) port
-
+  port: 8080  # HTTP (Tomcat) port
 swagger:
   controllerPackage: config.controller

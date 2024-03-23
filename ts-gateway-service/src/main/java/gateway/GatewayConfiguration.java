@@ -8,6 +8,7 @@ import com.alibaba.csp.sentinel.adapter.gateway.sc.callback.GatewayCallbackManag
 import com.alibaba.csp.sentinel.adapter.gateway.sc.exception.SentinelGatewayBlockExceptionHandler;
 import com.alibaba.csp.sentinel.slots.block.RuleConstant;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -97,7 +98,21 @@ public class GatewayConfiguration {
         GatewayCallbackManager.setBlockHandler(blockRequestHandler);
     }
 
+    @Bean
+    public GlobalFilter requestLoggingFilter() {
+        return (exchange, chain) -> {
+            ServerHttpRequest request = exchange.getRequest();
+            String requestPath = request.getURI().getPath();
+            String queryParams = request.getQueryParams().toString();
 
+            // 打印请求路径和查询参数
+            System.out.println("Request Path: " + requestPath);
+            System.out.println("Query Params: " + queryParams);
+
+            // 为了不影响请求的正常处理，确保继续调用过滤器链
+            return chain.filter(exchange);
+        };
+    }
     /**
      * 初始化流量控制规则
      *

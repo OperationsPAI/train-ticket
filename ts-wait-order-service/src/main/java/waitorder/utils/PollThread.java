@@ -68,7 +68,7 @@ public class PollThread extends Thread{
     }
 
     private String getServiceUrl(String serviceName) {
-        return "http://" + serviceName;
+        return "http://" + serviceName + ":8080";
     }
 
     private Response doPreserve(String url, HttpEntity requestParam){

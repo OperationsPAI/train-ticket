@@ -39,7 +39,7 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
     private static final Logger LOGGER = LoggerFactory.getLogger(InsidePaymentServiceImpl.class);
 
     private String getServiceUrl(String serviceName) {
-        return "http://" + serviceName;
+        return "http://" + serviceName + ":8080";
     }
 
     @Override

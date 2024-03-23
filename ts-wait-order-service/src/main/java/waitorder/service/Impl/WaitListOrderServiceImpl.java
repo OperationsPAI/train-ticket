@@ -5,7 +5,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,8 +28,7 @@ public class WaitListOrderServiceImpl implements WaitListOrderService {
     @Autowired
     private RestTemplate restTemplate;
 
-    @Autowired
-    private DiscoveryClient discoveryClient;
+
 
     private static final Logger LOGGER = LoggerFactory.getLogger(WaitListOrderServiceImpl.class);
 

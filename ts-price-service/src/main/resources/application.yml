@@ -1,8 +1,4 @@
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:127.0.0.1:8848}
   application:
     name: ts-price-service
   datasource:
@@ -20,7 +16,7 @@ spring:
 
 # HTTP Server
 server:
-  port: 16579  # HTTP (Tomcat) port
+  port: 8080  # HTTP (Tomcat) port
 
 swagger:
   controllerPackage: price.controller

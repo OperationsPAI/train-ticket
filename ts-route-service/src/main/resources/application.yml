@@ -1,8 +1,4 @@
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:127.0.0.1:8848}
   application:
     name: ts-route-service
   datasource:
@@ -19,7 +15,7 @@ spring:
 
 # HTTP Server
 server:
-  port: 11178  # HTTP (Tomcat) port
+  port: 8080  # HTTP (Tomcat) port
 
 swagger:
   controllerPackage: route.controller

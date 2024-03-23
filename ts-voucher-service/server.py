@@ -48,8 +48,8 @@ class GetVoucherHandler(tornado.web.RequestHandler):
         # to set order-service url.
         type = int(type)
         #ordinary train
-        order_url = 'http://ts-order-service:12031'
-        order_other_url = 'http://ts-order-other-service:12032'
+        order_url = 'http://ts-order-service:8080'
+        order_other_url = 'http://ts-order-other-service:8080'
         if(os.getenv("ORDER_SERVICE_URL") is not None):
             order_url = os.getenv("ORDER_SERVICE_URL")
 
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     initMysqlConfig()
     initDatabase()
     app = make_app()
-    app.listen(16101)
+    app.listen(8080)
     tornado.ioloop.IOLoop.current().start()
 
 

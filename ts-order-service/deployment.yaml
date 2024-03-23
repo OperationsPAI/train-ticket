@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-order-service
+  labels:
+    app: ts-order-service
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app: ts-order-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-order-service
+  labels:
+    app: ts-order-service
+spec:
+  selector:
+    matchLabels:
+      app: ts-order-service
+  template:
+    metadata:
+      labels:
+        app: ts-order-service
+    spec:
+      containers:
+      - name: ts-order-service
+        image: 192.168.1.105/library/ts-order-service
+        envFrom:
+          - secretRef:
+              name: ts-order-service

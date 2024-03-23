@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-admin-route-service
+  labels:
+    app: ts-admin-route-service
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app: ts-admin-route-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-admin-route-service
+  labels:
+    app: ts-admin-route-service
+spec:
+  selector:
+    matchLabels:
+      app: ts-admin-route-service
+  template:
+    metadata:
+      labels:
+        app: ts-admin-route-service
+    spec:
+      containers:
+      - name: ts-admin-route-service
+        image: 192.168.1.105/library/ts-admin-route-service
+        envFrom:
+          - secretRef:
+              name: ts-admin-route-service

@@ -1,10 +1,6 @@
-FROM java:8-jre
-
-RUN apt-get install -y procps --force-yes
-
+FROM openjdk:8-jre
+WORKDIR /app
 RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone
-
-ADD ./target/ts-basic-service-1.0.jar /app/
-CMD ["java", "-Xmx200m",  "-jar", "/app/ts-basic-service-1.0.jar"]
-
-EXPOSE 15680
+COPY ./target/*.jar app.jar
+EXPOSE 8080
+CMD ["java", "-Xmx200m",  "-jar", "app.jar"]

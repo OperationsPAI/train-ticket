@@ -1,11 +1,7 @@
 server:
-  port: 18855
+  port: 8080
 
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:127.0.0.1:8848}
   application:
     name: ts-station-food-service
   datasource:

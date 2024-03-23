@@ -1,11 +1,7 @@
 server:
-  port: 12347
+  port: 8080
 
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:nacos-0.nacos-headless.default.svc.cluster.local,nacos-1.nacos-headless.default.svc.cluster.local,nacos-2.nacos-headless.default.svc.cluster.local}
   application:
     name: ts-contacts-service
   datasource:

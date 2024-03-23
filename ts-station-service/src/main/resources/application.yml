@@ -1,8 +1,4 @@
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:nacos-0.nacos-headless.default.svc.cluster.local,nacos-1.nacos-headless.default.svc.cluster.local,nacos-2.nacos-headless.default.svc.cluster.local}
   application:
     name: ts-station-service
   datasource:
@@ -16,7 +12,7 @@ spring:
 
 # HTTP Server
 server:
-  port: 12345  # HTTP (Tomcat) port
+  port: 8080  # HTTP (Tomcat) port
 
 swagger:
   controllerPackage: fdse.microservice

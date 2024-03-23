@@ -5,8 +5,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.client.ServiceInstance;
-import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -32,14 +30,13 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private UserRepository userRepository;
 
-    @Autowired
-    private DiscoveryClient discoveryClient;
+
 
     @Autowired
     private RestTemplate restTemplate;
 
     private String getServiceUrl(String serviceName) {
-        return "http://" + serviceName;
+        return "http://" + serviceName + ":8080";
     }
 
     @Override
@@ -82,14 +79,6 @@ public class UserServiceImpl implements UserService {
         HttpHeaders headers = new HttpHeaders();
         HttpEntity<AuthDto> entity = new HttpEntity<>(dto, null);
         String auth_service_url = getServiceUrl("ts-auth-service");
-
-        List<ServiceInstance> auth_svcs = discoveryClient.getInstances("ts-auth-service");
-        if(auth_svcs.size() >0 ){
-            ServiceInstance auth_svc = auth_svcs.get(0);
-            LOGGER.info("[createDefaultAuthUser][CALL TO AUTH][auth_svc host: {}][auth_svc port: {}]", auth_svc.getHost(), auth_svc.getPort());
-        }else{
-            LOGGER.info("[createDefaultAuthUser][CALL TO AUTH][can not get auth url]");
-        }
 
         ResponseEntity<Response<AuthDto>> res  = restTemplate.exchange(auth_service_url + "/api/v1/auth",
                 HttpMethod.POST,

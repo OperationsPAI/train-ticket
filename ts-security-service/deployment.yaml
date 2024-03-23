@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-security-service
+  labels:
+    app: ts-security-service
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app: ts-security-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-security-service
+  labels:
+    app: ts-security-service
+spec:
+  selector:
+    matchLabels:
+      app: ts-security-service
+  template:
+    metadata:
+      labels:
+        app: ts-security-service
+    spec:
+      containers:
+      - name: ts-security-service
+        image: 192.168.1.105/library/ts-security-service
+        envFrom:
+          - secretRef:
+              name: ts-security-service

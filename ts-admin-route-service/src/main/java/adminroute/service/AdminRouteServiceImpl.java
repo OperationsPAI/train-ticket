@@ -6,7 +6,6 @@ import edu.fudan.common.util.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -23,13 +22,12 @@ import java.util.Map;
 public class AdminRouteServiceImpl implements AdminRouteService {
     @Autowired
     private RestTemplate restTemplate;
-    @Autowired
-    private DiscoveryClient discoveryClient;
+
 
     public static final Logger logger = LoggerFactory.getLogger(AdminRouteServiceImpl.class);
 
     private String getServiceUrl(String serviceName) {
-        return "http://" + serviceName;
+        return "http://" + serviceName + ":8080";
     }
 
     @Override

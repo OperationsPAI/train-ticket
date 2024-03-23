@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-train-service
+  labels:
+    app: ts-train-service
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app: ts-train-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-train-service
+  labels:
+    app: ts-train-service
+spec:
+  selector:
+    matchLabels:
+      app: ts-train-service
+  template:
+    metadata:
+      labels:
+        app: ts-train-service
+    spec:
+      containers:
+      - name: ts-train-service
+        image: 192.168.1.105/library/ts-train-service
+        envFrom:
+          - secretRef:
+              name: ts-train-service

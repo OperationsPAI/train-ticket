@@ -1,8 +1,4 @@
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_ADDRS:nacos-0.nacos-headless.default.svc.cluster.local,nacos-1.nacos-headless.default.svc.cluster.local,nacos-2.nacos-headless.default.svc.cluster.local}
   application:
     name: ts-consign-service
   datasource:
@@ -21,7 +17,7 @@ spring:
 
 # HTTP Server
 server:
-  port: 16111
+  port: 8080
 
 swagger:
   controllerPackage: consign.controller

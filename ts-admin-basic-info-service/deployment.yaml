@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-admin-basic-info-service
+  labels:
+    app: ts-admin-basic-info-service
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app: ts-admin-basic-info-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-admin-basic-info-service
+  labels:
+    app: ts-admin-basic-info-service
+spec:
+  selector:
+    matchLabels:
+      app: ts-admin-basic-info-service
+  template:
+    metadata:
+      labels:
+        app: ts-admin-basic-info-service
+    spec:
+      containers:
+      - name: ts-admin-basic-info-service
+        image: 192.168.1.105/library/ts-admin-basic-info-service
+        envFrom:
+          - secretRef:
+              name: ts-admin-basic-info-service

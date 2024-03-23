@@ -1,12 +1,6 @@
 server:
-  port: 18957
-
+  port: 8080
 spring:
-  cloud:
-    nacos:
-      discovery:
-          server-addr: ${NACOS_ADDRS:nacos-0.nacos-headless.default.svc.cluster.local,nacos-1.nacos-headless.default.svc.cluster.local,nacos-2.nacos-headless.default.svc.cluster.local}
-#          server-addr: 10.176.122.80:8848
   application:
     name: ts-food-delivery-service
   datasource:

@@ -8,4 +8,4 @@ ADD ./src/main/main.go /app/
 RUN go build
 CMD [ "./app" ]
 
-EXPOSE 12862
+EXPOSE 8080

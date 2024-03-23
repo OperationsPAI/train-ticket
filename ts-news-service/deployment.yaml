@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-news-service
+  labels:
+    app: ts-news-service
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app: ts-news-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-news-service
+  labels:
+    app: ts-news-service
+spec:
+  selector:
+    matchLabels:
+      app: ts-news-service
+  template:
+    metadata:
+      labels:
+        app: ts-news-service
+    spec:
+      containers:
+      - name: ts-news-service
+        image: 192.168.1.105/library/ts-news-service
+        envFrom:
+          - secretRef:
+              name: ts-news-service

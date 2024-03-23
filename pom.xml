@@ -65,12 +65,6 @@
 
         <!--        springcloud 相关依赖 在dependency management中-->
 
-        <!--        nacos服务发现相关依赖-->
-        <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
-            <version>2.2.7.RELEASE</version>
-        </dependency>
 
         <!--        springboot相关依赖-->
         <dependency>
