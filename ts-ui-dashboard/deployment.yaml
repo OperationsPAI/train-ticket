@@ -5,9 +5,11 @@ metadata:
   labels:
     app: ts-ui-dashboard
 spec:
+  type: NodePort
   ports:
   - port: 8080
     protocol: TCP
+    targetPort: 8080
   clusterIP: None
   selector:
     app: ts-ui-dashboard
