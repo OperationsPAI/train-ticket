@@ -1,0 +1,152 @@
+global:
+  image:
+    repository: 192.168.1.105/library
+    tag: latest
+  port: 8080
+  mysql:
+    host: "mysql"
+    port: "3306"
+    database: "ts"
+    user: "root"
+    password: "yourpassword" 
+
+services:
+  tsAdminBasicInfoService:
+    name: ts-admin-basic-info-service
+    secretRef: ts-admin-basic-info-service
+  tsAdminOrderService:
+    name: ts-admin-order-service
+    secretRef: ts-admin-order-service
+  tsAdminRouteService:
+    name: ts-admin-route-service
+    secretRef: ts-admin-route-service
+  tsAdminTravelService:
+    name: ts-admin-travel-service
+    secretRef: ts-admin-travel-service
+  tsAdminUserService:
+    name: ts-admin-user-service
+    secretRef: ts-admin-user-service
+  tsAssuranceService:
+    name: ts-assurance-service
+    secretRef: ts-assurance-service
+  tsAuthService:
+    name: ts-auth-service
+    secretRef: ts-auth-service
+  tsAvatarService:
+    name: ts-avatar-service
+    secretRef: ts-avatar-service
+  tsBasicService:
+    name: ts-basic-service
+    secretRef: ts-basic-service
+  tsCancelService:
+    name: ts-cancel-service
+    secretRef: ts-cancel-service
+  tsConfigService:
+    name: ts-config-service
+    secretRef: ts-config-service
+  tsConsignPriceService:
+    name: ts-consign-price-service
+    secretRef: ts-consign-price-service
+  tsConsignService:
+    name: ts-consign-service
+    secretRef: ts-consign-service
+  tsContactsService:
+    name: ts-contacts-service
+    secretRef: ts-contacts-service
+  tsDeliveryService:
+    name: ts-delivery-service
+    secretRef: ts-delivery-service
+  tsExecuteService:
+    name: ts-execute-service
+    secretRef: ts-execute-service
+  tsFoodDeliveryService:
+    name: ts-food-delivery-service
+    secretRef: ts-food-delivery-service
+  tsFoodService:
+    name: ts-food-service
+    secretRef: ts-food-service
+  tsGatewayService:
+    name: ts-gateway-service
+    secretRef: ts-gateway-service
+  tsInsidePaymentService:
+    name: ts-inside-payment-service
+    secretRef: ts-inside-payment-service
+  tsNewsService:
+    name: ts-news-service
+    secretRef: ts-news-service
+  tsNotificationService:
+    name: ts-notification-service
+    secretRef: ts-notification-service
+  tsOrderOtherService:
+    name: ts-order-other-service
+    secretRef: ts-order-other-service
+  tsOrderService:
+    name: ts-order-service
+    secretRef: ts-order-service
+  tsPaymentService:
+    name: ts-payment-service
+    secretRef: ts-payment-service
+  tsPreserveOtherService:
+    name: ts-preserve-other-service
+    secretRef: ts-preserve-other-service
+  tsPreserveService:
+    name: ts-preserve-service
+    secretRef: ts-preserve-service
+  tsPriceService:
+    name: ts-price-service
+    secretRef: ts-price-service
+  tsRebookService:
+    name: ts-rebook-service
+    secretRef: ts-rebook-service
+  tsRoutePlanService:
+    name: ts-route-plan-service
+    secretRef: ts-route-plan-service
+  tsRouteService:
+    name: ts-route-service
+    secretRef: ts-route-service
+  tsSeatService:
+    name: ts-seat-service
+    secretRef: ts-seat-service
+  tsSecurityService:
+    name: ts-security-service
+    secretRef: ts-security-service
+  tsStationFoodService:
+    name: ts-station-food-service
+    secretRef: ts-station-food-service
+  tsStationService:
+    name: ts-station-service
+    secretRef: ts-station-service
+  tsTicketOfficeService:
+    name: ts-ticket-office-service
+    secretRef: ts-ticket-office-service
+  tsTrainFoodService:
+    name: ts-train-food-service
+    secretRef: ts-train-food-service
+  tsTrainService:
+    name: ts-train-service
+    secretRef: ts-train-service
+  tsTravelPlanService:
+    name: ts-travel-plan-service
+    secretRef: ts-travel-plan-service
+  tsTravelService:
+    name: ts-travel-service
+    secretRef: ts-travel-service
+  tsTravel2Service:
+    name: ts-travel2-service
+    secretRef: ts-travel2-service
+  tsUiDashboard:
+    name: ts-ui-dashboard
+    secretRef: ts-ui-dashboard
+    type: NodePort
+  tsUserService:
+    name: ts-user-service
+    secretRef: ts-user-service
+  tsVerificationCodeService:
+    name: ts-verification-code-service
+    secretRef: ts-verification-code-service
+  tsVoucherService:
+    name: ts-voucher-service
+    secretRef: ts-voucher-service
+  tsWaitOrderService:
+    name: ts-wait-order-service
+    secretRef: ts-wait-order-service

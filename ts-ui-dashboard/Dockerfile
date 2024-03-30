@@ -5,3 +5,5 @@ RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shang
 COPY nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
 
 COPY static /usr/share/nginx/html
+
+RUN ulimit -n 65535

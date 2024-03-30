@@ -1,0 +1,33 @@
+{{- $root := . }}
+{{- range $name, $svc := .Values.services }}
+apiVersion: apps/v1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc.name }}
+  labels:
+    app: {{ $svc.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ $svc.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $svc.name }}
+    spec:
+      containers:
+      - name: {{ $svc.name }}
+        image: "{{ $root.Values.global.image.repository }}/{{ $svc.name }}:{{ $root.Values.global.image.tag | default $root.Chart.AppVersion }}"
+        {{- with $root.Values.global.image.pullPolicy }}
+        imagePullPolicy: {{ $root.Values.global.image.pullPolicy }}
+        {{- end}}
+        livenessProbe:
+          {{- toYaml $svc.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml $svc.readinessProbe | nindent 10 }}
+        envFrom:
+        - secretRef:
+            name: {{ $svc.secretRef | quote}}
+---
+{{- end}}
