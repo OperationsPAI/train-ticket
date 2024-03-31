@@ -22,8 +22,13 @@ version: 0.1.0
 # follow Semantic Versioning. They should reflect the version the application is using.
 # It is recommended to use it with quotes.
 appVersion: "1.16.0"
+
 dependencies:
   - name: mysql
     version: "0.0.1"
     repository: "file://../mysql"
+  - name: skywalking
+    version: 4.5.0
+    repository: "oci://registry-1.docker.io/apache/skywalking-helm"
+    condition: skywalking.enabled
 
