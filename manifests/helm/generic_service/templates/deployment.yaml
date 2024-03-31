@@ -34,9 +34,9 @@ spec:
               fieldRef:
                 fieldPath: status.hostIP
           - name: SW_AGENT_COLLECTOR_BACKEND_SERVICES
-            value: "skywalking-skywalking-helm-oap:11800"
+            value: "{{ $root.Release.Name }}-skywalking-helm-oap:11800"
           - name: SW_GRPC_LOG_SERVER_HOST
-            value: "skywalking-skywalking-helm-oap"
+            value: "{{ $root.Release.Name }}-skywalking-helm-oap"
           - name: SW_GRPC_LOG_SERVER_PORT
             value: "11800"
           - name: SW_AGENT_NAME

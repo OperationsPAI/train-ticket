@@ -196,18 +196,18 @@ skywalking-helm:
     nodeAffinity: {}
     nodeSelector: {}
     tolerations: []
-    resources: {}
-      # limits:
-      #   cpu: 8
-      #   memory: 8Gi
-      # requests:
-      #   cpu: 8
-      #   memory: 4Gi
-    livenessProbe: {}
-      # tcpSocket:
-      #   port: 12800
-      # initialDelaySeconds: 5
-      # periodSeconds: 20
+    resources:
+      limits:
+        cpu: 4
+        memory: 8Gi
+      requests:
+        cpu: 4
+        memory: 4Gi
+    livenessProbe: 
+      tcpSocket:
+        port: 12800
+      initialDelaySeconds: 10
+      periodSeconds: 20
     startupProbe: {}
     # Time to boot the application is set to:
     # 9 (failureThreshold) * 10 (periodSeconds) = 90 seconds in this case.
@@ -579,7 +579,7 @@ skywalking-helm:
     enabled: false # Whether to start a demo postgresql deployment, don't use this for production.
     config:
       # The hostname of your own postgresql service, this only takes effect when postgresql.enabled is false.
-      host: postgresql
+      host: ts-postgresql # note: change the name to your corresponding name !!!!!!
     auth:
       username: postgres
       password: "123456"
@@ -592,24 +592,6 @@ skywalking-helm:
     readReplicas:
       persistence:
         enabled: false
-
-  banyandb:
-    enabled: false
-    config:
-      httpHost: banyandb-http
-      httpPort: 17913
-      targets: "banyandb-grpc:17912"
-    standalone:
-      enabled: true
-    cluster:
-      enabled: false
-      liaison:
-        replicas: 1
-      data:
-        replicas: 1
-    etcd:
-      enabled: false
-      replicaCount: 1
 
   satellite:
     name: satellite
@@ -662,4 +644,3 @@ postgresql:
       service:
         ports:
           postgresql: "5432"
-  nameOverride: postgresql
