@@ -19,12 +19,7 @@ spec:
       - name: {{ $svc.name }}
         image: "{{ $root.Values.global.image.repository }}/{{ $svc.name }}:{{ $root.Values.global.image.tag | default $root.Chart.AppVersion }}"
         {{- with $root.Values.global.image.pullPolicy }}
-        imagePullPolicy: {{ $root.Values.global.image.pullPolicy }}
-        {{- end}}
-        livenessProbe:
-          {{- toYaml $svc.livenessProbe | nindent 10 }}
-        readinessProbe:
-          {{- toYaml $svc.readinessProbe | nindent 10 }}
+        imagePullPolicy: {{ . }}{{- end}}
         envFrom:
         - secretRef:
             name: {{ $svc.secretRef | quote}}
@@ -49,7 +44,7 @@ spec:
               fieldRef:
                 fieldPath: metadata.labels['app']
           - name: JAVA_TOOL_OPTIONS
-            value: "-javaagent:/skywalking/agent/skywalking-agent.jar"
+            value: "-javaagent:/skywalking-agent/skywalking-agent.jar"
       volumes:
         - name: skywalking-agent
           emptyDir: {}

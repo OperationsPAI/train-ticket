@@ -2,5 +2,11 @@ dependencies:
 - name: mysql
   repository: file://../mysql
   version: 0.0.1
-digest: sha256:83bf635f16a6a6ca7916b5a1d1e298f9f3be23d7c46e723d19a9547f1d5804c2
-generated: "2024-03-30T18:09:12.31916+08:00"
+- name: skywalking-helm
+  repository: oci://registry-1.docker.io/apache
+  version: 4.5.0
+- name: postgresql
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 15.1.4
+digest: sha256:6fa6eda855e75ceb7d0b1afc849f217ccaefdc87ddcb818f135f406580fc4ddb
+generated: "2024-03-31T09:34:40.817112+08:00"
