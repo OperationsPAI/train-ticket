@@ -39,8 +39,8 @@ helm uninstall "$SKYWALKING_RELEASE_NAME"  -n "$SKYWALKING_RELEASE_NAMESPACE"
 
 # 安装origin x
 helm install originx originx/originx \
-              --set global.skywalkingaddress="" \
-              --set global.portalp2p.username="aoyangfang@link.cuhk.edu.cn" \
+              --set global.skywalkingaddress="ts-skywalking-helm-oap.ts.svc.cluster.local" \
+              --set global.portalp2p.username="lincyaw" \
               --set global.portalp2p.password="SZj6c2cUVTzqaAX" \
               --set global.originxversion="v0.1.0" \
               -n originx --create-namespace

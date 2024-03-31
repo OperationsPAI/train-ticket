@@ -1,8 +1,0 @@
-global:
-  postgresql:
-    auth:
-      postgresPassword: 123456
-      database: skywalking
-    service:
-      ports:
-        postgresql: "5432"
