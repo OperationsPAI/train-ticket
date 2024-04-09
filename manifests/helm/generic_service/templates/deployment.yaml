@@ -53,11 +53,38 @@ spec:
         image: {{ $root.Values.skywalking.image }}
         command: ['sh', '-c', 'cp -r /skywalking/agent/* /skywalking-agent/']
         volumeMounts:
-        - name: skywalking-agent
-          mountPath: /skywalking-agent
+        - name: otel-agent
+          mountPath: /otel-agent
       {{- end}}
       {{- if eq $root.Values.global.monitoring "opentelemtry"}}
-
+        volumeMounts:
+          - name: otel-agent
+            mountPath: /otel-agent
+        env:
+          - name: NODE_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+          - name: OTEL_RESOURCE_ATTRIBUTES
+            value: {{ $svc.name }}
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "http://opentelemetry-collector-deployment.monitoring:4317"
+          - name: OTEL_METRICS_EXPORTER
+            value: otlp
+          - name: OTEL_TRACES_EXPORTER
+            value: otlp
+          - name: JAVA_TOOL_OPTIONS
+            value: "-javaagent:/otel-agent/otel-agent.jar"
+      volumes:
+        - name: otel-agent
+          emptyDir: {}
+      initContainers:
+      - name: init-otel-agent
+        image: {{ $root.Values.opentelemtry.image }}
+        command: ['sh', '-c', 'cp /javaagent.jar /otel-agent/otel-agent.jar']
+        volumeMounts:
+        - name: otel-agent
+          mountPath: /otel-agent
       {{- end}} 
       {{- end}}
 ---

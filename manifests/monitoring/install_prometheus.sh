@@ -10,7 +10,7 @@ install_prometheus() {
     echo "Updating Helm repository..."
     helm repo update
     echo "Installing Prometheus stack in namespace $NAMESPACE..."
-    helm install prometheus-stack prometheus-community/kube-prometheus-stack -n $NAMESPACE
+    helm install prometheus-stack prometheus-community/kube-prometheus-stack -n $NAMESPACE --create-namsepace
 }
 
 # 函数：卸载 Prometheus 堆栈

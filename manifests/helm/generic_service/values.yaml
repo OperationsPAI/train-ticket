@@ -1,6 +1,6 @@
 global:
   image:
-    repository: 192.168.1.105/library
+    repository: 10.10.10.210/library
     tag: latest
   port: 8080
   mysql:
@@ -16,6 +16,8 @@ skywalking:
   image: apache/skywalking-java-agent:8.8.0-alpine
 
 opentelemtry:
+  enabled: true
+  image: otel/autoinstrumentation-java:latest
 
 services:
   tsAdminBasicInfoService:

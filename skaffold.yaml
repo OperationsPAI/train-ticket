@@ -199,9 +199,9 @@ build:
 deploy:
   helm:
     releases:
-      - name: train-ticket
+      - name: ts
         chartPath: manifests/helm/generic_service
-        namespace: train-ticket
+        namespace: ts
         createNamespace: true
         valuesFiles:
           - manifests/helm/generic_service/values.yaml
