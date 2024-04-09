@@ -1,4 +1,0 @@
-initdbScripts:
-  create-db.sql: |
-    CREATE DATABASE IF NOT EXISTS otel;
-service.type: NodeIP
