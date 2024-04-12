@@ -71,10 +71,12 @@ spec:
             value: "http://opentelemetry-collector-deployment.monitoring:4317"
           - name: OTEL_EXPORTER_OTLP_PROTOCOL
             value: grpc
-          - name: OTEL_METRICS_EXPORTER
-            value: logging
-          - name: OTEL_TRACES_EXPORTER
-            value: logging
+          # - name: OTEL_METRICS_EXPORTER
+          #   value: otlp
+          # - name: OTEL_TRACES_EXPORTER
+          #   value: otlp
+          # - name: OTEL_LOGS_EXPORTER
+          #   value: otlp
           - name: JAVA_TOOL_OPTIONS
             value: "-javaagent:/otel-agent/otel-agent.jar"
       volumes:
