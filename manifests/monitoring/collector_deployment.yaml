@@ -84,15 +84,15 @@ config:
           - batch
         receivers:
           - otlp
-      metrics:
-        exporters:
-          - clickhouse
-        processors:
-          - memory_limiter
-          - batch
-        receivers:
-          - otlp
-          - prometheus
+      # metrics:
+      #   exporters:
+      #     - clickhouse
+      #   processors:
+      #     - memory_limiter
+      #     - batch
+      #   receivers:
+      #     - otlp
+      #     - prometheus
       traces:
         exporters:
           - clickhouse
