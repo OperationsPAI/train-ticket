@@ -78,14 +78,14 @@ config:
       - health_check
       - memory_ballast
     pipelines:
-      logs:
-        exporters:
-          - debug
-        processors:
-          - memory_limiter
-          - batch
-        receivers:
-          - otlp
+      # logs:
+      #   exporters:
+      #     - debug
+      #   processors:
+      #     - memory_limiter
+      #     - batch
+      #   receivers:
+      #     - otlp
       # metrics:
       #   exporters:
       #     - clickhouse
