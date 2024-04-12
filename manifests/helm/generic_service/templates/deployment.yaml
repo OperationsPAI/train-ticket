@@ -53,8 +53,8 @@ spec:
         image: {{ $root.Values.skywalking.image }}
         command: ['sh', '-c', 'cp -r /skywalking/agent/* /skywalking-agent/']
         volumeMounts:
-        - name: otel-agent
-          mountPath: /otel-agent
+        - name: skywalking-agent
+          mountPath: /skywalking-agent
       {{- end}}
       {{- if eq $root.Values.global.monitoring "opentelemtry"}}
         volumeMounts:
