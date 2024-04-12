@@ -69,14 +69,20 @@ spec:
             value: "service.name={{ $svc.name }}"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: "http://opentelemetry-collector-deployment.monitoring:4317"
+          - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+            value: "http://opentelemetry-collector-deployment.monitoring:4317"
+          - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+            value: "http://opentelemetry-collector-deployment.monitoring:4317"
+          - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+            value: "http://opentelemetry-collector-deployment.monitoring:4317"
           - name: OTEL_EXPORTER_OTLP_PROTOCOL
             value: grpc
-          # - name: OTEL_METRICS_EXPORTER
-          #   value: otlp
-          # - name: OTEL_TRACES_EXPORTER
-          #   value: otlp
-          # - name: OTEL_LOGS_EXPORTER
-          #   value: otlp
+          - name: OTEL_METRICS_EXPORTER
+            value: otlp
+          - name: OTEL_TRACES_EXPORTER
+            value: otlp
+          - name: OTEL_LOGS_EXPORTER
+            value: otlp
           - name: JAVA_TOOL_OPTIONS
             value: "-javaagent:/otel-agent/otel-agent.jar"
       volumes:
