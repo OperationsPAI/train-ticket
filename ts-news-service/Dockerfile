@@ -4,8 +4,6 @@ FROM mrrm/web.go
 RUN mkdir -p /app
 WORKDIR /app
 
-ADD ./src/main/main.go /app/
-RUN go build
+ADD . /app/
+RUN go build -o app
 CMD [ "./app" ]
-
-EXPOSE 8080
