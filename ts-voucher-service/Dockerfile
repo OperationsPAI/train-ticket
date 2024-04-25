@@ -19,6 +19,5 @@ RUN pip install cryptography
 RUN pip install --no-cache-dir -r requirements.txt
 
 ADD ./server.py /app/
-CMD [ "python", "server.py" ]
-
-EXPOSE 16101
+ENV OTEL_SERVICE_NAME ts-voucher-service
+CMD ["opentelemetry-instrument", "python", "server.py" ]

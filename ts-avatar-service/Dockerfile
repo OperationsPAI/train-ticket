@@ -23,7 +23,8 @@ WORKDIR /app
 
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install -r requirements.txt
-
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:app"]
+RUN opentelemetry-bootstrap -a install
+ENV OTEL_SERVICE_NAME ts-avatar-service
+CMD ["opentelemetry-instrument", "gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:app"]
 
 EXPOSE 8080

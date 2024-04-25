@@ -44,6 +44,7 @@ services:
   tsAvatarService:
     name: ts-avatar-service
     secretRef: ts-avatar-service
+    language: python
   tsBasicService:
     name: ts-basic-service
     secretRef: ts-basic-service
@@ -83,6 +84,7 @@ services:
   tsNewsService:
     name: ts-news-service
     secretRef: ts-news-service
+    language: golang
   tsNotificationService:
     name: ts-notification-service
     secretRef: ts-notification-service
@@ -128,6 +130,7 @@ services:
   tsTicketOfficeService:
     name: ts-ticket-office-service
     secretRef: ts-ticket-office-service
+    language: javascript
   tsTrainFoodService:
     name: ts-train-food-service
     secretRef: ts-train-food-service
@@ -156,6 +159,7 @@ services:
   tsVoucherService:
     name: ts-voucher-service
     secretRef: ts-voucher-service
+    language: python
   tsWaitOrderService:
     name: ts-wait-order-service
     secretRef: ts-wait-order-service

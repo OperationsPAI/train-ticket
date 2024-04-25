@@ -4,7 +4,7 @@ RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shang
 WORKDIR /app
 ADD . . 
 RUN npm install
-
+ENV OTEL_SERVICE_NAME "ts-ticket-office-service"
 CMD [ "npm", "start" ]
 
 EXPOSE 8080

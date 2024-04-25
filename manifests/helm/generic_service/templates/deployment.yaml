@@ -24,6 +24,29 @@ spec:
         - secretRef:
             name: {{ $svc.secretRef | quote}}
       {{- with $root.Values.global.monitoring}}
+      {{- if eq $svc.lang "python"}} # python auto instrument
+        env:
+          - name: OTEL_TRACES_EXPORTER
+            value: console,otlp
+          - name: OTEL_METRICS_EXPORTER
+            value: console,otlp
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: opentelemetry-collector-deployment.monitoring:4317
+      {{- end}}
+      {{- if eq $svc.lang "javascript"}}
+        env:
+          - name: OTEL_TRACES_EXPORTER
+            value: console,otlp
+          - name: OTEL_METRICS_EXPORTER
+            value: console,otlp
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: opentelemetry-collector-deployment.monitoring:4317
+          - name: OTEL_NODE_RESOURCE_DETECTORS
+            value: "env,host,os"
+          - name: NODE_OPTIONS
+            value: "--require @opentelemetry/auto-instrumentations-node/register"
+      {{- end}}
+      {{- if not $svc.lang}} #如果没有设置语言，则默认是 java
       {{- if eq $root.Values.global.monitoring "skywalking"}}
         volumeMounts:
           - name: skywalking-agent
@@ -96,6 +119,7 @@ spec:
         - name: otel-agent
           mountPath: /otel-agent
       {{- end}} 
+      {{- end}}
       {{- end}}
 ---
 {{- end}}
