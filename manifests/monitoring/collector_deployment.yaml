@@ -21,7 +21,7 @@ config:
     otlp:
       endpoint: "jaeger-collector.monitoring:4317"
       tls:
-        insecure: false
+        insecure: true
     clickhouse:
       endpoint: tcp://10.10.10.88:9000?dial_timeout=10s&compress=lz4&username=default&password=password
       database: default
