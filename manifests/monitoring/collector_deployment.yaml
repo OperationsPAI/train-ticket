@@ -7,6 +7,10 @@ presets:
   clusterMetrics:
     enabled: false
 
+image:
+  # If you want to use the core image `otel/opentelemetry-collector`, you also need to change `command.name` value to `otelcol`.
+  repository: otel/opentelemetry-collector-contrib
+
 configMap:
   create: true
 
@@ -14,6 +18,9 @@ config:
   exporters:
     debug:
       verbosity: normal
+    jaeger:
+      endpoint: "http://jaeger-collector.monitoring:14268/api/traces"
+      insecure: true
     clickhouse:
       endpoint: tcp://10.10.10.88:9000?dial_timeout=10s&compress=lz4&username=default&password=nn
       database: default
@@ -82,6 +89,7 @@ config:
         exporters:
           - debug
           - clickhouse
+          - jaeger
         processors:
           - memory_limiter
           - batch
