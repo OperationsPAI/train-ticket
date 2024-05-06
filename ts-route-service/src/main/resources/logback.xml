@@ -2,13 +2,10 @@
 <configuration>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-          <pattern>%d{HH:mm:ss.SSS} %-5level %logger{15}#%line TraceID: %X{trace_id} SpanID: %X{span_id} %msg%n</pattern>
+          <pattern>%d{HH:mm:ss.SSS} %-5level %logger{15}#%line TraceID: %X{traceId} SpanID: %X{spanId} %msg%n</pattern>
         </encoder>
     </appender>
 
-    <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.v1_0.OpenTelemetryAppender">
-        <appender-ref ref="CONSOLE" />
-    </appender>
 
     <root>
         <level value="INFO" />
