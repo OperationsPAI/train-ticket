@@ -26,7 +26,7 @@ jobs:
     - name: Login to Harbor
       uses: docker/login-action@v3
       with:
-        registry: http://10.10.10.210 # 自建Harbor地址
+        registry: http://${{  secrets.HARBOR_ADDR }} # 自建Harbor地址
         username: ${{ secrets.HARBOR_USERNAME }} # 存储在GitHub Secrets中的用户名
         password: ${{ secrets.HARBOR_PASSWORD }} # 存储在GitHub Secrets中的密码
 
@@ -36,6 +36,24 @@ jobs:
         for dir in $(find . -maxdepth 2 -type f -name Dockerfile -exec dirname {} \;); do
           echo "Building Docker image in directory: $dir"
           IMAGE_NAME=$(basename "$dir")
-          docker build -t 10.10.10.210/library/$IMAGE_NAME:$GITHUB_SHA "$dir"
-          docker push 10.10.10.210/library/$IMAGE_NAME:$GITHUB_SHA
+          docker build -t ${{  secrets.HARBOR_ADDR }}/library/$IMAGE_NAME:$GITHUB_SHA "$dir"
+          docker push ${{  secrets.HARBOR_ADDR }}/library/$IMAGE_NAME:$GITHUB_SHA
         done
+  deploy:
+    needs: [build-and-push]
+    if: startsWith(github.event.head_commit.message, '[deploy]')
+    runs-on: self-hosted
+    steps:
+      - name: Setup Kubernetes CLI
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.3'
+      - name: Configure Kubectl
+        run: |
+          echo "$KUBECONFIG_DATA" | base64 --decode > kubeconfig.yaml
+          export KUBECONFIG=$(pwd)/kubeconfig.yaml
+          kubectl cluster-info
+      - name: Deploy to Kubernetes
+        run: | 
+          kubectl apply -f k8s/deployment.yaml # 假设你的k8s配置文件位于k8s目录下
+          kubectl apply -f k8s/service.yaml
