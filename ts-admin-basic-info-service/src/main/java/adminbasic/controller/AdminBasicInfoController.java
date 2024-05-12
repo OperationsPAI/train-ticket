@@ -25,10 +25,11 @@ public class AdminBasicInfoController {
     @Autowired
     AdminBasicInfoService adminBasicInfoService;
     private static final Logger LOGGER = LoggerFactory.getLogger(AdminBasicInfoController.class);
-
+    
+    @CrossOrigin(origins = "*")
     @GetMapping(path = "/welcome")
     public String home(@RequestHeader HttpHeaders headers) {
-        AdminBasicInfoController.LOGGER.info("Welcome");
+        AdminBasicInfoController.LOGGER.info("Welcome --");
         return "Welcome to [ AdminBasicInfo Service ] !";
     }
 
