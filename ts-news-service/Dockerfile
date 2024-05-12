@@ -1,5 +1,4 @@
-FROM mrrm/web.go
-
+FROM golang:alpine3.19
 
 RUN mkdir -p /app
 WORKDIR /app

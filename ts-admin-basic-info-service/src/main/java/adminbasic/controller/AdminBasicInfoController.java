@@ -28,6 +28,7 @@ public class AdminBasicInfoController {
 
     @GetMapping(path = "/welcome")
     public String home(@RequestHeader HttpHeaders headers) {
+        AdminBasicInfoController.LOGGER.info("Welcome");
         return "Welcome to [ AdminBasicInfo Service ] !";
     }
 
