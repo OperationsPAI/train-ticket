@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-and-push:
-    if: startsWith(github.event.head_commit.message, '[deploy]')
+    if: startsWith(github.event.head_commit.message, '[build]') || startsWith(github.event.head_commit.message, '[both]')
     runs-on: self-hosted
     steps:
     - name: Checkout Code
@@ -42,7 +42,7 @@ jobs:
         done
   deploy:
     needs: [build-and-push]
-    if: startsWith(github.event.head_commit.message, '[deploy]')
+    if: startsWith(github.event.head_commit.message, '[deploy]') || startsWith(github.event.head_commit.message, '[both]')
     runs-on: self-hosted
     steps:
       - name: Setup Kubernetes CLI
@@ -51,7 +51,7 @@ jobs:
           version: 'v1.29.3'
       - name: Configure Kubectl
         run: |
-          echo ${{ secrets.KUBECONFIG_DATA }} | base64 --decode > kubeconfig.yaml
+          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 --decode > kubeconfig.yaml
           echo kubeconfig.yaml
           export KUBECONFIG=$(pwd)/kubeconfig.yaml
           kubectl cluster-info
