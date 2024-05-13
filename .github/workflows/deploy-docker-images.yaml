@@ -7,6 +7,7 @@ on:
 
 jobs:
   build-and-push:
+    if: startsWith(github.event.head_commit.message, '[deploy]')
     runs-on: self-hosted
     steps:
     - name: Checkout Code
@@ -50,10 +51,13 @@ jobs:
           version: 'v1.29.3'
       - name: Configure Kubectl
         run: |
-          echo "$KUBECONFIG_DATA" | base64 --decode > kubeconfig.yaml
+          echo ${{ secrets.KUBECONFIG_DATA }} | base64 --decode > kubeconfig.yaml
+          echo kubeconfig.yaml
           export KUBECONFIG=$(pwd)/kubeconfig.yaml
           kubectl cluster-info
+      - uses: azure/setup-helm@v4.2.0
+        with:
+          version: 'latest'
       - name: Deploy to Kubernetes
         run: | 
-          kubectl apply -f k8s/deployment.yaml # 假设你的k8s配置文件位于k8s目录下
-          kubectl apply -f k8s/service.yaml
+          helm install ts manifests/helm/generic_service -n ts --create-namespace --set global.monitoring=opentelemtry --set skywalking.enabled=false --set global.image.tag=
