@@ -60,4 +60,5 @@ jobs:
           version: 'latest'
       - name: Deploy to Kubernetes
         run: | 
+          helm dependency build
           helm install ts manifests/helm/generic_service -n ts --create-namespace --set global.monitoring=opentelemtry --set skywalking.enabled=false --set global.image.tag=
