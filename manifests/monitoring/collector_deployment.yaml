@@ -3,9 +3,9 @@ mode: "deployment"
 
 presets:
   kubernetesEvents:
-    enabled: false
+    enabled: true
   clusterMetrics:
-    enabled: false
+    enabled: true
 
 image:
   # If you want to use the core image `otel/opentelemetry-collector`, you also need to change `command.name` value to `otelcol`.
@@ -100,12 +100,12 @@ config:
 # Adding entries to Pod /etc/hosts with HostAliases
 # https://kubernetes.io/docs/tasks/network/customize-hosts-file-for-pods/
 hostAliases:
-  - ip: "10.10.10.202"
+  - ip: "10.10.10.221"
     hostnames:
     - "worker1"
-  - ip: "10.10.10.203"
+  - ip: "10.10.10.222"
     hostnames:
     - "worker2"
-  - ip: "10.10.10.204"
+  - ip: "10.10.10.223"
     hostnames:
     - "worker3"

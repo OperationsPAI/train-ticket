@@ -1,9 +1,0 @@
-global:
-  allInOneLocalStorage: true
-
-server:
-  readinessProbe:
-    failureThreshold: 1000
-    initialDelaySeconds: 1500
-    periodSeconds: 1000
-    successThreshold: 100
