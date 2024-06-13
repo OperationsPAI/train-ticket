@@ -50,7 +50,7 @@ public class UserController {
         }
     }
 
-    @GetMapping
+    @GetMapping("")
     public ResponseEntity<List<User>> getAllUser(@RequestHeader HttpHeaders headers) {
         logger.info("[getAllUser][Get all users]");
         return ResponseEntity.ok().body(userService.getAllUser(headers));

@@ -68,6 +68,7 @@ public class ConsignServiceImpl implements ConsignService {
                 new ParameterizedTypeReference<Response<Double>>() {
                 });
         consignRecord.setPrice(re.getBody().getData());
+        LOGGER.info("[debug]consignRecord detail:", consignRecord.toString());
 
         LOGGER.info("[insertConsignRecord][SAVE consign info][consignRecord : {}]", consignRecord.toString());
         ConsignRecord result = repository.save(consignRecord);

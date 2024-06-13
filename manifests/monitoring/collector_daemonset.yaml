@@ -11,74 +11,24 @@ mode: "daemonset"
 # Specify which namespace should be used to deploy the resources into
 namespaceOverride: ""
 
-# Handles basic configuration of components that
-# also require k8s modifications to work correctly.
-# .Values.config can be used to modify/add to a preset
-# component configuration, but CANNOT be used to remove
-# preset configuration. If you require removal of any
-# sections of a preset configuration, you cannot use
-# the preset. Instead, configure the component manually in
-# .Values.config and use the other fields supplied in the
-# values.yaml to configure k8s as necessary.
 presets:
-  # Configures the collector to collect logs.
-  # Adds the filelog receiver to the logs pipeline
-  # and adds the necessary volumes and volume mounts.
-  # Best used with mode = daemonset.
-  # See https://opentelemetry.io/docs/kubernetes/collector/components/#filelog-receiver for details on the receiver.
   logsCollection:
     enabled: true
     includeCollectorLogs: false
-    # Enabling this writes checkpoints in /var/lib/otelcol/ host directory.
-    # Note this changes collector's user to root, so that it can write to host directory.
     storeCheckpoints: false
-    # The maximum bytes size of the recombined field.
-    # Once the size exceeds the limit, all received entries of the source will be combined and flushed.
     maxRecombineLogSize: 102400
-  # Configures the collector to collect host metrics.
-  # Adds the hostmetrics receiver to the metrics pipeline
-  # and adds the necessary volumes and volume mounts.
-  # Best used with mode = daemonset.
-  # See https://opentelemetry.io/docs/kubernetes/collector/components/#host-metrics-receiver for details on the receiver.
   hostMetrics:
     enabled: true
-  # Configures the Kubernetes Processor to add Kubernetes metadata.
-  # Adds the k8sattributes processor to all the pipelines
-  # and adds the necessary rules to ClusteRole.
-  # Best used with mode = daemonset.
-  # See https://opentelemetry.io/docs/kubernetes/collector/components/#kubernetes-attributes-processor for details on the receiver.
   kubernetesAttributes:
     enabled: true
-    # When enabled the processor will extra all labels for an associated pod and add them as resource attributes.
-    # The label's exact name will be the key.
     extractAllPodLabels: false
-    # When enabled the processor will extra all annotations for an associated pod and add them as resource attributes.
-    # The annotation's exact name will be the key.
     extractAllPodAnnotations: false
-  # Configures the collector to collect node, pod, and container metrics from the API server on a kubelet..
-  # Adds the kubeletstats receiver to the metrics pipeline
-  # and adds the necessary rules to ClusteRole.
-  # Best used with mode = daemonset.
-  # See https://opentelemetry.io/docs/kubernetes/collector/components/#kubeletstats-receiver for details on the receiver.
   kubeletMetrics:
     enabled: true
-  # Configures the collector to collect kubernetes events.
-  # Adds the k8sobject receiver to the logs pipeline
-  # and collects kubernetes events by default.
-  # Best used with mode = deployment or statefulset.
-  # See https://opentelemetry.io/docs/kubernetes/collector/components/#kubernetes-objects-receiver for details on the receiver.
   kubernetesEvents:
-    enabled: false
-  # Configures the Kubernetes Cluster Receiver to collect cluster-level metrics.
-  # Adds the k8s_cluster receiver to the metrics pipeline
-  # and adds the necessary rules to ClusteRole.
-  # Best used with mode = deployment or statefulset.
-  # See https://opentelemetry.io/docs/kubernetes/collector/components/#kubernetes-cluster-receiver for details on the receiver.
-  clusterMetrics:
     enabled: false
 
 configMap:
-  # Specifies whether a configMap should be created (true by default)
   create: true
 
 # Base collector configuration.
@@ -87,7 +37,7 @@ configMap:
 config:
   exporters:
     clickhouse:
-      endpoint: tcp://clickhouse:9000?dial_timeout=10s&compress=lz4&username=admin&password=password
+      endpoint: tcp://10.10.10.88:9000?dial_timeout=10s&compress=lz4&username=default&password=password
       database: default
       ttl: 72h
       logs_table_name: otel_logs
@@ -122,29 +72,6 @@ config:
         - node
         - pod
         - container
-    jaeger:
-      protocols:
-        grpc:
-          endpoint: ${env:MY_POD_IP}:14250
-        thrift_http:
-          endpoint: ${env:MY_POD_IP}:14268
-        thrift_compact:
-          endpoint: ${env:MY_POD_IP}:6831
-    skywalking:
-      protocols:
-        grpc:
-          endpoint: 0.0.0.0:11800
-        http:
-          endpoint: 0.0.0.0:12800
-    otlp:
-      protocols:
-        grpc:
-          endpoint: ${env:MY_POD_IP}:4317
-        http:
-          endpoint: ${env:MY_POD_IP}:4318
-
-    zipkin:
-      endpoint: ${env:MY_POD_IP}:9411
   service:
     telemetry:
       metrics:
@@ -169,20 +96,10 @@ config:
           - batch
         receivers:
           - otlp
-          - prometheus
           - kubeletstats
-          - skywalking
       traces:
         exporters:
           - clickhouse
-        processors:
-          - memory_limiter
-          - batch
-        receivers:
-          - otlp
-          - jaeger
-          - zipkin
-          - skywalking
 
 image:
   # If you want to use the core image `otel/opentelemetry-collector`, you also need to change `command.name` value to `otelcol`.
@@ -329,13 +246,13 @@ hostNetwork: false
 # Adding entries to Pod /etc/hosts with HostAliases
 # https://kubernetes.io/docs/tasks/network/customize-hosts-file-for-pods/
 hostAliases:
-  - ip: "10.10.10.202"
+  - ip: "10.10.10.221"
     hostnames:
     - "worker1"
-  - ip: "10.10.10.203"
+  - ip: "10.10.10.222"
     hostnames:
     - "worker2"
-  - ip: "10.10.10.204"
+  - ip: "10.10.10.223"
     hostnames:
     - "worker3"
 

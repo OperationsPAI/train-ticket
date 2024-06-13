@@ -1,6 +1,6 @@
 global:
   image:
-    repository: 10.10.10.210/library
+    repository: 10.10.10.240/library
     tag: latest
   port: 8080
   mysql:
