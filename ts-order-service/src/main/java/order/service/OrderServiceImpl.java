@@ -427,9 +427,9 @@ public class OrderServiceImpl implements OrderService {
             return new Response<>(0, "Order already exist", null);
         } else {
             order.setId(UUID.randomUUID().toString());
-            orderRepository.save(order);
-            OrderServiceImpl.LOGGER.info("[addNewOrder][Admin Add Order Success][OrderId: {} , Price: {}]",order.getId() ,order.getPrice());
-            return new Response<>(1, "Add new Order Success", order);
+            Order neworder = orderRepository.save(order);
+            OrderServiceImpl.LOGGER.info("[addNewOrder][Admin Add Order Success][OrderId: {} , Price: {}] new{}",order.getId() ,order.getPrice(),neworder.getId());
+            return new Response<>(1, "Add new Order Success", neworder);
         }
     }
 
