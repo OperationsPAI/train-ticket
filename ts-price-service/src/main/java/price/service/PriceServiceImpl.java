@@ -29,6 +29,7 @@ public class PriceServiceImpl implements PriceService {
     public Response createNewPriceConfig(PriceConfig createAndModifyPriceConfig, HttpHeaders headers) {
         PriceServiceImpl.LOGGER.info("[createNewPriceConfig]");
         PriceConfig priceConfig = null;
+        PriceConfig newPriceConfig = null;
         // create
         if (createAndModifyPriceConfig.getId() == null || createAndModifyPriceConfig.getId().toString().length() < 10) {
             priceConfig = new PriceConfig();
@@ -37,7 +38,7 @@ public class PriceServiceImpl implements PriceService {
             priceConfig.setFirstClassPriceRate(createAndModifyPriceConfig.getFirstClassPriceRate());
             priceConfig.setRouteId(createAndModifyPriceConfig.getRouteId());
             priceConfig.setTrainType(createAndModifyPriceConfig.getTrainType());
-            priceConfigRepository.save(priceConfig);
+            newPriceConfig = priceConfigRepository.save(priceConfig);
         } else {
             // modify
             Optional<PriceConfig> op = priceConfigRepository.findById(createAndModifyPriceConfig.getId());
@@ -51,9 +52,9 @@ public class PriceServiceImpl implements PriceService {
             priceConfig.setFirstClassPriceRate(createAndModifyPriceConfig.getFirstClassPriceRate());
             priceConfig.setRouteId(createAndModifyPriceConfig.getRouteId());
             priceConfig.setTrainType(createAndModifyPriceConfig.getTrainType());
-            priceConfigRepository.save(priceConfig);
+            newPriceConfig = priceConfigRepository.save(priceConfig);
         }
-        return new Response<>(1, "Create success", priceConfig);
+        return new Response<>(1, "Create success", newPriceConfig);
     }
 
     @Override

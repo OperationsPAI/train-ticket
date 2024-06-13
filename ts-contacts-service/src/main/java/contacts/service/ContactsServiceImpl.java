@@ -53,8 +53,8 @@ public class ContactsServiceImpl implements ContactsService {
             ContactsServiceImpl.LOGGER.warn("[createContacts][Init Contacts, Already Exists][Id: {}]", contacts.getId());
             return new Response<>(0, "Already Exists", contactsTemp);
         } else {
-            contactsRepository.save(contacts);
-            return new Response<>(1, "Create Success", null);
+            Contacts newContact = contactsRepository.save(contacts);
+            return new Response<>(1, "Create Success", newContact);
         }
     }
 

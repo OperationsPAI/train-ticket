@@ -34,8 +34,8 @@ public class StationFoodServiceImpl implements StationFoodService {
             return new Response<>(0, "Already Exists Id", null);
         } else {
             try{
-                stationFoodRepository.save(fs);
-                return new Response<>(1, "Save Success", fs);
+                StationFoodStore newfs = stationFoodRepository.save(fs);
+                return new Response<>(1, "Save Success", newfs);
             }catch(Exception e){
                 return new Response<>(0, "Save failed", e.getMessage());
             }

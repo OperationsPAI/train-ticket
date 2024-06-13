@@ -137,7 +137,7 @@ public class WaitListOrderServiceImpl implements WaitListOrderService {
             newWaitListOrder.setId(UUID.randomUUID().toString());
             BeanUtils.copyProperties(newWaitListOrder,orderVO);
             newWaitListOrder.setTrainNumber(orderVO.getTripId());
-            waitListOrderRepository.save(newWaitListOrder);
+            newWaitListOrder = waitListOrderRepository.save(newWaitListOrder);
             WaitListOrderServiceImpl.LOGGER.info("[create][Create Wait Order Success][Order Price][AccountId: {} , TripId: {}]", orderVO.getAccountId(),orderVO.getTripId());
             return new Response<>(1,success,newWaitListOrder);
         }
