@@ -72,8 +72,8 @@ public class ConsignPriceServiceImpl implements ConsignPriceService {
         originalConfig.setInitialWeight(config.getInitialWeight());
         originalConfig.setWithinPrice(config.getWithinPrice());
         originalConfig.setBeyondPrice(config.getBeyondPrice());
-        repository.save(originalConfig);
-        return new Response<>(1, success, originalConfig);
+        ConsignPrice newConfig = repository.save(originalConfig);
+        return new Response<>(1, success, newConfig);
     }
 
     @Override

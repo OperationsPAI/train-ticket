@@ -82,14 +82,14 @@ public class FoodServiceImpl implements FoodService {
             }
             fo.setFoodName(addFoodOrder.getFoodName());
             fo.setPrice(addFoodOrder.getPrice());
-            foodOrderRepository.save(fo);
+            FoodOrder newAddFoodOrder = foodOrderRepository.save(fo);
             LOGGER.info("[createFoodOrdersInBatch][AddFoodOrderBatch][Success Save One Order][FoodOrderId: {}]", fo.getOrderId());
 
             Delivery delivery = new Delivery();
-            delivery.setFoodName(addFoodOrder.getFoodName());
-            delivery.setOrderId(UUID.fromString(addFoodOrder.getOrderId()));
-            delivery.setStationName(addFoodOrder.getStationName());
-            delivery.setStoreName(addFoodOrder.getStoreName());
+            delivery.setFoodName(newAddFoodOrder.getFoodName());
+            delivery.setOrderId(UUID.fromString(newAddFoodOrder.getOrderId()));
+            delivery.setStationName(newAddFoodOrder.getStationName());
+            delivery.setStoreName(newAddFoodOrder.getStoreName());
 
             String deliveryJson = JsonUtils.object2Json(delivery);
             deliveryJsons.add(deliveryJson);
@@ -126,7 +126,7 @@ public class FoodServiceImpl implements FoodService {
             }
             fo.setFoodName(addFoodOrder.getFoodName());
             fo.setPrice(addFoodOrder.getPrice());
-            foodOrderRepository.save(fo);
+            FoodOrder newfo = foodOrderRepository.save(fo);
             FoodServiceImpl.LOGGER.info("[createFoodOrder][AddFoodOrder Success]");
 
             Delivery delivery = new Delivery();
@@ -143,7 +143,7 @@ public class FoodServiceImpl implements FoodService {
                 LOGGER.error("[createFoodOrder][AddFoodOrder][send delivery info to mq error][exception: {}]", e.toString());
             }
 
-            return new Response<>(1, success, fo);
+            return new Response<>(1, success, newfo);
         }
     }
 

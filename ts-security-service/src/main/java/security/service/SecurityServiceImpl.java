@@ -63,12 +63,12 @@ public class SecurityServiceImpl implements SecurityService {
             return new Response<>(0, "Security Config Already Exist", null);
         } else {
             SecurityConfig config = new SecurityConfig();
-            config.setId(UUID.randomUUID().toString());
+            //config.setId(UUID.randomUUID().toString());
             config.setName(info.getName());
             config.setValue(info.getValue());
             config.setDescription(info.getDescription());
-            securityRepository.save(config);
-            return new Response<>(1, success, config);
+            SecurityConfig newConfig = securityRepository.save(config);
+            return new Response<>(1, success, newConfig);
         }
     }
 

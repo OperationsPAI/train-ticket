@@ -93,7 +93,7 @@ public class OrderOtherServiceImpl implements OrderOtherService {
             OrderOtherServiceImpl.LOGGER.error("[create][Order Create Fail][Order already exists][OrderId: {}]", order.getId());
             return new Response<>(0, "Order already exist", order);
         } else {
-            order.setId(UUID.randomUUID().toString());
+//            order.setId(UUID.randomUUID().toString());
             order=orderOtherRepository.save(order);
             OrderOtherServiceImpl.LOGGER.info("[create][Order Create Success][OrderId:{},Price: {}]",order.getId(),order.getPrice());
             return new Response<>(1, success, order);
@@ -104,8 +104,8 @@ public class OrderOtherServiceImpl implements OrderOtherService {
     public void initOrder(Order order, HttpHeaders headers) {
         Optional<Order> op = orderOtherRepository.findById(order.getId());
         if (!op.isPresent()) {
-            orderOtherRepository.save(order);
-            OrderOtherServiceImpl.LOGGER.info("[initOrder][Init Order Success][OrderId: {}]", order.getId());
+            Order newOrder = orderOtherRepository.save(order);
+            OrderOtherServiceImpl.LOGGER.info("[initOrder][Init Order Success][OrderId: {}]", newOrder.getId());
         } else {
             Order orderTemp = op.get();
             OrderOtherServiceImpl.LOGGER.error("[initOrder][Init Order Fail][Order Already Exists][OrderId: {}]", order.getId());
@@ -433,10 +433,9 @@ public class OrderOtherServiceImpl implements OrderOtherService {
             OrderOtherServiceImpl.LOGGER.error("[addNewOrder][Admin Add Order Fail][Order already exists][OrderId: {}]",order.getId());
             return new Response<>(0, "Order already exist", null);
         } else {
-            order.setId(UUID.randomUUID().toString());
-            orderOtherRepository.save(order);
-            OrderOtherServiceImpl.LOGGER.info("[addNewOrder][Admin Add Order Success][OrderId:{} , Price:{}]",order.getId(),order.getPrice());
-            return new Response<>(1, success, order);
+            Order newOrder = orderOtherRepository.save(order);
+            OrderOtherServiceImpl.LOGGER.info("[addNewOrder][Admin Add Order Success][OrderId:{} , Price:{}]",newOrder.getId(),newOrder.getPrice());
+            return new Response<>(1, success, newOrder);
         }
     }
 

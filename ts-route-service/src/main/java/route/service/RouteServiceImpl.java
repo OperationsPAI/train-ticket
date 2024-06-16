@@ -60,8 +60,8 @@ public class RouteServiceImpl implements RouteService {
         route.setEndStation(info.getEndStation());
         route.setStations(stationList);
         route.setDistances(distanceList);
-        routeRepository.save(route);
-        return new Response<>(1, "Save and Modify success", route);
+        Route newRoute = routeRepository.save(route);
+        return new Response<>(1, "Save and Modify success", newRoute);
     }
 
     @Override

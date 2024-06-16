@@ -37,8 +37,8 @@ public class PaymentServiceImpl implements PaymentService{
             payment.setOrderId(info.getOrderId());
             payment.setPrice(info.getPrice());
             payment.setUserId(info.getUserId());
-            paymentRepository.save(payment);
-            return new Response<>(1, "Pay Success", null);
+            Payment pm = paymentRepository.save(payment);
+            return new Response<>(1, "Pay Success", pm);
         }else{
             PaymentServiceImpl.LOGGER.warn("[pay][Pay Failed][Order not found with order id][PaymentId: {}, OrderId: {}]",info.getId(),info.getOrderId());
             return new Response<>(0, "Pay Failed, order not found with order id" +info.getOrderId(), null);
@@ -50,8 +50,8 @@ public class PaymentServiceImpl implements PaymentService{
         Money addMoney = new Money();
         addMoney.setUserId(info.getUserId());
         addMoney.setMoney(info.getPrice());
-        addMoneyRepository.save(addMoney);
-        return new Response<>(1,"Add Money Success", addMoney);
+        Money mn = addMoneyRepository.save(addMoney);
+        return new Response<>(1,"Add Money Success", mn);
     }
 
     @Override

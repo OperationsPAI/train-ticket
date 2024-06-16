@@ -77,6 +77,8 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
             payment.setPrice(order.getPrice());
             payment.setUserId(userId);
 
+            Payment newPay2;
+
             //判断一下账户余额够不够，不够要去站外支付
             List<Payment> payments = paymentRepository.findByUserId(userId);
             List<Money> addMonies = addMoneyRepository.findByUserId(userId);
@@ -117,9 +119,9 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
                 InsidePaymentServiceImpl.LOGGER.info("[Inside Payment Service.pay][outside Pay][Out pay result: {}]", outsidePaySuccess.toString());
                 if (outsidePaySuccess.getStatus() == 1) {
                     payment.setType(PaymentType.O);
-                    paymentRepository.save(payment);
+                    Payment newPay = paymentRepository.save(payment);
                     setOrderStatus(info.getTripId(), info.getOrderId(), headers);
-                    return new Response<>(1, "Payment Success " +    outsidePaySuccess.getMsg(), null);
+                    return new Response<>(1, "Payment Success " +    outsidePaySuccess.getMsg(), newPay);
                 } else {
                     LOGGER.error("Payment failed: {}", outsidePaySuccess.getMsg());
                     return new Response<>(0, "Payment Failed:  " +  outsidePaySuccess.getMsg(), null);
@@ -127,10 +129,10 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
             } else {
                 setOrderStatus(info.getTripId(), info.getOrderId(), headers);
                 payment.setType(PaymentType.P);
-                paymentRepository.save(payment);
+                newPay2 = paymentRepository.save(payment);
             }
             LOGGER.info("[Inside Payment Service.pay][Payment success][orderId: {}]", info.getOrderId());
-            return new Response<>(1, "Payment Success", null);
+            return new Response<>(1, "Payment Success", newPay2);
 
         } else {
             LOGGER.error("[Inside Payment Service.pay][Payment failed][Order not exists][orderId: {}]", info.getOrderId());
@@ -146,8 +148,8 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
             addMoney.setMoney(info.getMoney());
             addMoney.setUserId(info.getUserId());
             addMoney.setType(MoneyType.A);
-            addMoneyRepository.save(addMoney);
-            return new Response<>(1, "Create Account Success", null);
+            Money mn = addMoneyRepository.save(addMoney);
+            return new Response<>(1, "Create Account Success", mn);
         } else {
             LOGGER.error("[createAccount][Create Account Failed][Account already Exists][userId: {}]", info.getUserId());
             return new Response<>(0, "Create Account Failed, Account already Exists", null);
@@ -161,8 +163,8 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
             addMoney.setUserId(userId);
             addMoney.setMoney(money);
             addMoney.setType(MoneyType.A);
-            addMoneyRepository.save(addMoney);
-            return new Response<>(1, "Add Money Success", null);
+            Money mn = addMoneyRepository.save(addMoney);
+            return new Response<>(1, "Add Money Success", mn);
         } else {
             LOGGER.error("Add Money Failed, userId: {}", userId);
             return new Response<>(0, "Add Money Failed", null);
@@ -248,8 +250,8 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
             addMoney.setUserId(userId);
             addMoney.setMoney(money);
             addMoney.setType(MoneyType.D);
-            addMoneyRepository.save(addMoney);
-            return new Response<>(1, "Draw Back Money Success", null);
+            Money mn = addMoneyRepository.save(addMoney);
+            return new Response<>(1, "Draw Back Money Success", mn);
         } else {
             LOGGER.error("[drawBack][Draw Back Money Failed][addMoneyRepository.findByUserId null][userId: {}]", userId);
             return new Response<>(0, "Draw Back Money Failed", null);
@@ -266,6 +268,7 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
         payment.setPrice(info.getPrice());
         payment.setUserId(info.getUserId());
 
+        Payment pm2;
 
         List<Payment> payments = paymentRepository.findByUserId(userId);
         List<Money> addMonies = addMoneyRepository.findByUserId(userId);
@@ -303,17 +306,17 @@ public class InsidePaymentServiceImpl implements InsidePaymentService {
 
             if (outsidePaySuccess.getStatus() == 1) {
                 payment.setType(PaymentType.E);
-                paymentRepository.save(payment);
-                return new Response<>(1, "Pay Difference Success", null);
+                Payment pm = paymentRepository.save(payment);
+                return new Response<>(1, "Pay Difference Success", pm);
             } else {
                 LOGGER.error("[payDifference][Pay Difference Failed][outsidePaySuccess status not 1][orderId: {}]", info.getOrderId());
                 return new Response<>(0, "Pay Difference Failed", null);
             }
         } else {
             payment.setType(PaymentType.E);
-            paymentRepository.save(payment);
+            pm2 = paymentRepository.save(payment);
         }
-        return new Response<>(1, "Pay Difference Success", null);
+        return new Response<>(1, "Pay Difference Success", pm2);
     }
 
     @Override

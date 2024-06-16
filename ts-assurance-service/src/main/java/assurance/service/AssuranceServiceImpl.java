@@ -61,9 +61,9 @@ public class AssuranceServiceImpl implements AssuranceService {
             return new Response<>(0, "Fail.Assurance type doesn't exist", null);
         } else {
             Assurance assurance = new Assurance(UUID.randomUUID().toString(), UUID.fromString(orderId).toString(), at);
-            assuranceRepository.save(assurance);
+            Assurance newAssurance = assuranceRepository.save(assurance);
             AssuranceServiceImpl.LOGGER.info("[create][AddAssurance][Success]");
-            return new Response<>(1, "Success", assurance);
+            return new Response<>(1, "Success", newAssurance);
         }
     }
 

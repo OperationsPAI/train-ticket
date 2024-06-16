@@ -112,8 +112,8 @@ public class TravelServiceImpl implements TravelService {
             Trip trip = new Trip(ti, info.getTrainTypeName(), info.getStartStationName(),
                     info.getStationsName(), info.getTerminalStationName(), info.getStartTime(), info.getEndTime());
             trip.setRouteId(info.getRouteId());
-            repository.save(trip);
-            return new Response<>(1, "Create trip info:" + ti.toString() + ".", null);
+            Trip newTrip = repository.save(trip);
+            return new Response<>(1, "Create trip info:" + ti.toString() + ".", newTrip);
         } else {
             TravelServiceImpl.LOGGER.error("[getTripByRoute][Create trip error][Trip already exists][TripId: {}]",info.getTripId());
             return new Response<>(1, "Trip " + info.getTripId() + " already exists", null);

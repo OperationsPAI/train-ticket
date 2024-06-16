@@ -34,9 +34,9 @@ public class ConfigServiceImpl implements ConfigService {
             return new Response<>(0, result, null);
         } else {
             Config config = new Config(info.getName(), info.getValue(), info.getDescription());
-            repository.save(config);
-            logger.info("[create][create success][Config: {}]", info);
-            return new Response<>(1, "Create success", config);
+            Config newConfig = repository.save(config);
+            logger.info("[create][create success][Config: {}]", newConfig);
+            return new Response<>(1, "Create success", newConfig);
         }
     }
 

@@ -368,8 +368,8 @@ public class OrderServiceImpl implements OrderService {
     public void initOrder(Order order, HttpHeaders headers) {
         Optional<Order> op = orderRepository.findById(order.getId());
         if (!op.isPresent()) {
-            orderRepository.save(order);
-            OrderServiceImpl.LOGGER.info("[initOrder][Init Order Success][OrderId: {}]", order.getId());
+            Order newOrder = orderRepository.save(order);
+            OrderServiceImpl.LOGGER.info("[initOrder][Init Order Success][OrderId: {}]", newOrder.getId());
         } else {
             Order orderTemp = op.get();
             OrderServiceImpl.LOGGER.error("[initOrder][Init Order Fail][Order Already Exists][OrderId: {}]", order.getId());
@@ -427,9 +427,9 @@ public class OrderServiceImpl implements OrderService {
             return new Response<>(0, "Order already exist", null);
         } else {
             order.setId(UUID.randomUUID().toString());
-            Order neworder = orderRepository.save(order);
-            OrderServiceImpl.LOGGER.info("[addNewOrder][Admin Add Order Success][OrderId: {} , Price: {}] new{}",order.getId() ,order.getPrice(),neworder.getId());
-            return new Response<>(1, "Add new Order Success", neworder);
+            Order newOrder = orderRepository.save(order);
+            OrderServiceImpl.LOGGER.info("[addNewOrder][Admin Add Order Success][OrderId: {} , Price: {}]",newOrder.getId() ,order.getPrice());
+            return new Response<>(1, "Add new Order Success", newOrder);
         }
     }
 
