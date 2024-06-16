@@ -34,7 +34,7 @@ public class StationFoodController {
     }
 
     @CrossOrigin(origins = "*")
-    @GetMapping("/stationfoodstores/{stationId}")
+    @GetMapping("/stationfoodstores/{stationName}")
     public HttpEntity getFoodStoresOfStation(@PathVariable String stationName, @RequestHeader HttpHeaders headers) {
         StationFoodController.LOGGER.info("[Food Map Service][Get FoodStores By StationName]");
         return ok(stationFoodService.listFoodStoresByStationName(stationName, headers));
