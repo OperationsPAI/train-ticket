@@ -71,7 +71,7 @@ public class AssuranceServiceImpl implements AssuranceService {
     public Response deleteById(UUID assuranceId, HttpHeaders headers) {
         assuranceRepository.deleteById(assuranceId.toString());
         Optional<Assurance> a = assuranceRepository.findById(assuranceId.toString());
-        if (a == null) {
+        if (!a.isPresent()) {
             AssuranceServiceImpl.LOGGER.info("[deleteById][DeleteAssurance success][assuranceId: {}]", assuranceId);
             return new Response<>(1, "Delete Success with Assurance id", null);
         } else {
