@@ -55,10 +55,10 @@ public class AssuranceServiceImpl implements AssuranceService {
         AssuranceType at = AssuranceType.getTypeByIndex(typeIndex);
         if (a != null) {
             AssuranceServiceImpl.LOGGER.error("[create][AddAssurance Fail][Assurance already exists][typeIndex: {}, orderId: {}]", typeIndex, orderId);
-            return new Response<>(0, "Fail.Assurance already exists", null);
+            return new Response<>(0, "Fail.Assurance already exists", orderId);
         } else if (at == null) {
             AssuranceServiceImpl.LOGGER.warn("[create][AddAssurance Fail][Assurance type doesn't exist][typeIndex: {}, orderId: {}]", typeIndex, orderId);
-            return new Response<>(0, "Fail.Assurance type doesn't exist", null);
+            return new Response<>(0, "Fail.Assurance type doesn't exist", orderId);
         } else {
             Assurance assurance = new Assurance(UUID.randomUUID().toString(), UUID.fromString(orderId).toString(), at);
             Assurance newAssurance = assuranceRepository.save(assurance);
@@ -73,7 +73,7 @@ public class AssuranceServiceImpl implements AssuranceService {
         Optional<Assurance> a = assuranceRepository.findById(assuranceId.toString());
         if (!a.isPresent()) {
             AssuranceServiceImpl.LOGGER.info("[deleteById][DeleteAssurance success][assuranceId: {}]", assuranceId);
-            return new Response<>(1, "Delete Success with Assurance id", null);
+            return new Response<>(1, "Delete Success with Assurance id", assuranceId);
         } else {
             AssuranceServiceImpl.LOGGER.error("[deleteById][DeleteAssurance Fail][Assurance not clear][assuranceId: {}]", assuranceId);
             return new Response<>(0, "Fail.Assurance not clear", assuranceId);
@@ -86,7 +86,7 @@ public class AssuranceServiceImpl implements AssuranceService {
         Assurance isExistAssurace = assuranceRepository.findByOrderId(orderId.toString());
         if (isExistAssurace == null) {
             AssuranceServiceImpl.LOGGER.info("[deleteByOrderId][DeleteAssurance Success][orderId: {}]", orderId);
-            return new Response<>(1, "Delete Success with Order Id", null);
+            return new Response<>(1, "Delete Success with Order Id", orderId);
         } else {
             AssuranceServiceImpl.LOGGER.error("[deleteByOrderId][DeleteAssurance Fail][Assurance not clear][orderId: {}]", orderId);
             return new Response<>(0, "Fail.Assurance not clear", orderId);
