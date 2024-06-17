@@ -84,7 +84,7 @@ public class AssuranceController {
     }
 
     @CrossOrigin(origins = "*")
-    @GetMapping(path = "/assurance/orderid/{orderId}")
+    @GetMapping(path = "/assurances/orderid/{orderId}")
     public HttpEntity findAssuranceByOrderId(@PathVariable String orderId, @RequestHeader HttpHeaders headers) {
         AssuranceController.LOGGER.info("[findAssuranceByOrderId][Find assurance by orderId][orderId: {}]", orderId);
         return ok(assuranceService.findAssuranceByOrderId(UUID.fromString(orderId), headers));
