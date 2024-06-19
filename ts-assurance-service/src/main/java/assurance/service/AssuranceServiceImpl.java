@@ -30,7 +30,7 @@ public class AssuranceServiceImpl implements AssuranceService {
         Optional<Assurance> assurance = assuranceRepository.findById(id.toString());
         if (assurance == null) {
             AssuranceServiceImpl.LOGGER.warn("[findAssuranceById][find assurance][No content][assurance id: {}]", id);
-            return new Response<>(0, "No Content by this id", null);
+            return new Response<>(0, "No Content by this id", id);
         } else {
             AssuranceServiceImpl.LOGGER.info("[findAssuranceById][Find Assurance][assurance id: {}]", id);
             return new Response<>(1, "Find Assurance Success", assurance);

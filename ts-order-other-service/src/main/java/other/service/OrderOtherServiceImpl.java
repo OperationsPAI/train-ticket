@@ -421,7 +421,7 @@ public class OrderOtherServiceImpl implements OrderOtherService {
             Order order = op.get();
             orderOtherRepository.deleteById(orderUuid);
             OrderOtherServiceImpl.LOGGER.info("[deleteOrder][Delete order Success][OrderId: {}]",orderId);
-            return new Response<>(1, success, orderUuid);
+            return new Response<>(1, success, order);
         }
     }
 
