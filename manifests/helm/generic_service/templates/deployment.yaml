@@ -106,6 +106,8 @@ spec:
             value: otlp
           - name: OTEL_LOGS_EXPORTER
             value: otlp
+          - name: OTEL_EXPORTER_OTLP_SPAN_INSECURE
+            value: "true"
           - name: JAVA_TOOL_OPTIONS
             value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true"
       volumes:
