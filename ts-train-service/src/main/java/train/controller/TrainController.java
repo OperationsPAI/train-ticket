@@ -34,9 +34,9 @@ public class TrainController {
     @PostMapping(value = "/trains")
     public HttpEntity create(@RequestBody TrainType trainType, @RequestHeader HttpHeaders headers) {
         TrainController.LOGGER.info("[create][Create train][TrainTypeId: {}]",trainType.getId());
-        boolean isCreateSuccess = trainService.create(trainType, headers);
-        if (isCreateSuccess) {
-            return ok(new Response(1, "create success", null));
+        TrainType res = trainService.create(trainType, headers);
+        if (res != null) {
+            return ok(new Response(1, "create success", trainType));
         } else {
             return ok(new Response(0, "train type already exist", trainType));
         }

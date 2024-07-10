@@ -20,22 +20,20 @@ public class TrainServiceImpl implements TrainService {
     private static final Logger LOGGER = LoggerFactory.getLogger(TrainServiceImpl.class);
 
     @Override
-    public boolean create(TrainType trainType, HttpHeaders headers) {
-        boolean result = false;
+    public TrainType create(TrainType trainType, HttpHeaders headers) {
         if(trainType.getName().isEmpty()){
             TrainServiceImpl.LOGGER.error("[create][Create train error][Train Type name not specified]");
-            return result;
+            return null;
         }
         if (repository.findByName(trainType.getName()) == null) {
             TrainType type = new TrainType(trainType.getName(), trainType.getEconomyClass(), trainType.getConfortClass());
             type.setAverageSpeed(trainType.getAverageSpeed());
-            repository.save(type);
-            result = true;
-        }
-        else {
+            TrainType res = repository.save(type);
+            return res;
+        }else {
             TrainServiceImpl.LOGGER.error("[create][Create train error][Train already exists][TrainTypeId: {}]",trainType.getId());
         }
-        return result;
+        return null;
     }
 
     @Override

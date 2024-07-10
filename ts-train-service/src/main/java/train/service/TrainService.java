@@ -7,7 +7,7 @@ import java.util.List;
 
 public interface TrainService {
     //CRUD
-    boolean create(TrainType trainType, HttpHeaders headers);
+    TrainType create(TrainType trainType, HttpHeaders headers);
 
     TrainType retrieve(String id,HttpHeaders headers);
 
