@@ -36,7 +36,7 @@ public class TrainController {
         TrainController.LOGGER.info("[create][Create train][TrainTypeId: {}]",trainType.getId());
         TrainType res = trainService.create(trainType, headers);
         if (res != null) {
-            return ok(new Response(1, "create success", trainType));
+            return ok(new Response(1, "create success", res));
         } else {
             return ok(new Response(0, "train type already exist", trainType));
         }
