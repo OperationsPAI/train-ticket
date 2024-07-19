@@ -153,7 +153,7 @@ public class PreserveOtherServiceImpl implements PreserveOtherService {
                             order.getTrainNumber(), fromStationName, toStationName,
                             SeatClass.FIRSTCLASS.getCode(), firstClassTotalNum, stationList, httpHeaders);
             order.setSeatClass(SeatClass.FIRSTCLASS.getCode());
-            order.setSeatNumber("" + ticket.getSeatNo());
+            order.setSeatNumber(ticket.getSeatNo());
             order.setPrice(resultForTravel.getPrices().get("confortClass"));
         } else {
             int secondClassTotalNum = resultForTravel.getTrainType().getEconomyClass();
@@ -162,7 +162,7 @@ public class PreserveOtherServiceImpl implements PreserveOtherService {
                             order.getTrainNumber(), fromStationName, toStationName,
                             SeatClass.SECONDCLASS.getCode(), secondClassTotalNum, stationList, httpHeaders);
             order.setSeatClass(SeatClass.SECONDCLASS.getCode());
-            order.setSeatNumber("" + ticket.getSeatNo());
+            order.setSeatNumber(ticket.getSeatNo());
 
             order.setPrice(resultForTravel.getPrices().get("economyClass"));
         }

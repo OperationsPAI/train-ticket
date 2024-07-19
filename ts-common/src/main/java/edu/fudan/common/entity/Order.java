@@ -46,7 +46,7 @@ public class Order {
 
     private int seatClass;
 
-    private String seatNumber;
+    private int seatNumber;
 
     private String from;
 
@@ -64,7 +64,7 @@ public class Order {
         trainNumber = "G1235";
         coachNumber = 5;
         seatClass = SeatClass.FIRSTCLASS.getCode();
-        seatNumber = "5A";
+        seatNumber = 2;
         from = "shanghai";
         to = "taiyuan";
         status = OrderStatus.PAID.getCode();
@@ -93,7 +93,7 @@ public class Order {
                 && trainNumber.equals(other.getTrainNumber())
                 && coachNumber == other.getCoachNumber()
                 && seatClass == other.getSeatClass()
-                && seatNumber .equals(other.getSeatNumber())
+                && seatNumber == other.getSeatNumber()
                 && from.equals(other.getFrom())
                 && to.equals(other.getTo())
                 && status == other.getStatus()

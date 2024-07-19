@@ -46,7 +46,7 @@ public class NotificationController {
         notifyInfo.setOrderNumber("111-111-111");
         notifyInfo.setPrice("100");
         notifyInfo.setSeatClass("1");
-        notifyInfo.setSeatNumber("1102");
+        notifyInfo.setSeatNumber(2);
         notifyInfo.setStartTime("Sat May 04 07:00:00 CST 2013");
         notifyInfo.setUsername("h10g");
 

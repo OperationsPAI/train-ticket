@@ -203,14 +203,14 @@ public class RebookServiceImpl implements RebookService {
                             order.getTrainNumber(), order.getFrom(), order.getTo(),
                             SeatClass.FIRSTCLASS.getCode(), firstClassTotalNum, stations, httpHeaders);
             order.setSeatClass(SeatClass.FIRSTCLASS.getCode());
-            order.setSeatNumber("" + ticket.getSeatNo());
+            order.setSeatNumber(ticket.getSeatNo());
         } else {
             Ticket ticket =
                     dipatchSeat(info.getDate(),
                             order.getTrainNumber(), order.getFrom(), order.getTo(),
                             SeatClass.SECONDCLASS.getCode(), secondClassTotalNum, stations, httpHeaders);
             order.setSeatClass(SeatClass.SECONDCLASS.getCode());
-            order.setSeatNumber("" + ticket.getSeatNo());
+            order.setSeatNumber(ticket.getSeatNo());
         }
 
         //Update order information

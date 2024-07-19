@@ -54,7 +54,7 @@ public class OrderOtherServiceImpl implements OrderOtherService {
             Set ticketSet = new HashSet();
             for (Order tempOrder : list) {
                 Ticket ticket = new Ticket();
-                ticket.setSeatNo(Integer.parseInt(tempOrder.getSeatNumber()));
+                ticket.setSeatNo(tempOrder.getSeatNumber());
                 ticket.setStartStation(tempOrder.getFrom());
                 ticket.setDestStation(tempOrder.getTo());
                 ticketSet.add(ticket);

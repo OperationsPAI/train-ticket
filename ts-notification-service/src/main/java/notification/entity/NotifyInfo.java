@@ -45,7 +45,7 @@ public class NotifyInfo {
     private String startTime;
     private String date;
     private String seatClass;
-    private String seatNumber;
+    private int seatNumber;
     private String price;
 
 }

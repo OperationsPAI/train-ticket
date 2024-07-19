@@ -44,7 +44,7 @@ public class RabbitReceive {
     String endPlace = "endPlace";
     String startTime = "startTime";
     String seatClass = "seatClass";
-    String seatNumber = "seatNumber";
+    int seatNumber = 1;
     String date = "date";
     String price = "price";
 
@@ -71,7 +71,7 @@ public class RabbitReceive {
         model.put(startTime,info.getStartTime());
         model.put(date,info.getDate());
         model.put(seatClass,info.getSeatClass());
-        model.put(seatNumber,info.getSeatNumber());
+        model.put(Integer.toString(seatNumber),info.getSeatNumber());
         model.put(price,info.getPrice());
         mail.setModel(model);
 

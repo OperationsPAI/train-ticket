@@ -35,7 +35,7 @@ public class InitData implements CommandLineRunner {
         order1.setId("4d2a46c7-71cb-4cf1-c5bb-b68406d9da6f");
         order1.setPrice("100");
         order1.setSeatClass(SeatClass.FIRSTCLASS.getCode());
-        order1.setSeatNumber("6A");
+        order1.setSeatNumber(2);
         order1.setStatus(OrderStatus.PAID.getCode());
         order1.setTo("taiyuan");
         order1.setTrainNumber("K1235");
