@@ -21,7 +21,6 @@ public class InitData implements CommandLineRunner {
     String accountId = "4d2a46c7-71cb-4cf1-b5bb-b68406d9da6f";
     String contactName = "Contacts_One";
     String contactDocumentNumber = "DocumentNumber_One";
-    String firstClass = "FirstClass-30";
     String price = "100.0";
 
     @Override
@@ -37,7 +36,7 @@ public class InitData implements CommandLineRunner {
         order.setTrainNumber("G1237");
         order.setCoachNumber(5);
         order.setSeatClass(2);
-        order.setSeatNumber(firstClass);
+        order.setSeatNumber(1);
         order.setFrom("nanjing");
         order.setTo("shanghaihongqiao");
         order.setStatus(0);
@@ -56,7 +55,7 @@ public class InitData implements CommandLineRunner {
         orderTwo.setTrainNumber("G1234");
         orderTwo.setCoachNumber(5);
         orderTwo.setSeatClass(2);
-        orderTwo.setSeatNumber(firstClass);
+        orderTwo.setSeatNumber(2);
         orderTwo.setFrom("shanghai");
         orderTwo.setTo("beijing");
         orderTwo.setStatus(0);
@@ -74,7 +73,7 @@ public class InitData implements CommandLineRunner {
         orderThree.setTrainNumber("G1235");
         orderThree.setCoachNumber(5);
         orderThree.setSeatClass(2);
-        orderThree.setSeatNumber(firstClass);
+        orderThree.setSeatNumber(2);
         orderThree.setFrom("shanghai");
         orderThree.setTo("beijing");
         orderThree.setStatus(0);

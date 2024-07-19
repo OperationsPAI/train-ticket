@@ -54,7 +54,7 @@ public class OrderServiceImpl implements OrderService {
         if (list != null && !list.isEmpty()) {
             Set ticketSet = new HashSet();
             for (Order tempOrder : list) {
-                ticketSet.add(new Ticket(Integer.parseInt(tempOrder.getSeatNumber()),
+                ticketSet.add(new Ticket(tempOrder.getSeatNumber(),
                         tempOrder.getFrom(), tempOrder.getTo()));
             }
             LeftTicketInfo leftTicketInfo = new LeftTicketInfo();
