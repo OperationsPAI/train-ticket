@@ -18,10 +18,6 @@ config:
   exporters:
     debug:
       verbosity: normal
-    otlp:
-      endpoint: "jaeger-collector.monitoring:4317"
-      tls:
-        insecure: true
     clickhouse:
       endpoint: tcp://10.10.10.58:9000?dial_timeout=10s&compress=lz4&username=default&password=password
       database: default
@@ -93,7 +89,6 @@ config:
         exporters:
           - debug
           - clickhouse
-          - otlp
         processors:
           - memory_limiter
           - batch
