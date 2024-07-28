@@ -15,6 +15,9 @@ spec:
       {{- with $svc.targetPort }}
       targetPort: {{ $svc.targetPort }}
       {{- end}}
+      {{- if $svc.nodePort }}
+      nodePort: {{ $svc.nodePort }}
+      {{- end }}
       protocol: TCP
   selector:
     app: {{ $svc.name }}

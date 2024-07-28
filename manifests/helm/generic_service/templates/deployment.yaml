@@ -114,6 +114,9 @@ spec:
         - name: otel-agent
           emptyDir: {}
       initContainers:
+      - name: init-ulimit
+        image: busybox
+        command: ["sh", "-c", "ulimit -n 65535 && echo 'ulimit set'"]
       - name: init-otel-agent
         image: {{ $root.Values.opentelemtry.image }}
         command: ['sh', '-c', 'cp /javaagent.jar /otel-agent/otel-agent.jar']

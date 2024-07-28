@@ -150,6 +150,7 @@ services:
     name: ts-ui-dashboard
     secretRef: ts-ui-dashboard
     type: NodePort
+    nodePort: 30080
   tsUserService:
     name: ts-user-service
     secretRef: ts-user-service

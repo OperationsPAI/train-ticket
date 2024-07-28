@@ -21,7 +21,9 @@ To get started with development, you'll need to set up a few tools:
 After setting up the necessary tools, you can deploy your application using Skaffold:
 
 ```bash
+mvn clean package -Dmaven.test.skip=true
 skaffold run
+skaffold build --default-repo=10.10.10.240/library # push to the local repository
 ```
 
 ## Deployment Instructions
@@ -32,7 +34,9 @@ For deployment, the primary requirement is Helm:
 2. To deploy the application, use the following Helm command:
 
 ```bash
-helm install ts . -n ts --create-namespace
+helm install ts manifests/helm/generic_service -n ts --create-namespace --set global.monitoring=opentelemtry --set skywalking.enabled=false --set global.image.tag=3384da1c # your image tag
+
+helm uninstall ts -n ts
 ```
 
 Note: If you change the release name, you must also update the values.yaml file accordingly. For instance, when disabling the PostgreSQL component for demo purposes (not recommended for production), ensure you configure the host to match your PostgreSQL service's hostname, as shown below:
