@@ -36,6 +36,10 @@ For deployment, the primary requirement is Helm:
 ```bash
 helm install ts manifests/helm/generic_service -n ts --create-namespace --set global.monitoring=opentelemtry --set skywalking.enabled=false --set global.image.tag=3384da1c # your image tag
 
+# if use prebuild images:
+helm install ts manifests/helm/generic_service -n ts --create-namespace --set global.monitoring=opentelemtry --set skywalking.enabled=false --set global.image.tag=latest --set global.image.repository=registry.cn-shenzhen.aliyuncs.com/lincyaw
+
+# uninstall
 helm uninstall ts -n ts
 ```
 
