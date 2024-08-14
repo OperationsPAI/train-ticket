@@ -87,7 +87,8 @@
 
         <dependency>
             <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
+	    <artifactId>lombok</artifactId>
+	    <version>1.18.32</version>
         </dependency>
 
         <!--        swagger相关依赖-->
