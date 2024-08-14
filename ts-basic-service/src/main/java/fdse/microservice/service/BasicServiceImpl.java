@@ -90,6 +90,7 @@ public class BasicServiceImpl implements BasicService {
             result.setStatus(false);
             response.setStatus(0);
             response.setMsg("Station not correct in Route");
+            LOGGER.error("[queryForTravel]route info not valid: ",route);
             return response;
         }
         PriceConfig priceConfig = queryPriceConfigByRouteIdAndTrainType(routeId, trainType.getName(), headers);
