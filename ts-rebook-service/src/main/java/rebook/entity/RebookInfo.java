@@ -37,14 +37,4 @@ public class RebookInfo {
     @NotNull
     private String date;
 
-    public RebookInfo(){
-        //Default Constructor
-        this.loginId = "";
-        this.orderId = "";
-        this.oldTripId = "";
-        this.tripId = "";
-        this.seatType = 0;
-        this.date = StringUtils.Date2String(new Date());
-    }
-
 }

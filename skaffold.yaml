@@ -196,16 +196,3 @@ build:
       context: ts-wait-order-service
       docker:
         dockerfile: Dockerfile
-deploy:
-  helm:
-    releases:
-      - name: ts
-        chartPath: manifests/helm/generic_service
-        namespace: ts
-        createNamespace: true
-        values:
-          global.monitoring: opentelemtry
-          skywalking.enabled: false
-          global.image.tag: 3384da1c # replace with your tag
-        # valuesFiles:
-        #   - manifests/helm/generic_service/values.yaml
