@@ -141,7 +141,7 @@ public class OrderServiceImpl implements OrderService {
                 } else {
                     statePassFlag = true;
                 }
-                OrderServiceImpl.LOGGER.info("[queryOrders][Step 2][Check Status Fits End]");
+                OrderServiceImpl.LOGGER.debug("[queryOrders][Step 2][Check Status Fits End]");
                 //4.Check order travel date requirement.
                 Date boughtDate = StringUtils.String2Date(tempOrder.getBoughtDate());
                 Date travelDate = StringUtils.String2Date(tempOrder.getTravelDate());
@@ -158,7 +158,7 @@ public class OrderServiceImpl implements OrderService {
                 } else {
                     travelDatePassFlag = true;
                 }
-                OrderServiceImpl.LOGGER.info("[queryOrders][Step 2][Check Travel Date End]");
+                OrderServiceImpl.LOGGER.debug("[queryOrders][Step 2][Check Travel Date End]");
                 //5.Check order bought date requirement.
                 if (qi.isEnableBoughtDateQuery()) {
                     if (boughtDate.before(boughtDateEnd) &&
@@ -170,12 +170,12 @@ public class OrderServiceImpl implements OrderService {
                 } else {
                     boughtDatePassFlag = true;
                 }
-                OrderServiceImpl.LOGGER.info("[queryOrders][Step 2][Check Bought Date End]");
+                OrderServiceImpl.LOGGER.debug("[queryOrders][Step 2][Check Bought Date End]");
                 //6.check if all requirement fits.
                 if (statePassFlag && boughtDatePassFlag && travelDatePassFlag) {
                     finalList.add(tempOrder);
                 }
-                OrderServiceImpl.LOGGER.info("[queryOrders][Step 2][Check All Requirement End]");
+                OrderServiceImpl.LOGGER.debug("[queryOrders][Step 2][Check All Requirement End]");
             }
             OrderServiceImpl.LOGGER.info("[queryOrders][Get order num][size:{}]", finalList.size());
             return new Response<>(1, "Get order num", finalList);
