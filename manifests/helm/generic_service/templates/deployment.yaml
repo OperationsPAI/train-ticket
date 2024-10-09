@@ -23,6 +23,8 @@ spec:
         envFrom:
         - secretRef:
             name: {{ $svc.secretRef | quote}}
+        resources:
+          {{- toYaml $root.Values.resources | nindent 10 }}
       {{- with $root.Values.global.monitoring}}
       {{- if eq $svc.lang "python"}} # python auto instrument
         env:
