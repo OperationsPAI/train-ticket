@@ -1,0 +1,23 @@
+global:
+  clickhouseUrl: "10.26.1.146:9000"
+  clickhouseRootUsername: default
+  clickhouseRootPassword: "nn"
+  clickhouseClusterName: ""
+
+apo-one-agent:
+  enabled: true
+  odigos:
+    enabled: true
+    # targetNamespace 
+    # name：目标命名空间
+    # value：
+    #   enabled: 注入现有的所有服务,但不注入后续新增应用
+    #   enabledFuture: 注入现在以及后续的所有服务
+    #   disabled: 不注入指定namespace下的服务,用于在instrument-all-namespace时忽略特定的Namespace
+    targetNamespace:
+    - name: ts
+      value: enabledFuture
+
+altinity-clickhouse-operator:
+  enabled: false
+
