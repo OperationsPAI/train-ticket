@@ -55,7 +55,6 @@ config:
     # The health_check extension can be modified, but should never be removed.
     health_check:
       endpoint: ${env:MY_POD_IP}:13133
-    memory_ballast: {}
   processors:
     batch:
       timeout: 5s
@@ -76,7 +75,6 @@ config:
         address: ${env:MY_POD_IP}:8888
     extensions:
       - health_check
-      - memory_ballast
     pipelines:
       logs:
         exporters:
