@@ -64,11 +64,25 @@ config:
       collection_interval: 5s
       auth_type: 'serviceAccount'
       endpoint: '${env:K8S_NODE_NAME}:10250'
+      node: '${env:K8S_NODE_NAME}'
+      k8s_api_config:
+        auth_type: serviceAccount
       insecure_skip_verify: true
       metric_groups:
         - node
         - pod
         - container
+      metrics:
+        k8s.pod.cpu.node.utilization:
+          enabled: true
+        k8s.pod.cpu.usage:
+          enabled: true
+        k8s.pod.cpu_limit_utilization:
+          enabled: true
+        k8s.pod.memory.node.utilization:
+          enabled: true
+        k8s.pod.memory_limit_utilization:
+          enabled: true
   service:
     telemetry:
       metrics:
@@ -125,7 +139,7 @@ clusterRole:
   # Specifies whether a clusterRole should be created
   # Some presets also trigger the creation of a cluster role and cluster role binding.
   # If using one of those presets, this field is no-op.
-  create: false
+  create: true
   # Annotations to add to the clusterRole
   # Can be used in combination with presets that create a cluster role.
   annotations: {}
@@ -142,6 +156,8 @@ clusterRole:
     - 'pods'
     - 'nodes'
     - 'namespaces'
+    - 'nodes/stats'
+    - 'nodes/proxy'
     verbs:
     - 'get'
     - 'list'
