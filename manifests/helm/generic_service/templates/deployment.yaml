@@ -95,7 +95,7 @@ spec:
               fieldRef:
                 fieldPath: status.hostIP
           - name: OTEL_RESOURCE_ATTRIBUTES
-            value: "service.name={{ $svc.name }},namespace={{ .Release.Namespace }}"
+            value: "service.name={{ $svc.name }},service.namespace={{ .Release.Namespace }}"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: "http://opentelemetry-collector-deployment.monitoring:4317"
           - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
