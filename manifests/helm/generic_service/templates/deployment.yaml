@@ -52,7 +52,7 @@ spec:
           - name: NODE_OPTIONS
             value: "--require @opentelemetry/auto-instrumentations-node/register"
       {{- end}}
-      {{- if eq $svc.lang "java"}} #如果没有设置语言，则默认是 java
+      {{- if not $svc.lang }} #如果没有设置语言，则默认是 java
       {{- if eq $root.Values.global.monitoring "skywalking"}}
         volumeMounts:
           - name: skywalking-agent
