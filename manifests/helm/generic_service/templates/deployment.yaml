@@ -31,7 +31,7 @@ spec:
           - name: OTEL_TRACES_EXPORTER
             value: console,otlp
           - name: OTEL_METRICS_EXPORTER
-            value: console,otlp\
+            value: console,otlp
           - name: OTEL_RESOURCE_ATTRIBUTES
             value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }}"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
