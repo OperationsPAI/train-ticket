@@ -50,7 +50,7 @@ spec:
               fieldRef:
                 fieldPath: status.hostIP
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
-            value: opentelemetry-collector-deployment.monitoring:4317
+            value: "http://opentelemetry-collector-deployment.monitoring:4317"
       {{- end}}
       {{- if eq $svc.lang "javascript"}}
         env:
