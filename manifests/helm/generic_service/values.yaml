@@ -151,7 +151,7 @@ services:
     secretRef: ts-ui-dashboard
     type: NodePort
     nodePort: 30080
-    lang: javascript
+    lang: frontend
   tsUserService:
     name: ts-user-service
     secretRef: ts-user-service

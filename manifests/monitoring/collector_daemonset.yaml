@@ -13,7 +13,7 @@ namespaceOverride: ""
 
 presets:
   logsCollection:
-    enabled: true
+    enabled: false
     includeCollectorLogs: false
     storeCheckpoints: false
     maxRecombineLogSize: 102400
