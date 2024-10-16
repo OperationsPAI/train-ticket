@@ -60,12 +60,8 @@ spec:
             value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }}"
           - name: OTEL_METRICS_EXPORTER
             value: console,otlp
-          - name: NODE_IP
-            valueFrom:
-              fieldRef:
-                fieldPath: status.hostIP
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
-            value: "http://$(NODE_IP):4317"
+            value: "http://opentelemetry-collector-deployment.monitoring:4317"
           - name: OTEL_NODE_RESOURCE_DETECTORS
             value: "env,host,os"
           - name: NODE_OPTIONS
