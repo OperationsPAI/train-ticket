@@ -142,7 +142,7 @@ config:
           to: resource["service.name"]
         - type: move
           from: attributes.namespace
-          to: resource["namespace"]
+          to: resource["service.namespace"]
         - type: move
           from: attributes.pod_name
           to: resource["pod"]
