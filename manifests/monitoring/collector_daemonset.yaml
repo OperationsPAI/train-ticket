@@ -255,8 +255,15 @@ priorityClassName: ""
 
 extraEnvs: []
 extraEnvsFrom: []
-extraVolumes: []
-extraVolumeMounts: []
+extraVolumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+
+extraVolumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true
 
 # Configuration for ports
 # nodePort is also allowed
