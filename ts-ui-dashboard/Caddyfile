@@ -8,7 +8,7 @@
 	}
 	handle /api* {
 		tracing {
-			span api
+			span "{http.request.method} {http.request.uri.path}"
 		}
 		handle /api/v1/adminbasicservice* {
 			reverse_proxy ts-admin-basic-info-service:8080
