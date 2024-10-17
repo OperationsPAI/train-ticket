@@ -133,6 +133,14 @@ config:
           parse_from: attributes["log.file.path"]
           cache:
             size: 128 # default maximum amount of Pods per Node is 110
+        - type: json_parser
+          parse_from: attributes.log
+          trace:
+            trace_id:
+              parse_from: attributes.traceID
+          severity:
+            parse_from: attributes.level
+          if: 'attributes.log matches "^{.*}$"'
         # Rename attributes
         - type: move
           from: attributes["log.file.path"]
