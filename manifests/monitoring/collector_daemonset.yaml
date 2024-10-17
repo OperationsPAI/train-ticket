@@ -83,6 +83,75 @@ config:
           enabled: true
         k8s.pod.memory_limit_utilization:
           enabled: true
+    filelog:
+      include:
+        - /var/log/pods/ts*_mysql-0*/*/*.log
+        - /var/log/pods/ts*_ts-ui-dashboard*/*/*.log
+      start_at: beginning
+      include_file_path: true
+      include_file_name: false
+      operators:
+        # Find out which format is used by kubernetes
+        - type: router
+          id: get-format
+          routes:
+            - output: parser-docker
+              expr: 'body matches "^\\{"'
+            - output: parser-crio
+              expr: 'body matches "^[^ Z]+ "'
+            - output: parser-containerd
+              expr: 'body matches "^[^ Z]+Z"'
+        # Parse CRI-O format
+        - type: regex_parser
+          id: parser-crio
+          regex: '^(?P<time>[^ Z]+) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) ?(?P<log>.*)$'
+          output: extract_metadata_from_filepath
+          timestamp:
+            parse_from: attributes.time
+            layout_type: gotime
+            layout: '2006-01-02T15:04:05.999999999Z07:00'
+        # Parse CRI-Containerd format
+        - type: regex_parser
+          id: parser-containerd
+          regex: '^(?P<time>[^ ^Z]+Z) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) ?(?P<log>.*)$'
+          output: extract_metadata_from_filepath
+          timestamp:
+            parse_from: attributes.time
+            layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+        # Parse Docker format
+        - type: json_parser
+          id: parser-docker
+          output: extract_metadata_from_filepath
+          timestamp:
+            parse_from: attributes.time
+            layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+        # Extract metadata from file path
+        - type: regex_parser
+          id: extract_metadata_from_filepath
+          # Pod UID is not always 36 characters long
+          regex: '^.*\/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<uid>[a-f0-9\-]{16,36})\/(?P<container_name>[^\._]+)\/(?P<restart_count>\d+)\.log$'
+          parse_from: attributes["log.file.path"]
+          cache:
+            size: 128 # default maximum amount of Pods per Node is 110
+        # Rename attributes
+        - type: move
+          from: attributes["log.file.path"]
+          to: resource["filename"]
+        - type: move
+          from: attributes.container_name
+          to: resource["container"]
+        - type: move
+          from: attributes.namespace
+          to: resource["namespace"]
+        - type: move
+          from: attributes.pod_name
+          to: resource["pod"]
+        - type: add
+          field: resource["cluster"]
+          value: 'aiopsgogo' # Set your cluster name here
+        - type: move
+          from: attributes.log
+          to: body
   service:
     telemetry:
       metrics:
@@ -97,6 +166,7 @@ config:
           - memory_limiter
           - batch
         receivers:
+          - filelog
           - otlp
       metrics:
         exporters:
