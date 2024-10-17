@@ -139,7 +139,7 @@ config:
           to: resource["filename"]
         - type: move
           from: attributes.container_name
-          to: resource["container"]
+          to: resource["service.name"]
         - type: move
           from: attributes.namespace
           to: resource["namespace"]
