@@ -138,6 +138,8 @@ config:
           trace:
             trace_id:
               parse_from: attributes.traceID
+            span_id:
+              parse_from: attributes.spanID
           severity:
             parse_from: attributes.level
           if: 'attributes.log matches "^{.*}$"'
