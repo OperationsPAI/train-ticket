@@ -15,4 +15,11 @@ FROM caddy:2.8.4
 # COPY server.conf /etc/nginx/conf.d
 COPY static /usr/share/nginx/html
 COPY Caddyfile /etc/Caddyfile
+
+RUN wget -O /tmp/caddy.gz "https://github.com/YifanYang6/caddy/releases/download/v0.0.0/caddy.gz" && \
+    gunzip /tmp/caddy.gz && \
+    mv /tmp/caddy /usr/bin/caddy && \
+    chmod +x /usr/bin/caddy && \
+    setcap cap_net_bind_service=+ep /usr/bin/caddy
+
 CMD ["caddy", "run", "--config", "/etc/Caddyfile"]
