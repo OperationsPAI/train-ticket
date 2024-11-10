@@ -37,7 +37,7 @@ configMap:
 config:
   exporters:
     clickhouse:
-      endpoint: tcp://10.26.1.146:9000?dial_timeout=10s&compress=lz4&username=default&password=nn
+      endpoint: tcp://10.10.10.58:9000?dial_timeout=10s&compress=lz4&username=default&password=password
       database: default
       ttl: 72h
       logs_table_name: otel_logs
@@ -142,6 +142,7 @@ config:
               parse_from: attributes.spanID
           severity:
             parse_from: attributes.level
+            overwrite_with: true
           if: 'attributes.log matches "^{.*}$"'
         # Rename attributes
         - type: move
