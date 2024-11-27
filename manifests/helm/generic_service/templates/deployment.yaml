@@ -32,8 +32,12 @@ spec:
             value: console,otlp
           - name: OTEL_METRICS_EXPORTER
             value: console,otlp
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
           - name: OTEL_RESOURCE_ATTRIBUTES
-            value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }}"
+            value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }},pod.name=$(POD_NAME)"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: opentelemetry-collector-deployment.monitoring:4317
       {{- end}}
@@ -41,8 +45,12 @@ spec:
         env:
           - name: OTEL_TRACES_EXPORTER
             value: console,otlp
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
           - name: OTEL_RESOURCE_ATTRIBUTES
-            value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }}"
+            value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }},pod.name=$(POD_NAME)"
           - name: OTEL_METRICS_EXPORTER
             value: console,otlp
           - name: NODE_IP
@@ -109,8 +117,12 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: status.hostIP
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
           - name: OTEL_RESOURCE_ATTRIBUTES
-            value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }}"
+            value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }},pod.name=$(POD_NAME)"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: "http://opentelemetry-collector-deployment.monitoring:4317"
           - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
