@@ -18,7 +18,7 @@ apo-one-agent:
       targetNamespace:
       - name: ts
         value: enabledFuture
-
+    instrumentAllNamespace: false
 altinity-clickhouse-operator:
   enabled: false
 
