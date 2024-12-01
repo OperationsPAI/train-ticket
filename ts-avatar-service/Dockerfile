@@ -1,4 +1,4 @@
-FROM python:3.8.17-slim-bullseye
+FROM python:3.9.17-slim-bullseye
 
 RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone
 
