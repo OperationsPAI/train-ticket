@@ -39,6 +39,10 @@ helm install ts manifests/helm/generic_service -n ts --create-namespace --set gl
 # if use prebuild images:
 helm install ts manifests/helm/generic_service -n ts --create-namespace --set global.monitoring=opentelemtry --set skywalking.enabled=false --set global.image.tag=latest --set global.image.repository=registry.cn-shenzhen.aliyuncs.com/lincyaw
 
+
+# use apo
+helm upgrade ts manifests/helm/generic_service -n ts-dev --create-namespace --set global.monitoring=opentelemtry --set opentelemtry.enabled=false --set services.tsUiDashboard.nodePort=30081 --set global.image.tag=310a67e0
+
 # uninstall
 helm uninstall ts -n ts
 ```

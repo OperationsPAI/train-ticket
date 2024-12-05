@@ -10,6 +10,7 @@ global:
     user: "root"
     password: "yourpassword" 
   monitoring: "skywalking" # or "opentelemtry"
+  # otelcollector: "http://10.10.10.221:4317"
 
 skywalking:
   enabled: false  # 默认不部署SkyWalking
