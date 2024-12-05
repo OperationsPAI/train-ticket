@@ -16,7 +16,7 @@ apo-one-agent:
     #   disabled: 不注入指定namespace下的服务,用于在instrument-all-namespace时忽略特定的Namespace
     instrumentor:
       targetNamespace:
-      - name: ts
+      - name: ts-dev
         value: enabledFuture
     instrumentAllNamespace: false
 altinity-clickhouse-operator:

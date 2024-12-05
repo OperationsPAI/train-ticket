@@ -12,7 +12,7 @@ global:
   monitoring: "skywalking" # or "opentelemtry"
 
 skywalking:
-  enabled: true  # 默认不部署SkyWalking
+  enabled: false  # 默认不部署SkyWalking
   image: apache/skywalking-java-agent:8.8.0-alpine
 
 opentelemtry:

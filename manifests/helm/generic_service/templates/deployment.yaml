@@ -76,7 +76,7 @@ spec:
             value: "--require @opentelemetry/auto-instrumentations-node/register"
       {{- end}}
       {{- if not $svc.lang }} #如果没有设置语言，则默认是 java
-      {{- if eq $root.Values.global.monitoring "skywalking"}}
+      {{- if and (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
         volumeMounts:
           - name: skywalking-agent
             mountPath: /skywalking-agent
@@ -108,7 +108,7 @@ spec:
         - name: skywalking-agent
           mountPath: /skywalking-agent
       {{- end}}
-      {{- if eq $root.Values.global.monitoring "opentelemtry"}}
+      {{- if and (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
         volumeMounts:
           - name: otel-agent
             mountPath: /otel-agent

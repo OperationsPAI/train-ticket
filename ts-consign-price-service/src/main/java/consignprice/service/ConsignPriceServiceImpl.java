@@ -3,6 +3,9 @@ package consignprice.service;
 import consignprice.entity.ConsignPrice;
 import consignprice.repository.ConsignPriceConfigRepository;
 import edu.fudan.common.util.Response;
+
+import java.util.UUID;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,22 +61,32 @@ public class ConsignPriceServiceImpl implements ConsignPriceService {
 
     @Override
     public Response createAndModifyPrice(ConsignPrice config, HttpHeaders headers) {
-        ConsignPriceServiceImpl.LOGGER.info("[createAndModifyPrice][Create New Price Config]");
-        //update price
-        ConsignPrice originalConfig;
-        if (repository.findByIndex(0) != null) {
-            originalConfig = repository.findByIndex(0);
-        } else {
+        ConsignPriceServiceImpl.LOGGER.info("[createAndModifyPrice][Starting Operation]");
+    
+        // 查找现有记录
+        ConsignPrice originalConfig = repository.findByIndex(0);
+    
+        if (originalConfig == null) {
+            // 创建新记录
+            ConsignPriceServiceImpl.LOGGER.info("[createAndModifyPrice][Creating New Price Config]");
             originalConfig = new ConsignPrice();
+            originalConfig.setId(UUID.randomUUID().toString()); // 生成新 ID
+        } else {
+            // 更新现有记录
+            ConsignPriceServiceImpl.LOGGER.info("[createAndModifyPrice][Updating Existing Price Config]");
         }
-        originalConfig.setId(config.getId());
+    
+        // 设置/更新字段
         originalConfig.setIndex(0);
         originalConfig.setInitialPrice(config.getInitialPrice());
         originalConfig.setInitialWeight(config.getInitialWeight());
         originalConfig.setWithinPrice(config.getWithinPrice());
         originalConfig.setBeyondPrice(config.getBeyondPrice());
+    
+        // 保存记录（JPA 会根据主键自动区分是插入还是更新）
         ConsignPrice newConfig = repository.save(originalConfig);
-        return new Response<>(1, success, newConfig);
+    
+        return new Response<>(1, "Success", newConfig);
     }
 
     @Override
