@@ -25,8 +25,15 @@ spec:
             name: {{ $svc.secretRef | quote}}
         resources:
           {{- toYaml $root.Values.resources | nindent 10 }}
-      {{- with $root.Values.global.monitoring}}
-      {{- if eq $svc.lang "python"}} # python auto instrument
+        volumeMounts:
+          - name: localtime
+            mountPath: /etc/localtime
+            readOnly: true
+          - name: timezone
+            mountPath: /etc/timezone
+            readOnly: true
+        {{- with $root.Values.global.monitoring }}
+        {{- if eq $svc.lang "python" }} # python auto instrument
         env:
           - name: OTEL_TRACES_EXPORTER
             value: console,otlp
@@ -40,8 +47,8 @@ spec:
             value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }},pod.name=$(POD_NAME)"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: opentelemetry-collector-deployment.monitoring:4317
-      {{- end}}
-      {{- if eq $svc.lang "frontend"}}
+        {{- end }}
+        {{- if eq $svc.lang "frontend" }}
         env:
           - name: OTEL_TRACES_EXPORTER
             value: console,otlp
@@ -64,8 +71,8 @@ spec:
               {{- else }}
               http://$(NODE_IP):4317
               {{- end }}
-      {{- end}}
-      {{- if eq $svc.lang "javascript"}}
+        {{- end }}
+        {{- if eq $svc.lang "javascript" }}
         env:
           - name: OTEL_TRACES_EXPORTER
             value: console,otlp
@@ -79,9 +86,9 @@ spec:
             value: "env,host,os"
           - name: NODE_OPTIONS
             value: "--require @opentelemetry/auto-instrumentations-node/register"
-      {{- end}}
-      {{- if not $svc.lang }} #如果没有设置语言，则默认是 java
-      {{- if and (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
+        {{- end }}
+        {{- if not $svc.lang }} #如果没有设置语言，则默认是 java
+        {{- if and (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
         volumeMounts:
           - name: skywalking-agent
             mountPath: /skywalking-agent
@@ -102,18 +109,18 @@ spec:
                 fieldPath: metadata.labels['app']
           - name: JAVA_TOOL_OPTIONS
             value: "-javaagent:/skywalking-agent/skywalking-agent.jar"
-      volumes:
-        - name: skywalking-agent
-          emptyDir: {}
-      initContainers:
-      - name: init-skywalking-agent
-        image: {{ $root.Values.skywalking.image }}
-        command: ['sh', '-c', 'cp -r /skywalking/agent/* /skywalking-agent/']
-        volumeMounts:
-        - name: skywalking-agent
-          mountPath: /skywalking-agent
-      {{- end}}
-      {{- if and (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
+        volumes:
+          - name: skywalking-agent
+            emptyDir: {}
+        initContainers:
+        - name: init-skywalking-agent
+          image: {{ $root.Values.skywalking.image }}
+          command: ['sh', '-c', 'cp -r /skywalking/agent/* /skywalking-agent/']
+          volumeMounts:
+          - name: skywalking-agent
+            mountPath: /skywalking-agent
+        {{- end }}
+        {{- if and (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
         volumeMounts:
           - name: otel-agent
             mountPath: /otel-agent
@@ -148,21 +155,27 @@ spec:
             value: "true"
           - name: JAVA_TOOL_OPTIONS
             value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true"
+        volumes:
+          - name: otel-agent
+            emptyDir: {}
+        initContainers:
+        - name: init-otel-agent
+          image: {{ $root.Values.opentelemtry.image }}
+          command: ['sh', '-c', 'cp /javaagent.jar /otel-agent/otel-agent.jar']
+          volumeMounts:
+          - name: otel-agent
+            mountPath: /otel-agent
+        {{- end }}
+        {{- end }}
+        {{- end }}
       volumes:
-        - name: otel-agent
-          emptyDir: {}
-      initContainers:
-      - name: init-ulimit
-        image: busybox
-        command: ["sh", "-c", "ulimit -n 65535 && echo 'ulimit set'"]
-      - name: init-otel-agent
-        image: {{ $root.Values.opentelemtry.image }}
-        command: ['sh', '-c', 'cp /javaagent.jar /otel-agent/otel-agent.jar']
-        volumeMounts:
-        - name: otel-agent
-          mountPath: /otel-agent
-      {{- end}} 
-      {{- end}}
-      {{- end}}
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+            type: File
+        - name: timezone
+          hostPath:
+            path: /etc/timezone
+            type: File
 ---
-{{- end}}
+{{- end }}
