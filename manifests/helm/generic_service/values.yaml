@@ -10,7 +10,7 @@ global:
     user: "root"
     password: "yourpassword" 
   monitoring: "opentelemetry" 
-  otelcollector: "opentelemetry-collector-deployment.monitoring:4317"
+  otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
 skywalking:
   enabled: false  # 默认不部署SkyWalking
