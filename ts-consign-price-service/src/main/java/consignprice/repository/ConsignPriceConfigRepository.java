@@ -2,6 +2,7 @@ package consignprice.repository;
 
 import consignprice.entity.ConsignPrice;
 import org.springframework.data.repository.CrudRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -16,7 +17,9 @@ public interface ConsignPriceConfigRepository extends CrudRepository<ConsignPric
      * @param index index
      * @return ConsignPrice
      */
-//    @Query("{ 'index': ?0 }")
+    // @Query("{ 'index': ?0 }")
     ConsignPrice findByIndex(int index);
 
+    @Query("SELECT MAX(c.index) FROM ConsignPrice c")
+    Integer findMaxIndex();
 }
