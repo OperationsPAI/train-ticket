@@ -102,3 +102,13 @@ hostAliases:
   - ip: "10.10.10.223"
     hostnames:
     - "worker3"
+  - ip: "10.10.10.224"
+    hostnames:
+    - "worker4"
+  - ip: "10.10.10.225"
+    hostnames:
+    - "worker5"
+  - ip: "10.10.10.226"
+    hostnames:
+    - "worker6"
+
