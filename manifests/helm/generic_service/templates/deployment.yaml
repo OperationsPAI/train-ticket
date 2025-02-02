@@ -165,11 +165,26 @@ spec:
                 http://$(NODE_IP):4317
                 {{- end }}
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-              value: {{ $root.Values.global.otelcollector }}
+              value: |
+                {{- if $root.Values.global.otelcollector }}
+                {{ $root.Values.global.otelcollector }}
+                {{- else }}
+                http://$(NODE_IP):4317
+                {{- end }}
             - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
-              value: {{ $root.Values.global.otelcollector }}
+              value: |
+                {{- if $root.Values.global.otelcollector }}
+                {{ $root.Values.global.otelcollector }}
+                {{- else }}
+                http://$(NODE_IP):4317
+                {{- end }}
             - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
-              value: {{ $root.Values.global.otelcollector }}
+              value: |
+                {{- if $root.Values.global.otelcollector }}
+                {{ $root.Values.global.otelcollector }}
+                {{- else }}
+                http://$(NODE_IP):4317
+                {{- end }}
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: grpc
             - name: OTEL_METRICS_EXPORTER
@@ -180,9 +195,14 @@ spec:
               value: otlp
             - name: OTEL_EXPORTER_OTLP_SPAN_INSECURE
               value: "true"
+            {{- if $root.Values.global.otelcollector }}
             - name: JAVA_TOOL_OPTIONS
               value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true"
-              {{- end }}
+            {{- else }}
+            - name: JAVA_TOOL_OPTIONS
+              value: ""
+            {{- end }}
+            {{- end }}
             {{- end }}
           {{- end }}
       volumes:
