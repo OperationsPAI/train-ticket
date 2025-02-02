@@ -68,7 +68,12 @@ spec:
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }},pod.name=$(POD_NAME)"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: opentelemetry-collector-deployment.monitoring:4317
+              value: |
+                {{- if $root.Values.global.otelcollector }}
+                {{ $root.Values.global.otelcollector }}
+                {{- else }}
+                http://$(NODE_IP):4317
+                {{- end }}
             {{- end }}
             {{- if eq $svc.lang "frontend" }}
           env:
@@ -103,7 +108,12 @@ spec:
             - name: OTEL_METRICS_EXPORTER
               value: console,otlp
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $root.Values.global.otelcollector }}
+              value: |
+                {{- if $root.Values.global.otelcollector }}
+                {{ $root.Values.global.otelcollector }}
+                {{- else }}
+                http://$(NODE_IP):4317
+                {{- end }}
             - name: OTEL_NODE_RESOURCE_DETECTORS
               value: "env,host,os"
             - name: NODE_OPTIONS
@@ -148,7 +158,12 @@ spec:
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "service.name={{ $svc.name }},service.namespace={{ $root.Release.Namespace }},pod.name=$(POD_NAME)"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $root.Values.global.otelcollector }}
+              value: |
+                {{- if $root.Values.global.otelcollector }}
+                {{ $root.Values.global.otelcollector }}
+                {{- else }}
+                http://$(NODE_IP):4317
+                {{- end }}
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
               value: {{ $root.Values.global.otelcollector }}
             - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT

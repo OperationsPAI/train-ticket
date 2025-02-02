@@ -1,4 +1,4 @@
-FROM node
+FROM node:20-bullseye
 
 RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone
 WORKDIR /app

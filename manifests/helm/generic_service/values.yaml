@@ -10,7 +10,7 @@ global:
     user: "root"
     password: "yourpassword" 
   monitoring: "opentelemetry" 
-  otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
+  # otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
 skywalking:
   enabled: false  # 默认不部署SkyWalking
@@ -18,7 +18,7 @@ skywalking:
 
 opentelemetry:
   enabled: true
-  image: otel/autoinstrumentation-java:latest
+  image: 10.10.10.240/library/autoinstrumentation-java:latest
 
 services:
   tsAdminBasicInfoService:
@@ -45,7 +45,7 @@ services:
   tsAvatarService:
     name: ts-avatar-service
     secretRef: ts-avatar-service
-    language: python
+    lang: python
   tsBasicService:
     name: ts-basic-service
     secretRef: ts-basic-service
@@ -85,7 +85,7 @@ services:
   tsNewsService:
     name: ts-news-service
     secretRef: ts-news-service
-    language: golang
+    lang: golang
   tsNotificationService:
     name: ts-notification-service
     secretRef: ts-notification-service
@@ -131,7 +131,7 @@ services:
   tsTicketOfficeService:
     name: ts-ticket-office-service
     secretRef: ts-ticket-office-service
-    language: javascript
+    lang: javascript
   tsTrainFoodService:
     name: ts-train-food-service
     secretRef: ts-train-food-service
@@ -162,7 +162,7 @@ services:
   tsVoucherService:
     name: ts-voucher-service
     secretRef: ts-voucher-service
-    language: python
+    lang: python
   tsWaitOrderService:
     name: ts-wait-order-service
     secretRef: ts-wait-order-service
