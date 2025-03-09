@@ -200,7 +200,7 @@ spec:
               value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true"
             {{- else }}
             - name: JAVA_TOOL_OPTIONS
-              value: ""
+              value: "-javaagent:/var/odigos/java/javaagent.jar"
             {{- end }}
             {{- end }}
             {{- end }}
