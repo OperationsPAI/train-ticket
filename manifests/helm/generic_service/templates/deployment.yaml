@@ -46,7 +46,11 @@ spec:
             - secretRef:
                 name: {{ $svc.secretRef | quote}}
           resources:
+            {{- if $svc.resources }}
+            {{- toYaml $svc.resources | nindent 12 }}
+            {{- else }}
             {{- toYaml $root.Values.resources | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: localtime
               mountPath: /etc/localtime

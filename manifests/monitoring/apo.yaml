@@ -1,24 +1,55 @@
 global:
-  clickhouseUrl: "10.10.10.58:9000"
-  clickhouseRootUsername: "default"
-  clickhouseRootPassword: "password"
-  clickhouseClusterName: ""
+
+  clickhouse:
+    host: "10.10.10.58"
+    nativePort: 9000
+    httpPort: 8123
+    username: default
+    password: "password"
+    database: "apo"
+    clusterName: ""
+    replication: "false"
+
 
 apo-one-agent:
   enabled: true
+
+
   odigos:
     enabled: true
-    # targetNamespace 
-    # name：目标命名空间
-    # value：
-    #   enabled: 注入现有的所有服务,但不注入后续新增应用
-    #   enabledFuture: 注入现在以及后续的所有服务
-    #   disabled: 不注入指定namespace下的服务,用于在instrument-all-namespace时忽略特定的Namespace
     instrumentor:
-      targetNamespace:
-      - name: ts-dev
-        value: enabledFuture
-    instrumentAllNamespace: false
+      image:
+        repository: "{{ .Values.global.image.repository }}/apo-odigos-instrumentor"
+        imagePullPolicy: "{{ .Values.global.image.pullPolicy }}"
+        tag: "v1.0.0"
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024Mi
+        requests:
+          cpu: 10m
+          memory: 64Mi
+      # targetNamespace  
+      # name: Target namespace  
+      # value:  
+      #   enabled: Inject all existing services but do not inject newly added applications  
+      #   enabledFuture: Inject both current and future services  
+      #   disabled: Do not inject services in the specified namespace; used to exclude specific namespaces when instrument-all-namespace is enabled  
+      # instrument-all-namespace Whether to inject all namespaces  
+      # Equivalent to setting enabledFuture for all namespaces  
+      # However, if disabled is already set for a namespace or workload, it will not be injected  
+      instrumentAllNamespace: true
+      # force-instrument-all-namespace Whether to force inject all namespaces  
+      # Similar to instrument-all-namespace, sets enabledFuture for all namespaces  
+      # Ignores all disabled settings  
+      forceInstrumentAllNamespace: false
+    config:
+      apoOtelCollectorGrpcUrl: "apo-otel-collector-gateway-svc.{{ .Release.Namespace }}:4315"
+      apoOtelCollectorHttpUrl: "apo-otel-collector-gateway-svc.{{ .Release.Namespace }}:4316"
+      apoOtelCollectorSkywalkingUrl: "apo-otel-collector-gateway-svc.{{ .Release.Namespace }}:11800"
+      javaAgentType: "opentelemetry"
+
+
+
 altinity-clickhouse-operator:
   enabled: false
-

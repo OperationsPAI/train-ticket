@@ -95,6 +95,13 @@ services:
   tsOrderService:
     name: ts-order-service
     secretRef: ts-order-service
+    resources:
+      requests:
+        cpu: 12
+        memory: 8Gi
+      limits:
+        cpu: 48
+        memory: 32Gi
   tsPaymentService:
     name: ts-payment-service
     secretRef: ts-payment-service
@@ -172,8 +179,21 @@ resources:
     cpu: 2
     memory: 2Gi
   limits:
-    cpu: 4
-    memory: 4Gi
+    cpu: 8
+    memory: 8Gi
+
+# Example of how to specify service-specific resources
+# services:
+#   tsServiceName:
+#     name: ts-service-name
+#     secretRef: ts-service-name
+#     resources:
+#       requests:
+#         cpu: 1
+#         memory: 512Mi
+#       limits:
+#         cpu: 2
+#         memory: 1Gi
 
 skywalking-helm:
   oap:
