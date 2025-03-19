@@ -98,10 +98,10 @@ services:
     resources:
       requests:
         cpu: 12
-        memory: 8Gi
+        memory: 2Gi
       limits:
-        cpu: 48
-        memory: 32Gi
+        cpu: 32
+        memory: 8Gi
   tsPaymentService:
     name: ts-payment-service
     secretRef: ts-payment-service
@@ -177,10 +177,10 @@ services:
 resources:
   requests:
     cpu: 2
-    memory: 2Gi
+    memory: 1Gi
   limits:
-    cpu: 8
-    memory: 8Gi
+    cpu: 4
+    memory: 2Gi
 
 # Example of how to specify service-specific resources
 # services:
