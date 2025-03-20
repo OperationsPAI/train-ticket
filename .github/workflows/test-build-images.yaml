@@ -24,8 +24,10 @@ jobs:
       
       - name: Build with Maven
         run: mvn clean package -Dmaven.test.skip=true -T 1.5C
-      
+      - name: Install Skaffold
+        run: |
+          curl -Lo skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
+          chmod +x skaffold
+          sudo mv skaffold /usr/local/bin/ 
       - name: Build with Skaffold
-        uses: hiberbee/github-action-skaffold@1.27.0
-        with:
-          command: build
+        run: skaffold build
