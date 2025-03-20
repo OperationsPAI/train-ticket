@@ -29,5 +29,13 @@ jobs:
           curl -Lo skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
           chmod +x skaffold
           sudo mv skaffold /usr/local/bin/ 
+      - name: Cache skaffold image builds & config
+        uses: actions/cache@v2
+        with:
+            path: ~/.skaffold/
+            key: sk-${{ github.sha }}
+            restore-keys: |
+              sk-${{ github.sha }}
+              sk-
       - name: Build with Skaffold
         run: skaffold build --push=false
