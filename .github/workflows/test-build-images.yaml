@@ -30,7 +30,7 @@ jobs:
           chmod +x skaffold
           sudo mv skaffold /usr/local/bin/ 
       - name: Cache skaffold image builds & config
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
             path: ~/.skaffold/
             key: sk-${{ github.sha }}
