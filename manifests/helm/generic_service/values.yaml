@@ -10,7 +10,7 @@ global:
     user: "root"
     password: "yourpassword" 
   monitoring: "opentelemetry" 
-  # otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
+  otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
 skywalking:
   enabled: false  # 默认不部署SkyWalking
@@ -259,3 +259,24 @@ postgresql:
       service:
         ports:
           postgresql: "5432"
+
+# RabbitMQ Configuration
+rabbitmq:
+  enabled: true
+  auth:
+    username: guest   # Using the default RabbitMQ username
+    password: guest   # Using the default RabbitMQ password
+    erlangCookie: "RABBITMQCOOKIE"  # A simple cookie value
+  service:
+    type: ClusterIP
+  persistence:
+    enabled: false    # Disabling persistence makes it stateless
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 1Gi
+      cpu: 1000m
+  metrics:
+    enabled: false

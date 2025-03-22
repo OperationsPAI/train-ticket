@@ -10,7 +10,7 @@ spring:
     password: ${DELIVERY_MYSQL_PASSWORD:Abcd1234#}
     driver-class-name: com.mysql.cj.jdbc.Driver
   rabbitmq:
-    host: ${rabbitmq_host:localhost}
+    host: ${RABBITMQ_HOST:ts-rabbitmq}
     port: 5672
   jpa:
     hibernate:

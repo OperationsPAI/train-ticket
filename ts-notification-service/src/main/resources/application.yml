@@ -32,7 +32,7 @@ spring:
         dialect: org.hibernate.dialect.MySQL5Dialect
 
   rabbitmq:
-    host: ${rabbitmq_host:localhost}
+    host: ${RABBITMQ_HOST:ts-rabbitmq}
     port: 5672
 
 
