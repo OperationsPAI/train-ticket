@@ -156,7 +156,7 @@ config:
           to: resource["service.namespace"]
         - type: move
           from: attributes.pod_name
-          to: resource["pod"]
+          to: resource["pod.name"]
         - type: add
           field: resource["cluster"]
           value: 'aiopsgogo' # Set your cluster name here
