@@ -43,8 +43,7 @@ Follow these steps to build the project:
    ```
    - Replace `<your-registry>` with a registry you have push access to (e.g., `docker.io/yourusername`, `gcr.io/yourproject`).
    - Example: `skaffold build --default-repo=docker.io/myuser`.
-
-   After building, push the images to your registry, then proceed to deployment with Helm (see below).
+   - This builds and pushes images to the specified registry.
 
 
 ## Deployment Instructions
