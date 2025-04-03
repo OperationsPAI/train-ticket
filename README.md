@@ -48,12 +48,15 @@ Follow these steps to build the project:
 
 ## Deployment Instructions
 
+Before deploying the application, you must build the Helm dependencies:
 
-**Note**: You’ll need to update the [Helm chart values](https://github.com/CUHK-SE-Group/train-ticket/blob/master/manifests/helm/generic_service/values.yaml#L3) to reference the correct image location. The default `10.10.10.240/library` points to our internal private registry. Update it to your own registry. Alternatively, you can manually override the image reference during deployment using Helm’s `--set` flag (e.g., `helm install ... --set global.image.repository=<your-registry>`).
+1. **Build Helm Dependencies**:
+   ```bash
+   helm dependency build manifests/helm/generic_service
+   ```
+   This step is mandatory and will fetch all required dependencies specified in Chart.yaml (mysql, postgresql, rabbitmq, etc.).
 
-To deploy the application to a Kubernetes cluster, Helm is the primary tool. Ensure Helm is installed and your cluster is accessible via `kubectl`.
-
-1. **Basic Deployment with Specific Image Tag**:
+2. **Basic Deployment with Specific Image Tag**:
    ```bash
    helm install ts manifests/helm/generic_service -n ts --create-namespace \
      --set global.monitoring=opentelemetry \
@@ -64,7 +67,7 @@ To deploy the application to a Kubernetes cluster, Helm is the primary tool. Ens
    - `-n ts`: Namespace (created if it doesn’t exist).
    - `--set`: Customizes deployment options (e.g., monitoring type, image tag).
 
-2. **Using Custom Image Registry**:
+3. **Using Custom Image Registry**:
    ```bash
    helm install ts manifests/helm/generic_service -n ts --create-namespace \
      --set global.monitoring=opentelemetry \
@@ -73,7 +76,7 @@ To deploy the application to a Kubernetes cluster, Helm is the primary tool. Ens
      --set global.image.repository=registry.cn-shenzhen.aliyuncs.com/lincyaw
    ```
 
-3. **Advanced Example (with APO)**:
+4. **Advanced Example (with APO)**:
    To enable specific configurations (e.g., nodePort for UI):
    ```bash
    helm upgrade ts manifests/helm/generic_service -n ts-dev --create-namespace \
@@ -83,7 +86,7 @@ To deploy the application to a Kubernetes cluster, Helm is the primary tool. Ens
      --set global.image.tag=310a67e0
    ```
 
-4. **Uninstall**:
+5. **Uninstall**:
    To remove the deployment:
    ```bash
    helm uninstall ts -n ts
