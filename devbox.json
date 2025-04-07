@@ -10,8 +10,14 @@
       "echo 'Welcome to devbox!' > /dev/null"
     ],
     "scripts": {
-      "test": [
-        "echo \"Error: no test specified\" && exit 1"
+      "compile": [
+        "mvn clean package -Dmaven.test.skip=true"
+      ],
+      "build-image": [
+        "skaffold build --default-repo=10.10.10.240/library"
+      ],
+      "deploy": [
+        "helm install ts manifests/helm/generic_service -n ts --set global.image.tag=$(git rev-parse --short HEAD)"
       ]
     }
   }
