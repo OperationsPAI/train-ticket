@@ -263,6 +263,7 @@ postgresql:
 # RabbitMQ Configuration
 rabbitmq:
   enabled: true
+  podLabels: {app: ts-rabbitmq}
   auth:
     username: guest   # Using the default RabbitMQ username
     password: guest   # Using the default RabbitMQ password
