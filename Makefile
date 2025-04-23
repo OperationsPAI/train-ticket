@@ -12,7 +12,7 @@ deploy:
 		echo "No existing $(NS) release found"; \
 	fi; \
 	helm install $(NS) manifests/helm/generic_service -n $(NS) \
-		--set global.monitoring=opentelemtry \
+		--set global.monitoring=opentelemetry \
 		--set global.otelcollector="http://opentelemetry-collector-deployment.monitoring:4317" \
 		--set skywalking.enabled=false \
 		--set global.image.tag=637600ea \
