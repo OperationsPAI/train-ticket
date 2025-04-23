@@ -1,14 +1,19 @@
+NS ?= "ts"
+PORT ?= "30080"
+
 .PHONY: deploy
 
 deploy:
-	# Check if the release 'ts' exists and uninstall it if it does
-	@if helm list -n ts | grep -q 'ts'; then \
-		echo "Release 'ts' exists. Uninstalling..."; \
-		helm uninstall ts -n ts; \
+	@if helm status $(NS) -n $(NS) >/dev/null 2>&1; then \
+		echo "Uninstalling existing $(NS) release"; \
+		helm uninstall $(NS) -n $(NS); \
+		sleep 5; \
 	else \
-		echo "Release 'ts' does not exist. Skipping uninstall."; \
-	fi
-	
-	# Install the release with the provided parameters
-	echo "Installing 'ts' release..."
-	helm install ts manifests/helm/generic_service -n ts --set global.image.tag=637600ea --set services.tsUiDashboard.nodePort=30080
+		echo "No existing $(NS) release found"; \
+	fi; \
+	helm install $(NS) manifests/helm/generic_service -n $(NS) \
+		--set global.monitoring=opentelemtry \
+		--set global.otelcollector="http://opentelemetry-collector-deployment.monitoring:4317" \
+		--set skywalking.enabled=false \
+		--set global.image.tag=637600ea \
+		--set services.tsUiDashboard.nodePort=$(PORT)
