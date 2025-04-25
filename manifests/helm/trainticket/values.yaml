@@ -3,17 +3,11 @@ global:
     repository: 10.10.10.240/library
     tag: latest
   port: 8080
-  mysql:
-    host: "mysql"
-    port: "3306"
-    database: "ts"
-    user: "root"
-    password: "yourpassword" 
   monitoring: "opentelemetry" 
   otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
 skywalking:
-  enabled: false  # 默认不部署SkyWalking
+  enabled: false  
   image: apache/skywalking-java-agent:8.8.0-alpine
 
 opentelemetry:
@@ -250,15 +244,24 @@ skywalking-helm:
     image:
       tag: 9.6.0 # Must be set explicitly
 
-postgresql:
-  global:
-    postgresql:
-      auth:
-        postgresPassword: 123456
-        database: skywalking
-      service:
-        ports:
-          postgresql: "5432"
+
+mysql:
+  enabled: true
+  image: mysql:5.7
+  rootPassword: "yourpassword"
+  host: "mysql"
+  port: "3306"
+  database: "ts"
+  user: "root"
+  password: "yourpassword"
+  maxConnections: 1024
+  persistence:
+    enabled: false
+    # existingClaim: mysql-pvc
+  service:
+    type: NodePort
+    port: 3306
+    # nodePort: 30306
 
 # RabbitMQ Configuration
 rabbitmq:

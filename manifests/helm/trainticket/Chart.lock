@@ -1,7 +1,4 @@
 dependencies:
-- name: mysql
-  repository: file://../mysql
-  version: 0.0.1
 - name: skywalking-helm
   repository: oci://registry-1.docker.io/apache
   version: 4.5.0
@@ -11,5 +8,5 @@ dependencies:
 - name: rabbitmq
   repository: oci://registry-1.docker.io/bitnamicharts
   version: 15.4.0
-digest: sha256:476587ca0dbfccb13928b73639c1f001a26422108eb6c5360b6c8bd502379989
-generated: "2025-03-22T16:13:59.697516384+08:00"
+digest: sha256:cf0d0e5e743d064c29f58de7f9f3d8ae628ff9e4edaec449d552a6f28856eea5
+generated: "2025-04-25T23:18:58.963713043+08:00"

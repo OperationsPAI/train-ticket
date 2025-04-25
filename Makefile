@@ -1,4 +1,4 @@
-NS ?= "ts"
+NS ?= "ts22"
 PORT ?= "30080"
 
 .PHONY: deploy
@@ -11,7 +11,7 @@ deploy:
 	else \
 		echo "No existing $(NS) release found"; \
 	fi; \
-	helm install $(NS) manifests/helm/generic_service -n $(NS) \
+	helm install $(NS) manifests/helm/generic_service --create-namespace -n $(NS) \
 		--set global.monitoring=opentelemetry \
 		--set global.otelcollector="http://opentelemetry-collector-deployment.monitoring:4317" \
 		--set skywalking.enabled=false \

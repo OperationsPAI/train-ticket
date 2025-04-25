@@ -57,15 +57,27 @@ Before deploying the application, you must build the Helm dependencies:
    This step is mandatory and will fetch all required dependencies specified in Chart.yaml (mysql, postgresql, rabbitmq, etc.).
 
 2. **Basic Deployment with Specific Image Tag**:
-   ```bash
-   helm install ts manifests/helm/generic_service -n ts --create-namespace \
-     --set global.monitoring=opentelemetry \
-     --set skywalking.enabled=false \
-     --set global.image.tag=3384da1c
-   ```
-   - `ts`: Release name (customizable).
-   - `-n ts`: Namespace (created if it doesn’t exist).
-   - `--set`: Customizes deployment options (e.g., monitoring type, image tag).
+
+
+```bash
+# alter: use the published helm chart
+helm repo add train-ticket https://cuhk-se-group.github.io/train-ticket
+helm repo update
+helm search repo train-ticket
+```
+
+
+```bash
+helm install ts manifests/helm/generic_service -n ts --create-namespace \
+   --set global.monitoring=opentelemetry \
+   --set skywalking.enabled=false \
+   --set global.image.tag=3384da1c
+```
+- `ts`: Release name (customizable).
+- `-n ts`: Namespace (created if it doesn’t exist).
+- `--set`: Customizes deployment options (e.g., monitoring type, image tag).
+
+
 
 3. **Using Custom Image Registry**:
    ```bash
