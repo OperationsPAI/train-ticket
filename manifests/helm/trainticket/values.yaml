@@ -284,3 +284,8 @@ rabbitmq:
       cpu: 1000m
   metrics:
     enabled: false
+
+# Loadgenerator Configuration
+loadgenerator:
+  enabled: true
+  baseURL: "http://ts-ui-dashboard:8080"
