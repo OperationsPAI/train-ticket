@@ -91,11 +91,11 @@ services:
     secretRef: ts-order-service
     resources:
       requests:
-        cpu: 12
+        cpu: 2
         memory: 2Gi
       limits:
-        cpu: 32
-        memory: 8Gi
+        cpu: 4
+        memory: 4Gi
   tsPaymentService:
     name: ts-payment-service
     secretRef: ts-payment-service
@@ -170,10 +170,10 @@ services:
 
 resources:
   requests:
-    cpu: 2
+    cpu: 1
     memory: 1Gi
   limits:
-    cpu: 4
+    cpu: 2
     memory: 2Gi
 
 # Example of how to specify service-specific resources
