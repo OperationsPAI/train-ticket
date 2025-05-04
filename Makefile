@@ -17,3 +17,7 @@ deploy:
 		--set skywalking.enabled=false \
 		--set global.image.tag=637600ea \
 		--set services.tsUiDashboard.nodePort=$(PORT)
+
+upgrade-chart:
+	cd manifests/helm/trainticket && \
+		helm dependency update
