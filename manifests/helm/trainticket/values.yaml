@@ -290,5 +290,5 @@ loadgenerator:
   enabled: true
   baseURL: "http://ts-ui-dashboard:8080"
   config:
-    threads: 5
+    threads: 20
     sleep: 500
