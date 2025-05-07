@@ -25,17 +25,7 @@ spec:
             - name: skywalking-agent
               mountPath: /skywalking-agent
       {{- end }}
-
-      {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
-      initContainers:
-        - name: init-otel-agent
-          image: {{ $root.Values.opentelemetry.image }}
-          command: ['sh', '-c', 'cp /javaagent.jar /otel-agent/otel-agent.jar']
-          volumeMounts:
-            - name: otel-agent
-              mountPath: /otel-agent
-      {{- end }}
-
+      
       containers:
         - name: {{ $svc.name }}
           image: "{{ $root.Values.global.image.repository }}/{{ $svc.name }}:{{ $root.Values.global.image.tag | default $root.Chart.AppVersion }}"
