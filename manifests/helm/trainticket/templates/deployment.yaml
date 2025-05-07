@@ -137,9 +137,6 @@ spec:
               value: "-javaagent:/skywalking-agent/skywalking-agent.jar"
               {{- end }}
               {{- if and (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
-          volumeMounts:
-            - name: otel-agent
-              mountPath: /otel-agent
           env:
             - name: NODE_IP
               valueFrom:
@@ -210,10 +207,6 @@ spec:
             type: File
         {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
         - name: skywalking-agent
-          emptyDir: {}
-        {{- end }}
-        {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
-        - name: otel-agent
           emptyDir: {}
         {{- end }}
 ---
