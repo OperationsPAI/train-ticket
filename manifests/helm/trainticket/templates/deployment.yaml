@@ -188,10 +188,10 @@ spec:
               value: "true"
             {{- if $root.Values.global.otelcollector }}
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true"
+              value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true -Xmx2048m"
             {{- else }}
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/var/odigos/java/javaagent.jar"
+              value: "-javaagent:/var/odigos/java/javaagent.jar -Xmx2048m"
             {{- end }}
             {{- end }}
             {{- end }}

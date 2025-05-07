@@ -5,4 +5,4 @@ RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shang
 COPY --from=agent /javaagent.jar /otel-agent/otel-agent.jar
 COPY ./target/*.jar app.jar
 EXPOSE 8080
-CMD ["java", "-javaagent:/otel-agent/otel-agent.jar", "-jar", "app.jar"]
+CMD ["java", "-jar", "app.jar"]
