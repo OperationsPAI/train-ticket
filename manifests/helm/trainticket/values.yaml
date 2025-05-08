@@ -12,7 +12,7 @@ skywalking:
 
 opentelemetry:
   enabled: true
-  image: 10.10.10.240/library/autoinstrumentation-java:latest
+  image: 10.10.10.240/library/autoinstrumentation-java:elastic
 
 services:
   tsAdminBasicInfoService:
