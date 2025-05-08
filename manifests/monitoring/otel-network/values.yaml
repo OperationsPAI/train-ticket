@@ -8,7 +8,7 @@ clusterName: ""
 
 image:
   tag: ""
-  registry: otel
+  registry: 10.10.10.240/library
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
