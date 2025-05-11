@@ -21,3 +21,7 @@ deploy:
 upgrade-chart:
 	cd manifests/helm/trainticket && \
 		helm dependency update
+
+
+otel-agent:
+	cd otel-java-agent && bash build.sh
