@@ -11,5 +11,5 @@ dependencies:
 - name: loadgenerator
   repository: https://lgu-se-internal.github.io/loadgenerator
   version: 0.1.0
-digest: sha256:692c0f54b8732e49a49888cf3ae0b11f81f2468e6fb2bc5af045b7050efbdb03
-generated: "2025-05-04T13:50:12.993104701+08:00"
+digest: sha256:c3aff83b60f86e70dfd199d160537fa8a0f8b51f0d4e043a7041b4150ed9de49
+generated: "2025-05-16T12:15:17.467186828+08:00"
