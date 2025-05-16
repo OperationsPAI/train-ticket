@@ -3,7 +3,7 @@ set -e
 
 CHART_DIR="manifests/helm/trainticket"
 REPO_NAME="train-ticket"
-REPO_URL="https://cuhk-se-group.github.io/train-ticket"
+REPO_URL="https://lgu-se-internal.github.io/train-ticket"
 
 helm dependency update $CHART_DIR
 

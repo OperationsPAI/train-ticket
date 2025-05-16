@@ -9,7 +9,7 @@ dependencies:
   repository: oci://registry-1.docker.io/bitnamicharts
   version: 15.4.0
 - name: loadgenerator
-  repository: https://cuhk-se-group.github.io/loadgenerator
+  repository: https://lgu-se-internal.github.io/loadgenerator
   version: 0.1.0
 digest: sha256:692c0f54b8732e49a49888cf3ae0b11f81f2468e6fb2bc5af045b7050efbdb03
 generated: "2025-05-04T13:50:12.993104701+08:00"

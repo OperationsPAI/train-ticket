@@ -61,7 +61,7 @@ Before deploying the application, you must build the Helm dependencies:
 
 ```bash
 # alter: use the published helm chart
-helm repo add train-ticket https://cuhk-se-group.github.io/train-ticket
+helm repo add train-ticket https://lgu-se-internal.github.io/train-ticket
 helm repo update
 helm search repo train-ticket
 ```
