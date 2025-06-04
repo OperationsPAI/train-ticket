@@ -292,3 +292,4 @@ loadgenerator:
   config:
     threads: 20
     sleep: 500
+    debug: false
