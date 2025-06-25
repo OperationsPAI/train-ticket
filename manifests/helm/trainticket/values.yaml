@@ -266,6 +266,7 @@ mysql:
 # RabbitMQ Configuration
 rabbitmq:
   enabled: true
+  fullnameOverride: "rabbitmq"
   podLabels: {app: ts-rabbitmq}
   auth:
     username: guest   # Using the default RabbitMQ username
@@ -288,6 +289,7 @@ rabbitmq:
 # Loadgenerator Configuration
 loadgenerator:
   enabled: true
+  fullnameOverride: "loadgenerator"
   baseURL: "http://ts-ui-dashboard:8080"
   config:
     threads: 20
