@@ -292,6 +292,6 @@ loadgenerator:
   fullnameOverride: "loadgenerator"
   baseURL: "http://ts-ui-dashboard:8080"
   config:
-    threads: 20
+    threads: 5
     sleep: 500
     debug: false
