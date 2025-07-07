@@ -36,7 +36,7 @@ dependencies:
     version: "15.4.0"
     repository: "oci://registry-1.docker.io/bitnamicharts"
   - name: loadgenerator
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "https://lgu-se-internal.github.io/loadgenerator"
     condition: loadgenerator.enabled
 
