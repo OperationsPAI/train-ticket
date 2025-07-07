@@ -296,7 +296,7 @@ loadgenerator:
   image:
     repository: 10.10.10.240/library/loadgenerator
     pullPolicy: IfNotPresent
-    tag: "1"
+    tag: "002"
   config:
     threads: 5
     sleep: 500
