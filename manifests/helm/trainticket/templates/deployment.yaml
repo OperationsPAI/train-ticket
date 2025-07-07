@@ -25,7 +25,6 @@ spec:
             - name: skywalking-agent
               mountPath: /skywalking-agent
       {{- end }}
-      
       containers:
         - name: {{ $svc.name }}
           image: "{{ $root.Values.global.image.repository }}/{{ $svc.name }}:{{ $root.Values.global.image.tag | default $root.Chart.AppVersion }}"
