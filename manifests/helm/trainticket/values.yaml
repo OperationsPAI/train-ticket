@@ -291,7 +291,77 @@ loadgenerator:
   enabled: true
   fullnameOverride: "loadgenerator"
   baseURL: "http://ts-ui-dashboard:8080"
+  opentelemetry:
+    endpoint: "opentelemetry-collector-deployment.monitoring:4317"
+  image:
+    repository: 10.10.10.240/library/loadgenerator
+    pullPolicy: IfNotPresent
+    tag: "1"
   config:
     threads: 5
     sleep: 500
     debug: false
+  waitForServices:
+    enabled: true
+    timeout: 600  
+    checkInterval: 10 
+    services:
+      - name: ts-ui-dashboard
+        port: 8080
+        path: "/"
+      - name: ts-auth-service
+        port: 8080
+        path: "/api/v1/auth"
+      - name: ts-user-service
+        port: 8080
+        path: "/api/v1/userservice/users"
+      - name: ts-order-service
+        port: 8080
+        path: "/api/v1/orderservice"
+      - name: ts-travel-service
+        port: 8080
+        path: "/api/v1/travelservice"
+      - name: ts-travel2-service
+        port: 8080
+        path: "/api/v1/travel2service"
+      - name: ts-preserve-service
+        port: 8080
+        path: "/api/v1/preserveservice"
+      - name: ts-basic-service
+        port: 8080
+        path: "/api/v1/basicservice"
+      - name: ts-station-service
+        port: 8080
+        path: "/api/v1/stationservice"
+      - name: ts-train-service
+        port: 8080
+        path: "/api/v1/trainservice"
+      - name: ts-route-service
+        port: 8080
+        path: "/api/v1/routeservice"
+      - name: ts-price-service
+        port: 8080
+        path: "/api/v1/priceservice"
+      - name: ts-seat-service
+        port: 8080
+        path: "/api/v1/seatservice"
+      - name: ts-security-service
+        port: 8080
+        path: "/api/v1/securityservice"
+      - name: ts-payment-service
+        port: 8080
+        path: "/api/v1/paymentservice"
+      - name: mysql
+        port: 3306
+      - name: rabbitmq
+        port: 5672
+
+  initContainer:
+    image: nicolaka/netshoot:latest
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi

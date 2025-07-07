@@ -5,11 +5,17 @@
 :8080 {
 	log {
 		output stdout
+		format json
 	}
 	handle /api* {
 		tracing {
 			span "{http.request.method} {http.request.uri.path}"
 		}
+		request_header X-Trace-Id {http.request.header.X-Trace-Id}
+		request_header traceparent {http.request.header.traceparent}
+		request_header tracestate {http.request.header.tracestate}
+		request_header X-B3-TraceId {http.request.header.X-B3-TraceId}
+		request_header X-B3-SpanId {http.request.header.X-B3-SpanId}
 		handle /api/v1/adminbasicservice* {
 			reverse_proxy ts-admin-basic-info-service:8080
 		}
