@@ -296,7 +296,7 @@ loadgenerator:
   image:
     repository: 10.10.10.240/library/loadgenerator
     pullPolicy: IfNotPresent
-    tag: "002"
+    tag: "003"
   config:
     threads: 5
     sleep: 500
@@ -351,6 +351,84 @@ loadgenerator:
       - name: ts-payment-service
         port: 8080
         path: "/api/v1/paymentservice"
+      - name: ts-admin-basic-info-service
+        port: 8080
+        path: "/api/v1/adminbasicservice"
+      - name: ts-admin-order-service
+        port: 8080
+        path: "/api/v1/adminorderservice"
+      - name: ts-admin-route-service
+        port: 8080
+        path: "/api/v1/adminrouteservice"
+      - name: ts-admin-travel-service
+        port: 8080
+        path: "/api/v1/admintravelservice"
+      - name: ts-admin-user-service
+        port: 8080
+        path: "/api/v1/adminuserservice/users"
+      - name: ts-assurance-service
+        port: 8080
+        path: "/api/v1/assuranceservice"
+      - name: ts-avatar-service
+        port: 8080
+        path: "/api/v1/avatar"
+      - name: ts-cancel-service
+        port: 8080
+        path: "/api/v1/cancelservice"
+      - name: ts-config-service
+        port: 8080
+        path: "/api/v1/configservice"
+      - name: ts-consign-price-service
+        port: 8080
+        path: "/api/v1/consignpriceservice"
+      - name: ts-consign-service
+        port: 8080
+        path: "/api/v1/consignservice"
+      - name: ts-contacts-service
+        port: 8080
+        path: "/api/v1/contactservice"
+      - name: ts-execute-service
+        port: 8080
+        path: "/api/v1/executeservice"
+      - name: ts-food-service
+        port: 8080
+        path: "/api/v1/foodservice"
+      - name: ts-inside-payment-service
+        port: 8080
+        path: "/api/v1/inside_pay_service"
+      - name: ts-notification-service
+        port: 8080
+        path: "/api/v1/notifyservice"
+      - name: ts-order-other-service
+        port: 8080
+        path: "/api/v1/orderOtherService"
+      - name: ts-preserve-other-service
+        port: 8080
+        path: "/api/v1/preserveotherservice"
+      - name: ts-rebook-service
+        port: 8080
+        path: "/api/v1/rebookservice"
+      - name: ts-route-plan-service
+        port: 8080
+        path: "/api/v1/routeplanservice"
+      - name: ts-station-food-service
+        port: 8080
+        path: "/api/v1/stationfoodservice"
+      - name: ts-train-food-service
+        port: 8080
+        path: "/api/v1/trainfoodservice"
+      - name: ts-travel-plan-service
+        port: 8080
+        path: "/api/v1/travelplanservice"
+      - name: ts-verification-code-service
+        port: 8080
+        path: "/api/v1/verifycode"
+      - name: ts-wait-order-service
+        port: 8080
+        path: "/api/v1/waitorderservice"
+      - name: ts-food-delivery-service
+        port: 8080
+        path: "/api/v1/fooddeliveryservice"
       - name: mysql
         port: 3306
       - name: rabbitmq
