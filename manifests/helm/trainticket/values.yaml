@@ -435,7 +435,7 @@ loadgenerator:
         port: 5672
 
   initContainer:
-    image: nicolaka/netshoot:latest
+    image: 10.10.10.240/library/netshoot:v0.14
     resources:
       requests:
         cpu: 10m
