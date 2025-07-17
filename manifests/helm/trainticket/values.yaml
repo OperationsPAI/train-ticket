@@ -285,7 +285,15 @@ rabbitmq:
       cpu: 1000m
   metrics:
     enabled: false
-
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: disk
+            operator: In
+            values:
+            - ssd
 # Loadgenerator Configuration
 loadgenerator:
   enabled: true
@@ -304,11 +312,8 @@ loadgenerator:
   waitForServices:
     enabled: true
     timeout: 600  
-    checkInterval: 10 
+    checkInterval: 1
     services:
-      - name: ts-ui-dashboard
-        port: 8080
-        path: "/"
       - name: ts-auth-service
         port: 8080
         path: "/api/v1/auth"
