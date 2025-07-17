@@ -170,11 +170,11 @@ services:
 
 resources:
   requests:
-    cpu: 1
-    memory: 1Gi
-  limits:
     cpu: 2
     memory: 2Gi
+  limits:
+    cpu: 6
+    memory: 3Gi
 
 # Example of how to specify service-specific resources
 # services:
