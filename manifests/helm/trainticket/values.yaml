@@ -173,7 +173,7 @@ resources:
     cpu: 2
     memory: 2Gi
   limits:
-    cpu: 6
+    cpu: 5
     memory: 3Gi
 
 # Example of how to specify service-specific resources
@@ -307,7 +307,7 @@ loadgenerator:
     tag: "014"
   config:
     threads: 1
-    sleep: 1000
+    sleep: 200
     debug: false
   waitForServices:
     enabled: true
