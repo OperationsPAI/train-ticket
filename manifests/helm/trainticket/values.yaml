@@ -170,8 +170,8 @@ services:
 
 resources:
   requests:
-    cpu: 2
-    memory: 2Gi
+    cpu: 1
+    memory: 1Gi
   limits:
     cpu: 5
     memory: 3Gi
