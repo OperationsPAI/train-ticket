@@ -306,8 +306,8 @@ loadgenerator:
     pullPolicy: IfNotPresent
     tag: "015"
   config:
-    threads: 1
-    sleep: 200
+    threads: 2
+    sleep: 100
     debug: false
   waitForServices:
     enabled: true
