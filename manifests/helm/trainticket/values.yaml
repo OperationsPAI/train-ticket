@@ -380,7 +380,7 @@ loadgenerator:
         port: 5672
 
   initContainer:
-    image: docker.io/opspai/netshoot:v0.14
+    image: docker.io/nicolaka/netshoot:v0.14
     resources:
       requests:
         cpu: 10m
