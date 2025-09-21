@@ -25,14 +25,14 @@ spec:
                 values:
                 - ssd
       {{- /* 根据监控类型和语言，条件性地注入 initContainers */}}
-      {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
+      {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
       initContainers:
-        - name: init-skywalking-agent
-          image: {{ $root.Values.skywalking.image }}
-          command: ['sh', '-c', 'cp -r /skywalking/agent/* /skywalking-agent/']
+        - name: init-otel-agent
+          image: "{{ $root.Values.global.image.repository }}/{{ $root.Values.opentelemetry.image }}"
+          command: ['sh', '-c', 'cp -r /javaagent.jar /otel-agent/otel-agent.jar']
           volumeMounts:
-            - name: skywalking-agent
-              mountPath: /skywalking-agent
+            - name: otel-agent
+              mountPath: /otel-agent
       {{- end }}
       containers:
         - name: {{ $svc.name }}
@@ -56,6 +56,10 @@ spec:
             - name: timezone
               mountPath: /etc/timezone
               readOnly: true
+            {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
+            - name: otel-agent
+              mountPath: /otel-agent
+            {{- end }}
           {{- with $root.Values.global.monitoring }}
             {{- if eq $svc.lang "python" }}
           env:
@@ -122,28 +126,6 @@ spec:
               value: "--require @opentelemetry/auto-instrumentations-node/register"
             {{- end }}
             {{- if not $svc.lang }} # 默认语言为java
-              {{- if and (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
-          volumeMounts:
-            - name: skywalking-agent
-              mountPath: /skywalking-agent
-          env:
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            - name: SW_AGENT_COLLECTOR_BACKEND_SERVICES
-              value: "{{ $root.Release.Name }}-skywalking-helm-oap:11800"
-            - name: SW_GRPC_LOG_SERVER_HOST
-              value: "{{ $root.Release.Name }}-skywalking-helm-oap"
-            - name: SW_GRPC_LOG_SERVER_PORT
-              value: "11800"
-            - name: SW_AGENT_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['app']
-            - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/skywalking-agent/skywalking-agent.jar"
-              {{- end }}
               {{- if and (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
           env:
             - name: NODE_IP
@@ -213,8 +195,8 @@ spec:
           hostPath:
             path: /etc/timezone
             type: File
-        {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "skywalking") (eq $root.Values.opentelemetry.enabled true) }}
-        - name: skywalking-agent
+        {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
+        - name: otel-agent
           emptyDir: {}
         {{- end }}
 ---

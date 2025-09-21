@@ -1,18 +1,14 @@
 global:
   image:
-    repository: 10.10.10.240/library
+    repository: docker.io/opspai
     tag: latest
   port: 8080
   monitoring: "opentelemetry" 
   # otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
-skywalking:
-  enabled: false  
-  image: apache/skywalking-java-agent:8.8.0-alpine
-
 opentelemetry:
   enabled: true
-  image: 10.10.10.240/library/autoinstrumentation-java:elastic
+  image: autoinstrumentation-java:elastic
 
 services:
   tsAdminBasicInfoService:
@@ -189,62 +185,6 @@ resources:
 #         cpu: 2
 #         memory: 1Gi
 
-skywalking-helm:
-  oap:
-    name: oap
-    image:
-      tag: 9.6.0  # Must be set explicitly
-    storageType: postgresql
-    replicas: 2
-    service:
-      type: ClusterIP
-    javaOpts: -Xmx2g -Xms2g
-    resources:
-      limits:
-        cpu: 4
-        memory: 8Gi
-      requests:
-        cpu: 4
-        memory: 4Gi
-    livenessProbe: 
-      tcpSocket:
-        port: 12800
-      initialDelaySeconds: 10
-      periodSeconds: 20
-
-  ui:
-    name: ui
-    replicas: 1
-    image:
-      tag: 9.6.0  # Must be set explicitly
-    service:
-      type: ClusterIP
-  elasticsearch:
-    enabled: false
-
-  postgresql:
-    enabled: false # Whether to start a demo postgresql deployment, don't use this for production.
-    config:
-      # The hostname of your own postgresql service, this only takes effect when postgresql.enabled is false.
-      host: ts-postgresql # note: change the name to your corresponding name !!!!!!
-    auth:
-      username: postgres
-      password: "123456"
-      database: skywalking
-    containerPorts:
-      postgresql: 5432
-    primary:
-      persistence:
-        enabled: false
-    readReplicas:
-      persistence:
-        enabled: false
-
-  satellite:
-    image:
-      tag: 9.6.0 # Must be set explicitly
-
-
 mysql:
   enabled: true
   image: mysql:5.7
@@ -302,7 +242,7 @@ loadgenerator:
   opentelemetry:
     endpoint: "opentelemetry-collector-deployment.monitoring:4317"
   image:
-    repository: 10.10.10.240/library/loadgenerator
+    repository: docker.io/opspai/loadgenerator
     pullPolicy: IfNotPresent
     tag: "018"
   config:
@@ -440,7 +380,7 @@ loadgenerator:
         port: 5672
 
   initContainer:
-    image: 10.10.10.240/library/netshoot:v0.14
+    image: docker.io/opspai/netshoot:v0.14
     resources:
       requests:
         cpu: 10m

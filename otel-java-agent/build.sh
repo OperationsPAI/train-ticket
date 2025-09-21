@@ -1,2 +1,2 @@
-docker build -t 10.10.10.240/library/autoinstrumentation-java:elastic .
-docker push 10.10.10.240/library/autoinstrumentation-java:elastic
+docker build -t docker.io/opspai/autoinstrumentation-java:elastic .
+docker push docker.io/opspai/autoinstrumentation-java:elastic

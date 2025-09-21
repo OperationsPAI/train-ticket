@@ -8,7 +8,7 @@ clusterName: ""
 
 image:
   tag: ""
-  registry: 10.10.10.240/library
+  registry: docker.io/opspai
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

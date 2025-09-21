@@ -1,4 +1,4 @@
-FROM 10.10.10.240/library/autoinstrumentation-java:elastic as agent
+FROM docker.io/opspai/autoinstrumentation-java:elastic as agent
 FROM openjdk:8-jre
 WORKDIR /app
 RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone

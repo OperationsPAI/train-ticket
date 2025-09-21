@@ -1,4 +1,4 @@
-NS ?= "ts22"
+NS ?= "ts"
 PORT ?= "30080"
 
 .PHONY: deploy

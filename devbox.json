@@ -14,7 +14,7 @@
         "mvn clean package -Dmaven.test.skip=true"
       ],
       "build-image": [
-        "skaffold build --default-repo=10.10.10.240/library"
+        "skaffold build --default-repo=docker.io/opspai"
       ],
       "deploy": [
         "helm install ts manifests/helm/generic_service -n ts --set global.image.tag=$(git rev-parse --short HEAD)"
