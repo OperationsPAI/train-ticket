@@ -24,10 +24,6 @@ version: 0.1.0
 appVersion: "1.17.0"
 
 dependencies:
-  - name: skywalking-helm
-    version: 4.5.0
-    repository: "oci://registry-1.docker.io/apache"
-    condition: skywalking.enabled
   - name: postgresql
     version: 15.1.4
     repository: "oci://registry-1.docker.io/bitnamicharts"
