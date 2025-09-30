@@ -3,7 +3,7 @@ global:
     repository: docker.io/opspai
     tag: latest
   port: 8080
-  monitoring: "opentelemetry" 
+  monitoring: "opentelemetry"
   # otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
 opentelemetry:
@@ -187,7 +187,10 @@ resources:
 
 mysql:
   enabled: true
-  image: mysql:5.7
+  image:
+    repository: docker.io/library/mysql
+    pullPolicy: IfNotPresent
+    tag: "5.7"
   rootPassword: "yourpassword"
   host: "mysql"
   port: "3306"
@@ -206,16 +209,20 @@ mysql:
 # RabbitMQ Configuration
 rabbitmq:
   enabled: true
+  image:
+    repository: docker.io/bitnami/rabbitmq
+    pullPolicy: IfNotPresent
+    tag: "4.0.7-debian-12-r0"
   fullnameOverride: "rabbitmq"
-  podLabels: {app: ts-rabbitmq}
+  podLabels: { app: ts-rabbitmq }
   auth:
-    username: guest   # Using the default RabbitMQ username
-    password: guest   # Using the default RabbitMQ password
-    erlangCookie: "RABBITMQCOOKIE"  # A simple cookie value
+    username: guest # Using the default RabbitMQ username
+    password: guest # Using the default RabbitMQ password
+    erlangCookie: "RABBITMQCOOKIE" # A simple cookie value
   service:
     type: ClusterIP
   persistence:
-    enabled: false    # Disabling persistence makes it stateless
+    enabled: false # Disabling persistence makes it stateless
   resources:
     requests:
       memory: 256Mi
@@ -229,29 +236,30 @@ rabbitmq:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
-        - matchExpressions:
-          - key: disk
-            operator: In
-            values:
-            - ssd
+          - matchExpressions:
+              - key: disk
+                operator: In
+                values:
+                  - ssd
+
 # Loadgenerator Configuration
 loadgenerator:
   enabled: true
-  fullnameOverride: "loadgenerator"
-  baseURL: "http://ts-ui-dashboard:8080"
-  opentelemetry:
-    endpoint: "opentelemetry-collector-deployment.monitoring:4317"
   image:
     repository: docker.io/opspai/loadgenerator
     pullPolicy: IfNotPresent
     tag: "018"
+  fullnameOverride: "loadgenerator"
+  baseURL: "http://ts-ui-dashboard:8080"
+  opentelemetry:
+    endpoint: "opentelemetry-collector-deployment.monitoring:4317"
   config:
     threads: 2
     sleep: 100
     debug: false
   waitForServices:
     enabled: true
-    timeout: 600  
+    timeout: 600
     checkInterval: 1
     services:
       - name: ts-auth-service

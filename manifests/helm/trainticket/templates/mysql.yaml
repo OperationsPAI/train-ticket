@@ -44,7 +44,8 @@ spec:
                 - ssd
       containers:
       - name: mysql
-        image: {{ .Values.mysql.image | default "mysql:5.7" }}
+        image: {{ .Values.mysql.image.repository }}:{{ .Values.mysql.image.tag }}
+        imagePullPolicy: {{ .Values.mysql.image.pullPolicy }}
         command: ["/bin/sh"]
         args: ["-c", "ulimit -n 10240 && docker-entrypoint.sh mysqld"]
         env:
