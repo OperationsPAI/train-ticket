@@ -1,15 +1,9 @@
 dependencies:
-- name: skywalking-helm
-  repository: oci://registry-1.docker.io/apache
-  version: 4.5.0
-- name: postgresql
-  repository: oci://registry-1.docker.io/bitnamicharts
-  version: 15.1.4
 - name: rabbitmq
   repository: oci://registry-1.docker.io/bitnamicharts
   version: 15.4.0
 - name: loadgenerator
   repository: https://lgu-se-internal.github.io/loadgenerator
   version: 0.1.1
-digest: sha256:2510cdf8b3740ba3e0a344b8f151916c5ee25a8b38784762e84ff47c3d0c39ea
-generated: "2025-07-07T23:55:35.498244876+08:00"
+digest: sha256:40938b65ced12423d9d1950dcd0a17f588a33ba759aac13747c522e83b72efff
+generated: "2025-09-30T12:11:38.639341666+08:00"
