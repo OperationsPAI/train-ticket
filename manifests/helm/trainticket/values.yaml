@@ -6,6 +6,16 @@ global:
   monitoring: "opentelemetry"
   # otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
 
+# Autoscaling configuration (HPA)
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 200
+  targetMemoryUtilizationPercentage: 200
+  scaleDownStabilizationWindowSeconds: 60
+  scaleUpStabilizationWindowSeconds: 0
+
 opentelemetry:
   enabled: true
   image: autoinstrumentation-java:elastic

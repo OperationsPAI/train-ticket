@@ -7,6 +7,9 @@ metadata:
   labels:
     app: {{ $svc.name }}
 spec:
+  {{- if not $root.Values.autoscaling.enabled }}
+  replicas: {{ $svc.replicas | default 1 }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ $svc.name }}
