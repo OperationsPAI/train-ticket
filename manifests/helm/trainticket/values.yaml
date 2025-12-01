@@ -259,7 +259,7 @@ loadgenerator:
   image:
     repository: docker.io/opspai/loadgenerator
     pullPolicy: IfNotPresent
-    tag: "019"
+    tag: "021"
   fullnameOverride: "loadgenerator"
   baseURL: "http://ts-ui-dashboard:8080"
   opentelemetry:
