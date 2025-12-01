@@ -2,25 +2,24 @@ package notification;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.web.client.RestTemplateBuilder;
+import edu.fudan.common.config.RestTemplateConfig;
+import org.springframework.context.annotation.Import;
 
-
-import org.springframework.context.annotation.Bean;
-import org.springframework.web.client.RestTemplate;
-import springfox.documentation.swagger2.annotations.EnableSwagger2;
+import io.swagger.v3.oas.annotations.OpenAPIDefinition;
+import io.swagger.v3.oas.annotations.info.Info;
 
 /**
  * @author fdse
  */
+@OpenAPIDefinition(info = @Info(
+    title = "Notification Service API",
+    version = "1.0",
+    description = "通知服务 API"
+))
 @SpringBootApplication
-@EnableSwagger2
+@Import(RestTemplateConfig.class)
 public class NotificationApplication{
     public static void main(String[] args) {
         SpringApplication.run(NotificationApplication.class, args);
-    }
-
-    @Bean
-    public RestTemplate restTemplate(RestTemplateBuilder builder) {
-        return builder.build();
     }
 }

@@ -12,7 +12,7 @@ spring:
       ddl-auto: update
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.MySQL5Dialect
+        dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true  # 格式化 SQL 语句
         use_sql_comments: true  # 在生成的 SQL 中添加注释
     show-sql: true  # 显示生成的 SQL 语句

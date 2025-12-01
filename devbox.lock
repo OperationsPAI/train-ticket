@@ -52,11 +52,11 @@
         }
       }
     },
-    "openjdk8@latest": {
-      "last_modified": "2023-02-24T09:01:09Z",
-      "resolved": "github:NixOS/nixpkgs/7d0ed7f2e5aea07ab22ccb338d27fbe347ed2f11#openjdk8",
+    "openjdk@17": {
+      "last_modified": "2022-11-21T15:52:25Z",
+      "resolved": "github:NixOS/nixpkgs/6b5019a48f876f3288efc626fa8b70ad0c64eb46#openjdk",
       "source": "devbox-search",
-      "version": "8u352-ga"
+      "version": "17.0.3"
     },
     "skaffold@latest": {
       "last_modified": "2024-11-28T07:51:56Z",

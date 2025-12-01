@@ -236,7 +236,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
         seatRequest.setTotalNum(totalNum);
 
         TravelPlanServiceImpl.LOGGER.info("[getRestTicketNumber][Seat Request][Seat Request is: {}]", seatRequest.toString());
-        HttpEntity requestEntity = new HttpEntity(seatRequest, null);
+        HttpEntity requestEntity = new HttpEntity(seatRequest, headers);
         String seat_service_url = getServiceUrl("ts-seat-service");
         ResponseEntity<Response<Integer>> re = restTemplate.exchange(
                 seat_service_url + "/api/v1/seatservice/seats/left_tickets",
@@ -249,7 +249,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
     }
 
     private ArrayList<RoutePlanResultUnit> getRoutePlanResultCheapest(RoutePlanInfo info, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(info, null);
+        HttpEntity requestEntity = new HttpEntity(info, headers);
         String route_plan_service_url = getServiceUrl("ts-route-plan-service");
         ResponseEntity<Response<ArrayList<RoutePlanResultUnit>>> re = restTemplate.exchange(
                 route_plan_service_url + "/api/v1/routeplanservice/routePlan/cheapestRoute",
@@ -261,7 +261,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
     }
 
     private ArrayList<RoutePlanResultUnit> getRoutePlanResultQuickest(RoutePlanInfo info, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(info, null);
+        HttpEntity requestEntity = new HttpEntity(info, headers);
         String route_plan_service_url = getServiceUrl("ts-route-plan-service");
         ResponseEntity<Response<ArrayList<RoutePlanResultUnit>>> re = restTemplate.exchange(
                 route_plan_service_url + "/api/v1/routeplanservice/routePlan/quickestRoute",
@@ -274,7 +274,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
     }
 
     private ArrayList<RoutePlanResultUnit> getRoutePlanResultMinStation(RoutePlanInfo info, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(info, null);
+        HttpEntity requestEntity = new HttpEntity(info, headers);
         String route_plan_service_url = getServiceUrl("ts-route-plan-service");
         ResponseEntity<Response<ArrayList<RoutePlanResultUnit>>> re = restTemplate.exchange(
                 route_plan_service_url + "/api/v1/routeplanservice/routePlan/minStopStations",
@@ -286,7 +286,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
     }
 
     private List<TripResponse> tripsFromHighSpeed(TripInfo info, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(info, null);
+        HttpEntity requestEntity = new HttpEntity(info, headers);
         String travel_service_url=getServiceUrl("ts-travel-service");
         ResponseEntity<Response<List<TripResponse>>> re = restTemplate.exchange(
                 travel_service_url + "/api/v1/travelservice/trips/left",
@@ -299,7 +299,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
 
     private ArrayList<TripResponse> tripsFromNormal(TripInfo info, HttpHeaders headers) {
 
-        HttpEntity requestEntity = new HttpEntity(info, null);
+        HttpEntity requestEntity = new HttpEntity(info, headers);
         String travel2_service_url=getServiceUrl("ts-travel2-service");
         ResponseEntity<Response<ArrayList<TripResponse>>> re = restTemplate.exchange(
                 travel2_service_url + "/api/v1/travel2service/trips/left",
@@ -312,7 +312,7 @@ public class TravelPlanServiceImpl implements TravelPlanService {
     }
 
     public TrainType queryTrainTypeByName(String trainTypeName, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String train_service_url=getServiceUrl("ts-train-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 train_service_url + "/api/v1/trainservice/trains/byName/" + trainTypeName,
@@ -323,5 +323,6 @@ public class TravelPlanServiceImpl implements TravelPlanService {
 
         return JsonUtils.conveterObject(response.getData(), TrainType.class);
     }
+
 
 }

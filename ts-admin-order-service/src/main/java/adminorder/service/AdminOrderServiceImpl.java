@@ -39,7 +39,7 @@ public class AdminOrderServiceImpl implements AdminOrderService {
         //Get all of the orders
         ArrayList<Order> orders = new ArrayList<>();
         //From ts-order-service
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
 
         String order_service_url = getServiceUrl("ts-order-service");
         ResponseEntity<Response<ArrayList<Order>>> re = restTemplate.exchange(
@@ -58,7 +58,7 @@ public class AdminOrderServiceImpl implements AdminOrderService {
             AdminOrderServiceImpl.LOGGER.error("[getAllOrders][receive response][Get Orders From ts-order-service fail!]");
         }
         //From ts-order-other-service
-        HttpEntity requestEntity2 = new HttpEntity(null);
+        HttpEntity requestEntity2 = new HttpEntity(headers);
         String order_other_service_url = getServiceUrl("ts-order-other-service");
         ResponseEntity<Response<ArrayList<Order>>> re2 = restTemplate.exchange(
                 order_other_service_url + "/api/v1/orderOtherService/orderOther",
@@ -85,7 +85,7 @@ public class AdminOrderServiceImpl implements AdminOrderService {
         Response deleteOrderResult;
         if (trainNumber.startsWith("G") || trainNumber.startsWith("D")) {
             AdminOrderServiceImpl.LOGGER.info("[deleteOrder][Delete Order][orderId: {}, trainNumber: {}]", orderId, trainNumber);
-            HttpEntity requestEntity = new HttpEntity(null);
+            HttpEntity requestEntity = new HttpEntity(headers);
             String order_service_url = getServiceUrl("ts-order-service");
             ResponseEntity<Response> re = restTemplate.exchange(
                      order_service_url + "/api/v1/orderservice/order/" + orderId,
@@ -96,7 +96,7 @@ public class AdminOrderServiceImpl implements AdminOrderService {
 
         } else {
             AdminOrderServiceImpl.LOGGER.info("[deleteOrder][Delete Order Other][trainNumber doesn't starts With G or D]");
-            HttpEntity requestEntity = new HttpEntity(null);
+            HttpEntity requestEntity = new HttpEntity(headers);
             String order_other_service_url = getServiceUrl("ts-order-other-service");
             ResponseEntity<Response> re = restTemplate.exchange(
                     order_other_service_url + "/api/v1/orderOtherService/orderOther/" + orderId,
@@ -173,6 +173,7 @@ public class AdminOrderServiceImpl implements AdminOrderService {
         return addOrderResult;
 
     }
+
 
 
 }

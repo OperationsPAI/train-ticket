@@ -1,6 +1,6 @@
 package notification.service;
 
-import javax.mail.internet.MimeMessage;
+import jakarta.mail.internet.MimeMessage;
 
 import notification.entity.Mail;
 import org.springframework.beans.factory.annotation.Autowired;

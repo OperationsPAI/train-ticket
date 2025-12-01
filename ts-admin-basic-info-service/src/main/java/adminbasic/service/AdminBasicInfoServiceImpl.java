@@ -321,4 +321,5 @@ public class AdminBasicInfoServiceImpl implements AdminBasicInfoService {
                 Response.class);
         return re.getBody();
     }
+
 }

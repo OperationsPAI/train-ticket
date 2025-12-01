@@ -197,7 +197,7 @@ public class OrderServiceImpl implements OrderService {
 
     public List<String> queryForStationId(List<String> ids, HttpHeaders headers) {
 
-        HttpEntity requestEntity = new HttpEntity(ids, null);
+        HttpEntity requestEntity = new HttpEntity(ids, headers);
         String station_service_url=getServiceUrl("ts-station-service");
         ResponseEntity<Response<List<String>>> re = restTemplate.exchange(
                 station_service_url + "/api/v1/stationservice/stations/namelist",
@@ -477,5 +477,6 @@ public class OrderServiceImpl implements OrderService {
             return new Response<>(1, "Admin Update Order Success", oldOrder);
         }
     }
+
 }
 

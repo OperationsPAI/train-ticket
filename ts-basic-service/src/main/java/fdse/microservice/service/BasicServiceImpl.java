@@ -323,7 +323,7 @@ public class BasicServiceImpl implements BasicService {
     @Override
     public Response queryForStationId(String stationName, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[queryForStationId][Query For Station Id][stationName: {}]", stationName);
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String station_service_url=getServiceUrl("ts-station-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 station_service_url + "/api/v1/stationservice/stations/id/" + stationName,
@@ -340,7 +340,7 @@ public class BasicServiceImpl implements BasicService {
 
     public Map<String,String> checkStationsExists(List<String> stationNames, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[checkStationsExists][Check Stations Exists][stationNames: {}]", stationNames);
-        HttpEntity requestEntity = new HttpEntity(stationNames, null);
+        HttpEntity requestEntity = new HttpEntity(stationNames, headers);
         String station_service_url=getServiceUrl("ts-station-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 station_service_url + "/api/v1/stationservice/stations/idlist",
@@ -357,7 +357,7 @@ public class BasicServiceImpl implements BasicService {
 
     public boolean checkStationExists(String stationName, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[checkStationExists][Check Station Exists][stationName: {}]", stationName);
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String station_service_url=getServiceUrl("ts-station-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 station_service_url + "/api/v1/stationservice/stations/id/" + stationName,
@@ -371,7 +371,7 @@ public class BasicServiceImpl implements BasicService {
 
     public List<TrainType> queryTrainTypeByNames(List<String> trainTypeNames, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[queryTrainTypeByNames][Query Train Type][Train Type names: {}]", trainTypeNames);
-        HttpEntity requestEntity = new HttpEntity(trainTypeNames, null);
+        HttpEntity requestEntity = new HttpEntity(trainTypeNames, headers);
         String train_service_url=getServiceUrl("ts-train-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 train_service_url + "/api/v1/trainservice/trains/byNames",
@@ -388,7 +388,7 @@ public class BasicServiceImpl implements BasicService {
 
     public TrainType queryTrainTypeByName(String trainTypeName, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[queryTrainTypeByName][Query Train Type][Train Type name: {}]", trainTypeName);
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String train_service_url=getServiceUrl("ts-train-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 train_service_url + "/api/v1/trainservice/trains/byName/" + trainTypeName,
@@ -402,10 +402,10 @@ public class BasicServiceImpl implements BasicService {
 
     private List<Route> getRoutesByRouteIds(List<String> routeIds, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[getRoutesByRouteIds][Get Route By Ids][Route IDs: {}]", routeIds);
-        HttpEntity requestEntity = new HttpEntity(routeIds, null);
+        HttpEntity requestEntity = new HttpEntity(routeIds, headers);
         String route_service_url=getServiceUrl("ts-route-service");
         ResponseEntity<Response> re = restTemplate.exchange(
-                route_service_url + "/api/v1/routeservice/routes/byIds/",
+                route_service_url + "/api/v1/routeservice/routes/byIds",
                 HttpMethod.POST,
                 requestEntity,
                 Response.class);
@@ -422,7 +422,7 @@ public class BasicServiceImpl implements BasicService {
 
     private Route getRouteByRouteId(String routeId, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[getRouteByRouteId][Get Route By Id][Route ID: {}]", routeId);
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String route_service_url=getServiceUrl("ts-route-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 route_service_url + "/api/v1/routeservice/routes/" + routeId,
@@ -441,7 +441,7 @@ public class BasicServiceImpl implements BasicService {
 
     private PriceConfig queryPriceConfigByRouteIdAndTrainType(String routeId, String trainType, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[queryPriceConfigByRouteIdAndTrainType][Query For Price Config][RouteId: {} ,TrainType: {}]", routeId, trainType);
-        HttpEntity requestEntity = new HttpEntity(null, null);
+        HttpEntity requestEntity = new HttpEntity(null, headers);
         String price_service_url=getServiceUrl("ts-price-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 price_service_url + "/api/v1/priceservice/prices/" + routeId + "/" + trainType,
@@ -456,7 +456,7 @@ public class BasicServiceImpl implements BasicService {
 
     private Map<String, PriceConfig> queryPriceConfigByRouteIdsAndTrainTypes(List<String> routeIdsTypes, HttpHeaders headers) {
         BasicServiceImpl.LOGGER.info("[queryPriceConfigByRouteIdsAndTrainTypes][Query For Price Config][RouteId and TrainType: {}]", routeIdsTypes);
-        HttpEntity requestEntity = new HttpEntity(routeIdsTypes, null);
+        HttpEntity requestEntity = new HttpEntity(routeIdsTypes, headers);
         String price_service_url=getServiceUrl("ts-price-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 price_service_url + "/api/v1/priceservice/prices/byRouteIdsAndTrainTypes",
@@ -481,5 +481,6 @@ public class BasicServiceImpl implements BasicService {
             return pcMap;
         }
     }
+
 
 }

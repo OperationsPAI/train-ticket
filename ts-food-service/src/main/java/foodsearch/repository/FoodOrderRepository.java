@@ -7,7 +7,6 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 
 @Repository
 public interface FoodOrderRepository extends CrudRepository<FoodOrder, String> {
@@ -19,7 +18,8 @@ public interface FoodOrderRepository extends CrudRepository<FoodOrder, String> {
     @Override
     List<FoodOrder> findAll();
 
-    void deleteById(UUID id);
+    @Override
+    void deleteById(String id);
 
     void deleteFoodOrderByOrderId(String id);
 

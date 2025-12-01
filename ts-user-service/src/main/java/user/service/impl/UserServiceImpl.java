@@ -77,7 +77,7 @@ public class UserServiceImpl implements UserService {
     private Response createDefaultAuthUser(AuthDto dto) {
         LOGGER.info("[createDefaultAuthUser][CALL TO AUTH][AuthDto: {}]", dto.toString());
         HttpHeaders headers = new HttpHeaders();
-        HttpEntity<AuthDto> entity = new HttpEntity<>(dto, null);
+        HttpEntity<AuthDto> entity = new HttpEntity<>(dto, headers);
         String auth_service_url = getServiceUrl("ts-auth-service");
 
         ResponseEntity<Response<AuthDto>> res  = restTemplate.exchange(auth_service_url + "/api/v1/auth",

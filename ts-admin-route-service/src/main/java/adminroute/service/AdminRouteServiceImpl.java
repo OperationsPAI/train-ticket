@@ -30,10 +30,11 @@ public class AdminRouteServiceImpl implements AdminRouteService {
         return "http://" + serviceName + ":8080";
     }
 
+
     @Override
     public Response getAllRoutes(HttpHeaders headers) {
 
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String route_service_url = getServiceUrl("ts-route-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                  route_service_url + "/api/v1/routeservice/routes",
@@ -63,7 +64,7 @@ public class AdminRouteServiceImpl implements AdminRouteService {
             return response;
         }
 
-        HttpEntity requestEntity = new HttpEntity(request, null);
+        HttpEntity requestEntity = new HttpEntity(request, headers);
         String route_service_url = getServiceUrl("ts-route-service");
         ResponseEntity<Response<Route>> re = restTemplate.exchange(
                 route_service_url + "/api/v1/routeservice/routes",
@@ -80,7 +81,7 @@ public class AdminRouteServiceImpl implements AdminRouteService {
     @Override
     public Response deleteRoute(String routeId, HttpHeaders headers) {
 
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String route_service_url = getServiceUrl("ts-route-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 route_service_url + "/api/v1/routeservice/routes/" + routeId,
@@ -96,7 +97,7 @@ public class AdminRouteServiceImpl implements AdminRouteService {
 
     public Response checkStationsExists(List<String> stationNames, HttpHeaders headers) {
         logger.info("[checkStationsExists][Check Stations Exists][stationNames: {}]", stationNames);
-        HttpEntity requestEntity = new HttpEntity(stationNames, null);
+        HttpEntity requestEntity = new HttpEntity(stationNames, headers);
         String station_service_url=getServiceUrl("ts-station-service");
         ResponseEntity<Response> re = restTemplate.exchange(
                 station_service_url + "/api/v1/stationservice/stations/idlist",

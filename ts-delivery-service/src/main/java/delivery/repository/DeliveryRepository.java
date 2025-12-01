@@ -3,7 +3,6 @@ package delivery.repository;
 import delivery.entity.Delivery;
 import org.springframework.data.repository.CrudRepository;
 
-import org.springframework.scheduling.Trigger;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -21,8 +20,9 @@ public interface DeliveryRepository extends CrudRepository<Delivery, String> {
     @Override
     List<Delivery> findAll();
 
+    @Override
     void deleteById(String id);
 
-    void deleteFoodOrderByOrderId(String id);
+    void deleteByOrderId(UUID orderId);
 
 }

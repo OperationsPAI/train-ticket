@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.7/.schema/devbox.schema.json",
   "packages": [
-    "openjdk8@latest",
     "maven@latest",
-    "skaffold@latest"
+    "skaffold@latest",
+    "openjdk@17"
   ],
   "shell": {
     "init_hook": [

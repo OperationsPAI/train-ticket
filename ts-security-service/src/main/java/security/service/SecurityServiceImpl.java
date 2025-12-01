@@ -124,7 +124,7 @@ public class SecurityServiceImpl implements SecurityService {
     }
 
     private OrderSecurity getSecurityOrderInfoFromOrder(Date checkDate, String accountId, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String order_service_url = getServiceUrl("ts-order-service");
         ResponseEntity<Response<OrderSecurity>> re = restTemplate.exchange(
                 order_service_url + "/api/v1/orderservice/order/security/" + checkDate + "/" + accountId,
@@ -139,7 +139,7 @@ public class SecurityServiceImpl implements SecurityService {
     }
 
     private OrderSecurity getSecurityOrderOtherInfoFromOrder(Date checkDate, String accountId, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String order_other_service_url = getServiceUrl("ts-order-other-service");
         ResponseEntity<Response<OrderSecurity>> re = restTemplate.exchange(
                 order_other_service_url + "/api/v1/orderOtherService/orderOther/security/" + checkDate + "/" + accountId,

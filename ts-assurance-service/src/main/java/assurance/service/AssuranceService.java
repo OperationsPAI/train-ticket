@@ -3,7 +3,7 @@ package assurance.service;
 import edu.fudan.common.util.Response;
 import org.springframework.http.HttpHeaders;
 
-import javax.transaction.Transactional;
+import jakarta.transaction.Transactional;
 import java.util.UUID;
 
 /**

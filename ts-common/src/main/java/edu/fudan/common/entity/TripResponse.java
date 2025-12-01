@@ -3,8 +3,8 @@ package edu.fudan.common.entity;
 import edu.fudan.common.util.StringUtils;
 import lombok.Data;
 
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import java.util.Date;
 
 /**

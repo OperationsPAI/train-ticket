@@ -1,10 +1,11 @@
 package contacts.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 
 import org.hibernate.annotations.GenericGenerator;
 
@@ -19,22 +20,33 @@ import java.util.UUID;
 @GenericGenerator(name = "jpa-uuid", strategy = "org.hibernate.id.UUIDGenerator")
 @JsonIgnoreProperties(ignoreUnknown = true)
 @Table(indexes = {@Index(name = "account_document_idx", columnList = "account_id, document_number, document_type", unique = true)})
+@Schema(description = "Contact entity representing a passenger's contact information")
 public class Contacts {
 
     @Id
 //    private UUID id;
     @GeneratedValue(generator = "jpa-uuid")
     @Column(length = 36)
+    @Schema(description = "Unique identifier for the contact", example = "550e8400-e29b-41d4-a716-446655440000")
     private String id;
+    
     @Column(name = "account_id")
+    @Schema(description = "Associated account ID", example = "user-123")
     private String accountId;
 
+    @Schema(description = "Contact person's name", example = "John Doe")
     private String name;
+    
     @Column(name = "document_type")
+    @Schema(description = "Type of identification document (0: ID Card, 1: Passport, 2: Other)", example = "0")
     private int documentType;
+    
     @Column(name = "document_number")
+    @Schema(description = "Document number", example = "110101199001011234")
     private String documentNumber;
+    
     @Column(name = "phone_number")
+    @Schema(description = "Phone number", example = "+86-13800138000")
     private String phoneNumber;
 
     public Contacts() {

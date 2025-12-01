@@ -3,7 +3,7 @@ package edu.fudan.common.entity;
 
 import lombok.Data;
 
-import javax.persistence.Embeddable;
+import jakarta.persistence.Embeddable;
 import java.io.Serializable;
 
 @Data

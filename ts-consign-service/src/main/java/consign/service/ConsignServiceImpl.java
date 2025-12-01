@@ -145,4 +145,5 @@ public class ConsignServiceImpl implements ConsignService {
             return new Response<>(0, "No Content according to consignee", null);
         }
     }
+
 }

@@ -37,7 +37,7 @@ public class AdminUserServiceImpl implements AdminUserService {
 
     @Override
     public Response getAllUsers(HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(null);
+        HttpEntity requestEntity = new HttpEntity(headers);
         String user_service_url = getServiceUrl("ts-user-service");
         String USER_SERVICE_IP_URI = user_service_url + "/api/v1/userservice/users";
         ResponseEntity<Response<List<User>>> re = restTemplate.exchange(
@@ -107,7 +107,7 @@ public class AdminUserServiceImpl implements AdminUserService {
     @Override
     public Response addUser(UserDto userDto, HttpHeaders headers) {
         LOGGER.info("[addUser][ADD USER INFO][UserDto: {}]", userDto.toString());
-        HttpEntity requestEntity = new HttpEntity(userDto, null);
+        HttpEntity requestEntity = new HttpEntity(userDto, headers);
         String user_service_url = getServiceUrl("ts-user-service");
         String USER_SERVICE_IP_URI = user_service_url + "/api/v1/userservice/users";
         ResponseEntity<Response<User>> re = restTemplate.exchange(
@@ -125,4 +125,5 @@ public class AdminUserServiceImpl implements AdminUserService {
         AdminUserServiceImpl.LOGGER.info("[addUser][Add user success][userName: {}]", userName);
         return re.getBody();
     }
+
 }
