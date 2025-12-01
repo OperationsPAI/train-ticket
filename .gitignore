@@ -1,2 +1,4 @@
 target
 *.tgz
+generated-sdk
+openapi-docs

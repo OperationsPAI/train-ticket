@@ -2,6 +2,7 @@ package edu.fudan.common.entity;
 
 import edu.fudan.common.util.StringUtils;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import jakarta.validation.Valid;
@@ -13,22 +14,33 @@ import java.util.UUID;
  * @author fdse
  */
 @Data
+@Schema(description = "Trip entity representing a train trip")
 public class Trip {
+    @Schema(description = "Trip ID")
     private String id;
 
+    @Schema(description = "Trip ID object")
     private TripId tripId;
 
+    @Schema(description = "Train type name", example = "GaoTieOne")
     private String trainTypeName;
 
+    @Schema(description = "Route ID")
     private String routeId;
+
+    @Schema(description = "Start station name", example = "shanghai")
     private String startStationName;
 
+    @Schema(description = "Intermediate stations", example = "suzhou,wuxi,changzhou")
     private String stationsName;
 
+    @Schema(description = "Terminal station name", example = "nanjing")
     private String terminalStationName;
 
+    @Schema(description = "Departure time", example = "08:00")
     private String startTime;
 
+    @Schema(description = "Arrival time", example = "10:30")
     private String endTime;
 
     public Trip(edu.fudan.common.entity.TripId tripId, String trainTypeName, String startStationName, String stationsName, String terminalStationName, String startTime, String endTime) {

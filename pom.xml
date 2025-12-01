@@ -19,6 +19,7 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <springdoc.version>2.3.0</springdoc.version>
+
     </properties>
 
     <modules>
@@ -222,6 +223,8 @@
                     </execution>
                 </executions>
             </plugin>
+            
+
 
         </plugins>
     </build>

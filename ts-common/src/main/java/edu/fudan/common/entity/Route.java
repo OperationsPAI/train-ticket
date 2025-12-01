@@ -1,6 +1,7 @@
 package edu.fudan.common.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -12,15 +13,21 @@ import java.util.UUID;
  */
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
+@Schema(description = "Route entity representing a train route")
 public class Route {
+    @Schema(description = "Route ID", example = "route-001")
     private String id;
 
+    @Schema(description = "List of station names on the route", example = "[\"shanghai\", \"suzhou\", \"nanjing\"]")
     private List<String> stations;
 
+    @Schema(description = "Distances between stations in kilometers", example = "[0, 100, 200]")
     private List<Integer> distances;
 
+    @Schema(description = "Start station name", example = "shanghai")
     private String startStation;
 
+    @Schema(description = "End station name", example = "nanjing")
     private String endStation;
 
     public Route(){

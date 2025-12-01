@@ -4,6 +4,11 @@ import edu.fudan.common.entity.TravelInfo;
 import edu.fudan.common.entity.TripAllDetailInfo;
 import edu.fudan.common.entity.TripInfo;
 import edu.fudan.common.entity.TripResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,7 +31,7 @@ import static org.springframework.http.ResponseEntity.ok;
  */
 @RestController
 @RequestMapping("/api/v1/travelservice")
-
+@Tag(name = "Travel", description = "Travel/Trip management APIs")
 public class TravelController {
 
     @Autowired
@@ -34,84 +39,89 @@ public class TravelController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TravelController.class);
 
+    @Operation(summary = "Welcome endpoint", description = "Returns a welcome message")
     @GetMapping(path = "/welcome")
     public String home(@RequestHeader HttpHeaders headers) {
         return "Welcome to [ Travel Service ] !";
     }
 
+    @Operation(summary = "Get train type by trip ID", description = "Retrieve train type information for a specific trip")
     @GetMapping(value = "/train_types/{tripId}")
-    public HttpEntity getTrainTypeByTripId(@PathVariable String tripId,
-                                           @RequestHeader HttpHeaders headers) {
-        // TrainType
+    public HttpEntity getTrainTypeByTripId(
+            @Parameter(description = "Trip ID") @PathVariable String tripId,
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[getTrainTypeByTripId][Get train Type by Trip id][TripId: {}]", tripId);
         return ok(travelService.getTrainTypeByTripId(tripId, headers));
     }
 
+    @Operation(summary = "Get route by trip ID", description = "Retrieve route information for a specific trip")
     @GetMapping(value = "/routes/{tripId}")
-    public HttpEntity getRouteByTripId(@PathVariable String tripId,
-                                       @RequestHeader HttpHeaders headers) {
+    public HttpEntity getRouteByTripId(
+            @Parameter(description = "Trip ID") @PathVariable String tripId,
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[getRouteByTripId][Get Route By Trip ID][TripId: {}]", tripId);
-        //Route
         return ok(travelService.getRouteByTripId(tripId, headers));
     }
 
+    @Operation(summary = "Get trips by route IDs", description = "Retrieve trips for multiple route IDs")
     @PostMapping(value = "/trips/routes")
-    public HttpEntity getTripsByRouteId(@RequestBody ArrayList<String> routeIds,
-                                        @RequestHeader HttpHeaders headers) {
-        // ArrayList<ArrayList<Trip>>
+    public HttpEntity getTripsByRouteId(
+            @Parameter(description = "List of route IDs") @RequestBody ArrayList<String> routeIds,
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[getTripByRoute][Get Trips by Route ids][RouteIds: {}]", routeIds.size());
         return ok(travelService.getTripByRoute(routeIds, headers));
     }
 
+    @Operation(summary = "Create trip", description = "Create a new trip")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "201", description = "Trip created successfully"),
+        @ApiResponse(responseCode = "400", description = "Invalid input data")
+    })
     @CrossOrigin(origins = "*")
     @PostMapping(value = "/trips")
-    public HttpEntity<?> createTrip(@RequestBody TravelInfo routeIds, @RequestHeader HttpHeaders headers) {
-        // null
+    public HttpEntity<?> createTrip(
+            @Parameter(description = "Trip information") @RequestBody TravelInfo routeIds, 
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[create][Create trip][TripId: {}]", routeIds.getTripId());
         return new ResponseEntity<>(travelService.create(routeIds, headers), HttpStatus.CREATED);
     }
 
-    /**
-     * Return Trip only, no left ticket information
-     *
-     * @param tripId  trip id
-     * @param headers headers
-     * @return HttpEntity
-     */
+    @Operation(summary = "Get trip by ID", description = "Retrieve a specific trip by its ID (no ticket info)")
     @CrossOrigin(origins = "*")
     @GetMapping(value = "/trips/{tripId}")
-    public HttpEntity retrieve(@PathVariable String tripId, @RequestHeader HttpHeaders headers) {
-        // Trip
+    public HttpEntity retrieve(
+            @Parameter(description = "Trip ID") @PathVariable String tripId, 
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[retrieve][Retrieve trip][TripId: {}]", tripId);
         return ok(travelService.retrieve(tripId, headers));
     }
 
+    @Operation(summary = "Update trip", description = "Update an existing trip")
     @CrossOrigin(origins = "*")
     @PutMapping(value = "/trips")
-    public HttpEntity updateTrip(@RequestBody TravelInfo info, @RequestHeader HttpHeaders headers) {
-        // Trip
+    public HttpEntity updateTrip(
+            @Parameter(description = "Updated trip information") @RequestBody TravelInfo info, 
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[update][Update trip][TripId: {}]", info.getTripId());
         return ok(travelService.update(info, headers));
     }
 
+    @Operation(summary = "Delete trip", description = "Delete a trip by ID")
     @CrossOrigin(origins = "*")
     @DeleteMapping(value = "/trips/{tripId}")
-    public HttpEntity deleteTrip(@PathVariable String tripId, @RequestHeader HttpHeaders headers) {
-        // string
+    public HttpEntity deleteTrip(
+            @Parameter(description = "Trip ID to delete") @PathVariable String tripId, 
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[delete][Delete trip][TripId: {}]", tripId);
         return ok(travelService.delete(tripId, headers));
     }
 
-    /**
-     * Return Trips and the remaining tickets
-     *
-     * @param info    trip info
-     * @param headers headers
-     * @return HttpEntity
-     */
+    @Operation(summary = "Query available trips", description = "Query trips with remaining tickets")
     @CrossOrigin(origins = "*")
     @PostMapping(value = "/trips/left")
-    public HttpEntity queryInfo(@RequestBody TripInfo info, @RequestHeader HttpHeaders headers) {
+    public HttpEntity queryInfo(
+            @Parameter(description = "Query criteria") @RequestBody TripInfo info, 
+            @RequestHeader HttpHeaders headers) {
         if (info.getStartPlace() == null || info.getStartPlace().length() == 0 ||
                 info.getEndPlace() == null || info.getEndPlace().length() == 0 ||
                 info.getDepartureTime() == null) {
@@ -123,16 +133,12 @@ public class TravelController {
         return ok(travelService.queryByBatch(info, headers));
     }
 
-    /**
-     * Return Trips and the remaining tickets
-     *
-     * @param info    trip info
-     * @param headers headers
-     * @return HttpEntity
-     */
+    @Operation(summary = "Query available trips (parallel)", description = "Query trips with remaining tickets using parallel processing")
     @CrossOrigin(origins = "*")
     @PostMapping(value = "/trips/left_parallel")
-    public HttpEntity queryInfoInparallel(@RequestBody TripInfo info, @RequestHeader HttpHeaders headers) {
+    public HttpEntity queryInfoInparallel(
+            @Parameter(description = "Query criteria") @RequestBody TripInfo info, 
+            @RequestHeader HttpHeaders headers) {
         if (info.getStartPlace() == null || info.getStartPlace().length() == 0 ||
                 info.getEndPlace() == null || info.getEndPlace().length() == 0 ||
                 info.getDepartureTime() == null) {
@@ -144,34 +150,28 @@ public class TravelController {
         return ok(travelService.queryInParallel(info, headers));
     }
 
-    /**
-     * Return a Trip and the remaining
-     *
-     * @param gtdi    trip all detail info
-     * @param headers headers
-     * @return HttpEntity
-     */
+    @Operation(summary = "Get trip details", description = "Get all details for a specific trip including remaining tickets")
     @CrossOrigin(origins = "*")
     @PostMapping(value = "/trip_detail")
-    public HttpEntity getTripAllDetailInfo(@RequestBody TripAllDetailInfo gtdi, @RequestHeader HttpHeaders headers) {
-        // TripAllDetailInfo
-        // TripAllDetail tripAllDetail
+    public HttpEntity getTripAllDetailInfo(
+            @Parameter(description = "Trip detail query info") @RequestBody TripAllDetailInfo gtdi, 
+            @RequestHeader HttpHeaders headers) {
         TravelController.LOGGER.info("[getTripAllDetailInfo][Get trip detail][TripId: {}]", gtdi.getTripId());
         return ok(travelService.getTripAllDetailInfo(gtdi, headers));
     }
 
+    @Operation(summary = "Get all trips", description = "Retrieve all trips in the system")
     @CrossOrigin(origins = "*")
     @GetMapping(value = "/trips")
     public HttpEntity queryAll(@RequestHeader HttpHeaders headers) {
-        // List<Trip>
         TravelController.LOGGER.info("[queryAll][Query all trips]");
         return ok(travelService.queryAll(headers));
     }
 
+    @Operation(summary = "Admin query all trips", description = "Admin endpoint to retrieve all trips with details")
     @CrossOrigin(origins = "*")
     @GetMapping(value = "/admin_trip")
     public HttpEntity adminQueryAll(@RequestHeader HttpHeaders headers) {
-        // ArrayList<AdminTrip>
         TravelController.LOGGER.info("[adminQueryAll][Admin query all trips]");
         return ok(travelService.adminQueryAll(headers));
     }
