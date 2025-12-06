@@ -263,7 +263,7 @@ loadgenerator:
   fullnameOverride: "loadgenerator"
   baseURL: "http://ts-ui-dashboard:8080"
   opentelemetry:
-    endpoint: "opentelemetry-collector-deployment.monitoring:4317"
+    endpoint: "opentelemetry-kube-stack-deployment-collector.monitoring:4317"
   config:
     threads: 2
     sleep: 100
