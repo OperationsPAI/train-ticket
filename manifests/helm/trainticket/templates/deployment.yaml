@@ -18,15 +18,6 @@ spec:
       labels:
         app: {{ $svc.name }}
     spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: disk
-                operator: In
-                values:
-                - ssd
       {{- /* 根据监控类型和语言，条件性地注入 initContainers */}}
       {{- if and (not $svc.lang) (eq $root.Values.global.monitoring "opentelemetry") (eq $root.Values.opentelemetry.enabled true) }}
       initContainers:

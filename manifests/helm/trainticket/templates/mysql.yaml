@@ -33,15 +33,6 @@ spec:
       labels:
         app: mysql
     spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: disk
-                operator: In
-                values:
-                - ssd
       containers:
       - name: mysql
         image: {{ .Values.mysql.image.repository }}:{{ .Values.mysql.image.tag }}

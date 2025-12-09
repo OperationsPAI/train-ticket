@@ -243,15 +243,6 @@ rabbitmq:
       cpu: 1000m
   metrics:
     enabled: false
-  affinity:
-    nodeAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        nodeSelectorTerms:
-          - matchExpressions:
-              - key: disk
-                operator: In
-                values:
-                  - ssd
 
 # Loadgenerator Configuration
 loadgenerator:
