@@ -1,0 +1,29 @@
+=======================================================================================
+
+
+████████╗██████╗  █████╗ ██╗███╗   ██╗    ████████╗██╗ ██████╗██╗  ██╗███████╗████████╗
+╚══██╔══╝██╔══██╗██╔══██╗██║████╗  ██║    ╚══██╔══╝██║██╔════╝██║ ██╔╝██╔════╝╚══██╔══╝
+   ██║   ██████╔╝███████║██║██╔██╗ ██║       ██║   ██║██║     █████╔╝ █████╗     ██║   
+   ██║   ██╔══██╗██╔══██║██║██║╚██╗██║       ██║   ██║██║     ██╔═██╗ ██╔══╝     ██║   
+   ██║   ██║  ██║██║  ██║██║██║ ╚████║       ██║   ██║╚██████╗██║  ██╗███████╗   ██║   
+   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝       ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝   ╚═╝
+
+- All services are available via the ts-ui-dashboard service
+  by running these commands:
+     kubectl --namespace {{ .Release.Namespace }} port-forward svc/ts-ui-dashboard 8080:8080
+
+  The following services are available after the ts-ui-dashboard service is exposed with port forwarding:
+  Web UI               http://localhost:8080/
+  Load Generator       Running in background (check logs: kubectl logs -l app=loadgenerator -n {{ .Release.Namespace }})
+
+=======================================================================================
+
+Enabled Services:
+-------------------------
+{{- if .Values.services }}
+{{- range $name, $config := .Values.services }}
+{{- if $config }}
+- {{ $name }}
+{{- end }}
+{{- end }}
+{{- end }}
