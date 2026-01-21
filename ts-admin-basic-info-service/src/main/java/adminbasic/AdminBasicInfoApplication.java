@@ -24,6 +24,10 @@ import org.springframework.scheduling.annotation.EnableAsync;
 ))
 public class AdminBasicInfoApplication {
 
+    private AdminBasicInfoApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(AdminBasicInfoApplication.class, args);
     }

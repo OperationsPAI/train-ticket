@@ -11,8 +11,6 @@ import org.hibernate.annotations.GenericGenerator;
 import jakarta.persistence.*;
 import java.util.Date;
 
-import edu.fudan.common.entity.SeatClass;
-
 /**
  * @author fdse
  */

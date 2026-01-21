@@ -23,6 +23,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
     description = "Admin Route Service for managing routes"
 ))
 public class AdminRouteApplication {
+
+    private AdminRouteApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(AdminRouteApplication.class, args);
     }

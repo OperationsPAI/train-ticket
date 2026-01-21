@@ -24,6 +24,10 @@ import org.springframework.scheduling.annotation.EnableAsync;
 ))
 public class OrderOtherApplication {
 
+    private OrderOtherApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
 
         SpringApplication.run(OrderOtherApplication.class, args);

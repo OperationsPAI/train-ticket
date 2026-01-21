@@ -23,6 +23,10 @@ import io.swagger.v3.oas.annotations.info.Info;
 ))
 public class TrainFoodApplication {
 
+    private TrainFoodApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(TrainFoodApplication.class, args);
     }

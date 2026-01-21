@@ -19,6 +19,11 @@ import io.swagger.v3.oas.annotations.info.Info;
 @SpringBootApplication
 @Import(RestTemplateConfig.class)
 public class AuthApplication {
+
+    private AuthApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(AuthApplication.class, args);
     }

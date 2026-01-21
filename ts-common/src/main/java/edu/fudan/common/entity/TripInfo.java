@@ -7,7 +7,6 @@ import lombok.Data;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import java.util.Date;
 
 /**
  * @author fdse

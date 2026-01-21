@@ -3,8 +3,6 @@ package travel.entity;
 import edu.fudan.common.entity.TripResponse;
 import lombok.Data;
 
-import edu.fudan.common.entity.TripResponse;
-
 /**
  * @author fdse
  */

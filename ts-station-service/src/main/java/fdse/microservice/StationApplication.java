@@ -21,6 +21,10 @@ import org.springframework.scheduling.annotation.EnableAsync;
 ))
 public class StationApplication {
 
+    private StationApplication() {
+        // Private constructor to prevent instantiation
+    }
+
 	public static void main(String[] args) {
 		SpringApplication.run(StationApplication.class, args);
 	}

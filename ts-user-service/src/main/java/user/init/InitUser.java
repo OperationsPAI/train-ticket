@@ -8,9 +8,6 @@ import user.entity.User;
 import user.repository.UserRepository;
 import user.service.UserService;
 
-
-import java.util.UUID;
-
 /**
  * @author fdse
  */

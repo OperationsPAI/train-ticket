@@ -23,6 +23,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
     description = "Train Ticket Consign Service - Manage consignments"
 ))
 public class ConsignApplication {
+
+    private ConsignApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(ConsignApplication.class, args);
     }

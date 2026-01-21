@@ -12,7 +12,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
 @EnableAsync
 @IntegrationComponentScan
 public class GatewayApplication {
-    
+
+    private GatewayApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(GatewayApplication.class, args);
     }

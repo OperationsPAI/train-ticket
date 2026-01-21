@@ -6,7 +6,6 @@ import org.hibernate.annotations.GenericGenerator;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.GeneratedValue;
-import java.util.UUID;
 
 /**
  * @author fdse

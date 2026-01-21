@@ -6,7 +6,6 @@ import assurance.entity.AssuranceTypeBean;
 import assurance.entity.PlainAssurance;
 import assurance.repository.AssuranceRepository;
 import assurance.service.AssuranceService;
-import edu.fudan.common.util.Response;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
