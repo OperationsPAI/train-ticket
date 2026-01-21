@@ -48,6 +48,32 @@ skaffold build --default-repo=<your-registry>
 cd otel-java-agent && bash build.sh
 ```
 
+## Code Quality
+
+We use pre-commit hooks to maintain Java code quality. The configuration includes:
+- **Checkstyle**: Enforces Google Java Style Guide
+- **PMD**: Static code analysis for potential bugs
+- **Pretty-format-java**: Automatic code formatting
+- **Maven hooks**: Compile and test validation
+
+To set up pre-commit:
+```bash
+# Install pre-commit
+pip install pre-commit
+
+# Install git hooks
+pre-commit install
+
+# Run on all files
+pre-commit run --all-files
+
+# Run specific checks
+pre-commit run --all-files --show-diff-on-failure --color=always checkstyle
+pre-commit run --all-files --show-diff-on-failure --color=always pmd
+```
+
+Note: The pre-commit hooks will automatically run Maven compile and test phases to ensure code quality before commits.
+
 ## Deployment Commands
 
 ### Build Helm dependencies (required before first deployment)
