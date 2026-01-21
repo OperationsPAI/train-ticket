@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import static org.springframework.http.ResponseEntity.ok;
@@ -32,7 +31,9 @@ public class CancelController {
     @CrossOrigin(origins = "*")
     @GetMapping(path = "/cancel/refound/{orderId}")
     public HttpEntity calculate(@PathVariable String orderId, @RequestHeader HttpHeaders headers) {
-        CancelController.LOGGER.info("[calculate][Calculate Cancel Refund][OrderId: {}]", orderId);
+        if (CancelController.LOGGER.isInfoEnabled()) {
+            CancelController.LOGGER.info("[calculate][Calculate Cancel Refund][OrderId: {}]", orderId);
+        }
         return ok(cancelService.calculateRefund(orderId, headers));
     }
 
@@ -41,12 +42,18 @@ public class CancelController {
     public HttpEntity cancelTicket(@PathVariable String orderId, @PathVariable String loginId,
                                    @RequestHeader HttpHeaders headers) {
 
-        CancelController.LOGGER.info("[cancelTicket][Cancel Ticket][info: {}]", orderId);
+        if (CancelController.LOGGER.isInfoEnabled()) {
+            CancelController.LOGGER.info("[cancelTicket][Cancel Ticket][info: {}]", orderId);
+        }
         try {
-            CancelController.LOGGER.info("[cancelTicket][Cancel Ticket, Verify Success]");
+            if (CancelController.LOGGER.isInfoEnabled()) {
+                CancelController.LOGGER.info("[cancelTicket][Cancel Ticket, Verify Success]");
+            }
             return ok(cancelService.cancelOrder(orderId, loginId, headers));
         } catch (Exception e) {
-            CancelController.LOGGER.error(e.getMessage());
+            if (CancelController.LOGGER.isErrorEnabled()) {
+                CancelController.LOGGER.error(e.getMessage());
+            }
             return ok(new Response<>(1, "error", null));
         }
     }

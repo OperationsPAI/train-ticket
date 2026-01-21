@@ -30,26 +30,34 @@ public class AdminUserController {
     @CrossOrigin(origins = "*")
     @GetMapping
     public HttpEntity getAllUsers(@RequestHeader HttpHeaders headers) {
-        logger.info("[getAllUsers][Get all users]");
+        if (logger.isInfoEnabled()) {
+            logger.info("[getAllUsers][Get all users]");
+        }
         return ok(adminUserService.getAllUsers(headers));
     }
 
     @PutMapping
     public HttpEntity updateUser(@RequestBody UserDto userDto, @RequestHeader HttpHeaders headers) {
-        logger.info("[updateUser][Update User][userName: {}]", userDto.getUserName());
+        if (logger.isInfoEnabled()) {
+            logger.info("[updateUser][Update User][userName: {}]", userDto.getUserName());
+        }
         return ok(adminUserService.updateUser(userDto, headers));
     }
 
 
     @PostMapping
     public HttpEntity addUser(@RequestBody UserDto userDto, @RequestHeader HttpHeaders headers) {
-        logger.info("[addUser][Add user][userName: {}]", userDto.getUserName());
+        if (logger.isInfoEnabled()) {
+            logger.info("[addUser][Add user][userName: {}]", userDto.getUserName());
+        }
         return ok(adminUserService.addUser(userDto, headers));
     }
 
     @DeleteMapping(value = "/{userId}")
     public HttpEntity deleteUser(@PathVariable String userId, @RequestHeader HttpHeaders headers) {
-        logger.info("[deleteUser][Delete user][userId: {}]", userId);
+        if (logger.isInfoEnabled()) {
+            logger.info("[deleteUser][Delete user][userId: {}]", userId);
+        }
         return ok(adminUserService.deleteUser(userId, headers));
     }
 

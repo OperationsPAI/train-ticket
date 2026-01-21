@@ -26,6 +26,10 @@ import io.swagger.v3.oas.annotations.info.Info;
 @IntegrationComponentScan
 public class InsidePaymentApplication {
 
+    private InsidePaymentApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(InsidePaymentApplication.class, args);
     }

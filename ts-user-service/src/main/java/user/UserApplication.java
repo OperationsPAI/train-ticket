@@ -23,6 +23,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
     description = "Train Ticket User Service - Manage users"
 ))
 public class UserApplication {
+
+    private UserApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(UserApplication.class, args);
     }

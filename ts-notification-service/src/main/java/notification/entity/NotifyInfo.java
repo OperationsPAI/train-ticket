@@ -5,16 +5,9 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
-
-
-import jakarta.persistence.Entity;
 import org.hibernate.annotations.GenericGenerator;
-import java.util.UUID;
-
-import lombok.Data;
-
-import jakarta.persistence.Entity;
 
 /**
  * @author fdse

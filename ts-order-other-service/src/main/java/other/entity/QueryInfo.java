@@ -1,9 +1,6 @@
 package other.entity;
 
-import edu.fudan.common.util.StringUtils;
 import lombok.Data;
-
-import java.util.Date;
 
 /**
  * @author fdse

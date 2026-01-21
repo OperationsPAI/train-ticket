@@ -16,7 +16,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * @author fdse
@@ -40,25 +39,33 @@ public class UserController {
 
     @PostMapping("/login")
     public ResponseEntity<Response> getToken(@RequestBody BasicAuthDto dao , @RequestHeader HttpHeaders headers) {
-        logger.info("Login request of username: {}", dao.getUsername());
+        if (logger.isInfoEnabled()) {
+            logger.info("Login request of username: {}", dao.getUsername());
+        }
         try {
             Response<?> res = tokenService.getToken(dao, headers);
             return ResponseEntity.ok(res);
         } catch (UserOperationException e) {
-            logger.error("[getToken][tokenService.getToken error][UserOperationException, message: {}]", e.getMessage());
+            if (logger.isErrorEnabled()) {
+                logger.error("[getToken][tokenService.getToken error][UserOperationException, message: {}]", e.getMessage());
+            }
             return ResponseEntity.ok(new Response<>(0, "get token error", null));
         }
     }
 
     @GetMapping("")
     public ResponseEntity<List<User>> getAllUser(@RequestHeader HttpHeaders headers) {
-        logger.info("[getAllUser][Get all users]");
+        if (logger.isInfoEnabled()) {
+            logger.info("[getAllUser][Get all users]");
+        }
         return ResponseEntity.ok().body(userService.getAllUser(headers));
     }
 
     @DeleteMapping("/{userId}")
     public ResponseEntity<Response> deleteUserById(@PathVariable String userId, @RequestHeader HttpHeaders headers) {
-        logger.info("[deleteUserById][Delete user][userId: {}]", userId);
+        if (logger.isInfoEnabled()) {
+            logger.info("[deleteUserById][Delete user][userId: {}]", userId);
+        }
         return ResponseEntity.ok(userService.deleteByUserId(userId, headers));
     }
 

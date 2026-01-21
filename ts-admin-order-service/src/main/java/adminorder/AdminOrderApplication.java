@@ -23,6 +23,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
     description = "Admin Order Service for managing orders"
 ))
 public class AdminOrderApplication {
+
+    private AdminOrderApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(AdminOrderApplication.class, args);
     }

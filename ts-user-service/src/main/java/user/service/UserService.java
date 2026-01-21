@@ -4,8 +4,6 @@ import edu.fudan.common.util.Response;
 import org.springframework.http.HttpHeaders;
 import user.dto.UserDto;
 
-import java.util.UUID;
-
 /**
  * @author fdse
  */

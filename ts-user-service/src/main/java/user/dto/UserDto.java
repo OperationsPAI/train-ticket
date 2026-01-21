@@ -1,8 +1,10 @@
 package user.dto;
 
-import lombok.*;
-
-import java.util.UUID;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 /**
  * @author fdse
@@ -15,7 +17,7 @@ import java.util.UUID;
 public class UserDto {
 
     private String userId;
-    
+
     private String userName;
 
     private String password;

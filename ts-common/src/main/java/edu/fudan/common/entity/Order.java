@@ -1,15 +1,12 @@
 package edu.fudan.common.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import edu.fudan.common.entity.SeatClass;
 import edu.fudan.common.util.StringUtils;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
 import java.util.Date;
-import java.util.UUID;
 
 /**
  * @author fdse

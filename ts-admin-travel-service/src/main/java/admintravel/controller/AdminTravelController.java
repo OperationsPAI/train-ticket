@@ -30,27 +30,35 @@ public class AdminTravelController {
     @CrossOrigin(origins = "*")
     @GetMapping(path = "/admintravel")
     public HttpEntity getAllTravels(@RequestHeader HttpHeaders headers) {
-        logger.info("[getAllTravels][Get all travels]");
+        if (logger.isInfoEnabled()) {
+            logger.info("[getAllTravels][Get all travels]");
+        }
         return ok(adminTravelService.getAllTravels(headers));
     }
 
     @PostMapping(value = "/admintravel")
     public HttpEntity addTravel(@RequestBody TravelInfo request, @RequestHeader HttpHeaders headers) {
-        logger.info("[addTravel][Add travel][trip id: {}, train type name: {}, form station {} to station {}, login id: {}]",
-                request.getTripId(), request.getTrainTypeName(), request.getStartStationName(), request.getStationsName(), request.getLoginId());
+        if (logger.isInfoEnabled()) {
+            logger.info("[addTravel][Add travel][trip id: {}, train type name: {}, form station {} to station {}, login id: {}]",
+                    request.getTripId(), request.getTrainTypeName(), request.getStartStationName(), request.getStationsName(), request.getLoginId());
+        }
         return ok(adminTravelService.addTravel(request, headers));
     }
 
     @PutMapping(value = "/admintravel")
     public HttpEntity updateTravel(@RequestBody TravelInfo request, @RequestHeader HttpHeaders headers) {
-        logger.info("[updateTravel][Update travel][trip id: {}, train type id: {}, form station {} to station {}, login id: {}]",
-                request.getTripId(), request.getTrainTypeName(), request.getStartStationName(), request.getStationsName(), request.getLoginId());
+        if (logger.isInfoEnabled()) {
+            logger.info("[updateTravel][Update travel][trip id: {}, train type id: {}, form station {} to station {}, login id: {}]",
+                    request.getTripId(), request.getTrainTypeName(), request.getStartStationName(), request.getStationsName(), request.getLoginId());
+        }
         return ok(adminTravelService.updateTravel(request, headers));
     }
 
     @DeleteMapping(value = "/admintravel/{tripId}")
     public HttpEntity deleteTravel(@PathVariable String tripId, @RequestHeader HttpHeaders headers) {
-        logger.info("[deleteTravel][Delete travel][trip id: {}]", tripId);
+        if (logger.isInfoEnabled()) {
+            logger.info("[deleteTravel][Delete travel][trip id: {}]", tripId);
+        }
         return ok(adminTravelService.deleteTravel(tripId, headers));
     }
 

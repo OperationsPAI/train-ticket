@@ -18,6 +18,11 @@ import io.swagger.v3.oas.annotations.info.Info;
 @SpringBootApplication
 @Import(RestTemplateConfig.class)
 public class VerifyCodeApplication {
+
+    private VerifyCodeApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(VerifyCodeApplication.class, args);
     }

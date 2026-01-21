@@ -6,8 +6,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 import travel.service.TravelService;
 
-import java.util.Date;
-
 /**
  * @author fdse
  */

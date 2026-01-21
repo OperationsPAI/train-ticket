@@ -1,7 +1,7 @@
 package edu.fudan.common.entity;
 
 import java.util.Map;
-import lombok.*;
+import lombok.Data;
 
 /**
  * @author fdse

@@ -5,7 +5,6 @@ import org.springframework.stereotype.Repository;
 import user.entity.User;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * @author fdse

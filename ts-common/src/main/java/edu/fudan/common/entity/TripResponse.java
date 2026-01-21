@@ -1,11 +1,9 @@
 package edu.fudan.common.entity;
 
-import edu.fudan.common.util.StringUtils;
 import lombok.Data;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import java.util.Date;
 
 /**
  * @author fdse

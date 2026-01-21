@@ -30,6 +30,10 @@ public class ConsignPriceApplication {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConsignPriceApplication.class);
 
+    private ConsignPriceApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         ConsignPriceApplication.LOGGER.info("[ConsignPriceApplication.main][launch date: {}]", new Date());
         SpringApplication.run(ConsignPriceApplication.class, args);

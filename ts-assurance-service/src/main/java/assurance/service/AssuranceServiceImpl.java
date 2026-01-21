@@ -128,10 +128,14 @@ public class AssuranceServiceImpl implements AssuranceService {
                 pa.setTypePrice(a.getType().getPrice());
                 result.add(pa);
             }
-            AssuranceServiceImpl.LOGGER.info("[getAllAssurances][find all assurance success][list size: {}]", as.size());
+            if (AssuranceServiceImpl.LOGGER.isInfoEnabled()) {
+                AssuranceServiceImpl.LOGGER.info("[getAllAssurances][find all assurance success][list size: {}]", as.size());
+            }
             return new Response<>(1, "Success", result);
         } else {
-            AssuranceServiceImpl.LOGGER.warn("[getAllAssurances][find all assurance][No content]");
+            if (AssuranceServiceImpl.LOGGER.isWarnEnabled()) {
+                AssuranceServiceImpl.LOGGER.warn("[getAllAssurances][find all assurance][No content]");
+            }
             return new Response<>(0, "No Content, Assurance is empty", null);
         }
     }
@@ -148,10 +152,14 @@ public class AssuranceServiceImpl implements AssuranceService {
             atlist.add(atb);
         }
         if (!atlist.isEmpty()) {
-            AssuranceServiceImpl.LOGGER.info("[getAllAssuranceTypes][find all assurance type success][list size: {}]", atlist.size());
+            if (AssuranceServiceImpl.LOGGER.isInfoEnabled()) {
+                AssuranceServiceImpl.LOGGER.info("[getAllAssuranceTypes][find all assurance type success][list size: {}]", atlist.size());
+            }
             return new Response<>(1, "Find All Assurance", atlist);
         } else {
-            AssuranceServiceImpl.LOGGER.warn("[getAllAssuranceTypes][find all assurance type][No content]");
+            if (AssuranceServiceImpl.LOGGER.isWarnEnabled()) {
+                AssuranceServiceImpl.LOGGER.warn("[getAllAssuranceTypes][find all assurance type][No content]");
+            }
             return new Response<>(0, "Assurance is Empty", null);
         }
     }

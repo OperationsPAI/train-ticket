@@ -2,8 +2,6 @@ package edu.fudan.common.entity;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotNull;
 
 /**
  * @author fdse

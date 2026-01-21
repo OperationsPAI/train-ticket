@@ -5,7 +5,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 import edu.fudan.common.entity.TravelInfo;
 import travel2.service.TravelService;
-import java.util.Date;
 
 /**
  * @author fdse

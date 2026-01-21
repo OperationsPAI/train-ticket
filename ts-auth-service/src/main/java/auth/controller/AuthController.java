@@ -35,7 +35,7 @@ public class AuthController {
         return "hello";
     }
 
-    @Operation(summary = "Create default auth user", 
+    @Operation(summary = "Create default auth user",
                description = "Creates a default role user during registration. Called by ts-user-service")
     @ApiResponses(value = {
         @ApiResponse(responseCode = "201", description = "Auth user created successfully"),
@@ -44,10 +44,11 @@ public class AuthController {
     @PostMapping
     public HttpEntity<Response> createDefaultUser(
             @Parameter(description = "Authentication data for new user") @RequestBody AuthDto authDto) {
-        logger.info("[createDefaultUser][Create default auth user with authDto][AuthDto: {}]", authDto.toString());
+        if (logger.isInfoEnabled()) {
+            logger.info("[createDefaultUser][Create default auth user with authDto][AuthDto: {}]", authDto.toString());
+        }
         userService.createDefaultAuthUser(authDto);
         Response response = new Response(1, "SUCCESS", authDto);
         return new ResponseEntity<>(response, HttpStatus.CREATED);
     }
 }
-

@@ -23,6 +23,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
     description = "Admin Travel Service for managing travels"
 ))
 public class AdminTravelApplication {
+
+    private AdminTravelApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
         SpringApplication.run(AdminTravelApplication.class, args);
     }

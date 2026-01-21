@@ -23,6 +23,11 @@ import org.springframework.scheduling.annotation.EnableAsync;
     description = "Train Ticket Preserve Other Service - Preserve tickets (type 2)"
 ))
 public class PreserveOtherApplication {
+
+    private PreserveOtherApplication() {
+        // Private constructor to prevent instantiation
+    }
+
     public static void main(String[] args) {
 
         SpringApplication.run(PreserveOtherApplication.class, args);
