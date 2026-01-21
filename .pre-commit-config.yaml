@@ -1,0 +1,44 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: |
+          (?x)^(
+            manifests/helm/.*\.yaml$|
+            manifests/monitoring/.*\.yaml$
+          )
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-xml
+
+  - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+    rev: v2.16.0
+    hooks:
+      - id: pretty-format-java
+        args: [--autofix, --google-java-formatter-version, "1.15.0"]
+
+  - repo: https://github.com/dustinsand/pre-commit-jvm
+    rev: v0.11.0
+    hooks:
+      - id: pmd
+        args: [-R, rulesets/java/quickstart.xml, -d, .]
+
+  - repo: local
+    hooks:
+      - id: maven-test
+        name: Run Maven tests
+        entry: mvn test
+        language: system
+        pass_filenames: false
+        files: ^.*\.(java|xml)$
+
+      - id: maven-compile
+        name: Compile with Maven
+        entry: mvn compile
+        language: system
+        pass_filenames: false
+        files: ^.*\.(java|xml)$
