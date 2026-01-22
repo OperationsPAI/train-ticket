@@ -11,38 +11,38 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class TravelInfo {
-    private String loginId;
+  private String loginId;
 
-    private String tripId;
+  private String tripId;
 
-    private String trainTypeName;
+  private String trainTypeName;
 
-    private String routeId;
+  private String routeId;
 
-    private String startStationName;
+  private String startStationName;
 
-    private String stationsName;
+  private String stationsName;
 
-    private String terminalStationName;
+  private String terminalStationName;
 
-    private String startTime;
+  private String startTime;
 
-    private String endTime;
+  private String endTime;
 
-//    public Date getStartTime(){
-//        return StringUtils.String2Date(this.startTime);
-//    }
-//
-//    public Date getEndTime(){
-//        return StringUtils.String2Date(this.endTime);
-//    }
-//
-//    public String getStartStationName() {
-//        return StringUtils.String2Lower(this.startStationName);
-//    }
-//
-//    public String getTerminalStationName() {
-//        return StringUtils.String2Lower(this.terminalStationName);
-//    }
+  //    public Date getStartTime(){
+  //        return StringUtils.String2Date(this.startTime);
+  //    }
+  //
+  //    public Date getEndTime(){
+  //        return StringUtils.String2Date(this.endTime);
+  //    }
+  //
+  //    public String getStartStationName() {
+  //        return StringUtils.String2Lower(this.startStationName);
+  //    }
+  //
+  //    public String getTerminalStationName() {
+  //        return StringUtils.String2Lower(this.terminalStationName);
+  //    }
 
 }

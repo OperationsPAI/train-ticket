@@ -1,9 +1,22 @@
 package other.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.LeftTicketInfo;
+import edu.fudan.common.entity.OrderSecurity;
+import edu.fudan.common.entity.OrderStatus;
+import edu.fudan.common.entity.Seat;
+import edu.fudan.common.entity.SeatClass;
+import edu.fudan.common.entity.SoldTicket;
+import edu.fudan.common.entity.Ticket;
 import edu.fudan.common.util.Response;
 import edu.fudan.common.util.StringUtils;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,9 +27,9 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import other.entity.*;
 import other.entity.Order;
 import other.entity.OrderAlterInfo;
+import other.entity.QueryInfo;
 import other.repository.OrderOtherRepository;
 
 /**

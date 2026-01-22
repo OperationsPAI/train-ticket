@@ -2,14 +2,17 @@ package trainFood.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import edu.fudan.common.entity.Food;
-import lombok.Data;
-import org.hibernate.annotations.GenericGenerator;
-
-import jakarta.persistence.*;
-import jakarta.validation.Valid;
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
 import jakarta.validation.constraints.NotNull;
 import java.util.List;
-import java.util.UUID;
+import lombok.Data;
+import org.hibernate.annotations.GenericGenerator;
 
 @Data
 @Entity
@@ -17,22 +20,21 @@ import java.util.UUID;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class TrainFood {
 
-    @Id
-    @GeneratedValue(generator = "jpa-uuid")
-    @Column(length = 36)
-    private String id;
+  @Id
+  @GeneratedValue(generator = "jpa-uuid")
+  @Column(length = 36)
+  private String id;
 
-    @NotNull
-    @Column(unique = true)
-    private String tripId;
+  @NotNull
+  @Column(unique = true)
+  private String tripId;
 
-    @ElementCollection(targetClass = Food.class)
-    @CollectionTable(name = "train_food_list", joinColumns = @JoinColumn(name = "trip_id"))
-    private List<Food> foodList;
+  @ElementCollection(targetClass = Food.class)
+  @CollectionTable(name = "train_food_list", joinColumns = @JoinColumn(name = "trip_id"))
+  private List<Food> foodList;
 
-    public TrainFood(){
-        //Default Constructor
-        this.tripId = "";
-    }
-
+  public TrainFood() {
+    // Default Constructor
+    this.tripId = "";
+  }
 }

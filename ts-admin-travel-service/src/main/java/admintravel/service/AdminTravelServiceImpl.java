@@ -206,7 +206,8 @@ public class AdminTravelServiceImpl implements AdminTravelService {
     if (trainType == null) {
       if (AdminTravelServiceImpl.LOGGER.isWarnEnabled()) {
         AdminTravelServiceImpl.LOGGER.warn(
-            "[queryForTravel][traintype doesn't exist][trainTypeName: {}]", info.getTrainTypeName());
+            "[queryForTravel][traintype doesn't exist][trainTypeName: {}]",
+            info.getTrainTypeName());
       }
       response.setStatus(0);
       response.setMsg("Train type doesn't exist");

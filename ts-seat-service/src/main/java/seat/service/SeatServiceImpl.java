@@ -1,6 +1,11 @@
 package seat.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.Config;
+import edu.fudan.common.entity.LeftTicketInfo;
+import edu.fudan.common.entity.Route;
+import edu.fudan.common.entity.Seat;
+import edu.fudan.common.entity.Ticket;
+import edu.fudan.common.entity.TrainType;
 import edu.fudan.common.util.Response;
 import java.util.List;
 import java.util.Random;

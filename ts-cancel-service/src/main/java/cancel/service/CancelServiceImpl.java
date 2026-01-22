@@ -204,13 +204,15 @@ public class CancelServiceImpl implements CancelService {
           if (CancelServiceImpl.LOGGER.isInfoEnabled()) {
             CancelServiceImpl.LOGGER.info(
                 "[calculateRefund][Cancel Order, Refund Price From Order Service.Not Paid][orderId:"
-                    + " {}]", orderId);
+                    + " {}]",
+                orderId);
           }
           return new Response<>(1, "Success. Refoud 0", "0");
         } else {
           if (CancelServiceImpl.LOGGER.isInfoEnabled()) {
             CancelServiceImpl.LOGGER.info(
-                "[calculateRefund][Cancel Order, Refund Price From Order Service.Paid][orderId: {}]",
+                "[calculateRefund][Cancel Order, Refund Price From Order Service.Paid][orderId:"
+                    + " {}]",
                 orderId);
           }
           return new Response<>(1, "Success. ", calculateRefund(order));
@@ -218,7 +220,8 @@ public class CancelServiceImpl implements CancelService {
       } else {
         if (CancelServiceImpl.LOGGER.isInfoEnabled()) {
           CancelServiceImpl.LOGGER.info(
-              "[calculateRefund][Cancel Order Refund Price Order.Cancel Not Permitted][orderId: {}]",
+              "[calculateRefund][Cancel Order Refund Price Order.Cancel Not Permitted][orderId:"
+                  + " {}]",
               orderId);
         }
         return new Response<>(0, "Order Status Cancel Not Permitted, Refound error", null);
@@ -241,14 +244,16 @@ public class CancelServiceImpl implements CancelService {
           } else {
             if (CancelServiceImpl.LOGGER.isInfoEnabled()) {
               CancelServiceImpl.LOGGER.info(
-                  "[Cancel Order][Refund Price From Order Other Service.Paid][orderId: {}]", orderId);
+                  "[Cancel Order][Refund Price From Order Other Service.Paid][orderId: {}]",
+                  orderId);
             }
             return new Response<>(1, "Success", calculateRefund(order));
           }
         } else {
           if (CancelServiceImpl.LOGGER.isWarnEnabled()) {
             CancelServiceImpl.LOGGER.warn(
-                "[Cancel Order][Refund Price, Order Other. Cancel Not Permitted][orderId: {}]", orderId);
+                "[Cancel Order][Refund Price, Order Other. Cancel Not Permitted][orderId: {}]",
+                orderId);
           }
           return new Response<>(0, orderStatusCancelNotPermitted, null);
         }

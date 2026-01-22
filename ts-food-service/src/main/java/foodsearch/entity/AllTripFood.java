@@ -2,21 +2,18 @@ package foodsearch.entity;
 
 import edu.fudan.common.entity.Food;
 import edu.fudan.common.entity.StationFoodStore;
-import edu.fudan.common.entity.TrainFood;
-import lombok.Data;
-
 import java.util.List;
 import java.util.Map;
+import lombok.Data;
 
 @Data
 public class AllTripFood {
 
-    private List<Food> trainFoodList;
+  private List<Food> trainFoodList;
 
-    private Map<String, List<StationFoodStore>>  foodStoreListMap;
+  private Map<String, List<StationFoodStore>> foodStoreListMap;
 
-    public AllTripFood(){
-        //Default Constructor
-    }
-
+  public AllTripFood() {
+    // Default Constructor
+  }
 }

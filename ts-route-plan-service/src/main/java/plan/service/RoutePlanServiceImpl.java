@@ -1,6 +1,13 @@
 package plan.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.Route;
+import edu.fudan.common.entity.RoutePlanInfo;
+import edu.fudan.common.entity.RoutePlanResultUnit;
+import edu.fudan.common.entity.Trip;
+import edu.fudan.common.entity.TripAllDetail;
+import edu.fudan.common.entity.TripAllDetailInfo;
+import edu.fudan.common.entity.TripInfo;
+import edu.fudan.common.entity.TripResponse;
 import edu.fudan.common.util.Response;
 import edu.fudan.common.util.StringUtils;
 import java.util.ArrayList;
