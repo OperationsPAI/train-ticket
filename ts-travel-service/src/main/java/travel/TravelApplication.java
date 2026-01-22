@@ -18,18 +18,19 @@ import org.springframework.scheduling.annotation.EnableAsync;
 @EnableAspectJAutoProxy(proxyTargetClass = true)
 @EnableAsync
 @IntegrationComponentScan
-@OpenAPIDefinition(info = @Info(
-    title = "Travel Service API",
-    version = "1.0",
-    description = "Train Ticket Travel Service - Manage travel trips"
-))
+@OpenAPIDefinition(
+    info =
+        @Info(
+            title = "Travel Service API",
+            version = "1.0",
+            description = "Train Ticket Travel Service - Manage travel trips"))
 public class TravelApplication {
 
-    private TravelApplication() {
-        // Private constructor to prevent instantiation
-    }
+  private TravelApplication() {
+    // Private constructor to prevent instantiation
+  }
 
-    public static void main(String[] args) {
-        SpringApplication.run(TravelApplication.class, args);
-    }
+  public static void main(String[] args) {
+    SpringApplication.run(TravelApplication.class, args);
+  }
 }

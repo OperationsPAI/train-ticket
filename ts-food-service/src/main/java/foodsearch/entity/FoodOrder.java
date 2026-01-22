@@ -1,15 +1,13 @@
 package foodsearch.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.Id;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import org.hibernate.annotations.GenericGenerator;
-
-import jakarta.persistence.Column;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.Id;
-import jakarta.persistence.Entity;
-import java.util.UUID;
 
 @Data
 @AllArgsConstructor
@@ -18,26 +16,25 @@ import java.util.UUID;
 @GenericGenerator(name = "jpa-uuid", strategy = "org.hibernate.id.UUIDGenerator")
 public class FoodOrder {
 
-    @Id
-    @GeneratedValue(generator = "jpa-uuid")
-    @Column(length = 36)
-    private String id;
+  @Id
+  @GeneratedValue(generator = "jpa-uuid")
+  @Column(length = 36)
+  private String id;
 
-    private String orderId;
+  private String orderId;
 
-    //1:train food;2:food store
-    private int foodType;
+  // 1:train food;2:food store
+  private int foodType;
 
-    private String stationName;
+  private String stationName;
 
-    private String storeName;
+  private String storeName;
 
-    private String foodName;
+  private String foodName;
 
-    private double price;
+  private double price;
 
-    public FoodOrder(){
-        //Default Constructor
-    }
-
+  public FoodOrder() {
+    // Default Constructor
+  }
 }

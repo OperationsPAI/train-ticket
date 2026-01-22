@@ -9,14 +9,13 @@ import lombok.Data;
 @Data
 public class GetAccountByIdResult {
 
-    private boolean status;
+  private boolean status;
 
-    private String message;
+  private String message;
 
-    private Account account;
+  private Account account;
 
-    public GetAccountByIdResult() {
-        //Default Constructor
-    }
-
+  public GetAccountByIdResult() {
+    // Default Constructor
+  }
 }

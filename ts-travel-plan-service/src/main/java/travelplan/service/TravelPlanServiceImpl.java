@@ -1,6 +1,12 @@
 package travelplan.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.RoutePlanInfo;
+import edu.fudan.common.entity.RoutePlanResultUnit;
+import edu.fudan.common.entity.Seat;
+import edu.fudan.common.entity.SeatClass;
+import edu.fudan.common.entity.TrainType;
+import edu.fudan.common.entity.TripInfo;
+import edu.fudan.common.entity.TripResponse;
 import edu.fudan.common.util.JsonUtils;
 import edu.fudan.common.util.Response;
 import edu.fudan.common.util.StringUtils;

@@ -1,6 +1,13 @@
 package rebook.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.Order;
+import edu.fudan.common.entity.OrderStatus;
+import edu.fudan.common.entity.PaymentDifferenceInfo;
+import edu.fudan.common.entity.Route;
+import edu.fudan.common.entity.Seat;
+import edu.fudan.common.entity.SeatClass;
+import edu.fudan.common.entity.Ticket;
+import edu.fudan.common.entity.TrainType;
 import edu.fudan.common.entity.Trip;
 import edu.fudan.common.entity.TripAllDetail;
 import edu.fudan.common.entity.TripAllDetailInfo;
@@ -22,7 +29,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import rebook.entity.*;
+import rebook.entity.RebookInfo;
 
 /**
  * @author fdse

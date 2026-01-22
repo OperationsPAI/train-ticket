@@ -8,16 +8,14 @@ import lombok.Data;
  */
 @Data
 public class TripAllDetail {
-    private TripResponse tripResponse;
+  private TripResponse tripResponse;
 
-    private Trip trip;
+  private Trip trip;
 
-    public TripAllDetail() {
-    }
+  public TripAllDetail() {}
 
-    public TripAllDetail(TripResponse tripResponse, Trip trip) {
-        this.tripResponse = tripResponse;
-        this.trip = trip;
-    }
-
+  public TripAllDetail(TripResponse tripResponse, Trip trip) {
+    this.tripResponse = tripResponse;
+    this.trip = trip;
+  }
 }

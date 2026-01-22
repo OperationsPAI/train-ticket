@@ -1,9 +1,8 @@
 package edu.fudan.common.entity;
 
+import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Data;
-
-import java.util.UUID;
 
 /**
  * @author fdse
@@ -12,18 +11,17 @@ import java.util.UUID;
 @AllArgsConstructor
 public class PriceConfig {
 
-    private UUID id;
+  private UUID id;
 
-    private String trainType;
+  private String trainType;
 
-    private String routeId;
+  private String routeId;
 
-    private double basicPriceRate;
+  private double basicPriceRate;
 
-    private double firstClassPriceRate;
+  private double firstClassPriceRate;
 
-    public PriceConfig() {
-        //Empty Constructor
-    }
-
+  public PriceConfig() {
+    // Empty Constructor
+  }
 }

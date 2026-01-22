@@ -8,16 +8,15 @@ import lombok.Data;
 @Data
 public class Travel {
 
-    private Trip trip;
+  private Trip trip;
 
-    private String startPlace;
+  private String startPlace;
 
-    private String endPlace;
+  private String endPlace;
 
-    private String departureTime;
+  private String departureTime;
 
-    public Travel(){
-        //Default Constructor
-    }
-
+  public Travel() {
+    // Default Constructor
+  }
 }

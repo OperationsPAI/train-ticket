@@ -1,6 +1,6 @@
 package adminbasic.service;
 
-import adminbasic.entity.*;
+import adminbasic.entity.PriceInfo;
 import edu.fudan.common.entity.Config;
 import edu.fudan.common.entity.Contacts;
 import edu.fudan.common.entity.Station;

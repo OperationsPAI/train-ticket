@@ -1,6 +1,9 @@
 package notification.mq;
 
 import edu.fudan.common.util.JsonUtils;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 import notification.config.Queues;
 import notification.entity.Mail;
 import notification.entity.NotifyInfo;
@@ -14,74 +17,68 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-
 @Component
 public class RabbitReceive {
 
-    private static final Logger logger = LoggerFactory.getLogger(RabbitReceive.class);
+  private static final Logger logger = LoggerFactory.getLogger(RabbitReceive.class);
 
-    @Autowired
-    MailService mailService;
+  @Autowired MailService mailService;
 
-    @Autowired
-    private RestTemplate restTemplate;
+  @Autowired private RestTemplate restTemplate;
 
-    @Autowired
-    private NotifyRepository notifyRepository;
+  @Autowired private NotifyRepository notifyRepository;
 
-    @Value("${email_address:trainticket_notify@163.com}")
-    String email;
-    String username = "username";
-    String startPlace = "startPlace";
-    String endPlace = "endPlace";
-    String startTime = "startTime";
-    String seatClass = "seatClass";
-    int seatNumber = 1;
-    String date = "date";
-    String price = "price";
+  @Value("${email_address:trainticket_notify@163.com}")
+  String email;
 
-    @RabbitListener(queues = Queues.queueName)
-    public void process(String payload) {
-        NotifyInfo info = JsonUtils.json2Object(payload, NotifyInfo.class);
+  String username = "username";
+  String startPlace = "startPlace";
+  String endPlace = "endPlace";
+  String startTime = "startTime";
+  String seatClass = "seatClass";
+  int seatNumber = 1;
+  String date = "date";
+  String price = "price";
 
-        if (info == null) {
-            logger.error("[process][json2Object][Receive email object is null, error]");
-            return;
-        }
+  @RabbitListener(queues = Queues.queueName)
+  public void process(String payload) {
+    NotifyInfo info = JsonUtils.json2Object(payload, NotifyInfo.class);
 
-        logger.info("[process][Receive email object][info: {}]", info);
-
-        Mail mail = new Mail();
-        mail.setMailFrom(email);
-        mail.setMailTo(info.getEmail());
-        mail.setMailSubject("Preserve Success");
-
-        Map<String, Object> model = new HashMap<>();
-        model.put(username, info.getUsername());
-        model.put(startPlace,info.getStartPlace());
-        model.put(endPlace,info.getEndPlace());
-        model.put(startTime,info.getStartTime());
-        model.put(date,info.getDate());
-        model.put(seatClass,info.getSeatClass());
-        model.put(Integer.toString(seatNumber),info.getSeatNumber());
-        model.put(price,info.getPrice());
-        mail.setModel(model);
-
-        try {
-            mailService.sendEmail(mail, "preserve_success.ftl");
-            logger.info("[process][Send email to user {} success]", username);
-            info.setSendStatus(true);
-        } catch (Exception e) {
-            logger.error("[process][mailService.sendEmail][Send email error][Exception: {}]", e.getMessage());
-            info.setSendStatus(false);
-        }
-
-
-        info.setId(UUID.randomUUID().toString());
-        logger.info("[process][Save notify info object [{}] into database]", info.getId());
-        notifyRepository.save(info);
+    if (info == null) {
+      logger.error("[process][json2Object][Receive email object is null, error]");
+      return;
     }
+
+    logger.info("[process][Receive email object][info: {}]", info);
+
+    Mail mail = new Mail();
+    mail.setMailFrom(email);
+    mail.setMailTo(info.getEmail());
+    mail.setMailSubject("Preserve Success");
+
+    Map<String, Object> model = new HashMap<>();
+    model.put(username, info.getUsername());
+    model.put(startPlace, info.getStartPlace());
+    model.put(endPlace, info.getEndPlace());
+    model.put(startTime, info.getStartTime());
+    model.put(date, info.getDate());
+    model.put(seatClass, info.getSeatClass());
+    model.put(Integer.toString(seatNumber), info.getSeatNumber());
+    model.put(price, info.getPrice());
+    mail.setModel(model);
+
+    try {
+      mailService.sendEmail(mail, "preserve_success.ftl");
+      logger.info("[process][Send email to user {} success]", username);
+      info.setSendStatus(true);
+    } catch (Exception e) {
+      logger.error(
+          "[process][mailService.sendEmail][Send email error][Exception: {}]", e.getMessage());
+      info.setSendStatus(false);
+    }
+
+    info.setId(UUID.randomUUID().toString());
+    logger.info("[process][Save notify info object [{}] into database]", info.getId());
+    notifyRepository.save(info);
+  }
 }
