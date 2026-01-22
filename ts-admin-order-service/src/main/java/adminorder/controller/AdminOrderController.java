@@ -1,15 +1,24 @@
 package adminorder.controller;
 
-import edu.fudan.common.entity.*;
+import static org.springframework.http.ResponseEntity.ok;
+
 import adminorder.service.AdminOrderService;
+import edu.fudan.common.entity.Order;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
-import org.springframework.web.bind.annotation.*;
-
-import static org.springframework.http.ResponseEntity.ok;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * @author fdse
@@ -18,47 +27,52 @@ import static org.springframework.http.ResponseEntity.ok;
 @RequestMapping("/api/v1/adminorderservice")
 public class AdminOrderController {
 
-    @Autowired
-    AdminOrderService adminOrderService;
+  @Autowired AdminOrderService adminOrderService;
 
-    private static final Logger logger = LoggerFactory.getLogger(AdminOrderController.class);
+  private static final Logger logger = LoggerFactory.getLogger(AdminOrderController.class);
 
-    @GetMapping(path = "/welcome")
-    public String home(@RequestHeader HttpHeaders headers) {
-        return "Welcome to [Admin Order Service] !";
+  @GetMapping(path = "/welcome")
+  public String home(@RequestHeader HttpHeaders headers) {
+    return "Welcome to [Admin Order Service] !";
+  }
+
+  @CrossOrigin(origins = "*")
+  @GetMapping(path = "/adminorder")
+  public HttpEntity getAllOrders(@RequestHeader HttpHeaders headers) {
+    if (logger.isInfoEnabled()) {
+      logger.info("[getAllOrders][Get all orders][getAllOrders]");
     }
+    return ok(adminOrderService.getAllOrders(headers));
+  }
 
-    @CrossOrigin(origins = "*")
-    @GetMapping(path = "/adminorder")
-    public HttpEntity getAllOrders(@RequestHeader HttpHeaders headers) {
-        if (logger.isInfoEnabled()) {
-            logger.info("[getAllOrders][Get all orders][getAllOrders]");
-        }
-        return ok(adminOrderService.getAllOrders(headers));
+  @PostMapping(value = "/adminorder")
+  public HttpEntity addOrder(@RequestBody Order request, @RequestHeader HttpHeaders headers) {
+    if (logger.isInfoEnabled()) {
+      logger.info("[addOrder][Add new order][AccountID: {}]", request.getAccountId());
     }
+    return ok(adminOrderService.addOrder(request, headers));
+  }
 
-    @PostMapping(value = "/adminorder")
-    public HttpEntity addOrder(@RequestBody Order request, @RequestHeader HttpHeaders headers) {
-        if (logger.isInfoEnabled()) {
-            logger.info("[addOrder][Add new order][AccountID: {}]", request.getAccountId());
-        }
-        return ok(adminOrderService.addOrder(request, headers));
+  @PutMapping(value = "/adminorder")
+  public HttpEntity updateOrder(@RequestBody Order request, @RequestHeader HttpHeaders headers) {
+    if (logger.isInfoEnabled()) {
+      logger.info(
+          "[updateOrder][Update order][AccountID: {}, OrderId: {}]",
+          request.getAccountId(),
+          request.getId());
     }
+    return ok(adminOrderService.updateOrder(request, headers));
+  }
 
-    @PutMapping(value = "/adminorder")
-    public HttpEntity updateOrder(@RequestBody Order request, @RequestHeader HttpHeaders headers) {
-        if (logger.isInfoEnabled()) {
-            logger.info("[updateOrder][Update order][AccountID: {}, OrderId: {}]", request.getAccountId(), request.getId());
-        }
-        return ok(adminOrderService.updateOrder(request, headers));
+  @DeleteMapping(value = "/adminorder/{orderId}/{trainNumber}")
+  public HttpEntity deleteOrder(
+      @PathVariable String orderId,
+      @PathVariable String trainNumber,
+      @RequestHeader HttpHeaders headers) {
+    if (logger.isInfoEnabled()) {
+      logger.info(
+          "[deleteOrder][Delete order][OrderId: {}, TrainNumber: {}]", orderId, trainNumber);
     }
-
-    @DeleteMapping(value = "/adminorder/{orderId}/{trainNumber}")
-    public HttpEntity deleteOrder(@PathVariable String orderId, @PathVariable String trainNumber, @RequestHeader HttpHeaders headers) {
-        if (logger.isInfoEnabled()) {
-            logger.info("[deleteOrder][Delete order][OrderId: {}, TrainNumber: {}]", orderId, trainNumber);
-        }
-        return ok(adminOrderService.deleteOrder(orderId, trainNumber, headers));
-    }
-
+    return ok(adminOrderService.deleteOrder(orderId, trainNumber, headers));
+  }
 }

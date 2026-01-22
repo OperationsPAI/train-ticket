@@ -1,9 +1,7 @@
 package travelplan.entity;
 
-import lombok.Data;
-
-import java.util.Date;
 import java.util.List;
+import lombok.Data;
 
 /**
  * @author fdse
@@ -11,30 +9,29 @@ import java.util.List;
 @Data
 public class TravelAdvanceResultUnit {
 
-    private String tripId;
+  private String tripId;
 
-    private String trainTypeId;
+  private String trainTypeId;
 
-    private String startStation;
+  private String startStation;
 
-    private String endStation;
+  private String endStation;
 
-    private List<String> stopStations;
+  private List<String> stopStations;
 
-    private String priceForSecondClassSeat;
+  private String priceForSecondClassSeat;
 
-    private int numberOfRestTicketSecondClass;
+  private int numberOfRestTicketSecondClass;
 
-    private String priceForFirstClassSeat;
+  private String priceForFirstClassSeat;
 
-    private int numberOfRestTicketFirstClass;
+  private int numberOfRestTicketFirstClass;
 
-    private String startTime;
+  private String startTime;
 
-    private String endTime;
+  private String endTime;
 
-    public TravelAdvanceResultUnit() {
-        //Default Constructor
-    }
-
+  public TravelAdvanceResultUnit() {
+    // Default Constructor
+  }
 }

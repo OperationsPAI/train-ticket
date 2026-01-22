@@ -1,10 +1,9 @@
 package user.repository;
 
+import java.util.List;
 import org.springframework.data.repository.CrudRepository;
 import org.springframework.stereotype.Repository;
 import user.entity.User;
-
-import java.util.List;
 
 /**
  * @author fdse
@@ -12,12 +11,12 @@ import java.util.List;
 @Repository
 public interface UserRepository extends CrudRepository<User, String> {
 
-    User findByUserName(String userName);
+  User findByUserName(String userName);
 
-    User findByUserId(String userId);
+  User findByUserId(String userId);
 
-    void deleteByUserId(String userId);
+  void deleteByUserId(String userId);
 
-    @Override
-    List<User> findAll();
+  @Override
+  List<User> findAll();
 }

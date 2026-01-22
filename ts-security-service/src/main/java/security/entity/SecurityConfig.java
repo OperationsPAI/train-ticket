@@ -1,15 +1,12 @@
 package security.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import lombok.Data;
-import org.hibernate.annotations.GenericGenerator;
-
 import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
-import jakarta.persistence.Entity;
-
-import java.util.UUID;
+import lombok.Data;
+import org.hibernate.annotations.GenericGenerator;
 
 /**
  * @author fdse
@@ -20,19 +17,18 @@ import java.util.UUID;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class SecurityConfig {
 
-    @Id
-    @GeneratedValue(generator = "jpa-uuid")
-    @Column(length = 36)
-    private String id;
+  @Id
+  @GeneratedValue(generator = "jpa-uuid")
+  @Column(length = 36)
+  private String id;
 
-    private String name;
+  private String name;
 
-    private String value;
+  private String value;
 
-    private String description;
+  private String description;
 
-    public SecurityConfig() {
-        //Default Constructor
-    }
-
+  public SecurityConfig() {
+    // Default Constructor
+  }
 }

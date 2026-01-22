@@ -1,6 +1,23 @@
 package preserveOther.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.Assurance;
+import edu.fudan.common.entity.Consign;
+import edu.fudan.common.entity.Contacts;
+import edu.fudan.common.entity.FoodOrder;
+import edu.fudan.common.entity.NotifyInfo;
+import edu.fudan.common.entity.Order;
+import edu.fudan.common.entity.OrderStatus;
+import edu.fudan.common.entity.OrderTicketsInfo;
+import edu.fudan.common.entity.Seat;
+import edu.fudan.common.entity.SeatClass;
+import edu.fudan.common.entity.Ticket;
+import edu.fudan.common.entity.Travel;
+import edu.fudan.common.entity.TravelResult;
+import edu.fudan.common.entity.Trip;
+import edu.fudan.common.entity.TripAllDetail;
+import edu.fudan.common.entity.TripAllDetailInfo;
+import edu.fudan.common.entity.TripResponse;
+import edu.fudan.common.entity.User;
 import edu.fudan.common.util.JsonUtils;
 import edu.fudan.common.util.Response;
 import edu.fudan.common.util.StringUtils;

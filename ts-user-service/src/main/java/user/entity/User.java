@@ -1,15 +1,12 @@
 package user.entity;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import org.hibernate.annotations.GenericGenerator;
-
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import java.util.UUID;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
 
 /**
  * @author fdse
@@ -20,24 +17,27 @@ import java.util.UUID;
 @Entity
 public class User {
 
-    //    private UUID userId;
-    @Id
-    @Column(length = 36, name = "user_id")
-    private String userId;
-    @Column(name = "user_name")
-    private String userName;
-    private String password;
+  //    private UUID userId;
+  @Id
+  @Column(length = 36, name = "user_id")
+  private String userId;
 
-    private int gender;
-    @Column(name = "document_type")
-    private int documentType;
-    @Column(name = "document_num")
-    private String documentNum;
+  @Column(name = "user_name")
+  private String userName;
 
-    private String email;
+  private String password;
 
-    public User() {
-        this.userId = UUID.randomUUID().toString();
-    }
+  private int gender;
 
+  @Column(name = "document_type")
+  private int documentType;
+
+  @Column(name = "document_num")
+  private String documentNum;
+
+  private String email;
+
+  public User() {
+    this.userId = UUID.randomUUID().toString();
+  }
 }

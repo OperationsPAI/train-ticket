@@ -14,7 +14,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * @author fdse
@@ -24,31 +28,34 @@ import org.springframework.web.bind.annotation.*;
 @Tag(name = "Auth", description = "Authentication and authorization APIs")
 public class AuthController {
 
-    @Autowired
-    private UserService userService;
+  @Autowired private UserService userService;
 
-    private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
+  private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
 
-    @Operation(summary = "Hello endpoint", description = "Simple hello endpoint for testing")
-    @GetMapping("/hello")
-    public String getHello() {
-        return "hello";
-    }
+  @Operation(summary = "Hello endpoint", description = "Simple hello endpoint for testing")
+  @GetMapping("/hello")
+  public String getHello() {
+    return "hello";
+  }
 
-    @Operation(summary = "Create default auth user",
-               description = "Creates a default role user during registration. Called by ts-user-service")
-    @ApiResponses(value = {
+  @Operation(
+      summary = "Create default auth user",
+      description = "Creates a default role user during registration. Called by ts-user-service")
+  @ApiResponses(
+      value = {
         @ApiResponse(responseCode = "201", description = "Auth user created successfully"),
         @ApiResponse(responseCode = "400", description = "Invalid auth data")
-    })
-    @PostMapping
-    public HttpEntity<Response> createDefaultUser(
-            @Parameter(description = "Authentication data for new user") @RequestBody AuthDto authDto) {
-        if (logger.isInfoEnabled()) {
-            logger.info("[createDefaultUser][Create default auth user with authDto][AuthDto: {}]", authDto.toString());
-        }
-        userService.createDefaultAuthUser(authDto);
-        Response response = new Response(1, "SUCCESS", authDto);
-        return new ResponseEntity<>(response, HttpStatus.CREATED);
+      })
+  @PostMapping
+  public HttpEntity<Response> createDefaultUser(
+      @Parameter(description = "Authentication data for new user") @RequestBody AuthDto authDto) {
+    if (logger.isInfoEnabled()) {
+      logger.info(
+          "[createDefaultUser][Create default auth user with authDto][AuthDto: {}]",
+          authDto.toString());
     }
+    userService.createDefaultAuthUser(authDto);
+    Response response = new Response(1, "SUCCESS", authDto);
+    return new ResponseEntity<>(response, HttpStatus.CREATED);
+  }
 }

@@ -1,8 +1,12 @@
 package food_delivery.service;
 
-import edu.fudan.common.entity.*;
+import edu.fudan.common.entity.Food;
 import edu.fudan.common.util.Response;
-import food_delivery.entity.*;
+import food_delivery.entity.DeliveryInfo;
+import food_delivery.entity.FoodDeliveryOrder;
+import food_delivery.entity.SeatInfo;
+import food_delivery.entity.StationFoodStoreInfo;
+import food_delivery.entity.TripOrderInfo;
 import food_delivery.repository.FoodDeliveryOrderRepository;
 import java.util.List;
 import java.util.Map;

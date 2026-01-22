@@ -1,6 +1,10 @@
 package adminuser.dto;
 
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 /**
  * @author fdse
@@ -11,17 +15,17 @@ import lombok.*;
 @NoArgsConstructor
 @ToString
 public class UserDto {
-    private String userId;
+  private String userId;
 
-    private String userName;
+  private String userName;
 
-    private String password;
+  private String password;
 
-    private int gender;
+  private int gender;
 
-    private int documentType;
+  private int documentType;
 
-    private String documentNum;
+  private String documentNum;
 
-    private String email;
+  private String email;
 }

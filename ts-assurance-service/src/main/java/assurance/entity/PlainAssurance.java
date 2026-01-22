@@ -1,10 +1,8 @@
 package assurance.entity;
 
-
+import java.io.Serializable;
 import lombok.AllArgsConstructor;
 import lombok.Data;
-
-import java.io.Serializable;
 
 /**
  * @author fdse
@@ -13,18 +11,17 @@ import java.io.Serializable;
 @AllArgsConstructor
 public class PlainAssurance implements Serializable {
 
-    private String id;
+  private String id;
 
-    private String orderId;
+  private String orderId;
 
-    private  int typeIndex;
+  private int typeIndex;
 
-    private String typeName;
+  private String typeName;
 
-    private double typePrice;
+  private double typePrice;
 
-    public PlainAssurance(){
-        //Default Constructor
-    }
-
+  public PlainAssurance() {
+    // Default Constructor
+  }
 }
