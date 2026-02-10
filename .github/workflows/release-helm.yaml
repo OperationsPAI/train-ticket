@@ -5,6 +5,7 @@ on:
     paths:
       - 'manifests/helm/trainticket/**'
       - '.github/workflows/release-helm.yml'
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -19,7 +20,7 @@ jobs:
       uses: azure/setup-helm@v4.3.0
       with:
         version: 'v3.16.3'
-
+        
     - name: Run publish script
       run: |
         bash scripts/publish.sh
