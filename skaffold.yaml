@@ -84,10 +84,6 @@ build:
       context: ts-food-service
       docker:
         dockerfile: Dockerfile
-    - image: ts-gateway-service
-      context: ts-gateway-service
-      docker:
-        dockerfile: Dockerfile
     - image: ts-inside-payment-service
       context: ts-inside-payment-service
       docker:
