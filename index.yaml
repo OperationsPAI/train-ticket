@@ -1,0 +1,22 @@
+apiVersion: v1
+entries:
+  trainticket:
+  - apiVersion: v2
+    appVersion: 1.17.0
+    created: "2026-03-22T12:43:37.71676175Z"
+    dependencies:
+    - name: rabbitmq
+      repository: oci://registry-1.docker.io/bitnamicharts
+      version: 15.4.0
+    - condition: loadgenerator.enabled
+      name: loadgenerator
+      repository: https://operationspai.github.io/loadgenerator
+      version: 0.1.1
+    description: A Helm chart for Kubernetes
+    digest: 6ba797b7f983c3463ee923e2e9a11ee1dd4744db4cab4cbefd70d2dfca918673
+    name: trainticket
+    type: application
+    urls:
+    - https://operationspai.github.io/train-ticket/trainticket-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-03-22T12:43:37.711043987Z"
