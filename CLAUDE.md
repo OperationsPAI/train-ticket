@@ -133,7 +133,6 @@ The system follows a domain-driven microservices architecture where each service
 - `ts-delivery-service`: General delivery service
 
 **Infrastructure Services:**
-- `ts-gateway-service`: API Gateway (Spring Cloud Gateway)
 - `ts-config-service`: Configuration management
 - `ts-basic-service`: Basic data services (stations, trains, routes, prices)
 - `ts-station-service`: Station information
@@ -226,7 +225,6 @@ Services are instrumented with OpenTelemetry for distributed tracing. The Docker
 
 - All services run on port 8080 internally (mapped via Kubernetes services)
 - JWT tokens are used for authentication across services
-- The gateway service (`ts-gateway-service`) routes external requests to internal services
 - Services use Spring Boot 3.x with Jakarta EE (not javax)
 - Lombok is used extensively for reducing boilerplate code
 - The UI dashboard (`ts-ui-dashboard`) is the frontend application

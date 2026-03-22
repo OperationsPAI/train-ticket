@@ -76,9 +76,6 @@ services:
   tsFoodService:
     name: ts-food-service
     secretRef: ts-food-service
-  tsGatewayService:
-    name: ts-gateway-service
-    secretRef: ts-gateway-service
   tsInsidePaymentService:
     name: ts-inside-payment-service
     secretRef: ts-inside-payment-service
