@@ -4,7 +4,12 @@ global:
     tag: latest
   port: 8080
   monitoring: "opentelemetry"
-  # otelcollector: "http://opentelemetry-collector-deployment.monitoring:4317"
+  # OTLP gRPC endpoint for the chart-installed deployment-collector. Override with --set
+  # global.otelcollector=<host:port> to point at a different collector. The previous default
+  # of http://$(NODE_IP):4317 only works when a node-local DaemonSet collector listens via
+  # hostPort/hostNetwork, which is not the case in our standard deployments — so service
+  # spans were dropped silently while only loadgen (which uses a separate config) landed.
+  otelcollector: "http://opentelemetry-kube-stack-deployment-collector.monitoring.svc.cluster.local:4317"
 
 # Autoscaling configuration (HPA)
 autoscaling:
