@@ -15,7 +15,7 @@ spec:
       {{- with $svc.targetPort }}
       targetPort: {{ $svc.targetPort }}
       {{- end}}
-      {{- if $svc.nodePort }}
+      {{- if and $svc.nodePort (ne ($svc.type | default "") "ClusterIP") }}
       nodePort: {{ $svc.nodePort }}
       {{- end }}
       protocol: TCP
