@@ -35,7 +35,6 @@ data:
           enabled: {{ .Values.otelCollector.sendingQueue.enabled }}
           num_consumers: {{ .Values.otelCollector.sendingQueue.numConsumers }}
           queue_size: {{ .Values.otelCollector.sendingQueue.queueSize }}
-          blocking: {{ .Values.otelCollector.sendingQueue.blocking }}
     processors:
       batch:
         send_batch_max_size: {{ .Values.otelCollector.batch.sendBatchMaxSize }}
