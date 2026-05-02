@@ -63,7 +63,6 @@ otelCollector:
     enabled: true
     numConsumers: 10
     queueSize: 5000
-    blocking: true
   batch:
     sendBatchSize: 2000
     sendBatchMaxSize: 4000
