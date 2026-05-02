@@ -4,12 +4,12 @@ global:
     tag: latest
   port: 8080
   monitoring: "opentelemetry"
-  # OTLP gRPC endpoint for the chart-installed deployment-collector. Override with --set
-  # global.otelcollector=<host:port> to point at a different collector. The previous default
-  # of http://$(NODE_IP):4317 only works when a node-local DaemonSet collector listens via
-  # hostPort/hostNetwork, which is not the case in our standard deployments — so service
-  # spans were dropped silently while only loadgen (which uses a separate config) landed.
-  otelcollector: "http://opentelemetry-kube-stack-deployment-collector.monitoring.svc.cluster.local:4317"
+  # OTLP gRPC endpoint for ts services. Default targets the per-namespace sidecar
+  # collector deployed by this chart (see .Values.otelCollector). Override with
+  # --set global.otelcollector=<url> to route at a shared cluster-wide collector
+  # (e.g. http://opentelemetry-kube-stack-deployment-collector.monitoring.svc.cluster.local:4317)
+  # — typical when otelCollector.enabled=false.
+  otelcollector: "http://otel-collector:4317"
 
 # Autoscaling configuration (HPA)
 autoscaling:
@@ -24,6 +24,53 @@ autoscaling:
 opentelemetry:
   enabled: true
   image: autoinstrumentation-java:elastic
+
+# Per-namespace OTLP collector sidecar.
+#
+# Deploys a single-replica otel-collector-contrib in the release namespace so each
+# train-ticket install gets its own queue and exporter to ClickHouse, instead of all
+# namespaces fanning into one shared cluster-wide collector (which saturates its
+# ClickHouse exporter sending_queue and silently drops spans). See aegis #367.
+#
+# Disable to fall back to a shared collector — also override .global.otelcollector
+# to point at that collector's URL.
+otelCollector:
+  enabled: true
+  name: otel-collector
+  replicas: 1
+  image:
+    # Public upstream image; byte-cluster pulls via its registry mirror automatically.
+    # Override to a private mirror by setting --set otelCollector.image.repository=...
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.142.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+  clickhouse:
+    endpoint: "tcp://clickstack-clickhouse-clickhouse-headless.monitoring.svc.cluster.local:9000?dial_timeout=10s&compress=lz4&username=default"
+    database: otel
+    tracesTableName: otel_traces
+    metricsTableName: otel_metrics
+    logsTableName: otel_logs
+    ttl: 72h
+    timeout: 30s
+  sendingQueue:
+    enabled: true
+    numConsumers: 10
+    queueSize: 5000
+    blocking: true
+  batch:
+    sendBatchSize: 2000
+    sendBatchMaxSize: 4000
+    timeout: 5s
+  memoryLimiter:
+    limitPercentage: 75
+    spikeLimitPercentage: 15
 
 services:
   tsAdminBasicInfoService:
@@ -256,7 +303,7 @@ loadgenerator:
   fullnameOverride: "loadgenerator"
   baseURL: "http://ts-ui-dashboard:8080"
   opentelemetry:
-    endpoint: "opentelemetry-kube-stack-deployment-collector.monitoring:4317"
+    endpoint: "otel-collector:4317"
   config:
     threads: 2
     sleep: 100

@@ -1,0 +1,24 @@
+{{- if .Values.otelCollector.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.otelCollector.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.otelCollector.name }}
+    app.kubernetes.io/component: opentelemetry-collector
+    app.kubernetes.io/part-of: trainticket
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Values.otelCollector.name }}
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+{{- end }}
