@@ -1,4 +1,4 @@
-FROM docker.io/opspai/autoinstrumentation-java:elastic as agent
+FROM docker.io/opspai/autoinstrumentation-java:2.28.1 as agent
 FROM  eclipse-temurin:17-jre
 WORKDIR /app
 RUN /bin/cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo 'Asia/Shanghai' >/etc/timezone

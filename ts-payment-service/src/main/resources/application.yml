@@ -6,7 +6,7 @@ spring:
   application:
     name: ts-payment-service
   datasource:
-    url: jdbc:mysql://${PAYMENT_MYSQL_HOST:ts-payment-mysql}:${PAYMENT_MYSQL_PORT:3306}/${PAYMENT_MYSQL_DATABASE:ts-payment-mysql}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=UTC
+    url: jdbc:mysql://${PAYMENT_MYSQL_HOST:ts-payment-mysql}:${PAYMENT_MYSQL_PORT:3306}/${PAYMENT_MYSQL_DATABASE:ts-payment-mysql}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=UTC&openTelemetry=REQUIRED
     username: ${PAYMENT_MYSQL_USER:root}
     password: ${PAYMENT_MYSQL_PASSWORD:Abcd1234#}
     driver-class-name: com.mysql.cj.jdbc.Driver

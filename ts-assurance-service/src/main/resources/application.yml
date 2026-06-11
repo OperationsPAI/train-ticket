@@ -4,7 +4,7 @@ spring:
   application:
     name: ts-assurance-service
   datasource:
-    url: jdbc:mysql://${ASSURANCE_MYSQL_HOST:ts-assurance-mysql}:${ASSURANCE_MYSQL_PORT:3306}/${ASSURANCE_MYSQL_DATABASE:ts-assurance-mysql}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=UTC
+    url: jdbc:mysql://${ASSURANCE_MYSQL_HOST:ts-assurance-mysql}:${ASSURANCE_MYSQL_PORT:3306}/${ASSURANCE_MYSQL_DATABASE:ts-assurance-mysql}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=UTC&openTelemetry=REQUIRED
     username: ${ASSURANCE_MYSQL_USER:root}
     password: ${ASSURANCE_MYSQL_PASSWORD:root}
     driver-class-name: com.mysql.cj.jdbc.Driver
