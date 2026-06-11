@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Preserve Service - Preserve tickets"))
 public class PreserveApplication {
 
-  private PreserveApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(PreserveApplication.class, args);
   }

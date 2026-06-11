@@ -23,10 +23,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Food Delivery Service API"))
 public class FoodDeliveryApplication {
 
-  private FoodDeliveryApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(FoodDeliveryApplication.class, args);
   }
