@@ -137,10 +137,10 @@ spec:
               value: "true"
             {{- if $root.Values.global.otelcollector }}
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true -Xmx2048m"
+              value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true -Dotel.instrumentation.jdbc.enabled=false -Xmx2048m"
             {{- else }}
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true -Xmx2048m -Xms2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=15 -XX:+ParallelRefProcEnabled -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof -XX:NativeMemoryTracking=summary -XX:+DisableExplicitGC"
+              value: "-javaagent:/otel-agent/otel-agent.jar -Dotel.instrumentation.common.experimental.controller-telemetry.enabled=true -Dotel.instrumentation.jdbc.enabled=false -Xmx2048m -Xms2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=15 -XX:+ParallelRefProcEnabled -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof -XX:NativeMemoryTracking=summary -XX:+DisableExplicitGC"
             {{- end }}
             {{- end }}
             {{- end }}

@@ -9,6 +9,13 @@ data:
     USE mysql;
     GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
     FLUSH PRIVILEGES;
+    {{- if .Values.mysql.telemetry.enabled }}
+    INSTALL COMPONENT 'file://component_telemetry';
+    SET GLOBAL telemetry.otel_exporter_otlp_traces_endpoint = '{{ .Values.mysql.telemetry.otelEndpoint }}';
+    SET GLOBAL telemetry.otel_exporter_otlp_traces_protocol = '{{ .Values.mysql.telemetry.otelProtocol }}';
+    SET GLOBAL telemetry.trace_enabled = ON;
+    SET GLOBAL telemetry.query_text_enabled = {{ if .Values.mysql.telemetry.queryTextEnabled }}ON{{ else }}OFF{{ end }};
+    {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap
