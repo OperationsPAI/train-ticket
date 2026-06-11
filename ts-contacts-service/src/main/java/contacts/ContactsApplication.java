@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Contacts Service - Manage passenger contacts"))
 public class ContactsApplication {
 
-  private ContactsApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(ContactsApplication.class, args);
   }

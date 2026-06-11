@@ -16,10 +16,6 @@ import org.springframework.context.annotation.Import;
 @Import(RestTemplateConfig.class)
 public class NotificationApplication {
 
-  private NotificationApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(NotificationApplication.class, args);
   }

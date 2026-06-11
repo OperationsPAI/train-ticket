@@ -23,10 +23,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Train Service - Manage train type information"))
 public class TrainApplication {
 
-  private TrainApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(TrainApplication.class, args);
   }

@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Config Service - Manage system configurations"))
 public class ConfigApplication {
 
-  private ConfigApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(ConfigApplication.class, args);
   }

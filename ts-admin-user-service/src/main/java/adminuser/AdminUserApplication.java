@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Admin User Service API"))
 public class AdminUserApplication {
 
-  private AdminUserApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(AdminUserApplication.class, args);
   }

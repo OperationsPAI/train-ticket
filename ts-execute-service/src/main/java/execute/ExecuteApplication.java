@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Execute Service - Execute orders"))
 public class ExecuteApplication {
 
-  private ExecuteApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(ExecuteApplication.class, args);
   }
