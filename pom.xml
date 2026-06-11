@@ -153,16 +153,11 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!--        MySQL Driver (新坐标，兼容旧坐标)-->
-            <dependency>
-                <groupId>mysql</groupId>
-                <artifactId>mysql-connector-java</artifactId>
-                <version>8.0.33</version>
-            </dependency>
+            <!--        MySQL Connector/J 9.7 — native OTel tracing + context propagation to server -->
             <dependency>
                 <groupId>com.mysql</groupId>
                 <artifactId>mysql-connector-j</artifactId>
-                <version>8.0.33</version>
+                <version>9.7.0</version>
             </dependency>
             <!--        Hibernate Core-->
             <dependency>

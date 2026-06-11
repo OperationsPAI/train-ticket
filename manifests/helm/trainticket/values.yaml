@@ -248,7 +248,7 @@ mysql:
   image:
     repository: docker.io/library/mysql
     pullPolicy: IfNotPresent
-    tag: "5.7"
+    tag: "9.7"
   rootPassword: "yourpassword"
   host: "mysql"
   port: "3306"
@@ -256,6 +256,12 @@ mysql:
   user: "root"
   password: "yourpassword"
   maxConnections: 1024
+  # component_telemetry (available in Community Edition since 9.7 LTS)
+  telemetry:
+    enabled: true
+    otelEndpoint: "http://otel-collector:4318/v1/traces"
+    otelProtocol: "http/protobuf"
+    queryTextEnabled: true
   persistence:
     enabled: false
     # existingClaim: mysql-pvc
@@ -291,6 +297,15 @@ rabbitmq:
       cpu: 1000m
   metrics:
     enabled: false
+  # RabbitMQ 4.0+ native OpenTelemetry plugin — emits server-side spans
+  extraPlugins: "rabbitmq_opentelemetry"
+  extraEnvVars:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: "http://otel-collector:4317"
+    - name: OTEL_EXPORTER_OTLP_PROTOCOL
+      value: "grpc"
+    - name: OTEL_SERVICE_NAME
+      value: "rabbitmq"
 
 # Loadgenerator Configuration
 loadgenerator:
