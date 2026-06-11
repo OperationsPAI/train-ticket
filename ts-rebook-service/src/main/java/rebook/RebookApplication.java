@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Rebook Service - Rebook tickets"))
 public class RebookApplication {
 
-  private RebookApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(RebookApplication.class, args);
   }

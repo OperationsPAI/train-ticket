@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Seat Service - Manage seat availability"))
 public class SeatApplication {
 
-  private SeatApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(SeatApplication.class, args);
   }

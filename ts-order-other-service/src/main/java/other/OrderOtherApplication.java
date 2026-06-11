@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Order Other Service - Manage other ticket orders"))
 public class OrderOtherApplication {
 
-  private OrderOtherApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
 
     SpringApplication.run(OrderOtherApplication.class, args);

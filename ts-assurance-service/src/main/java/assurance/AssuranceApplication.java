@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Assurance Service - Manage travel assurance"))
 public class AssuranceApplication {
 
-  private AssuranceApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(AssuranceApplication.class, args);
   }

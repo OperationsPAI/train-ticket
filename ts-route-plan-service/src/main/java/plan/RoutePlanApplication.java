@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Route Plan Service - Plan travel routes"))
 public class RoutePlanApplication {
 
-  private RoutePlanApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(RoutePlanApplication.class, args);
   }

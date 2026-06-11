@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Price Service - Manage ticket prices"))
 public class PriceApplication {
 
-  private PriceApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(PriceApplication.class, args);
   }

@@ -23,10 +23,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Food Service API"))
 public class TrainFoodApplication {
 
-  private TrainFoodApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(TrainFoodApplication.class, args);
   }

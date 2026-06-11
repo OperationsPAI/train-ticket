@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Cancel Service - Cancel tickets"))
 public class CancelApplication {
 
-  private CancelApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(CancelApplication.class, args);
   }

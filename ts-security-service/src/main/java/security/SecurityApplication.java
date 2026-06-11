@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Security Service - Security checks"))
 public class SecurityApplication {
 
-  private SecurityApplication() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(SecurityApplication.class, args);
   }

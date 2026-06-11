@@ -26,10 +26,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
             description = "Train Ticket Travel2 Service - Manage travel trips (type 2)"))
 public class Travel2Application {
 
-  private Travel2Application() {
-    // Private constructor to prevent instantiation
-  }
-
   public static void main(String[] args) {
     SpringApplication.run(Travel2Application.class, args);
   }
