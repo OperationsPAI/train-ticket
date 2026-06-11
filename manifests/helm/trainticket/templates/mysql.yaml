@@ -11,10 +11,21 @@ data:
     FLUSH PRIVILEGES;
     {{- if .Values.mysql.telemetry.enabled }}
     INSTALL COMPONENT 'file://component_telemetry';
-    SET GLOBAL telemetry.otel_exporter_otlp_traces_endpoint = '{{ .Values.mysql.telemetry.otelEndpoint }}';
-    SET GLOBAL telemetry.otel_exporter_otlp_traces_protocol = '{{ .Values.mysql.telemetry.otelProtocol }}';
-    SET GLOBAL telemetry.trace_enabled = ON;
-    SET GLOBAL telemetry.query_text_enabled = {{ if .Values.mysql.telemetry.queryTextEnabled }}ON{{ else }}OFF{{ end }};
+    -- telemetry.* endpoint vars are non-dynamic. PERSIST_ONLY writes them to
+    -- mysqld-auto.cnf; the docker entrypoint restarts mysqld after the initdb
+    -- scripts, and persisted component vars are re-applied once component_telemetry
+    -- auto-loads on that restart. All three signals default ON and share the
+    -- OTLP/HTTP base from global.otelcollectorHttp.
+    SET PERSIST_ONLY telemetry.otel_exporter_otlp_traces_protocol  = 'http/protobuf';
+    SET PERSIST_ONLY telemetry.otel_exporter_otlp_traces_endpoint  = '{{ .Values.global.otelcollectorHttp }}/v1/traces';
+    SET PERSIST_ONLY telemetry.otel_exporter_otlp_metrics_protocol = 'http/protobuf';
+    SET PERSIST_ONLY telemetry.otel_exporter_otlp_metrics_endpoint = '{{ .Values.global.otelcollectorHttp }}/v1/metrics';
+    SET PERSIST_ONLY telemetry.otel_exporter_otlp_logs_protocol    = 'http/protobuf';
+    SET PERSIST_ONLY telemetry.otel_exporter_otlp_logs_endpoint    = '{{ .Values.global.otelcollectorHttp }}/v1/logs';
+    SET PERSIST_ONLY telemetry.trace_enabled      = ON;
+    SET PERSIST_ONLY telemetry.metrics_enabled    = ON;
+    SET PERSIST_ONLY telemetry.log_enabled        = ON;
+    SET PERSIST_ONLY telemetry.query_text_enabled = {{ if .Values.mysql.telemetry.queryTextEnabled }}ON{{ else }}OFF{{ end }};
     {{- end }}
 ---
 apiVersion: v1

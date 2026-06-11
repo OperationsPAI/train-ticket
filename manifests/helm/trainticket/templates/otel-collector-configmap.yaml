@@ -17,14 +17,7 @@ data:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
-      {{- if .Values.mysql.enabled }}
-      mysql:
-        endpoint: {{ .Values.mysql.host }}:{{ .Values.mysql.port }}
-        username: {{ .Values.mysql.user }}
-        password: {{ .Values.mysql.password }}
-        database: {{ .Values.mysql.database }}
-        collection_interval: 30s
-      {{- end }}
+      {{- /* MySQL metrics come from native component_telemetry push (9.7), not a pull receiver. */}}
       {{- if .Values.rabbitmq.enabled }}
       rabbitmq:
         endpoint: http://rabbitmq:15672
@@ -126,9 +119,6 @@ data:
           receivers:
             - otlp
             - spanmetrics
-            {{- if .Values.mysql.enabled }}
-            - mysql
-            {{- end }}
             {{- if .Values.rabbitmq.enabled }}
             - rabbitmq
             {{- end }}
