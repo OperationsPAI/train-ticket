@@ -17,14 +17,11 @@ data:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
-      {{- /* MySQL metrics come from native component_telemetry push (9.7), not a pull receiver. */}}
-      {{- if .Values.rabbitmq.enabled }}
-      rabbitmq:
-        endpoint: http://rabbitmq:15672
-        username: {{ .Values.rabbitmq.auth.username }}
-        password: {{ .Values.rabbitmq.auth.password }}
-        collection_interval: 30s
-      {{- end }}
+      {{- /* No pull receivers: MySQL metrics arrive via native component_telemetry
+             push (9.7); the rabbitmqreceiver was dropped — it emitted a metric with
+             unset type that the clickhouse exporter rejects, poisoning the whole
+             metrics batch (otel-collector-contrib #27671). Revisit via
+             rabbitmq_prometheus + prometheusreceiver if RabbitMQ metrics are needed. */}}
     exporters:
       clickhouse:
         database: {{ .Values.otelCollector.clickhouse.database | quote }}
@@ -116,12 +113,7 @@ data:
           processors: [memory_limiter, k8sattributes, transform/service_namespace, batch]
           exporters: [spanmetrics, clickhouse]
         metrics:
-          receivers:
-            - otlp
-            - spanmetrics
-            {{- if .Values.rabbitmq.enabled }}
-            - rabbitmq
-            {{- end }}
+          receivers: [otlp, spanmetrics]
           processors: [memory_limiter, k8sattributes, transform/service_namespace, batch]
           exporters: [clickhouse]
         logs:

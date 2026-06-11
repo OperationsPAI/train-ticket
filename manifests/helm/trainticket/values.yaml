@@ -4,6 +4,10 @@ global:
     tag: latest
   port: 8080
   monitoring: "opentelemetry"
+  # The rabbitmq subchart pins a bitnamilegacy/* image, which Bitnami's image
+  # guard rejects unless this is set. Propagates to the subchart via Helm globals.
+  security:
+    allowInsecureImages: true
   # OTLP gRPC endpoint for ts services. Default targets the per-namespace sidecar
   # collector deployed by this chart (see .Values.otelCollector). Override with
   # --set global.otelcollector=<url> to route at a shared cluster-wide collector
@@ -302,15 +306,12 @@ rabbitmq:
       cpu: 1000m
   metrics:
     enabled: false
-  # RabbitMQ 4.0+ native OpenTelemetry plugin — emits server-side spans
-  extraPlugins: "rabbitmq_opentelemetry"
-  extraEnvVars:
-    - name: OTEL_EXPORTER_OTLP_ENDPOINT
-      value: "http://otel-collector:4317"
-    - name: OTEL_EXPORTER_OTLP_PROTOCOL
-      value: "grpc"
-    - name: OTEL_SERVICE_NAME
-      value: "rabbitmq"
+  # NOTE: RabbitMQ has no server-side OpenTelemetry plugin (there is no
+  # rabbitmq_opentelemetry tier-1 plugin in any 4.x release — only
+  # rabbitmq_prometheus for metrics). RabbitMQ trace continuity is client-side:
+  # the OTel Java agent instruments Spring AMQP, injecting traceparent into AMQP
+  # headers on publish and extracting it on consume, so producer→consumer spans
+  # link without any broker config. Nothing to enable on the broker for traces.
 
 # Loadgenerator Configuration
 loadgenerator:
