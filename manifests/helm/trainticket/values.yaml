@@ -305,7 +305,7 @@ rabbitmq:
       memory: 1Gi
       cpu: 1000m
   metrics:
-    enabled: false
+    enabled: true # enables rabbitmq_prometheus plugin + exposes svc port 9419 (scraped by the collector's prometheus receiver)
   # NOTE: RabbitMQ has no server-side OpenTelemetry plugin (there is no
   # rabbitmq_opentelemetry tier-1 plugin in any 4.x release — only
   # rabbitmq_prometheus for metrics). RabbitMQ trace continuity is client-side:

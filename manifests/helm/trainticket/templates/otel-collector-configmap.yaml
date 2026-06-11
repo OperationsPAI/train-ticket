@@ -17,11 +17,22 @@ data:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
-      {{- /* No pull receivers: MySQL metrics arrive via native component_telemetry
-             push (9.7); the rabbitmqreceiver was dropped — it emitted a metric with
-             unset type that the clickhouse exporter rejects, poisoning the whole
-             metrics batch (otel-collector-contrib #27671). Revisit via
-             rabbitmq_prometheus + prometheusreceiver if RabbitMQ metrics are needed. */}}
+      {{- /* MySQL metrics arrive via native component_telemetry push (9.7).
+             RabbitMQ metrics are scraped from its built-in rabbitmq_prometheus
+             plugin (Bitnami exposes it on svc port 9419 when metrics.enabled).
+             We deliberately do NOT use the contrib rabbitmqreceiver: in this stack
+             it emitted a metric the clickhouse exporter rejected with "metrics type
+             is unset", poisoning the whole metrics batch into permanent retry. The
+             prometheus path uses standard Prometheus-typed metrics and avoids that. */}}
+      {{- if .Values.rabbitmq.enabled }}
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: rabbitmq
+              scrape_interval: 30s
+              static_configs:
+                - targets: ['rabbitmq:9419']
+      {{- end }}
     exporters:
       clickhouse:
         database: {{ .Values.otelCollector.clickhouse.database | quote }}
@@ -113,7 +124,12 @@ data:
           processors: [memory_limiter, k8sattributes, transform/service_namespace, batch]
           exporters: [spanmetrics, clickhouse]
         metrics:
-          receivers: [otlp, spanmetrics]
+          receivers:
+            - otlp
+            - spanmetrics
+            {{- if .Values.rabbitmq.enabled }}
+            - prometheus
+            {{- end }}
           processors: [memory_limiter, k8sattributes, transform/service_namespace, batch]
           exporters: [clickhouse]
         logs:
