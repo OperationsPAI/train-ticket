@@ -10,6 +10,10 @@ global:
   # (e.g. http://opentelemetry-kube-stack-deployment-collector.monitoring.svc.cluster.local:4317)
   # — typical when otelCollector.enabled=false.
   otelcollector: "http://otel-collector:4317"
+  # OTLP HTTP/protobuf endpoint (port 4318) for components that push over HTTP instead
+  # of gRPC — currently MySQL 9.7 native telemetry, which appends /v1/{traces,metrics,logs}.
+  # Keep the host in sync with otelcollector when overriding to a shared collector.
+  otelcollectorHttp: "http://otel-collector:4318"
 
 # Autoscaling configuration (HPA)
 autoscaling:
@@ -256,11 +260,12 @@ mysql:
   user: "root"
   password: "yourpassword"
   maxConnections: 1024
-  # component_telemetry (available in Community Edition since 9.7 LTS)
+  # component_telemetry (Community Edition since 9.7 LTS) — one component emits
+  # traces + metrics + logs, all pushed via OTLP/HTTP to global.otelcollectorHttp
+  # (mysql.yaml appends the per-signal /v1/* paths). We rely on native telemetry for
+  # MySQL metrics, so the collector deliberately has NO mysqlreceiver (would double-export).
   telemetry:
     enabled: true
-    otelEndpoint: "http://otel-collector:4318/v1/traces"
-    otelProtocol: "http/protobuf"
     queryTextEnabled: true
   persistence:
     enabled: false
