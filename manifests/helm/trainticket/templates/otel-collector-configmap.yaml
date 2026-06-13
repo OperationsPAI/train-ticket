@@ -116,18 +116,15 @@ data:
           - context: resource
             statements:
               - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["k8s.namespace.name"] != nil
-    connectors:
-      spanmetrics: {}
     service:
       pipelines:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, transform/service_namespace, batch]
-          exporters: [spanmetrics, clickhouse]
+          exporters: [clickhouse]
         metrics:
           receivers:
             - otlp
-            - spanmetrics
             {{- if .Values.rabbitmq.enabled }}
             - prometheus
             {{- end }}
