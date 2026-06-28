@@ -1,3 +1,12 @@
+# Superseded Historical Implementation Status
+
+> **Superseded:** This file records an earlier AgentM loop and an old WP-oriented
+> interpretation. The project is now being prepared for a full rewrite /
+> greenfield rebuild. Do not treat `WP-01`, the `WP-xx` sequence, or the blocker
+> list below as the current execution plan. Start from
+> `docs/00-current-status.md` and regenerate any implementation plan from the
+> current DDD baseline and rewrite priorities.
+
 ## Accepted Work
 - Accepted DDD baseline remains the implementation target under `docs/03-ddd-final`.
 - Repository status accepted: current source is legacy train-ticket microservice code with no verified DDD work package completion and no `src/test` coverage for required invariants.

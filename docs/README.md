@@ -4,13 +4,17 @@ Last updated: 2026-06-28
 
 ## 当前入口
 
-当前 DDD 设计已经完成收敛。最终文档从下面六份开始读：
+当前项目状态入口是 `docs/00-current-status.md`。本仓库现在按 Train Ticket
+完整重写 / greenfield rebuild 初始化；旧 `WP-01` / `WP-xx` 计划只作为历史参考，
+不是当前执行 backlog。
+
+DDD 设计已经完成收敛。理解领域基线时从下面六份开始读：
 
 1. `docs/03-ddd-final/reduce-summary.md`
 2. `docs/03-ddd-final/decision-record.md`
 3. `docs/03-ddd-final/phase-1-contract.md`
 4. `docs/03-ddd-final/domain-reduce-status.md`
-5. `docs/03-ddd-final/implementation-roadmap.md`
+5. `docs/03-ddd-final/implementation-roadmap.md`（历史 roadmap/reference；如需执行计划应重新生成）
 6. `docs/03-ddd-final/change-routing.md`
 
 ## 文档分层
