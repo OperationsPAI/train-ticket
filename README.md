@@ -52,7 +52,7 @@ Before deploying the application, you must build the Helm dependencies:
 
 1. **Build Helm Dependencies**:
    ```bash
-   helm dependency build manifests/helm/generic_service
+   helm dependency build manifests/helm/trainticket
    ```
    This step is mandatory and will fetch all required dependencies specified in Chart.yaml (mysql, postgresql, rabbitmq, etc.).
 
@@ -68,7 +68,7 @@ helm search repo train-ticket
 
 
 ```bash
-helm install ts manifests/helm/generic_service -n ts --create-namespace \
+helm install ts manifests/helm/trainticket -n ts --create-namespace \
    --set global.monitoring=opentelemetry \
    --set skywalking.enabled=false \
    --set global.image.tag=3384da1c
@@ -81,7 +81,7 @@ helm install ts manifests/helm/generic_service -n ts --create-namespace \
 
 3. **Using Custom Image Registry**:
    ```bash
-   helm install ts manifests/helm/generic_service -n ts --create-namespace \
+   helm install ts manifests/helm/trainticket -n ts --create-namespace \
      --set global.monitoring=opentelemetry \
      --set skywalking.enabled=false \
      --set global.image.tag=latest \
@@ -91,7 +91,7 @@ helm install ts manifests/helm/generic_service -n ts --create-namespace \
 4. **Advanced Example (with APO)**:
    To enable specific configurations (e.g., nodePort for UI):
    ```bash
-   helm upgrade ts manifests/helm/generic_service -n ts-dev --create-namespace \
+   helm upgrade ts manifests/helm/trainticket -n ts-dev --create-namespace \
      --set global.monitoring=opentelemetry \
      --set opentelemetry.enabled=false \
      --set services.tsUiDashboard.nodePort=30081 \
@@ -116,3 +116,16 @@ postgresql:
 ```
 
 This new version is designed to offer a more streamlined, efficient, and powerful solution for managing train ticket services, leveraging the latest in technology and best practices.
+
+## Dev Container and Automation
+
+This repository includes a development container for AgentM/ARL workers and
+local contributors. See `.devcontainer/README.md`.
+
+Main automation commands:
+
+```bash
+make smoke           # toolchain + Helm validation
+make check           # smoke + Maven package
+make skaffold-build  # image build through Skaffold, requires Docker
+```

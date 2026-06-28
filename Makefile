@@ -1,7 +1,28 @@
-NS ?= "ts"
-PORT ?= "30080"
+NS ?= ts
+PORT ?= 30080
+CHART_DIR ?= manifests/helm/trainticket
+MAVEN_THREADS ?= 1.5C
+MAVEN_SKIP_TESTS ?= true
 
-.PHONY: deploy
+.PHONY: smoke check package helm-deps helm-lint skaffold-build deploy upgrade-chart otel-agent
+
+smoke:
+	.devcontainer/scripts/check.sh smoke
+
+check:
+	.devcontainer/scripts/check.sh package
+
+package:
+	mvn -B -T $(MAVEN_THREADS) clean package -Dmaven.test.skip=$(MAVEN_SKIP_TESTS)
+
+helm-deps:
+	helm dependency build $(CHART_DIR)
+
+helm-lint:
+	.devcontainer/scripts/check.sh smoke
+
+skaffold-build:
+	.devcontainer/scripts/check.sh images
 
 deploy:
 	@if helm status $(NS) -n $(NS) >/dev/null 2>&1; then \
@@ -11,7 +32,7 @@ deploy:
 	else \
 		echo "No existing $(NS) release found"; \
 	fi; \
-	helm install $(NS) manifests/helm/generic_service --create-namespace -n $(NS) \
+	helm install $(NS) $(CHART_DIR) --create-namespace -n $(NS) \
 		--set global.monitoring=opentelemetry \
 		--set global.otelcollector="http://opentelemetry-collector-deployment.monitoring:4317" \
 		--set skywalking.enabled=false \
@@ -19,7 +40,7 @@ deploy:
 		--set services.tsUiDashboard.nodePort=$(PORT)
 
 upgrade-chart:
-	cd manifests/helm/trainticket && \
+	cd $(CHART_DIR) && \
 		helm dependency update
 
 
