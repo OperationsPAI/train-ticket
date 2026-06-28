@@ -1,0 +1,668 @@
+{
+  "schemaVersion": "trainticket.service-catalog/v1",
+  "project": "train-ticket-ddd-greenfield",
+  "allowedLanguages": [
+    "java",
+    "golang",
+    "python",
+    "rust",
+    "typescript"
+  ],
+  "platformModules": [
+    {
+      "id": "shared-kernel",
+      "path": "platform/shared-kernel-rust",
+      "domain": "Shared Kernel / Platform",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "phase-1-foundation",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-01"
+      ],
+      "docs": [
+        "docs/03-ddd-final/implementation-roadmap.md",
+        "docs/03-ddd-final/phase-1-contract.md"
+      ],
+      "owns": [
+        "reference implementation for IDs, value objects, and event envelope",
+        "language-neutral contract source before code generation exists"
+      ],
+      "rationale": "Rust keeps shared invariant examples strict while the normative contract remains language-neutral."
+    }
+  ],
+  "services": [
+    {
+      "id": "place-network",
+      "path": "services/place-network",
+      "domain": "Place & Network",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-02"
+      ],
+      "docs": [
+        "docs/02-domains/place-network.md"
+      ],
+      "owns": [
+        "Place",
+        "TransportNode",
+        "ProviderPlaceMapping"
+      ],
+      "rationale": "Go fits read-heavy master-data APIs and simple operational lookup paths."
+    },
+    {
+      "id": "service-plan",
+      "path": "services/service-plan",
+      "domain": "Service Plan",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-03"
+      ],
+      "docs": [
+        "docs/02-domains/service-plan.md"
+      ],
+      "owns": [
+        "Route",
+        "ServicePlan",
+        "Calendar",
+        "Timetable",
+        "PlanVersion"
+      ],
+      "rationale": "Go keeps schedule query services small, fast, and easy to operate."
+    },
+    {
+      "id": "capacity-availability",
+      "path": "services/capacity-availability",
+      "domain": "Capacity & Availability",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-05"
+      ],
+      "docs": [
+        "docs/02-domains/capacity-availability.md"
+      ],
+      "owns": [
+        "InventoryPool",
+        "CapacityHold",
+        "Quota"
+      ],
+      "rationale": "Rust is appropriate for interval overlap and seat-hold invariants that must fail closed."
+    },
+    {
+      "id": "fare-pricing",
+      "path": "services/fare-pricing",
+      "domain": "Fare & Pricing",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-04"
+      ],
+      "docs": [
+        "docs/02-domains/fare-pricing.md"
+      ],
+      "owns": [
+        "FareRuleSet",
+        "FareQuote",
+        "RefundFee",
+        "ChangeFee",
+        "RuleSnapshot"
+      ],
+      "rationale": "Python keeps fare rules, explanation tooling, and later experimentation lightweight."
+    },
+    {
+      "id": "trip-planning",
+      "path": "services/trip-planning",
+      "domain": "Trip Planning",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-06"
+      ],
+      "docs": [
+        "docs/02-domains/trip-planning.md"
+      ],
+      "owns": [
+        "TripIntent",
+        "Itinerary",
+        "SearchResult",
+        "PriceHint"
+      ],
+      "rationale": "Python is a better fit for search heuristics, ranking, and explanation logic."
+    },
+    {
+      "id": "offer-management",
+      "path": "services/offer-management",
+      "domain": "Offer Management",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-07"
+      ],
+      "docs": [
+        "docs/02-domains/offer-management.md"
+      ],
+      "owns": [
+        "Offer",
+        "OfferItem",
+        "PriceSnapshot",
+        "RiskDisclosure",
+        "ChangeOffer"
+      ],
+      "rationale": "TypeScript fits user-facing offer API composition, TTL policy, and disclosure payloads."
+    },
+    {
+      "id": "journey-order",
+      "path": "services/journey-order",
+      "domain": "Journey Order",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-08"
+      ],
+      "docs": [
+        "docs/02-domains/journey-order.md"
+      ],
+      "owns": [
+        "JourneyOrder",
+        "OrderItem",
+        "MonetarySummary",
+        "OrderTimeline"
+      ],
+      "rationale": "Java is conservative for central transactional aggregates and long-lived domain models."
+    },
+    {
+      "id": "booking-orchestration",
+      "path": "services/booking-orchestration",
+      "domain": "Booking Orchestration",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-09"
+      ],
+      "docs": [
+        "docs/02-domains/booking-orchestration.md"
+      ],
+      "owns": [
+        "BookingSaga",
+        "SegmentBooking",
+        "ProviderReservation mapping"
+      ],
+      "rationale": "Java gives the saga layer explicit state transitions and stable integration testing options."
+    },
+    {
+      "id": "payment",
+      "path": "services/payment",
+      "domain": "Payment",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-10"
+      ],
+      "docs": [
+        "docs/02-domains/payment.md"
+      ],
+      "owns": [
+        "PaymentIntent",
+        "Refund",
+        "CallbackRecord",
+        "IdempotencyKey"
+      ],
+      "rationale": "Java is a strong default for money state machines, idempotency, and audit-heavy flows."
+    },
+    {
+      "id": "provider-integration",
+      "path": "services/provider-integration",
+      "domain": "Provider Integration",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-11"
+      ],
+      "docs": [
+        "docs/02-domains/provider-integration.md"
+      ],
+      "owns": [
+        "adapter protocol",
+        "signature verification",
+        "raw archive",
+        "external status mapping"
+      ],
+      "rationale": "Go fits protocol adapters, webhooks, retry loops, and small deployable edge services."
+    },
+    {
+      "id": "entitlement-ticketing",
+      "path": "services/entitlement-ticketing",
+      "domain": "Entitlement & Ticketing",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-12"
+      ],
+      "docs": [
+        "docs/02-domains/entitlement-ticketing.md"
+      ],
+      "owns": [
+        "Entitlement",
+        "Credential",
+        "Issue",
+        "Void",
+        "Suspend",
+        "Boarded consumption"
+      ],
+      "rationale": "Rust is appropriate for ticket entitlement lifecycle invariants and credential safety."
+    },
+    {
+      "id": "fulfillment",
+      "path": "services/fulfillment",
+      "domain": "Fulfillment",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-limited",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-13"
+      ],
+      "docs": [
+        "docs/02-domains/fulfillment.md"
+      ],
+      "owns": [
+        "FulfillmentRecord",
+        "BoardingVerified",
+        "NoShow",
+        "EvidenceDispute"
+      ],
+      "rationale": "Go keeps event ingestion and station-side fact normalization operationally simple."
+    },
+    {
+      "id": "post-sales",
+      "path": "services/post-sales",
+      "domain": "Post Sales",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-core",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-14"
+      ],
+      "docs": [
+        "docs/02-domains/post-sales.md"
+      ],
+      "owns": [
+        "PostSalesCase",
+        "RefundDecision",
+        "ChangeExecutionPlan"
+      ],
+      "rationale": "Java keeps refund/change case workflows explicit and compatible with transaction review tooling."
+    },
+    {
+      "id": "notification",
+      "path": "services/notification",
+      "domain": "Notification",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-15"
+      ],
+      "docs": [
+        "docs/02-domains/notification.md"
+      ],
+      "owns": [
+        "NotificationTask",
+        "Template",
+        "RecipientPolicy",
+        "DeliveryReceipt"
+      ],
+      "rationale": "TypeScript fits template payloads, channel adapters, and product-facing notification policies."
+    },
+    {
+      "id": "traveler-profile",
+      "path": "services/traveler-profile",
+      "domain": "Traveler Profile",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P0",
+      "workPackages": [
+        "WP-16"
+      ],
+      "docs": [
+        "docs/02-domains/traveler-profile.md"
+      ],
+      "owns": [
+        "TravelerProfile",
+        "Document",
+        "EligibilitySummary",
+        "PreferenceSnapshot"
+      ],
+      "rationale": "Java keeps PII-heavy profile aggregates and validation policies explicit."
+    },
+    {
+      "id": "risk-compliance",
+      "path": "services/risk-compliance",
+      "domain": "Risk & Compliance",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-17"
+      ],
+      "docs": [
+        "docs/02-domains/risk-compliance.md"
+      ],
+      "owns": [
+        "RiskAssessment",
+        "Challenge",
+        "BlockDecision",
+        "EvidenceSummary"
+      ],
+      "rationale": "Python supports rule experimentation, scoring, and evidence summarization without coupling source domains."
+    },
+    {
+      "id": "account",
+      "path": "services/account",
+      "domain": "Account",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-limited",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-18"
+      ],
+      "docs": [
+        "docs/02-domains/account.md"
+      ],
+      "owns": [
+        "UserAccount",
+        "Session",
+        "Preference",
+        "Freeze",
+        "AccountClosureSaga shell"
+      ],
+      "rationale": "TypeScript is suitable for identity/session edge APIs while traveler facts remain in Traveler Profile."
+    },
+    {
+      "id": "admin-audit",
+      "path": "services/admin-audit",
+      "domain": "Admin & Audit",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-19"
+      ],
+      "docs": [
+        "docs/02-domains/admin-audit.md"
+      ],
+      "owns": [
+        "OperatorIdentity",
+        "Approval",
+        "ManualAction",
+        "AuditTrail"
+      ],
+      "rationale": "Java is a conservative fit for approvals, audit retention, and authorization boundaries."
+    },
+    {
+      "id": "customer-service",
+      "path": "services/customer-service",
+      "domain": "Customer Service",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-20"
+      ],
+      "docs": [
+        "docs/02-domains/customer-service.md"
+      ],
+      "owns": [
+        "SupportCase",
+        "EvidenceRef",
+        "ManualActionRequest",
+        "CaseTimeline"
+      ],
+      "rationale": "TypeScript fits collaborative case APIs and UI-adjacent timelines without owning target state."
+    },
+    {
+      "id": "finance-settlement",
+      "path": "services/finance-settlement",
+      "domain": "Finance Settlement",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-limited",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-21"
+      ],
+      "docs": [
+        "docs/02-domains/finance-settlement.md"
+      ],
+      "owns": [
+        "RevenueRecognition",
+        "Reconciliation",
+        "Invoice",
+        "SettlementView"
+      ],
+      "rationale": "Java is appropriate for financial ledgers, reconciliation workflows, and audit consistency."
+    },
+    {
+      "id": "reporting",
+      "path": "services/reporting",
+      "domain": "Reporting",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-limited",
+      "status": "skeleton",
+      "priority": "P2",
+      "workPackages": [
+        "WP-22"
+      ],
+      "docs": [
+        "docs/02-domains/reporting.md"
+      ],
+      "owns": [
+        "MetricDefinition",
+        "DashboardReadModel",
+        "FunnelView"
+      ],
+      "rationale": "Python is a pragmatic fit for metric definitions, event-derived views, and analytics validation."
+    },
+    {
+      "id": "supplier-catalog",
+      "path": "services/supplier-catalog",
+      "domain": "Supplier Catalog",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-02",
+        "WP-11"
+      ],
+      "docs": [
+        "docs/02-domains/supplier-catalog.md"
+      ],
+      "owns": [
+        "Supplier",
+        "Carrier",
+        "Contract",
+        "ProductCapability",
+        "ExternalCode"
+      ],
+      "rationale": "Go keeps supplier capability lookup compact and separate from provider runtime health."
+    },
+    {
+      "id": "disruption-recovery",
+      "path": "services/disruption-recovery",
+      "domain": "Disruption Recovery",
+      "language": "python",
+      "runtime": "python",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/disruption-recovery.md"
+      ],
+      "owns": [
+        "RecoveryCase",
+        "RecoveryOption",
+        "CompensationDecision"
+      ],
+      "rationale": "Python fits recovery optimization and policy experimentation when this future domain is enabled."
+    },
+    {
+      "id": "transfer-management",
+      "path": "services/transfer-management",
+      "domain": "Transfer Management",
+      "language": "python",
+      "runtime": "python",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/transfer-management.md"
+      ],
+      "owns": [
+        "ConnectionContract",
+        "MctVersion",
+        "ProtectedConnection"
+      ],
+      "rationale": "Python fits connection-risk calculation and later protected-transfer recovery planning."
+    },
+    {
+      "id": "ancillary-service",
+      "path": "services/ancillary-service",
+      "domain": "Ancillary Service",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/ancillary-service.md"
+      ],
+      "owns": [
+        "AncillaryOffer",
+        "AncillaryOrderItem",
+        "ActivationPolicy"
+      ],
+      "rationale": "TypeScript fits productized add-ons and bundle-facing API composition."
+    },
+    {
+      "id": "waitlist",
+      "path": "services/waitlist",
+      "domain": "Waitlist",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/waitlist.md"
+      ],
+      "owns": [
+        "WaitlistRequest",
+        "QueuePolicy",
+        "FulfillmentWindow"
+      ],
+      "rationale": "Rust fits fairness, mutual-exclusion, and queue-order invariants."
+    },
+    {
+      "id": "wallet-promotion",
+      "path": "services/wallet-promotion",
+      "domain": "Wallet / Promotion",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/wallet-promotion.md"
+      ],
+      "owns": [
+        "WalletBalance",
+        "PromotionGrant",
+        "Coupon",
+        "PointLedger"
+      ],
+      "rationale": "Java is a conservative default for stored-value and promotion ledgers."
+    },
+    {
+      "id": "dispatch",
+      "path": "services/dispatch",
+      "domain": "Dispatch",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/dispatch.md"
+      ],
+      "owns": [
+        "RideRequest",
+        "RideAssignment",
+        "DriverLifecycle",
+        "Eta"
+      ],
+      "rationale": "Go fits real-time dispatch APIs, adapter calls, and low-latency state updates."
+    }
+  ]
+}

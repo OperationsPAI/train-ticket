@@ -1,0 +1,11 @@
+[package]
+name = "capacity-availability"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "capacity_availability"
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.8.9"

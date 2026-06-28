@@ -1,0 +1,366 @@
+project:
+  name: train-ticket-ddd-greenfield
+  languages: [java, golang, python, rust, typescript]
+
+requirements:
+  - id: REQ-001
+    title: "Polyglot bounded-context skeleton"
+    description: "Initialize one service skeleton per DDD bounded context and one platform shared-kernel module."
+    priority: P0
+    status: tested
+    code:
+      - path: service-catalog.json
+        description: "Machine-readable service ownership and language catalog."
+      - path: services
+        description: "Bounded-context service skeletons."
+      - path: platform/shared-kernel-rust
+        description: "Shared Kernel reference skeleton."
+    tests:
+      - path: scripts/check-skeleton.py
+        description: "Validates catalog, service files, and available language checks."
+    docs:
+      - path: docs/05-service-architecture/language-selection.md
+    depends_on: []
+    confidence: confirmed
+    source: "docs/03-ddd-final/domain-reduce-status.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-002
+    title: "Polyglot devcontainer toolchain"
+    description: "The development container includes the runtime tools needed by the selected Java, Go, Python, Rust, and TypeScript skeletons."
+    priority: P0
+    status: implemented
+    code:
+      - path: .devcontainer/Dockerfile
+        description: "Installs language toolchains and operational CLI tools."
+      - path: .devcontainer/scripts/check.sh
+        description: "Reports available toolchain versions and validates the repository layout."
+    tests:
+      - path: .devcontainer/scripts/check.sh
+        description: "Smoke check for documentation and toolchain availability."
+    docs:
+      - path: .devcontainer/README.md
+    depends_on: [REQ-001]
+    confidence: confirmed
+    source: ".devcontainer/README.md"
+
+  - id: REQ-101
+    title: "WP-01 Shared kernel contracts"
+    description: "Define common IDs, value objects, and event envelope."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: []
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-102
+    title: "WP-02 Place and network master data"
+    description: "Represent places, transport nodes, and provider place mappings."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-103
+    title: "WP-03 Service plan schedules"
+    description: "Represent routes, timetables, calendars, planned suspension, and plan versions."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-102]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-104
+    title: "WP-04 Fare and rule snapshots"
+    description: "Represent fare rule sets, quotes, refund fees, change fees, and rule snapshots."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-102, REQ-103]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-105
+    title: "WP-05 Internal segment inventory"
+    description: "Represent inventory pools, capacity holds, quotas, overlap checks, and hold TTL."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-103]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-106
+    title: "WP-06 Trip planning query candidates"
+    description: "Search without locking inventory and explain unavailable or unreachable journeys."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-102, REQ-103, REQ-104, REQ-105]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-107
+    title: "WP-07 Offer snapshots"
+    description: "Freeze offer, offer item, price snapshot, disclosure, and TTL without holding inventory."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-104, REQ-105, REQ-106]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-108
+    title: "WP-08 Journey order aggregate"
+    description: "Create commercial orders that reference offers without owning inventory, payment, or ticketing."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-107]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-109
+    title: "WP-09 Booking saga"
+    description: "Coordinate segment bookings, provider reservation mapping, and compensation status."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-105, REQ-108, REQ-111]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-110
+    title: "WP-10 Payment cash loop"
+    description: "Create payment intents, refunds, callback records, late payment handling, and idempotency keys."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-111
+    title: "WP-11 Provider integration ACL"
+    description: "Normalize provider/channel adapters, signatures, raw archive, and external status mapping."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-112
+    title: "WP-12 Ticket entitlement"
+    description: "Issue, void, suspend, and board main-ticket entitlements after all prerequisites are satisfied."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-109, REQ-110]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-113
+    title: "WP-13 Fulfillment facts"
+    description: "Record boarding, check-in, no-show, and offline evidence disputes."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-112]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-114
+    title: "WP-14 Post-sales refund and change"
+    description: "Evaluate and execute refund/change cases without delete-and-recreate semantics."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-104, REQ-105, REQ-109, REQ-110, REQ-112]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-115
+    title: "WP-15 Transaction notification"
+    description: "Schedule required transaction notifications with idempotency and delivery receipts."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-112, REQ-114]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-116
+    title: "WP-16 Traveler facts"
+    description: "Represent travelers, documents, eligibility summaries, and preference snapshots."
+    priority: P0
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-117
+    title: "WP-17 Risk decisions"
+    description: "Represent risk assessments, challenges, block/allow decisions, and evidence summaries."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-116]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-118
+    title: "WP-18 Account minimum"
+    description: "Represent account, session, preference, freeze, and account-closure shell behavior."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-115, REQ-116]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-119
+    title: "WP-19 Admin and audit commands"
+    description: "Represent operator identity, approval, manual action, and audit trails."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-120
+    title: "WP-20 Customer service cases"
+    description: "Represent support cases, evidence references, manual action requests, and timelines."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-112, REQ-114, REQ-119]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-121
+    title: "WP-21 Finance event consumption"
+    description: "Consume order/payment/post-sales events for revenue recognition and reconciliation views."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-114]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-122
+    title: "WP-22 Reporting read models"
+    description: "Expose read-only metrics and dashboards from events and Finance views."
+    priority: P2
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-106, REQ-108, REQ-110, REQ-112, REQ-121]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-123
+    title: "WP-23 Legacy ACL strangler"
+    description: "Map old preserve, cancel, rebook, payment, and execute entrypoints to controlled commands."
+    priority: P1
+    status: active
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-109, REQ-110, REQ-112, REQ-114, REQ-119]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"

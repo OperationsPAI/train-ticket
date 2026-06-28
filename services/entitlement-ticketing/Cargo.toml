@@ -1,0 +1,11 @@
+[package]
+name = "entitlement-ticketing"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "entitlement_ticketing"
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.8.9"
