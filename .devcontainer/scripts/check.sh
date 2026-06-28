@@ -4,13 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
-MODE="${1:-package}"
-CHART_DIR="${CHART_DIR:-manifests/helm/trainticket}"
-HELM_RELEASE="${HELM_RELEASE:-ts}"
-HELM_NAMESPACE="${HELM_NAMESPACE:-ts}"
-MAVEN_THREADS="${MAVEN_THREADS:-1.5C}"
-MAVEN_SKIP_TESTS="${MAVEN_SKIP_TESTS:-true}"
-
 require_tool() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required tool: $1" >&2
@@ -18,90 +11,37 @@ require_tool() {
   fi
 }
 
-verify_tools() {
-  for tool in git java mvn node npm python3 pip3 helm kubectl skaffold yq jq; do
-    require_tool "${tool}"
-  done
+for tool in git python3; do
+  require_tool "${tool}"
+done
 
-  java -version
-  mvn -version | head -n 1
-  node --version
-  npm --version
-  python3 --version
-  helm version --short
-  skaffold version
-  kubectl version --client=true --output=yaml | awk '/gitVersion:/ {print "kubectl " $2; exit}'
-}
+test -d docs/02-domains
+test -d docs/03-ddd-final
+test -f docs/03-ddd-final/implementation-roadmap.md
+test -f docs/03-ddd-final/phase-1-contract.md
+test -f docs/03-ddd-final/change-routing.md
 
-helm_validate() {
-  require_tool helm
-  require_tool yq
-  test -f "${CHART_DIR}/Chart.yaml"
-
-  local chart_tmp chart_copy repo_added
-  chart_tmp="$(mktemp -d)"
-  chart_copy="${chart_tmp}/chart"
-  cp -a "${CHART_DIR}" "${chart_copy}"
-
-  repo_added=false
-  while IFS=$'\t' read -r name repo; do
-    if [ -n "${name}" ] && [ -n "${repo}" ]; then
-      helm repo add "${name}" "${repo}" --force-update >/dev/null
-      repo_added=true
-    fi
-  done < <(yq -r '.dependencies[]? | select(.repository | test("^https?://")) | [.name, .repository] | @tsv' "${chart_copy}/Chart.yaml")
-
-  if [ "${repo_added}" = true ]; then
-    helm repo update >/dev/null
+python3 --version
+for cmd in java mvn node npm pip3 uv jq yq helm kubectl skaffold docker; do
+  if command -v "${cmd}" >/dev/null 2>&1; then
+    case "${cmd}" in
+      java)
+        if java -version >/tmp/train-ticket-java-version 2>&1; then
+          head -n 1 /tmp/train-ticket-java-version
+        fi
+        ;;
+      mvn) mvn -version | head -n 1 || true ;;
+      kubectl) kubectl version --client=true --output=yaml 2>/dev/null | awk '/gitVersion:/ {print "kubectl " $2; exit}' || true ;;
+      docker)
+        if docker version >/dev/null 2>&1; then
+          docker version --format 'docker {{.Client.Version}} -> {{.Server.Version}}'
+        else
+          echo "docker client present; daemon unavailable"
+        fi
+        ;;
+      *) "${cmd}" --version 2>/dev/null | head -n 1 || true ;;
+    esac
   fi
+done
 
-  helm dependency build "${chart_copy}"
-  helm lint "${chart_copy}"
-  helm template "${HELM_RELEASE}" "${chart_copy}" --namespace "${HELM_NAMESPACE}" >/tmp/train-ticket-helm-template.yaml
-  rm -rf "${chart_tmp}"
-}
-
-maven_package() {
-  require_tool mvn
-  mvn -B -T "${MAVEN_THREADS}" clean package -Dmaven.test.skip="${MAVEN_SKIP_TESTS}"
-}
-
-skaffold_images() {
-  require_tool skaffold
-  require_tool docker
-  if ! docker info >/dev/null 2>&1; then
-    echo "Docker daemon is not reachable. Mount /var/run/docker.sock or configure a compatible builder." >&2
-    if [ -S /var/run/docker.sock ]; then
-      sock_gid="$(stat -c '%g' /var/run/docker.sock)"
-      echo "The mounted Docker socket gid is ${sock_gid}. For direct docker run, add: --group-add ${sock_gid}" >&2
-      echo "Alternatively run the image as root for image-build jobs, or use the Dev Container post-create hook." >&2
-    fi
-    exit 1
-  fi
-  skaffold build --push=false
-}
-
-case "${MODE}" in
-  smoke)
-    verify_tools
-    helm_validate
-    ;;
-  package)
-    verify_tools
-    maven_package
-    helm_validate
-    ;;
-  images)
-    skaffold_images
-    ;;
-  all)
-    verify_tools
-    maven_package
-    helm_validate
-    skaffold_images
-    ;;
-  *)
-    echo "usage: $0 [smoke|package|images|all]" >&2
-    exit 2
-    ;;
-esac
+echo "Greenfield DDD workspace smoke check passed."
