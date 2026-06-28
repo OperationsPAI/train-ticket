@@ -1,0 +1,42 @@
+{
+  "name": "train-ticket-dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspace/train-ticket",
+  "remoteUser": "vscode",
+  "init": true,
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    "source=train-ticket-m2,target=/home/vscode/.m2,type=volume",
+    "source=train-ticket-skaffold,target=/home/vscode/.skaffold,type=volume",
+    "source=train-ticket-npm,target=/home/vscode/.npm,type=volume",
+    "source=train-ticket-cache,target=/home/vscode/.cache,type=volume"
+  ],
+  "containerEnv": {
+    "CHART_DIR": "manifests/helm/trainticket",
+    "MAVEN_THREADS": "1.5C",
+    "MAVEN_SKIP_TESTS": "true"
+  },
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "redhat.java",
+        "vscjava.vscode-maven",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "ms-azuretools.vscode-docker",
+        "ms-python.python",
+        "dbaeumer.vscode-eslint"
+      ],
+      "settings": {
+        "java.configuration.updateBuildConfiguration": "automatic",
+        "java.compile.nullAnalysis.mode": "automatic",
+        "maven.executable.path": "/usr/bin/mvn",
+        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}
