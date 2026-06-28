@@ -126,5 +126,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
     && pip3 config set global.index-url "${PIP_INDEX_URL}" \
     && pip3 config set global.timeout 120
 
+RUN mkdir -p /workspace/train-ticket \
+    && chown -R "${USERNAME}:${USERNAME}" /workspace
+
 WORKDIR /workspace/train-ticket
 USER ${USERNAME}
