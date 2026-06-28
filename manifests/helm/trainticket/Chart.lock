@@ -1,9 +1,0 @@
-dependencies:
-- name: rabbitmq
-  repository: oci://registry-1.docker.io/bitnamicharts
-  version: 15.4.0
-- name: loadgenerator
-  repository: https://operationspai.github.io/loadgenerator
-  version: 0.1.1
-digest: sha256:c1dc344d1cf42810034b854697e86de61ae48f8cd83c6c6c0391ebcc56baaee3
-generated: "2026-05-02T06:42:29.308592339+01:00"
