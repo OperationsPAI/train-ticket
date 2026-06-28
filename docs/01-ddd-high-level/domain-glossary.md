@@ -103,7 +103,7 @@ Last updated: 2026-06-28
 | Disruption | 出行异常 | 延误、取消、停运、封航、司机取消、备降、站点变更等。 | Disruption Recovery | 异常来源可以是供应商、运营或系统。 |
 | Reaccommodation | 保护性改乘 | 因异常为用户重新安排可接受方案。 | Disruption Recovery | 可能免费或有成本承担规则。 |
 | Recovery Option | 恢复方案 | 面向用户或客服的替代出行、退款或补偿选项。 | Disruption Recovery | 需要可解释成本和权益。 |
-| Compensation | 补偿 | 因服务失败给予用户的赔付、优惠或费用减免。 | Customer Service, Payment | 不等同退款。 |
+| Compensation | 补偿 | 因服务失败给予用户的赔付、优惠或费用减免。 | Disruption Recovery, Post Sales, Customer Service | 不等同退款；现金、券、积分、钱包余额等执行动作按权益类型路由到 Payment 或 Wallet/Promotion 等上下文。 |
 
 ## 附加服务词汇
 

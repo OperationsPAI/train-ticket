@@ -356,8 +356,10 @@ Provider Integration 应只负责翻译、重试、幂等、错误映射和供�
 | OfferExpired | Offer Management | 报价失效，需要重新确认。 |
 | JourneyOrderCreated | Journey Order | 用户提交订单。 |
 | SegmentReservationRequested | Booking Orchestration | 开始向库存或供应商请求预留。 |
-| SegmentReservationConfirmed | Provider Integration | 某段预留成功。 |
-| SegmentReservationFailed | Provider Integration | 某段预留失败。 |
+| ProviderReservationConfirmed | Provider Integration | 外部供应商预留成功，仍需 Booking 映射为内部分段事实。 |
+| ProviderReservationFailed | Provider Integration | 外部供应商预留失败，仍需 Booking 映射为内部分段事实。 |
+| SegmentReservationConfirmed | Booking Orchestration | 某段平台预留成功。 |
+| SegmentReservationFailed | Booking Orchestration | 某段平台预留失败。 |
 | PaymentAuthorized | Payment | 支付授权成功。 |
 | PaymentCaptured | Payment | 收款成功。 |
 | EntitlementIssued | Entitlement & Ticketing | 凭证生成。 |

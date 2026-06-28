@@ -287,7 +287,7 @@ Last updated: 2026-06-28
 
 ## 当前代码缺口视角
 
-结合 `docs/00-current-state/functional-recovery.md` 和 `docs/01-ddd-high-level/train-ddd-business-flows.md`，当前仓库已经显性或隐性覆盖了部分查询、下单、支付、取消、改签、餐饮、托运、保险、通知和候补能力，但距离完整火车售票系统仍有明显缺口：
+结合 `docs/01-ddd-high-level/train-ddd-business-flows.md` 中恢复出的主干链路，当前系统已经显性或隐性覆盖了部分查询、下单、支付、取消、改签、餐饮、托运、保险、通知和候补能力，但距离完整火车售票系统仍有明显缺口：
 
 | 缺口 | 影响 |
 |---|---|

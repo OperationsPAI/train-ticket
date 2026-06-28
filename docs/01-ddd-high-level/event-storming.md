@@ -60,14 +60,15 @@ Last updated: 2026-06-28
 | 1 | 用户 | CreateJourneyOrder | JourneyOrder | JourneyOrderCreated | 触发分段预订编排 | OrderTimeline |
 | 2 | Booking Orchestration | RequestSegmentReservation | SegmentBooking | SegmentReservationRequested | 内部库存走 Hold，外部供应商走 ACL | BookingProgress |
 | 3 | Booking Orchestration | HoldCapacity | CapacityHold | CapacityHeld | 如果所有必要 Segment 已 Hold，进入支付 | InventoryHoldView |
-| 4 | Provider Integration | ConfirmSegmentReservation | SegmentBooking | SegmentReservationConfirmed | 更新订单分段确认进度 | BookingProgress |
-| 5 | Journey Order | MarkPendingPayment | JourneyOrder | JourneyOrderPendingPayment | 创建 PaymentIntent | OrderTimeline |
-| 6 | Payment | CreatePaymentIntent | PaymentIntent | PaymentIntentCreated | 打开收银台或发起预授权 | PaymentView |
-| 7 | 支付渠道 | CapturePayment | PaymentIntent | PaymentCaptured | 触发确认 Hold 和出票 | PaymentView |
-| 8 | Capacity | ConfirmHold | CapacityHold | CapacityHoldConfirmed | 通知 Booking 可以出票 | InventoryView |
-| 9 | Ticketing | IssueEntitlement | Entitlement | EntitlementIssued | 汇总订单确认条件 | EntitlementView |
-| 10 | Journey Order | ConfirmJourneyOrder | JourneyOrder | JourneyOrderConfirmed | 发送出票通知 | OrderTimeline |
-| 11 | Notification | ScheduleNotification | NotificationTask | NotificationScheduled | 异步发送 | MessageOutbox |
+| 4 | Provider Integration | MapProviderReservationResult | ProviderReservation | ProviderReservationConfirmed | Booking 映射为内部分段确认 | ProviderInteractionLog |
+| 5 | Booking Orchestration | ConfirmSegmentReservation | SegmentBooking | SegmentReservationConfirmed | 更新订单分段确认进度 | BookingProgress |
+| 6 | Journey Order | MarkPendingPayment | JourneyOrder | JourneyOrderPendingPayment | 触发编排层或 Payment OHS 创建 PaymentIntent | OrderTimeline |
+| 7 | Payment | CreatePaymentIntent | PaymentIntent | PaymentIntentCreated | 打开收银台或发起预授权 | PaymentView |
+| 8 | 支付渠道 | CapturePayment | PaymentIntent | PaymentCaptured | 触发确认 Hold 和出票 | PaymentView |
+| 9 | Capacity | ConfirmHold | CapacityHold | CapacityHoldConfirmed | 通知 Booking 可以出票 | InventoryView |
+| 10 | Ticketing | IssueEntitlement | Entitlement | EntitlementIssued | 汇总订单确认条件 | EntitlementView |
+| 11 | Journey Order | ConfirmJourneyOrder | JourneyOrder | JourneyOrderConfirmed | 发送出票通知 | OrderTimeline |
+| 12 | Notification | ScheduleNotification | NotificationTask | NotificationScheduled | 异步发送 | MessageOutbox |
 
 ### 失败分支
 
