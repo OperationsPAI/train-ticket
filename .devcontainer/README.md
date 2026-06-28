@@ -30,3 +30,16 @@ The container workdir is `/workspace/train-ticket`, owned by the non-root
 
 The check verifies the base toolchain, the DDD document layout, and the
 polyglot skeleton catalog.
+
+## Full Repository Check
+
+Use the devcontainer as the standard development environment for the rewrite.
+Inside the container, run:
+
+```bash
+make check-strict
+```
+
+`make check-strict` is the authoritative skeleton validation gate because it
+fails when required language toolchains are missing. Host `make check` is only an
+adaptive smoke test and may skip languages that are not installed locally.

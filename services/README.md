@@ -2,6 +2,10 @@
 
 This directory contains one service skeleton per DDD bounded context.
 
+The `Work Package` column is retained from the historical skeleton generator for
+traceability only. Old `WP-01` / `WP-xx` identifiers are not the current rewrite
+backlog unless a new plan explicitly regenerates and approves them.
+
 | Service | Domain | Language | Phase | Work Package |
 |---|---|---|---|---|
 | `place-network` | Place & Network | golang | phase-1-core | WP-02 |

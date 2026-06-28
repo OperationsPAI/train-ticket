@@ -2,6 +2,11 @@ project:
   name: train-ticket-ddd-greenfield
   languages: [java, golang, python, rust, typescript]
 
+# Current framing: this repository is being prepared for a full rewrite /
+# greenfield rebuild. Only REQ-001 and REQ-002 describe the current skeleton and
+# devcontainer state. REQ-101 through REQ-123 are retained as legacy WP-derived
+# references for traceability; they are not the current execution backlog unless
+# explicitly regenerated and re-approved. See docs/00-current-status.md.
 requirements:
   - id: REQ-001
     title: "Polyglot bounded-context skeleton"
@@ -43,11 +48,13 @@ requirements:
     confidence: confirmed
     source: ".devcontainer/README.md"
 
+  # Legacy WP-derived references below. Do not use as active backlog without
+  # regenerating the rewrite plan.
   - id: REQ-101
     title: "WP-01 Shared kernel contracts"
     description: "Define common IDs, value objects, and event envelope."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -61,7 +68,7 @@ requirements:
     title: "WP-02 Place and network master data"
     description: "Represent places, transport nodes, and provider place mappings."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -75,7 +82,7 @@ requirements:
     title: "WP-03 Service plan schedules"
     description: "Represent routes, timetables, calendars, planned suspension, and plan versions."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -89,7 +96,7 @@ requirements:
     title: "WP-04 Fare and rule snapshots"
     description: "Represent fare rule sets, quotes, refund fees, change fees, and rule snapshots."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -103,7 +110,7 @@ requirements:
     title: "WP-05 Internal segment inventory"
     description: "Represent inventory pools, capacity holds, quotas, overlap checks, and hold TTL."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -117,7 +124,7 @@ requirements:
     title: "WP-06 Trip planning query candidates"
     description: "Search without locking inventory and explain unavailable or unreachable journeys."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -131,7 +138,7 @@ requirements:
     title: "WP-07 Offer snapshots"
     description: "Freeze offer, offer item, price snapshot, disclosure, and TTL without holding inventory."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -145,7 +152,7 @@ requirements:
     title: "WP-08 Journey order aggregate"
     description: "Create commercial orders that reference offers without owning inventory, payment, or ticketing."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -159,7 +166,7 @@ requirements:
     title: "WP-09 Booking saga"
     description: "Coordinate segment bookings, provider reservation mapping, and compensation status."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -173,7 +180,7 @@ requirements:
     title: "WP-10 Payment cash loop"
     description: "Create payment intents, refunds, callback records, late payment handling, and idempotency keys."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -187,7 +194,7 @@ requirements:
     title: "WP-11 Provider integration ACL"
     description: "Normalize provider/channel adapters, signatures, raw archive, and external status mapping."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -201,7 +208,7 @@ requirements:
     title: "WP-12 Ticket entitlement"
     description: "Issue, void, suspend, and board main-ticket entitlements after all prerequisites are satisfied."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -215,7 +222,7 @@ requirements:
     title: "WP-13 Fulfillment facts"
     description: "Record boarding, check-in, no-show, and offline evidence disputes."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -229,7 +236,7 @@ requirements:
     title: "WP-14 Post-sales refund and change"
     description: "Evaluate and execute refund/change cases without delete-and-recreate semantics."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -243,7 +250,7 @@ requirements:
     title: "WP-15 Transaction notification"
     description: "Schedule required transaction notifications with idempotency and delivery receipts."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -257,7 +264,7 @@ requirements:
     title: "WP-16 Traveler facts"
     description: "Represent travelers, documents, eligibility summaries, and preference snapshots."
     priority: P0
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -271,7 +278,7 @@ requirements:
     title: "WP-17 Risk decisions"
     description: "Represent risk assessments, challenges, block/allow decisions, and evidence summaries."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -285,7 +292,7 @@ requirements:
     title: "WP-18 Account minimum"
     description: "Represent account, session, preference, freeze, and account-closure shell behavior."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -299,7 +306,7 @@ requirements:
     title: "WP-19 Admin and audit commands"
     description: "Represent operator identity, approval, manual action, and audit trails."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -313,7 +320,7 @@ requirements:
     title: "WP-20 Customer service cases"
     description: "Represent support cases, evidence references, manual action requests, and timelines."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -327,7 +334,7 @@ requirements:
     title: "WP-21 Finance event consumption"
     description: "Consume order/payment/post-sales events for revenue recognition and reconciliation views."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -341,7 +348,7 @@ requirements:
     title: "WP-22 Reporting read models"
     description: "Expose read-only metrics and dashboards from events and Finance views."
     priority: P2
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:
@@ -355,7 +362,7 @@ requirements:
     title: "WP-23 Legacy ACL strangler"
     description: "Map old preserve, cancel, rebook, payment, and execute entrypoints to controlled commands."
     priority: P1
-    status: active
+    status: legacy-reference
     code: []
     tests: []
     docs:

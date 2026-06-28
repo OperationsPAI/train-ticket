@@ -1049,6 +1049,10 @@ def service_readme() -> None:
 
 This directory contains one service skeleton per DDD bounded context.
 
+The `Work Package` column is retained from the historical skeleton generator for
+traceability only. Old `WP-01` / `WP-xx` identifiers are not the current rewrite
+backlog unless a new plan explicitly regenerates and approves them.
+
 | Service | Domain | Language | Phase | Work Package |
 |---|---|---|---|---|
 {chr(10).join(rows)}
@@ -1124,6 +1128,11 @@ def project_index() -> None:
         "  name: train-ticket-ddd-greenfield",
         "  languages: [java, golang, python, rust, typescript]",
         "",
+        "# Current framing: this repository is being prepared for a full rewrite /",
+        "# greenfield rebuild. Only REQ-001 and REQ-002 describe the current skeleton and",
+        "# devcontainer state. REQ-101 through REQ-123 are retained as legacy WP-derived",
+        "# references for traceability; they are not the current execution backlog unless",
+        "# explicitly regenerated and re-approved. See docs/00-current-status.md.",
         "requirements:",
         "  - id: REQ-001",
         "    title: \"Polyglot bounded-context skeleton\"",
@@ -1166,6 +1175,12 @@ def project_index() -> None:
         "    source: \".devcontainer/README.md\"",
         "",
     ]
+    lines.extend(
+        [
+            "  # Legacy WP-derived references below. Do not use as active backlog without",
+            "  # regenerating the rewrite plan.",
+        ]
+    )
     for req_id, title, description, priority, depends_on in WORK_PACKAGES:
         lines.extend(
             [
@@ -1173,7 +1188,7 @@ def project_index() -> None:
                 f"    title: {yaml_string(title)}",
                 f"    description: {yaml_string(description)}",
                 f"    priority: {priority}",
-                "    status: active",
+                "    status: legacy-reference",
                 "    code: []",
                 "    tests: []",
                 "    docs:",
