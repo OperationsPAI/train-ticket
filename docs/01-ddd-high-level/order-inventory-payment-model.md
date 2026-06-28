@@ -85,9 +85,9 @@ JourneyOrder 进入 `Confirmed` 必须满足：
 
 | 场景 | 处理 |
 |---|---|
-| 用户首次下单支付 | JourneyOrder 创建 PaymentIntent。 |
-| 改签补差价 | PostSalesCase 创建新的 PaymentIntent。 |
-| 候补担保 | WaitlistRequest 创建 Authorization 或 PaymentIntent。 |
+| 用户首次下单支付 | JourneyOrder 发布待支付商业事实，Booking Orchestration 或 Payment Open Host Service 创建 PaymentIntent。 |
+| 改签补差价 | PostSalesCase 发布差价支付请求，Payment 创建新的 PaymentIntent。 |
+| 候补担保 | WaitlistRequest 发布担保请求，Payment 创建 Authorization 或 PaymentIntent。 |
 | 网约车预授权 | Ride Segment 创建 Authorization，行程结束后 Capture。 |
 | 退款 | PostSalesCase 或 DisruptionCase 创建 Refund。 |
 

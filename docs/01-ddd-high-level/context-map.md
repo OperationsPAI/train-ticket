@@ -20,10 +20,10 @@ Last updated: 2026-06-28
 | 核心域 | Offer Management | 把可售性、价格、票规、风险和有效期冻结成可交易快照。 |
 | 核心域 | Booking Orchestration | 多段预订、占座、供应商确认、失败补偿的编排中心。 |
 | 核心域 | Journey Order | 用户视角的商业订单和售后入口。 |
-| 核心域 | Capacity & Availability | 固定班次库存、动态运力、候补和配额的可用性判断。 |
+| 核心域 | Capacity & Availability | 固定班次库存、动态运力、配额和可用性判断；候补队列是否独立由 reduce 决策。 |
 | 核心域 | Transfer Management | 联乘、中转可达性、保障契约和错过接续判断。 |
 | 核心域 | Disruption Recovery | 延误、取消、停运、停航、司机取消等异常恢复。 |
-| 支撑域 | Service Plan | 固定班次运行计划、运营日历、停售限售。 |
+| 支撑域 | Service Plan | 固定班次运行计划、运营日历、计划性停运和运行版本。 |
 | 支撑域 | Fare & Pricing | 票价、税费、手续费、优惠和售后规则。 |
 | 支撑域 | Entitlement & Ticketing | 出票、票证、登机牌、乘车码等权益凭证。 |
 | 支撑域 | Fulfillment | 检票、值机、登乘、行程完成等履约事实。 |
@@ -192,7 +192,8 @@ flowchart LR
 9. Payment
 10. Entitlement & Ticketing
 11. Post Sales
-12. Notification
-13. Admin & Audit
+12. Provider Integration
+13. Notification
+14. Admin & Audit
 
-网约车、飞机、轮船和完整联乘可以先作为模型预留，不必第一阶段实现完整供应商集成。
+第一阶段的 Provider Integration 可以只落最小 ACL：供应商状态映射、支付渠道协议适配、幂等、签名验签和 raw archive，不承载核心订单规则。网约车、飞机、轮船和完整联乘可以先作为模型预留，不必第一阶段实现完整供应商集成。

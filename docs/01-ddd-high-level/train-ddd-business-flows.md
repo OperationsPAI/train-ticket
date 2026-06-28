@@ -872,13 +872,12 @@ Ancillary Sales
 2. `docs/01-ddd-high-level/train-business-flow-catalog.md`：完整火车业务流全景目录。
 3. `docs/01-ddd-high-level/general-travel-ddd.md`：通用出行业务流和 DDD 边界，覆盖大巴、网约车、飞机、轮船和联乘中转。
 4. `docs/01-ddd-high-level/domain-glossary.md`：统一领域词汇表。
-5. `docs/00-current-state/service-dependency-map.md`：当前服务依赖图和目标 DDD 映射。
-6. `docs/01-ddd-high-level/context-map.md`：限界上下文和上下游关系。
-7. `docs/01-ddd-high-level/aggregate-model.md`：聚合根、不变量、命令和领域事件。
-8. `docs/01-ddd-high-level/state-machines.md`：核心业务对象状态机。
-9. `docs/01-ddd-high-level/event-storming.md`：命令、事件、策略、读模型。
-10. `docs/01-ddd-high-level/consistency-and-saga.md`：跨上下文一致性、Saga 和补偿。
-11. `docs/01-ddd-high-level/acl-provider-contracts.md`：供应商防腐层和状态映射。
-12. `docs/01-ddd-high-level/order-inventory-payment-model.md`：订单、库存、支付、出票核心一致性模型。
+5. `docs/01-ddd-high-level/context-map.md`：限界上下文和上下游关系。
+6. `docs/01-ddd-high-level/aggregate-model.md`：聚合根、不变量、命令和领域事件。
+7. `docs/01-ddd-high-level/state-machines.md`：核心业务对象状态机。
+8. `docs/01-ddd-high-level/event-storming.md`：命令、事件、策略、读模型。
+9. `docs/01-ddd-high-level/consistency-and-saga.md`：跨上下文一致性、Saga 和补偿。
+10. `docs/01-ddd-high-level/acl-provider-contracts.md`：供应商防腐层和状态映射。
+11. `docs/01-ddd-high-level/order-inventory-payment-model.md`：订单、库存、支付、出票核心一致性模型。
 
 `project-index.yaml` 仍建议稍后创建。等这些业务设计被确认后，再把 P0/P1/P2 能力索引化为正式重构任务。

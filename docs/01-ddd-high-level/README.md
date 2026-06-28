@@ -4,9 +4,9 @@ Last updated: 2026-06-28
 
 ## 状态
 
-这层文档是当前已经完成的 DDD high-level 设计基线。后续 map 阶段的领域 agent 应把这里作为输入，不直接修改这些文件。
+这层文档是当前已经完成的 DDD high-level 设计基线。后续 domain 详细设计和工程任务拆分应把这里作为输入，不直接修改这些文件。
 
-如果 map 或 reduce 阶段发现高层设计需要调整，应先记录到 `docs/03-ddd-reduce/conflict-log.md`，由 reduce 阶段统一决策后再回写。
+如果后续实现阶段发现高层设计需要调整，应新增或修改 `docs/03-ddd-final/decision-record.md` 中的 decision record，再回写相关文档。
 
 ## 文档清单
 
@@ -24,7 +24,7 @@ Last updated: 2026-06-28
 | `acl-provider-contracts.md` | 供应商防腐层契约。 |
 | `order-inventory-payment-model.md` | 第一阶段核心交易一致性模型。 |
 
-## 对 map 阶段的约束
+## 对 domain 详细设计的约束
 
 1. 每个领域设计必须使用 `domain-glossary.md` 的术语。
 2. 每个领域设计必须尊重 `context-map.md` 的上下游边界。
