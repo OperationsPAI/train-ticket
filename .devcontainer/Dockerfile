@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1.6
 ARG DEBIAN_TAG=trixie-slim
-FROM eclipse-temurin:17-jdk AS jdk17
+ARG JDK_TAG=25-jdk
+FROM eclipse-temurin:${JDK_TAG} AS jdk
 
 FROM debian:${DEBIAN_TAG}
 
-ARG NODE_MAJOR=20
+ARG GO_VERSION=1.26.4
+ARG NODE_MAJOR=26
+ARG TYPESCRIPT_VERSION=6.0.3
 ARG HELM_VERSION=v3.15.4
 ARG KUBECTL_VERSION=v1.30.4
 ARG SKAFFOLD_VERSION=v2.13.2
@@ -13,13 +16,15 @@ ARG USERNAME=vscode
 ARG USER_UID=1000
 ARG USER_GID=${USER_UID}
 
-COPY --from=jdk17 /opt/java/openjdk /opt/java/openjdk
+COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_HOME=/usr/local/cargo \
     JAVA_HOME=/opt/java/openjdk \
     MAVEN_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0" \
     NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
-    PATH="/opt/java/openjdk/bin:${PATH}" \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH="/opt/java/openjdk/bin:/usr/local/go/bin:/usr/local/cargo/bin:${PATH}" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PYTHONUNBUFFERED=1 \
@@ -92,15 +97,22 @@ RUN install -m 0755 -d /etc/apt/keyrings \
         docker-compose-plugin \
         nodejs \
     && npm config set registry https://registry.npmmirror.com \
+    && npm install -g "typescript@${TYPESCRIPT_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
-        amd64) tool_arch="amd64" ;; \
-        arm64) tool_arch="arm64" ;; \
+        amd64) tool_arch="amd64"; go_arch="amd64" ;; \
+        arm64) tool_arch="arm64"; go_arch="arm64" ;; \
         *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
+    curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz"; \
+    rm -rf /usr/local/go; \
+    tar -C /usr/local -xzf /tmp/go.tar.gz; \
+    rm -f /tmp/go.tar.gz; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable; \
+    chmod -R a+rX "${RUSTUP_HOME}" "${CARGO_HOME}"; \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${tool_arch}/kubectl"; \
     chmod +x /usr/local/bin/kubectl; \
     curl -fsSL -o /tmp/helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-${tool_arch}.tar.gz"; \
@@ -113,6 +125,14 @@ RUN set -eux; \
     rm -rf /tmp/helm.tar.gz "/tmp/linux-${tool_arch}"
 
 RUN set -eux; \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go; \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; \
+    ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo; \
+    ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc; \
+    ln -sf /usr/local/cargo/bin/rustfmt /usr/local/bin/rustfmt; \
+    printf '%s\n' 'export PATH="/usr/local/go/bin:/usr/local/cargo/bin:${PATH}"' > /etc/profile.d/train-ticket-toolchains.sh
+
+RUN set -eux; \
     groupadd --gid "${USER_GID}" "${USERNAME}"; \
     useradd --uid "${USER_UID}" --gid "${USER_GID}" -m -s /bin/bash "${USERNAME}"; \
     groupadd -f docker; \
@@ -120,7 +140,8 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${USERNAME}"; \
     chmod 0440 "/etc/sudoers.d/${USERNAME}"; \
     mkdir -p "/home/${USERNAME}/.m2" "/home/${USERNAME}/.cache" "/home/${USERNAME}/.skaffold" "/home/${USERNAME}/.npm"; \
-    chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
+    mkdir -p "${CARGO_HOME}/registry" "${CARGO_HOME}/git"; \
+    chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}" "${CARGO_HOME}" "${RUSTUP_HOME}"
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
     && pip3 config set global.index-url "${PIP_INDEX_URL}" \

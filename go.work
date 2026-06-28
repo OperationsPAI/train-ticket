@@ -1,0 +1,10 @@
+go 1.26
+
+use (
+	./services/place-network
+	./services/service-plan
+	./services/provider-integration
+	./services/fulfillment
+	./services/supplier-catalog
+	./services/dispatch
+)

@@ -1,0 +1,17 @@
+[project]
+name = "transfer-management"
+version = "0.1.0"
+description = "Transfer Management service skeleton"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.138.1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12"]
+build-backend = "uv_build"
