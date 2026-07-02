@@ -1,6 +1,6 @@
 # Current Project Status
 
-Last updated: 2026-06-28
+Last updated: 2026-07-03
 
 ## Status
 
@@ -19,6 +19,8 @@ partially completed implementation of the old Train Ticket services.
   regenerated and re-approved for the rewrite.
 - Treat `project-index.yaml` entries `REQ-101` through `REQ-123` as legacy
   references, not active implementation requirements.
+- Treat `REQ-003` as the first regenerated active slice: a minimal Shared
+  Kernel contract baseline in `platform/shared-kernel-rust`.
 - Treat `docs/04-implementation-plan/status.md` as a superseded historical
   AgentM loop record, not as the current blocker list.
 - Legacy service behavior may be consulted only as reference material or through

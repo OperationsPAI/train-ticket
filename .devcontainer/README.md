@@ -10,17 +10,33 @@ Included tools:
 - Go 1.26.x, for Gin adapter, ingestion, and high-throughput service skeletons.
 - Node 26 and TypeScript 6, for Fastify service skeletons.
 - Python 3 and uv, for scripting or Python services.
-- rustup stable and Cargo, for Axum invariant-heavy service skeletons.
+- rustup stable, Cargo, rustfmt, and clippy, for Axum invariant-heavy service
+  skeletons.
 - Docker CLI, kubectl, Helm, Skaffold, yq, jq, git-lfs, and rsync.
 
 ## Build
 
 ```bash
-docker build -f .devcontainer/Dockerfile -t train-ticket-dev:local .
+make build-devcontainer
 ```
 
 The container workdir is `/workspace/train-ticket`, owned by the non-root
 `vscode` user so ARL can clone or upload a repository snapshot into it.
+
+## AgentM / ARL Worker Snapshot
+
+Build a worker image that includes the current repository snapshot:
+
+```bash
+make build-agent-env-image
+make check-agent-env-image
+```
+
+Use `train-ticket-agent-env:local` as `AGENTM_AGENT_ENV_IMAGE` when running an
+AgentM scenario with the `agent_env` operations backend against local OrbStack
+Kubernetes. The snapshot image keeps repository files owned by `vscode`, but
+uses root as the default image user so ARL's workspace-seeding init container
+can populate the sandbox volume.
 
 ## Smoke Check
 
@@ -34,6 +50,12 @@ polyglot skeleton catalog.
 ## Full Repository Check
 
 Use the devcontainer as the standard development environment for the rewrite.
+From the host, run the authoritative strict validation inside the local image:
+
+```bash
+make check-devcontainer
+```
+
 Inside the container, run:
 
 ```bash

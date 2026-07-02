@@ -112,6 +112,7 @@ RUN set -eux; \
     tar -C /usr/local -xzf /tmp/go.tar.gz; \
     rm -f /tmp/go.tar.gz; \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable; \
+    rustup component add rustfmt clippy; \
     chmod -R a+rX "${RUSTUP_HOME}" "${CARGO_HOME}"; \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${tool_arch}/kubectl"; \
     chmod +x /usr/local/bin/kubectl; \
