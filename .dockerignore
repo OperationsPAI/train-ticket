@@ -1,0 +1,14 @@
+.agentm/
+.git/
+.venv/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+**/target/
+**/node_modules/
+**/dist/
+**/coverage/
+*.log
+generated-sdk/
+openapi-docs/

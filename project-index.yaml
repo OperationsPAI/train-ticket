@@ -3,10 +3,11 @@ project:
   languages: [java, golang, python, rust, typescript]
 
 # Current framing: this repository is being prepared for a full rewrite /
-# greenfield rebuild. Only REQ-001 and REQ-002 describe the current skeleton and
-# devcontainer state. REQ-101 through REQ-123 are retained as legacy WP-derived
-# references for traceability; they are not the current execution backlog unless
-# explicitly regenerated and re-approved. See docs/00-current-status.md.
+# greenfield rebuild. REQ-001 through REQ-003 describe the current skeleton,
+# devcontainer, and first regenerated implementation slice. REQ-101 through
+# REQ-123 are retained as legacy WP-derived references for traceability; they
+# are not the current execution backlog unless explicitly regenerated and
+# re-approved. See docs/00-current-status.md.
 requirements:
   - id: REQ-001
     title: "Polyglot bounded-context skeleton"
@@ -31,22 +32,50 @@ requirements:
 
   - id: REQ-002
     title: "Polyglot devcontainer toolchain"
-    description: "The development container includes the runtime tools needed by the selected Java, Go, Python, Rust, and TypeScript skeletons."
+    description: "The development container includes the runtime tools needed by the selected Java, Go, Python, Rust, and TypeScript skeletons, plus a reproducible AgentM/ARL worker snapshot image."
     priority: P0
-    status: implemented
+    status: tested
     code:
       - path: .devcontainer/Dockerfile
         description: "Installs language toolchains and operational CLI tools."
+      - path: .devcontainer/agent-env.Dockerfile
+        description: "Copies the current repository snapshot into the devcontainer base image for ARL agent-env sessions."
       - path: .devcontainer/scripts/check.sh
         description: "Reports available toolchain versions and validates the repository layout."
+      - path: .dockerignore
+        description: "Keeps local caches, AgentM artifacts, and build outputs out of Docker build contexts."
+      - path: Makefile
+        description: "Provides host entry points for devcontainer checks and AgentM/ARL worker image builds."
     tests:
       - path: .devcontainer/scripts/check.sh
         description: "Smoke check for documentation and toolchain availability."
+      - path: Makefile
+        description: "Runs strict repository validation inside the devcontainer and ARL worker snapshot images."
     docs:
       - path: .devcontainer/README.md
     depends_on: [REQ-001]
     confidence: confirmed
     source: ".devcontainer/README.md"
+
+  - id: REQ-003
+    title: "Shared Kernel contract baseline"
+    description: "Define the first active shared-kernel contract primitives for cross-context references, money, time windows, and event envelopes."
+    priority: P0
+    status: tested
+    code:
+      - path: platform/shared-kernel-rust/src/lib.rs
+        description: "Rust reference implementation for shared IDs, value objects, and event envelope invariants."
+    tests:
+      - path: platform/shared-kernel-rust/src/lib.rs
+        description: "Unit tests for shared contract invariants."
+      - path: platform/shared-kernel-rust/tests/skeleton.rs
+        description: "Public API construction test for contract primitives."
+    docs:
+      - path: platform/shared-kernel-rust/README.md
+      - path: docs/00-current-status.md
+    depends_on: [REQ-001, REQ-002]
+    confidence: confirmed
+    source: "docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
