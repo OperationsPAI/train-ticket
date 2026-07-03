@@ -11,7 +11,7 @@
   <groupId>com.trainticket</groupId>
   <artifactId>booking-orchestration</artifactId>
   <version>0.1.0-SNAPSHOT</version>
-  <name>Booking Orchestration service skeleton</name>
+  <name>Booking Orchestration domain foundation</name>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <java.version>25</java.version>
