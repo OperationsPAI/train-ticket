@@ -12,7 +12,8 @@ Included tools:
 - Python 3 and uv, for scripting or Python services.
 - rustup stable, Cargo, rustfmt, and clippy, for Axum invariant-heavy service
   skeletons.
-- Docker CLI, kubectl, Helm, Skaffold, yq, jq, git-lfs, and rsync.
+- Docker CLI, GitHub CLI (`gh`), kubectl, Helm, Skaffold, yq, jq, git-lfs,
+  and rsync.
 
 ## Build
 
