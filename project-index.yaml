@@ -96,6 +96,28 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/place-network.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
+  - id: REQ-005
+    title: "Service Plan domain foundation"
+    description: "Define the first coherent Go domain foundation for Service Plan schedules, including plans, patterns, stops, calendars, timetables, scheduled services, service segments, and plan versions."
+    priority: P0
+    status: tested
+    code:
+      - path: services/service-plan/internal/domain/service_plan.go
+        description: "Go domain model and validation for ServicePlan, ServicePattern, ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, and PlanVersion."
+      - path: services/service-plan/internal/domain/profile.go
+        description: "Service profile updated to the regenerated REQ-005 ownership set."
+    tests:
+      - path: services/service-plan/internal/domain/service_plan_test.go
+        description: "Unit tests for stop ordering, calendar exceptions, timetable cross-day semantics, version publication, immutability, overlap checks, and scheduled-service materialization."
+    docs:
+      - path: services/service-plan/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/service-plan.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-004]
+    confidence: confirmed
+    source: "docs/02-domains/service-plan.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
   - id: REQ-101

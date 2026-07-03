@@ -15,8 +15,8 @@ func Profile() ServiceProfile {
 		Domain:       "Service Plan",
 		Language:     "golang",
 		Phase:        "phase-1-core",
-		WorkPackages: []string{"WP-03"},
-		Owns:         []string{"Route", "ServicePlan", "Calendar", "Timetable", "PlanVersion"},
+		WorkPackages: []string{"REQ-005"},
+		Owns:         []string{"ServicePlan", "ServicePattern", "ServiceStop", "Calendar", "Timetable", "ScheduledService", "ServiceSegment", "PlanVersion"},
 	}
 }
 
@@ -24,5 +24,5 @@ func Health() string {
 	return "ok"
 }
 
-const WorkPackageSummary = "WP-03"
-const OwnershipSummary = "Route, ServicePlan, Calendar, Timetable, PlanVersion"
+const WorkPackageSummary = "REQ-005"
+const OwnershipSummary = "ServicePlan, ServicePattern, ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, PlanVersion"
