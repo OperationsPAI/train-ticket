@@ -27,6 +27,10 @@ partially completed implementation of the old Train Ticket services.
   foundation in `services/service-plan` covering ServicePlan, ServicePattern,
   ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, and
   PlanVersion invariants.
+- Treat `REQ-006` as the regenerated Capacity & Availability slice: a tested
+  Rust domain foundation in `services/capacity-availability` covering
+  InventoryPool identity, StationInterval overlap, CapacityHold lifecycle and
+  conflict rules, and non-locking AvailabilitySnapshot calculation.
 - Treat `REQ-007` as a regenerated active slice: the first tested Fare & Pricing
   domain foundation in `services/fare-pricing`, covering rule-set publication,
   quote calculation, immutable rule snapshots, and basic refund/change fee

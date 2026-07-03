@@ -86,18 +86,20 @@
       "language": "rust",
       "runtime": "rust",
       "phase": "phase-1-core",
-      "status": "skeleton",
+      "status": "tested",
       "priority": "P0",
       "workPackages": [
-        "WP-05"
+        "REQ-006"
       ],
       "docs": [
-        "docs/02-domains/capacity-availability.md"
+        "docs/02-domains/capacity-availability.md",
+        "docs/03-ddd-final/phase-1-contract.md"
       ],
       "owns": [
         "InventoryPool",
+        "StationInterval",
         "CapacityHold",
-        "Quota"
+        "AvailabilitySnapshot"
       ],
       "rationale": "Rust is appropriate for interval overlap and seat-hold invariants that must fail closed."
     },
