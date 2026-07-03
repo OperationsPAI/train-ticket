@@ -15,9 +15,9 @@ public class Application {
             "payment",
             "Payment",
             "java",
-            "phase-1-core",
-            "WP-10",
-            "PaymentIntent, Refund, CallbackRecord, IdempotencyKey"
+            "phase-1-domain-foundation",
+            "REQ-012-Payment-domain-foundation",
+            "PaymentIntent aggregate, Refund aggregate, ChannelCallbackRecord idempotency, LatePaymentCase facts, original-route refund lifecycle"
         );
     }
 }
