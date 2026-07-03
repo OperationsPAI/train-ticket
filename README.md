@@ -62,15 +62,16 @@ make check-strict
   packages are useful, regenerate them from the current rewrite priorities and
   explicitly approve them before implementation.
 
-## Current Next Step
+## Current Active Slice
 
-Initialize the rewrite plan from the current DDD baseline and skeleton state.
-The immediate task is not to revise old `WP-01`; it is to define a fresh,
-minimal implementation slice for the full rebuild.
+`REQ-004` is the current regenerated implementation slice: Place & Network now
+contains validated Go domain primitives for `Place`, `TransportNode`, and
+`ProviderPlaceMapping`. This is the first small WP-02-derived master-data step
+after the Shared Kernel baseline, not a resumption of the legacy WP backlog.
 
-The skeleton exists so agents can route future implementation work to the
-correct bounded context. It does not mean any old WP business behavior is
-complete or currently scheduled.
+The remaining skeleton services exist so agents can route future implementation
+work to the correct bounded context. It does not mean any old WP business
+behavior is complete or currently scheduled.
 
 ## Development Container
 
