@@ -23,7 +23,7 @@ requirements:
         description: "Shared Kernel reference skeleton."
     tests:
       - path: scripts/check-skeleton.py
-        description: "Validates catalog, service files, and available language checks."
+        description: "Validates catalog, service files, and bootstrapped language checks."
     docs:
       - path: docs/05-service-architecture/language-selection.md
     depends_on: []
