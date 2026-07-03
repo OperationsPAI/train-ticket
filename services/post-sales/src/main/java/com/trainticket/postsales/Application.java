@@ -16,8 +16,8 @@ public class Application {
             "Post Sales",
             "java",
             "phase-1-core",
-            "WP-14",
-            "PostSalesCase, RefundDecision, ChangeExecutionPlan"
+            "REQ-014",
+            "PostSalesCase, PostSalesDecision, PostSalesExecutionPlan, PostSalesApplied"
         );
     }
 }
