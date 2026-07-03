@@ -11,7 +11,7 @@ require_tool() {
   fi
 }
 
-for tool in git python3 java mvn go node npm tsc pip3 uv rustc cargo; do
+for tool in git gh python3 java mvn go node npm tsc pip3 uv rustc cargo; do
   require_tool "${tool}"
 done
 
@@ -25,7 +25,7 @@ test -f project-index.yaml
 test -x scripts/check-skeleton.py
 
 python3 --version
-for cmd in java mvn go node npm tsc pip3 uv rustc cargo jq yq helm kubectl skaffold docker; do
+for cmd in java mvn go node npm tsc pip3 uv rustc cargo gh jq yq helm kubectl skaffold docker; do
   if command -v "${cmd}" >/dev/null 2>&1; then
     case "${cmd}" in
       java)
