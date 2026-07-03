@@ -4,28 +4,35 @@ Domain: Entitlement & Ticketing
 
 Language: rust
 
-Phase: phase-1-core
+Phase: phase-1-domain-foundation
 
-Status: skeleton
+Status: REQ-013 domain foundation
 
 ## Owns
 
-- Entitlement
-- Credential
-- Issue
-- Void
-- Suspend
-- Boarded consumption
+- Entitlement lifecycle state and audit invariants: requested, issued, retryable/non-retryable issue failure, suspended/frozen, voided, expired, and used.
+- Ticket credential references and duplicate credential prevention in the provider/type scope.
+- Issuance decisions from accepted fact references supplied by Booking, Capacity, Payment, Traveler, and Risk contracts.
+- Void, suspend/freeze, resume, expire, and late issued-after-refund-request domain behavior.
+- Domain events such as `EntitlementIssued`, `EntitlementIssueFailed`, `EntitlementSuspended`, `EntitlementVoided`, `EntitlementExpired`, and `EntitlementUsed`.
+
+## Does Not Own
+
+- Physical boarding or segment-completion facts; they are consumed as Fulfillment references.
+- Funds, refund amounts, payment execution, or order totals.
+- Provider reservation internals, raw supplier status machines, or provider calls.
+- Inventory holds, capacity release execution, or order writes.
 
 ## DDD Sources
 
 - `docs/02-domains/entitlement-ticketing.md`
+- Phase 1 active contracts for cross-context references and event boundaries.
 
 ## Language Rationale
 
-Rust is appropriate for ticket entitlement lifecycle invariants and credential safety.
+Rust is appropriate for ticket entitlement lifecycle invariants, idempotent issuance, and credential safety.
 
-## Skeleton Check
+## Validation
 
 ```bash
 cargo test
