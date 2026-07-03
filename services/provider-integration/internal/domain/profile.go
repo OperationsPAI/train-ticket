@@ -14,9 +14,16 @@ func Profile() ServiceProfile {
 		ServiceID:    "provider-integration",
 		Domain:       "Provider Integration",
 		Language:     "golang",
-		Phase:        "phase-1-support",
-		WorkPackages: []string{"WP-11"},
-		Owns:         []string{"adapter protocol", "signature verification", "raw archive", "external status mapping"},
+		Phase:        "phase-1-acl-foundation",
+		WorkPackages: []string{"REQ-015"},
+		Owns: []string{
+			"provider request and callback identity",
+			"idempotency scope",
+			"raw archive references",
+			"external status and error mapping",
+			"unmapped status quarantine",
+			"retry and manual-review directives",
+		},
 	}
 }
 
@@ -24,5 +31,5 @@ func Health() string {
 	return "ok"
 }
 
-const WorkPackageSummary = "WP-11"
-const OwnershipSummary = "adapter protocol, signature verification, raw archive, external status mapping"
+const WorkPackageSummary = "REQ-015 Provider Integration ACL foundation"
+const OwnershipSummary = "provider request/callback identity, idempotency scope, raw archive references, status/error mapping, unmapped status quarantine, retry/manual review directives"
