@@ -16,8 +16,8 @@ public class Application {
             "Booking Orchestration",
             "java",
             "phase-1-core",
-            "WP-09",
-            "BookingSaga, SegmentBooking, ProviderReservation mapping"
+            "REQ-011",
+            "BookingSaga progress, SegmentBooking lifecycle, normalized ProviderReservation mapping"
         );
     }
 }
