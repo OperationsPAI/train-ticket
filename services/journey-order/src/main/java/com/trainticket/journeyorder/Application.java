@@ -15,9 +15,9 @@ public class Application {
             "journey-order",
             "Journey Order",
             "java",
-            "phase-1-core",
-            "WP-08",
-            "JourneyOrder, OrderItem, MonetarySummary, OrderTimeline"
+            "phase-1-domain-foundation",
+            "REQ-010-Journey-Order-domain-foundation",
+            "JourneyOrder aggregate, OrderItem, TravelerRef, MonetarySummary, OrderTimeline facts, confirmation condition guards"
         );
     }
 }
