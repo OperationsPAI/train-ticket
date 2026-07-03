@@ -38,6 +38,12 @@ def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> Non
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def npm_install_command(service_root: Path) -> list[str]:
+    if (service_root / "package-lock.json").exists():
+        return ["npm", "ci"]
+    return ["npm", "install"]
+
+
 def require(path: Path) -> None:
     if not path.exists():
         fail(f"missing required path: {path.relative_to(ROOT)}")
@@ -142,13 +148,12 @@ def run_available_language_checks(services: list[dict], strict: bool) -> None:
         if service["language"] != "typescript":
             continue
         service_root = ROOT / service["path"]
-        if strict:
-            require_tool("npm", strict)
-            run(["npm", "install"], service_root)
-        if (service_root / "node_modules/.bin/tsc").exists() or require_tool("tsc", strict):
-            run(["npm", "test"], service_root)
-        else:
-            print(f"skip typescript build for {service['id']}: tsc not available")
+        if not require_tool("npm", strict):
+            print(f"skip typescript build for {service['id']}: npm not available")
+            continue
+        if strict or not (service_root / "node_modules/.bin/tsc").exists():
+            run(npm_install_command(service_root), service_root)
+        run(["npm", "test"], service_root)
 
 
 def main() -> None:
