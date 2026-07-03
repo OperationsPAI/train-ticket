@@ -133,22 +133,23 @@
       "domain": "Trip Planning",
       "language": "python",
       "runtime": "python",
-      "phase": "phase-1-core",
-      "status": "skeleton",
+      "phase": "phase-1-search-foundation",
+      "status": "implemented-foundation",
       "priority": "P0",
       "workPackages": [
-        "WP-06"
+        "REQ-008-Trip-Planning-search-foundation"
       ],
       "docs": [
-        "docs/02-domains/trip-planning.md"
+        "docs/02-domains/trip-planning.md",
+        "docs/03-ddd-final/phase-1-contract.md"
       ],
       "owns": [
-        "TripIntent",
-        "Itinerary",
-        "SearchResult",
-        "PriceHint"
+        "TripIntent validation",
+        "Itinerary candidates",
+        "SearchResult ranking explanations",
+        "Non-authoritative PriceHint and AvailabilityHint snapshots"
       ],
-      "rationale": "Python is a better fit for search heuristics, ranking, and explanation logic."
+      "rationale": "Python is a better fit for search heuristics, deterministic ranking, and auditable explanation logic."
     },
     {
       "id": "offer-management",
