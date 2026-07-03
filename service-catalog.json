@@ -157,23 +157,29 @@
       "domain": "Offer Management",
       "language": "typescript",
       "runtime": "node",
-      "phase": "phase-1-core",
-      "status": "skeleton",
+      "phase": "phase-1-offer-domain-foundation",
+      "status": "implemented-foundation",
       "priority": "P0",
       "workPackages": [
-        "WP-07"
+        "REQ-009-Offer-Management-domain-foundation"
       ],
       "docs": [
-        "docs/02-domains/offer-management.md"
+        "docs/02-domains/offer-management.md",
+        "docs/03-ddd-final/phase-1-contract.md"
       ],
       "owns": [
-        "Offer",
-        "OfferItem",
+        "Offer identity and lifecycle",
+        "OfferItem snapshot composition",
+        "ItineraryReference",
+        "AvailabilitySnapshotReference",
         "PriceSnapshot",
+        "FareRuleSnapshotReference",
+        "PassengerMix",
         "RiskDisclosure",
-        "ChangeOffer"
+        "OfferQuoted",
+        "OfferExpired"
       ],
-      "rationale": "TypeScript fits user-facing offer API composition, TTL policy, and disclosure payloads."
+      "rationale": "TypeScript fits user-facing offer API composition, TTL policy, immutable snapshot enforcement, and disclosure payloads."
     },
     {
       "id": "journey-order",
