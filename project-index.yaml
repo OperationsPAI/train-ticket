@@ -3,8 +3,8 @@ project:
   languages: [java, golang, python, rust, typescript]
 
 # Current framing: this repository is being prepared for a full rewrite /
-# greenfield rebuild. REQ-001 through REQ-003 describe the current skeleton,
-# devcontainer, and first regenerated implementation slice. REQ-101 through
+# greenfield rebuild. REQ-001 through REQ-004 describe the current skeleton,
+# devcontainer, and regenerated implementation slices. REQ-101 through
 # REQ-123 are retained as legacy WP-derived references for traceability; they
 # are not the current execution backlog unless explicitly regenerated and
 # re-approved. See docs/00-current-status.md.
@@ -76,6 +76,25 @@ requirements:
     depends_on: [REQ-001, REQ-002]
     confidence: confirmed
     source: "docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-004
+    title: "Place and network master-data primitives"
+    description: "Define validated Place, TransportNode, and ProviderPlaceMapping domain primitives for Place & Network master data, including explicit low-confidence provider mapping gaps."
+    priority: P0
+    status: tested
+    code:
+      - path: services/place-network/internal/domain/master_data.go
+        description: "Go domain primitives and validation for places, transport nodes, and provider place mappings."
+    tests:
+      - path: services/place-network/internal/domain/master_data_test.go
+        description: "Unit tests for Place & Network master-data invariants."
+    docs:
+      - path: services/place-network/README.md
+      - path: docs/00-current-status.md
+      - path: README.md
+    depends_on: [REQ-001, REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/place-network.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.

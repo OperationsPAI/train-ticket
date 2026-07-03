@@ -21,6 +21,8 @@ partially completed implementation of the old Train Ticket services.
   references, not active implementation requirements.
 - Treat `REQ-003` as the first regenerated active slice: a minimal Shared
   Kernel contract baseline in `platform/shared-kernel-rust`.
+- Treat `REQ-004` as the next regenerated active slice: validated Place &
+  Network master-data primitives in `services/place-network`.
 - Treat `docs/04-implementation-plan/status.md` as a superseded historical
   AgentM loop record, not as the current blocker list.
 - Legacy service behavior may be consulted only as reference material or through
