@@ -3,10 +3,10 @@ project:
   languages: [java, golang, python, rust, typescript]
 
 # Current framing: this repository is being prepared for a full rewrite /
-# greenfield rebuild. REQ-001 through REQ-004 describe the current skeleton,
-# devcontainer, and regenerated implementation slices. REQ-101 through
-# REQ-123 are retained as legacy WP-derived references for traceability; they
-# are not the current execution backlog unless explicitly regenerated and
+# greenfield rebuild. REQ-001 through REQ-005 and REQ-007 describe the current
+# skeleton, devcontainer, and regenerated implementation slices. REQ-101
+# through REQ-123 are retained as legacy WP-derived references for traceability;
+# they are not the current execution backlog unless explicitly regenerated and
 # re-approved. See docs/00-current-status.md.
 requirements:
   - id: REQ-001
@@ -117,6 +117,29 @@ requirements:
     depends_on: [REQ-004]
     confidence: confirmed
     source: "docs/02-domains/service-plan.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-007
+    title: "Fare and Pricing domain foundation"
+    description: "Define the first Python domain foundation for rule-set publication, quote calculation, immutable pricing snapshots, and basic post-sales refund/change fee assessment."
+    priority: P0
+    status: tested
+    code:
+      - path: services/fare-pricing/src/fare_pricing/domain.py
+        description: "Fare & Pricing domain models and invariants for FareRuleSet, FareRule, FareQuote, RuleSnapshot, FareBreakdown, PriceExplanation, FeeAssessment, and AdjustmentQuote."
+      - path: services/fare-pricing/src/fare_pricing/__init__.py
+        description: "Public package exports and service profile ownership for the Fare & Pricing foundation."
+    tests:
+      - path: services/fare-pricing/tests/test_domain.py
+        description: "Unit tests for rule validation, quote calculation, snapshot immutability, quote expiry, and refund/change fee assessment."
+      - path: services/fare-pricing/tests/test_skeleton.py
+        description: "Service skeleton health/profile tests retained for FastAPI registration."
+    docs:
+      - path: services/fare-pricing/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/fare-pricing.md
+    depends_on: [REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/fare-pricing.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.

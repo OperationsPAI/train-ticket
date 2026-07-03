@@ -2,6 +2,28 @@ from typing import List, TypedDict
 
 from fastapi import FastAPI
 
+from .domain import (
+    AdjustmentQuote,
+    AssessmentPurpose,
+    FareBreakdown,
+    FareQuote,
+    FareRule,
+    FareRuleSet,
+    FeeAssessment,
+    Money,
+    PriceComponent,
+    PriceExplanation,
+    PricingError,
+    QuoteStatus,
+    RuleKind,
+    RuleSetStatus,
+    RuleSnapshot,
+    ValidityWindow,
+    assess_change,
+    assess_refund,
+    calculate_fare_quote,
+)
+
 
 class ServiceProfile(TypedDict):
     service_id: str
@@ -17,8 +39,17 @@ SERVICE_PROFILE: ServiceProfile = {
     "domain": "Fare & Pricing",
     "language": "python",
     "phase": "phase-1-core",
-    "work_packages": ["WP-04"],
-    "owns": ["FareRuleSet", "FareQuote", "RefundFee", "ChangeFee", "RuleSnapshot"],
+    "work_packages": ["REQ-007", "WP-04"],
+    "owns": [
+        "FareRuleSet",
+        "FareRule",
+        "FareQuote",
+        "RuleSnapshot",
+        "FareBreakdown",
+        "PriceExplanation",
+        "FeeAssessment",
+        "AdjustmentQuote",
+    ],
 }
 
 

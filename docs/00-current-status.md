@@ -27,6 +27,10 @@ partially completed implementation of the old Train Ticket services.
   foundation in `services/service-plan` covering ServicePlan, ServicePattern,
   ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, and
   PlanVersion invariants.
+- Treat `REQ-007` as a regenerated active slice: the first tested Fare & Pricing
+  domain foundation in `services/fare-pricing`, covering rule-set publication,
+  quote calculation, immutable rule snapshots, and basic refund/change fee
+  assessment.
 - Treat `docs/04-implementation-plan/status.md` as a superseded historical
   AgentM loop record, not as the current blocker list.
 - Legacy service behavior may be consulted only as reference material or through
