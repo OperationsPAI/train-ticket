@@ -327,6 +327,69 @@ requirements:
     source: "docs/02-domains/journey-order.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
 
+  - id: REQ-011
+    title: "Booking Orchestration domain foundation"
+    description: "Implement the Booking Orchestration domain foundation in Java. Owns SegmentBooking, BookingSaga, ReservationRequestLog, CompensationCase aggregates with persisted saga step coordination, idempotent provider request logging, and controlled compensation."
+    priority: P0
+    status: tested
+    code:
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBooking.java
+        description: "SegmentBooking aggregate root with lifecycle from REQUESTED through CONFIRMED, TICKETED, CANCELLED and FAILED states."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingSaga.java
+        description: "BookingSaga saga orchestrator with persisted step coordination, idempotency keys, timeouts, retry limits, and compensation actions."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingSagaStep.java
+        description: "SagaStep entity with idempotency key, timeout, retry limit, and compensation action."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingSagaStatus.java
+        description: "BookingSaga lifecycle state enumeration."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingStepStatus.java
+        description: "SagaStep status enumeration."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBookingStatus.java
+        description: "SegmentBooking lifecycle state enumeration."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBookingEvent.java
+        description: "Segment-level domain events emitted for Journey Order, Capacity, Payment, and Entitlement."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingEvent.java
+        description: "Saga coordination events emitted for Journey Order and downstream consumers."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/DomainEvent.java
+        description: "Domain event marker interface."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/EventRecorder.java
+        description: "Internal event recording helper."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/ProviderReference.java
+        description: "Normalized provider booking reference value object."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/ProviderReservationConfirmed.java
+        description: "Normalized provider confirmation fact with segment booking id, provider reference, evidence, and attributes."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/ReservationRequestLog.java
+        description: "ReservationRequestLog aggregate for idempotent audit of external provider requests."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/CompensationCase.java
+        description: "CompensationCase aggregate for controlled compensation of failed saga steps."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/DomainRuleViolation.java
+        description: "Domain rule violation exception."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+    tests:
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/SegmentBookingTest.java
+        description: "Unit tests for SegmentBooking lifecycle, provider confirmation idempotency, timeout semantics, cancellation, and late provider confirmation."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/BookingSagaTest.java
+        description: "Unit tests for BookingSaga step coordination, retry limits, terminal failure, and idempotent step recording."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/ReservationRequestLogTest.java
+        description: "Unit tests for ReservationRequestLog response recording, timeout, and field validation."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/CompensationCaseTest.java
+        description: "Unit tests for CompensationCase open, close, escalate, and action tracking."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/booking-orchestration/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/booking-orchestration.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-010, REQ-015]
+    confidence: confirmed
+    source: "docs/02-domains/booking-orchestration.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+
   - id: REQ-016
     title: "OpenTelemetry collection baseline"
     description: "Provide a local OpenTelemetry collector configuration, stable service-side OTLP environment contract, and opt-in OpenTelemetry API adapters for all language runtime baselines."
