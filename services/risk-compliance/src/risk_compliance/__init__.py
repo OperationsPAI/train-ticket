@@ -1,10 +1,66 @@
 from .api import create_app
+from .domain import (
+    AssessmentInputSnapshot,
+    AssessmentStatus,
+    BlockScope,
+    BlockStatus,
+    Challenge,
+    ChallengeOutcome,
+    ChallengeStatus,
+    ChallengeType,
+    Decision,
+    EvidenceBundle,
+    EvidenceItem,
+    EvidenceSummary,
+    EvidenceType,
+    PolicyVersionRef,
+    RiskAssessment,
+    RiskComplianceError,
+    RiskDecision,
+    RiskLevel,
+    allow_subject,
+    assess_risk,
+    block_subject,
+    issue_challenge,
+    record_evidence,
+    resolve_challenge,
+)
 from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
 
 __all__ = [
-    'SERVICE_PROFILE',
-    'ServiceProfile',
-    'create_app',
-    'health',
-    'profile',
+    # Value objects
+    "AssessmentInputSnapshot",
+    "EvidenceBundle",
+    "EvidenceItem",
+    "EvidenceSummary",
+    "PolicyVersionRef",
+    # Enums
+    "AssessmentStatus",
+    "BlockScope",
+    "BlockStatus",
+    "ChallengeOutcome",
+    "ChallengeStatus",
+    "ChallengeType",
+    "Decision",
+    "EvidenceType",
+    "RiskLevel",
+    # Aggregates
+    "Challenge",
+    "RiskAssessment",
+    "RiskDecision",
+    # Errors
+    "RiskComplianceError",
+    # Commands
+    "allow_subject",
+    "assess_risk",
+    "block_subject",
+    "issue_challenge",
+    "record_evidence",
+    "resolve_challenge",
+    # Runtime
+    "SERVICE_PROFILE",
+    "ServiceProfile",
+    "create_app",
+    "health",
+    "profile",
 ]
