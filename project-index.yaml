@@ -3,10 +3,10 @@ project:
   languages: [java, golang, python, rust, typescript]
 
 # Current framing: this repository is being prepared for a full rewrite /
-# greenfield rebuild. REQ-001 through REQ-010 describe the current skeleton,
+# greenfield rebuild. REQ-001 through REQ-012 describe the current skeleton,
 # devcontainer, and regenerated implementation slices. REQ-015 and REQ-016 describe
 # the Provider Integration ACL foundation and the current OpenTelemetry collection
-# baseline. REQ-011 through REQ-014
+# baseline. REQ-011, REQ-013, and REQ-014
 # require status reconciliation before they become authoritative active slices.
 # REQ-101 through REQ-123 are retained as legacy WP-derived references for
 # traceability; they are not the current execution backlog unless explicitly
@@ -358,6 +358,85 @@ requirements:
     confidence: confirmed
     source: "docs/07-observability/README.md"
 
+
+  - id: REQ-012
+    title: "Payment domain foundation"
+    description: "Implement the Payment domain foundation in Java. Owns PaymentIntent lifecycle with authorization/capture/refund balance invariants, Refund lifecycle with settled/failed/manual-review states, ChannelCallbackRecord idempotency and duplicate detection, LatePaymentCase isolation for captures after cancellation or expiration, IdempotencyLedger for business key idempotency, and domain events including PaymentIntentCreated, PaymentAuthorized, PaymentCaptured, PaymentFailed, PaymentIntentCancelled, PaymentIntentExpired, RefundRequested, RefundSettled, RefundFailed, ChannelCallbackReceived, DuplicateChannelCallbackDetected, and LatePaymentDetected."
+    priority: P0
+    status: tested
+    code:
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntent.java
+        description: "PaymentIntent aggregate root with creation, authorization, capture, failure, cancellation, expiration, refund balance, and late-capture isolation."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/Refund.java
+        description: "Refund aggregate root with request, submit to channel, settle, retryable failure, and final/manual-review lifecycle."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/ChannelCallbackRecord.java
+        description: "ChannelCallbackRecord aggregate root with callback receipt, duplicate detection, and apply/reject lifecycle."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/LatePaymentCase.java
+        description: "LatePaymentCase aggregate root for isolating captures that arrive after cancellation or expiration."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/IdempotencyLedger.java
+        description: "Generic idempotency ledger for deduplicating PaymentIntent and Refund creation by business key."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/Money.java
+        description: "Money value object with currency, addition, subtraction, comparison, and zero-amount validation."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/DomainRuleViolation.java
+        description: "Domain rule violation exception."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/EventMetadata.java
+        description: "Domain event metadata envelope with event id, timestamps, command/causation/correlation chain, and schema version."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentEvent.java
+        description: "Sealed interface for all Payment domain events."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentCreated.java
+        description: "Event emitted when a PaymentIntent is created."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentAuthorized.java
+        description: "Event emitted when a PaymentIntent is authorized."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentCaptured.java
+        description: "Event emitted when a PaymentIntent is captured."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentFailed.java
+        description: "Event emitted when a PaymentIntent fails."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentCancelled.java
+        description: "Event emitted when a PaymentIntent is cancelled."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentExpired.java
+        description: "Event emitted when a PaymentIntent expires."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentStatus.java
+        description: "Enum for PaymentIntent lifecycle states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundRequested.java
+        description: "Event emitted when a Refund is requested."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundSettled.java
+        description: "Event emitted when a Refund is settled."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundFailed.java
+        description: "Event emitted when a Refund fails."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundStatus.java
+        description: "Enum for Refund lifecycle states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/CallbackProcessingStatus.java
+        description: "Enum for ChannelCallbackRecord processing states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/ChannelCallbackReceived.java
+        description: "Event emitted when a channel callback is received."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/DuplicateChannelCallbackDetected.java
+        description: "Event emitted when a duplicate channel callback is detected."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/LatePaymentCaseStatus.java
+        description: "Enum for LatePaymentCase lifecycle states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/LatePaymentDetected.java
+        description: "Event emitted when a late payment is detected."
+      - path: services/payment/src/main/java/com/trainticket/payment/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/payment/src/main/java/com/trainticket/payment/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/payment/src/main/java/com/trainticket/payment/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+    tests:
+      - path: services/payment/src/test/java/com/trainticket/payment/domain/PaymentIntentDomainTest.java
+        description: "Unit tests for PaymentIntent creation, idempotency, authorization/capture, expiry, late capture after cancellation, and callback duplicate detection."
+      - path: services/payment/src/test/java/com/trainticket/payment/domain/RefundDomainTest.java
+        description: "Unit tests for Refund request/settle against captured balance, refund amount validation, and retryable/final failure facts."
+      - path: services/payment/src/test/java/com/trainticket/payment/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/payment/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/payment.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-010]
+    confidence: confirmed
+    source: "docs/02-domains/payment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+ 
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
   - id: REQ-101
