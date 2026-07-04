@@ -1185,6 +1185,106 @@ impl fmt::Display for EntitlementError {
 
 impl std::error::Error for EntitlementError {}
 
+// ---------------------------------------------------------------------------
+// EventEnvelope -- contract-conformant event wrapper
+// ---------------------------------------------------------------------------
+
+/// Contract-conformant event envelope per docs/08-contracts/shared-primitives.md
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventEnvelope {
+    pub event_id: String,
+    pub event_type: String,
+    pub schema_version: u32,
+    pub occurred_at: String, // RFC3339 UTC
+    pub correlation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<String>,
+    pub producer: String,
+}
+
+impl EventEnvelope {
+    pub fn new(
+        event_type: impl Into<String>,
+        occurred_at: u64,
+        correlation_id: impl Into<String>,
+        causation_id: Option<impl Into<String>>,
+        producer: impl Into<String>,
+    ) -> Self {
+        Self {
+            event_id: format!("evt-{:x}", occurred_at),
+            event_type: event_type.into(),
+            schema_version: 1,
+            occurred_at: unix_millis_to_rfc3339(occurred_at),
+            correlation_id: correlation_id.into(),
+            causation_id: causation_id.map(|v| v.into()),
+            producer: producer.into(),
+        }
+    }
+}
+
+/// Helper to wrap a serializable domain payload into a serde_json Value envelope
+pub fn wrap_domain_event<T: serde::Serialize>(
+    envelope: EventEnvelope,
+    payload: &T,
+) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "eventId": envelope.event_id,
+        "eventType": envelope.event_type,
+        "schemaVersion": envelope.schema_version,
+        "occurredAt": envelope.occurred_at,
+        "correlationId": envelope.correlation_id,
+        "causationId": envelope.causation_id,
+        "producer": envelope.producer,
+        "data": serde_json::to_value(payload).unwrap_or_default(),
+    })
+}
+
+/// Convert UnixMillis to RFC3339 UTC string
+pub fn unix_millis_to_rfc3339(ms: u64) -> String {
+    let secs = ms / 1000;
+    let naive = time_secs_to_datetime(secs);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        naive.0, naive.1, naive.2, naive.3, naive.4, naive.5, ms % 1000
+    )
+}
+
+fn time_secs_to_datetime(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let h = (time_secs / 3600) as u32;
+    let m = ((time_secs % 3600) / 60) as u32;
+    let s = (time_secs % 60) as u32;
+    let mut y = 1970i64;
+    let mut d = days as i64;
+    loop {
+        let days_in_year = if is_leap(y as u64) { 366 } else { 365 };
+        if d < days_in_year {
+            break;
+        }
+        d -= days_in_year;
+        y += 1;
+    }
+    let leap = is_leap(y as u64);
+    const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 1u32;
+    for &md in MONTH_DAYS.iter() {
+        let md_adj = if mo == 2 && leap { md + 1 } else { md };
+        if d < md_adj {
+            break;
+        }
+        d -= md_adj;
+        mo += 1;
+    }
+    (y as u64, mo, (d + 1) as u32, h, m, s)
+}
+
+fn is_leap(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1618,4 +1718,31 @@ mod tests {
             EntitlementError::VoidRequiresCompensation
         ));
     }
+
+    #[test]
+    fn event_envelope_round_trip() {
+        let envelope = EventEnvelope::new(
+            "EntitlementIssued",
+            1800000000000,
+            "corr-1",
+            None::<String>,
+            "entitlement-ticketing",
+        );
+        assert_eq!(envelope.event_type, "EntitlementIssued");
+        assert_eq!(envelope.schema_version, 1);
+        assert_eq!(envelope.producer, "entitlement-ticketing");
+        assert!(envelope.occurred_at.contains("2027-01-") || envelope.occurred_at.contains("2026-"));
+        assert!(envelope.occurred_at.ends_with("Z"));
+
+        // Wrap a domain event
+        let payload = serde_json::json!({
+            "entitlementId": "ent-1",
+            "segmentBookingRef": "sb-1",
+        });
+        let wrapped = wrap_domain_event(envelope, &payload);
+        assert_eq!(wrapped["eventType"], "EntitlementIssued");
+        assert_eq!(wrapped["data"]["entitlementId"], "ent-1");
+        assert_eq!(wrapped["schemaVersion"], 1);
+    }
+
 }

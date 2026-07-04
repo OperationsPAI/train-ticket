@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -721,5 +722,38 @@ func TestInvariantNonDestructiveChanges(t *testing.T) {
 	c.Activate()
 	if c.Description != "desc" {
 		t.Fatalf("contract data should be preserved")
+	}
+}
+
+func TestEventEnvelopeRoundTrip(t *testing.T) {
+	now := frozenNow()
+	env := NewEventEnvelope("SupplierRegistered", now, "corr-1", nil, "supplier-catalog")
+	if env.EventType != "SupplierRegistered" {
+		t.Fatalf("unexpected event type: %s", env.EventType)
+	}
+	if env.SchemaVersion != 1 {
+		t.Fatalf("unexpected schema version: %d", env.SchemaVersion)
+	}
+	if env.Producer != "supplier-catalog" {
+		t.Fatalf("unexpected producer: %s", env.Producer)
+	}
+	if !strings.HasSuffix(env.OccurredAt, "Z") {
+		t.Fatalf("occurredAt should end with Z (RFC3339 UTC): %s", env.OccurredAt)
+	}
+
+	payload := SupplierRegisteredEvent{
+		SupplierID:   "sup-001",
+		LegalName:    "Test Supplier",
+		BrandName:    "Test",
+		Status:       SupplierStatusDraft,
+		RegisteredAt: now,
+	}
+	wrapped := WrapDomainEvent(env, payload)
+	if wrapped["eventType"] != "SupplierRegistered" {
+		t.Fatalf("unexpected wrapped event type: %v", wrapped["eventType"])
+	}
+	data := wrapped["data"].(SupplierRegisteredEvent)
+	if data.SupplierID != "sup-001" {
+		t.Fatalf("unexpected data supplier id: %s", data.SupplierID)
 	}
 }
