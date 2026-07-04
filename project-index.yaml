@@ -685,6 +685,37 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/payment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
  
+  - id: REQ-026
+    title: "Supplier Catalog domain foundation"
+    description: "Implement the Supplier Catalog domain foundation in Go. Owns supplier master data: suppliers, carriers, contracts, product capabilities, and external code mappings."
+    priority: P1
+    status: tested
+    code:
+      - path: services/supplier-catalog/internal/domain/supplier_catalog.go
+        description: "Go domain model for Supplier, Carrier, Contract, ProductCapability, and ExternalCode aggregates."
+      - path: services/supplier-catalog/internal/domain/events.go
+        description: "Domain events for Supplier Catalog: SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped."
+      - path: services/supplier-catalog/internal/domain/clock.go
+        description: "Package-level clock variable for deterministic time in tests."
+      - path: services/supplier-catalog/internal/domain/profile.go
+        description: "Service profile updated to REQ-026 ownership."
+    tests:
+      - path: services/supplier-catalog/internal/domain/supplier_catalog_test.go
+        description: "Unit tests for domain invariants: supplier lifecycle, carrier registration, contract activation/suspension, product capability declaration, external code mapping, conflict detection, and non-destructive master data versioning."
+    docs:
+      - path: services/supplier-catalog/README.md
+        description: "Service README with REQ-026 domain documentation."
+      - path: docs/02-domains/supplier-catalog.md
+        description: "Supplier Catalog domain design document."
+      - path: docs/08-contracts/events/supplier-catalog.md
+        description: "Supplier Catalog event and contract command specification."
+    depends_on:
+      - REQ-004
+      - REQ-015
+      - REQ-028
+    confidence: confirmed
+    source: "docs/02-domains/supplier-catalog.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
   - id: REQ-027

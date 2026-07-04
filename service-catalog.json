@@ -583,14 +583,14 @@
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-support",
-      "status": "skeleton",
+      "status": "tested",
       "priority": "P1",
       "workPackages": [
-        "WP-02",
-        "WP-11"
+        "REQ-026"
       ],
       "docs": [
-        "docs/02-domains/supplier-catalog.md"
+        "docs/02-domains/supplier-catalog.md",
+        "docs/08-contracts/events/supplier-catalog.md"
       ],
       "owns": [
         "Supplier",
