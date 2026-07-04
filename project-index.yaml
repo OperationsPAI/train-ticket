@@ -247,6 +247,41 @@ requirements:
         description: "Unit tests for ProviderRequestLog state machine and idempotency."
       - path: services/provider-integration/internal/domain/provider_status_probe_test.go
         description: "Unit tests for ProviderStatusProbe scheduling and execution."
+
+  - id: REQ-017
+    title: "Traveler Profile domain foundation"
+    description: "Implement the Traveler Profile domain foundation in Java. This domain owns traveler master data: TravelerProfile aggregates, identity documents, eligibility summaries, and preference snapshots consumed by Fare & Pricing and Entitlement issuance."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/TravelerProfile.java
+        description: "TravelerProfile aggregate root with lifecycle, document, eligibility, and preference management."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/Document.java
+        description: "Identity document aggregate with verification, expiry, revocation lifecycle."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/EligibilitySummary.java
+        description: "Eligibility facts with validity windows and revocation."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/PreferenceSnapshot.java
+        description: "Immutable preference snapshots with versioning."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/TravelerProfileEvent.java
+        description: "Sealed event interface with 13 event types."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/EventMetadata.java
+        description: "Standard event metadata envelope."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/ServiceProfile.java
+        description: "Service profile with REQ-017 ownership."
+      - path: services/traveler-profile/README.md
+        description: "Service README with domain documentation."
+    tests:
+      - path: services/traveler-profile/src/test/java/com/trainticket/travelerprofile/domain/TravelerProfileTest.java
+        description: "38 unit tests for domain invariants, document lifecycle, eligibility, preferences, and booking validation."
+      - path: services/traveler-profile/src/test/java/com/trainticket/travelerprofile/ApplicationTest.java
+        description: "4 application skeleton tests (health, runtime endpoints, context filter, tracing seam)."
+    docs:
+      - path: docs/02-domains/traveler-profile.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/traveler-profile.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
       - path: services/provider-integration/internal/domain/webhook_inbox_test.go
         description: "Unit tests for WebhookInbox verification, mapping, and publishing."
       - path: services/provider-integration/internal/domain/provider_outbox_test.go
