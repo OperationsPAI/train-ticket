@@ -842,6 +842,34 @@ requirements:
     depends_on: [REQ-010, REQ-012, REQ-014, REQ-028]
     confidence: confirmed
     source: "docs/02-domains/finance-settlement.md, docs/03-ddd-final/phase-1-contract.md, docs/08-contracts/README.md, docs/08-contracts/shared-primitives.md"
+  - id: REQ-025
+    title: "Reporting read models foundation"
+    description: "Implement the Reporting domain foundation in Python. This domain exposes read-only metric definitions and dashboard read models built from business events and Finance views."
+    priority: P2
+    status: implemented
+    code:
+      - path: services/reporting/src/reporting/domain.py
+        description: "Reporting domain model: MetricDefinition, DashboardReadModel, FunnelView, ConsumedEventLog aggregates, commands, and events."
+      - path: services/reporting/src/reporting/__init__.py
+        description: "Public API exports for reporting domain types and commands."
+      - path: services/reporting/src/reporting/runtime.py
+        description: "Service profile with REQ-025 ownership."
+    tests:
+      - path: services/reporting/tests/test_domain.py
+        description: "Unit tests for domain invariants, state machines, commands, and idempotent event consumption."
+      - path: services/reporting/tests/test_skeleton.py
+        description: "Application skeleton tests (health, runtime endpoints, tracing seam, domain type imports)."
+    docs:
+      - path: docs/02-domains/reporting.md
+        description: "Reporting domain design document."
+      - path: docs/03-ddd-final/phase-1-contract.md
+        description: "Phase 1 cross-domain contract specification."
+      - path: docs/08-contracts/events/reporting.md
+        description: "Reporting event and command contract specification."
+    depends_on: [REQ-024, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/reporting.md, docs/03-ddd-final/phase-1-contract.md, docs/08-contracts/events/reporting.md"
+
   # Legacy WP-derived references below. Do not use as active backlog without
   - id: REQ-014
     title: "Post Sales domain foundation"
