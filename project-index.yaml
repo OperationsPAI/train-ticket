@@ -537,6 +537,27 @@ requirements:
  
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
+  - id: REQ-027
+    title: "Field-level cross-domain contract specification"
+    description: "Author the authoritative field-level cross-domain contract specification under docs/08-contracts/. This document set is the single source of truth every service must conform to for cross-context communication."
+    priority: P0
+    status: implemented
+    code: []
+    tests: []
+    docs:
+      - path: docs/08-contracts/README.md
+        description: "Contract organization, versioning, and conformance rules."
+      - path: docs/08-contracts/shared-primitives.md
+        description: "Language-neutral field-level definitions for EventEnvelope, IDs, Money, TimeWindow, and enums."
+      - path: docs/08-contracts/conformance-gaps.md
+        description: "Audit of service implementations against the contract spec."
+      - path: docs/08-contracts/events/
+        description: "Per-context event and command definitions (13 contexts)."
+    depends_on:
+      - REQ-015
+    confidence: confirmed
+    source: "docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
   - id: REQ-101
     title: "WP-01 Shared kernel contracts"
     description: "Define common IDs, value objects, and event envelope."
