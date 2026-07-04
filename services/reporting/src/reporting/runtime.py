@@ -11,7 +11,19 @@ class ServiceProfile(TypedDict):
     boundary: NotRequired[str]
 
 
-SERVICE_PROFILE: ServiceProfile = {'service_id': 'reporting', 'domain': 'Reporting', 'language': 'python', 'phase': 'phase-1-limited', 'work_packages': ['WP-22'], 'owns': ['MetricDefinition', 'DashboardReadModel', 'FunnelView']}
+SERVICE_PROFILE: ServiceProfile = {
+    'service_id': 'reporting',
+    'domain': 'Reporting',
+    'language': 'python',
+    'phase': 'phase-1-limited',
+    'work_packages': ['REQ-025', 'WP-22'],
+    'owns': [
+        'MetricDefinition',
+        'DashboardReadModel',
+        'FunnelView',
+        'ConsumedEventLog',
+    ],
+}
 
 
 def health() -> str:
