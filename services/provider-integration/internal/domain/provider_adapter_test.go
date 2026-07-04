@@ -8,8 +8,8 @@ import (
 func TestNewProviderAdapterValidates(t *testing.T) {
 	matrix := CapabilityMatrix{
 		Version: "1.0",
-		Capabilites: map[Capability]bool{
-			CapabilityReserve: true,
+		Capabilities: map[Capability]bool{
+			CapabilityReserve:         true,
 			CapabilityIssueCredential: true,
 		},
 	}
@@ -37,8 +37,8 @@ func TestNewProviderAdapterValidates(t *testing.T) {
 
 func TestNewProviderAdapterRejectsMissingFields(t *testing.T) {
 	matrix := CapabilityMatrix{
-		Version: "1.0",
-		Capabilites: map[Capability]bool{CapabilityReserve: true},
+		Version:      "1.0",
+		Capabilities: map[Capability]bool{CapabilityReserve: true},
 	}
 	_, err := NewProviderAdapter("", ProviderTypeRail, "1.0.0", AuthConfig{AuthType: "key", Credentials: nil}, matrix, SlaPolicy{})
 	if err == nil || !strings.Contains(err.Error(), "provider id is required") {
@@ -58,8 +58,8 @@ func TestNewProviderAdapterRejectsMissingFields(t *testing.T) {
 
 func TestProviderAdapterEnableDisable(t *testing.T) {
 	matrix := CapabilityMatrix{
-		Version: "1.0",
-		Capabilites: map[Capability]bool{CapabilityReserve: true},
+		Version:      "1.0",
+		Capabilities: map[Capability]bool{CapabilityReserve: true},
 	}
 	adapter, _ := NewProviderAdapter("cr", ProviderTypeRail, "1.0.0", AuthConfig{AuthType: "key"}, matrix, SlaPolicy{})
 
@@ -77,15 +77,15 @@ func TestProviderAdapterEnableDisable(t *testing.T) {
 
 func TestProviderAdapterUpdateCapabilityMatrix(t *testing.T) {
 	matrix := CapabilityMatrix{
-		Version: "1.0",
-		Capabilites: map[Capability]bool{CapabilityReserve: true},
+		Version:      "1.0",
+		Capabilities: map[Capability]bool{CapabilityReserve: true},
 	}
 	adapter, _ := NewProviderAdapter("cr", ProviderTypeRail, "1.0.0", AuthConfig{AuthType: "key"}, matrix, SlaPolicy{})
 
 	newMatrix := CapabilityMatrix{
 		Version: "2.0",
-		Capabilites: map[Capability]bool{
-			CapabilityReserve: true,
+		Capabilities: map[Capability]bool{
+			CapabilityReserve:           true,
 			CapabilityCancelReservation: true,
 		},
 	}
@@ -100,8 +100,8 @@ func TestProviderAdapterUpdateCapabilityMatrix(t *testing.T) {
 func TestProviderAdapterRejectsUnsupportedCapability(t *testing.T) {
 	matrix := CapabilityMatrix{
 		Version: "1.0",
-		Capabilites: map[Capability]bool{
-			CapabilityReserve: true,
+		Capabilities: map[Capability]bool{
+			CapabilityReserve:   true,
 			"UnknownCapability": true,
 		},
 	}
@@ -113,8 +113,8 @@ func TestProviderAdapterRejectsUnsupportedCapability(t *testing.T) {
 
 func TestProviderAdapterRejectsUnsupportedProviderType(t *testing.T) {
 	matrix := CapabilityMatrix{
-		Version: "1.0",
-		Capabilites: map[Capability]bool{CapabilityReserve: true},
+		Version:      "1.0",
+		Capabilities: map[Capability]bool{CapabilityReserve: true},
 	}
 	_, err := NewProviderAdapter("test", ProviderType("UNKNOWN"), "1.0.0", AuthConfig{AuthType: "key"}, matrix, SlaPolicy{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported provider type") {
@@ -124,8 +124,8 @@ func TestProviderAdapterRejectsUnsupportedProviderType(t *testing.T) {
 
 func TestProviderAdapterUpdateSlaPolicy(t *testing.T) {
 	matrix := CapabilityMatrix{
-		Version: "1.0",
-		Capabilites: map[Capability]bool{CapabilityReserve: true},
+		Version:      "1.0",
+		Capabilities: map[Capability]bool{CapabilityReserve: true},
 	}
 	adapter, _ := NewProviderAdapter("cr", ProviderTypeRail, "1.0.0", AuthConfig{AuthType: "key"}, matrix, SlaPolicy{})
 
@@ -138,8 +138,8 @@ func TestProviderAdapterUpdateSlaPolicy(t *testing.T) {
 
 func TestProviderAdapterRegisteredAtSet(t *testing.T) {
 	matrix := CapabilityMatrix{
-		Version: "1.0",
-		Capabilites: map[Capability]bool{CapabilityReserve: true},
+		Version:      "1.0",
+		Capabilities: map[Capability]bool{CapabilityReserve: true},
 	}
 	adapter, _ := NewProviderAdapter("cr", ProviderTypeRail, "1.0.0", AuthConfig{AuthType: "key"}, matrix, SlaPolicy{})
 	if adapter.RegisteredAt.IsZero() {
