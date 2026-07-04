@@ -15,7 +15,7 @@ be resolved before integration testing (联调).
 | GAP-001 | fare-pricing | `services/fare-pricing/src/fare_pricing/domain.py` | `Money` uses `Decimal` amount with implicit two-decimal-place semantics. | ✅ RESOLVED: added `amount_minor` property and `from_minor` factory. |
 | GAP-002 | offer-management | `services/offer-management/src/domain.ts` | `Money` type uses `amount: number` (float). | ✅ RESOLVED: replaced `amount` with `amountMinor: integer`. |
 | GAP-003 | journey-order | `services/journey-order/.../domain/Money.java` | Uses `BigDecimal` amount. | ✅ RESOLVED: added `toMinorUnits()` and `fromMinorUnits()`. |
-| GAP-004 | payment | `services/payment/.../domain/Money.java` | Uses `BigDecimal` amount. | ✅ RESOLVED: added `toMinorUnits()` and `fromMinorUnits()`. |
+| GAP-004 | post-sales | `services/post-sales/.../domain/Money.java` | Uses `BigDecimal` amount without minor-unit boundary. | ✅ RESOLVED: added `fromMinorUnits(long, String)` and `toMinorUnits()` matching journey-order pattern. |
 
 ## 2. ID Prefix Conventions
 
@@ -39,6 +39,9 @@ be resolved before integration testing (联调).
 | GAP-011 | payment | `PaymentIntent.java` | Events use `PaymentEvent` with `EventMetadata`. | ✅ RESOLVED: replaced `EventMetadata` with canonical `EventEnvelope`. |
 | GAP-012 | booking-orchestration | `BookingSaga.java` | Events use `DomainEvent` base. | Same as GAP-010. |
 
+| GAP-010-A | entitlement-ticketing | `src/lib.rs` | Domain events are bare structs without EventEnvelope. | ✅ RESOLVED: added `EventEnvelope` type with `wrap_domain_event()` helper per shared-primitives.md. |
+| GAP-010-B | supplier-catalog | `internal/domain/events.go` | Domain events are bare structs without EventEnvelope. | ✅ RESOLVED: added `EventEnvelope` type with `WrapDomainEvent()` helper per shared-primitives.md. |
+| GAP-010-C | service-plan | `internal/domain/service_plan.go` | Domain events are bare structs without EventEnvelope. | ✅ RESOLVED: added `EventEnvelope` type with `WrapDomainEvent()` helper per shared-primitives.md. |
 ## 4. Serialisation Conventions
 
 ### Severity: MEDIUM — JSON field naming and enum casing
@@ -46,7 +49,7 @@ be resolved before integration testing (联调).
 | # | Service | File | Issue | Required |
 |---|---|---|---|---|
 | GAP-013 | trip-planning | `domain.py` | Accepts both camelCase and snake_case. | All JSON fields MUST be camelCase. |
-| GAP-014 | offer-management | `domain.ts` | Enums are PascalCase (`"Quoted"`). | ⚠️ PARTIALLY RESOLVED: `OfferExpired.reason` uses SCREAMING_SNAKE. Internal status enums remain PascalCase for TypeScript consistency; serialization boundary should convert. |
+| GAP-014 | offer-management | `domain.ts` | Enums are PascalCase (`"Quoted"`). | ✅ RESOLVED: added `mapAvailabilityConfidence()` mapping function per docs/08-contracts/events/capacity-availability.md mapping table. Internal enums remain PascalCase; boundary converts to contract canonical SCREAMING_SNAKE. |
 
 ## 5. Missing Event Publications
 
@@ -65,7 +68,7 @@ be resolved before integration testing (联调).
 
 | # | Service | Issue |
 |---|---|---|
-| GAP-019 | capacity-availability | `AvailabilitySnapshot` uses `u64` Unix timestamps instead of RFC3339 UTC. | ⚠️ PARTIALLY RESOLVED: added `snapshot_id`, `snapshot_version`, `sellable`, and canonical `AvailabilityStatus`. UnixMillis kept internally; serialization boundary should convert to RFC3339. |
+| GAP-019 | capacity-availability | `AvailabilitySnapshot` uses `u64` Unix timestamps instead of RFC3339 UTC. | ✅ RESOLVED: added `unix_millis_to_rfc3339()` and `rfc3339_to_unix_millis()` conversion helpers at serialization boundary. Internal UnixMillis preserved for performance; all wire-format timestamps use RFC3339 UTC. |
 
 ## 7. Missing Validation
 
@@ -121,13 +124,13 @@ be resolved before integration testing (联调).
 | offer-management | 5 | HIGH |
 | journey-order | 5 | HIGH |
 | payment | 3 | HIGH |
-| capacity-availability | 2 | MEDIUM |
+| capacity-availability | 1 | MEDIUM |
 | booking-orchestration | 3 | HIGH |
 | shared-kernel-rust | 1 | MEDIUM |
 | trip-planning | 1 | MEDIUM |
 | traveler-profile | 1 | HIGH |
 
-**Total gaps: 22** (14 HIGH, 8 MEDIUM)
+**Total gaps: 22 (3 new GAP-010 sub-items resolved inline)** (14 HIGH, 8 MEDIUM)
 
 All HIGH-severity gaps MUST be resolved before integration testing (联调).
 

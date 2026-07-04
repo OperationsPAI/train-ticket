@@ -5,6 +5,8 @@ import { describe, it } from "node:test";
 import {
   DomainError,
   Offer,
+  mapAvailabilityConfidence,
+  mapStatusToConfidence,
   nonMutationBoundaryProof,
   type QuoteOfferCommand,
 } from "./domain.js";
@@ -244,4 +246,38 @@ describe("Offer Management domain foundation", () => {
     assert.equal(event.boundaryProof.entitlementMutated, false);
     assert.deepEqual(event.boundaryProof.crossContextWriteTargets, []);
   });
+
+describe("AvailabilityConfidence mapping", () => {
+  it("maps confirmed-snapshot to AVAILABLE", () => {
+    const result = mapAvailabilityConfidence("confirmed-snapshot", true);
+    assert.equal(result.status, "AVAILABLE");
+    assert.equal(result.confidence, "confirmed-snapshot");
+  });
+
+  it("maps low to LIMITED", () => {
+    const result = mapAvailabilityConfidence("low", true);
+    assert.equal(result.status, "LIMITED");
+    assert.equal(result.confidence, "low");
+  });
+
+  it("maps estimated to UNKNOWN", () => {
+    const result = mapAvailabilityConfidence("estimated", true);
+    assert.equal(result.status, "UNKNOWN");
+    assert.equal(result.confidence, "estimated");
+  });
+
+  it("maps any confidence with sellable=false to UNAVAILABLE", () => {
+    const result = mapAvailabilityConfidence("confirmed-snapshot", false);
+    assert.equal(result.status, "UNAVAILABLE");
+  });
+
+  it("reverse maps status to confidence correctly", () => {
+    assert.equal(mapStatusToConfidence("AVAILABLE"), "confirmed-snapshot");
+    assert.equal(mapStatusToConfidence("LIMITED"), "low");
+    assert.equal(mapStatusToConfidence("UNKNOWN"), "estimated");
+    assert.equal(mapStatusToConfidence("UNAVAILABLE"), "estimated");
+    assert.equal(mapStatusToConfidence("UNAVAILABLE", "low"), "low");
+  });
+});
+
 });

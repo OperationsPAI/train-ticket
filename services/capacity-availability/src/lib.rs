@@ -869,6 +869,113 @@ pub enum AvailabilityExplanation {
     NoUnitsAvailable,
 }
 
+
+// ---------------------------------------------------------------------------
+// Timestamp conversion helpers -- UnixMillis <-> RFC3339 UTC
+// ---------------------------------------------------------------------------
+
+/// Convert Unix millisecond timestamp to RFC3339 UTC string.
+pub fn unix_millis_to_rfc3339(ms: u64) -> String {
+    let secs = ms / 1000;
+    let subsec_ms = ms % 1000;
+    let (year, month, day, hour, min, sec) = epoch_seconds_to_ymdhms(secs);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        year, month, day, hour, min, sec, subsec_ms
+    )
+}
+
+/// Parse RFC3339 UTC string to Unix millisecond timestamp.
+/// Supports formats: "2026-07-04T10:00:00Z", "2026-07-04T10:00:00.123Z"
+pub fn rfc3339_to_unix_millis(s: &str) -> Option<u64> {
+    let s = s.strip_suffix('Z')?;
+    let (date_part, time_part) = s.split_once('T')?;
+    let parts: Vec<&str> = date_part.split('-').collect();
+    if parts.len() != 3 { return None; }
+    let year: u64 = parts[0].parse().ok()?;
+    let month: u64 = parts[1].parse().ok()?;
+    let day: u64 = parts[2].parse().ok()?;
+
+    let (hms, millis) = if let Some((hms, ms_str)) = time_part.split_once('.') {
+        let ms: u64 = ms_str.parse().ok()?;
+        (hms, ms)
+    } else {
+        (time_part, 0)
+    };
+
+    let time_parts: Vec<&str> = hms.split(':').collect();
+    if time_parts.len() != 3 { return None; }
+    let hour: u64 = time_parts[0].parse().ok()?;
+    let min: u64 = time_parts[1].parse().ok()?;
+    let sec: u64 = time_parts[2].parse().ok()?;
+
+    let total_days = days_since_epoch(year, month, day)?;
+    let total_secs = total_days * 86400 + hour * 3600 + min * 60 + sec;
+    Some(total_secs * 1000 + millis)
+}
+
+fn epoch_seconds_to_ymdhms(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let h = (time_secs / 3600) as u32;
+    let m = ((time_secs % 3600) / 60) as u32;
+    let s = (time_secs % 60) as u32;
+    let mut y = 1970i64;
+    let mut d = days as i64;
+    loop {
+        let days_in_year = if is_leap_year(y as u64) { 366 } else { 365 };
+        if d < days_in_year { break; }
+        d -= days_in_year;
+        y += 1;
+    }
+    let leap = is_leap_year(y as u64);
+    const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 1u32;
+    for &md in MONTH_DAYS.iter() {
+        let md_adj = if mo == 2 && leap { md + 1 } else { md };
+        if d < md_adj { break; }
+        d -= md_adj;
+        mo += 1;
+    }
+    (y as u64, mo, (d + 1) as u32, h, m, s)
+}
+
+fn is_leap_year(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
+    if month < 1 || month > 12 || day < 1 || day > 31 { return None; }
+    // Days from 1970-01-01 using a simple cumulative algorithm
+    let mut y = 1970i64;
+    let target_y = year as i64;
+    let target_m = month as i64;
+    let target_d = day as i64;
+    let mut total_days: i64 = 0;
+
+    // Add days for whole years
+    while y < target_y {
+        total_days += if is_leap_year(y as u64) { 366 } else { 365 };
+        y += 1;
+    }
+
+    // Add days for months in target year
+    const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 1..target_m {
+        let mut md = MONTH_DAYS[(m - 1) as usize];
+        if m == 2 && is_leap_year(target_y as u64) {
+            md = 29;
+        }
+        total_days += md;
+    }
+
+    // Add days in current month (1-based)
+    total_days += target_d - 1;
+
+    Some(total_days as u64)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1083,4 +1190,37 @@ mod tests {
         let after_expiry = pool.availability_snapshot("avs-test-2", StationInterval::new(2, 3).unwrap(), 70, 80);
         assert_eq!(after_expiry.available_count, 2);
     }
+
+    #[test]
+    fn unix_millis_to_rfc3339_round_trip() {
+        // Known timestamp: 2027-01-01T00:00:00.000Z
+        let ms: u64 = 1800000000000;
+        let rfc = unix_millis_to_rfc3339(ms);
+        assert!(rfc.ends_with('Z'), "RFC3339 should end with Z: {}", rfc);
+        assert!(rfc.contains("2027-01-") || rfc.contains("2026-"), "unexpected year in {}", rfc);
+
+        // Round-trip
+        let parsed = rfc3339_to_unix_millis(&rfc);
+        assert_eq!(parsed, Some(ms), "round-trip failed: {} -> {} -> {:?}", ms, rfc, parsed);
+    }
+
+    #[test]
+    fn rfc3339_to_unix_millis_parses_valid() {
+        let cases = vec![
+            ("2026-07-04T10:00:00Z", Some(1783159200000)),
+            ("2026-07-04T10:00:00.000Z", Some(1783159200000)),
+            ("2027-01-01T00:00:00Z", Some(1798761600000)),
+        ];
+        for (input, expected) in cases {
+            let result = rfc3339_to_unix_millis(input);
+            assert_eq!(result, expected, "failed to parse {}", input);
+        }
+    }
+
+    #[test]
+    fn rfc3339_to_unix_millis_rejects_invalid() {
+        assert_eq!(rfc3339_to_unix_millis("not-a-date"), None);
+        assert_eq!(rfc3339_to_unix_millis("2026-13-01T00:00:00Z"), None);
+    }
+
 }

@@ -85,6 +85,7 @@ dependencies = [
  "axum",
  "opentelemetry",
  "serde",
+ "serde_json",
  "shared-kernel",
  "tokio",
  "tower",
