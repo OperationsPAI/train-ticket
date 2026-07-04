@@ -68,7 +68,7 @@ func NewProviderStatusProbe(probeID string, sourceLogID string, providerID Provi
 		AttemptNo:       0,
 		MaxAttempts:     maxAttempts,
 		IntervalSeconds: intervalSeconds,
-		ScheduledAt:     time.Now().UTC(),
+		ScheduledAt:     timeNow().UTC(),
 	}
 	if err := probe.Validate(); err != nil {
 		return ProviderStatusProbe{}, err
@@ -108,7 +108,7 @@ func (p *ProviderStatusProbe) Execute() error {
 	if p.Status != ProbeScheduled && p.Status != ProbeStillProcessing {
 		return fmt.Errorf("cannot execute probe from status %q", p.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	p.Status = ProbeRunning
 	p.AttemptNo++
 	p.LastExecutedAt = &now
@@ -119,7 +119,7 @@ func (p *ProviderStatusProbe) CompleteSuccess() error {
 	if p.Status != ProbeRunning {
 		return fmt.Errorf("cannot complete probe from status %q", p.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	p.Status = ProbeResolvedSuccess
 	outcome := OutcomeSuccess
 	p.Outcome = &outcome
@@ -131,7 +131,7 @@ func (p *ProviderStatusProbe) CompleteRejection() error {
 	if p.Status != ProbeRunning {
 		return fmt.Errorf("cannot complete probe from status %q", p.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	p.Status = ProbeResolvedRejection
 	outcome := OutcomeRejected
 	p.Outcome = &outcome
@@ -155,7 +155,7 @@ func (p *ProviderStatusProbe) Escalate(message string) error {
 	if p.Status != ProbeExhausted && p.Status != ProbeRunning {
 		return fmt.Errorf("cannot escalate probe from status %q", p.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	p.Status = ProbeEscalated
 	p.ErrorMessage = message
 	p.CompletedAt = &now

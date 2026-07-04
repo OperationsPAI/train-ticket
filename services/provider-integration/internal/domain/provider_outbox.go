@@ -43,7 +43,7 @@ func NewProviderOutbox(outboxID string, sourceLogID string, sourceType string, m
 		CorrelationID:   strings.TrimSpace(correlationID),
 		IdempotencyKey:  strings.TrimSpace(idempotencyKey),
 		Status:          OutboxEnqueued,
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:       timeNow().UTC(),
 	}
 	if err := outbox.Validate(); err != nil {
 		return ProviderOutbox{}, err
@@ -74,7 +74,7 @@ func (o *ProviderOutbox) MarkPublished() error {
 	if o.Status != OutboxEnqueued && o.Status != OutboxDeliveryFailed {
 		return fmt.Errorf("cannot mark published from status %q", o.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	o.Status = OutboxPublished
 	o.PublishedAt = &now
 	return nil
