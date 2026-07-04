@@ -47,13 +47,15 @@ The root `service-catalog.json` is the machine-readable source of this table.
 
 ## TypeScript Operational Foundation
 
-TypeScript services expose app construction separately from service/domain exports. The shared skeleton contract is intentionally small:
+TypeScript services expose app construction, bootstrap defaults, service profile metadata, and domain exports separately. The shared skeleton contract is intentionally small:
 
 - `createApp()` returns a Fastify instance without opening a socket.
-- `/health` remains the compatibility health endpoint.
-- `/livez` and `/readyz` expose the same current skeleton readiness status.
+- `bootstrap()` applies environment/default host and port settings for runtime startup.
+- `/health` remains the compatibility health endpoint and includes the service profile.
+- `/live`, `/livez`, `/ready`, and `/readyz` expose the current skeleton probe status.
+- `/metadata` exposes service profile metadata and the observability contract.
 - `x-request-id` is propagated when supplied, generated otherwise, and returned on every response.
 - `x-correlation-id` is propagated when supplied and otherwise defaults to the request id.
 - Missing routes and unhandled errors use `{ "error": { "code", "message", "requestId", "correlationId" } }`.
 
-Instrumentation is a seam, not a dependency, in this slice: `createApp({ onRequest })` lets future OpenTelemetry wiring observe request/correlation ids without adding heavy OTel packages to skeleton services.
+Instrumentation is a seam, not a dependency, in this slice: `createApp({ onRequest, startSpan })` lets future OpenTelemetry wiring observe request/correlation ids and span completion without adding heavy OTel packages to skeleton services. The default is no-op and requires no external infrastructure in tests.
