@@ -23,20 +23,20 @@ const (
 // provider. Webhooks must be signature-verified before processing. The same
 // providerId + eventId is idempotent.
 type WebhookInbox struct {
-	InboxID          string
-	ProviderID       ProviderID
-	EventID          string
-	Signature        string
-	RawPayload       string
-	SchemaVersion    string
-	MappingVersion   string
-	Status           WebhookInboxStatus
-	VerifiedAt       *time.Time
-	MappedEventType  string
-	MappedPayload    string
-	RejectionReason  string
-	ReceivedAt       time.Time
-	PublishedAt      *time.Time
+	InboxID         string
+	ProviderID      ProviderID
+	EventID         string
+	Signature       string
+	RawPayload      string
+	SchemaVersion   string
+	MappingVersion  string
+	Status          WebhookInboxStatus
+	VerifiedAt      *time.Time
+	MappedEventType string
+	MappedPayload   string
+	RejectionReason string
+	ReceivedAt      time.Time
+	PublishedAt     *time.Time
 }
 
 // NewWebhookInbox creates a validated WebhookInbox aggregate.
@@ -49,7 +49,7 @@ func NewWebhookInbox(inboxID string, providerID ProviderID, eventID string, sign
 		RawPayload:    rawPayload,
 		SchemaVersion: strings.TrimSpace(schemaVersion),
 		Status:        WebhookReceived,
-		ReceivedAt:    time.Now().UTC(),
+		ReceivedAt:    timeNow().UTC(),
 	}
 	if err := inbox.Validate(); err != nil {
 		return WebhookInbox{}, err
@@ -77,7 +77,7 @@ func (w *WebhookInbox) Verify() error {
 	if w.Status != WebhookReceived {
 		return fmt.Errorf("cannot verify webhook from status %q", w.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	w.Status = WebhookVerified
 	w.VerifiedAt = &now
 	return nil
@@ -115,7 +115,7 @@ func (w *WebhookInbox) MarkPublished() error {
 	if w.Status != WebhookMapped && w.Status != WebhookPublishFailed {
 		return fmt.Errorf("cannot mark published from status %q", w.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	w.Status = WebhookPublished
 	w.PublishedAt = &now
 	return nil

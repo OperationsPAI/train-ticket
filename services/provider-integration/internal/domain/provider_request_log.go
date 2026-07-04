@@ -21,16 +21,16 @@ const (
 type ProviderRequestLogStatus string
 
 const (
-	RequestCreated    ProviderRequestLogStatus = "CREATED"
-	RequestSent       ProviderRequestLogStatus = "SENT"
-	RequestSucceeded  ProviderRequestLogStatus = "SUCCEEDED"
-	RequestRejected   ProviderRequestLogStatus = "REJECTED"
-	RequestFailed     ProviderRequestLogStatus = "FAILED"
-	RequestRetrying   ProviderRequestLogStatus = "RETRYING"
-	RequestTimedOut   ProviderRequestLogStatus = "TIMED_OUT"
-	RequestAmbiguous  ProviderRequestLogStatus = "AMBIGUOUS"
-	RequestProbing    ProviderRequestLogStatus = "PROBING"
-	RequestConflict   ProviderRequestLogStatus = "CONFLICT"
+	RequestCreated   ProviderRequestLogStatus = "CREATED"
+	RequestSent      ProviderRequestLogStatus = "SENT"
+	RequestSucceeded ProviderRequestLogStatus = "SUCCEEDED"
+	RequestRejected  ProviderRequestLogStatus = "REJECTED"
+	RequestFailed    ProviderRequestLogStatus = "FAILED"
+	RequestRetrying  ProviderRequestLogStatus = "RETRYING"
+	RequestTimedOut  ProviderRequestLogStatus = "TIMED_OUT"
+	RequestAmbiguous ProviderRequestLogStatus = "AMBIGUOUS"
+	RequestProbing   ProviderRequestLogStatus = "PROBING"
+	RequestConflict  ProviderRequestLogStatus = "CONFLICT"
 )
 
 // ProviderRef holds the external provider's reference identifiers (struct version).
@@ -63,23 +63,23 @@ type RetryAttempt struct {
 // It is the authoritative interaction log containing idempotency keys,
 // correlation IDs, raw data, retry chain, and the final mapped outcome.
 type ProviderRequestLog struct {
-	LogID             string
-	ProviderID        ProviderID
-	Operation         Operation
-	IdempotencyKey    string
-	CorrelationID     string
-	BusinessRef       string
-	Status            ProviderRequestLogStatus
-	Outcome           *RequestOutcome
-	ProviderRef       *ProviderRef
-	ErrorType         *ErrorClassification
-	ErrorMessage      string
-	NextAction        string
-	RawArchive        *RawArchive
-	RetryAttempts     []RetryAttempt
-	CreatedAt         time.Time
-	SentAt            *time.Time
-	CompletedAt       *time.Time
+	LogID          string
+	ProviderID     ProviderID
+	Operation      Operation
+	IdempotencyKey string
+	CorrelationID  string
+	BusinessRef    string
+	Status         ProviderRequestLogStatus
+	Outcome        *RequestOutcome
+	ProviderRef    *ProviderRef
+	ErrorType      *ErrorClassification
+	ErrorMessage   string
+	NextAction     string
+	RawArchive     *RawArchive
+	RetryAttempts  []RetryAttempt
+	CreatedAt      time.Time
+	SentAt         *time.Time
+	CompletedAt    *time.Time
 }
 
 // NewProviderRequestLog creates a validated ProviderRequestLog aggregate.
@@ -93,7 +93,7 @@ func NewProviderRequestLog(logID string, providerID ProviderID, operation Operat
 		BusinessRef:    strings.TrimSpace(businessRef),
 		Status:         RequestCreated,
 		RetryAttempts:  nil,
-		CreatedAt:      time.Now().UTC(),
+		CreatedAt:      timeNow().UTC(),
 	}
 	if err := log.Validate(); err != nil {
 		return ProviderRequestLog{}, err
@@ -124,7 +124,7 @@ func (l *ProviderRequestLog) MarkSent() error {
 	if l.Status != RequestCreated && l.Status != RequestRetrying {
 		return fmt.Errorf("cannot mark sent from status %q", l.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	l.Status = RequestSent
 	l.SentAt = &now
 	return nil
@@ -134,7 +134,7 @@ func (l *ProviderRequestLog) MarkSucceeded(ref *ProviderRef) error {
 	if l.Status != RequestSent && l.Status != RequestProbing {
 		return fmt.Errorf("cannot mark succeeded from status %q", l.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	l.Status = RequestSucceeded
 	outcome := OutcomeSuccess
 	l.Outcome = &outcome
@@ -147,7 +147,7 @@ func (l *ProviderRequestLog) MarkRejected(errorType ErrorClassification, message
 	if l.Status != RequestSent && l.Status != RequestProbing {
 		return fmt.Errorf("cannot mark rejected from status %q", l.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	l.Status = RequestRejected
 	outcome := OutcomeRejected
 	l.Outcome = &outcome
@@ -161,7 +161,7 @@ func (l *ProviderRequestLog) MarkFailed(errorType ErrorClassification, message s
 	if l.Status != RequestSent {
 		return fmt.Errorf("cannot mark failed from status %q", l.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	l.Status = RequestFailed
 	outcome := OutcomeFailed
 	l.Outcome = &outcome
@@ -178,7 +178,7 @@ func (l *ProviderRequestLog) MarkRetrying(attemptNo int) error {
 	l.Status = RequestRetrying
 	l.RetryAttempts = append(l.RetryAttempts, RetryAttempt{
 		AttemptNo:   attemptNo,
-		RequestedAt: time.Now().UTC(),
+		RequestedAt: timeNow().UTC(),
 	})
 	return nil
 }
@@ -213,7 +213,7 @@ func (l *ProviderRequestLog) MarkConflict(message string) error {
 	if l.Status != RequestProbing && l.Status != RequestAmbiguous {
 		return fmt.Errorf("cannot mark conflict from status %q", l.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	l.Status = RequestConflict
 	outcome := OutcomeConflict
 	l.Outcome = &outcome

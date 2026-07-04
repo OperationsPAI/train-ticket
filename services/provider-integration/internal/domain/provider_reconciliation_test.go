@@ -54,15 +54,15 @@ func TestProviderReconciliationBatchAddAndMatchRecords(t *testing.T) {
 	batch, _ := NewProviderReconciliationBatch("batch-002", "cr", "2026-06", "hash", "file.csv")
 
 	record := ReconciliationRecord{
-		RecordKey:       "rec-001",
-		RecordType:      RecordReservation,
-		ProviderRef:     "CNF-001",
-		PlatformRef:     "booking-001",
-		ProviderAmount:  "100.00",
-		PlatformAmount:  "100.00",
-		ProviderStatus:  "confirmed",
-		PlatformStatus:  "confirmed",
-		Matched:         true,
+		RecordKey:      "rec-001",
+		RecordType:     RecordReservation,
+		ProviderRef:    "CNF-001",
+		PlatformRef:    "booking-001",
+		ProviderAmount: "100.00",
+		PlatformAmount: "100.00",
+		ProviderStatus: "confirmed",
+		PlatformStatus: "confirmed",
+		Matched:        true,
 	}
 	if err := batch.AddRecord(record); err != nil {
 		t.Fatalf("unexpected error: %v", err)

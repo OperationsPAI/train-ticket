@@ -57,33 +57,33 @@ type AuthConfig struct {
 
 // SlaPolicy defines service-level agreement parameters for an adapter.
 type SlaPolicy struct {
-	P95LatencyMs    int
-	SuccessRate     float64
-	MaxConcurrency  int
-	DailyQuota      int
-	MaintenanceWin  string
+	P95LatencyMs   int
+	SuccessRate    float64
+	MaxConcurrency int
+	DailyQuota     int
+	MaintenanceWin string
 }
 
 // CapabilityMatrix declares which capabilities a provider supports.
 type CapabilityMatrix struct {
 	Version      string
-	Capabilites map[Capability]bool
+	Capabilities map[Capability]bool
 }
 
 // ProviderAdapter is the aggregate root for a provider's integration adapter.
 // It owns registration, version, capability declaration, health status,
 // authentication configuration, and SLA policy.
 type ProviderAdapter struct {
-	ProviderID         ProviderID
-	ProviderType       ProviderType
-	AdapterVersion     AdapterVersion
-	Status             ProviderAdapterStatus
-	AuthConfig         AuthConfig
-	CapabilityMatrix   CapabilityMatrix
-	SlaPolicy          SlaPolicy
-	HealthStatus       string
-	RegisteredAt       time.Time
-	LastHealthCheckAt  *time.Time
+	ProviderID        ProviderID
+	ProviderType      ProviderType
+	AdapterVersion    AdapterVersion
+	Status            ProviderAdapterStatus
+	AuthConfig        AuthConfig
+	CapabilityMatrix  CapabilityMatrix
+	SlaPolicy         SlaPolicy
+	HealthStatus      string
+	RegisteredAt      time.Time
+	LastHealthCheckAt *time.Time
 }
 
 // NewProviderAdapter creates a validated ProviderAdapter aggregate.
@@ -104,7 +104,7 @@ func NewProviderAdapter(
 		CapabilityMatrix: capabilityMatrix,
 		SlaPolicy:        slaPolicy,
 		HealthStatus:     "unknown",
-		RegisteredAt:     time.Now().UTC(),
+		RegisteredAt:     timeNow().UTC(),
 	}
 	if err := adapter.Validate(); err != nil {
 		return ProviderAdapter{}, err
@@ -129,10 +129,10 @@ func (a ProviderAdapter) Validate() error {
 	if a.AuthConfig.AuthType == "" {
 		return fmt.Errorf("auth config type is required for an active adapter")
 	}
-	if len(a.CapabilityMatrix.Capabilites) == 0 {
+	if len(a.CapabilityMatrix.Capabilities) == 0 {
 		return fmt.Errorf("capability matrix must declare at least one capability")
 	}
-	for cap := range a.CapabilityMatrix.Capabilites {
+	for cap := range a.CapabilityMatrix.Capabilities {
 		if !validCapability(cap) {
 			return fmt.Errorf("unsupported capability: %q", cap)
 		}
@@ -151,16 +151,19 @@ func (a *ProviderAdapter) Enable() error {
 
 // Disable transitions the adapter to disabled status. No new commands are accepted.
 func (a *ProviderAdapter) Disable() error {
+	if a.Status == ProviderAdapterStatusDisabled {
+		return fmt.Errorf("adapter is already disabled")
+	}
 	a.Status = ProviderAdapterStatusDisabled
 	return nil
 }
 
 // UpdateCapabilityMatrix replaces the current capability matrix.
 func (a *ProviderAdapter) UpdateCapabilityMatrix(matrix CapabilityMatrix) error {
-	if len(matrix.Capabilites) == 0 {
+	if len(matrix.Capabilities) == 0 {
 		return fmt.Errorf("capability matrix must declare at least one capability")
 	}
-	for cap := range matrix.Capabilites {
+	for cap := range matrix.Capabilities {
 		if !validCapability(cap) {
 			return fmt.Errorf("unsupported capability: %q", cap)
 		}

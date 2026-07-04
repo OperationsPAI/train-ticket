@@ -67,7 +67,7 @@ func NewProviderReconciliationBatch(batchID string, providerID ProviderID, state
 		FileName:        strings.TrimSpace(fileName),
 		Status:          BatchImported,
 		Records:         nil,
-		ImportedAt:      time.Now().UTC(),
+		ImportedAt:      timeNow().UTC(),
 	}
 	if err := batch.Validate(); err != nil {
 		return ProviderReconciliationBatch{}, err
@@ -114,7 +114,7 @@ func (b *ProviderReconciliationBatch) Complete() error {
 	if b.Status != BatchMatched {
 		return fmt.Errorf("cannot complete batch from status %q", b.Status)
 	}
-	now := time.Now().UTC()
+	now := timeNow().UTC()
 	b.Status = BatchCompleted
 	b.CompletedAt = &now
 	return nil
