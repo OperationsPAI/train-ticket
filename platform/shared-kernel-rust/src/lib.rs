@@ -1,9 +1,28 @@
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::{Router, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Request, State},
+    http::{HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+    routing::get,
+};
+use serde::Serialize;
+use serde_json::{Value, json};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Standard inbound/outbound HTTP request identifier header.
+pub const REQUEST_ID_HEADER: &str = "x-request-id";
+/// Standard inbound/outbound HTTP correlation identifier header.
+pub const CORRELATION_ID_HEADER: &str = "x-correlation-id";
+
+static REQUEST_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceProfile {
     pub service_id: &'static str,
     pub domain: &'static str,
@@ -31,12 +50,187 @@ pub fn health() -> &'static str {
     "ok"
 }
 
-pub fn router() -> Router {
-    Router::new().route("/health", get(health_handler))
+/// Metadata exposed by HTTP routers and service discovery tests.
+pub fn metadata() -> ServiceProfile {
+    profile()
 }
 
-async fn health_handler() -> &'static str {
-    health()
+/// HTTP request identity made available to handlers through Axum extensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestContext {
+    request_id: String,
+    correlation_id: String,
+}
+
+impl RequestContext {
+    pub fn new(request_id: impl Into<String>, correlation_id: impl Into<String>) -> Self {
+        Self {
+            request_id: request_id.into(),
+            correlation_id: correlation_id.into(),
+        }
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    pub fn correlation_id(&self) -> &str {
+        &self.correlation_id
+    }
+}
+
+/// A no-op-by-default observability seam for opt-in tracing adapters.
+pub trait Observer: Send + Sync + 'static {
+    fn start(&self, context: &RequestContext, operation: &str) -> Box<dyn Span>;
+}
+
+pub trait Span: Send + Sync + 'static {
+    fn end(&self, status: StatusCode);
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NoopObserver;
+
+#[derive(Debug)]
+struct NoopSpan;
+
+impl Observer for NoopObserver {
+    fn start(&self, _context: &RequestContext, _operation: &str) -> Box<dyn Span> {
+        Box::new(NoopSpan)
+    }
+}
+
+impl Span for NoopSpan {
+    fn end(&self, _status: StatusCode) {}
+}
+
+#[derive(Clone)]
+pub struct RuntimeConfig {
+    pub metadata: Value,
+    pub observer: Arc<dyn Observer>,
+}
+
+impl RuntimeConfig {
+    pub fn new(profile: ServiceProfile) -> Self {
+        Self::from_metadata(profile)
+    }
+
+    pub fn from_metadata(metadata: impl Serialize) -> Self {
+        Self {
+            metadata: serde_json::to_value(metadata).unwrap_or_else(|_| json!({})),
+            observer: Arc::new(NoopObserver),
+        }
+    }
+
+    pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = observer;
+        self
+    }
+}
+
+/// Construct the standard Axum-compatible service router.
+pub fn router() -> Router {
+    router_with_config(RuntimeConfig::new(profile()))
+}
+
+pub fn router_with_config(config: RuntimeConfig) -> Router {
+    let metadata = config.metadata.clone();
+    let standard_routes = Router::new()
+        .route("/health", get(health_handler))
+        .route("/live", get(live_handler))
+        .route("/livez", get(live_handler))
+        .route("/ready", get(ready_handler))
+        .route("/readyz", get(ready_handler))
+        .route(
+            "/metadata",
+            get(move || {
+                let metadata = metadata.clone();
+                async move { Json(metadata) }
+            }),
+        );
+    apply_runtime(standard_routes, config)
+}
+
+/// Apply the shared runtime middleware to a router with service-specific routes.
+pub fn apply_runtime(router: Router, config: RuntimeConfig) -> Router {
+    router.layer(middleware::from_fn_with_state(config, runtime_middleware))
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeResponse {
+    status: &'static str,
+}
+
+async fn health_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: health() })
+}
+
+async fn live_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: "alive" })
+}
+
+async fn ready_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: "ready" })
+}
+
+async fn runtime_middleware(
+    State(config): State<RuntimeConfig>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let request_id = header_or_generate(&request, REQUEST_ID_HEADER);
+    let correlation_id =
+        header_value(&request, CORRELATION_ID_HEADER).unwrap_or_else(|| request_id.clone());
+    let context = RequestContext::new(request_id.clone(), correlation_id.clone());
+    let operation = request.uri().path().to_string();
+    let span = config.observer.start(&context, &operation);
+
+    request.extensions_mut().insert(context);
+    let mut response = next.run(request).await;
+    insert_header(response.headers_mut(), REQUEST_ID_HEADER, &request_id);
+    insert_header(
+        response.headers_mut(),
+        CORRELATION_ID_HEADER,
+        &correlation_id,
+    );
+    span.end(response.status());
+    response
+}
+
+fn header_value(request: &Request, name: &'static str) -> Option<String> {
+    request
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn header_or_generate(request: &Request, name: &'static str) -> String {
+    header_value(request, name).unwrap_or_else(generate_request_id)
+}
+
+fn insert_header(headers: &mut axum::http::HeaderMap, name: &'static str, value: &str) {
+    if let Ok(value) = HeaderValue::from_str(value) {
+        headers.insert(name, value);
+    }
+}
+
+pub fn generate_request_id() -> String {
+    let sequence = REQUEST_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("req-{nanos:x}-{sequence:x}")
+}
+
+#[cfg(test)]
+async fn request_context_handler(
+    axum::extract::Extension(context): axum::extract::Extension<RequestContext>,
+) -> String {
+    format!("{}:{}", context.request_id(), context.correlation_id())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +481,103 @@ mod tests {
     #[test]
     fn axum_router_can_be_constructed() {
         let _router = router();
+    }
+
+    #[tokio::test]
+    async fn standard_runtime_endpoints_are_exposed() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        for path in [
+            "/health",
+            "/live",
+            "/livez",
+            "/ready",
+            "/readyz",
+            "/metadata",
+        ] {
+            let response = router()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(!response.headers()[REQUEST_ID_HEADER].is_empty());
+            assert!(!response.headers()[CORRELATION_ID_HEADER].is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn request_and_correlation_ids_are_propagated_to_handlers() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = apply_runtime(
+            Router::new().route("/context", get(request_context_handler)),
+            RuntimeConfig::new(profile()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/context")
+                    .header(REQUEST_ID_HEADER, "req-in")
+                    .header(CORRELATION_ID_HEADER, "corr-in")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers()[REQUEST_ID_HEADER], "req-in");
+        assert_eq!(response.headers()[CORRELATION_ID_HEADER], "corr-in");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"req-in:corr-in");
+    }
+
+    #[tokio::test]
+    async fn observer_seam_is_opt_in() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use std::sync::Mutex;
+        use tower::ServiceExt;
+
+        #[derive(Default)]
+        struct RecordingObserver {
+            operations: Mutex<Vec<String>>,
+        }
+
+        impl Observer for RecordingObserver {
+            fn start(&self, context: &RequestContext, operation: &str) -> Box<dyn Span> {
+                self.operations.lock().unwrap().push(format!(
+                    "{}:{}",
+                    operation,
+                    context.request_id()
+                ));
+                Box::new(NoopSpan)
+            }
+        }
+
+        let observer = Arc::new(RecordingObserver::default());
+        let app = router_with_config(RuntimeConfig::new(profile()).with_observer(observer.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(REQUEST_ID_HEADER, "req-observed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            observer.operations.lock().unwrap().as_slice(),
+            &["/health:req-observed"]
+        );
     }
 
     #[test]
