@@ -4,8 +4,9 @@ project:
 
 # Current framing: this repository is being prepared for a full rewrite /
 # greenfield rebuild. REQ-001 through REQ-010 describe the current skeleton,
-# devcontainer, and regenerated implementation slices. REQ-016 describes the
-# current OpenTelemetry collection baseline. REQ-011 through REQ-015
+# devcontainer, and regenerated implementation slices. REQ-015 and REQ-016 describe
+# the Provider Integration ACL foundation and the current OpenTelemetry collection
+# baseline. REQ-011 through REQ-014
 # require status reconciliation before they become authoritative active slices.
 # REQ-101 through REQ-123 are retained as legacy WP-derived references for
 # traceability; they are not the current execution backlog unless explicitly
@@ -215,6 +216,55 @@ requirements:
     depends_on: [REQ-006, REQ-007, REQ-008]
     confidence: confirmed
     source: "docs/02-domains/offer-management.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+  - id: REQ-015
+    title: "Provider Integration ACL foundation"
+    description: "Implement the Provider Integration anti-corruption layer foundation in Go. Owns ProviderAdapter, ProviderRequestLog, WebhookInbox, ProviderOutbox, ProviderReconciliationBatch aggregates with signature-verified webhooks, idempotent external call logging, status probes, and reconciliation import."
+    priority: P0
+    status: tested
+    code:
+      - path: services/provider-integration/internal/domain/provider_adapter.go
+        description: "ProviderAdapter aggregate with capability matrix, auth config, SLA policy, and lifecycle commands."
+      - path: services/provider-integration/internal/domain/provider_request_log.go
+        description: "ProviderRequestLog aggregate with idempotent request logging, state machine, raw archive, and retry chain."
+      - path: services/provider-integration/internal/domain/provider_status_probe.go
+        description: "ProviderStatusProbe aggregate for scheduling and executing status queries."
+      - path: services/provider-integration/internal/domain/webhook_inbox.go
+        description: "WebhookInbox aggregate with signature verification, deduplication, event mapping, and outbox publishing."
+      - path: services/provider-integration/internal/domain/provider_outbox.go
+        description: "ProviderOutbox aggregate for publishing mapped events with idempotency guarantees."
+      - path: services/provider-integration/internal/domain/provider_reconciliation.go
+        description: "ProviderReconciliationBatch aggregate for importing and matching settlement statements."
+      - path: services/provider-integration/internal/domain/profile.go
+        description: "Service profile, health check, and ownership summary."
+      - path: services/provider-integration/internal/http/router.go
+        description: "HTTP router with standard runtime middleware and operational endpoints."
+      - path: services/provider-integration/cmd/provider-integration/main.go
+        description: "Service entry point."
+    tests:
+      - path: services/provider-integration/internal/domain/provider_adapter_test.go
+        description: "Unit tests for ProviderAdapter invariants and lifecycle."
+      - path: services/provider-integration/internal/domain/provider_request_log_test.go
+        description: "Unit tests for ProviderRequestLog state machine and idempotency."
+      - path: services/provider-integration/internal/domain/provider_status_probe_test.go
+        description: "Unit tests for ProviderStatusProbe scheduling and execution."
+      - path: services/provider-integration/internal/domain/webhook_inbox_test.go
+        description: "Unit tests for WebhookInbox verification, mapping, and publishing."
+      - path: services/provider-integration/internal/domain/provider_outbox_test.go
+        description: "Unit tests for ProviderOutbox publishing and delivery failure."
+      - path: services/provider-integration/internal/domain/provider_reconciliation_test.go
+        description: "Unit tests for reconciliation batch lifecycle and unmatched records."
+      - path: services/provider-integration/internal/http/router_test.go
+        description: "Integration tests for standard runtime endpoints."
+    docs:
+      - path: services/provider-integration/README.md
+      - path: docs/02-domains/provider-integration.md
+      - path: docs/01-ddd-high-level/acl-provider-contracts.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/00-current-status.md
+    depends_on: [REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/provider-integration.md, docs/03-ddd-final/phase-1-contract.md, docs/01-ddd-high-level/acl-provider-contracts.md"
+
 
   - id: REQ-010
     title: "Journey Order domain foundation"
