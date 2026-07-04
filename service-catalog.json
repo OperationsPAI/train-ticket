@@ -57,6 +57,398 @@
   ],
   "services": [
     {
+      "id": "place-network",
+      "path": "services/place-network",
+      "domain": "Place & Network",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-core",
+      "status": "tested",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-004"
+      ],
+      "docs": [
+        "docs/02-domains/place-network.md"
+      ],
+      "owns": [
+        "Place",
+        "TransportNode",
+        "ProviderPlaceMapping"
+      ],
+      "rationale": "Go fits read-heavy master-data APIs and simple operational lookup paths."
+    },
+    {
+      "id": "service-plan",
+      "path": "services/service-plan",
+      "domain": "Service Plan",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-core",
+      "status": "tested",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-005"
+      ],
+      "docs": [
+        "docs/02-domains/service-plan.md"
+      ],
+      "owns": [
+        "Route",
+        "ServicePlan",
+        "Calendar",
+        "Timetable",
+        "PlanVersion"
+      ],
+      "rationale": "Go keeps schedule query services small, fast, and easy to operate."
+    },
+    {
+      "id": "capacity-availability",
+      "path": "services/capacity-availability",
+      "domain": "Capacity & Availability",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "phase-1-core",
+      "status": "tested",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-006"
+      ],
+      "docs": [
+        "docs/02-domains/capacity-availability.md",
+        "docs/03-ddd-final/phase-1-contract.md"
+      ],
+      "owns": [
+        "InventoryPool",
+        "StationInterval",
+        "CapacityHold",
+        "AvailabilitySnapshot"
+      ],
+      "rationale": "Rust is appropriate for interval overlap and seat-hold invariants that must fail closed."
+    },
+    {
+      "id": "fare-pricing",
+      "path": "services/fare-pricing",
+      "domain": "Fare & Pricing",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-core",
+      "status": "tested",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-007"
+      ],
+      "docs": [
+        "docs/02-domains/fare-pricing.md"
+      ],
+      "owns": [
+        "FareRuleSet",
+        "FareQuote",
+        "RefundFee",
+        "ChangeFee",
+        "RuleSnapshot"
+      ],
+      "rationale": "Python keeps fare rules, explanation tooling, and later experimentation lightweight."
+    },
+    {
+      "id": "trip-planning",
+      "path": "services/trip-planning",
+      "domain": "Trip Planning",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-search-foundation",
+      "status": "implemented-foundation",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-008-Trip-Planning-search-foundation"
+      ],
+      "docs": [
+        "docs/02-domains/trip-planning.md",
+        "docs/03-ddd-final/phase-1-contract.md"
+      ],
+      "owns": [
+        "TripIntent validation",
+        "Itinerary candidates",
+        "SearchResult ranking explanations",
+        "Non-authoritative PriceHint and AvailabilityHint snapshots"
+      ],
+      "rationale": "Python is a better fit for search heuristics, deterministic ranking, and auditable explanation logic."
+    },
+    {
+      "id": "offer-management",
+      "path": "services/offer-management",
+      "domain": "Offer Management",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-offer-domain-foundation",
+      "status": "implemented-foundation",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-009-Offer-Management-domain-foundation"
+      ],
+      "docs": [
+        "docs/02-domains/offer-management.md",
+        "docs/03-ddd-final/phase-1-contract.md"
+      ],
+      "owns": [
+        "Offer identity and lifecycle",
+        "OfferItem snapshot composition",
+        "ItineraryReference",
+        "AvailabilitySnapshotReference",
+        "PriceSnapshot",
+        "FareRuleSnapshotReference",
+        "PassengerMix",
+        "RiskDisclosure",
+        "OfferQuoted",
+        "OfferExpired"
+      ],
+      "rationale": "TypeScript fits user-facing offer API composition, TTL policy, immutable snapshot enforcement, and disclosure payloads."
+    },
+    {
+      "id": "journey-order",
+      "path": "services/journey-order",
+      "domain": "Journey Order",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-domain-foundation",
+      "status": "tested",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-010-Journey-Order-domain-foundation"
+      ],
+      "docs": [
+        "docs/02-domains/journey-order.md"
+      ],
+      "owns": [
+        "JourneyOrder aggregate root",
+        "OrderItem entity and lifecycle",
+        "MonetarySummary invariants",
+        "OrderTimeline facts",
+        "ConfirmationConditions guards",
+        "OrderLifecycleState machine",
+        "TravelerRef snapshots",
+        "SegmentOrderSnapshot references",
+        "OrderLineBinding bindings",
+        "JourneyOrderCreated, JourneyOrderPendingPayment, JourneyOrderConfirmed, JourneyOrderCancelled events"
+      ],
+      "rationale": "Java is conservative for central transactional aggregates and long-lived domain models."
+    },
+    {
+      "id": "booking-orchestration",
+      "path": "services/booking-orchestration",
+      "domain": "Booking Orchestration",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-core",
+      "status": "status-reconciliation-needed",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-011"
+      ],
+      "docs": [
+        "docs/02-domains/booking-orchestration.md"
+      ],
+      "owns": [
+        "BookingSaga",
+        "SegmentBooking",
+        "ProviderReservation mapping"
+      ],
+      "rationale": "Java gives the saga layer explicit state transitions and stable integration testing options."
+    },
+    {
+      "id": "payment",
+      "path": "services/payment",
+      "domain": "Payment",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-domain-foundation",
+      "status": "tested",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-012-Payment-domain-foundation"
+      ],
+      "docs": [
+        "docs/02-domains/payment.md"
+      ],
+      "owns": [
+        "PaymentIntent",
+        "Refund",
+        "CallbackRecord",
+        "IdempotencyKey"
+      ],
+      "rationale": "Java is a strong default for money state machines, idempotency, and audit-heavy flows."
+    },
+    {
+      "id": "provider-integration",
+      "path": "services/provider-integration",
+      "domain": "Provider Integration",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-acl-foundation",
+      "status": "status-reconciliation-needed",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-015"
+      ],
+      "docs": [
+        "docs/02-domains/provider-integration.md"
+      ],
+      "owns": [
+        "adapter protocol",
+        "signature verification",
+        "raw archive",
+        "external status mapping"
+      ],
+      "rationale": "Go fits protocol adapters, webhooks, retry loops, and small deployable edge services."
+    },
+    {
+      "id": "entitlement-ticketing",
+      "path": "services/entitlement-ticketing",
+      "domain": "Entitlement & Ticketing",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "phase-1-domain-foundation",
+      "status": "status-reconciliation-needed",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-013"
+      ],
+      "docs": [
+        "docs/02-domains/entitlement-ticketing.md"
+      ],
+      "owns": [
+        "Entitlement",
+        "Credential",
+        "Issue",
+        "Void",
+        "Suspend",
+        "Boarded consumption"
+      ],
+      "rationale": "Rust is appropriate for ticket entitlement lifecycle invariants and credential safety."
+    },
+    {
+      "id": "fulfillment",
+      "path": "services/fulfillment",
+      "domain": "Fulfillment",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-limited",
+      "status": "implemented",
+      "priority": "P1",
+      "workPackages": [
+        "REQ-018"
+      ],
+      "docs": [
+        "docs/02-domains/fulfillment.md",
+        "docs/03-ddd-final/phase-1-contract.md",
+        "docs/08-contracts/events/fulfillment.md"
+      ],
+      "owns": [
+        "FulfillmentRecord aggregate",
+        "EvidenceDispute aggregate",
+        "BoardingVerified event",
+        "NoShowRecorded event",
+        "FulfillmentCompleted event",
+        "EvidenceDisputeOpened event",
+        "EvidenceDisputeResolved event"
+      ],
+      "rationale": "Go keeps event ingestion and station-side fact normalization operationally simple."
+    },
+    {
+      "id": "post-sales",
+      "path": "services/post-sales",
+      "domain": "Post Sales",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-core",
+      "status": "status-reconciliation-needed",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-014"
+      ],
+      "docs": [
+        "docs/02-domains/post-sales.md"
+      ],
+      "owns": [
+        "PostSalesCase",
+        "RefundDecision",
+        "ChangeExecutionPlan"
+      ],
+      "rationale": "Java keeps refund/change case workflows explicit and compatible with transaction review tooling."
+    },
+    {
+      "id": "notification",
+      "path": "services/notification",
+      "domain": "Notification",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-domain-foundation",
+      "status": "implemented-foundation",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-019",
+        "WP-15-transaction-notification"
+      ],
+      "docs": [
+        "docs/02-domains/notification.md"
+      ],
+      "owns": [
+        "NotificationTask lifecycle (Planned, Delivering, Delivered, Failed, Cancelled)",
+        "Template versioning with variable schema and channel adaptations",
+        "RecipientPolicy with channel priority, fallback, and consent bypass",
+        "DeliveryReceipt appended facts (Delivered, Bounced, Rejected, Timeout, Expired)",
+        "NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled events",
+        "Send idempotency via idempotencyKey (triggerEventId + recipientRef + templateCode)"
+      ],
+      "rationale": "TypeScript fits template payloads, channel adapters, and product-facing notification policies. Domain foundation established with full aggregate lifecycle, idempotency, and boundary proof."
+    },
+    {
+      "id": "traveler-profile",
+      "path": "services/traveler-profile",
+      "domain": "Traveler Profile",
+      "language": "java",
+      "runtime": "jvm",
+      "phase": "phase-1-domain-foundation",
+      "status": "implemented",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-017"
+      ],
+      "docs": [
+        "docs/02-domains/traveler-profile.md"
+      ],
+      "owns": [
+        "TravelerProfile",
+        "Document",
+        "EligibilitySummary",
+        "PreferenceSnapshot"
+      ],
+      "rationale": "Java keeps PII-heavy profile aggregates and validation policies explicit."
+    },
+    {
+      "id": "risk-compliance",
+      "path": "services/risk-compliance",
+      "domain": "Risk & Compliance",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-support",
+      "status": "skeleton",
+      "priority": "P1",
+      "workPackages": [
+        "WP-17"
+      ],
+      "docs": [
+        "docs/02-domains/risk-compliance.md"
+      ],
+      "owns": [
+        "RiskAssessment",
+        "Challenge",
+        "BlockDecision",
+        "EvidenceSummary"
+      ],
+      "rationale": "Python supports rule experimentation, scoring, and evidence summarization without coupling source domains."
+    },
+    {
       "id": "account",
       "path": "services/account",
       "domain": "Account",
@@ -104,72 +496,6 @@
       "rationale": "Java is a conservative fit for approvals, audit retention, and authorization boundaries."
     },
     {
-      "id": "ancillary-service",
-      "path": "services/ancillary-service",
-      "domain": "Ancillary Service",
-      "language": "typescript",
-      "runtime": "node",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
-      "priority": "P1",
-      "workPackages": [],
-      "docs": [
-        "docs/02-domains/ancillary-service.md"
-      ],
-      "owns": [
-        "AncillaryOffer",
-        "AncillaryOrderItem",
-        "ActivationPolicy"
-      ],
-      "rationale": "TypeScript fits productized add-ons and bundle-facing API composition."
-    },
-    {
-      "id": "booking-orchestration",
-      "path": "services/booking-orchestration",
-      "domain": "Booking Orchestration",
-      "language": "java",
-      "runtime": "jvm",
-      "phase": "phase-1-core",
-      "status": "status-reconciliation-needed",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-011"
-      ],
-      "docs": [
-        "docs/02-domains/booking-orchestration.md"
-      ],
-      "owns": [
-        "BookingSaga",
-        "SegmentBooking",
-        "ProviderReservation mapping"
-      ],
-      "rationale": "Java gives the saga layer explicit state transitions and stable integration testing options."
-    },
-    {
-      "id": "capacity-availability",
-      "path": "services/capacity-availability",
-      "domain": "Capacity & Availability",
-      "language": "rust",
-      "runtime": "rust",
-      "phase": "phase-1-core",
-      "status": "tested",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-006"
-      ],
-      "docs": [
-        "docs/02-domains/capacity-availability.md",
-        "docs/03-ddd-final/phase-1-contract.md"
-      ],
-      "owns": [
-        "InventoryPool",
-        "StationInterval",
-        "CapacityHold",
-        "AvailabilitySnapshot"
-      ],
-      "rationale": "Rust is appropriate for interval overlap and seat-hold invariants that must fail closed."
-    },
-    {
       "id": "customer-service",
       "path": "services/customer-service",
       "domain": "Customer Service",
@@ -191,96 +517,6 @@
         "CaseTimeline"
       ],
       "rationale": "TypeScript fits collaborative case APIs and UI-adjacent timelines without owning target state."
-    },
-    {
-      "id": "dispatch",
-      "path": "services/dispatch",
-      "domain": "Dispatch",
-      "language": "golang",
-      "runtime": "go",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
-      "priority": "P1",
-      "workPackages": [],
-      "docs": [
-        "docs/02-domains/dispatch.md"
-      ],
-      "owns": [
-        "RideRequest",
-        "RideAssignment",
-        "DriverLifecycle",
-        "Eta"
-      ],
-      "rationale": "Go fits real-time dispatch APIs, adapter calls, and low-latency state updates."
-    },
-    {
-      "id": "disruption-recovery",
-      "path": "services/disruption-recovery",
-      "domain": "Disruption Recovery",
-      "language": "python",
-      "runtime": "python",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
-      "priority": "P1",
-      "workPackages": [],
-      "docs": [
-        "docs/02-domains/disruption-recovery.md"
-      ],
-      "owns": [
-        "RecoveryCase",
-        "RecoveryOption",
-        "CompensationDecision"
-      ],
-      "rationale": "Python fits recovery optimization and policy experimentation when this future domain is enabled."
-    },
-    {
-      "id": "entitlement-ticketing",
-      "path": "services/entitlement-ticketing",
-      "domain": "Entitlement & Ticketing",
-      "language": "rust",
-      "runtime": "rust",
-      "phase": "phase-1-domain-foundation",
-      "status": "status-reconciliation-needed",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-013"
-      ],
-      "docs": [
-        "docs/02-domains/entitlement-ticketing.md"
-      ],
-      "owns": [
-        "Entitlement",
-        "Credential",
-        "Issue",
-        "Void",
-        "Suspend",
-        "Boarded consumption"
-      ],
-      "rationale": "Rust is appropriate for ticket entitlement lifecycle invariants and credential safety."
-    },
-    {
-      "id": "fare-pricing",
-      "path": "services/fare-pricing",
-      "domain": "Fare & Pricing",
-      "language": "python",
-      "runtime": "python",
-      "phase": "phase-1-core",
-      "status": "tested",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-007"
-      ],
-      "docs": [
-        "docs/02-domains/fare-pricing.md"
-      ],
-      "owns": [
-        "FareRuleSet",
-        "FareQuote",
-        "RefundFee",
-        "ChangeFee",
-        "RuleSnapshot"
-      ],
-      "rationale": "Python keeps fare rules, explanation tooling, and later experimentation lightweight."
     },
     {
       "id": "finance-settlement",
@@ -306,204 +542,6 @@
       "rationale": "Java is appropriate for financial ledgers, reconciliation workflows, and audit consistency."
     },
     {
-      "id": "fulfillment",
-      "path": "services/fulfillment",
-      "domain": "Fulfillment",
-      "language": "golang",
-      "runtime": "go",
-      "phase": "phase-1-limited",
-      "status": "skeleton",
-      "priority": "P1",
-      "workPackages": [
-        "WP-13"
-      ],
-      "docs": [
-        "docs/02-domains/fulfillment.md"
-      ],
-      "owns": [
-        "FulfillmentRecord",
-        "BoardingVerified",
-        "NoShow",
-        "EvidenceDispute"
-      ],
-      "rationale": "Go keeps event ingestion and station-side fact normalization operationally simple."
-    },
-    {
-      "id": "journey-order",
-      "path": "services/journey-order",
-      "domain": "Journey Order",
-      "language": "java",
-      "runtime": "jvm",
-      "phase": "phase-1-domain-foundation",
-      "status": "tested",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-010-Journey-Order-domain-foundation"
-      ],
-      "docs": [
-        "docs/02-domains/journey-order.md"
-      ],
-      "owns": [
-        "JourneyOrder aggregate root",
-        "OrderItem entity and lifecycle",
-        "MonetarySummary invariants",
-        "OrderTimeline facts",
-        "ConfirmationConditions guards",
-        "OrderLifecycleState machine",
-        "TravelerRef snapshots",
-        "SegmentOrderSnapshot references",
-        "OrderLineBinding bindings",
-        "JourneyOrderCreated, JourneyOrderPendingPayment, JourneyOrderConfirmed, JourneyOrderCancelled events"
-      ],
-      "rationale": "Java is conservative for central transactional aggregates and long-lived domain models."
-    },
-    {
-      "id": "notification",
-      "path": "services/notification",
-      "domain": "Notification",
-      "language": "typescript",
-      "runtime": "node",
-      "phase": "phase-1-domain-foundation",
-      "status": "implemented-foundation",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-019",
-        "WP-15-transaction-notification"
-      ],
-      "docs": [
-        "docs/02-domains/notification.md"
-      ],
-      "owns": [
-        "NotificationTask lifecycle (Planned, Delivering, Delivered, Failed, Cancelled)",
-        "Template versioning with variable schema and channel adaptations",
-        "RecipientPolicy with channel priority, fallback, and consent bypass",
-        "DeliveryReceipt appended facts (Delivered, Bounced, Rejected, Timeout, Expired)",
-        "NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled events",
-        "Send idempotency via idempotencyKey (triggerEventId + recipientRef + templateCode)"
-      ],
-      "rationale": "TypeScript fits template payloads, channel adapters, and product-facing notification policies. Domain foundation established with full aggregate lifecycle, idempotency, and boundary proof."
-    },
-    {
-      "id": "offer-management",
-      "path": "services/offer-management",
-      "domain": "Offer Management",
-      "language": "typescript",
-      "runtime": "node",
-      "phase": "phase-1-offer-domain-foundation",
-      "status": "implemented-foundation",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-009-Offer-Management-domain-foundation"
-      ],
-      "docs": [
-        "docs/02-domains/offer-management.md",
-        "docs/03-ddd-final/phase-1-contract.md"
-      ],
-      "owns": [
-        "Offer identity and lifecycle",
-        "OfferItem snapshot composition",
-        "ItineraryReference",
-        "AvailabilitySnapshotReference",
-        "PriceSnapshot",
-        "FareRuleSnapshotReference",
-        "PassengerMix",
-        "RiskDisclosure",
-        "OfferQuoted",
-        "OfferExpired"
-      ],
-      "rationale": "TypeScript fits user-facing offer API composition, TTL policy, immutable snapshot enforcement, and disclosure payloads."
-    },
-    {
-      "id": "payment",
-      "path": "services/payment",
-      "domain": "Payment",
-      "language": "java",
-      "runtime": "jvm",
-      "phase": "phase-1-domain-foundation",
-      "status": "tested",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-012-Payment-domain-foundation"
-      ],
-      "docs": [
-        "docs/02-domains/payment.md"
-      ],
-      "owns": [
-        "PaymentIntent",
-        "Refund",
-        "CallbackRecord",
-        "IdempotencyKey"
-      ],
-      "rationale": "Java is a strong default for money state machines, idempotency, and audit-heavy flows."
-    },
-    {
-      "id": "place-network",
-      "path": "services/place-network",
-      "domain": "Place & Network",
-      "language": "golang",
-      "runtime": "go",
-      "phase": "phase-1-core",
-      "status": "tested",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-004"
-      ],
-      "docs": [
-        "docs/02-domains/place-network.md"
-      ],
-      "owns": [
-        "Place",
-        "TransportNode",
-        "ProviderPlaceMapping"
-      ],
-      "rationale": "Go fits read-heavy master-data APIs and simple operational lookup paths."
-    },
-    {
-      "id": "post-sales",
-      "path": "services/post-sales",
-      "domain": "Post Sales",
-      "language": "java",
-      "runtime": "jvm",
-      "phase": "phase-1-core",
-      "status": "status-reconciliation-needed",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-014"
-      ],
-      "docs": [
-        "docs/02-domains/post-sales.md"
-      ],
-      "owns": [
-        "PostSalesCase",
-        "RefundDecision",
-        "ChangeExecutionPlan"
-      ],
-      "rationale": "Java keeps refund/change case workflows explicit and compatible with transaction review tooling."
-    },
-    {
-      "id": "provider-integration",
-      "path": "services/provider-integration",
-      "domain": "Provider Integration",
-      "language": "golang",
-      "runtime": "go",
-      "phase": "phase-1-acl-foundation",
-      "status": "status-reconciliation-needed",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-015"
-      ],
-      "docs": [
-        "docs/02-domains/provider-integration.md"
-      ],
-      "owns": [
-        "adapter protocol",
-        "signature verification",
-        "raw archive",
-        "external status mapping"
-      ],
-      "rationale": "Go fits protocol adapters, webhooks, retry loops, and small deployable edge services."
-    },
-    {
       "id": "reporting",
       "path": "services/reporting",
       "domain": "Reporting",
@@ -526,71 +564,20 @@
       "rationale": "Python is a pragmatic fit for metric definitions, event-derived views, and analytics validation."
     },
     {
-      "id": "risk-compliance",
-      "path": "services/risk-compliance",
-      "domain": "Risk & Compliance",
-      "language": "python",
-      "runtime": "python",
-      "phase": "phase-1-support",
-      "status": "tested",
-      "priority": "P1",
-      "workPackages": [
-        "WP-17"
-      ],
-      "docs": [
-        "docs/02-domains/risk-compliance.md"
-      ],
-      "owns": [
-        "RiskAssessment",
-        "Challenge",
-        "RiskDecision",
-        "EvidenceSummary"
-      ],
-      "rationale": "Python supports rule experimentation, scoring, and evidence summarization without coupling source domains.",
-      "work_packages": [
-        "REQ-020",
-        "WP-17"
-      ]
-    },
-    {
-      "id": "service-plan",
-      "path": "services/service-plan",
-      "domain": "Service Plan",
-      "language": "golang",
-      "runtime": "go",
-      "phase": "phase-1-core",
-      "status": "tested",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-005"
-      ],
-      "docs": [
-        "docs/02-domains/service-plan.md"
-      ],
-      "owns": [
-        "Route",
-        "ServicePlan",
-        "Calendar",
-        "Timetable",
-        "PlanVersion"
-      ],
-      "rationale": "Go keeps schedule query services small, fast, and easy to operate."
-    },
-    {
       "id": "supplier-catalog",
       "path": "services/supplier-catalog",
       "domain": "Supplier Catalog",
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-support",
-      "status": "tested",
+      "status": "skeleton",
       "priority": "P1",
       "workPackages": [
-        "REQ-026"
+        "WP-02",
+        "WP-11"
       ],
       "docs": [
-        "docs/02-domains/supplier-catalog.md",
-        "docs/08-contracts/events/supplier-catalog.md"
+        "docs/02-domains/supplier-catalog.md"
       ],
       "owns": [
         "Supplier",
@@ -600,6 +587,26 @@
         "ExternalCode"
       ],
       "rationale": "Go keeps supplier capability lookup compact and separate from provider runtime health."
+    },
+    {
+      "id": "disruption-recovery",
+      "path": "services/disruption-recovery",
+      "domain": "Disruption Recovery",
+      "language": "python",
+      "runtime": "python",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/disruption-recovery.md"
+      ],
+      "owns": [
+        "RecoveryCase",
+        "RecoveryOption",
+        "CompensationDecision"
+      ],
+      "rationale": "Python fits recovery optimization and policy experimentation when this future domain is enabled."
     },
     {
       "id": "transfer-management",
@@ -622,51 +629,24 @@
       "rationale": "Python fits connection-risk calculation and later protected-transfer recovery planning."
     },
     {
-      "id": "traveler-profile",
-      "path": "services/traveler-profile",
-      "domain": "Traveler Profile",
-      "language": "java",
-      "runtime": "jvm",
-      "phase": "phase-1-domain-foundation",
-      "status": "implemented",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-017"
-      ],
+      "id": "ancillary-service",
+      "path": "services/ancillary-service",
+      "domain": "Ancillary Service",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
       "docs": [
-        "docs/02-domains/traveler-profile.md"
+        "docs/02-domains/ancillary-service.md"
       ],
       "owns": [
-        "TravelerProfile",
-        "Document",
-        "EligibilitySummary",
-        "PreferenceSnapshot"
+        "AncillaryOffer",
+        "AncillaryOrderItem",
+        "ActivationPolicy"
       ],
-      "rationale": "Java keeps PII-heavy profile aggregates and validation policies explicit."
-    },
-    {
-      "id": "trip-planning",
-      "path": "services/trip-planning",
-      "domain": "Trip Planning",
-      "language": "python",
-      "runtime": "python",
-      "phase": "phase-1-search-foundation",
-      "status": "implemented-foundation",
-      "priority": "P0",
-      "workPackages": [
-        "REQ-008-Trip-Planning-search-foundation"
-      ],
-      "docs": [
-        "docs/02-domains/trip-planning.md",
-        "docs/03-ddd-final/phase-1-contract.md"
-      ],
-      "owns": [
-        "TripIntent validation",
-        "Itinerary candidates",
-        "SearchResult ranking explanations",
-        "Non-authoritative PriceHint and AvailabilityHint snapshots"
-      ],
-      "rationale": "Python is a better fit for search heuristics, deterministic ranking, and auditable explanation logic."
+      "rationale": "TypeScript fits productized add-ons and bundle-facing API composition."
     },
     {
       "id": "waitlist",
@@ -708,6 +688,27 @@
         "PointLedger"
       ],
       "rationale": "Java is a conservative default for stored-value and promotion ledgers."
+    },
+    {
+      "id": "dispatch",
+      "path": "services/dispatch",
+      "domain": "Dispatch",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "future-scope",
+      "status": "placeholder-skeleton",
+      "priority": "P1",
+      "workPackages": [],
+      "docs": [
+        "docs/02-domains/dispatch.md"
+      ],
+      "owns": [
+        "RideRequest",
+        "RideAssignment",
+        "DriverLifecycle",
+        "Eta"
+      ],
+      "rationale": "Go fits real-time dispatch APIs, adapter calls, and low-latency state updates."
     }
   ]
 }
