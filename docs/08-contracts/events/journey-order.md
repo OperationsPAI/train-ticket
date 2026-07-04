@@ -1,6 +1,6 @@
 # Journey Order — Events & Commands
 
-Last updated: 2026-06-28
+Last updated: 2026-07-04
 
 ## Published Events
 
@@ -20,7 +20,7 @@ Last updated: 2026-06-28
 | `accountId` | string | yes | Owning account. |
 | `offerId` | `OfferId` | yes | Source offer ID. |
 | `monetarySummary` | `MonetarySummary` | yes | Price breakdown at creation. |
-| `travelerRefs` | string[] | yes | Traveler references. |
+| `travelerRefs` | `TravelerRef[]` | yes | Traveler references (structured form, see shared-primitives.md section 2a). |
 | `segmentRefs` | string[] | yes | Segment references. |
 | `createdAt` | RFC3339 UTC | yes | Order creation time. |
 
@@ -134,7 +134,7 @@ Last updated: 2026-06-28
 | `channelRef` | string | yes | Sales channel. |
 | `clientRequestId` | string | yes | Client-generated idempotency key. |
 | `offerSnapshot` | `OfferSnapshotRef` | yes | Reference to the accepted offer. |
-| `travelers` | `TravelerRef[]` | yes | Traveler snapshots. |
+| `travelers` | `TravelerRef[]` | yes | Traveler snapshots (structured form, see shared-primitives.md section 2a). |
 | `segments` | `SegmentOrderSnapshot[]` | yes | Segment order snapshots. |
 | `orderItems` | `OrderItem[]` | yes | Line items. |
 
@@ -142,16 +142,19 @@ Last updated: 2026-06-28
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `offerId` | `OfferId` | yes | Offer ID. |
-| `priceSnapshotRef` | string | yes | Frozen price snapshot reference. |
+| `offerId` | `OfferId` | yes | Offer ID. Maps from `OfferQuoted.downstreamReference.offerId`. |
+| `offerVersion` | u32 | yes | Offer version at quote time. Maps from `OfferQuoted.downstreamReference.offerVersion`. |
+| `priceSnapshotRef` | string | yes | Frozen price snapshot reference. Maps from `OfferQuoted.downstreamReference.priceSnapshotRef`. |
+| `ruleSnapshotId` | string | yes | Immutable rule snapshot reference. Maps from `OfferQuoted.downstreamReference.ruleSnapshotRef`. |
 
 **TravelerRef:**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `travelerId` | `TravelerId` | yes | Traveler ID. |
-| `documentType` | string | no | Travel document type. |
+| `travelerId` | `TravelerId` | yes | Traveler ID (`tvl-<uuid>`). |
+| `travelerType` | enum | yes | Traveler category (see shared-primitives.md TravelerType enum). Canonical field name; current implementation uses `documentType` as a deviation. |
 | `maskedDocumentNo` | string | no | Partially masked document number. |
+| `eligibilityRef` | `EligibilityRef` | no | Eligibility determination (see shared-primitives.md section 2b). |
 
 **SegmentOrderSnapshot:**
 
