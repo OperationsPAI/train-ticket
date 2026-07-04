@@ -1,6 +1,6 @@
 package com.trainticket.postsales.domain;
 
-public sealed interface PostSalesEvent permits PostSalesRequested, PostSalesEvaluated, PostSalesApproved, PostSalesRejected, PostSalesExecutionRequested, PostSalesStepSucceeded, PostSalesStepFailed, PostSalesManualReviewRequired, PostSalesApplied {
+public sealed interface PostSalesEvent permits PostSalesRequested, PostSalesCaseOpened, PostSalesEvaluated, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesExecutionRequested, PostSalesExecutionStarted, PostSalesStepSucceeded, PostSalesStepFailed, PostSalesManualReviewRequired, PostSalesApplied, PostSalesFailed, ChangeApplied {
     String caseId();
     EventMetadata metadata();
 }

@@ -2,6 +2,7 @@ package com.trainticket.postsales.domain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -45,7 +46,8 @@ class PostSalesCaseDomainTest {
         }
 
         assertEquals(PostSalesCaseStatus.APPLIED, postSalesCase.status());
-        assertInstanceOf(PostSalesRequested.class, postSalesCase.domainEvents().get(0));
+        assertInstanceOf(PostSalesCaseOpened.class, postSalesCase.domainEvents().get(0));
+        assertInstanceOf(PostSalesRequested.class, postSalesCase.domainEvents().get(1));
         assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesEvaluated.class::isInstance));
         assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesApproved.class::isInstance));
         assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesApplied.class::isInstance));
@@ -110,6 +112,109 @@ class PostSalesCaseDomainTest {
 
         assertEquals(PostSalesCaseStatus.REJECTED, postSalesCase.status());
         assertThrows(DomainRuleViolation.class, () -> postSalesCase.requestExecution(NOW.plusSeconds(3), "execute", "quote", "corr"));
+    }
+
+    @Test
+    void postSalesExecutionPlanCreatedAndTracksStepsIndependently() {
+        List<PostSalesStep> steps = List.of(
+            new PostSalesStep(PostSalesStepType.VOID_ENTITLEMENT, "ent-1", "idem-void", 2),
+            new PostSalesStep(PostSalesStepType.REQUEST_REFUND, "payment:refund", "idem-refund", 1),
+            new PostSalesStep(PostSalesStepType.APPLY_RESULT, "order-1", "idem-apply", 0)
+        );
+        PostSalesExecutionPlan plan = new PostSalesExecutionPlan("case-1", 1, steps);
+
+        assertEquals("case-1", plan.caseId());
+        assertEquals(1, plan.version());
+        assertEquals(3, plan.steps().size());
+        assertEquals(PostSalesStepStatus.PLANNED, plan.status());
+
+        plan.start(NOW);
+        assertEquals(PostSalesStepStatus.EXECUTING, plan.status());
+
+        plan.recordStepSucceeded(PostSalesStepType.VOID_ENTITLEMENT, "voided", NOW.plusSeconds(1));
+        assertEquals(PostSalesStepStatus.EXECUTING, plan.status());
+
+        plan.recordStepSucceeded(PostSalesStepType.REQUEST_REFUND, "refunded", NOW.plusSeconds(2));
+        assertEquals(PostSalesStepStatus.EXECUTING, plan.status());
+
+        plan.recordStepSucceeded(PostSalesStepType.APPLY_RESULT, "applied", NOW.plusSeconds(3));
+        assertEquals(PostSalesStepStatus.SUCCEEDED, plan.status());
+    }
+
+    @Test
+    void postSalesExecutionPlanRejectsOutOfOrderSteps() {
+        List<PostSalesStep> steps = List.of(
+            new PostSalesStep(PostSalesStepType.VOID_ENTITLEMENT, "ent-1", "idem-void", 2),
+            new PostSalesStep(PostSalesStepType.REQUEST_REFUND, "payment:refund", "idem-refund", 1)
+        );
+        PostSalesExecutionPlan plan = new PostSalesExecutionPlan("case-1", 1, steps);
+        plan.start(NOW);
+
+        assertThrows(DomainRuleViolation.class, () ->
+            plan.recordStepSucceeded(PostSalesStepType.REQUEST_REFUND, "refund", NOW.plusSeconds(1)));
+    }
+
+    @Test
+    void postSalesExecutionPlanStepFailureMarksPlanFailed() {
+        List<PostSalesStep> steps = List.of(
+            new PostSalesStep(PostSalesStepType.VOID_ENTITLEMENT, "ent-1", "idem-void", 2),
+            new PostSalesStep(PostSalesStepType.REQUEST_REFUND, "payment:refund", "idem-refund", 1)
+        );
+        PostSalesExecutionPlan plan = new PostSalesExecutionPlan("case-1", 1, steps);
+        plan.start(NOW);
+        plan.recordStepSucceeded(PostSalesStepType.VOID_ENTITLEMENT, "voided", NOW.plusSeconds(1));
+        plan.recordStepFailed(PostSalesStepType.REQUEST_REFUND, "channel declined", false, NOW.plusSeconds(2));
+
+        assertEquals(PostSalesStepStatus.FAILED, plan.status());
+    }
+
+    @Test
+    void postSalesCaseOpenedEmitsCaseOpenedAndRequestedEvents() {
+        PostSalesCase postSalesCase = PostSalesCase.open("order-1", PostSalesCaseType.REFUND, scope(), "CUSTOMER_REQUEST", "traveler-1", "idem-open", NOW, "request", "corr");
+
+        assertEquals(PostSalesCaseStatus.OPENED, postSalesCase.status());
+        assertInstanceOf(PostSalesCaseOpened.class, postSalesCase.domainEvents().get(0));
+        assertInstanceOf(PostSalesRequested.class, postSalesCase.domainEvents().get(1));
+    }
+
+    @Test
+    void eligibilityEvaluationEmitsEventAndCanRejectDirectly() {
+        PostSalesCase postSalesCase = refundCase();
+        postSalesCase.evaluateEligibility(false, "RULE_BLOCKED", "eval-1", "v1", NOW.plusSeconds(1), "evaluate", "request", "corr");
+
+        assertEquals(PostSalesCaseStatus.REJECTED, postSalesCase.status());
+        assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesEligibilityEvaluated.class::isInstance));
+    }
+
+    @Test
+    void executionStartedEventIsEmitted() {
+        PostSalesCase postSalesCase = approvedExecutingRefundCase();
+        assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesExecutionStarted.class::isInstance));
+    }
+
+    @Test
+    void failCaseEmitsPostSalesFailedEvent() {
+        PostSalesCase postSalesCase = approvedExecutingRefundCase();
+        postSalesCase.recordStepFailed(PostSalesStepType.VOID_ENTITLEMENT, "entitlement void failed", false, NOW.plusSeconds(10), "step", "execute", "corr");
+
+        assertEquals(PostSalesCaseStatus.FAILED, postSalesCase.status());
+        assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesFailed.class::isInstance));
+    }
+
+    @Test
+    void cancelCaseFromOpenStatusWorks() {
+        PostSalesCase postSalesCase = refundCase();
+        postSalesCase.cancelCase("user cancelled", NOW.plusSeconds(1), "cancel", "request", "corr");
+
+        assertEquals(PostSalesCaseStatus.CANCELLED, postSalesCase.status());
+    }
+
+    @Test
+    void applyResultFromExecutingWorks() {
+        PostSalesCase postSalesCase = approvedExecutingRefundCase();
+        postSalesCase.applyResult("manual override applied", NOW.plusSeconds(10), "apply", "execute", "corr");
+
+        assertEquals(PostSalesCaseStatus.APPLIED, postSalesCase.status());
     }
 
     private static PostSalesCase approvedExecutingRefundCase() {
