@@ -4,7 +4,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -66,8 +65,10 @@ public final class PaymentIntent {
             throw new DomainRuleViolation("payment intent expiry must be in the future");
         }
         PaymentIntent intent = new PaymentIntent(UUID.randomUUID().toString(), businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey);
-        intent.domainEvents.add(new PaymentIntentCreated(intent.paymentIntentId, intent.businessRef, intent.purpose, intent.amount, intent.payerRef, intent.idempotencyKey,
-            EventMetadata.create(occurredAt, sourceCommandId, sourceCommandId, correlationId, Map.of("status", intent.status.name()))));
+        intent.domainEvents.add(new PaymentIntentCreated(
+            EventEnvelope.create("PaymentIntentCreated", occurredAt, sourceCommandId, correlationId, "payment"),
+            intent.paymentIntentId, intent.businessRef, intent.purpose, intent.amount, intent.payerRef, intent.idempotencyKey
+        ));
         return intent;
     }
 
@@ -101,8 +102,10 @@ public final class PaymentIntent {
         this.authorizedAmount = authorizedAmount;
         this.status = PaymentIntentStatus.AUTHORIZED;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
-        domainEvents.add(new PaymentAuthorized(paymentIntentId, authorizedAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId"),
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new PaymentAuthorized(
+            EventEnvelope.create("PaymentAuthorized", occurredAt, causationId, correlationId, "payment"),
+            paymentIntentId, authorizedAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
+        ));
     }
 
     public void capture(Money captureAmount, String channel, String channelTransactionId, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -127,8 +130,10 @@ public final class PaymentIntent {
             return;
         }
         status = PaymentIntentStatus.FAILED;
-        domainEvents.add(new PaymentFailed(paymentIntentId, requireText(reasonCode, "reasonCode"), retryable,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new PaymentFailed(
+            EventEnvelope.create("PaymentFailed", occurredAt, causationId, correlationId, "payment"),
+            paymentIntentId, requireText(reasonCode, "reasonCode"), retryable
+        ));
     }
 
     public void cancel(String reason, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -139,8 +144,10 @@ public final class PaymentIntent {
             return;
         }
         status = PaymentIntentStatus.CANCELLED;
-        domainEvents.add(new PaymentIntentCancelled(paymentIntentId, requireText(reason, "reason"),
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new PaymentIntentCancelled(
+            EventEnvelope.create("PaymentIntentCancelled", occurredAt, causationId, correlationId, "payment"),
+            paymentIntentId, requireText(reason, "reason")
+        ));
     }
 
     public void expire(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -154,8 +161,10 @@ public final class PaymentIntent {
             throw new DomainRuleViolation("cannot expire payment intent before expiresAt");
         }
         status = PaymentIntentStatus.EXPIRED;
-        domainEvents.add(new PaymentIntentExpired(paymentIntentId,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new PaymentIntentExpired(
+            EventEnvelope.create("PaymentIntentExpired", occurredAt, causationId, correlationId, "payment"),
+            paymentIntentId
+        ));
     }
 
     void markRefunded(Money amount) {
@@ -180,8 +189,10 @@ public final class PaymentIntent {
         this.capturedAmount = capturedAmount.add(captureAmount);
         this.status = capturedAmount.equals(amount) ? PaymentIntentStatus.CAPTURED : status;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
-        domainEvents.add(new PaymentCaptured(paymentIntentId, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId"),
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new PaymentCaptured(
+            EventEnvelope.create("PaymentCaptured", occurredAt, causationId, correlationId, "payment"),
+            paymentIntentId, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
+        ));
     }
 
     private void requireNonTerminalForPayment(String action) {

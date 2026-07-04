@@ -1,13 +1,8 @@
 package com.trainticket.payment.domain;
 
 public record PaymentFailed(
+    EventEnvelope envelope,
     String paymentIntentId,
     String reasonCode,
-    boolean retryable,
-    EventMetadata metadata
-) implements PaymentEvent {
-    @Override
-    public String eventType() {
-        return "PaymentFailed";
-    }
-}
+    boolean retryable
+) implements PaymentEvent {}

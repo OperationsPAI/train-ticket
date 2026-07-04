@@ -1,14 +1,9 @@
 package com.trainticket.payment.domain;
 
 public record RefundSettled(
+    EventEnvelope envelope,
     String refundId,
     String paymentIntentId,
     Money amount,
-    String channelRefundTransactionId,
-    EventMetadata metadata
-) implements PaymentEvent {
-    @Override
-    public String eventType() {
-        return "RefundSettled";
-    }
-}
+    String channelRefundTransactionId
+) implements PaymentEvent {}

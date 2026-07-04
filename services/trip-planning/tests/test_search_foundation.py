@@ -48,7 +48,7 @@ def price(amount: int) -> PriceHint:
     )
 
 
-def availability(status: str = "available_hint") -> AvailabilityHint:
+def availability(status: str = "AVAILABLE") -> AvailabilityHint:
     return AvailabilityHint(
         status=status,
         snapshot_ref=f"availability-snapshot:{status}",
@@ -163,12 +163,12 @@ class SearchFoundationTest(unittest.TestCase):
         direct = Itinerary(
             legs=(leg("seg:direct", "station:A", "station:C", "2026-08-01T09:00:00+00:00", "2026-08-01T10:00:00+00:00"),),
             price_hint=price(2000),
-            availability_hint=availability("limited_hint"),
+            availability_hint=availability("LIMITED"),
         )
         slower = Itinerary(
             legs=(leg("seg:slow", "station:A", "station:C", "2026-08-01T09:10:00+00:00", "2026-08-01T11:00:00+00:00"),),
             price_hint=price(4500),
-            availability_hint=availability("available_hint"),
+            availability_hint=availability("AVAILABLE"),
         )
         result = search_itineraries(self.intent(), (slower, direct), generated_at=CAPTURED)
         dto = trip_plan_to_dto(result)
@@ -223,7 +223,7 @@ class SearchFoundationTest(unittest.TestCase):
                         "capturedAt": "2026-07-03T12:00:00+00:00",
                     },
                     "availabilityHint": {
-                        "status": "available_hint",
+                        "status": "AVAILABLE",
                         "snapshotRef": "availability-snapshot:1",
                         "capturedAt": "2026-07-03T12:00:00+00:00",
                     },

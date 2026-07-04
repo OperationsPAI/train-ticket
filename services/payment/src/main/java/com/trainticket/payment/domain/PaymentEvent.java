@@ -13,6 +13,5 @@ public sealed interface PaymentEvent permits
     ChannelCallbackReceived,
     DuplicateChannelCallbackDetected,
     LatePaymentDetected {
-    String eventType();
-    EventMetadata metadata();
+    EventEnvelope envelope();
 }

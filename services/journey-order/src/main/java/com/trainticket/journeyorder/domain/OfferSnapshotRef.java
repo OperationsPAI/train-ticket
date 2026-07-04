@@ -8,6 +8,7 @@ public record OfferSnapshotRef(
     int offerVersion,
     Instant quotedAt,
     Instant expiresAt,
+    String priceSnapshotRef,
     String ruleSnapshotId
 ) {
     public OfferSnapshotRef {
@@ -17,6 +18,7 @@ public record OfferSnapshotRef(
         }
         Objects.requireNonNull(quotedAt, "quotedAt is required");
         Objects.requireNonNull(expiresAt, "expiresAt is required");
+        requireText(priceSnapshotRef, "priceSnapshotRef");
         requireText(ruleSnapshotId, "ruleSnapshotId");
         if (!expiresAt.isAfter(quotedAt)) {
             throw new DomainRuleViolation("offer expiresAt must be after quotedAt");
