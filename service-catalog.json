@@ -127,7 +127,6 @@
       "rationale": "Rust is appropriate for interval overlap and seat-hold invariants that must fail closed."
     },
     {
-
       "id": "fare-pricing",
       "path": "services/fare-pricing",
       "domain": "Fare & Pricing",
@@ -555,18 +554,21 @@
       "language": "python",
       "runtime": "python",
       "phase": "phase-1-limited",
-      "status": "skeleton",
+      "status": "implemented",
       "priority": "P2",
       "workPackages": [
+        "REQ-025",
         "WP-22"
       ],
       "docs": [
-        "docs/02-domains/reporting.md"
+        "docs/02-domains/reporting.md",
+        "docs/08-contracts/events/reporting.md"
       ],
       "owns": [
         "MetricDefinition",
         "DashboardReadModel",
-        "FunnelView"
+        "FunnelView",
+        "ConsumedEventLog"
       ],
       "rationale": "Python is a pragmatic fit for metric definitions, event-derived views, and analytics validation."
     },
