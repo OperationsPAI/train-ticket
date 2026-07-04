@@ -471,7 +471,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-support",
-      "status": "skeleton",
+      "status": "implemented",
       "priority": "P1",
       "workPackages": [
         "WP-19"

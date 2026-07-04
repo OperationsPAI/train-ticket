@@ -17,6 +17,7 @@ docs/08-contracts/
 ├── shared-primitives.md    ← Language-neutral field-level definitions
 ├── conformance-gaps.md     ← Known mismatches between spec and implementation
 └── events/
+    ├── admin-audit.md
     ├── trip-planning.md
     ├── offer-management.md
     ├── journey-order.md
