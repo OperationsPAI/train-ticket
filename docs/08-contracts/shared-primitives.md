@@ -61,6 +61,10 @@ canonical identity and MUST be preserved in serialisation.
 | `DisruptionCaseId` | `dc-` | `dc-<uuid>` | Disruption case identity. |
 | `TransferPlanId` | `tp-` | `tp-<uuid>` | Transfer plan identity. |
 | `ProviderReference` | varies | provider-specific | External provider reference (PNR, confirmation number, ticket number). |
+| `AccountId` | `acct-` | `acct-<uuid>` | Account aggregate root. |
+| `SessionId` | `sess-` | `sess-<uuid>` | Session aggregate root. |
+| `PreferenceId` | `pref-` | `pref-<uuid>` | Preference aggregate root. |
+| `ClosureRequestId` | `clr-` | `clr-<uuid>` | Account closure saga request. |
 | `AvailabilitySnapshotId` | `avs-` | `avs-<uuid>` | Availability snapshot identity. |
 
 **Reference implementation:** `platform/shared-kernel-rust/src/lib.rs` — `PlaceRef`, `TravelerRef`, `SegmentRef`, `EventId`, `CausationId`, `CorrelationId`.

@@ -454,21 +454,24 @@
       "domain": "Account",
       "language": "typescript",
       "runtime": "node",
-      "phase": "phase-1-limited",
-      "status": "skeleton",
+      "phase": "phase-1-account-domain-foundation",
+      "status": "implemented-foundation",
       "priority": "P1",
       "workPackages": [
-        "WP-18"
+        "REQ-021",
+        "WP-18-account-minimum"
       ],
       "docs": [
         "docs/02-domains/account.md"
       ],
       "owns": [
-        "UserAccount",
-        "Session",
-        "Preference",
-        "Freeze",
-        "AccountClosureSaga shell"
+        "UserAccount lifecycle (create, freeze, unfreeze, closure)",
+        "Session lifecycle (open, revoke, expiry)",
+        "Preference management (update)",
+        "Freeze invariant (blocks new transactions, not refunds/notifications)",
+        "AccountClosureSaga shell (verify in-flight orders/refunds before final closure)",
+        "AccountCreated, AccountFrozen, AccountUnfrozen, AccountClosureStarted, AccountClosed",
+        "SessionOpened, SessionRevoked, PreferenceUpdated"
       ],
       "rationale": "TypeScript is suitable for identity/session edge APIs while traveler facts remain in Traveler Profile."
     },
