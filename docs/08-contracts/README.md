@@ -1,6 +1,6 @@
 # Cross-Domain Contract Specification
 
-Last updated: 2026-06-28
+Last updated: 2026-07-04
 
 ## Purpose
 

@@ -1,8 +1,54 @@
 # Capacity & Availability — Events & Commands
 
-Last updated: 2026-06-28
+Last updated: 2026-07-04
 
 ## Published Events
+
+### AvailabilitySnapshot
+
+| Field | Description |
+|---|---|
+| **Producer** | capacity-availability |
+| **Consumers** | trip-planning, offer-management, fare-pricing |
+| **Trigger** | Query snapshot computed on demand; not an authoritative hold. Published as a reference for offer quoting and availability hints. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `snapshotId` | string | yes | Stable snapshot identity. Format: `avs-<uuid>`. |
+| `snapshotVersion` | u64 | yes | Monotonically increasing version of the snapshot. |
+| `scheduledServiceRef` | string | yes | Reference to the scheduled service this snapshot covers (e.g. `ss-<uuid>`). |
+| `segmentRef` | `SegmentRef` | yes | Service segment the snapshot applies to. |
+| `capturedAt` | RFC3339 UTC | yes | When the snapshot was captured. |
+| `validUntil` | RFC3339 UTC | yes | Snapshot expiry time; after this, the snapshot MUST NOT be used for quoting. |
+| `sellable` | bool | yes | Whether at least one unit is sellable for the requested interval. |
+| `remainingByClass` | `RemainingByClass[]` | yes | Per-class (seat-grade/cabin) remaining unit counts. |
+| `totalUnits` | u32 | yes | Total sellable units in the pool. |
+| `availableCount` | u32 | yes | Estimated number of available units. |
+| `status` | enum | yes | Canonical availability status (see mapping table below). |
+
+**RemainingByClass:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `classRef` | string | yes | Seat class / cabin reference (e.g. `first`, `second`, `business`). |
+| `total` | u32 | yes | Total units in this class. |
+| `available` | u32 | yes | Estimated available units in this class. |
+
+**Status vocabulary and cross-context mapping:**
+
+| Canonical Status | trip-planning hint | offer-management confidence | Description |
+|---|---|---|---|
+| `AVAILABLE` | `available_hint` | `confirmed-snapshot` | Sufficient sellable units; quote confidently. |
+| `LIMITED` | `limited` | `low` | Fewer than threshold units remain; may sell out soon. |
+| `UNKNOWN` | `unknown` | `estimated` | Snapshot data stale or incomplete; estimate only. |
+| `UNAVAILABLE` | `unavailable` | N/A | No sellable units; cannot quote. |
+
+**Idempotency/Ordering Notes:**
+- `AvailabilitySnapshot` is a read-model projection, not an event-sourced fact.
+- Same `snapshotId` with higher `snapshotVersion` supersedes earlier versions.
+- Consumers MUST discard snapshots where `validUntil` has elapsed.
 
 ### CapacityHeld
 

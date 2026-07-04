@@ -1,6 +1,6 @@
 # Offer Management — Events & Commands
 
-Last updated: 2026-06-28
+Last updated: 2026-07-04
 
 ## Published Events
 
@@ -40,10 +40,23 @@ Last updated: 2026-06-28
 | `offerId` | `OfferId` | yes | Canonical offer ID. |
 | `offerVersion` | u32 | yes | Version at quote time. |
 | `priceSnapshotRef` | string | yes | Immutable price snapshot reference. |
+| `ruleSnapshotRef` | string | yes | Immutable rule snapshot reference. This is the canonical reference that journey-order maps into its `OfferSnapshotRef.ruleSnapshotId` field. |
 
 **Idempotency/Ordering Notes:**
 - Idempotent on `(offerId, offerVersion)`. Same combination produces same event.
-- `OfferQuoted` is an immutable fact. Once published, the price snapshot cannot change.
+- `OfferQuoted` is an immutable fact. Once published, the price snapshot and rule snapshot cannot change.
+
+#### Round-trip mapping to journey-order's OfferSnapshotRef
+
+| OfferQuoted.downstreamReference field | journey-order.OfferSnapshotRef field |
+|---|---|
+| `offerId` | `offerId` |
+| `offerVersion` | `offerVersion` |
+| `priceSnapshotRef` | `priceSnapshotRef` |
+| `ruleSnapshotRef` | `ruleSnapshotId` |
+
+The journey-order context MUST construct its `OfferSnapshotRef` by copying these
+four fields directly. No transformation or derivation is required.
 
 ### OfferExpired
 
