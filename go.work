@@ -1,10 +1,11 @@
 go 1.26
 
 use (
-	./services/place-network
-	./services/service-plan
-	./services/provider-integration
-	./services/fulfillment
-	./services/supplier-catalog
+	./platform/go-runtime
 	./services/dispatch
+	./services/fulfillment
+	./services/place-network
+	./services/provider-integration
+	./services/service-plan
+	./services/supplier-catalog
 )

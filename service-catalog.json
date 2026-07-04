@@ -30,6 +30,29 @@
         "language-neutral contract source before code generation exists"
       ],
       "rationale": "Rust keeps shared invariant examples strict while the normative contract remains language-neutral."
+    },
+    {
+      "id": "go-runtime",
+      "path": "platform/go-runtime",
+      "domain": "Go Runtime / Platform",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "phase-1-foundation",
+      "status": "runtime-baseline",
+      "priority": "P0",
+      "workPackages": [
+        "STAB-010"
+      ],
+      "docs": [
+        "docs/05-service-architecture/language-selection.md"
+      ],
+      "owns": [
+        "Go HTTP runtime bootstrap helpers",
+        "request and correlation id middleware",
+        "standard operational endpoints",
+        "no-op observability seam"
+      ],
+      "rationale": "A shared Go runtime keeps HTTP service baselines consistent without moving bounded-context ownership."
     }
   ],
   "services": [

@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 
+	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	apphttp "github.com/trainticket/greenfield/services/fulfillment/internal/http"
 )
 
@@ -12,7 +13,11 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	if err := apphttp.Router().Run(":" + port); err != nil {
+	server := goruntime.NewHTTPServer(goruntime.ServerConfig{
+		Address: ":" + port,
+		Handler: apphttp.Router(),
+	})
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
