@@ -300,6 +300,77 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/provider-integration.md, docs/03-ddd-final/phase-1-contract.md, docs/01-ddd-high-level/acl-provider-contracts.md"
 
+  - id: REQ-022
+    title: "Admin and Audit domain foundation"
+    description: "Implement the Admin & Audit domain foundation in Java. Owns operator identity, approvals, controlled manual actions, and audit trails."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorIdentity.java
+        description: "OperatorIdentity aggregate root with registration, scope validation, and active check."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualAction.java
+        description: "ManualAction aggregate root with request, approve, reject, execute lifecycle and four-eyes enforcement."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AuditTrail.java
+        description: "AuditTrail append-only aggregate with correction support."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AuditEntry.java
+        description: "Immutable audit entry value object."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/Approval.java
+        description: "Approval value object recording four-eyes approval decisions."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AdminAuditEvent.java
+        description: "Sealed event interface for all Admin & Audit domain events."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorRegistered.java
+        description: "Event emitted when an operator is registered."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionRequested.java
+        description: "Event emitted when a manual action is requested."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionApproved.java
+        description: "Event emitted when a manual action is approved."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionRejected.java
+        description: "Event emitted when a manual action is rejected."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionExecuted.java
+        description: "Event emitted when a manual action is executed or fails."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AuditEntryRecorded.java
+        description: "Event emitted when an audit trail entry is recorded."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/EventEnvelope.java
+        description: "Canonical cross-context event envelope per contract shared-primitives.md."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/DomainRuleViolation.java
+        description: "Domain rule violation exception."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorRef.java
+        description: "Operator reference value object."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorRole.java
+        description: "Operator role enumeration."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/PermissionScope.java
+        description: "Permission scope enumeration for ABAC."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionState.java
+        description: "ManualAction lifecycle state enumeration."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/ServiceProfile.java
+        description: "Service profile with REQ-022 ownership."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/Application.java
+        description: "Spring Boot application entry point."
+      - path: docs/08-contracts/events/admin-audit.md
+        description: "Admin & Audit event and command contract specification."
+    tests:
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/OperatorIdentityTest.java
+        description: "Unit tests for OperatorIdentity registration, scope validation, and invariants."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/ManualActionTest.java
+        description: "Unit tests for ManualAction lifecycle, four-eyes enforcement, and state machine."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/AuditTrailTest.java
+        description: "Unit tests for AuditTrail append-only semantics and correction references."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/AuditEntryTest.java
+        description: "Unit tests for AuditEntry immutability and validation."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/ApprovalTest.java
+        description: "Unit tests for Approval value object."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/OperatorRefTest.java
+        description: "Unit tests for OperatorRef validation."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: docs/02-domains/admin-audit.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/admin-audit.md
+    depends_on: [REQ-003, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/admin-audit.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
 
   - id: REQ-010
     title: "Journey Order domain foundation"
