@@ -11,7 +11,7 @@ class ServiceProfile(TypedDict):
     boundary: NotRequired[str]
 
 
-SERVICE_PROFILE: ServiceProfile = {'service_id': 'risk-compliance', 'domain': 'Risk & Compliance', 'language': 'python', 'phase': 'phase-1-support', 'work_packages': ['WP-17'], 'owns': ['RiskAssessment', 'Challenge', 'BlockDecision', 'EvidenceSummary']}
+SERVICE_PROFILE: ServiceProfile = {'service_id': 'risk-compliance', 'domain': 'Risk & Compliance', 'language': 'python', 'phase': 'phase-1-support', 'work_packages': ['REQ-020', 'WP-17'], 'owns': ['RiskAssessment', 'Challenge', 'RiskDecision', 'EvidenceSummary']}
 
 
 def health() -> str:
