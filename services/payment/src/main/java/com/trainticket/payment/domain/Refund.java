@@ -3,7 +3,6 @@ package com.trainticket.payment.domain;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -51,8 +50,10 @@ public final class Refund {
             throw new DomainRuleViolation("refund amount cannot exceed captured-and-not-refunded balance");
         }
         Refund refund = new Refund(UUID.randomUUID().toString(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
-        refund.domainEvents.add(new RefundRequested(refund.refundId, refund.paymentIntentId, refund.amount, refund.sourceCaseRef, refund.reasonCode, refund.idempotencyKey,
-            EventMetadata.create(occurredAt, sourceCommandId, sourceCommandId, correlationId, Map.of("status", refund.status.name()))));
+        refund.domainEvents.add(new RefundRequested(
+            EventEnvelope.create("RefundRequested", occurredAt, sourceCommandId, correlationId, "payment"),
+            refund.refundId, refund.paymentIntentId, refund.amount, refund.sourceCaseRef, refund.reasonCode, refund.idempotencyKey
+        ));
         return refund;
     }
 
@@ -98,8 +99,10 @@ public final class Refund {
         this.channelRefundTransactionId = requireText(channelRefundTransactionId, "channelRefundTransactionId");
         capturedIntent.markRefunded(amount);
         this.status = RefundStatus.SETTLED;
-        domainEvents.add(new RefundSettled(refundId, paymentIntentId, amount, this.channelRefundTransactionId,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new RefundSettled(
+            EventEnvelope.create("RefundSettled", occurredAt, causationId, correlationId, "payment"),
+            refundId, paymentIntentId, amount, this.channelRefundTransactionId
+        ));
     }
 
     public void fail(String reasonCode, boolean retryable, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -110,8 +113,10 @@ public final class Refund {
             return;
         }
         status = retryable ? RefundStatus.FAILED : RefundStatus.MANUAL_REVIEW_REQUIRED;
-        domainEvents.add(new RefundFailed(refundId, paymentIntentId, requireText(reasonCode, "reasonCode"), retryable,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("status", status.name()))));
+        domainEvents.add(new RefundFailed(
+            EventEnvelope.create("RefundFailed", occurredAt, causationId, correlationId, "payment"),
+            refundId, paymentIntentId, requireText(reasonCode, "reasonCode"), retryable
+        ));
     }
 
     private static String requireText(String value, String name) {

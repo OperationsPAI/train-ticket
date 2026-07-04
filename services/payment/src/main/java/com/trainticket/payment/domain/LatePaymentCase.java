@@ -2,7 +2,6 @@ package com.trainticket.payment.domain;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -51,8 +50,9 @@ public final class LatePaymentCase {
         String correlationId
     ) {
         String id = UUID.randomUUID().toString();
-        LatePaymentDetected event = new LatePaymentDetected(id, paymentIntentId, capturedAmount, channelTransactionId, reason,
-            EventMetadata.create(detectedAt, sourceCommandId, causationId, correlationId, Map.of("status", LatePaymentCaseStatus.OPEN.name(), "channel", channel)));
+        LatePaymentDetected event = new LatePaymentDetected(
+            EventEnvelope.create("LatePaymentDetected", detectedAt, causationId, correlationId, "payment"),
+            id, paymentIntentId, capturedAmount, channel, channelTransactionId);
         return new LatePaymentCase(id, paymentIntentId, capturedAmount, channel, channelTransactionId, reason, detectedAt, event);
     }
 

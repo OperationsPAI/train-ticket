@@ -19,6 +19,18 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
         return new Money(new BigDecimal(amount), Currency.getInstance(requireText(currencyCode, "currencyCode")));
     }
 
+    public static Money fromMinorUnits(long minorUnits, String currencyCode) {
+        Currency cur = Currency.getInstance(currencyCode);
+        return new Money(BigDecimal.valueOf(minorUnits, cur.getDefaultFractionDigits()), cur);
+    }
+
+    /**
+     * Cross-context canonical form: amount in minor units (e.g. cents/fen).
+     */
+    public long toMinorUnits() {
+        return amount.movePointRight(currency.getDefaultFractionDigits()).longValue();
+    }
+
     public static Money zero(Currency currency) {
         return new Money(BigDecimal.ZERO, currency);
     }

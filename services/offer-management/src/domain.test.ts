@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { describe, it } from "node:test";
 
 import {
@@ -12,8 +13,8 @@ const quotedAt = new Date("2026-07-03T10:00:00.000Z");
 const expiresAt = new Date("2026-07-03T10:10:00.000Z");
 const upstreamExpiresAt = new Date("2026-07-03T10:15:00.000Z");
 
-function money(amount: number) {
-  return { amount, currency: "CNY" } as const;
+function money(amountMinor: number) {
+  return { amountMinor, currency: "CNY" } as const;
 }
 
 function quoteCommand(overrides: Partial<QuoteOfferCommand> = {}): QuoteOfferCommand {
@@ -35,7 +36,7 @@ function quoteCommand(overrides: Partial<QuoteOfferCommand> = {}): QuoteOfferCom
     },
     passengerMix: {
       travelerSetHash: "traveler-hash-1",
-      travelers: [{ travelerId: "traveler-1", category: "adult", eligibilitySnapshotRef: "eligibility-1" }],
+      travelers: [{ travelerId: "traveler-1", travelerType: "ADULT" }],
     },
     items: [
       {
@@ -50,6 +51,7 @@ function quoteCommand(overrides: Partial<QuoteOfferCommand> = {}): QuoteOfferCom
           capturedAt: new Date("2026-07-03T09:58:00.000Z"),
           expiresAt: upstreamExpiresAt,
           sellable: true,
+          status: "AVAILABLE",
           confidence: "confirmed-snapshot",
         },
         fareSnapshot: {
@@ -103,17 +105,22 @@ describe("Offer Management domain foundation", () => {
     assert.equal(offer.version, 1);
     assert.equal(offer.status, "Quoted");
     assert.equal(event.type, "OfferQuoted");
+    assert.equal(event.eventType, "OfferQuoted");
+    assert.equal(event.schemaVersion, 1);
+    assert.equal(event.producer, "offer-management");
+    assert.ok(event.eventId.startsWith("evt-"));
     assert.deepEqual(event.availabilitySnapshotRefs, ["availability-snapshot-1"]);
     assert.deepEqual(event.fareQuoteRefs, ["fare-quote-1"]);
     assert.deepEqual(event.ruleSnapshotRefs, ["rule-snapshot-1"]);
     assert.equal(event.downstreamReference.priceSnapshotRef, "price-snapshot-1");
+    assert.equal(event.downstreamReference.ruleSnapshotRef, "rule-snapshot-1");
     assert.deepEqual(event.boundaryProof, nonMutationBoundaryProof());
 
     const snapshot = offer.toSnapshot();
     assert.throws(() => {
-      (snapshot.priceSnapshot.total as { amount: number }).amount = 999;
+      (snapshot.priceSnapshot.total as { amountMinor: number }).amountMinor = 999;
     }, TypeError);
-    assert.equal(offer.toSnapshot().priceSnapshot.total.amount, 104);
+    assert.equal(offer.toSnapshot().priceSnapshot.total.amountMinor, 104);
   });
 
   it("rejects missing or stale snapshots and offer validity beyond upstream TTLs", () => {
@@ -211,7 +218,7 @@ describe("Offer Management domain foundation", () => {
       "OFFER_EXPIRED",
     );
 
-    const { offer: expiredOffer, event } = offer.expire(expiresAt, "validity-window-elapsed");
+    const { offer: expiredOffer, event } = offer.expire(expiresAt, "VALIDITY_WINDOW_ELAPSED");
     assert.equal(expiredOffer.status, "Expired");
     assert.equal(event.type, "OfferExpired");
     assert.equal(event.previousStatus, "Quoted");

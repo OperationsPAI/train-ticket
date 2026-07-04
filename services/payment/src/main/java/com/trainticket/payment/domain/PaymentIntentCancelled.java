@@ -1,12 +1,7 @@
 package com.trainticket.payment.domain;
 
 public record PaymentIntentCancelled(
+    EventEnvelope envelope,
     String paymentIntentId,
-    String reason,
-    EventMetadata metadata
-) implements PaymentEvent {
-    @Override
-    public String eventType() {
-        return "PaymentIntentCancelled";
-    }
-}
+    String reason
+) implements PaymentEvent {}

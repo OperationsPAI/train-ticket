@@ -24,7 +24,7 @@ class RefundDomainTest {
         assertEquals(Money.of("75.00", "USD"), intent.refundableBalance());
         assertInstanceOf(RefundRequested.class, refund.domainEvents().getFirst());
         RefundSettled settled = assertInstanceOf(RefundSettled.class, refund.domainEvents().get(1));
-        assertEquals("RefundSettled", settled.eventType());
+        assertEquals("RefundSettled", settled.envelope().eventType());
         assertEquals(intent.paymentIntentId(), settled.paymentIntentId());
     }
 

@@ -24,14 +24,14 @@ class JourneyOrderTest {
         assertEquals(1, order.segments().size());
         assertEquals(1, order.timeline().size());
         JourneyOrderEvent event = assertInstanceOf(JourneyOrderCreated.class, order.domainEvents().getFirst());
-        assertEquals("JourneyOrderCreated", event.eventType());
-        assertEquals(1, event.schemaVersion());
+        assertEquals("JourneyOrderCreated", event.envelope().eventType());
+        assertEquals(1, event.envelope().schemaVersion());
         assertEquals(order.orderId(), event.orderId());
     }
 
     @Test
     void refusesExpiredOfferAndInvalidTravelerBinding() {
-        OfferSnapshotRef expiredOffer = new OfferSnapshotRef("offer-expired", 1, NOW.minusSeconds(600), NOW.minusSeconds(1), "rule-1");
+        OfferSnapshotRef expiredOffer = new OfferSnapshotRef("offer-expired", 1, NOW.minusSeconds(600), NOW.minusSeconds(1), "price-snap-1", "rule-1");
         assertThrows(DomainRuleViolation.class, () -> createOrder(expiredOffer, sampleItems("missing-traveler")));
 
         assertThrows(DomainRuleViolation.class, () -> createOrder(sampleOffer(), sampleItems("unknown-traveler")));
@@ -134,7 +134,7 @@ class JourneyOrderTest {
             "mobile-app",
             "client-req-1",
             offer,
-            List.of(new TravelerRef("traveler-1", "doc-mask-1", "ADULT", "qualification-v1")),
+            List.of(new TravelerRef("traveler-1", "ADULT", "doc-mask-1", null)),
             List.of(new SegmentOrderSnapshot(
                 "segment-1",
                 "BJP",
@@ -152,7 +152,7 @@ class JourneyOrderTest {
     }
 
     private static OfferSnapshotRef sampleOffer() {
-        return new OfferSnapshotRef("offer-1", 3, NOW.minusSeconds(60), NOW.plusSeconds(600), "rule-snapshot-1");
+        return new OfferSnapshotRef("offer-1", 3, NOW.minusSeconds(60), NOW.plusSeconds(600), "price-snap-1", "rule-snapshot-1");
     }
 
     private static List<OrderItem> sampleItems(String travelerId) {

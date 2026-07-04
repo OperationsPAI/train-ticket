@@ -1,14 +1,9 @@
 package com.trainticket.payment.domain;
 
 public record PaymentCaptured(
+    EventEnvelope envelope,
     String paymentIntentId,
     Money capturedAmount,
     String channel,
-    String channelTransactionId,
-    EventMetadata metadata
-) implements PaymentEvent {
-    @Override
-    public String eventType() {
-        return "PaymentCaptured";
-    }
-}
+    String channelTransactionId
+) implements PaymentEvent {}

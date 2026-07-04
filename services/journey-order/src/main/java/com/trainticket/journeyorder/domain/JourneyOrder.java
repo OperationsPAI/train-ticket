@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -75,11 +76,11 @@ public final class JourneyOrder {
         );
         order.recordTimeline("JourneyOrderCreated", now, "journey-order", "valid offer accepted", Map.of("offerId", offerSnapshot.offerId()));
         order.domainEvents.add(new JourneyOrderCreated(
+            EventEnvelope.create("JourneyOrderCreated", now, sourceCommandId, correlationId, "journey-order"),
             order.orderId,
             order.accountId,
             offerSnapshot.offerId(),
-            order.monetarySummary,
-            EventMetadata.create(now, sourceCommandId, sourceCommandId, correlationId, Map.of("state", order.state.name()))
+            order.monetarySummary
         ));
         return order;
     }
@@ -111,8 +112,10 @@ public final class JourneyOrder {
         }
         state = OrderLifecycleState.PENDING_PAYMENT;
         recordTimeline("JourneyOrderPendingPayment", occurredAt, "journey-order", "waiting for payment", Map.of("paymentPurpose", paymentPurpose));
-        domainEvents.add(new JourneyOrderPendingPayment(orderId, accountId, paymentPurpose, monetarySummary,
-            EventMetadata.create(occurredAt, sourceCommandId, sourceCommandId, correlationId, Map.of("state", state.name()))));
+        domainEvents.add(new JourneyOrderPendingPayment(
+            EventEnvelope.create("JourneyOrderPendingPayment", occurredAt, sourceCommandId, correlationId, "journey-order"),
+            orderId, accountId, paymentPurpose, monetarySummary
+        ));
     }
 
     public void recordPaymentCaptured(String paymentIntentId, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -120,8 +123,10 @@ public final class JourneyOrder {
         confirmationConditions = confirmationConditions.withPaymentConditionSatisfied();
         state = OrderLifecycleState.CONFIRMING;
         recordTimeline("PaymentCaptured", occurredAt, "payment", "payment condition satisfied; awaiting entitlement summary", Map.of("paymentIntentId", paymentIntentId));
-        domainEvents.add(new JourneyOrderPaymentRecorded(orderId, accountId, paymentIntentId,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("state", state.name()))));
+        domainEvents.add(new JourneyOrderPaymentRecorded(
+            EventEnvelope.create("JourneyOrderPaymentRecorded", occurredAt, causationId, correlationId, "journey-order"),
+            orderId, accountId, paymentIntentId
+        ));
     }
 
     public void recordEntitlementSummaryAccepted(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -137,8 +142,10 @@ public final class JourneyOrder {
         }
         state = OrderLifecycleState.CONFIRMED;
         recordTimeline("JourneyOrderConfirmed", occurredAt, "journey-order", "all confirmation conditions satisfied", Map.of("confirmationAttempt", confirmationAttempt));
-        domainEvents.add(new JourneyOrderConfirmed(orderId, accountId, monetarySummary,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("state", state.name()))));
+        domainEvents.add(new JourneyOrderConfirmed(
+            EventEnvelope.create("JourneyOrderConfirmed", occurredAt, causationId, correlationId, "journey-order"),
+            orderId, accountId, monetarySummary
+        ));
     }
 
     public void cancel(String reason, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -150,8 +157,10 @@ public final class JourneyOrder {
         }
         state = OrderLifecycleState.CANCELLED;
         recordTimeline("JourneyOrderCancelled", occurredAt, "journey-order", reason, Map.of());
-        domainEvents.add(new JourneyOrderCancelled(orderId, accountId, reason,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("state", state.name()))));
+        domainEvents.add(new JourneyOrderCancelled(
+            EventEnvelope.create("JourneyOrderCancelled", occurredAt, causationId, correlationId, "journey-order"),
+            orderId, accountId, reason
+        ));
     }
 
     public void expirePayment(String paymentIntentId, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -171,8 +180,10 @@ public final class JourneyOrder {
         monetarySummary = MonetarySummary.fromItems(orderItems);
         state = OrderLifecycleState.POST_SALES_ADJUSTED;
         recordTimeline("PostSalesAdjustmentApplied", occurredAt, "post-sales", reason, Map.of("postSalesCaseId", postSalesCaseId, "orderItemId", orderItemId));
-        domainEvents.add(new JourneyOrderPostSalesAdjusted(orderId, accountId, postSalesCaseId, monetarySummary,
-            EventMetadata.create(occurredAt, sourceCommandId, causationId, correlationId, Map.of("state", state.name()))));
+        domainEvents.add(new JourneyOrderPostSalesAdjusted(
+            EventEnvelope.create("JourneyOrderPostSalesAdjusted", occurredAt, causationId, correlationId, "journey-order"),
+            orderId, accountId, postSalesCaseId, monetarySummary
+        ));
     }
 
     private void requireCreateInvariants() {

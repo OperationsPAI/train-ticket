@@ -4,15 +4,30 @@ import java.util.Objects;
 
 public record TravelerRef(
     String travelerId,
-    String maskedDocumentRef,
     String travelerType,
-    String qualificationVersion
+    String maskedDocumentRef,
+    EligibilityRef eligibilityRef
 ) {
     public TravelerRef {
         requireText(travelerId, "travelerId");
-        requireText(maskedDocumentRef, "maskedDocumentRef");
         requireText(travelerType, "travelerType");
-        requireText(qualificationVersion, "qualificationVersion");
+    }
+
+    public TravelerRef(String travelerId, String travelerType) {
+        this(travelerId, travelerType, null, null);
+    }
+
+    public TravelerRef(String travelerId, String travelerType, String maskedDocumentRef) {
+        this(travelerId, travelerType, maskedDocumentRef, null);
+    }
+
+    // For backward compatibility
+    public String maskedDocumentRef() {
+        return maskedDocumentRef;
+    }
+
+    public String qualificationVersion() {
+        return eligibilityRef != null ? eligibilityRef.eligibilityId() : null;
     }
 
     private static void requireText(String value, String name) {

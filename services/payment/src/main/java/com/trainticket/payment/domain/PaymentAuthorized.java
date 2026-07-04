@@ -1,14 +1,9 @@
 package com.trainticket.payment.domain;
 
 public record PaymentAuthorized(
+    EventEnvelope envelope,
     String paymentIntentId,
     Money authorizedAmount,
     String channel,
-    String channelTransactionId,
-    EventMetadata metadata
-) implements PaymentEvent {
-    @Override
-    public String eventType() {
-        return "PaymentAuthorized";
-    }
-}
+    String channelTransactionId
+) implements PaymentEvent {}

@@ -20,12 +20,12 @@ export type CurrencyCode = string;
 export type OfferStatus = "Quoted" | "Accepted" | "Expired" | "Unavailable" | "Requoted" | "Withdrawn";
 export type PriceGuaranteeLevel = "FixedUntilExpiry" | "EstimatedOnly" | "ProviderFinalConfirmRequired";
 export type TransportMode = "train" | "transfer" | "ancillary";
-export type PassengerCategory = "adult" | "child" | "senior" | "student";
+export type TravelerType = "ADULT" | "CHILD" | "STUDENT" | "SENIOR" | "INFANT" | "MILITARY" | "DISABLED";
 export type RiskSeverity = "info" | "warning" | "blocking";
 export type AvailabilityConfidence = "confirmed-snapshot" | "low" | "estimated";
 
 export type Money = Readonly<{
-  amount: number;
+  amountMinor: number;
   currency: CurrencyCode;
 }>;
 
@@ -48,6 +48,7 @@ export type AvailabilitySnapshotReference = Readonly<{
   capturedAt: Date;
   expiresAt: Date;
   sellable: boolean;
+  status: "AVAILABLE" | "LIMITED" | "UNKNOWN" | "UNAVAILABLE";
   confidence: AvailabilityConfidence;
 }>;
 
@@ -83,8 +84,15 @@ export type PriceSnapshot = Readonly<{
 
 export type TravelerRef = Readonly<{
   travelerId: TravelerId;
-  category: PassengerCategory;
-  eligibilitySnapshotRef?: SnapshotId;
+  travelerType: TravelerType;
+  maskedDocumentRef?: string;
+  eligibilityRef?: Readonly<{
+    eligibilityId: string;
+    eligibilityType: string;
+    eligibilitySource: string;
+    evidenceHash?: string;
+    verifiedAt?: string;
+  }>;
 }>;
 
 export type PassengerMix = Readonly<{
@@ -128,7 +136,13 @@ export type QuoteOfferCommand = Readonly<{
 
 export type OfferQuoted = Readonly<{
   type: "OfferQuoted";
+  eventId: string;
+  eventType: string;
+  schemaVersion: number;
   occurredAt: Date;
+  correlationId: string;
+  causationId?: string;
+  producer: string;
   offerId: OfferId;
   offerVersion: OfferVersion;
   quoteRequestId: string;
@@ -148,18 +162,25 @@ export type OfferQuoted = Readonly<{
     offerId: OfferId;
     offerVersion: OfferVersion;
     priceSnapshotRef: SnapshotId;
+    ruleSnapshotRef: SnapshotId;
   }>;
   boundaryProof: BoundaryProof;
 }>;
 
 export type OfferExpired = Readonly<{
   type: "OfferExpired";
+  eventId: string;
+  eventType: string;
+  schemaVersion: number;
   occurredAt: Date;
+  correlationId: string;
+  causationId?: string;
+  producer: string;
   offerId: OfferId;
   offerVersion: OfferVersion;
   expiredAt: Date;
   previousStatus: OfferStatus;
-  reason: "validity-window-elapsed" | "explicit-expire-command";
+  reason: "VALIDITY_WINDOW_ELAPSED" | "EXPLICIT_EXPIRE_COMMAND";
   boundaryProof: BoundaryProof;
 }>;
 
@@ -178,6 +199,7 @@ export type OfferAcceptanceToken = Readonly<{
   offerId: OfferId;
   offerVersion: OfferVersion;
   priceSnapshotRef: SnapshotId;
+  ruleSnapshotRef: SnapshotId;
   travelerSetHash: string;
   acceptedAt: Date;
 }>;
@@ -250,7 +272,12 @@ export class Offer {
     const offer = new Offer(snapshot);
     const event: OfferQuoted = deepFreeze({
       type: "OfferQuoted" as const,
+      eventId: `evt-${crypto.randomUUID()}`,
+      eventType: "OfferQuoted",
+      schemaVersion: 1,
       occurredAt: new Date(command.quotedAt),
+      correlationId: `corr-${crypto.randomUUID()}`,
+      producer: "offer-management",
       offerId: snapshot.offerId,
       offerVersion: snapshot.offerVersion,
       quoteRequestId: snapshot.quoteRequestId,
@@ -270,6 +297,7 @@ export class Offer {
         offerId: snapshot.offerId,
         offerVersion: snapshot.offerVersion,
         priceSnapshotRef: snapshot.priceSnapshot.snapshotId,
+        ruleSnapshotRef: unique(snapshot.items.map((item) => item.fareSnapshot.ruleSnapshotRef))[0] ?? "",
       },
       boundaryProof,
     });
@@ -297,11 +325,11 @@ export class Offer {
     return at.getTime() >= this.snapshot.validityWindow.expiresAt.getTime();
   }
 
-  expire(at: Date, reason: OfferExpired["reason"] = "explicit-expire-command"): { offer: Offer; event: OfferExpired } {
+  expire(at: Date, reason: OfferExpired["reason"] = "EXPLICIT_EXPIRE_COMMAND"): { offer: Offer; event: OfferExpired } {
     if (!this.isExpirable()) {
       throw new DomainError("OFFER_NOT_EXPIRABLE", `Offer ${this.id} in ${this.status} cannot expire`);
     }
-    if (at.getTime() < this.snapshot.validityWindow.expiresAt.getTime() && reason === "validity-window-elapsed") {
+    if (at.getTime() < this.snapshot.validityWindow.expiresAt.getTime() && reason === "VALIDITY_WINDOW_ELAPSED") {
       throw new DomainError("OFFER_NOT_YET_EXPIRED", "Cannot expire by elapsed validity before expiresAt");
     }
 
@@ -312,7 +340,12 @@ export class Offer {
     }));
     const event: OfferExpired = deepFreeze({
       type: "OfferExpired" as const,
+      eventId: `evt-${crypto.randomUUID()}`,
+      eventType: "OfferExpired",
+      schemaVersion: 1,
       occurredAt: new Date(at),
+      correlationId: `corr-${crypto.randomUUID()}`,
+      producer: "offer-management",
       offerId: this.snapshot.offerId,
       offerVersion: this.snapshot.offerVersion,
       expiredAt: new Date(at),
@@ -353,6 +386,7 @@ export class Offer {
       offerId: this.snapshot.offerId,
       offerVersion: this.snapshot.offerVersion,
       priceSnapshotRef: this.snapshot.priceSnapshot.snapshotId,
+      ruleSnapshotRef: unique(this.snapshot.items.map((item) => item.fareSnapshot.ruleSnapshotRef))[0] ?? "",
       travelerSetHash: this.snapshot.passengerMix.travelerSetHash,
       acceptedAt: new Date(request.at),
     });
@@ -498,13 +532,13 @@ function validateAvailabilitySnapshot(snapshot: AvailabilitySnapshotReference | 
 }
 
 function validatePriceTotals(priceSnapshot: PriceSnapshot, items: readonly OfferItem[]): void {
-  const itemTotal = sum(items.map((item) => item.itemPrice.amount));
-  const taxes = sum(priceSnapshot.taxes.map((line) => line.amount.amount));
-  const fees = sum(priceSnapshot.fees.map((line) => line.amount.amount));
-  const discounts = sum(priceSnapshot.discounts.map((line) => line.amount.amount));
+  const itemTotal = sum(items.map((item) => item.itemPrice.amountMinor));
+  const taxes = sum(priceSnapshot.taxes.map((line) => line.amount.amountMinor));
+  const fees = sum(priceSnapshot.fees.map((line) => line.amount.amountMinor));
+  const discounts = sum(priceSnapshot.discounts.map((line) => line.amount.amountMinor));
   const expected = roundMoney(itemTotal + taxes + fees - discounts);
-  if (expected !== priceSnapshot.total.amount) {
-    throw new DomainError("PRICE_TOTAL_MISMATCH", `PriceSnapshot total ${priceSnapshot.total.amount} does not match item/tax/fee/discount total ${expected}`);
+  if (expected !== priceSnapshot.total.amountMinor) {
+    throw new DomainError("PRICE_TOTAL_MISMATCH", `PriceSnapshot total ${priceSnapshot.total.amountMinor} does not match item/tax/fee/discount total ${expected}`);
   }
 }
 
@@ -522,7 +556,7 @@ function validateMoney(money: Money | undefined, expectedCurrency: CurrencyCode,
   if (money.currency !== expectedCurrency) {
     throw new DomainError("CURRENCY_MISMATCH", `${label} currency ${money.currency} does not match ${expectedCurrency}`);
   }
-  if (!Number.isFinite(money.amount) || money.amount < 0) {
+  if (!Number.isFinite(money.amountMinor) || money.amountMinor < 0) {
     throw new DomainError("INVALID_MONEY", `${label} must be a finite non-negative amount`);
   }
 }
@@ -538,7 +572,8 @@ function sum(values: readonly number[]): number {
 }
 
 function roundMoney(value: number): number {
-  return Math.round(value * 100) / 100;
+  // amountMinor is integer minor units; no float rounding needed
+  return Math.round(value);
 }
 
 function unique<T>(values: readonly T[]): readonly T[] {
