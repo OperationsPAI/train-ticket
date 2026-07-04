@@ -3,7 +3,7 @@ use std::fmt;
 
 use axum::Router;
 use serde::Serialize;
-use shared_kernel::{RuntimeConfig, apply_runtime, router_with_config};
+use shared_kernel::{OpenTelemetryObserver, RuntimeConfig, apply_runtime, router_with_config};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceProfile {
@@ -42,6 +42,7 @@ pub fn metadata() -> ServiceProfile {
 
 pub fn runtime_config() -> RuntimeConfig {
     RuntimeConfig::from_metadata(metadata())
+        .with_observer(OpenTelemetryObserver::from_env(profile().service_id))
 }
 
 pub fn router() -> Router {

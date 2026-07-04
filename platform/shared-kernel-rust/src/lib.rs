@@ -12,6 +12,10 @@ use axum::{
     response::Response,
     routing::get,
 };
+use opentelemetry::{
+    KeyValue, global,
+    trace::{Span as OTelSpanTrait, Tracer},
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -81,11 +85,11 @@ impl RequestContext {
 
 /// A no-op-by-default observability seam for opt-in tracing adapters.
 pub trait Observer: Send + Sync + 'static {
-    fn start(&self, context: &RequestContext, operation: &str) -> Box<dyn Span>;
+    fn start(&self, context: &RequestContext, operation: &str, method: &str) -> Box<dyn Span>;
 }
 
 pub trait Span: Send + Sync + 'static {
-    fn end(&self, status: StatusCode);
+    fn end(&mut self, status: StatusCode);
 }
 
 #[derive(Debug, Clone, Default)]
@@ -95,13 +99,92 @@ pub struct NoopObserver;
 struct NoopSpan;
 
 impl Observer for NoopObserver {
-    fn start(&self, _context: &RequestContext, _operation: &str) -> Box<dyn Span> {
+    fn start(&self, _context: &RequestContext, _operation: &str, _method: &str) -> Box<dyn Span> {
         Box::new(NoopSpan)
     }
 }
 
 impl Span for NoopSpan {
-    fn end(&self, _status: StatusCode) {}
+    fn end(&mut self, _status: StatusCode) {}
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenTelemetryObserver {
+    service_name: String,
+    tracer_name: &'static str,
+}
+
+struct OpenTelemetrySpan {
+    span: opentelemetry::global::BoxedSpan,
+}
+
+impl OpenTelemetryObserver {
+    pub fn new(service_name: impl Into<String>) -> Self {
+        Self {
+            service_name: service_name.into(),
+            tracer_name: "shared-kernel-rust",
+        }
+    }
+
+    pub fn from_env(service_name: impl Into<String>) -> Arc<dyn Observer> {
+        let exporter = std::env::var("OTEL_TRACES_EXPORTER")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if exporter.is_empty() || exporter == "none" {
+            Arc::new(NoopObserver)
+        } else {
+            let configured = std::env::var("OTEL_SERVICE_NAME").unwrap_or_default();
+            let fallback = service_name.into();
+            let service_name = if configured.trim().is_empty() {
+                fallback
+            } else {
+                configured
+            };
+            Arc::new(Self::new(service_name))
+        }
+    }
+}
+
+impl Observer for OpenTelemetryObserver {
+    fn start(&self, context: &RequestContext, operation: &str, method: &str) -> Box<dyn Span> {
+        let tracer = global::tracer(self.tracer_name);
+        let span = tracer
+            .span_builder(operation.to_owned())
+            .with_kind(opentelemetry::trace::SpanKind::Server)
+            .with_attributes(vec![
+                KeyValue::new("service.name", self.service_name.clone()),
+                KeyValue::new("http.route", operation.to_owned()),
+                KeyValue::new("url.path", operation.to_owned()),
+                KeyValue::new("http.request.method", method.to_owned()),
+                KeyValue::new("http.method", method.to_owned()),
+                KeyValue::new("http.request_id", context.request_id().to_owned()),
+                KeyValue::new("http.correlation_id", context.correlation_id().to_owned()),
+            ])
+            .start(&tracer);
+        Box::new(OpenTelemetrySpan { span })
+    }
+}
+
+impl Span for OpenTelemetrySpan {
+    fn end(&mut self, status: StatusCode) {
+        self.span.set_attribute(KeyValue::new(
+            "http.response.status_code",
+            i64::from(status.as_u16()),
+        ));
+        self.span.set_attribute(KeyValue::new(
+            "http.status_code",
+            i64::from(status.as_u16()),
+        ));
+        if status.is_server_error() {
+            self.span
+                .set_status(opentelemetry::trace::Status::error(format!(
+                    "http status {}",
+                    status.as_u16()
+                )));
+        }
+        self.span.end();
+    }
 }
 
 #[derive(Clone)]
@@ -183,7 +266,9 @@ async fn runtime_middleware(
         header_value(&request, CORRELATION_ID_HEADER).unwrap_or_else(|| request_id.clone());
     let context = RequestContext::new(request_id.clone(), correlation_id.clone());
     let operation = request.uri().path().to_string();
-    let span = config.observer.start(&context, &operation);
+    let mut span = config
+        .observer
+        .start(&context, &operation, request.method().as_str());
 
     request.extensions_mut().insert(context);
     let mut response = next.run(request).await;
@@ -550,7 +635,12 @@ mod tests {
         }
 
         impl Observer for RecordingObserver {
-            fn start(&self, context: &RequestContext, operation: &str) -> Box<dyn Span> {
+            fn start(
+                &self,
+                context: &RequestContext,
+                operation: &str,
+                _method: &str,
+            ) -> Box<dyn Span> {
                 self.operations.lock().unwrap().push(format!(
                     "{}:{}",
                     operation,

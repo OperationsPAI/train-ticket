@@ -2,6 +2,7 @@ export {
   createApp,
   health,
   metadata,
+  opentelemetryInstrumentationFromEnv,
   type ErrorEnvelope,
   type HealthStatus,
   type InstrumentationHooks,

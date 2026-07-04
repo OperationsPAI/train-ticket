@@ -56,6 +56,46 @@ export type InstrumentationHooks = Readonly<{
   startSpan?: (context: RequestTraceContext) => void | TraceSpan | Promise<void | TraceSpan>;
 }>;
 
+type OTelSpan = Readonly<{
+  setAttribute?: (key: string, value: string | number) => void;
+  setAttributes?: (attributes: Record<string, string | number>) => void;
+  end?: () => void;
+}>;
+
+type OTelTracer = Readonly<{
+  startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
+}>;
+
+export function opentelemetryInstrumentationFromEnv(tracer?: OTelTracer): InstrumentationHooks {
+  const exporter = process.env.OTEL_TRACES_EXPORTER?.trim().toLowerCase();
+  if (!exporter || exporter === "none" || tracer === undefined) {
+    return {};
+  }
+  return {
+    startSpan: (context) => {
+      const path = context.url.split("?")[0] || context.url;
+      const attributes: Record<string, string | number> = {
+        "service.name": serviceProfile.serviceId,
+        "http.request.method": context.method,
+        "http.method": context.method,
+        "url.path": path,
+        "http.route": path,
+        "http.request_id": context.requestId,
+        "http.correlation_id": context.correlationId,
+      };
+      const span = tracer.startSpan(`${context.method} ${path}`, { attributes, kind: "server" });
+      span.setAttributes?.(attributes);
+      return {
+        end: (result) => {
+          span.setAttribute?.("http.response.status_code", result.statusCode);
+          span.setAttribute?.("http.status_code", result.statusCode);
+          span.end?.();
+        },
+      };
+    },
+  };
+}
+
 export function health(): "ok" {
   return "ok";
 }

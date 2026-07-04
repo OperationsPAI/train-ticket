@@ -1,4 +1,4 @@
-import { createApp, type InstrumentationHooks } from "./app.js";
+import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 
 export type BootstrapOptions = Readonly<{
   host?: string;
@@ -19,7 +19,7 @@ export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): numbe
 }
 
 export async function bootstrap(options: BootstrapOptions = {}) {
-  const app = createApp(options.instrumentation);
+  const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv());
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;
 }

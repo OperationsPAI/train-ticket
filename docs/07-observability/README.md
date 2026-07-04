@@ -66,20 +66,38 @@ OTEL_LOGS_EXPORTER=otlp
 Inside a compose network, use `http://otel-collector:4318` for
 `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-## Runtime Seams
+## Runtime Adapters
 
-Language runtime baselines keep OpenTelemetry optional by default:
+Language runtime baselines keep OpenTelemetry optional by default and now include
+OpenTelemetry API adapters that bind to the existing runtime seams:
 
-- Go services use `platform/go-runtime` middleware for request and correlation
-  identifiers plus an observer hook.
-- Python FastAPI services expose a `tracer` hook on `create_app`.
-- TypeScript Fastify services expose `createApp({ onRequest, startSpan })`.
-- Java Spring services expose `RuntimeTracer` with a default no-op bean.
-- Rust Axum-compatible modules expose the shared-kernel observer seam.
+- Go services call `goruntime.ObserverFromEnv(serviceID)`. It returns the no-op
+  observer unless `OTEL_TRACES_EXPORTER` is set to a value other than `none`;
+  when enabled it starts server spans with the global OpenTelemetry tracer.
+- Python FastAPI services accept an optional `otel_tracer` on `create_app()` and
+  can discover `opentelemetry.trace.get_tracer()` from `OTEL_TRACES_EXPORTER`
+  when the optional OpenTelemetry API package is installed.
+- TypeScript Fastify services export `opentelemetryInstrumentationFromEnv()` to
+  adapt an OpenTelemetry API tracer to `createApp({ startSpan })`; without an
+  injected tracer or enabled exporter it returns empty hooks.
+- Java Spring services provide `OpenTelemetryRuntimeTracer`, activated only when
+  `otel.traces.exporter=otlp` / `OTEL_TRACES_EXPORTER=otlp` is selected;
+  `NoOpRuntimeTracer` remains the default bean.
+- Rust Axum-compatible modules use `OpenTelemetryObserver::from_env(service_id)`
+  from `platform/shared-kernel-rust`, returning `NoopObserver` unless tracing is
+  explicitly enabled.
 
-Tests use the no-op/default path or in-memory recording adapters. Real
-OpenTelemetry SDK adapters should bind to these seams and export OTLP to the
-collector using the environment contract above.
+The adapters use only OpenTelemetry API surfaces in the runtime baseline. A
+service deployment that needs real export must install/configure the language
+SDK and OTLP exporter in bootstrap or packaging, using the `OTEL_*` contract
+above. With no SDK provider installed, API spans are non-recording and tests do
+not require a collector.
+
+All HTTP server spans/events include service name where available, HTTP
+method/path/status, request ID, and correlation ID using stable attributes such
+as `service.name`, `http.request.method`, `url.path`,
+`http.response.status_code`, `http.request_id`, and `http.correlation_id` (with
+legacy `http.method` / `http.status_code` aliases during the baseline).
 
 ## Rules
 

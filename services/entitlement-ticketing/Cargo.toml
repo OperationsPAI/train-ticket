@@ -8,6 +8,7 @@ name = "entitlement_ticketing"
 path = "src/lib.rs"
 
 [dependencies]
+opentelemetry = "0.32.0"
 axum = "0.8.9"
 serde = { version = "1.0", features = ["derive"] }
 shared-kernel = { path = "../../platform/shared-kernel-rust" }
