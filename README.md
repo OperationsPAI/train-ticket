@@ -12,6 +12,9 @@ Skaffold setup, and old CI workflows have been removed intentionally.
 - `docs/02-domains/` contains the detailed bounded-context documents.
 - `docs/05-service-architecture/` records the initial polyglot service
   skeleton and language assignment.
+- `docs/06-agentic-development/` records the AgentM WorkGraph / ARL
+  methodology for scheduling, environment setup, iterative development,
+  verification, and rebase-based merging.
 - `service-catalog.json` is the machine-readable service/domain/language map.
 - `project-index.yaml` is retained for skeleton validation and historical
   requirement traceability. Its old `WP-01` / `WP-xx` entries are legacy

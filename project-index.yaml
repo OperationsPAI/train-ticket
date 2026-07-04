@@ -55,6 +55,7 @@ requirements:
         description: "Runs strict repository validation inside the devcontainer and ARL worker snapshot images."
     docs:
       - path: .devcontainer/README.md
+      - path: docs/06-agentic-development/README.md
     depends_on: [REQ-001]
     confidence: confirmed
     source: ".devcontainer/README.md"
