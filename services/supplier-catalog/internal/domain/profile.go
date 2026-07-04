@@ -15,8 +15,14 @@ func Profile() ServiceProfile {
 		Domain:       "Supplier Catalog",
 		Language:     "golang",
 		Phase:        "phase-1-support",
-		WorkPackages: []string{"WP-02", "WP-11"},
-		Owns:         []string{"Supplier", "Carrier", "Contract", "ProductCapability", "ExternalCode"},
+		WorkPackages: []string{"REQ-026"},
+		Owns: []string{
+			"Supplier",
+			"Carrier",
+			"Contract",
+			"ProductCapability",
+			"ExternalCode",
+		},
 	}
 }
 
@@ -24,5 +30,5 @@ func Health() string {
 	return "ok"
 }
 
-const WorkPackageSummary = "WP-02, WP-11"
+const WorkPackageSummary = "REQ-026 Supplier Catalog domain foundation"
 const OwnershipSummary = "Supplier, Carrier, Contract, ProductCapability, ExternalCode"
