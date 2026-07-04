@@ -603,6 +603,33 @@ requirements:
       - path: docs/02-domains/payment.md
       - path: docs/03-ddd-final/phase-1-contract.md
     depends_on: [REQ-010]
+
+  - id: REQ-013
+    title: "Entitlement & Ticketing domain foundation"
+    description: "Implement the Entitlement & Ticketing domain foundation in Rust. Owns Entitlement lifecycle (Requested to Used/Voided/Suspended), CredentialRegistry uniqueness, and domain events for ticketing state changes. Key invariants: Issued entitlement must have a unique Credential; same SegmentBookingId + TravelerId + issuePurpose is idempotent. Used entitlement cannot be ordinarily voided; Voided is irreversible. Suspended entitlement cannot pass boarding verification. Issuance must satisfy Booking, Payment, Capacity, Traveler, and Risk conditions."
+    priority: P0
+    status: tested
+    code:
+      - path: services/entitlement-ticketing/src/lib.rs
+        description: "Entitlement aggregate root with lifecycle, CredentialRegistry, state machine, audit trail, and domain events."
+      - path: services/entitlement-ticketing/README.md
+        description: "Service README with domain documentation."
+      - path: services/entitlement-ticketing/tests/skeleton.rs
+        description: "Skeleton test for REQ-013 service profile and router."
+    tests:
+      - path: services/entitlement-ticketing/src/lib.rs
+        description: "12 unit tests for domain invariants: issuance with preconditions, idempotency, credential uniqueness, retryable/non-retryable failure, suspend/resume, void rules after check-in/boarding/use, late issue after refund, and expiry terminality."
+      - path: services/entitlement-ticketing/tests/skeleton.rs
+        description: "Skeleton test for service profile metadata."
+    docs:
+      - path: services/entitlement-ticketing/README.md
+      - path: docs/02-domains/entitlement-ticketing.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/entitlement-ticketing.md
+        description: "Cross-context event and command contracts (extended with EntitlementResumed, EntitlementUsed, EntitlementIssueFailed, FulfillmentUseFactAccepted, and full command definitions)."
+    depends_on: [REQ-011, REQ-012, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/entitlement-ticketing.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
     confidence: confirmed
     source: "docs/02-domains/payment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
  
