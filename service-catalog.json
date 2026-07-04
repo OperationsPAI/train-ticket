@@ -377,22 +377,25 @@
       "domain": "Notification",
       "language": "typescript",
       "runtime": "node",
-      "phase": "phase-1-support",
-      "status": "skeleton",
-      "priority": "P1",
+      "phase": "phase-1-domain-foundation",
+      "status": "implemented-foundation",
+      "priority": "P0",
       "workPackages": [
-        "WP-15"
+        "REQ-019",
+        "WP-15-transaction-notification"
       ],
       "docs": [
         "docs/02-domains/notification.md"
       ],
       "owns": [
-        "NotificationTask",
-        "Template",
-        "RecipientPolicy",
-        "DeliveryReceipt"
+        "NotificationTask lifecycle (Planned, Delivering, Delivered, Failed, Cancelled)",
+        "Template versioning with variable schema and channel adaptations",
+        "RecipientPolicy with channel priority, fallback, and consent bypass",
+        "DeliveryReceipt appended facts (Delivered, Bounced, Rejected, Timeout, Expired)",
+        "NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled events",
+        "Send idempotency via idempotencyKey (triggerEventId + recipientRef + templateCode)"
       ],
-      "rationale": "TypeScript fits template payloads, channel adapters, and product-facing notification policies."
+      "rationale": "TypeScript fits template payloads, channel adapters, and product-facing notification policies. Domain foundation established with full aggregate lifecycle, idempotency, and boundary proof."
     },
     {
       "id": "traveler-profile",
