@@ -41,3 +41,11 @@ Rust keeps shared invariant examples strict while the normative contract remains
 ```bash
 cargo test
 ```
+
+## Rust HTTP Runtime Baseline
+
+The shared kernel also provides the Rust Axum-compatible service runtime seam:
+
+- `router()` / `router_with_config()` register `/health`, `/live`, `/livez`, `/ready`, `/readyz`, and `/metadata`.
+- `apply_runtime()` adds request/correlation ID propagation for service-specific Axum routes.
+- `RuntimeConfig::with_observer()` enables opt-in tracing through the `Observer` trait; the default is `NoopObserver` and requires no external infrastructure.
