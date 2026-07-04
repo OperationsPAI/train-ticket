@@ -372,6 +372,32 @@ requirements:
     source: "docs/02-domains/admin-audit.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
 
+  - id: REQ-019
+    title: Notification domain foundation
+    description: Implement the Notification domain foundation in TypeScript. This domain owns transactional notification scheduling: NotificationTask lifecycle, templates, recipient policy, send idempotency, and delivery receipts.
+    priority: P0
+    status: implemented
+    code:
+      - path: services/notification/src/domain.ts
+        description: Notification domain model: NotificationTask, Template, RecipientPolicy, DeliveryReceipt aggregates with lifecycle commands and domain events.
+      - path: services/notification/src/index.ts
+        description: Public exports, service profile, and health endpoint re-exports.
+      - path: services/notification/src/profile.ts
+        description: Service profile updated to REQ-019 ownership set.
+    tests:
+      - path: services/notification/src/domain.test.ts
+        description: Unit tests for NotificationTask lifecycle, Template versioning, RecipientPolicy, DeliveryReceipt, idempotency, and boundary proof.
+    docs:
+      - path: docs/02-domains/notification.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/notification.md
+    depends_on:
+      - REQ-010
+      - REQ-012
+      - REQ-028
+    confidence: confirmed
+    source: docs/02-domains/notification.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md
+
   - id: REQ-010
     title: "Journey Order domain foundation"
     description: "Define the Journey Order aggregate lifecycle in Java: creation from valid Offer, OrderItems with TravelerRefs and SegmentOrderSnapshots, MonetarySummary invariants, and the order state machine (Created to Confirmed via PendingPayment, with Cancelled and Failed as terminal states)."
