@@ -19,6 +19,7 @@ public final class PostSalesCase {
     private final List<PostSalesEvent> domainEvents;
     private PostSalesCaseStatus status;
     private PostSalesDecision decision;
+    private PostSalesExecutionPlan executionPlanAggregate;
     private String terminalReason;
 
     private PostSalesCase(
@@ -42,7 +43,7 @@ public final class PostSalesCase {
         this.status = PostSalesCaseStatus.OPENED;
     }
 
-    public static PostSalesCase request(
+    public static PostSalesCase open(
         String journeyOrderId,
         PostSalesCaseType caseType,
         PostSalesScope scope,
@@ -54,9 +55,25 @@ public final class PostSalesCase {
         String correlationId
     ) {
         PostSalesCase postSalesCase = new PostSalesCase(UUID.randomUUID().toString(), journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey);
+        postSalesCase.domainEvents.add(new PostSalesCaseOpened(postSalesCase.caseId, journeyOrderId, caseType, scope, reasonCode, actorRef,
+            metadata(occurredAt, sourceCommandId, sourceCommandId, correlationId, postSalesCase.status)));
         postSalesCase.domainEvents.add(new PostSalesRequested(postSalesCase.caseId, journeyOrderId, caseType, scope, reasonCode,
             metadata(occurredAt, sourceCommandId, sourceCommandId, correlationId, postSalesCase.status)));
         return postSalesCase;
+    }
+
+    public static PostSalesCase request(
+        String journeyOrderId,
+        PostSalesCaseType caseType,
+        PostSalesScope scope,
+        String reasonCode,
+        String actorRef,
+        String idempotencyKey,
+        Instant occurredAt,
+        String sourceCommandId,
+        String correlationId
+    ) {
+        return open(journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey, occurredAt, sourceCommandId, correlationId);
     }
 
     public String caseId() { return caseId; }
@@ -68,13 +85,33 @@ public final class PostSalesCase {
     public String idempotencyKey() { return idempotencyKey; }
     public PostSalesCaseStatus status() { return status; }
     public PostSalesDecision decision() { return decision; }
+    public PostSalesExecutionPlan executionPlanAggregate() { return executionPlanAggregate; }
     public String terminalReason() { return terminalReason; }
     public List<PostSalesStep> executionPlan() { return executionPlan.stream().map(PostSalesStep::copy).toList(); }
     public List<PostSalesEvent> domainEvents() { return List.copyOf(domainEvents); }
 
+    public void requestCancellation(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        requireStatus(PostSalesCaseStatus.OPENED);
+        status = PostSalesCaseStatus.ELIGIBILITY_CHECKING;
+        domainEvents.add(new PostSalesEligibilityEvaluated(caseId, true, "CANCELLATION_REQUESTED", null, null,
+            metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
+    }
+
     public void beginEvaluation(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
         requireStatus(PostSalesCaseStatus.OPENED);
         status = PostSalesCaseStatus.ELIGIBILITY_CHECKING;
+    }
+
+    public void evaluateEligibility(boolean eligible, String reasonCode, String ruleSnapshotRef, String ruleVersion, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        if (status != PostSalesCaseStatus.ELIGIBILITY_CHECKING && status != PostSalesCaseStatus.OPENED) {
+            throw new DomainRuleViolation("eligibility can only be evaluated from ELIGIBILITY_CHECKING or OPENED status");
+        }
+        status = PostSalesCaseStatus.ELIGIBILITY_CHECKING;
+        domainEvents.add(new PostSalesEligibilityEvaluated(caseId, eligible, reasonCode, ruleSnapshotRef, ruleVersion,
+            metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
+        if (!eligible) {
+            reject(reasonCode, occurredAt, sourceCommandId, causationId, correlationId);
+        }
     }
 
     public void recordDecision(PostSalesDecision decision, boolean requireUserConfirmation, boolean requireManualApproval, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -86,6 +123,8 @@ public final class PostSalesCase {
             throw new DomainRuleViolation("decision kind must match post-sales case type");
         }
         this.decision = decision;
+        domainEvents.add(new PostSalesDecisionQuoted(caseId, decision.kind(), decision.eligible(), decision.ruleSnapshot().farePricingEvaluationRef(),
+            metadata(occurredAt, sourceCommandId, causationId, correlationId, PostSalesCaseStatus.ELIGIBILITY_CHECKING)));
         domainEvents.add(new PostSalesEvaluated(caseId, decision.kind(), decision.eligible(), decision.ruleSnapshot().farePricingEvaluationRef(),
             metadata(occurredAt, sourceCommandId, causationId, correlationId, PostSalesCaseStatus.ELIGIBILITY_CHECKING)));
         if (!decision.eligible()) {
@@ -129,9 +168,19 @@ public final class PostSalesCase {
     public void requestExecution(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
         requireStatus(PostSalesCaseStatus.APPROVED);
         buildExecutionPlan();
+        String approvalRef = "auto";
+        List<PostSalesStep> planSteps = executionPlan.stream().map(PostSalesStep::copy).toList();
+        this.executionPlanAggregate = new PostSalesExecutionPlan(caseId, 1, planSteps);
+        this.executionPlanAggregate.start(occurredAt);
         status = PostSalesCaseStatus.EXECUTING;
         domainEvents.add(new PostSalesExecutionRequested(caseId, executionPlan.stream().map(PostSalesStep::type).toList(),
             metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
+        domainEvents.add(new PostSalesExecutionStarted(caseId, executionPlan.stream().map(PostSalesStep::type).toList(), approvalRef,
+            metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
+    }
+
+    public void startExecution(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        requestExecution(occurredAt, sourceCommandId, causationId, correlationId);
     }
 
     public void recordStepSucceeded(PostSalesStepType stepType, String externalRef, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -139,6 +188,9 @@ public final class PostSalesCase {
         PostSalesStep step = requireStep(stepType);
         ensurePriorStepsSucceeded(stepType);
         step.succeed(externalRef, occurredAt);
+        if (executionPlanAggregate != null) {
+            executionPlanAggregate.recordStepSucceeded(stepType, externalRef, occurredAt);
+        }
         domainEvents.add(new PostSalesStepSucceeded(caseId, stepType, externalRef, metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
         if (allStepsSucceeded()) {
             apply("all post-sales execution steps succeeded", occurredAt, sourceCommandId, causationId, correlationId);
@@ -149,19 +201,49 @@ public final class PostSalesCase {
         requireStatus(PostSalesCaseStatus.EXECUTING);
         PostSalesStep step = requireStep(stepType);
         step.fail(reason, recoverable, occurredAt);
+        if (executionPlanAggregate != null) {
+            executionPlanAggregate.recordStepFailed(stepType, reason, !recoverable, occurredAt);
+        }
         domainEvents.add(new PostSalesStepFailed(caseId, stepType, reason, recoverable, metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
         if (recoverable) {
             status = PostSalesCaseStatus.MANUAL_REVIEW_REQUIRED;
             terminalReason = "manual review required after " + stepType + " failed: " + reason;
             domainEvents.add(new PostSalesManualReviewRequired(caseId, terminalReason, metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
         } else {
-            status = PostSalesCaseStatus.FAILED;
-            terminalReason = reason;
+            failCase(reason, stepType.name(), occurredAt, sourceCommandId, causationId, correlationId);
         }
+    }
+
+    public void failCase(String reason, String failedStepRef, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        if (status == PostSalesCaseStatus.APPLIED) {
+            throw new DomainRuleViolation("post-sales case cannot fail after being applied");
+        }
+        status = PostSalesCaseStatus.FAILED;
+        terminalReason = PostSalesScope.requireText(reason, "reason");
+        domainEvents.add(new PostSalesFailed(caseId, journeyOrderId, terminalReason, failedStepRef,
+            metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
+    }
+
+    public void cancelCase(String reason, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        if (status == PostSalesCaseStatus.APPLIED || status == PostSalesCaseStatus.FAILED) {
+            throw new DomainRuleViolation("post-sales case cannot be cancelled from terminal status " + status);
+        }
+        if (status == PostSalesCaseStatus.EXECUTING) {
+            throw new DomainRuleViolation("post-sales case cannot be cancelled during execution; use failCase instead");
+        }
+        status = PostSalesCaseStatus.CANCELLED;
+        terminalReason = PostSalesScope.requireText(reason, "reason");
     }
 
     public void completeManualReview(String resultSummary, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
         requireStatus(PostSalesCaseStatus.MANUAL_REVIEW_REQUIRED);
+        apply(resultSummary, occurredAt, sourceCommandId, causationId, correlationId);
+    }
+
+    public void applyResult(String resultSummary, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        if (status != PostSalesCaseStatus.EXECUTING && status != PostSalesCaseStatus.MANUAL_REVIEW_REQUIRED) {
+            throw new DomainRuleViolation("post-sales result can only be applied from EXECUTING or MANUAL_REVIEW_REQUIRED status");
+        }
         apply(resultSummary, occurredAt, sourceCommandId, causationId, correlationId);
     }
 

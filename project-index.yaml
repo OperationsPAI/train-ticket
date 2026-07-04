@@ -717,6 +717,54 @@ requirements:
     source: "docs/02-domains/supplier-catalog.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
   # Legacy WP-derived references below. Do not use as active backlog without
+  - id: REQ-014
+    title: "Post Sales domain foundation"
+    description: "Implement the Post Sales domain foundation in Java. Owns the post-sales case lifecycle: eligibility evaluation, fee/refund/change decisions, execution plan orchestration, and manual exception tracking. Key invariants: Post Sales must never directly modify JourneyOrder invariants, MonetarySummary, or lifecycle state — only publish result events or send controlled commands. Every eligibility and fee decision must reference a frozen RuleSnapshot, RuleVersion, and input timestamp; confirmed execution amounts cannot be silently rewritten. Already-Used or Boarded entitlements cannot be ordinarily voided; such cases must enter Compensation or manual exception with full audit."
+    priority: P0
+    status: tested
+    code:
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesCase.java
+        description: "PostSalesCase aggregate root with lifecycle from OPENED through ELIGIBILITY_CHECKING, QUOTED, APPROVED, EXECUTING, APPLIED, REJECTED, FAILED, CANCELLED, and MANUAL_REVIEW_REQUIRED states."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesDecision.java
+        description: "PostSalesDecision immutable decision snapshot value object with eligibility, fee, refund, extra charge, and change flow references."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesExecutionPlan.java
+        description: "PostSalesExecutionPlan aggregate for ordered step execution, idempotency, retry limits, and compensation tracking."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesStep.java
+        description: "PostSalesStep entity with state machine: PLANNED, EXECUTING, SUCCEEDED, FAILED, SKIPPED, MANUAL_REQUIRED."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesScope.java
+        description: "PostSalesScope value object for explicit scope references (order items, segments, travelers, entitlements)."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/RuleEvaluationSnapshot.java
+        description: "RuleEvaluationSnapshot value object freezing fare-pricing evaluation reference, rule snapshot, rule version, and input snapshot refs."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/AmountDecisionSnapshot.java
+        description: "AmountDecisionSnapshot value object with fee, refund, extra charge amounts and explanation."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/ChangeFlowSnapshot.java
+        description: "ChangeFlowSnapshot value object for conservative change execution: hold, payment, void, issue, release ordering."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/Money.java
+        description: "Money value object with currency, scale, and same-currency arithmetic."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesEvent.java
+        description: "Sealed event interface with 14 event types including PostSalesCaseOpened, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesExecutionStarted, PostSalesFailed, and ChangeApplied."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+      - path: docs/08-contracts/events/post-sales.md
+        description: "Post Sales event and command contract specification (extended with PostSalesCaseOpened, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesExecutionStarted, PostSalesFailed, ChangeApplied)."
+    tests:
+      - path: services/post-sales/src/test/java/com/trainticket/postsales/domain/PostSalesCaseDomainTest.java
+        description: "Unit tests for PostSalesCase lifecycle, execution plan ordering, PostSalesExecutionPlan step tracking, failure handling, eligibility evaluation, cancellation, and result application."
+      - path: services/post-sales/src/test/java/com/trainticket/postsales/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/post-sales/README.md
+      - path: docs/02-domains/post-sales.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/post-sales.md
+    depends_on: [REQ-012, REQ-013, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/post-sales.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
   # regenerating the rewrite plan.
   - id: REQ-027
     title: "Field-level cross-domain contract specification"
