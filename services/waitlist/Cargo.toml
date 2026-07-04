@@ -9,3 +9,9 @@ path = "src/lib.rs"
 
 [dependencies]
 axum = "0.8.9"
+serde = { version = "1.0", features = ["derive"] }
+shared-kernel = { path = "../../platform/shared-kernel-rust" }
+
+[dev-dependencies]
+tokio = { version = "1.48", features = ["macros", "rt"] }
+tower = { version = "0.5.3", features = ["util"] }
