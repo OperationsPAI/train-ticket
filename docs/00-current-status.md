@@ -35,6 +35,19 @@ partially completed implementation of the old Train Ticket services.
   domain foundation in `services/fare-pricing`, covering rule-set publication,
   quote calculation, immutable rule snapshots, and basic refund/change fee
   assessment.
+- Treat `REQ-008` as the regenerated Trip Planning search foundation in
+  `services/trip-planning`, covering validated trip intent, deterministic
+  itinerary candidate ranking, and non-authoritative price/availability hints.
+- Treat `REQ-009` as the regenerated Offer Management domain foundation in
+  `services/offer-management`, covering immutable offer snapshots, TTL/lifecycle
+  behavior, passenger mix, risk disclosures, and non-mutation boundary proof.
+- Treat `REQ-010` through `REQ-015` as status-reconciliation-needed where local
+  service metadata or code references those IDs. They must not be promoted to
+  authoritative active slices until this status file is updated with their
+  accepted scope.
+- Treat legacy `WP-01` / `WP-xx` identifiers in service runtime profiles as
+  traceability-only metadata. Runtime health/profile payloads that still expose
+  them do not make those WP IDs an active backlog or completion signal.
 - Treat `docs/04-implementation-plan/status.md` as a superseded historical
   AgentM loop record, not as the current blocker list.
 - Legacy service behavior may be consulted only as reference material or through

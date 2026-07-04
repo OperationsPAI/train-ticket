@@ -15,7 +15,9 @@ Skaffold setup, and old CI workflows have been removed intentionally.
 - `service-catalog.json` is the machine-readable service/domain/language map.
 - `project-index.yaml` is retained for skeleton validation and historical
   requirement traceability. Its old `WP-01` / `WP-xx` entries are legacy
-  references, not the current execution backlog.
+  references, not the current execution backlog. Legacy WP IDs that still appear
+  in service runtime profiles are traceability-only metadata, not active backlog
+  or completion signals.
 - `docs/04-implementation-plan/status.md` is a superseded historical AgentM
   loop record, not the current blocker list.
 
@@ -62,16 +64,19 @@ make check-strict
   packages are useful, regenerate them from the current rewrite priorities and
   explicitly approve them before implementation.
 
-## Current Active Slice
+## Current Active Slices
 
-`REQ-004` is the current regenerated implementation slice: Place & Network now
-contains validated Go domain primitives for `Place`, `TransportNode`, and
-`ProviderPlaceMapping`. This is the first small WP-02-derived master-data step
-after the Shared Kernel baseline, not a resumption of the legacy WP backlog.
+`REQ-004` through `REQ-009` are the regenerated implementation slices currently
+recognized by `docs/00-current-status.md`: Place & Network, Service Plan,
+Capacity & Availability, Fare & Pricing, Trip Planning, and Offer Management.
+These are small DDD-derived foundations, not a resumption of the legacy WP
+backlog.
 
-The remaining skeleton services exist so agents can route future implementation
-work to the correct bounded context. It does not mean any old WP business
-behavior is complete or currently scheduled.
+Services whose local metadata references `REQ-010` through `REQ-015` are marked
+`status-reconciliation-needed` in the catalog until `docs/00-current-status.md`
+accepts their scope. The remaining skeleton services exist so agents can route
+future implementation work to the correct bounded context. It does not mean any
+old WP business behavior is complete or currently scheduled.
 
 ## Development Container
 
