@@ -1,15 +1,10 @@
 package com.trainticket.payment.domain;
 
 public record LatePaymentDetected(
+    EventEnvelope envelope,
     String latePaymentCaseId,
     String paymentIntentId,
     Money capturedAmount,
-    String channelTransactionId,
-    String reason,
-    EventMetadata metadata
-) implements PaymentEvent {
-    @Override
-    public String eventType() {
-        return "LatePaymentDetected";
-    }
-}
+    String channel,
+    String channelTransactionId
+) implements PaymentEvent {}

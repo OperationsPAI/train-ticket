@@ -134,7 +134,7 @@ def validate_itinerary_for_intent(intent: TripIntent, itinerary: Itinerary) -> t
                 amount_minor=itinerary.price_hint.amount_minor,
             )
         )
-    if itinerary.availability_hint and itinerary.availability_hint.status == "unavailable_hint":
+    if itinerary.availability_hint and itinerary.availability_hint.status == "UNAVAILABLE":
         exclusions.append(
             _exclusion(
                 "UNAVAILABLE_SNAPSHOT_HINT",
@@ -202,10 +202,10 @@ def rank_itinerary(intent: TripIntent, itinerary: Itinerary) -> PlanningScore:
 
     availability_value = {
         None: 80,
-        "available_hint": 200,
-        "limited_hint": 120,
-        "unknown": 60,
-        "unavailable_hint": 0,
+        "AVAILABLE": 200,
+        "LIMITED": 120,
+        "UNKNOWN": 60,
+        "UNAVAILABLE": 0,
     }[itinerary.availability_hint.status if itinerary.availability_hint else None]
     components.append(
         ScoreComponent(

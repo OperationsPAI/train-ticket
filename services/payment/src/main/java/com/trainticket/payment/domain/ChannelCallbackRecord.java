@@ -2,7 +2,6 @@ package com.trainticket.payment.domain;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -55,11 +54,13 @@ public final class ChannelCallbackRecord {
             .filter(record -> record.hasSameIdempotencyKey(channel, callbackId, payloadDigest))
             .findFirst()
             .map(first -> new ChannelCallbackRecord(id, channel, callbackId, payloadDigest, callbackType, receivedAt, CallbackProcessingStatus.DUPLICATE, first.callbackRecordId,
-                new DuplicateChannelCallbackDetected(id, channel, callbackId, first.callbackRecordId,
-                    EventMetadata.create(receivedAt, sourceCommandId, sourceCommandId, correlationId, Map.of("status", CallbackProcessingStatus.DUPLICATE.name())))))
+                new DuplicateChannelCallbackDetected(
+                    EventEnvelope.create("DuplicateChannelCallbackDetected", receivedAt, sourceCommandId, correlationId, "payment"),
+                    id, channel, callbackId, first.callbackRecordId)))
             .orElseGet(() -> new ChannelCallbackRecord(id, channel, callbackId, payloadDigest, callbackType, receivedAt, CallbackProcessingStatus.RECEIVED, null,
-                new ChannelCallbackReceived(id, channel, callbackId, payloadDigest,
-                    EventMetadata.create(receivedAt, sourceCommandId, sourceCommandId, correlationId, Map.of("status", CallbackProcessingStatus.RECEIVED.name())))));
+                new ChannelCallbackReceived(
+                    EventEnvelope.create("ChannelCallbackReceived", receivedAt, sourceCommandId, correlationId, "payment"),
+                    id, channel, callbackId, payloadDigest, CallbackProcessingStatus.RECEIVED)));
     }
 
     public String callbackRecordId() { return callbackRecordId; }

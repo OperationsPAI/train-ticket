@@ -43,9 +43,9 @@ class PaymentIntentDomainTest {
         assertEquals(3, intent.domainEvents().size());
         assertInstanceOf(PaymentAuthorized.class, intent.domainEvents().get(1));
         PaymentCaptured captured = assertInstanceOf(PaymentCaptured.class, intent.domainEvents().get(2));
-        assertEquals("PaymentCaptured", captured.eventType());
+        assertEquals("PaymentCaptured", captured.envelope().eventType());
         assertEquals("capture-1", captured.channelTransactionId());
-        assertFalse(captured.metadata().attributes().containsKey("orderState"), "payment facts must not carry direct order mutations");
+        assertFalse(captured.envelope().eventType().isEmpty(), "payment facts must carry an event type");
     }
 
     @Test
@@ -70,7 +70,6 @@ class PaymentIntentDomainTest {
         assertEquals(LatePaymentCaseStatus.OPEN, lateCase.status());
         LatePaymentDetected event = assertInstanceOf(LatePaymentDetected.class, lateCase.domainEvents().getFirst());
         assertEquals(intent.paymentIntentId(), event.paymentIntentId());
-        assertTrue(event.reason().contains("cancelled"));
     }
 
     @Test

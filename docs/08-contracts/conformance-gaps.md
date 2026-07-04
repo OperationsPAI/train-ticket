@@ -12,10 +12,10 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Canonical Form |
 |---|---|---|---|---|
-| GAP-001 | fare-pricing | `services/fare-pricing/src/fare_pricing/domain.py` | `Money` uses `Decimal` amount with implicit two-decimal-place semantics. | `minorUnits: i64` |
-| GAP-002 | offer-management | `services/offer-management/src/domain.ts` | `Money` type uses `amount: number` (float). | `minorUnits: i64` |
-| GAP-003 | journey-order | `services/journey-order/.../domain/Money.java` | Uses `BigDecimal` amount. | `minorUnits: i64` |
-| GAP-004 | payment | `services/payment/.../domain/Money.java` | Uses `BigDecimal` amount. | `minorUnits: i64` |
+| GAP-001 | fare-pricing | `services/fare-pricing/src/fare_pricing/domain.py` | `Money` uses `Decimal` amount with implicit two-decimal-place semantics. | ✅ RESOLVED: added `amount_minor` property and `from_minor` factory. |
+| GAP-002 | offer-management | `services/offer-management/src/domain.ts` | `Money` type uses `amount: number` (float). | ✅ RESOLVED: replaced `amount` with `amountMinor: integer`. |
+| GAP-003 | journey-order | `services/journey-order/.../domain/Money.java` | Uses `BigDecimal` amount. | ✅ RESOLVED: added `toMinorUnits()` and `fromMinorUnits()`. |
+| GAP-004 | payment | `services/payment/.../domain/Money.java` | Uses `BigDecimal` amount. | ✅ RESOLVED: added `toMinorUnits()` and `fromMinorUnits()`. |
 
 ## 2. ID Prefix Conventions
 
@@ -35,8 +35,8 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Required |
 |---|---|---|---|---|
-| GAP-010 | journey-order | `JourneyOrderCreated.java` | Events use `EventMetadata`, not `EventEnvelope`. | `EventEnvelope` with `eventId`, `eventType`, `occurredAt`, `correlationId`, `causationId`, `producer`, `schemaVersion`, `payload`. |
-| GAP-011 | payment | `PaymentIntent.java` | Events use `PaymentEvent` with `EventMetadata`. | Same as GAP-010. |
+| GAP-010 | journey-order | `JourneyOrderCreated.java` | Events use `EventMetadata`, not `EventEnvelope`. | ✅ RESOLVED: replaced `EventMetadata` with canonical `EventEnvelope`. |
+| GAP-011 | payment | `PaymentIntent.java` | Events use `PaymentEvent` with `EventMetadata`. | ✅ RESOLVED: replaced `EventMetadata` with canonical `EventEnvelope`. |
 | GAP-012 | booking-orchestration | `BookingSaga.java` | Events use `DomainEvent` base. | Same as GAP-010. |
 
 ## 4. Serialisation Conventions
@@ -46,7 +46,7 @@ be resolved before integration testing (联调).
 | # | Service | File | Issue | Required |
 |---|---|---|---|---|
 | GAP-013 | trip-planning | `domain.py` | Accepts both camelCase and snake_case. | All JSON fields MUST be camelCase. |
-| GAP-014 | offer-management | `domain.ts` | Enums are PascalCase (`"Quoted"`). | Enums MUST be SCREAMING_SNAKE. |
+| GAP-014 | offer-management | `domain.ts` | Enums are PascalCase (`"Quoted"`). | ⚠️ PARTIALLY RESOLVED: `OfferExpired.reason` uses SCREAMING_SNAKE. Internal status enums remain PascalCase for TypeScript consistency; serialization boundary should convert. |
 
 ## 5. Missing Event Publications
 
@@ -65,7 +65,7 @@ be resolved before integration testing (联调).
 
 | # | Service | Issue |
 |---|---|---|
-| GAP-019 | capacity-availability | `AvailabilitySnapshot` uses `u64` Unix timestamps instead of RFC3339 UTC. |
+| GAP-019 | capacity-availability | `AvailabilitySnapshot` uses `u64` Unix timestamps instead of RFC3339 UTC. | ⚠️ PARTIALLY RESOLVED: added `snapshot_id`, `snapshot_version`, `sellable`, and canonical `AvailabilityStatus`. UnixMillis kept internally; serialization boundary should convert to RFC3339. |
 
 ## 7. Missing Validation
 
@@ -82,8 +82,8 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Canonical Form |
 |---|---|---|---|---|
-| GAP-022 | offer-management | `services/offer-management/src/domain.ts` | Uses `category: PassengerCategory` (enum: `adult`, `child`, `senior`, `student`) instead of `travelerType: TravelerType` (enum: `ADULT`, `CHILD`, `STUDENT`, `SENIOR`, `INFANT`, `MILITARY`, `DISABLED`). Field name `category` differs from canonical `travelerType`. | `travelerType` field with `ADULT`/`CHILD`/`STUDENT`/`SENIOR`/`INFANT`/`MILITARY`/`DISABLED` values. |
-| GAP-023 | journey-order | `services/journey-order/.../domain/TravelerRef.java` | Uses `documentType: string` (free-form) instead of `travelerType: TravelerType` enum. Missing `eligibilityRef` field. | `travelerType` enum and optional `eligibilityRef`. |
+| GAP-022 | offer-management | `services/offer-management/src/domain.ts` | Uses `category: PassengerCategory` (enum: `adult`, `child`, `senior`, `student`) instead of `travelerType: TravelerType` (enum: `ADULT`, `CHILD`, `STUDENT`, `SENIOR`, `INFANT`, `MILITARY`, `DISABLED`). Field name `category` differs from canonical `travelerType`. | ✅ RESOLVED: replaced `PassengerCategory` with `TravelerType` enum and `category` with `travelerType`. |
+| GAP-023 | journey-order | `services/journey-order/.../domain/TravelerRef.java` | Uses `documentType: string` (free-form) instead of `travelerType: TravelerType` enum. Missing `eligibilityRef` field. | ✅ RESOLVED: added `travelerType` enum and `EligibilityRef`. |
 
 ## 9. Eligibility Reference Mismatches
 
@@ -91,8 +91,8 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Canonical Form |
 |---|---|---|---|---|
-| GAP-024 | offer-management | `services/offer-management/src/domain.ts` | Uses `eligibilitySnapshotRef?: SnapshotId` (free-form string) instead of structured `EligibilityRef`. | `EligibilityRef` with `eligibilityId`, `eligibilityType`, `evidenceHash`, `verifiedAt`. |
-| GAP-025 | journey-order | `services/journey-order/.../domain/OfferSnapshotRef.java` | Carries `ruleSnapshotId: String` (free-form string) instead of structured `EligibilityRef`. Missing `eligibilityRef` in `TravelerRef`. | `EligibilityRef` in `TravelerRef`; `OfferSnapshotRef.ruleSnapshotId` is separate from eligibility. |
+| GAP-024 | offer-management | `services/offer-management/src/domain.ts` | Uses `eligibilitySnapshotRef?: SnapshotId` (free-form string) instead of structured `EligibilityRef`. | ✅ RESOLVED: replaced with structured `eligibilityRef` matching contract. |
+| GAP-025 | journey-order | `services/journey-order/.../domain/OfferSnapshotRef.java` | Carries `ruleSnapshotId: String` (free-form string) instead of structured `EligibilityRef`. Missing `eligibilityRef` in `TravelerRef`. | ✅ RESOLVED: added `EligibilityRef` record and `TravelerRef.eligibilityRef` field. |
 | GAP-026 | traveler-profile | `services/traveler-profile` | Produces `EligibilitySummary` (definition pending — no domain code on base branch yet). Must align with canonical `EligibilityRef` shape. | `EligibilityRef` with `eligibilityId`, `eligibilityType`, `eligibilitySource`, `evidenceHash`, `verifiedAt`. |
 
 ## 10. Offer → Order Reference Alignment
@@ -101,8 +101,8 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Canonical Form |
 |---|---|---|---|---|
-| GAP-027 | offer-management | `services/offer-management/src/domain.ts` | `downstreamReference` has `offerId`, `offerVersion`, `priceSnapshotRef` but **missing `ruleSnapshotRef`**. journey-order's `OfferSnapshotRef` requires `ruleSnapshotId`. | Add `ruleSnapshotRef` to `downstreamReference`. |
-| GAP-028 | journey-order | `services/journey-order/.../domain/OfferSnapshotRef.java` | `OfferSnapshotRef` requires `ruleSnapshotId` but the canonical source (`OfferQuoted.downstreamReference`) does not yet provide it. | Consume `ruleSnapshotRef` from `OfferQuoted.downstreamReference` once added. |
+| GAP-027 | offer-management | `services/offer-management/src/domain.ts` | `downstreamReference` has `offerId`, `offerVersion`, `priceSnapshotRef` but **missing `ruleSnapshotRef`**. journey-order's `OfferSnapshotRef` requires `ruleSnapshotId`. | ✅ RESOLVED: added `ruleSnapshotRef` to `downstreamReference`. |
+| GAP-028 | journey-order | `services/journey-order/.../domain/OfferSnapshotRef.java` | `OfferSnapshotRef` requires `ruleSnapshotId` but the canonical source (`OfferQuoted.downstreamReference`) does not yet provide it. | ✅ RESOLVED: `OfferSnapshotRef` now consumes `ruleSnapshotId` and `priceSnapshotRef`. |
 
 ## 11. AvailabilitySnapshot Contract Completeness
 
@@ -110,8 +110,8 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Canonical Form |
 |---|---|---|---|---|
-| GAP-029 | offer-management | `services/offer-management/src/domain.ts` | `AvailabilitySnapshotReference` has `sellable: boolean` and `confidence: AvailabilityConfidence` enum but no `status` field. The canonical `AvailabilitySnapshot` uses a status vocabulary (`AVAILABLE`/`LIMITED`/`UNKNOWN`/`UNAVAILABLE`). | Add `status` field and map confidence values per cross-context mapping table in events/capacity-availability.md. |
-| GAP-030 | trip-planning | `services/trip-planning/src/trip_planning/domain.py` | Availability hints use internal vocabulary (`available_hint`, `limited`, `unknown`, `unavailable`) but may not use canonical `AvailabilitySnapshot` structure. | Consume canonical `AvailabilitySnapshot` with status mapping. |
+| GAP-029 | offer-management | `services/offer-management/src/domain.ts` | `AvailabilitySnapshotReference` has `sellable: boolean` and `confidence: AvailabilityConfidence` enum but no `status` field. | ✅ RESOLVED: added `status` field with canonical vocabulary. |
+| GAP-030 | trip-planning | `services/trip-planning/src/trip_planning/domain.py` | Availability hints use internal vocabulary (`available_hint`, `limited`, `unknown`, `unavailable`) but may not use canonical `AvailabilitySnapshot` structure. | ✅ RESOLVED: status values mapped to canonical contract vocabulary (`AVAILABLE`/`LIMITED`/`UNKNOWN`/`UNAVAILABLE`). |
 
 ## 12. Conformance Summary
 

@@ -58,6 +58,11 @@ class Money:
         object.__setattr__(self, "amount", quantized)
         object.__setattr__(self, "currency", normalized_currency)
 
+    @property
+    def amount_minor(self) -> int:
+        """Cross-context canonical form: integer minor units (cents/fen)."""
+        return int(self.amount * Decimal("100"))
+
     def require_same_currency(self, other: Self) -> None:
         if self.currency != other.currency:
             raise PricingError(f"currency mismatch: {self.currency} != {other.currency}")
@@ -76,6 +81,16 @@ class Money:
     @classmethod
     def zero(cls, currency: str) -> Self:
         return cls(Decimal("0.00"), currency)
+
+    @classmethod
+    def from_minor(cls, amount_minor: int, currency: str) -> Self:
+        """Construct Money from canonical minor units."""
+        return cls(Decimal(amount_minor) / Decimal("100"), currency)
+
+    @classmethod
+    def from_minor(cls, amount_minor: int, currency: str) -> Self:
+        """Construct Money from canonical minor units."""
+        return cls(Decimal(amount_minor) / Decimal("100"), currency)
 
 
 @dataclass(frozen=True, slots=True)

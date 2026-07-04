@@ -416,6 +416,37 @@ impl CapacityHold {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventEnvelope {
+    pub event_id: String,
+    pub event_type: String,
+    pub schema_version: u32,
+    pub occurred_at: u64,
+    pub correlation_id: String,
+    pub causation_id: Option<String>,
+    pub producer: String,
+}
+
+impl EventEnvelope {
+    pub fn new(
+        event_type: impl Into<String>,
+        occurred_at: u64,
+        correlation_id: impl Into<String>,
+        causation_id: Option<impl Into<String>>,
+        producer: impl Into<String>,
+    ) -> Self {
+        Self {
+            event_id: format!("evt-{:x}", occurred_at),
+            event_type: event_type.into(),
+            schema_version: 1,
+            occurred_at,
+            correlation_id: correlation_id.into(),
+            causation_id: causation_id.map(|v| v.into()),
+            producer: producer.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainEvent {
     CapacityHeld(CapacityHeld),
     CapacityHoldConfirmed(CapacityHoldConfirmed),
@@ -426,6 +457,7 @@ pub enum DomainEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapacityHeld {
+    pub envelope: EventEnvelope,
     pub hold_id: HoldId,
     pub inventory_pool_id: InventoryPoolId,
     pub capacity_unit_ref: CapacityUnitRef,
@@ -438,6 +470,7 @@ pub struct CapacityHeld {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapacityHoldConfirmed {
+    pub envelope: EventEnvelope,
     pub hold_id: HoldId,
     pub inventory_pool_id: InventoryPoolId,
     pub capacity_unit_ref: CapacityUnitRef,
@@ -448,6 +481,7 @@ pub struct CapacityHoldConfirmed {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapacityReleased {
+    pub envelope: EventEnvelope,
     pub hold_id: HoldId,
     pub inventory_pool_id: InventoryPoolId,
     pub capacity_unit_ref: CapacityUnitRef,
@@ -459,6 +493,7 @@ pub struct CapacityReleased {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapacityHoldExpired {
+    pub envelope: EventEnvelope,
     pub hold_id: HoldId,
     pub inventory_pool_id: InventoryPoolId,
     pub capacity_unit_ref: CapacityUnitRef,
@@ -469,6 +504,7 @@ pub struct CapacityHoldExpired {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapacityHoldFailed {
+    pub envelope: EventEnvelope,
     pub requested_hold_id: HoldId,
     pub inventory_pool_id: InventoryPoolId,
     pub capacity_unit_ref: CapacityUnitRef,
@@ -565,6 +601,13 @@ impl InventoryPool {
             now,
         ) {
             let event = CapacityHoldFailed {
+                envelope: EventEnvelope::new(
+                    "CapacityHoldFailed",
+                    now,
+                    &hold.scope.references.source_context,
+                    None::<String>,
+                    "capacity-availability",
+                ),
                 requested_hold_id: hold.hold_id.clone(),
                 inventory_pool_id: self.identity.pool_id.clone(),
                 capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
@@ -598,6 +641,13 @@ impl InventoryPool {
                 .ok_or_else(|| DomainError::UnknownHold(hold_id.to_string()))?;
             hold.confirm(now)?;
             DomainEvent::CapacityHoldConfirmed(CapacityHoldConfirmed {
+                envelope: EventEnvelope::new(
+                    "CapacityHoldConfirmed",
+                    now,
+                    &hold.scope.references.source_context,
+                    None::<String>,
+                    "capacity-availability",
+                ),
                 hold_id: hold.hold_id.clone(),
                 inventory_pool_id: hold.scope.inventory_pool_id.clone(),
                 capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
@@ -624,6 +674,13 @@ impl InventoryPool {
                 .ok_or_else(|| DomainError::UnknownHold(hold_id.to_string()))?;
             hold.release(now)?;
             DomainEvent::CapacityReleased(CapacityReleased {
+                envelope: EventEnvelope::new(
+                    "CapacityReleased",
+                    now,
+                    &hold.scope.references.source_context,
+                    None::<String>,
+                    "capacity-availability",
+                ),
                 hold_id: hold.hold_id.clone(),
                 inventory_pool_id: hold.scope.inventory_pool_id.clone(),
                 capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
@@ -645,6 +702,13 @@ impl InventoryPool {
                 .ok_or_else(|| DomainError::UnknownHold(hold_id.to_string()))?;
             hold.expire(now)?;
             DomainEvent::CapacityHoldExpired(CapacityHoldExpired {
+                envelope: EventEnvelope::new(
+                    "CapacityHoldExpired",
+                    now,
+                    &hold.scope.references.source_context,
+                    None::<String>,
+                    "capacity-availability",
+                ),
                 hold_id: hold.hold_id.clone(),
                 inventory_pool_id: hold.scope.inventory_pool_id.clone(),
                 capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
@@ -659,6 +723,7 @@ impl InventoryPool {
 
     pub fn availability_snapshot(
         &self,
+        snapshot_id: impl Into<String>,
         requested_interval: StationInterval,
         generated_at: u64,
         valid_until: u64,
@@ -682,25 +747,30 @@ impl InventoryPool {
 
         let available_count = available_units.len();
         let total_units = self.capacity_units.len();
+        let sellable = available_count > 0;
         let status = if total_units == 0 || available_count == 0 {
-            AvailabilityStatus::SoldOut
+            AvailabilityStatus::Unavailable
         } else if available_count <= 2 || available_count * 4 <= total_units {
-            AvailabilityStatus::LowAvailability
+            AvailabilityStatus::Limited
         } else {
             AvailabilityStatus::Available
         };
         let explanations = match status {
             AvailabilityStatus::Available => vec![AvailabilityExplanation::InventoryAvailable],
-            AvailabilityStatus::LowAvailability => vec![AvailabilityExplanation::LowAvailability],
-            AvailabilityStatus::SoldOut => vec![AvailabilityExplanation::NoUnitsAvailable],
+            AvailabilityStatus::Limited => vec![AvailabilityExplanation::LowAvailability],
+            AvailabilityStatus::Unavailable => vec![AvailabilityExplanation::NoUnitsAvailable],
+            AvailabilityStatus::Unknown => vec![],
         };
 
         AvailabilitySnapshot {
+            snapshot_id: snapshot_id.into(),
+            snapshot_version: self.version,
             inventory_pool_id: self.identity.pool_id.clone(),
             requested_interval,
             source_version: self.version,
             generated_at,
             valid_until,
+            sellable,
             total_units,
             available_count,
             available_units,
@@ -742,6 +812,13 @@ fn same_hold_request(existing: &CapacityHold, requested: &CapacityHold) -> bool 
 impl CapacityHold {
     fn to_capacity_held(&self, idempotent_replay: bool) -> CapacityHeld {
         CapacityHeld {
+            envelope: EventEnvelope::new(
+                "CapacityHeld",
+                self.requested_at,
+                &self.scope.references.source_context,
+                None::<String>,
+                "capacity-availability",
+            ),
             hold_id: self.hold_id.clone(),
             inventory_pool_id: self.scope.inventory_pool_id.clone(),
             capacity_unit_ref: self.scope.capacity_unit_ref.clone(),
@@ -756,11 +833,14 @@ impl CapacityHold {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailabilitySnapshot {
+    pub snapshot_id: String,
+    pub snapshot_version: u64,
     pub inventory_pool_id: InventoryPoolId,
     pub requested_interval: StationInterval,
     pub source_version: u64,
     pub generated_at: u64,
     pub valid_until: u64,
+    pub sellable: bool,
     pub total_units: usize,
     pub available_count: usize,
     pub available_units: Vec<CapacityUnitRef>,
@@ -777,8 +857,9 @@ impl AvailabilitySnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AvailabilityStatus {
     Available,
-    LowAvailability,
-    SoldOut,
+    Limited,
+    Unknown,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -992,14 +1073,14 @@ mod tests {
         pool.request_hold(request("hold-1", "01A", 1, 4, "idem-1", 10, 70), 10)
             .unwrap();
 
-        let snapshot = pool.availability_snapshot(StationInterval::new(2, 3).unwrap(), 20, 30);
+        let snapshot = pool.availability_snapshot("avs-test-1", StationInterval::new(2, 3).unwrap(), 20, 30);
         assert_eq!(snapshot.total_units, 2);
         assert_eq!(snapshot.available_count, 1);
         assert_eq!(snapshot.available_units, vec![unit("01B")]);
-        assert_eq!(snapshot.status, AvailabilityStatus::LowAvailability);
+        assert_eq!(snapshot.status, AvailabilityStatus::Limited);
         assert_eq!(pool.holds.len(), 1, "snapshot must not create a hold");
 
-        let after_expiry = pool.availability_snapshot(StationInterval::new(2, 3).unwrap(), 70, 80);
+        let after_expiry = pool.availability_snapshot("avs-test-2", StationInterval::new(2, 3).unwrap(), 70, 80);
         assert_eq!(after_expiry.available_count, 2);
     }
 }

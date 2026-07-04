@@ -11,10 +11,10 @@ class TripPlanningValidationError(ValueError):
 
 
 _ALLOWED_AVAILABILITY_STATUSES = {
-    "available_hint",
-    "limited_hint",
-    "unknown",
-    "unavailable_hint",
+    "AVAILABLE",
+    "LIMITED",
+    "UNKNOWN",
+    "UNAVAILABLE",
 }
 _PRICE_HINT_DISCLAIMER = (
     "Price hint is a non-authoritative planning snapshot. It is not an offer, "
@@ -240,7 +240,7 @@ class AvailabilityHint:
     disclaimer: str = _AVAILABILITY_HINT_DISCLAIMER
 
     def __post_init__(self) -> None:
-        status = _require_ref(self.status, "status").lower()
+        status = _require_ref(self.status, "status").upper()
         if status not in _ALLOWED_AVAILABILITY_STATUSES:
             raise TripPlanningValidationError(f"unsupported availability hint status: {status}")
         object.__setattr__(self, "status", status)
