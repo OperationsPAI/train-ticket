@@ -24,6 +24,59 @@ export type TravelerType = "ADULT" | "CHILD" | "STUDENT" | "SENIOR" | "INFANT" |
 export type RiskSeverity = "info" | "warning" | "blocking";
 export type AvailabilityConfidence = "confirmed-snapshot" | "low" | "estimated";
 
+// ---------------------------------------------------------------------------
+// AvailabilityConfidence mapping -- local vocabulary to contract canonical
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps the local AvailabilityConfidence vocabulary to the contract canonical
+ * status/confidence pair. See docs/08-contracts/events/capacity-availability.md
+ * for the mapping table.
+ *
+ * | Local confidence | Canonical status | Canonical confidence |
+ * |-----------------|-----------------|---------------------|
+ * | confirmed-snapshot | AVAILABLE | confirmed-snapshot |
+ * | low               | LIMITED    | low                |
+ * | estimated         | UNKNOWN    | estimated          |
+ * | N/A (unavailable) | UNAVAILABLE | (none)            |
+ */
+export function mapAvailabilityConfidence(
+  confidence: AvailabilityConfidence,
+  sellable: boolean,
+): { status: "AVAILABLE" | "LIMITED" | "UNKNOWN" | "UNAVAILABLE"; confidence: AvailabilityConfidence } {
+  if (!sellable) {
+    return { status: "UNAVAILABLE", confidence: "estimated" };
+  }
+  switch (confidence) {
+    case "confirmed-snapshot":
+      return { status: "AVAILABLE", confidence: "confirmed-snapshot" };
+    case "low":
+      return { status: "LIMITED", confidence: "low" };
+    case "estimated":
+      return { status: "UNKNOWN", confidence: "estimated" };
+  }
+}
+
+/**
+ * Maps a canonical status back to the local AvailabilityConfidence vocabulary.
+ */
+export function mapStatusToConfidence(
+  status: "AVAILABLE" | "LIMITED" | "UNKNOWN" | "UNAVAILABLE",
+  defaultConfidence: AvailabilityConfidence = "estimated",
+): AvailabilityConfidence {
+  switch (status) {
+    case "AVAILABLE":
+      return "confirmed-snapshot";
+    case "LIMITED":
+      return "low";
+    case "UNKNOWN":
+      return "estimated";
+    case "UNAVAILABLE":
+      return defaultConfidence;
+  }
+}
+
+
 export type Money = Readonly<{
   amountMinor: number;
   currency: CurrencyCode;

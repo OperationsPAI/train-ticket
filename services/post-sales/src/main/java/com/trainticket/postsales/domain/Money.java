@@ -27,6 +27,21 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
         return new Money(BigDecimal.ZERO, currency);
     }
 
+    /**
+     * Cross-context canonical factory: amount in minor units (e.g. cents/fen).
+     */
+    public static Money fromMinorUnits(long minorUnits, String currencyCode) {
+        Currency cur = Currency.getInstance(requireText(currencyCode, "currencyCode"));
+        return new Money(BigDecimal.valueOf(minorUnits, cur.getDefaultFractionDigits()), cur);
+    }
+
+    /**
+     * Cross-context canonical form: amount in minor units (e.g. cents/fen).
+     */
+    public long toMinorUnits() {
+        return amount.movePointRight(currency.getDefaultFractionDigits()).longValue();
+    }
+
     public boolean isZero() {
         return amount.signum() == 0;
     }
