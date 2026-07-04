@@ -8,10 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -52,6 +57,97 @@ func (noopSpan) End(error) {}
 
 // NoopObserver is the default observer for tests and services that have not opted into tracing.
 func NoopObserver() Observer { return noopObserver{} }
+
+// OTelObserverConfig configures the OpenTelemetry API adapter. It intentionally
+// uses the global OpenTelemetry tracer provider so SDK/exporter setup remains an
+// opt-in bootstrap concern controlled by standard OTEL_* environment variables.
+type OTelObserverConfig struct {
+	ServiceName string
+	TracerName  string
+}
+
+type otelObserver struct {
+	serviceName string
+	tracer      trace.Tracer
+}
+
+type otelSpan struct{ span trace.Span }
+
+// NewOTelObserver adapts the runtime observer seam to the OpenTelemetry API.
+// Without an installed SDK provider, OpenTelemetry's global default provider is
+// non-recording, preserving no-op behavior and avoiding collector dependencies
+// in unit tests.
+func NewOTelObserver(config OTelObserverConfig) Observer {
+	tracerName := strings.TrimSpace(config.TracerName)
+	if tracerName == "" {
+		tracerName = "github.com/trainticket/greenfield/platform/go-runtime"
+	}
+	return otelObserver{serviceName: strings.TrimSpace(config.ServiceName), tracer: otel.Tracer(tracerName)}
+}
+
+// ObserverFromEnv returns an OpenTelemetry observer only when tracing is
+// explicitly selected. Set OTEL_TRACES_EXPORTER to any value other than "none"
+// and install an SDK/exporter in service bootstrap to emit OTLP using the
+// standard OTEL_EXPORTER_OTLP_* environment contract.
+func ObserverFromEnv(serviceName string) Observer {
+	if !otelTracingEnabled() {
+		return NoopObserver()
+	}
+	if strings.TrimSpace(serviceName) == "" {
+		serviceName = strings.TrimSpace(env("OTEL_SERVICE_NAME"))
+	}
+	return NewOTelObserver(OTelObserverConfig{ServiceName: serviceName})
+}
+
+func otelTracingEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(env("OTEL_TRACES_EXPORTER")))
+	return value != "" && value != "none"
+}
+
+var env = os.Getenv
+
+func (observer otelObserver) Start(ctx context.Context, operation string) (context.Context, Span) {
+	attrs := []attribute.KeyValue{
+		attribute.String("http.route", operation),
+		attribute.String("url.path", operation),
+		attribute.String("http.request_id", RequestID(ctx)),
+		attribute.String("http.correlation_id", CorrelationID(ctx)),
+	}
+	if observer.serviceName != "" {
+		attrs = append(attrs, attribute.String("service.name", observer.serviceName))
+	}
+	ctx, span := observer.tracer.Start(ctx, operation, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
+	return ctx, otelSpan{span: span}
+}
+
+func (span otelSpan) End(err error) {
+	if err != nil {
+		span.span.RecordError(err)
+		span.span.SetStatus(codes.Error, err.Error())
+	}
+	span.span.End()
+}
+
+// SetSpanHTTPAttributes enriches the active OpenTelemetry span, when one is
+// recording, with the HTTP dimensions required by the runtime baseline.
+func SetSpanHTTPAttributes(ctx context.Context, method, path string, statusCode int) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("http.request.method", method),
+		attribute.String("http.method", method),
+		attribute.String("url.path", path),
+		attribute.String("http.route", path),
+		attribute.Int("http.response.status_code", statusCode),
+		attribute.Int("http.status_code", statusCode),
+	}
+	span.SetAttributes(attrs...)
+	if statusCode >= http.StatusInternalServerError {
+		span.SetStatus(codes.Error, fmt.Sprintf("http status %d", statusCode))
+	}
+}
 
 // GinConfig configures a service router using the shared runtime baseline.
 type GinConfig struct {
@@ -153,12 +249,14 @@ func TracingMiddleware(observer Observer) gin.HandlerFunc {
 		requestContext, span := observer.Start(ctx.Request.Context(), operation)
 		ctx.Request = ctx.Request.WithContext(requestContext)
 		ctx.Next()
+		status := ctx.Writer.Status()
+		SetSpanHTTPAttributes(ctx.Request.Context(), ctx.Request.Method, operation, status)
 		var err error
 		if len(ctx.Errors) > 0 {
 			err = errors.New(ctx.Errors.String())
 		}
-		if ctx.Writer.Status() >= http.StatusInternalServerError && err == nil {
-			err = fmt.Errorf("http status %d", ctx.Writer.Status())
+		if status >= http.StatusInternalServerError && err == nil {
+			err = fmt.Errorf("http status %d", status)
 		}
 		span.End(err)
 	}
