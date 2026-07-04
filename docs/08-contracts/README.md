@@ -18,6 +18,7 @@ docs/08-contracts/
 ├── conformance-gaps.md     ← Known mismatches between spec and implementation
 └── events/
     ├── admin-audit.md
+    ├── customer-service.md
     ├── trip-planning.md
     ├── offer-management.md
     ├── journey-order.md

@@ -127,6 +127,7 @@
       "rationale": "Rust is appropriate for interval overlap and seat-hold invariants that must fail closed."
     },
     {
+
       "id": "fare-pricing",
       "path": "services/fare-pricing",
       "domain": "Fare & Pricing",
@@ -432,7 +433,7 @@
       "language": "python",
       "runtime": "python",
       "phase": "phase-1-support",
-      "status": "skeleton",
+      "status": "implemented",
       "priority": "P1",
       "workPackages": [
         "WP-17"
@@ -505,7 +506,7 @@
       "language": "typescript",
       "runtime": "node",
       "phase": "phase-1-support",
-      "status": "skeleton",
+      "status": "implemented",
       "priority": "P1",
       "workPackages": [
         "WP-20"
