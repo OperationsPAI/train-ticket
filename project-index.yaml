@@ -3,11 +3,13 @@ project:
   languages: [java, golang, python, rust, typescript]
 
 # Current framing: this repository is being prepared for a full rewrite /
-# greenfield rebuild. REQ-001 through REQ-005 and REQ-007 describe the current
-# skeleton, devcontainer, and regenerated implementation slices. REQ-101
-# through REQ-123 are retained as legacy WP-derived references for traceability;
-# they are not the current execution backlog unless explicitly regenerated and
-# re-approved. See docs/00-current-status.md.
+# greenfield rebuild. REQ-001 through REQ-009 describe the current skeleton,
+# devcontainer, and regenerated implementation slices. REQ-010 through REQ-015
+# require status reconciliation before they become authoritative active slices.
+# REQ-101 through REQ-123 are retained as legacy WP-derived references for
+# traceability; they are not the current execution backlog unless explicitly
+# regenerated and re-approved. Legacy WP IDs in runtime profiles are
+# traceability-only metadata. See docs/00-current-status.md.
 requirements:
   - id: REQ-001
     title: "Polyglot bounded-context skeleton"
@@ -118,6 +120,28 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/service-plan.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
+  - id: REQ-006
+    title: "Capacity and Availability domain foundation"
+    description: "Define the first Rust domain foundation for inventory pools, station intervals, capacity holds, and non-locking availability snapshots."
+    priority: P0
+    status: tested
+    code:
+      - path: services/capacity-availability/src/lib.rs
+        description: "Rust domain model and invariants for InventoryPool, StationInterval, CapacityHold lifecycle, and AvailabilitySnapshot calculation."
+    tests:
+      - path: services/capacity-availability/src/lib.rs
+        description: "Unit tests for capacity and availability invariants."
+      - path: services/capacity-availability/tests/skeleton.rs
+        description: "Public API/profile construction test for the capacity service."
+    docs:
+      - path: services/capacity-availability/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/capacity-availability.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-005]
+    confidence: confirmed
+    source: "docs/02-domains/capacity-availability.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
   - id: REQ-007
     title: "Fare and Pricing domain foundation"
     description: "Define the first Python domain foundation for rule-set publication, quote calculation, immutable pricing snapshots, and basic post-sales refund/change fee assessment."
@@ -140,6 +164,55 @@ requirements:
     depends_on: [REQ-003]
     confidence: confirmed
     source: "docs/02-domains/fare-pricing.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+
+  - id: REQ-008
+    title: "Trip Planning search foundation"
+    description: "Define a deterministic, explainable Trip Planning search foundation with validated trip intents and non-authoritative price/availability hints."
+    priority: P0
+    status: implemented-foundation
+    code:
+      - path: services/trip-planning/src/trip_planning/domain.py
+        description: "Trip intent, itinerary candidate, ranking, and hint domain primitives."
+      - path: services/trip-planning/src/trip_planning/application.py
+        description: "Search application function and FastAPI-safe adapter path."
+      - path: services/trip-planning/src/trip_planning/__init__.py
+        description: "Public package exports and service profile ownership for the Trip Planning foundation."
+    tests:
+      - path: services/trip-planning/tests/test_search_foundation.py
+        description: "Unit tests for intent validation, deterministic ranking, exclusion explanations, and non-authoritative hints."
+      - path: services/trip-planning/tests/test_skeleton.py
+        description: "Service skeleton health/profile tests retained for FastAPI registration."
+    docs:
+      - path: services/trip-planning/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/trip-planning.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-005, REQ-006, REQ-007]
+    confidence: confirmed
+    source: "docs/02-domains/trip-planning.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-009
+    title: "Offer Management domain foundation"
+    description: "Define immutable Offer Management snapshots, lifecycle/TTL behavior, passenger mix, risk disclosures, and boundary proof that offers do not mutate downstream domains."
+    priority: P0
+    status: implemented-foundation
+    code:
+      - path: services/offer-management/src/domain.ts
+        description: "Offer Management domain model and invariants for offer snapshots, items, references, disclosures, and events."
+      - path: services/offer-management/src/index.ts
+        description: "Public exports, service profile, and Fastify health endpoint."
+    tests:
+      - path: services/offer-management/src/domain.test.ts
+        description: "Unit tests for offer lifecycle, immutable snapshots, TTL behavior, passenger mix, disclosures, and non-mutation boundary proof."
+    docs:
+      - path: services/offer-management/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/offer-management.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-006, REQ-007, REQ-008]
+    confidence: confirmed
+    source: "docs/02-domains/offer-management.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
