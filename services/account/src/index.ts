@@ -1,2 +1,16 @@
-export { createApp, health, type ErrorEnvelope, type HealthStatus, type InstrumentationHooks, type RequestContext } from "./app.js";
+export {
+  createApp,
+  health,
+  metadata,
+  type ErrorEnvelope,
+  type HealthStatus,
+  type InstrumentationHooks,
+  type ProbeStatus,
+  type RequestContext,
+  type RequestTraceContext,
+  type ServiceMetadata,
+  type TraceResult,
+  type TraceSpan,
+} from "./app.js";
+export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
 export { serviceProfile, type ServiceProfile } from "./profile.js";
