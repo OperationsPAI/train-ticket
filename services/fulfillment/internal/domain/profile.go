@@ -15,8 +15,16 @@ func Profile() ServiceProfile {
 		Domain:       "Fulfillment",
 		Language:     "golang",
 		Phase:        "phase-1-limited",
-		WorkPackages: []string{"WP-13"},
-		Owns:         []string{"FulfillmentRecord", "BoardingVerified", "NoShow", "EvidenceDispute"},
+		WorkPackages: []string{"REQ-018"},
+		Owns: []string{
+			"FulfillmentRecord aggregate",
+			"EvidenceDispute aggregate",
+			"BoardingVerified event",
+			"NoShowRecorded event",
+			"FulfillmentCompleted event",
+			"EvidenceDisputeOpened event",
+			"EvidenceDisputeResolved event",
+		},
 	}
 }
 
@@ -24,5 +32,5 @@ func Health() string {
 	return "ok"
 }
 
-const WorkPackageSummary = "WP-13"
-const OwnershipSummary = "FulfillmentRecord, BoardingVerified, NoShow, EvidenceDispute"
+const WorkPackageSummary = "REQ-018 Fulfillment facts domain foundation"
+const OwnershipSummary = "FulfillmentRecord, EvidenceDispute, BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved"
