@@ -397,6 +397,36 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/admin-audit.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
+  - id: REQ-018
+    title: "Fulfillment facts domain foundation"
+    description: "Implement the Fulfillment domain foundation in Go. Records physical travel facts: check-in, boarding verification, no-show, and offline evidence disputes."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/fulfillment/internal/domain/fulfillment_record.go
+        description: "FulfillmentRecord aggregate with check-in, boarding, no-show, and completion lifecycle."
+      - path: services/fulfillment/internal/domain/evidence_dispute.go
+        description: "EvidenceDispute aggregate for offline evidence conflicts with open/resolve lifecycle."
+      - path: services/fulfillment/internal/domain/types.go
+        description: "Shared types, canonical IDs, enums, value objects, and domain events."
+      - path: services/fulfillment/internal/domain/profile.go
+        description: "Service profile updated to REQ-018 ownership set."
+    tests:
+      - path: services/fulfillment/internal/domain/fulfillment_record_test.go
+        description: "Unit tests for FulfillmentRecord lifecycle, idempotency, and invariants."
+      - path: services/fulfillment/internal/domain/evidence_dispute_test.go
+        description: "Unit tests for EvidenceDispute lifecycle, validation, and domain events."
+    docs:
+      - path: docs/02-domains/fulfillment.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/fulfillment.md
+    depends_on:
+      - REQ-013
+      - REQ-028
+    confidence: confirmed
+    source: "docs/02-domains/fulfillment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+
 
   - id: REQ-019
     title: Notification domain foundation

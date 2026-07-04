@@ -13,4 +13,15 @@ func TestSkeletonProfileMatchesDomain(t *testing.T) {
 	if Health() != "ok" {
 		t.Fatalf("unexpected health value")
 	}
+	// Verify REQ-018 is listed as a work package.
+	found := false
+	for _, wp := range profile.WorkPackages {
+		if wp == "REQ-018" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("REQ-018 not found in work packages: %v", profile.WorkPackages)
+	}
 }
