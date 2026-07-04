@@ -1,18 +1,17 @@
 package http
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+
+	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
 	"github.com/trainticket/greenfield/services/dispatch/internal/domain"
 )
 
 func Router() *gin.Engine {
-	gin.SetMode(gin.ReleaseMode)
-	router := gin.New()
-	router.GET("/health", func(ctx *gin.Context) {
-		ctx.JSON(http.StatusOK, gin.H{"status": domain.Health(), "service": domain.Profile()})
+	return goruntime.NewGinRouter(goruntime.GinConfig{
+		ServiceID:    domain.Profile().ServiceID,
+		Metadata:     domain.Profile(),
+		HealthStatus: domain.Health(),
 	})
-	return router
 }
