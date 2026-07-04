@@ -447,6 +447,31 @@ requirements:
       - REQ-028
     confidence: confirmed
     source: "docs/02-domains/fulfillment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+  - id: REQ-023
+    title: Customer Service domain foundation
+    description: Implement the Customer Service domain foundation in TypeScript. This domain owns support cases, evidence references, manual action requests, and case timelines. It collaborates and collects evidence but never directly mutates business state.
+    priority: P1
+    status: implemented
+    code:
+      - path: services/customer-service/src/domain.ts
+        description: Customer Service domain model: SupportCase, EvidenceRef, ManualActionRequest, CaseTimeline aggregates with lifecycle commands and domain events.
+      - path: services/customer-service/src/index.ts
+        description: Public exports, service profile, and health endpoint re-exports.
+      - path: services/customer-service/src/profile.ts
+        description: Service profile updated to REQ-023 ownership set.
+    tests:
+      - path: services/customer-service/src/domain.test.ts
+        description: Unit tests for SupportCase lifecycle, EvidenceRef attachment, ManualActionRequest lifecycle, CaseTimeline append-only semantics, and boundary proof.
+    docs:
+      - path: docs/02-domains/customer-service.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/customer-service.md
+    depends_on:
+      - REQ-014
+      - REQ-022
+      - REQ-028
+    confidence: confirmed
+    source: docs/02-domains/customer-service.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md
 
 
 
