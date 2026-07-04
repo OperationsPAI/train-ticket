@@ -16,8 +16,8 @@ public class Application {
             "Finance Settlement",
             "java",
             "phase-1-limited",
-            "WP-21",
-            "RevenueRecognition, Reconciliation, Invoice, SettlementView"
+            "REQ-024",
+            "RevenueRecognition, ReconciliationCase, SettlementView, ConsumedEventLog"
         );
     }
 }

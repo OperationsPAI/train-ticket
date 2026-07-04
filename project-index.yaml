@@ -793,6 +793,55 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/supplier-catalog.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
+  - id: REQ-024
+    title: "Finance Settlement domain foundation"
+    description: "Implement the Finance Settlement domain foundation in Java. Consumes order/payment/post-sales events to build revenue recognition defaults, reconciliation views, and settlement records."
+    priority: P1
+    status: tested
+    code:
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/RevenueRecognition.java
+        description: "RevenueRecognition aggregate with recognize/reverse lifecycle."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/ReconciliationCase.java
+        description: "ReconciliationCase aggregate with open/resolve/reject/escalate lifecycle."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/SettlementView.java
+        description: "SettlementView aggregate rebuildable from event log."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/ConsumedEventLog.java
+        description: "Idempotent event consumption tracking."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/Money.java
+        description: "Minor domain money type for financial amounts."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/FinanceSettlementEvent.java
+        description: "Sealed event interface for domain events."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/EventMetadata.java
+        description: "Standard event envelope metadata."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/DomainRuleViolation.java
+        description: "Domain invariant violation exception."
+      - path: docs/08-contracts/README.md
+        description: "Cross-context contracts directory README."
+      - path: docs/08-contracts/shared-primitives.md
+        description: "Shared cross-context ID, Money, timestamp, event envelope contracts."
+      - path: docs/08-contracts/events/finance-settlement-events.md
+        description: "Finance Settlement domain event payload contracts."
+      - path: docs/08-contracts/events/upstream-events.md
+        description: "Upstream event contracts consumed by Finance Settlement."
+    tests:
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/RevenueRecognitionTest.java
+        description: "Unit tests for RevenueRecognition aggregate invariants."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/ReconciliationCaseTest.java
+        description: "Unit tests for ReconciliationCase aggregate lifecycle."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/SettlementViewTest.java
+        description: "Unit tests for SettlementView rebuild invariants."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/ConsumedEventLogTest.java
+        description: "Unit tests for ConsumedEventLog idempotent recording."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/MoneyTest.java
+        description: "Unit tests for Money value object invariants."
+    docs:
+      - path: docs/02-domains/finance-settlement.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/README.md
+      - path: docs/08-contracts/shared-primitives.md
+    depends_on: [REQ-010, REQ-012, REQ-014, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/finance-settlement.md, docs/03-ddd-final/phase-1-contract.md, docs/08-contracts/README.md, docs/08-contracts/shared-primitives.md"
   # Legacy WP-derived references below. Do not use as active backlog without
   - id: REQ-014
     title: "Post Sales domain foundation"
