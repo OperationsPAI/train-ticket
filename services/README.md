@@ -59,3 +59,16 @@ TypeScript services expose app construction, bootstrap defaults, service profile
 - Missing routes and unhandled errors use `{ "error": { "code", "message", "requestId", "correlationId" } }`.
 
 Instrumentation is a seam, not a dependency, in this slice: `createApp({ onRequest, startSpan })` lets future OpenTelemetry wiring observe request/correlation ids and span completion without adding heavy OTel packages to skeleton services. The default is no-op and requires no external infrastructure in tests.
+
+## OpenTelemetry Collection Baseline
+
+All service runtimes target the repository OpenTelemetry collection contract in
+`docs/07-observability/README.md`. The collector baseline is intentionally
+centralized under `platform/observability/` so language services can keep tests
+no-op by default while production or local runtime adapters export OTLP signals
+to the same endpoint shape.
+
+When enabling real SDK instrumentation, use the service id as
+`OTEL_SERVICE_NAME`, include `service.namespace=train-ticket` in
+`OTEL_RESOURCE_ATTRIBUTES`, and export to the local collector over OTLP HTTP or
+gRPC.

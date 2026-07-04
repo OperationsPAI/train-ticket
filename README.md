@@ -15,6 +15,8 @@ Skaffold setup, and old CI workflows have been removed intentionally.
 - `docs/06-agentic-development/` records the AgentM WorkGraph / ARL
   methodology for scheduling, environment setup, iterative development,
   verification, and rebase-based merging.
+- `docs/07-observability/` records the OpenTelemetry collection baseline and
+  service runtime telemetry contract.
 - `service-catalog.json` is the machine-readable service/domain/language map.
 - `project-index.yaml` is retained for skeleton validation and historical
   requirement traceability. Its old `WP-01` / `WP-xx` entries are legacy

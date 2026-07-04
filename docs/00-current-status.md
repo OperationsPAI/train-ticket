@@ -41,6 +41,8 @@ partially completed implementation of the old Train Ticket services.
 - Treat `REQ-009` as the regenerated Offer Management domain foundation in
   `services/offer-management`, covering immutable offer snapshots, TTL/lifecycle
   behavior, passenger mix, risk disclosures, and non-mutation boundary proof.
+- Treat `REQ-016` as the current OpenTelemetry collection baseline: a local
+  OTLP collector configuration and service-side telemetry environment contract.
 - Treat `REQ-010` through `REQ-015` as status-reconciliation-needed where local
   service metadata or code references those IDs. They must not be promoted to
   authoritative active slices until this status file is updated with their
@@ -62,7 +64,9 @@ Use these documents to understand the intended domain model and skeleton layout:
 2. `docs/02-domains/` — bounded-context details.
 3. `docs/05-service-architecture/` — service skeleton and language assignment.
 4. `service-catalog.json` — machine-readable service/domain/language map.
-5. This file — current project-status framing for the rewrite.
+5. `docs/07-observability/` — OpenTelemetry collection and runtime telemetry
+   contract.
+6. This file — current project-status framing for the rewrite.
 
 When a new implementation plan is needed, create it from the current DDD baseline
 and the actual rewrite priorities instead of resuming the legacy WP sequence.

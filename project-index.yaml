@@ -4,7 +4,8 @@ project:
 
 # Current framing: this repository is being prepared for a full rewrite /
 # greenfield rebuild. REQ-001 through REQ-009 describe the current skeleton,
-# devcontainer, and regenerated implementation slices. REQ-010 through REQ-015
+# devcontainer, and regenerated implementation slices. REQ-016 describes the
+# current OpenTelemetry collection baseline. REQ-010 through REQ-015
 # require status reconciliation before they become authoritative active slices.
 # REQ-101 through REQ-123 are retained as legacy WP-derived references for
 # traceability; they are not the current execution backlog unless explicitly
@@ -171,7 +172,7 @@ requirements:
     title: "Trip Planning search foundation"
     description: "Define a deterministic, explainable Trip Planning search foundation with validated trip intents and non-authoritative price/availability hints."
     priority: P0
-    status: implemented-foundation
+    status: implemented
     code:
       - path: services/trip-planning/src/trip_planning/domain.py
         description: "Trip intent, itinerary candidate, ranking, and hint domain primitives."
@@ -197,7 +198,7 @@ requirements:
     title: "Offer Management domain foundation"
     description: "Define immutable Offer Management snapshots, lifecycle/TTL behavior, passenger mix, risk disclosures, and boundary proof that offers do not mutate downstream domains."
     priority: P0
-    status: implemented-foundation
+    status: implemented
     code:
       - path: services/offer-management/src/domain.ts
         description: "Offer Management domain model and invariants for offer snapshots, items, references, disclosures, and events."
@@ -215,13 +216,38 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/offer-management.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
+  - id: REQ-016
+    title: "OpenTelemetry collection baseline"
+    description: "Provide a local OpenTelemetry collector configuration and a stable service-side OTLP environment contract for all language runtime baselines."
+    priority: P0
+    status: implemented
+    code:
+      - path: platform/observability/otel-collector.yaml
+        description: "Local OpenTelemetry Collector configuration accepting OTLP traces, metrics, and logs over HTTP and gRPC."
+      - path: platform/observability/docker-compose.yaml
+        description: "Local compose entry point for running the collector."
+      - path: platform/observability/env.example
+        description: "Shared OTEL_* environment contract for service runtime adapters."
+      - path: Makefile
+        description: "Observability compose validation, startup, and shutdown targets."
+    tests:
+      - path: Makefile
+        description: "`make observability-config` validates compose rendering; `make observability-validate` validates the collector configuration with the collector binary."
+    docs:
+      - path: docs/07-observability/README.md
+      - path: services/README.md
+      - path: docs/00-current-status.md
+    depends_on: [REQ-002]
+    confidence: confirmed
+    source: "docs/07-observability/README.md"
+
   # Legacy WP-derived references below. Do not use as active backlog without
   # regenerating the rewrite plan.
   - id: REQ-101
     title: "WP-01 Shared kernel contracts"
     description: "Define common IDs, value objects, and event envelope."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -235,7 +261,7 @@ requirements:
     title: "WP-02 Place and network master data"
     description: "Represent places, transport nodes, and provider place mappings."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -249,7 +275,7 @@ requirements:
     title: "WP-03 Service plan schedules"
     description: "Represent routes, timetables, calendars, planned suspension, and plan versions."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -263,7 +289,7 @@ requirements:
     title: "WP-04 Fare and rule snapshots"
     description: "Represent fare rule sets, quotes, refund fees, change fees, and rule snapshots."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -277,7 +303,7 @@ requirements:
     title: "WP-05 Internal segment inventory"
     description: "Represent inventory pools, capacity holds, quotas, overlap checks, and hold TTL."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -291,7 +317,7 @@ requirements:
     title: "WP-06 Trip planning query candidates"
     description: "Search without locking inventory and explain unavailable or unreachable journeys."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -305,7 +331,7 @@ requirements:
     title: "WP-07 Offer snapshots"
     description: "Freeze offer, offer item, price snapshot, disclosure, and TTL without holding inventory."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -319,7 +345,7 @@ requirements:
     title: "WP-08 Journey order aggregate"
     description: "Create commercial orders that reference offers without owning inventory, payment, or ticketing."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -333,7 +359,7 @@ requirements:
     title: "WP-09 Booking saga"
     description: "Coordinate segment bookings, provider reservation mapping, and compensation status."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -347,7 +373,7 @@ requirements:
     title: "WP-10 Payment cash loop"
     description: "Create payment intents, refunds, callback records, late payment handling, and idempotency keys."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -361,7 +387,7 @@ requirements:
     title: "WP-11 Provider integration ACL"
     description: "Normalize provider/channel adapters, signatures, raw archive, and external status mapping."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -375,7 +401,7 @@ requirements:
     title: "WP-12 Ticket entitlement"
     description: "Issue, void, suspend, and board main-ticket entitlements after all prerequisites are satisfied."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -389,7 +415,7 @@ requirements:
     title: "WP-13 Fulfillment facts"
     description: "Record boarding, check-in, no-show, and offline evidence disputes."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -403,7 +429,7 @@ requirements:
     title: "WP-14 Post-sales refund and change"
     description: "Evaluate and execute refund/change cases without delete-and-recreate semantics."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -417,7 +443,7 @@ requirements:
     title: "WP-15 Transaction notification"
     description: "Schedule required transaction notifications with idempotency and delivery receipts."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -431,7 +457,7 @@ requirements:
     title: "WP-16 Traveler facts"
     description: "Represent travelers, documents, eligibility summaries, and preference snapshots."
     priority: P0
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -445,7 +471,7 @@ requirements:
     title: "WP-17 Risk decisions"
     description: "Represent risk assessments, challenges, block/allow decisions, and evidence summaries."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -459,7 +485,7 @@ requirements:
     title: "WP-18 Account minimum"
     description: "Represent account, session, preference, freeze, and account-closure shell behavior."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -473,7 +499,7 @@ requirements:
     title: "WP-19 Admin and audit commands"
     description: "Represent operator identity, approval, manual action, and audit trails."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -487,7 +513,7 @@ requirements:
     title: "WP-20 Customer service cases"
     description: "Represent support cases, evidence references, manual action requests, and timelines."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -501,7 +527,7 @@ requirements:
     title: "WP-21 Finance event consumption"
     description: "Consume order/payment/post-sales events for revenue recognition and reconciliation views."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -515,7 +541,7 @@ requirements:
     title: "WP-22 Reporting read models"
     description: "Expose read-only metrics and dashboards from events and Finance views."
     priority: P2
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
@@ -529,7 +555,7 @@ requirements:
     title: "WP-23 Legacy ACL strangler"
     description: "Map old preserve, cancel, rebook, payment, and execute entrypoints to controlled commands."
     priority: P1
-    status: legacy-reference
+    status: deprecated
     code: []
     tests: []
     docs:
