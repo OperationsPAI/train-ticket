@@ -1,6 +1,6 @@
 # Shared Primitives — Language-Neutral Field-Level Definitions
 
-Last updated: 2026-06-28
+Last updated: 2026-07-04
 
 ## 1. EventEnvelope
 
@@ -36,7 +36,8 @@ canonical identity and MUST be preserved in serialisation.
 | `PlanVersionId` | `pv-` | `pv-<uuid>` | Versioned plan publication. |
 | `ScheduledServiceId` | `ss-` | `ss-<uuid>` | Materialised service instance for a specific date. |
 | `SegmentRef` | `seg-` | `seg-<uuid>` or `seg-<patternId>:<fromSeq>-<toSeq>` | Reference to a service segment. |
-| `TravelerRef` / `TravelerId` | `tvl-` | `tvl-<uuid>` | Cross-context traveler reference. |
+| `TravelerRef` / `TravelerId` | `tvl-` | `tvl-<uuid>` | Cross-context traveler reference (see section 2a for structured shape). |
+| `EligibilityId` | `elig-` | `elig-<uuid>` | Eligibility determination reference (see section 2b for EligibilityRef shape). |
 | `OfferId` | `off-` | `off-<uuid>` | Offer aggregate root. |
 | `OrderId` / `JourneyOrderId` | `ord-` | `ord-<uuid>` | Journey order aggregate root. |
 | `OrderItemId` | `oit-` | `oit-<uuid>` | Line item within a journey order. |
@@ -60,6 +61,7 @@ canonical identity and MUST be preserved in serialisation.
 | `DisruptionCaseId` | `dc-` | `dc-<uuid>` | Disruption case identity. |
 | `TransferPlanId` | `tp-` | `tp-<uuid>` | Transfer plan identity. |
 | `ProviderReference` | varies | provider-specific | External provider reference (PNR, confirmation number, ticket number). |
+| `AvailabilitySnapshotId` | `avs-` | `avs-<uuid>` | Availability snapshot identity. |
 
 **Reference implementation:** `platform/shared-kernel-rust/src/lib.rs` — `PlaceRef`, `TravelerRef`, `SegmentRef`, `EventId`, `CausationId`, `CorrelationId`.
 
@@ -69,6 +71,93 @@ The Rust shared-kernel uses `PlaceRef`, `TravelerRef`, `SegmentRef` as generic
 wrapper types without prefix validation. The canonical ID formats above define
 the prefix conventions that all services should adopt. See `conformance-gaps.md`
 for current deviations.
+
+## 2a. TravelerRef — Structured Cross-Context Shape
+
+The TravelerRef is both a simple string ID (`tvl-<uuid>`) and a structured value
+object when full traveler context is needed across bounded contexts.
+
+### Simple ID form
+
+Used where only a reference is needed (e.g. in event headers or audit trails):
+`tvl-<uuid>`
+
+### Structured form (cross-context payload)
+
+```json
+{
+  "travelerId": "tvl-abc123",
+  "travelerType": "ADULT",
+  "maskedDocumentRef": "****1234",
+  "eligibilityRef": { "eligibilityId": "elig-def456", "eligibilityType": "STUDENT", "evidenceHash": "sha256-..." }
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `travelerId` | `TravelerId` | yes | Canonical traveler string ID (`tvl-<uuid>`). |
+| `travelerType` | enum | yes | Traveler category (see enum below). The field name is `travelerType`, NOT `category`. |
+| `maskedDocumentRef` | string | no | Partially masked travel document number (e.g. `****1234`). MUST NOT contain full document number. |
+| `eligibilityRef` | `EligibilityRef` | no | Eligibility determination reference (see section 2b). |
+
+### TravelerType enum
+
+| Value | Description |
+|---|---|
+| `ADULT` | Adult passenger (default). |
+| `CHILD` | Child passenger (age-dependent fare). |
+| `STUDENT` | Student passenger (eligibility-verified discount). |
+| `SENIOR` | Senior passenger (age-dependent fare). |
+| `INFANT` | Infant (no seat, accompanying adult). |
+| `MILITARY` | Military personnel (eligibility-verified discount). |
+| `DISABLED` | Passenger with disability (eligibility-verified assistance). |
+
+### Deviations from canonical form
+
+- **offer-management (TypeScript):** Uses `category` field (type `PassengerCategory` enum with values `adult`, `child`, `senior`, `student`) instead of `travelerType`. See conformance-gaps.md GAP-022.
+- **journey-order (Java):** `TravelerRef` record has `travelerId`, `documentType`, `maskedDocumentNo` but uses `documentType` (free-form string) rather than the canonical `travelerType` enum. See conformance-gaps.md GAP-023.
+
+## 2b. EligibilityRef — Canonical Eligibility Reference
+
+Unified reference for eligibility determinations produced by traveler-profile and
+consumed by offer-management, fare-pricing, and journey-order.
+
+```json
+{
+  "eligibilityId": "elig-def456",
+  "eligibilityType": "STUDENT",
+  "eligibilitySource": "traveler-profile",
+  "evidenceHash": "sha256-abc123...",
+  "verifiedAt": "2026-07-03T10:00:00Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `eligibilityId` | `EligibilityId` | yes | Canonical eligibility ID (`elig-<uuid>`). |
+| `eligibilityType` | enum | yes | Type of eligibility (see EligibilityType enum). |
+| `eligibilitySource` | string | yes | Bounded context that determined eligibility (e.g. `traveler-profile`, `fare-pricing`). |
+| `evidenceHash` | string | no | Hash of the evidence document used for verification (SHA-256 hex). |
+| `verifiedAt` | RFC3339 UTC | no | When the eligibility was verified. |
+
+### EligibilityType enum
+
+| Value | Description |
+|---|---|
+| `STUDENT` | Student discount eligibility. |
+| `SENIOR` | Senior discount eligibility. |
+| `MILITARY` | Military discount eligibility. |
+| `DISABLED` | Disability assistance eligibility. |
+| `LOYALTY` | Loyalty programme tier-based eligibility. |
+| `CORPORATE` | Corporate travel agreement eligibility. |
+| `PROMOTIONAL` | Promotional campaign eligibility. |
+| `GENERAL` | No special eligibility (default). |
+
+### Deviations from canonical form
+
+- **offer-management (TypeScript):** Uses `eligibilitySnapshotRef?: SnapshotId` (free-form string) instead of the structured `EligibilityRef`. See conformance-gaps.md GAP-024.
+- **journey-order (Java):** `OfferSnapshotRef` carries `ruleSnapshotId` (free-form string) instead of the structured `EligibilityRef`. See conformance-gaps.md GAP-025.
+- **traveler-profile (Java):** Produces `EligibilitySummary` with similar fields but uses slightly different naming. The canonical shape above is the contract target. See conformance-gaps.md GAP-026.
 
 ## 3. Money
 
@@ -214,6 +303,37 @@ Enum values are serialised as SCREAMING_SNAKE_CASE strings in JSON.
 | `APPROVED` | Case approved for execution. |
 | `APPLIED` | Post-sales result applied. |
 | `FAILED` | Post-sales execution failed. |
+
+**TravelerType:**
+| Value | Description |
+|---|---|
+| `ADULT` | Adult passenger (default). |
+| `CHILD` | Child passenger (age-dependent fare). |
+| `STUDENT` | Student passenger (eligibility-verified discount). |
+| `SENIOR` | Senior passenger (age-dependent fare). |
+| `INFANT` | Infant (no seat, accompanying adult). |
+| `MILITARY` | Military personnel (eligibility-verified discount). |
+| `DISABLED` | Passenger with disability (eligibility-verified assistance). |
+
+**EligibilityType:**
+| Value | Description |
+|---|---|
+| `STUDENT` | Student discount eligibility. |
+| `SENIOR` | Senior discount eligibility. |
+| `MILITARY` | Military discount eligibility. |
+| `DISABLED` | Disability assistance eligibility. |
+| `LOYALTY` | Loyalty programme tier-based eligibility. |
+| `CORPORATE` | Corporate travel agreement eligibility. |
+| `PROMOTIONAL` | Promotional campaign eligibility. |
+| `GENERAL` | No special eligibility (default). |
+
+**AvailabilityStatus (cross-context mapping):**
+| Value | trip-planning hint | offer-management confidence | Description |
+|---|---|---|---|
+| `AVAILABLE` | `available_hint` | `confirmed-snapshot` | Sufficient sellable units. |
+| `LIMITED` | `limited` | `low` | Few units remain. |
+| `UNKNOWN` | `unknown` | `estimated` | Snapshot stale/incomplete. |
+| `UNAVAILABLE` | `unavailable` | N/A | No sellable units. |
 
 ## 7. ProviderReference
 
