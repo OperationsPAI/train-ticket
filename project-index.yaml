@@ -3,9 +3,9 @@ project:
   languages: [java, golang, python, rust, typescript]
 
 # Current framing: this repository is being prepared for a full rewrite /
-# greenfield rebuild. REQ-001 through REQ-009 describe the current skeleton,
+# greenfield rebuild. REQ-001 through REQ-010 describe the current skeleton,
 # devcontainer, and regenerated implementation slices. REQ-016 describes the
-# current OpenTelemetry collection baseline. REQ-010 through REQ-015
+# current OpenTelemetry collection baseline. REQ-011 through REQ-015
 # require status reconciliation before they become authoritative active slices.
 # REQ-101 through REQ-123 are retained as legacy WP-derived references for
 # traceability; they are not the current execution backlog unless explicitly
@@ -215,6 +215,67 @@ requirements:
     depends_on: [REQ-006, REQ-007, REQ-008]
     confidence: confirmed
     source: "docs/02-domains/offer-management.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-010
+    title: "Journey Order domain foundation"
+    description: "Define the Journey Order aggregate lifecycle in Java: creation from valid Offer, OrderItems with TravelerRefs and SegmentOrderSnapshots, MonetarySummary invariants, and the order state machine (Created to Confirmed via PendingPayment, with Cancelled and Failed as terminal states)."
+    priority: P0
+    status: tested
+    code:
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrder.java
+        description: "JourneyOrder aggregate root with state machine, creation, payment, entitlement, confirmation, cancellation, and post-sales adjustment commands."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OrderItem.java
+        description: "OrderItem entity with type, amount, bindings, and cancellation tracking."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/MonetarySummary.java
+        description: "MonetarySummary value object enforcing currency-consistent total computation from order items."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OfferSnapshotRef.java
+        description: "OfferSnapshotRef value object with expiry validation for offer-based order creation."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OrderLifecycleState.java
+        description: "JourneyOrder lifecycle state enumeration."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/ConfirmationConditions.java
+        description: "Confirmation conditions record tracking booking, capacity, payment, entitlement, and risk facts."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderCreated.java
+        description: "Domain event emitted when a JourneyOrder is created from a valid Offer."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderPendingPayment.java
+        description: "Domain event emitted when the order transitions to PENDING_PAYMENT."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderConfirmed.java
+        description: "Domain event emitted when all confirmation conditions are satisfied."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderCancelled.java
+        description: "Domain event emitted when the order is cancelled."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderPaymentRecorded.java
+        description: "Domain event emitted when payment capture is recorded."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderPostSalesAdjusted.java
+        description: "Domain event emitted when post-sales adjustment is applied."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/SegmentOrderSnapshot.java
+        description: "SegmentOrderSnapshot value object for segment reference snapshot."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/TravelerRef.java
+        description: "TravelerRef value object for traveler reference snapshot."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OrderLineBinding.java
+        description: "OrderLineBinding value object binding order items to travelers and segments."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/Money.java
+        description: "Minor domain money type for Journey Order commercial summaries."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/TimelineFact.java
+        description: "TimelineFact value object for audit timeline entries."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+    tests:
+      - path: services/journey-order/src/test/java/com/trainticket/journeyorder/domain/JourneyOrderTest.java
+        description: "Unit tests for JourneyOrder creation, offer expiry, monetary summary invariants, state machine transitions, payment capture, confirmation conditions, payment expiry, and post-sales adjustment."
+      - path: services/journey-order/src/test/java/com/trainticket/journeyorder/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/journey-order/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/journey-order.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-009]
+    confidence: confirmed
+    source: "docs/02-domains/journey-order.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
 
   - id: REQ-016
     title: "OpenTelemetry collection baseline"

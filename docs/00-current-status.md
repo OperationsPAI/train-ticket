@@ -1,6 +1,6 @@
 # Current Project Status
 
-Last updated: 2026-07-03
+Last updated: 2026-07-05
 
 ## Status
 
@@ -41,9 +41,14 @@ partially completed implementation of the old Train Ticket services.
 - Treat `REQ-009` as the regenerated Offer Management domain foundation in
   `services/offer-management`, covering immutable offer snapshots, TTL/lifecycle
   behavior, passenger mix, risk disclosures, and non-mutation boundary proof.
+- Treat `REQ-010` as the regenerated Journey Order domain foundation in
+  `services/journey-order`, covering the JourneyOrder aggregate lifecycle, order
+  creation from valid Offer, OrderItems with TravelerRefs and SegmentOrderSnapshots,
+  MonetarySummary invariants, ConfirmationConditions guards, and the order state
+  machine (Created, PendingPayment, Confirmed, with Cancelled as terminal).
 - Treat `REQ-016` as the current OpenTelemetry collection baseline: a local
   OTLP collector configuration and service-side telemetry environment contract.
-- Treat `REQ-010` through `REQ-015` as status-reconciliation-needed where local
+- Treat `REQ-011` through `REQ-015` as status-reconciliation-needed where local
   service metadata or code references those IDs. They must not be promoted to
   authoritative active slices until this status file is updated with their
   accepted scope.
