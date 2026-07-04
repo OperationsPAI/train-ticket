@@ -25,6 +25,7 @@ DDD 设计已经完成收敛。理解领域基线时从下面六份开始读：
 | Domain Details | `docs/02-domains/*.md` | 每个 domain 的详细设计。 |
 | High-level DDD | `docs/01-ddd-high-level/*.md` | 统一语言、上下文地图、聚合、状态机、事件和 Saga。 |
 | Agentic Development | `docs/06-agentic-development/*.md` | AgentM WorkGraph / ARL 的调度、环境配置、迭代验证和 rebase merge 方法论。 |
+| Observability | `docs/07-observability/*.md` | OpenTelemetry collector、本地采集拓扑和服务运行时遥测接入契约。 |
 
 ## 第一阶段重构建议
 
@@ -46,3 +47,4 @@ DDD 设计已经完成收敛。理解领域基线时从下面六份开始读：
 3. 数据库 schema：在聚合和存储策略确定后设计。
 4. 任务拆分：从 `implementation-roadmap.md`、`phase-1-contract.md` 和 `domain-reduce-status.md` 生成。
 5. Agentic development 方法论：见 `docs/06-agentic-development/README.md`。
+6. Observability 基线：见 `docs/07-observability/README.md`。

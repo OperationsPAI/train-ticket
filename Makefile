@@ -2,8 +2,10 @@ SHELL := /usr/bin/env bash
 
 DEVCONTAINER_IMAGE ?= train-ticket-dev:local
 AGENT_ENV_IMAGE ?= train-ticket-agent-env:local
+OTEL_COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib:latest
+OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 
-.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image check-devcontainer check-strict skeleton-check list-services
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
 
 check: skeleton-check
 
@@ -27,3 +29,15 @@ skeleton-check:
 
 list-services:
 	python3 scripts/list-services.py
+
+observability-config:
+	docker compose -f $(OBSERVABILITY_COMPOSE) config
+
+observability-validate:
+	docker run --rm -v "$$PWD/platform/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" $(OTEL_COLLECTOR_IMAGE) validate --config=/etc/otelcol-contrib/config.yaml
+
+observability-up:
+	docker compose -f $(OBSERVABILITY_COMPOSE) up -d
+
+observability-down:
+	docker compose -f $(OBSERVABILITY_COMPOSE) down
