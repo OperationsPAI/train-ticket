@@ -72,7 +72,8 @@ def validate_catalog(catalog: dict) -> list[dict]:
             require(ROOT / doc)
         if language == "golang":
             require(root / "go.mod")
-            require(root / "internal/domain/profile.go")
+            if service["path"].startswith("services/"):
+                require(root / "internal/domain/profile.go")
         elif language == "java":
             require(root / "pom.xml")
             require(root / "src/main")
