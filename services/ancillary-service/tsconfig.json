@@ -4,9 +4,13 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
-    "noEmit": true,
+    "noEmit": false,
     "skipLibCheck": true,
-    "rootDir": "src"
+    "rootDir": "src",
+    "outDir": "test-output",
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/**/*.ts"
