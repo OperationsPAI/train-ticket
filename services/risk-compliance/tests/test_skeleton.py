@@ -2,7 +2,26 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from risk_compliance import create_app, health, profile
+from risk_compliance import (
+    Challenge,
+    ChallengeOutcome,
+    ChallengeType,
+    Decision,
+    EvidenceSummary,
+    RiskAssessment,
+    RiskComplianceError,
+    RiskDecision,
+    RiskLevel,
+    allow_subject,
+    assess_risk,
+    block_subject,
+    create_app,
+    health,
+    issue_challenge,
+    profile,
+    record_evidence,
+    resolve_challenge,
+)
 
 
 class SkeletonTest(unittest.TestCase):
@@ -10,7 +29,31 @@ class SkeletonTest(unittest.TestCase):
         service_profile = profile()
         self.assertEqual(service_profile["service_id"], 'risk-compliance')
         self.assertEqual(service_profile["domain"], 'Risk & Compliance')
+        self.assertIn('REQ-020', service_profile["work_packages"])
+        self.assertIn('RiskAssessment', service_profile["owns"])
+        self.assertIn('Challenge', service_profile["owns"])
+        self.assertIn('RiskDecision', service_profile["owns"])
+        self.assertIn('EvidenceSummary', service_profile["owns"])
         self.assertEqual(health(), "ok")
+
+    def test_domain_types_are_importable(self) -> None:
+        self.assertIsNotNone(RiskAssessment)
+        self.assertIsNotNone(Challenge)
+        self.assertIsNotNone(RiskDecision)
+        self.assertIsNotNone(EvidenceSummary)
+        self.assertIsNotNone(RiskComplianceError)
+        self.assertIsNotNone(Decision)
+        self.assertIsNotNone(RiskLevel)
+        self.assertIsNotNone(ChallengeType)
+        self.assertIsNotNone(ChallengeOutcome)
+
+    def test_domain_commands_are_importable(self) -> None:
+        self.assertIsNotNone(assess_risk)
+        self.assertIsNotNone(issue_challenge)
+        self.assertIsNotNone(resolve_challenge)
+        self.assertIsNotNone(block_subject)
+        self.assertIsNotNone(allow_subject)
+        self.assertIsNotNone(record_evidence)
 
     def test_fastapi_runtime_routes_are_registered(self) -> None:
         app = create_app()

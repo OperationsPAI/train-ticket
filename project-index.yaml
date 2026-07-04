@@ -281,6 +281,32 @@ requirements:
     depends_on: [REQ-003]
     confidence: confirmed
     source: "docs/02-domains/traveler-profile.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+  - id: REQ-020
+    title: "Risk & Compliance domain foundation"
+    description: "Implement the Risk & Compliance domain foundation in Python. This domain owns risk assessments, challenges, block/allow decisions, and evidence summaries for order and payment flows."
+    priority: P1
+    status: tested
+    code:
+      - path: services/risk-compliance/src/risk_compliance/domain.py
+        description: "Domain model with RiskAssessment, Challenge, RiskDecision, EvidenceSummary aggregates and commands."
+      - path: services/risk-compliance/src/risk_compliance/__init__.py
+        description: "Public API exports for domain types, commands, and runtime."
+      - path: services/risk-compliance/src/risk_compliance/runtime.py
+        description: "Service profile with REQ-020 ownership."
+      - path: docs/08-contracts/events/risk-compliance.md
+        description: "Events and commands contract for Risk & Compliance."
+    tests:
+      - path: services/risk-compliance/tests/test_domain.py
+        description: "Unit tests for domain invariants, state machines, commands, and cross-context contracts."
+      - path: services/risk-compliance/tests/test_skeleton.py
+        description: "Application skeleton tests (health, runtime endpoints, tracing seam, domain type imports)."
+    docs:
+      - path: docs/02-domains/risk-compliance.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/risk-compliance.md
+    depends_on: [REQ-010, REQ-012, REQ-017, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/risk-compliance.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
       - path: services/provider-integration/internal/domain/webhook_inbox_test.go
         description: "Unit tests for WebhookInbox verification, mapping, and publishing."
