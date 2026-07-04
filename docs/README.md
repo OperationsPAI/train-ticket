@@ -24,6 +24,7 @@ DDD 设计已经完成收敛。理解领域基线时从下面六份开始读：
 | Final DDD | `docs/03-ddd-final/*.md` | 当前跨域边界、第一阶段契约、最终裁决和 domain 状态。 |
 | Domain Details | `docs/02-domains/*.md` | 每个 domain 的详细设计。 |
 | High-level DDD | `docs/01-ddd-high-level/*.md` | 统一语言、上下文地图、聚合、状态机、事件和 Saga。 |
+| Agentic Development | `docs/06-agentic-development/*.md` | AgentM WorkGraph / ARL 的调度、环境配置、迭代验证和 rebase merge 方法论。 |
 
 ## 第一阶段重构建议
 
@@ -44,3 +45,4 @@ DDD 设计已经完成收敛。理解领域基线时从下面六份开始读：
 2. API 契约：在实现语言和服务形态确定后补 OpenAPI、AsyncAPI 或 protobuf。
 3. 数据库 schema：在聚合和存储策略确定后设计。
 4. 任务拆分：从 `implementation-roadmap.md`、`phase-1-contract.md` 和 `domain-reduce-status.md` 生成。
+5. Agentic development 方法论：见 `docs/06-agentic-development/README.md`。
