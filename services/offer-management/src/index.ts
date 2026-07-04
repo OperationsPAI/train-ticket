@@ -1,5 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
-
+export { createApp, health, type ErrorEnvelope, type HealthStatus, type InstrumentationHooks, type RequestContext } from "./app.js";
 export {
   DomainError,
   Offer,
@@ -21,48 +20,4 @@ export {
   type RiskDisclosure,
   type ValidityWindow,
 } from "./domain.js";
-
-export type ServiceProfile = {
-  serviceId: string;
-  domain: string;
-  language: "typescript";
-  phase: string;
-  requirement: string;
-  workPackages: string[];
-  owns: string[];
-  doesNotOwn: string[];
-  publishes: string[];
-};
-
-export const serviceProfile: ServiceProfile = {
-  serviceId: "offer-management",
-  domain: "Offer Management",
-  language: "typescript",
-  phase: "phase-1-offer-domain-foundation",
-  requirement: "REQ-009-Offer-Management-domain-foundation",
-  workPackages: ["REQ-009", "WP-07-offer-snapshots"],
-  owns: [
-    "Offer identity and lifecycle",
-    "OfferItem snapshot composition",
-    "ItineraryReference",
-    "AvailabilitySnapshotReference",
-    "PriceSnapshot",
-    "FareRuleSnapshotReference",
-    "PassengerMix",
-    "RiskDisclosure",
-    "OfferQuoted",
-    "OfferExpired",
-  ],
-  doesNotOwn: ["CapacityHold", "PaymentIntent", "JourneyOrder", "Entitlement"],
-  publishes: ["OfferQuoted", "OfferExpired"],
-};
-
-export function health(): "ok" {
-  return "ok";
-}
-
-export function createApp(): FastifyInstance {
-  const app = Fastify({ logger: false });
-  app.get("/health", async () => ({ status: health(), service: serviceProfile }));
-  return app;
-}
+export { serviceProfile, type ServiceProfile } from "./profile.js";

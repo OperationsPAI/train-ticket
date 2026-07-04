@@ -38,3 +38,16 @@ backlog unless a new plan explicitly regenerates and approves them.
 | `dispatch` | Dispatch | golang | future-scope | future |
 
 The root `service-catalog.json` is the machine-readable source of this table.
+
+## TypeScript Operational Foundation
+
+TypeScript services expose app construction separately from service/domain exports. The shared skeleton contract is intentionally small:
+
+- `createApp()` returns a Fastify instance without opening a socket.
+- `/health` remains the compatibility health endpoint.
+- `/livez` and `/readyz` expose the same current skeleton readiness status.
+- `x-request-id` is propagated when supplied, generated otherwise, and returned on every response.
+- `x-correlation-id` is propagated when supplied and otherwise defaults to the request id.
+- Missing routes and unhandled errors use `{ "error": { "code", "message", "requestId", "correlationId" } }`.
+
+Instrumentation is a seam, not a dependency, in this slice: `createApp({ onRequest })` lets future OpenTelemetry wiring observe request/correlation ids without adding heavy OTel packages to skeleton services.

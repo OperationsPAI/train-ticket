@@ -36,7 +36,7 @@ Offer Management does **not** lock inventory and does **not** create orders, pay
 ## Validation
 
 ```bash
-npm test -- --runInBand || npm test
+npm test
 ```
 
-The first command form is accepted by the WorkGraph validation contract; this service uses Node's built-in `node:test` runner rather than Jest, so the fallback `npm test` is the expected local runner.
+The test command compiles TypeScript into ignored `test-output/` files and runs Node's built-in `node:test` suite, including Fastify inject smoke tests for `/health`, `/livez`, and `/readyz`.
