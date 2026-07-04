@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping
-from typing import Any
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any, Protocol
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -11,9 +12,50 @@ CORRELATION_ID_HEADER = "X-Correlation-ID"
 TraceHook = Callable[[str, Mapping[str, object]], None]
 
 
+class RuntimeSpan(AbstractContextManager["RuntimeSpan"], Protocol):
+    def set_attribute(self, key: str, value: object) -> None: ...
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool | None: ...
+
+
+class RuntimeTracer(Protocol):
+    def start_as_current_span(self, name: str) -> RuntimeSpan: ...
+
+
 def _emit_trace(tracer: TraceHook | None, event: str, attributes: Mapping[str, object]) -> None:
     if tracer is not None:
         tracer(event, dict(attributes))
+
+
+def opentelemetry_tracer_from_env(service_name: str) -> RuntimeTracer | None:
+    """Return an OpenTelemetry API tracer only when OTEL_TRACES_EXPORTER is enabled.
+
+    The OpenTelemetry API defaults to non-recording spans unless a service
+    bootstrap installs an SDK/exporter. That keeps tests collector-free while
+    allowing OTEL_* environment configuration to drive real deployments.
+    """
+    import os
+
+    exporter = os.getenv("OTEL_TRACES_EXPORTER", "").strip().lower()
+    if not exporter or exporter == "none":
+        return None
+    configured_service = os.getenv("OTEL_SERVICE_NAME", "").strip() or service_name
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover - optional adapter dependency
+        return None
+    return trace.get_tracer(configured_service)
+
+
+def _span_context(tracer: RuntimeTracer | None, name: str) -> AbstractContextManager[RuntimeSpan | None]:
+    if tracer is None:
+        return nullcontext(None)
+    return tracer.start_as_current_span(name)
+
+
+def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> None:
+    if span is not None:
+        span.set_attribute(key, value)
 
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
@@ -22,32 +64,45 @@ def _request_identifiers(request: Request) -> tuple[str, str]:
     return request_id, correlation_id
 
 
-def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None) -> None:
+def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None) -> None:
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next: Any):
         request_id, correlation_id = _request_identifiers(request)
         request.state.request_id = request_id
         request.state.correlation_id = correlation_id
+        service_name = profile()["service_id"]
+        path = request.url.path
         trace_attributes = {
+            "service.name": service_name,
             "request_id": request_id,
             "correlation_id": correlation_id,
-            "method": request.method,
-            "path": request.url.path,
+            "http.request.method": request.method,
+            "http.method": request.method,
+            "url.path": path,
+            "http.route": path,
+            "http.request_id": request_id,
+            "http.correlation_id": correlation_id,
         }
         _emit_trace(tracer, "http.request.start", trace_attributes)
-        try:
-            response = await call_next(request)
-        except Exception as exc:  # pragma: no cover - exercised by FastAPI exception handling paths
-            _emit_trace(tracer, "http.request.error", {**trace_attributes, "error": exc.__class__.__name__})
-            raise
-        response.headers[REQUEST_ID_HEADER] = request_id
-        response.headers[CORRELATION_ID_HEADER] = correlation_id
-        _emit_trace(
-            tracer,
-            "http.request.complete",
-            {**trace_attributes, "status_code": response.status_code},
-        )
-        return response
+        with _span_context(otel_tracer, f"{request.method} {path}") as span:
+            for key, value in trace_attributes.items():
+                _set_span_attribute(span, key, value)
+            try:
+                response = await call_next(request)
+            except Exception as exc:  # pragma: no cover - exercised by FastAPI exception handling paths
+                _set_span_attribute(span, "error.type", exc.__class__.__name__)
+                _emit_trace(tracer, "http.request.error", {**trace_attributes, "error": exc.__class__.__name__})
+                raise
+            response.headers[REQUEST_ID_HEADER] = request_id
+            response.headers[CORRELATION_ID_HEADER] = correlation_id
+            _set_span_attribute(span, "http.response.status_code", response.status_code)
+            _set_span_attribute(span, "http.status_code", response.status_code)
+            _emit_trace(
+                tracer,
+                "http.request.complete",
+                {**trace_attributes, "status_code": response.status_code},
+            )
+            return response
 
     @app.get("/health")
     def health_endpoint() -> dict[str, object]:
@@ -66,7 +121,7 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None) -
         return {"service": profile(), "observability": {"tracing": "opt-in", "default": "noop"}}
 
 
-def create_app(tracer: TraceHook | None = None) -> FastAPI:
+def create_app(tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None) -> FastAPI:
     app = FastAPI(title='Disruption Recovery', version="0.1.0")
-    configure_runtime_endpoints(app, tracer)
+    configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     return app

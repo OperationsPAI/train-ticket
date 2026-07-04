@@ -9,9 +9,11 @@ import (
 )
 
 func Router() *gin.Engine {
+	profile := domain.Profile()
 	return goruntime.NewGinRouter(goruntime.GinConfig{
-		ServiceID:    domain.Profile().ServiceID,
-		Metadata:     domain.Profile(),
+		ServiceID:    profile.ServiceID,
+		Metadata:     profile,
 		HealthStatus: domain.Health(),
+		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
 }

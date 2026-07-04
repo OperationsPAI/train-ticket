@@ -218,7 +218,7 @@ requirements:
 
   - id: REQ-016
     title: "OpenTelemetry collection baseline"
-    description: "Provide a local OpenTelemetry collector configuration and a stable service-side OTLP environment contract for all language runtime baselines."
+    description: "Provide a local OpenTelemetry collector configuration, stable service-side OTLP environment contract, and opt-in OpenTelemetry API adapters for all language runtime baselines."
     priority: P0
     status: implemented
     code:
@@ -230,6 +230,12 @@ requirements:
         description: "Shared OTEL_* environment contract for service runtime adapters."
       - path: Makefile
         description: "Observability compose validation, startup, and shutdown targets."
+      - path: platform/go-runtime/runtime.go
+        description: "Go observer seam adapter for OpenTelemetry API spans, selected by standard OTEL_* environment configuration."
+      - path: platform/shared-kernel-rust/src/lib.rs
+        description: "Rust shared-kernel observer adapter for OpenTelemetry API spans with no-op default behavior."
+      - path: services
+        description: "Python, TypeScript, Java, Go, and Rust service runtime seams wired to optional OpenTelemetry adapters while retaining no-op defaults."
     tests:
       - path: Makefile
         description: "`make observability-config` validates compose rendering; `make observability-validate` validates the collector configuration with the collector binary."
