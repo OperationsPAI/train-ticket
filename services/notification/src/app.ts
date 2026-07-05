@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
@@ -64,23 +64,7 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
-type IdempotencyRecord = Readonly<{
-  bodyHash: string;
-  statusCode: number;
-  payload: unknown;
-}>;
-
-export class InMemoryIdempotencyStore {
-  private readonly records = new Map<string, IdempotencyRecord>();
-
-  get(key: string): IdempotencyRecord | undefined {
-    return this.records.get(key);
-  }
-
-  save(key: string, record: IdempotencyRecord): void {
-    this.records.set(key, record);
-  }
-}
+export { InMemoryIdempotencyStore, handleIdempotentPost } from "@trainticket/ts-kit";
 
 export function opentelemetryInstrumentationFromEnv(tracer?: OTelTracer): InstrumentationHooks {
   const exporter = process.env.OTEL_TRACES_EXPORTER?.trim().toLowerCase();
@@ -172,36 +156,6 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
   return app;
 }
 
-export async function handleIdempotentPost<T>(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  store: InMemoryIdempotencyStore,
-  handler: () => Promise<Readonly<{ statusCode: number; payload: T }>>,
-): Promise<T | ErrorEnvelope> {
-  const context = requestContext(request);
-  const key = headerValue(request.headers["idempotency-key"]);
-  if (key === undefined) {
-    reply.status(400);
-    return errorBody("VALIDATION_FAILED", "Idempotency-Key header is required", context);
-  }
-
-  const bodyHash = hashBody(request.body);
-  const existing = store.get(key);
-  if (existing !== undefined) {
-    if (existing.bodyHash !== bodyHash) {
-      reply.status(422);
-      return errorBody("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body", context);
-    }
-    reply.status(existing.statusCode);
-    return existing.payload as T;
-  }
-
-  const result = await handler();
-  store.save(key, { bodyHash, statusCode: result.statusCode, payload: result.payload });
-  reply.status(result.statusCode);
-  return result.payload;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
 }
@@ -253,8 +207,4 @@ function errorBody(code: string, message: string, context: RequestContext): Erro
     correlationId: context.correlationId,
     details: {},
   };
-}
-
-function hashBody(body: unknown): string {
-  return createHash("sha256").update(JSON.stringify(body ?? null)).digest("hex");
 }
