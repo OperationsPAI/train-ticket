@@ -25,7 +25,7 @@ from fare_pricing.domain import (
     RuleSnapshot,
 )
 
-from fare_pricing.ports.messaging import PublishFailed
+from train_ticket_platform.messaging import PublishFailed
 
 from .errors import ApiError
 from .schemas import AdjustmentQuoteRequest, FareQuoteRequest
