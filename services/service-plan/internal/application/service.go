@@ -2,9 +2,6 @@ package application
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 
 	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 )
@@ -425,12 +425,12 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 
 func (s *Service) newEnvelope(eventType, correlationID, causationID string, payload []byte) EventEnvelope {
 	now := s.now().UTC()
-	return EventEnvelope{
-		EventID:       newCanonicalID("evt"),
+	return kitmsg.EventEnvelope{
+		EventID:       ids.NewEventID(),
 		EventType:     eventType,
 		OccurredAt:    now,
-		CorrelationID: canonicalCorrelationID(correlationID),
-		CausationID:   canonicalCausationID(causationID),
+		CorrelationID: ids.CanonicalCorrelationID(correlationID),
+		CausationID:   ids.CanonicalCausationID(causationID),
 		Producer:      ProducerServicePlan,
 		SchemaVersion: SchemaVersion,
 		Payload:       append(json.RawMessage(nil), payload...),
@@ -506,42 +506,23 @@ type NoopPublisher struct{}
 func (NoopPublisher) Publish(context.Context, EventEnvelope) error { return nil }
 
 func NewPrefixedID(prefix string) string {
-	return prefix + "-" + newUUID()
+	return ids.NewPrefixed(prefix)
 }
 
-func newCanonicalID(prefix string) string {
-	return prefix + "-" + newUUID()
-}
-
-func canonicalCorrelationID(value string) string {
-	value = strings.TrimSpace(value)
-	if validPrefixedUUIDv7(value, "corr") {
-		return value
-	}
-	if validUUIDv7(value) {
-		return "corr-" + value
-	}
-	return newCanonicalID("corr")
-}
-
-func canonicalCausationID(value string) string {
-	value = strings.TrimSpace(value)
-	if validPrefixedUUIDv7(value, "cmd") || validPrefixedUUIDv7(value, "evt") {
-		return value
-	}
-	return newCanonicalID("cmd")
-}
+func newCanonicalID(prefix string) string        { return ids.NewPrefixed(prefix) }
+func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
+func canonicalCausationID(value string) string   { return ids.CanonicalCausationID(value) }
 
 func validPrefixedUUID(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix+"-") && validUUID(strings.TrimPrefix(value, prefix+"-"))
 }
 
 func validPrefixedUUIDv7(value, prefix string) bool {
-	return strings.HasPrefix(value, prefix+"-") && validUUIDv7(strings.TrimPrefix(value, prefix+"-"))
+	return ids.ValidPrefixedUUIDv7(value, prefix)
 }
 
 func validUUIDv7(value string) bool {
-	return validUUID(value) && value[14] == '7'
+	return ids.ValidUUIDv7(value)
 }
 
 func validUUID(value string) bool {
@@ -561,18 +542,6 @@ func validUUID(value string) bool {
 		}
 	}
 	return true
-}
-
-func newUUID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		copy(b[:], fmt.Sprintf("%016x", time.Now().UTC().UnixNano()))
-	}
-	timestampMillis := uint64(time.Now().UTC().UnixMilli())
-	binary.BigEndian.PutUint64(b[0:8], timestampMillis<<16)
-	b[6] = (b[6] & 0x0f) | 0x70
-	b[8] = (b[8] & 0x3f) | 0x80
-	return hex.EncodeToString(b[0:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:16])
 }
 
 func plannedTimeFor(serviceStart, value time.Time) (domain.PlannedTime, error) {

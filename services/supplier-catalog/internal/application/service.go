@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 
 	"github.com/trainticket/greenfield/services/supplier-catalog/internal/domain"
 )
@@ -322,9 +322,9 @@ func wrapDomainEvents(events []interface{}, correlationID, causationID string) [
 
 func WrapDomainEvent(event interface{}, correlationID, causationID string) EventEnvelope {
 	return EventEnvelope{
-		EventID:       "evt-" + newUUIDString(),
+		EventID:       ids.NewEventID(),
 		EventType:     eventType(event),
-		OccurredAt:    formatUTC(time.Now()),
+		OccurredAt:    time.Now().UTC(),
 		CorrelationID: canonicalCorrelationID(correlationID),
 		CausationID:   canonicalCausationID(causationID),
 		Producer:      producerName,
@@ -333,39 +333,10 @@ func WrapDomainEvent(event interface{}, correlationID, causationID string) Event
 	}
 }
 
-func newUUIDString() string {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return uuid.NewString()
-	}
-	return id.String()
-}
-
-func formatUTC(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000Z")
-}
-
-func canonicalCorrelationID(value string) string {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "corr-") {
-		return value
-	}
-	if _, err := uuid.Parse(value); err == nil {
-		return "corr-" + value
-	}
-	return "corr-" + newUUIDString()
-}
-
-func canonicalCausationID(value string) string {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "cmd-") || strings.HasPrefix(value, "evt-") {
-		return value
-	}
-	if _, err := uuid.Parse(value); err == nil {
-		return "cmd-" + value
-	}
-	return "cmd-" + newUUIDString()
-}
+func newUUIDString() string                      { return ids.NewUUIDv7() }
+func formatUTC(t time.Time) string               { return ids.FormatUTC(t) }
+func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
+func canonicalCausationID(value string) string   { return ids.CanonicalCausationID(value) }
 
 func eventType(event interface{}) string {
 	switch event.(type) {
