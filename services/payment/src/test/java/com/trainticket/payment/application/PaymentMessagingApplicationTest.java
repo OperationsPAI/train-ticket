@@ -2,6 +2,7 @@ package com.trainticket.payment.application;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.payment.domain.Money;
 import java.time.Clock;
@@ -43,21 +44,24 @@ class PaymentMessagingApplicationTest {
 
         assertEquals(HandlerResult.SUCCESS, subscriber.emit(envelope));
         assertEquals(HandlerResult.SUCCESS, subscriber.emit(envelope));
-        assertEquals(2, publisher.published().size());
+        assertEquals(0, publisher.published().size());
     }
 
     @Test
-    void segmentReservationRequestedCreatesAndAuthorizesPaymentIntent() {
+    void segmentReservationRequestedRecordsConformantRequestWithoutInventingMoney() {
         FakeEventPublisher publisher = new FakeEventPublisher();
-        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(
-            new ConsumedEventDeduplicator(),
-            new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher)
-        );
+        PaymentCommandService commands = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
+        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
 
         assertEquals(HandlerResult.SUCCESS, handler.handle(segmentReservationRequested("evt-segment", "idem-segment")));
 
-        assertEquals("PaymentIntentCreated", publisher.published().get(0).eventType());
-        assertEquals("PaymentAuthorized", publisher.published().get(1).eventType());
+        ReservationPaymentRequest request = commands.getReservationPaymentRequest("sb-1");
+        assertEquals("evt-segment", request.eventId());
+        assertEquals("ord-1", request.journeyOrderId());
+        assertEquals("seg-1", request.segmentRef());
+        assertEquals("trav-1", request.travelerRef());
+        assertEquals("idem-segment", request.idempotencyKey());
+        assertTrue(publisher.published().isEmpty());
     }
 
     @Test
@@ -101,8 +105,7 @@ class PaymentMessagingApplicationTest {
                 "journeyOrderId", "ord-1",
                 "segmentRef", "seg-1",
                 "travelerRef", "trav-1",
-                "idempotencyKey", idempotencyKey,
-                "amount", Map.of("currency", "CNY", "minorUnits", 35000L)
+                "idempotencyKey", idempotencyKey
             )
         );
     }
