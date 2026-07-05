@@ -138,6 +138,31 @@ func TestIdempotencyKeyReuseWithDifferentBodyFails(t *testing.T) {
 	}
 }
 
+func TestIdempotencyKeyReuseAcrossResolvedCancelPathsFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := application.NewInMemoryReservationService(&fakePublisher{})
+	router := RouterWithDependencies(service, application.NewIdempotencyStore())
+	_ = post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
+	_ = post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-456","providerConfigRef":"cr-rail","reservationPayload":{"seat":"2A"}}`, testUUIDv7(2))
+
+	first := post(router, "/api/v1/internal/provider-reservations/sb-123/cancel", ``, testUUIDv7(3))
+	second := post(router, "/api/v1/internal/provider-reservations/sb-456/cancel", ``, testUUIDv7(3))
+
+	if first.Code != http.StatusOK {
+		t.Fatalf("first cancel status: %d body=%s", first.Code, first.Body.String())
+	}
+	if second.Code != 422 {
+		t.Fatalf("expected idempotency conflict for reused key on different resource, got %d body=%s", second.Code, second.Body.String())
+	}
+	var body ErrorBody
+	if err := json.Unmarshal(second.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "IDEMPOTENCY_KEY_REUSED" {
+		t.Fatalf("unexpected error body: %#v", body)
+	}
+}
+
 func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 	publisher := &fakePublisher{}
 	service := application.NewInMemoryReservationService(publisher)
