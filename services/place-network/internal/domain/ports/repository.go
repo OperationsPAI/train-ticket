@@ -13,14 +13,3 @@ type TransportNodeRepository interface {
 	FindByID(id domain.TransportNodeID) (*domain.TransportNode, error)
 	FindByPlaceID(placeID domain.PlaceID) ([]domain.TransportNode, error)
 }
-
-type IdempotencyRecord struct {
-	RequestHash string
-	StatusCode  int
-	Response    any
-}
-
-type IdempotencyStore interface {
-	Get(key string) (*IdempotencyRecord, bool)
-	Put(key string, record IdempotencyRecord) error
-}

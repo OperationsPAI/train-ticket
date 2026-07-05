@@ -1,8 +1,7 @@
 package http
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/trainticket/greenfield/platform/go-kit/httpkit"
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
 	"github.com/trainticket/greenfield/services/service-plan/internal/application"
@@ -20,13 +21,6 @@ import (
 
 type Handler struct {
 	service *application.Service
-}
-
-type errorBody struct {
-	Code          string         `json:"code"`
-	Message       string         `json:"message"`
-	CorrelationID string         `json:"correlationId"`
-	Details       map[string]any `json:"details"`
 }
 
 type createScheduledServiceRequest struct {
@@ -53,6 +47,10 @@ func Router() *gin.Engine {
 }
 
 func RouterWithService(service *application.Service) *gin.Engine {
+	return RouterWithServiceAndIdempotency(service, idempotency.NewMemoryStore())
+}
+
+func RouterWithServiceAndIdempotency(service *application.Service, store idempotency.Store) *gin.Engine {
 	profile := domain.Profile()
 	router := goruntime.NewGinRouter(goruntime.GinConfig{
 		ServiceID:    profile.ServiceID,
@@ -61,25 +59,23 @@ func RouterWithService(service *application.Service) *gin.Engine {
 		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
 	handler := Handler{service: service}
+	idempotent := idempotency.Middleware(store)
 	api := router.Group("/api/v1")
-	api.POST("/scheduled-services", handler.createScheduledService)
+	api.POST("/scheduled-services", idempotent, handler.createScheduledService)
 	api.GET("/scheduled-services/:serviceRef", handler.getScheduledService)
 	api.GET("/scheduled-services", handler.listScheduledServices)
-	api.POST("/service-segments", handler.createServiceSegment)
+	api.POST("/service-segments", idempotent, handler.createServiceSegment)
 	return router
 }
 
 func (h Handler) createScheduledService(ctx *gin.Context) {
-	body, ok := readJSONBody(ctx)
-	if !ok {
-		return
-	}
 	var request createScheduledServiceRequest
-	if err := bindBody(body, &request); err != nil {
-		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Request body failed structural validation")
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
 		return
 	}
-	result, replay, err := h.service.CreateScheduledService(ctx.Request.Context(), application.CreateScheduledServiceCommand{
+	metadata := idempotencyMetadata(ctx)
+	result, _, err := h.service.CreateScheduledService(ctx.Request.Context(), application.CreateScheduledServiceCommand{
 		ServiceRef:        request.ServiceRef,
 		CarrierID:         request.CarrierID,
 		ServiceNumber:     request.ServiceNumber,
@@ -88,15 +84,11 @@ func (h Handler) createScheduledService(ctx *gin.Context) {
 		OriginNodeID:      request.OriginNodeID,
 		DestinationNodeID: request.DestinationNodeID,
 		Status:            request.Status,
-		IdempotencyKey:    ctx.GetHeader("Idempotency-Key"),
-		CorrelationID:     correlationID(ctx),
+		IdempotencyKey:    metadata.Key,
+		CorrelationID:     httpkit.CorrelationID(ctx),
 		CausationID:       ctx.GetHeader("X-Causation-Id"),
-		RequestHash:       hashBody(body),
+		RequestHash:       metadata.Fingerprint,
 	})
-	if replay != nil {
-		ctx.JSON(replay.StatusCode, replay.Body)
-		return
-	}
 	if err != nil {
 		writeMappedError(ctx, err)
 		return
@@ -116,42 +108,35 @@ func (h Handler) getScheduledService(ctx *gin.Context) {
 func (h Handler) listScheduledServices(ctx *gin.Context) {
 	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, 100)
 	if err != nil {
-		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "limit must be an integer between 1 and 100")
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "limit must be an integer between 1 and 100", nil)
 		return
 	}
 	offset, err := parseBoundedInt(ctx.Query("offset"), 0, 0, int(^uint(0)>>1))
 	if err != nil {
-		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "offset must be a non-negative integer")
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "offset must be a non-negative integer", nil)
 		return
 	}
 	ctx.JSON(http.StatusOK, h.service.ListScheduledServices(application.ListScheduledServicesQuery{Limit: limit, Offset: offset, CarrierID: strings.TrimSpace(ctx.Query("carrierId"))}))
 }
 
 func (h Handler) createServiceSegment(ctx *gin.Context) {
-	body, ok := readJSONBody(ctx)
-	if !ok {
-		return
-	}
 	var request createServiceSegmentRequest
-	if err := bindBody(body, &request); err != nil {
-		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Request body failed structural validation")
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
 		return
 	}
-	result, replay, err := h.service.CreateServiceSegment(ctx.Request.Context(), application.CreateServiceSegmentCommand{
+	metadata := idempotencyMetadata(ctx)
+	result, _, err := h.service.CreateServiceSegment(ctx.Request.Context(), application.CreateServiceSegmentCommand{
 		ScheduledServiceRef: request.ScheduledServiceRef,
 		OriginStopRef:       request.OriginStopRef,
 		DestinationStopRef:  request.DestinationStopRef,
 		DepartureTime:       request.DepartureTime,
 		ArrivalTime:         request.ArrivalTime,
-		IdempotencyKey:      ctx.GetHeader("Idempotency-Key"),
-		CorrelationID:       correlationID(ctx),
+		IdempotencyKey:      metadata.Key,
+		CorrelationID:       httpkit.CorrelationID(ctx),
 		CausationID:         ctx.GetHeader("X-Causation-Id"),
-		RequestHash:         hashBody(body),
+		RequestHash:         metadata.Fingerprint,
 	})
-	if replay != nil {
-		ctx.JSON(replay.StatusCode, replay.Body)
-		return
-	}
 	if err != nil {
 		writeMappedError(ctx, err)
 		return
@@ -159,55 +144,37 @@ func (h Handler) createServiceSegment(ctx *gin.Context) {
 	ctx.JSON(http.StatusCreated, result)
 }
 
-func readJSONBody(ctx *gin.Context) ([]byte, bool) {
+func bindBody(ctx *gin.Context, target any) error {
 	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil || len(strings.TrimSpace(string(body))) == 0 {
-		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Request body failed structural validation")
-		return nil, false
+		return errors.New("request body is required")
 	}
-	return body, true
+	ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return jsonUnmarshalStrict(body, target)
 }
 
-func bindBody(body []byte, target any) error {
-	return jsonUnmarshalStrict(body, target)
+func idempotencyMetadata(ctx *gin.Context) idempotency.ContextValue {
+	metadata, _ := idempotency.FromContext(ctx)
+	return metadata
 }
 
 func writeMappedError(ctx *gin.Context, err error) {
 	switch {
 	case errors.Is(err, application.ErrValidation), errors.Is(err, application.ErrIdempotencyKeyRequired):
-		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
 	case errors.Is(err, application.ErrNotFound):
-		writeError(ctx, http.StatusNotFound, "NOT_FOUND", err.Error())
+		httpkit.WriteError(ctx, http.StatusNotFound, httpkit.NotFound, err.Error(), nil)
 	case errors.Is(err, application.ErrConflict):
-		writeError(ctx, http.StatusConflict, "CONFLICT", err.Error())
+		httpkit.WriteError(ctx, http.StatusConflict, httpkit.Conflict, err.Error(), nil)
 	case errors.Is(err, application.ErrIdempotencyKeyReused):
-		writeError(ctx, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body")
+		httpkit.WriteIdempotencyReused(ctx)
 	case errors.Is(err, application.ErrDomainRule):
-		writeError(ctx, http.StatusUnprocessableEntity, "DOMAIN_RULE_VIOLATION", err.Error())
+		httpkit.WriteError(ctx, http.StatusUnprocessableEntity, httpkit.DomainRuleViolation, err.Error(), nil)
 	case errors.Is(err, application.ErrPublish):
-		writeError(ctx, http.StatusServiceUnavailable, "UNAVAILABLE", "Service is temporarily unavailable")
+		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Service is temporarily unavailable", nil)
 	default:
-		writeError(ctx, http.StatusServiceUnavailable, "UNAVAILABLE", "Service is temporarily unavailable")
+		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Service is temporarily unavailable", nil)
 	}
-}
-
-func writeError(ctx *gin.Context, status int, code, message string) {
-	ctx.JSON(status, errorBody{Code: code, Message: message, CorrelationID: correlationID(ctx), Details: map[string]any{}})
-}
-
-func correlationID(ctx *gin.Context) string {
-	if value := ctx.Writer.Header().Get(goruntime.CorrelationIDHeader); value != "" {
-		return value
-	}
-	if value := ctx.GetHeader(goruntime.CorrelationIDHeader); value != "" {
-		return value
-	}
-	return goruntime.CorrelationID(ctx.Request.Context())
-}
-
-func hashBody(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
 }
 
 func parseBoundedInt(raw string, defaultValue, minValue, maxValue int) (int, error) {
