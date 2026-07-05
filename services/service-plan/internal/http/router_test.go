@@ -180,6 +180,16 @@ func TestCreateServiceSegmentValidationFailure(t *testing.T) {
 	assertCanonicalError(t, recorder, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
+func TestDomainInvariantViolationSurfacesAsDomainRuleViolation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := Router()
+	serviceBody := `{"serviceRef":"ss-domain-rule","carrierId":"car-1","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "idem-domain-rule-service")
+	segmentBody := `{"scheduledServiceRef":"ss-domain-rule","originStopRef":"node-a","destinationStopRef":"node-a","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T11:30:00Z"}`
+	recorder := performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "idem-domain-rule-segment")
+	assertCanonicalError(t, recorder, http.StatusUnprocessableEntity, "DOMAIN_RULE_VIOLATION")
+}
+
 func performJSON(router http.Handler, method, path, body, idempotencyKey string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
