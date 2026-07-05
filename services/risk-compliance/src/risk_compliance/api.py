@@ -19,7 +19,7 @@ from .application import (
     uuid7,
 )
 from train_ticket_platform.http import canonical_error_body
-from train_ticket_platform.idempotency import configure_idempotency_middleware
+from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
 
 from .runtime import health, profile
 
@@ -214,6 +214,8 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
                 context=payload.context,
                 idempotency_key=request.headers[IDEMPOTENCY_KEY_HEADER],
                 correlation_id=request.state.correlation_id,
+                idempotency_scope=request.state.idempotency_decision.scope,
+                idempotency_fingerprint=request.state.idempotency_decision.fingerprint,
             )
         except PublishFailed:
             return error_response(
@@ -237,9 +239,11 @@ def create_app(
     tracer: TraceHook | None = None,
     otel_tracer: RuntimeTracer | None = None,
     service: RiskComplianceService | None = None,
+    idempotency_store: IdempotencyStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Risk & Compliance", version="0.1.0")
     app.state.assessment_repository = InMemoryAssessmentRepository()
+    store = idempotency_store or BoundedInMemoryIdempotencyStore()
     if service is None:
         from train_ticket_platform.messaging import InMemoryEventPublisher
 
@@ -247,14 +251,17 @@ def create_app(
         app.state.risk_service = RiskComplianceService(
             publisher=app.state.publisher,
             repository=app.state.assessment_repository,
+            idempotency_store=store,
         )
     else:
         app.state.risk_service = service
         app.state.publisher = service.publisher
+        app.state.risk_service.idempotency_store = store
     configure_error_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     configure_idempotency_middleware(
         app,
+        store,
         require_key=True,
         include_path_prefixes=("/api/v1/risk-assessments",),
         error_body_factory=_risk_error_body,
