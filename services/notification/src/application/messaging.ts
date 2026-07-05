@@ -1,63 +1,33 @@
 import type { NotificationDomainEvent } from "../domain.js";
+import {
+  DeduplicatingEventHandler,
+  InMemoryEventPublisher,
+  PublishFailed,
+  SubscribeFailed,
+  fatalHandling,
+  successfulHandling,
+  transientHandling,
+  type EventEnvelope,
+  type EventHandler,
+  type EventHandlerResult,
+  type EventPublisher,
+  type EventSubscriber,
+} from "@trainticket/ts-kit";
 
-export type EventEnvelope<TPayload extends Record<string, unknown> = Record<string, unknown>> = Readonly<{
-  eventId: string;
-  eventType: string;
-  schemaVersion: number;
-  producer: string;
-  causationId?: string;
-  correlationId: string;
-  occurredAt: string;
-  payload: TPayload;
-}>;
-
-export class PublishFailed extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "PublishFailed";
-  }
-}
-
-export class SubscribeFailed extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "SubscribeFailed";
-  }
-}
-
-export type HandlerErrorKind = "transient" | "fatal";
-
-export type EventHandlerResult =
-  | Readonly<{ ok: true }>
-  | Readonly<{ ok: false; kind: HandlerErrorKind; error?: Error }>;
-
-export type EventHandler = (envelope: EventEnvelope) => Promise<EventHandlerResult> | EventHandlerResult;
-
-export interface EventPublisher {
-  publish(envelope: EventEnvelope): Promise<void>;
-}
-
-export interface EventSubscriber {
-  subscribe(
-    streams: readonly string[],
-    group: string,
-    consumerName: string,
-    handler: EventHandler,
-  ): Promise<void>;
-  stop?(): Promise<void>;
-}
-
-export function successfulHandling(): EventHandlerResult {
-  return { ok: true };
-}
-
-export function transientHandling(error?: Error): EventHandlerResult {
-  return { ok: false, kind: "transient", error };
-}
-
-export function fatalHandling(error?: Error): EventHandlerResult {
-  return { ok: false, kind: "fatal", error };
-}
+export {
+  DeduplicatingEventHandler,
+  InMemoryEventPublisher,
+  PublishFailed,
+  SubscribeFailed,
+  fatalHandling,
+  successfulHandling,
+  transientHandling,
+  type EventEnvelope,
+  type EventHandler,
+  type EventHandlerResult,
+  type EventPublisher,
+  type EventSubscriber,
+};
 
 export function toEventEnvelope(event: NotificationDomainEvent): EventEnvelope {
   return {
@@ -120,35 +90,5 @@ function domainEventPayload(event: NotificationDomainEvent): Record<string, unkn
         reason: event.reason,
         cancelledAt: event.cancelledAt.toISOString(),
       };
-  }
-}
-
-export class InMemoryEventPublisher implements EventPublisher {
-  public readonly envelopes: EventEnvelope[] = [];
-
-  async publish(envelope: EventEnvelope): Promise<void> {
-    this.envelopes.push(structuredClone(envelope));
-  }
-}
-
-export class DeduplicatingEventHandler {
-  private readonly consumedEventIds = new Set<string>();
-
-  constructor(private readonly delegate: EventHandler) {}
-
-  async handle(envelope: EventEnvelope): Promise<EventHandlerResult> {
-    if (this.consumedEventIds.has(envelope.eventId)) {
-      return successfulHandling();
-    }
-
-    const result = await this.delegate(envelope);
-    if (result.ok) {
-      this.consumedEventIds.add(envelope.eventId);
-    }
-    return result;
-  }
-
-  hasConsumed(eventId: string): boolean {
-    return this.consumedEventIds.has(eventId);
   }
 }

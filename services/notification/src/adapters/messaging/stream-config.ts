@@ -1,3 +1,5 @@
+import { dlqForStream, redisUrl, streamForProducer } from "@trainticket/ts-kit";
+
 export const NOTIFICATION_PRODUCER = "notification";
 export const NOTIFICATION_CONSUMER_GROUP = "notification";
 export const NOTIFICATION_SUBSCRIBED_STREAMS = Object.freeze([
@@ -12,14 +14,5 @@ export function notificationConsumerName(instanceId = process.env.HOSTNAME ?? pr
   return `notification-${instanceId}`;
 }
 
-export function redisUrl(): string {
-  return process.env.REDIS_URL ?? "redis://localhost:6379";
-}
-
-export function streamForProducer(producer: string): string {
-  return `events:${producer}`;
-}
-
-export function dlqStream(stream: string): string {
-  return `${stream}:dlq`;
-}
+export { redisUrl, streamForProducer };
+export const dlqStream = dlqForStream;

@@ -15,7 +15,8 @@ export {
   type TraceSpan,
 } from "./app.js";
 export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
-export { InMemoryAccountRepository, InMemoryEventPublisher, InMemoryIdempotencyStore } from "./application.js";
+export { InMemoryAccountRepository, InMemoryEventPublisher } from "./application.js";
+export { InMemoryIdempotencyStore } from "@trainticket/ts-kit";
 export type { EventEnvelope, EventPublisher, EventSubscriber, HandlerResult } from "./ports.js";
 export {
   DomainError,

@@ -1,5 +1,3 @@
-import { createHash, randomUUID } from "node:crypto";
-
 import {
   AccountClosureSaga,
   DomainError,
@@ -11,6 +9,7 @@ import {
   type UserAccountSnapshot,
 } from "./domain.js";
 import { toEventEnvelope, type EventEnvelope, type EventPublisher } from "./ports.js";
+import { newCommandId } from "@trainticket/ts-kit";
 
 export type AccountStatusDto = "ACTIVE" | "FROZEN" | "CLOSURE_PENDING" | "CLOSED";
 
@@ -62,13 +61,7 @@ export class InMemoryAccountRepository implements AccountRepository {
   }
 }
 
-export class InMemoryEventPublisher implements EventPublisher {
-  readonly envelopes: EventEnvelope[] = [];
-
-  async publish(envelope: EventEnvelope): Promise<void> {
-    this.envelopes.push(envelope);
-  }
-}
+export { InMemoryEventPublisher } from "@trainticket/ts-kit";
 
 export class AccountApplicationService {
   constructor(
@@ -178,28 +171,6 @@ export class ApplicationError extends Error {
   }
 }
 
-export type IdempotencyRecord = Readonly<{
-  fingerprint: string;
-  statusCode: number;
-  body: unknown;
-}>;
-
-export class InMemoryIdempotencyStore {
-  private readonly records = new Map<string, IdempotencyRecord>();
-
-  get(key: string): IdempotencyRecord | undefined {
-    return this.records.get(key);
-  }
-
-  set(key: string, record: IdempotencyRecord): void {
-    this.records.set(key, record);
-  }
-}
-
-export function fingerprintRequest(method: string, path: string, body: unknown): string {
-  return createHash("sha256").update(JSON.stringify({ method, path, body: normalizeJson(body) })).digest("hex");
-}
-
 export type DomainErrorMapping = Readonly<{
   preconditionDomainCodes?: readonly string[] | "all";
 }>;
@@ -264,16 +235,4 @@ function requiredDate(value: Date | undefined): Date {
   return value;
 }
 
-function normalizeJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(normalizeJson);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => [key, normalizeJson(nested)]));
-  }
-  return value;
-}
-
-export function commandId(): string {
-  return `cmd-${randomUUID()}`;
-}
+export const commandId = newCommandId;
