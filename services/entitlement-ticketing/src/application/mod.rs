@@ -1,6 +1,6 @@
 //! Broker-independent application-layer messaging ports.
 
-use std::fmt;
+use std::{fmt, future::Future, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,6 +57,8 @@ pub trait EventPublisher: Send + Sync + 'static {
     async fn publish(&self, envelope: EventEnvelope) -> Result<(), PublishFailed>;
 }
 
+pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>;
+
 #[derive(Debug, Clone)]
 pub struct SubscribeFailed(pub String);
 
@@ -81,6 +83,6 @@ pub trait EventSubscriber: Send + Sync + 'static {
         streams: Vec<String>,
         group: String,
         consumer_name: String,
-        handler: Box<dyn Fn(EventEnvelope) -> Result<(), HandlerError> + Send + Sync>,
+        handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
     ) -> Result<(), SubscribeFailed>;
 }
