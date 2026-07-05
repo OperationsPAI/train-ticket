@@ -21,7 +21,7 @@ public record EventEnvelope(
         eventType = requireText(eventType, "eventType");
         Objects.requireNonNull(occurredAt, "occurredAt is required");
         correlationId = requirePrefixed(correlationId, "corr-", "correlationId");
-        causationId = requireCausationId(causationId);
+        causationId = causationId == null ? null : requireCausationId(causationId);
         producer = requireText(producer, "producer");
         if (schemaVersion < 1) throw new IllegalArgumentException("schemaVersion must be positive");
         payload = Map.copyOf(Objects.requireNonNull(payload, "payload is required"));

@@ -60,15 +60,19 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             text(payload, "orderId"),
             optionalText(payload, "orderItemId", optionalText(payload, "paymentIntentId", envelope.eventId())),
             optionalText(payload, "componentCode", "fare"),
-            money(payload.get("amount")),
+            money(payload.get("capturedAmount"), "capturedAmount"),
             optionalText(payload, "recognitionPolicyVersion", "payment-capture-v1"),
             envelope.eventId(),
             envelope.occurredAt(),
             clock.instant(),
-            envelope.causationId(),
+            causationIdOrSourceEventId(envelope),
             envelope.correlationId()
         );
         service.saveAndPublish(recognition);
+    }
+
+    private static String causationIdOrSourceEventId(EventEnvelope envelope) {
+        return envelope.causationId() == null ? envelope.eventId() : envelope.causationId();
     }
 
     private static String text(Map<String, Object> payload, String name) {
@@ -85,15 +89,15 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     @SuppressWarnings("unchecked")
-    private static Money money(Object value) {
+    private static Money money(Object value, String fieldName) {
         if (!(value instanceof Map<?, ?> raw)) {
-            throw new IllegalArgumentException("amount is required");
+            throw new IllegalArgumentException(fieldName + " is required");
         }
         Map<String, Object> amount = (Map<String, Object>) raw;
         String currencyCode = text(amount, "currency");
         Object minorUnitsValue = amount.get("minorUnits");
         if (!(minorUnitsValue instanceof Number minorUnits)) {
-            throw new IllegalArgumentException("amount.minorUnits is required");
+            throw new IllegalArgumentException(fieldName + ".minorUnits is required");
         }
         int fractionDigits = Currency.getInstance(currencyCode).getDefaultFractionDigits();
         BigDecimal majorUnits = BigDecimal.valueOf(minorUnits.longValue()).movePointLeft(fractionDigits);
