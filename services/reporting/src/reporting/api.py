@@ -5,14 +5,13 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from hashlib import sha256
 from typing import Any, Protocol
-from uuid import uuid4
-
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
 from .domain import DashboardReadModel, MetricCategory, MetricDefinition, ReportingError
+from .ids import is_uuid7, uuid7
 from .runtime import health, profile
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -106,7 +105,7 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid4())
+    request_id = request.headers.get(REQUEST_ID_HEADER) or uuid7()
     correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request_id
     return request_id, correlation_id
 
@@ -239,10 +238,10 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         if request.method.upper() != "POST":
             return await call_next(request)
         key = request.headers.get("Idempotency-Key")
-        if not key:
+        if not key or not is_uuid7(key):
             return JSONResponse(
                 status_code=400,
-                content=_error_body(request, "VALIDATION_FAILED", "Idempotency-Key header is required"),
+                content=_error_body(request, "VALIDATION_FAILED", "Idempotency-Key header must be a UUID v7"),
                 headers=_ensure_request_context(request),
             )
         body = await request.body()
