@@ -26,13 +26,13 @@ func main() {
 		log.Fatal(err)
 	}
 	defer subscriber.Close()
+	service := application.NewInMemoryReservationService(publisher)
 	consumedEvents := application.NewInMemoryConsumedEventLog()
 	consumerName := "provider-integration-" + hostname()
-	if err := subscriber.Subscribe(ctx, nil, messaging.ProviderIntegrationGroup, consumerName, application.DeduplicatingHandler(consumedEvents, handleInboundEvent)); err != nil {
+	if err := subscriber.Subscribe(ctx, nil, messaging.ProviderIntegrationGroup, consumerName, application.DeduplicatingHandler(consumedEvents, application.NewInboundEventHandler(service))); err != nil {
 		log.Fatal(err)
 	}
 
-	service := application.NewInMemoryReservationService(publisher)
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{
 		Address: ":" + cfg.HTTPPort,
 		Handler: apphttp.RouterWithDependencies(service, application.NewIdempotencyStore()),
@@ -41,8 +41,6 @@ func main() {
 		log.Fatal(err)
 	}
 }
-
-func handleInboundEvent(context.Context, application.EventEnvelope) error { return nil }
 
 func hostname() string {
 	name, err := os.Hostname()

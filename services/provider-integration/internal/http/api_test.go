@@ -71,6 +71,9 @@ func TestCancelProviderReservationHappyPath(t *testing.T) {
 	if response.SegmentBookingID != segmentBookingID1 || response.CancellationStatus != application.CancellationCancelled {
 		t.Fatalf("unexpected response: %#v", response)
 	}
+	if len(publisher.envelopes) != 1 {
+		t.Fatalf("cancel must not publish non-contract events, got %d envelopes", len(publisher.envelopes))
+	}
 }
 
 func TestValidationFailureReturnsCanonicalBody(t *testing.T) {
@@ -282,6 +285,58 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 		if payload[field] != want {
 			t.Fatalf("payload[%s]=%#v, want %#v (payload %#v)", field, payload[field], want, payload)
 		}
+	}
+}
+
+func TestInboundSegmentReservationRequestedInvokesReservationFlow(t *testing.T) {
+	publisher := &fakePublisher{}
+	service := application.NewInMemoryReservationService(publisher)
+	handler := application.DeduplicatingHandler(application.NewInMemoryConsumedEventLog(), application.NewInboundEventHandler(service))
+	payload := map[string]any{
+		"segmentBookingId": segmentBookingID1,
+		"journeyOrderId":   "jo-018f0000-0000-7000-8000-000000000201",
+		"segmentRef":       "cr-rail:G1234:2026-07-05",
+		"travelerRef":      "trav-018f0000-0000-7000-8000-000000000301",
+		"idempotencyKey":   testUUIDv7(41),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := application.EventEnvelope{
+		EventID:       "evt-" + testUUIDv7(42),
+		EventType:     "SegmentReservationRequested",
+		OccurredAt:    "2026-07-05T00:00:00Z",
+		CorrelationID: "corr-" + testUUIDv7(43),
+		CausationID:   "cmd-" + testUUIDv7(44),
+		Producer:      "booking-orchestration",
+		SchemaVersion: 1,
+		Payload:       payloadBytes,
+	}
+
+	if err := handler(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.envelopes) != 1 {
+		t.Fatalf("expected one documented outcome event after duplicate delivery, got %d", len(publisher.envelopes))
+	}
+	outcome := publisher.envelopes[0]
+	if outcome.EventType != "ProviderReservationConfirmed" {
+		t.Fatalf("unexpected outcome event: %#v", outcome)
+	}
+	assertCanonicalPrefixedUUID(t, outcome.EventID, "evt-")
+	if outcome.CausationID != envelope.EventID {
+		t.Fatalf("causationId = %q, want inbound eventId %q", outcome.CausationID, envelope.EventID)
+	}
+	var outcomePayload map[string]any
+	if err := json.Unmarshal(outcome.Payload, &outcomePayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomePayload) != 3 || outcomePayload["segmentBookingId"] != segmentBookingID1 || outcomePayload["providerReference"] != providerReferenceFor(segmentBookingID1) || outcomePayload["normalizedEvidence"] != normalizedEvidenceFor(segmentBookingID1) {
+		t.Fatalf("unexpected outcome payload: %#v", outcomePayload)
 	}
 }
 
