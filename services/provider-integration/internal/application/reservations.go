@@ -239,6 +239,29 @@ func ValidateSegmentBookingID(value string) error {
 	return nil
 }
 
+func validatePrefixedUUIDV7(field, value, prefix string) error {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, prefix+"-") {
+		return fmt.Errorf("%w: %s must be %s-<uuid-v7>", ErrValidation, field, prefix)
+	}
+	return validateUUIDV7(field, strings.TrimPrefix(trimmed, prefix+"-"))
+}
+
+func validateUUIDV7(field, value string) error {
+	id, err := uuid.Parse(strings.TrimSpace(value))
+	if err != nil || id.Version() != 7 {
+		return fmt.Errorf("%w: %s must be UUID v7", ErrValidation, field)
+	}
+	return nil
+}
+
+func validateRequiredToken(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s is required", ErrValidation, field)
+	}
+	return nil
+}
+
 func validateReservationCommand(cmd RequestProviderReservationCommand) error {
 	if err := ValidateSegmentBookingID(cmd.SegmentBookingID); err != nil {
 		return err

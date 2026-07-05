@@ -36,8 +36,8 @@ func handleSegmentReservationRequested(ctx context.Context, reservations Provide
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return FatalHandlerError(fmt.Errorf("invalid SegmentReservationRequested payload: %w", err))
 	}
-	if strings.TrimSpace(payload.IdempotencyKey) == "" {
-		return FatalHandlerError(fmt.Errorf("SegmentReservationRequested idempotencyKey is required"))
+	if err := validateSegmentReservationRequestedPayload(payload); err != nil {
+		return FatalHandlerError(err)
 	}
 	cmd := RequestProviderReservationCommand{
 		SegmentBookingID:  strings.TrimSpace(payload.SegmentBookingID),
@@ -52,21 +52,34 @@ func handleSegmentReservationRequested(ctx context.Context, reservations Provide
 		IdempotencyKey: strings.TrimSpace(payload.IdempotencyKey),
 	}
 	if _, err := reservations.RequestReservation(ctx, cmd); err != nil {
-		if strings.TrimSpace(payload.SegmentBookingID) == "" {
-			return FatalHandlerError(err)
-		}
 		return TransientHandlerError(err)
+	}
+	return nil
+}
+
+func validateSegmentReservationRequestedPayload(payload SegmentReservationRequestedPayload) error {
+	if err := ValidateSegmentBookingID(payload.SegmentBookingID); err != nil {
+		return fmt.Errorf("invalid SegmentReservationRequested segmentBookingId: %w", err)
+	}
+	if err := validatePrefixedUUIDV7("journeyOrderId", payload.JourneyOrderID, "ord"); err != nil {
+		return err
+	}
+	if err := validateRequiredToken("segmentRef", payload.SegmentRef); err != nil {
+		return err
+	}
+	if err := validatePrefixedUUIDV7("travelerRef", payload.TravelerRef, "tvl"); err != nil {
+		return err
+	}
+	if err := validateUUIDV7("idempotencyKey", payload.IdempotencyKey); err != nil {
+		return err
 	}
 	return nil
 }
 
 func providerConfigRefForSegment(segmentRef string) string {
 	trimmed := strings.TrimSpace(segmentRef)
-	if trimmed == "" {
-		return "cr-rail"
-	}
-	if provider, _, ok := strings.Cut(trimmed, ":"); ok && strings.TrimSpace(provider) != "" {
+	if provider, _, ok := strings.Cut(trimmed, ":"); ok {
 		return strings.TrimSpace(provider)
 	}
-	return "cr-rail"
+	return trimmed
 }
