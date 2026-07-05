@@ -105,23 +105,22 @@ avoids field-level schema drift between producer and consumer.
 A `PaymentCaptured` event as stored in the `events:payment` stream:
 
 ```
-XADD events:payment 1720000000000-0 envelope "{\"eventId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c222\",\"eventType\":\"PaymentCaptured\",\"schemaVersion\":1,\"producer\":\"payment\",\"sourceCommandId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c333\",\"causationId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c555\",\"correlationId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c444\",\"occurredAt\":\"2026-07-03T10:30:00.000Z\",\"payload\":{\"paymentIntentId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c789\",\"capturedAmount\":{\"currency\":\"CNY\",\"minorUnits\":35000},\"channel\":\"wechat_pay\",\"channelTransactionId\":\"wx_txn_20260703_a1b2c3\"}}
+XADD events:payment 1720000000000-0 envelope "{\"eventId\":\"evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222\",\"eventType\":\"PaymentCaptured\",\"schemaVersion\":1,\"producer\":\"payment\",\"causationId\":\"cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555\",\"correlationId\":\"corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444\",\"occurredAt\":\"2026-07-03T10:30:00.000Z\",\"payload\":{\"paymentIntentId\":\"pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789\",\"capturedAmount\":{\"currency\":\"CNY\",\"minorUnits\":35000},\"channel\":\"wechat_pay\",\"channelTransactionId\":\"wx_txn_20260703_a1b2c3\"}}
 ```
 
 The JSON value (formatted for readability) is:
 
 ```json
 {
-  "eventId": "0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+  "eventId": "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
   "eventType": "PaymentCaptured",
   "schemaVersion": 1,
   "producer": "payment",
-  "sourceCommandId": "0194f2e0-7b3e-7610-0284-5c26e8b0c333",
-  "causationId": "0194f2e0-7b3e-7610-0284-5c26e8b0c555",
-  "correlationId": "0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+  "causationId": "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555",
+  "correlationId": "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
   "occurredAt": "2026-07-03T10:30:00.000Z",
   "payload": {
-    "paymentIntentId": "0194f2e0-7b3e-7610-0284-5c26e8b0c789",
+    "paymentIntentId": "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
     "capturedAmount": {
       "currency": "CNY",
       "minorUnits": 35000
@@ -386,12 +385,12 @@ interface EventPublisher {
      * Publish a domain event to the event bus.
      *
      * @param envelope  The fully-populated EventEnvelope (eventId, eventType,
-     *                  occurredAt, sourceCommandId, causationId, correlationId,
-     *                  schemaVersion, attributes, payload).
+     *                  occurredAt, correlationId, causationId, producer,
+     *                  schemaVersion, payload — per shared-primitives.md §1).
      *
      * Behavior:
-     * - The implementation MUST determine the target stream from the `source`
-     *   field of the envelope (stream = "events:<source>").
+     * - The implementation MUST determine the target stream from the `producer`
+     *   field of the envelope (stream = "events:<producer>").
      * - The implementation MUST serialize the entire envelope as a single JSON
      *   value in the "envelope" field of the Redis Stream entry (or the
      *   equivalent single-message field in the target broker).
