@@ -145,12 +145,11 @@ class FarePricingService:
         return None
 
     def find_fare_quote_id_for_journey_order(self, journey_order_id: str) -> str | None:
-        # Until journey-order integration provides a persisted cross-reference,
-        # the in-memory implementation maps the seeded/created quote for tests.
-        # The HTTP layer depends on this application boundary, not store internals.
-        if not journey_order_id.strip():
-            return None
-        return next(iter(self._store.fare_quotes), None)
+        # Backward-compatible explicit linkage: callers pass the original fare
+        # quote id in the order-reference slot until journey-order owns a
+        # persistent order-to-quote projection. Never fall back to arbitrary
+        # stored quotes.
+        return journey_order_id if journey_order_id in self._store.fare_quotes else None
 
     def get_fare_quote(self, quote_id: str) -> FareQuote:
         return self._store.get_quote(quote_id)

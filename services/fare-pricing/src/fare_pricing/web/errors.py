@@ -65,10 +65,18 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        safe_errors = [
+            {
+                "loc": list(error.get("loc", ())),
+                "type": str(error.get("type", "")),
+                "msg": str(error.get("msg", "")),
+            }
+            for error in exc.errors()
+        ]
         return error_response(
             request,
             "VALIDATION_FAILED",
             "Request validation failed",
             400,
-            {"errors": exc.errors()},
+            {"errors": safe_errors},
         )
