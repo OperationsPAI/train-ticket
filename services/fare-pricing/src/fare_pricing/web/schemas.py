@@ -78,6 +78,7 @@ class AdjustmentQuoteRequest(BaseModel):
     purpose: Literal["REFUND", "CHANGE"]
     entitlementIds: list[str] = Field(..., min_length=1)
     journeyOrderId: str = Field(..., min_length=1)
+    segmentRefs: list[str] = Field(..., min_length=1)
 
 
 class FeeAssessmentSchema(BaseModel):
