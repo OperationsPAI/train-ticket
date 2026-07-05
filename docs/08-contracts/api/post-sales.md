@@ -8,6 +8,9 @@ Post Sales manages post-sales cases: cancellations, refunds, changes, and
 compensation. It evaluates eligibility, approves or rejects cases, and
 orchestrates downstream actions (entitlement voiding, refunds).
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 ## Endpoints
 
 ### Open Post-Sales Case
@@ -78,6 +81,17 @@ orchestrates downstream actions (entitlement voiding, refunds).
 **Response (200):** Full case details.
 
 **Error codes:** `NOT_FOUND`
+
+## Bus-only commands
+
+The following commands are consumed from the event bus only and have no HTTP
+endpoint:
+
+| Command | Trigger | Description |
+|---|---|---|
+| `QuotePostSalesDecision` | post-sales (internal) | Quote a decision with amounts and eligibility for a post-sales case. |
+| `StartPostSalesExecution` | post-sales (internal) | Start execution of an approved post-sales case. |
+| `ApplyPostSalesResult` | post-sales (internal) | Apply the result of post-sales execution to the case. |
 
 ## Open Issues
 

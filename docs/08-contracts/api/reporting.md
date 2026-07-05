@@ -8,6 +8,9 @@ Reporting manages metric definitions, dashboard read models, and report
 queries. It consumes events from all contexts and provides read-only query
 endpoints. All write commands are **bus-only**.
 
+
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs
+and timestamps.
 ## Query Endpoints
 
 ### List Metrics

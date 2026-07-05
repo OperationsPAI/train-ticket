@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Place & Network manages geographic places (cities, stations, airports) and
 transport nodes (platforms, gates). It serves as the reference master data
 for all location lookups.

@@ -9,6 +9,9 @@ recording delivery receipts. All notification commands are **bus-only** —
 there are no external HTTP endpoints for sending notifications.
 Notifications are triggered by events published by other contexts.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs
+and timestamps.
+
 ## Bus-only commands
 
 The following commands are consumed from the event bus only and have no HTTP
@@ -19,6 +22,7 @@ endpoint:
 | `ScheduleNotification` | Domain events (e.g. `JourneyOrderConfirmed`, `EntitlementIssued`) | Schedule a notification for a recipient. |
 | `DispatchNotification` | Internal scheduler | Dispatch a scheduled notification via the appropriate channel. |
 | `RecordDeliveryReceipt` | Channel callback | Record delivery success or failure. |
+| `CancelNotification` | Manual or business event | Cancel a scheduled notification. |
 
 ## Health endpoints only
 

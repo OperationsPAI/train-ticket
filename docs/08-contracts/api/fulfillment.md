@@ -8,6 +8,9 @@ Fulfillment records physical journey events: boarding verification, no-show
 recording, and fulfillment status queries. These events are recorded after
 the passenger travels.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 ## Endpoints
 
 ### Verify Boarding
@@ -74,6 +77,17 @@ the passenger travels.
 **Response (200):** Full record details.
 
 **Error codes:** `NOT_FOUND`
+
+## Bus-only commands
+
+The following commands are consumed from the event bus only and have no HTTP
+endpoint:
+
+| Command | Trigger | Description |
+|---|---|---|
+| `RecordCheckIn` | station-device, provider-integration, admin-audit | Record a passenger check-in at station or gate. |
+| `OpenEvidenceDispute` | system, admin-audit, customer-service | Open an evidence dispute for conflicting offline data. |
+| `ResolveEvidenceDispute` | admin-audit, customer-service | Resolve an evidence dispute. |
 
 ## Open Issues
 

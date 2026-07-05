@@ -7,6 +7,9 @@ Last updated: 2026-07-05
 Supplier Catalog manages suppliers, carriers, and commercial contracts. It is
 the master data source for provider integration and fare pricing.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 ## Endpoints
 
 ### Register Supplier
@@ -100,6 +103,17 @@ the master data source for provider integration and fare pricing.
 | `status` | enum | `DRAFT`, `PUBLISHED`, `SUSPENDED`, `TERMINATED` |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`
+
+## Bus-only commands
+
+The following commands are consumed from the event bus only and have no HTTP
+endpoint:
+
+| Command | Trigger | Description |
+|---|---|---|
+| `SuspendContract` | Admin UI / Automated policy | Suspend an active contract. |
+| `DeclareProductCapability` | Admin UI / Capability discovery | Declare a product capability for a supplier contract. |
+| `MapExternalCode` | Admin UI / Import batch / ACL | Map an external supplier code to an internal platform reference. |
 
 ## Open Issues
 
