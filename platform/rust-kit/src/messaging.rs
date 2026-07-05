@@ -1,0 +1,833 @@
+use std::collections::HashSet;
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use chrono::{SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const RETENTION_MAXLEN: usize = 100_000;
+pub const MAX_DELIVERY_ATTEMPTS: u64 = 5;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventEnvelope {
+    pub event_id: String,
+    pub event_type: String,
+    pub schema_version: u32,
+    pub producer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<String>,
+    pub correlation_id: String,
+    pub occurred_at: String,
+    pub payload: Value,
+}
+
+impl EventEnvelope {
+    pub fn new(
+        event_type: impl Into<String>,
+        occurred_at: impl Into<String>,
+        correlation_id: impl Into<String>,
+        causation_id: Option<impl Into<String>>,
+        producer: impl Into<String>,
+        payload: Value,
+    ) -> Self {
+        Self {
+            event_id: event_id(),
+            event_type: event_type.into(),
+            schema_version: 1,
+            producer: producer.into(),
+            causation_id: causation_id.map(Into::into),
+            correlation_id: canonical_correlation_id(correlation_id.into()),
+            occurred_at: occurred_at.into(),
+            payload,
+        }
+    }
+
+    pub fn canonical(
+        event_type: impl Into<String>,
+        correlation_id: impl Into<String>,
+        causation_id: Option<impl Into<String>>,
+        producer: impl Into<String>,
+        payload: Value,
+    ) -> Self {
+        Self::new(
+            event_type,
+            now_rfc3339_utc(),
+            correlation_id,
+            causation_id,
+            producer,
+            payload,
+        )
+    }
+
+    pub fn with_occurred_at(mut self, occurred_at: impl Into<String>) -> Self {
+        self.occurred_at = occurred_at.into();
+        self
+    }
+}
+
+pub fn uuid_v7_string() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+pub fn event_id() -> String {
+    format!("evt-{}", uuid_v7_string())
+}
+pub fn command_id() -> String {
+    format!("cmd-{}", uuid_v7_string())
+}
+pub fn correlation_id() -> String {
+    format!("corr-{}", uuid_v7_string())
+}
+pub fn canonical_correlation_id(value: String) -> String {
+    if value.starts_with("corr-") {
+        value
+    } else {
+        format!("corr-{value}")
+    }
+}
+pub fn now_rfc3339_utc() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishFailed(pub String);
+impl fmt::Display for PublishFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "publish failed: {}", self.0)
+    }
+}
+impl std::error::Error for PublishFailed {}
+
+#[async_trait]
+pub trait AsyncEventPublisher: Send + Sync + 'static {
+    async fn publish(&self, envelope: EventEnvelope) -> Result<(), PublishFailed>;
+}
+pub trait EventPublisher: Send + Sync + 'static {
+    fn publish(&self, envelope: &EventEnvelope) -> Result<(), PublishFailed>;
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscribeFailed(pub String);
+impl fmt::Display for SubscribeFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "subscribe failed: {}", self.0)
+    }
+}
+impl std::error::Error for SubscribeFailed {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandlerResult {
+    Success,
+    TransientError(String),
+    FatalError(String),
+}
+#[derive(Debug, Clone)]
+pub enum HandlerError {
+    Transient(String),
+    Fatal(String),
+}
+pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>;
+
+pub trait EventSubscriber: Send + Sync + 'static {
+    fn subscribe(
+        &self,
+        streams: &[String],
+        group: &str,
+        consumer_name: &str,
+        handler: Box<dyn Fn(EventEnvelope) -> HandlerResult + Send + Sync>,
+    ) -> Result<(), SubscribeFailed>;
+}
+
+#[async_trait]
+pub trait AsyncEventSubscriber: Send + Sync + 'static {
+    async fn subscribe(
+        &self,
+        streams: Vec<String>,
+        group: String,
+        consumer_name: String,
+        handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
+    ) -> Result<(), SubscribeFailed>;
+}
+
+pub async fn publish_after_commit<F, T, P>(
+    operation: F,
+    publisher: &P,
+    events: Vec<EventEnvelope>,
+) -> Result<T, PublishFailed>
+where
+    F: FnOnce() -> Result<T, PublishFailed>,
+    P: EventPublisher + ?Sized,
+{
+    let value = operation()?;
+    for event in &events {
+        publisher.publish(event)?;
+    }
+    Ok(value)
+}
+
+pub async fn async_publish_after_commit<F, T, P>(
+    operation: F,
+    publisher: &P,
+    events: Vec<EventEnvelope>,
+) -> Result<T, PublishFailed>
+where
+    F: FnOnce() -> Result<T, PublishFailed>,
+    P: AsyncEventPublisher + ?Sized,
+{
+    let value = operation()?;
+    for event in events {
+        publisher.publish(event).await?;
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscriberAction {
+    Ack,
+    LeavePending,
+    DeadLetterAndAck,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReceivedEvent {
+    pub entry_id: String,
+    pub stream: String,
+    pub envelope: EventEnvelope,
+    pub delivery_attempts: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct SubscriberState {
+    dedup: Mutex<HashSet<String>>,
+}
+impl SubscriberState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn has_seen(&self, event_id: &str) -> bool {
+        self.dedup
+            .lock()
+            .expect("dedup lock poisoned")
+            .contains(event_id)
+    }
+    pub fn mark_consumed(&self, event_id: &str) {
+        self.dedup
+            .lock()
+            .expect("dedup lock poisoned")
+            .insert(event_id.to_string());
+    }
+    pub fn decide_action(
+        &self,
+        event: &ReceivedEvent,
+        handler: &dyn Fn(EventEnvelope) -> HandlerResult,
+    ) -> SubscriberAction {
+        if event.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
+            return SubscriberAction::DeadLetterAndAck;
+        }
+        if self.has_seen(&event.envelope.event_id) {
+            return SubscriberAction::Ack;
+        }
+        match handler(event.envelope.clone()) {
+            HandlerResult::Success => SubscriberAction::Ack,
+            HandlerResult::TransientError(_) => SubscriberAction::LeavePending,
+            HandlerResult::FatalError(_) => SubscriberAction::DeadLetterAndAck,
+        }
+    }
+    pub fn process_received(
+        &self,
+        event: &ReceivedEvent,
+        handler: &dyn Fn(EventEnvelope) -> HandlerResult,
+    ) -> SubscriberAction {
+        let action = self.decide_action(event, handler);
+        if matches!(
+            action,
+            SubscriberAction::Ack | SubscriberAction::DeadLetterAndAck
+        ) {
+            self.mark_consumed(&event.envelope.event_id);
+        }
+        action
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryEventPublisher {
+    published: Arc<Mutex<Vec<EventEnvelope>>>,
+    fail_next: Arc<Mutex<Option<String>>>,
+}
+impl InMemoryEventPublisher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn published(&self) -> Vec<EventEnvelope> {
+        self.published
+            .lock()
+            .expect("publisher lock poisoned")
+            .clone()
+    }
+    pub fn fail_next(&self, message: impl Into<String>) {
+        *self.fail_next.lock().expect("publisher lock poisoned") = Some(message.into());
+    }
+}
+impl EventPublisher for InMemoryEventPublisher {
+    fn publish(&self, envelope: &EventEnvelope) -> Result<(), PublishFailed> {
+        if let Some(message) = self
+            .fail_next
+            .lock()
+            .expect("publisher lock poisoned")
+            .take()
+        {
+            return Err(PublishFailed(message));
+        }
+        self.published
+            .lock()
+            .expect("publisher lock poisoned")
+            .push(envelope.clone());
+        Ok(())
+    }
+}
+#[async_trait]
+impl AsyncEventPublisher for InMemoryEventPublisher {
+    async fn publish(&self, envelope: EventEnvelope) -> Result<(), PublishFailed> {
+        EventPublisher::publish(self, &envelope)
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryEventSubscriber {
+    state: Arc<SubscriberState>,
+}
+impl InMemoryEventSubscriber {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn has_seen(&self, event_id: &str) -> bool {
+        self.state.has_seen(event_id)
+    }
+    pub fn process_received(
+        &self,
+        event: &ReceivedEvent,
+        handler: &dyn Fn(EventEnvelope) -> HandlerResult,
+    ) -> SubscriberAction {
+        self.state.process_received(event, handler)
+    }
+    pub fn receive(
+        &self,
+        envelope: &EventEnvelope,
+        handler: &dyn Fn(EventEnvelope) -> HandlerResult,
+    ) -> HandlerResult {
+        let event = ReceivedEvent {
+            entry_id: "in-memory".into(),
+            stream: format!("events:{}", envelope.producer),
+            envelope: envelope.clone(),
+            delivery_attempts: 1,
+        };
+        match self.process_received(&event, handler) {
+            SubscriberAction::Ack | SubscriberAction::DeadLetterAndAck => HandlerResult::Success,
+            SubscriberAction::LeavePending => {
+                HandlerResult::TransientError("event left pending".into())
+            }
+        }
+    }
+}
+impl EventSubscriber for InMemoryEventSubscriber {
+    fn subscribe(
+        &self,
+        _streams: &[String],
+        _group: &str,
+        _consumer_name: &str,
+        _handler: Box<dyn Fn(EventEnvelope) -> HandlerResult + Send + Sync>,
+    ) -> Result<(), SubscribeFailed> {
+        Ok(())
+    }
+}
+#[async_trait]
+impl AsyncEventSubscriber for InMemoryEventSubscriber {
+    async fn subscribe(
+        &self,
+        _streams: Vec<String>,
+        _group: String,
+        _consumer_name: String,
+        _handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
+    ) -> Result<(), SubscribeFailed> {
+        Ok(())
+    }
+}
+
+pub fn stream_for_producer(producer: &str) -> String {
+    format!("events:{producer}")
+}
+
+#[cfg(feature = "redis-impl")]
+pub mod redis_runtime {
+    use super::*;
+    use redis::RedisResult;
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, sleep};
+
+    #[derive(Clone)]
+    pub struct RedisEventPublisher {
+        client: redis::Client,
+    }
+    impl RedisEventPublisher {
+        pub fn from_env() -> Result<Self, PublishFailed> {
+            let url =
+                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+            Self::new(&url)
+        }
+        pub fn new(url: &str) -> Result<Self, PublishFailed> {
+            Ok(Self {
+                client: redis::Client::open(url)
+                    .map_err(|error| PublishFailed(error.to_string()))?,
+            })
+        }
+        pub fn queued(self) -> QueuedRedisEventPublisher {
+            let (tx, rx) = mpsc::unbounded_channel();
+            tokio::spawn(drain_loop(self.client, rx));
+            QueuedRedisEventPublisher { tx }
+        }
+    }
+    #[async_trait]
+    impl AsyncEventPublisher for RedisEventPublisher {
+        async fn publish(&self, envelope: EventEnvelope) -> Result<(), PublishFailed> {
+            publish_with_retry(&self.client, envelope).await
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct QueuedRedisEventPublisher {
+        tx: mpsc::UnboundedSender<EventEnvelope>,
+    }
+    impl EventPublisher for QueuedRedisEventPublisher {
+        fn publish(&self, envelope: &EventEnvelope) -> Result<(), PublishFailed> {
+            self.tx
+                .send(envelope.clone())
+                .map_err(|error| PublishFailed(format!("redis publish queue unavailable: {error}")))
+        }
+    }
+    async fn drain_loop(client: redis::Client, mut rx: mpsc::UnboundedReceiver<EventEnvelope>) {
+        while let Some(envelope) = rx.recv().await {
+            if let Err(error) = publish_with_retry(&client, envelope).await {
+                eprintln!("redis publisher parked event after retries: {}", error.0);
+            }
+        }
+    }
+    pub async fn publish_with_retry(
+        client: &redis::Client,
+        envelope: EventEnvelope,
+    ) -> Result<(), PublishFailed> {
+        let stream = stream_for_producer(&envelope.producer);
+        let raw_envelope =
+            serde_json::to_string(&envelope).map_err(|error| PublishFailed(error.to_string()))?;
+        let mut last_error = None;
+        for attempt in 0..3 {
+            let result: RedisResult<String> = async {
+                let mut connection = client.get_multiplexed_async_connection().await?;
+                redis::cmd("XADD")
+                    .arg(&stream)
+                    .arg("MAXLEN")
+                    .arg("~")
+                    .arg(RETENTION_MAXLEN)
+                    .arg("*")
+                    .arg("envelope")
+                    .arg(&raw_envelope)
+                    .query_async(&mut connection)
+                    .await
+            }
+            .await;
+            match result {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    if attempt < 2 {
+                        sleep(Duration::from_millis(50 * (1 << attempt))).await;
+                    }
+                }
+            }
+        }
+        Err(PublishFailed(last_error.unwrap_or_else(|| {
+            "unknown Redis publish failure".to_string()
+        })))
+    }
+
+    #[derive(Clone)]
+    pub struct RedisEventSubscriber {
+        client: redis::Client,
+        state: Arc<SubscriberState>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl RedisEventSubscriber {
+        pub fn from_env() -> Result<Self, SubscribeFailed> {
+            let url =
+                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+            Self::new(&url)
+        }
+        pub fn new(url: &str) -> Result<Self, SubscribeFailed> {
+            Ok(Self {
+                client: redis::Client::open(url)
+                    .map_err(|error| SubscribeFailed(error.to_string()))?,
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+        }
+        pub fn shutdown(&self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        async fn create_groups(
+            connection: &mut redis::aio::MultiplexedConnection,
+            streams: &[String],
+            group: &str,
+        ) -> Result<(), SubscribeFailed> {
+            for stream in streams {
+                let result: RedisResult<String> = redis::cmd("XGROUP")
+                    .arg("CREATE")
+                    .arg(stream)
+                    .arg(group)
+                    .arg("$")
+                    .arg("MKSTREAM")
+                    .query_async(&mut *connection)
+                    .await;
+                if let Err(error) = result {
+                    if !error.to_string().contains("BUSYGROUP") {
+                        return Err(SubscribeFailed(format!(
+                            "failed to create consumer group for {stream}: {error}"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
+        async fn recover_pending(
+            &self,
+            connection: &mut redis::aio::MultiplexedConnection,
+            streams: &[String],
+            group: &str,
+            consumer_name: &str,
+            handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
+        ) -> Result<(), SubscribeFailed> {
+            for stream in streams {
+                let response: redis::Value = redis::cmd("XAUTOCLAIM")
+                    .arg(stream)
+                    .arg(group)
+                    .arg(consumer_name)
+                    .arg(60_000)
+                    .arg("0-0")
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(&mut *connection)
+                    .await
+                    .map_err(|error| SubscribeFailed(error.to_string()))?;
+                for mut message in parse_autoclaim_messages(stream, response) {
+                    message.delivery_count =
+                        pending_delivery_count(connection, stream, group, &message.id)
+                            .await
+                            .unwrap_or(message.delivery_count);
+                    if message.delivery_count >= MAX_DELIVERY_ATTEMPTS {
+                        move_to_dlq(
+                            connection,
+                            &message.stream,
+                            group,
+                            &message.id,
+                            &message.raw_envelope,
+                        )
+                        .await?;
+                    } else {
+                        self.process_message(connection, group, message, handler)
+                            .await?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        async fn process_message(
+            &self,
+            connection: &mut redis::aio::MultiplexedConnection,
+            group: &str,
+            message: StreamMessage,
+            handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
+        ) -> Result<(), SubscribeFailed> {
+            let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
+                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            if self.state.has_seen(&envelope.event_id) {
+                return ack(connection, &message.stream, group, &message.id).await;
+            }
+            match handler(envelope.clone()).await {
+                Ok(()) => {
+                    self.state.mark_consumed(&envelope.event_id);
+                    ack(connection, &message.stream, group, &message.id).await
+                }
+                Err(HandlerError::Transient(_)) => Ok(()),
+                Err(HandlerError::Fatal(_)) => {
+                    self.state.mark_consumed(&envelope.event_id);
+                    move_to_dlq(
+                        connection,
+                        &message.stream,
+                        group,
+                        &message.id,
+                        &message.raw_envelope,
+                    )
+                    .await
+                }
+            }
+        }
+    }
+    #[async_trait]
+    impl AsyncEventSubscriber for RedisEventSubscriber {
+        async fn subscribe(
+            &self,
+            streams: Vec<String>,
+            group: String,
+            consumer_name: String,
+            handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
+        ) -> Result<(), SubscribeFailed> {
+            let mut connection = self
+                .client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            Self::create_groups(&mut connection, &streams, &group).await?;
+            while !self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+                self.recover_pending(
+                    &mut connection,
+                    &streams,
+                    &group,
+                    &consumer_name,
+                    handler.as_ref(),
+                )
+                .await?;
+                let response: redis::Value = redis::cmd("XREADGROUP")
+                    .arg("GROUP")
+                    .arg(&group)
+                    .arg(&consumer_name)
+                    .arg("BLOCK")
+                    .arg(2_000)
+                    .arg("COUNT")
+                    .arg(10)
+                    .arg("STREAMS")
+                    .arg(&streams)
+                    .arg(vec![">"; streams.len()])
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| SubscribeFailed(error.to_string()))?;
+                for message in parse_stream_messages(response) {
+                    self.process_message(&mut connection, &group, message, handler.as_ref())
+                        .await?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct StreamMessage {
+        stream: String,
+        id: String,
+        raw_envelope: String,
+        delivery_count: u64,
+    }
+    fn parse_stream_messages(value: redis::Value) -> Vec<StreamMessage> {
+        let mut messages = Vec::new();
+        if let redis::Value::Bulk(streams) = value {
+            for stream_value in streams {
+                if let redis::Value::Bulk(parts) = stream_value {
+                    if parts.len() != 2 {
+                        continue;
+                    }
+                    let stream = redis_value_to_string(&parts[0]).unwrap_or_default();
+                    if let redis::Value::Bulk(entries) = &parts[1] {
+                        for entry in entries {
+                            if let Some((id, raw_envelope)) = parse_entry(entry) {
+                                messages.push(StreamMessage {
+                                    stream: stream.clone(),
+                                    id,
+                                    raw_envelope,
+                                    delivery_count: 1,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        messages
+    }
+    fn parse_autoclaim_messages(stream: &str, value: redis::Value) -> Vec<StreamMessage> {
+        let mut messages = Vec::new();
+        if let redis::Value::Bulk(parts) = value {
+            if let Some(redis::Value::Bulk(entries)) = parts.get(1) {
+                for entry in entries {
+                    if let Some((id, raw_envelope)) = parse_entry(entry) {
+                        messages.push(StreamMessage {
+                            stream: stream.to_string(),
+                            id,
+                            raw_envelope,
+                            delivery_count: 0,
+                        });
+                    }
+                }
+            }
+        }
+        messages
+    }
+    fn parse_entry(value: &redis::Value) -> Option<(String, String)> {
+        let redis::Value::Bulk(parts) = value else {
+            return None;
+        };
+        if parts.len() != 2 {
+            return None;
+        }
+        let id = redis_value_to_string(&parts[0])?;
+        let redis::Value::Bulk(fields) = &parts[1] else {
+            return None;
+        };
+        let mut index = 0;
+        while index + 1 < fields.len() {
+            if redis_value_to_string(&fields[index]).as_deref() == Some("envelope") {
+                return Some((id, redis_value_to_string(&fields[index + 1])?));
+            }
+            index += 2;
+        }
+        None
+    }
+    async fn ack(
+        connection: &mut redis::aio::MultiplexedConnection,
+        stream: &str,
+        group: &str,
+        id: &str,
+    ) -> Result<(), SubscribeFailed> {
+        let _: usize = redis::cmd("XACK")
+            .arg(stream)
+            .arg(group)
+            .arg(id)
+            .query_async(connection)
+            .await
+            .map_err(|error| SubscribeFailed(error.to_string()))?;
+        Ok(())
+    }
+    async fn pending_delivery_count(
+        connection: &mut redis::aio::MultiplexedConnection,
+        stream: &str,
+        group: &str,
+        id: &str,
+    ) -> Result<u64, SubscribeFailed> {
+        let value: redis::Value = redis::cmd("XPENDING")
+            .arg(stream)
+            .arg(group)
+            .arg(id)
+            .arg(id)
+            .arg(1)
+            .query_async(connection)
+            .await
+            .map_err(|error| SubscribeFailed(error.to_string()))?;
+        Ok(parse_xpending_delivery_count(value).unwrap_or(1))
+    }
+    pub fn parse_xpending_delivery_count(value: redis::Value) -> Option<u64> {
+        let redis::Value::Bulk(entries) = value else {
+            return None;
+        };
+        let redis::Value::Bulk(entry) = entries.first()? else {
+            return None;
+        };
+        match entry.get(3)? {
+            redis::Value::Int(count) => (*count).try_into().ok(),
+            other => redis_value_to_string(other)?.parse().ok(),
+        }
+    }
+    async fn move_to_dlq(
+        connection: &mut redis::aio::MultiplexedConnection,
+        stream: &str,
+        group: &str,
+        id: &str,
+        raw_envelope: &str,
+    ) -> Result<(), SubscribeFailed> {
+        let dlq = format!("{stream}:dlq");
+        let _: String = redis::cmd("XADD")
+            .arg(dlq)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(RETENTION_MAXLEN)
+            .arg("*")
+            .arg("envelope")
+            .arg(raw_envelope)
+            .query_async(&mut *connection)
+            .await
+            .map_err(|error| SubscribeFailed(error.to_string()))?;
+        ack(connection, stream, group, id).await
+    }
+    fn redis_value_to_string(value: &redis::Value) -> Option<String> {
+        match value {
+            redis::Value::Data(bytes) => String::from_utf8(bytes.clone()).ok(),
+            redis::Value::Status(value) => Some(value.clone()),
+            redis::Value::Okay => Some("OK".to_string()),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn xpending_delivery_count_controls_dlq_threshold() {
+            let value = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                redis::Value::Data(b"1700000000000-0".to_vec()),
+                redis::Value::Data(b"consumer-a".to_vec()),
+                redis::Value::Int(42),
+                redis::Value::Int(5),
+            ])]);
+            assert_eq!(parse_xpending_delivery_count(value), Some(5));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn envelope_has_canonical_contract_fields() {
+        let envelope = EventEnvelope::canonical(
+            "EntitlementIssued",
+            "0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+            Some(command_id()),
+            "entitlement-ticketing",
+            serde_json::json!({"a":1}),
+        );
+        let value = serde_json::to_value(&envelope).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 8);
+        assert!(envelope.event_id.starts_with("evt-"));
+        assert!(envelope.correlation_id.starts_with("corr-"));
+        assert!(envelope.occurred_at.ends_with('Z'));
+    }
+    #[test]
+    fn dedup_records_event_id_only_after_success() {
+        let subscriber = InMemoryEventSubscriber::new();
+        let envelope = EventEnvelope::canonical(
+            "Test",
+            correlation_id(),
+            Some(command_id()),
+            "test",
+            serde_json::json!({}),
+        );
+        let event = ReceivedEvent {
+            entry_id: "1-0".into(),
+            stream: "events:test".into(),
+            envelope: envelope.clone(),
+            delivery_attempts: 1,
+        };
+        assert_eq!(
+            subscriber.process_received(&event, &|_| HandlerResult::TransientError(
+                "temporary".into()
+            )),
+            SubscriberAction::LeavePending
+        );
+        assert!(!subscriber.has_seen(&envelope.event_id));
+        assert_eq!(
+            subscriber.process_received(&event, &|_| HandlerResult::Success),
+            SubscriberAction::Ack
+        );
+        assert!(subscriber.has_seen(&envelope.event_id));
+    }
+}
