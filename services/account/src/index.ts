@@ -3,6 +3,7 @@ export {
   health,
   metadata,
   opentelemetryInstrumentationFromEnv,
+  type AppOptions,
   type ErrorEnvelope,
   type HealthStatus,
   type InstrumentationHooks,
@@ -14,6 +15,8 @@ export {
   type TraceSpan,
 } from "./app.js";
 export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
+export { InMemoryAccountRepository, InMemoryEventPublisher, InMemoryIdempotencyStore } from "./application.js";
+export type { EventEnvelope, EventPublisher, EventSubscriber, HandlerResult } from "./ports.js";
 export {
   DomainError,
   UserAccount,
