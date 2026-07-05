@@ -114,7 +114,7 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
           try {
             const attempts = await this.deliveryAttempts(stream, group, entry[0]);
             if (attempts >= maxDeliveryAttempts) {
-            await this.deadLetterAndAck(stream, group, entry);
+              await this.deadLetterAndAck(stream, group, entry);
             } else {
               await this.processEntry(stream, group, entry, handler);
             }
@@ -153,7 +153,7 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     try {
       envelope = JSON.parse(serializedEnvelope) as EventEnvelope;
     } catch {
-            await this.deadLetterAndAck(stream, group, entry);
+      await this.deadLetterAndAck(stream, group, entry);
       return;
     }
 
@@ -170,7 +170,7 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     }
 
     if (result.errorType === "fatal") {
-            await this.deadLetterAndAck(stream, group, entry);
+      await this.deadLetterAndAck(stream, group, entry);
     }
   }
 
