@@ -1,10 +1,10 @@
 package com.trainticket.adminaudit;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnMissingBean(RuntimeTracer.class)
+@ConditionalOnProperty(name = "otel.traces.exporter", havingValue = "none", matchIfMissing = true)
 public class NoOpRuntimeTracer implements RuntimeTracer {
     @Override
     public void requestStarted(RequestTraceContext context) {
