@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   DeduplicatingEventHandler,
   InMemoryEventPublisher,
+  NonConformantNotificationTrigger,
   NotificationApplicationService,
   NotificationTask,
   successfulHandling,
@@ -95,5 +96,44 @@ describe("notification messaging integration surface", () => {
     assert.equal(publisher.envelopes[0].causationId, "evt-upstream-001");
     assert.equal(publisher.envelopes[0].payload.recipientRef, "usr-test-001");
     assert.equal(publisher.envelopes[0].payload.templateCode, "payment_captured");
+  });
+
+  it("rejects conformant trigger events that do not identify a recipient", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-upstream-missing-recipient",
+      eventType: "PaymentCaptured",
+      schemaVersion: 1,
+      producer: "payment",
+      correlationId: "corr-upstream-missing-recipient",
+      causationId: "cmd-upstream-missing-recipient",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: { paymentIntentId: "pi-test-001" },
+    };
+
+    await assert.rejects(
+      () => service.handleExternalTrigger(upstream),
+      NonConformantNotificationTrigger,
+    );
+    assert.equal(publisher.envelopes.length, 0);
+  });
+
+  it("ignores unsupported upstream event types without scheduling a notification", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-upstream-ignored",
+      eventType: "CapacityReleased",
+      schemaVersion: 1,
+      producer: "capacity-availability",
+      correlationId: "corr-upstream-ignored",
+      causationId: "cmd-upstream-ignored",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: { recipientRef: "usr-test-001" },
+    };
+
+    assert.equal(await service.handleExternalTrigger(upstream), "ignored");
+    assert.equal(publisher.envelopes.length, 0);
   });
 });
