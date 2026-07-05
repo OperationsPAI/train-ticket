@@ -4,8 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
+from reporting.ids import prefixed_uuid7
 from reporting.domain import (
     ConsumedEventLog,
     ConsumedEventRecord,
@@ -31,10 +31,6 @@ def rfc3339_utc(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def prefixed_uuid(prefix: str) -> str:
-    return f"{prefix}-{uuid4()}"
 
 
 @dataclass(slots=True)
@@ -185,14 +181,14 @@ class ReportingApplicationService:
         occurred_at: datetime | None = None,
     ) -> EventEnvelope:
         envelope = EventEnvelope(
-            eventId=prefixed_uuid("evt"),
+            eventId=prefixed_uuid7("evt"),
             eventType=event_type,
             occurredAt=rfc3339_utc(occurred_at or utc_now()),
-            correlationId=correlation_id if correlation_id and correlation_id.startswith("corr-") else prefixed_uuid("corr"),
-            causationId=causation_id if causation_id and (causation_id.startswith("cmd-") or causation_id.startswith("evt-")) else prefixed_uuid("cmd"),
+            correlationId=correlation_id if correlation_id and correlation_id.startswith("corr-") else prefixed_uuid7("corr"),
             producer=PRODUCER,
             schemaVersion=1,
             payload=dict(payload),
+            causationId=causation_id if causation_id and (causation_id.startswith("cmd-") or causation_id.startswith("evt-")) else None,
         )
         if self.publisher is not None:
             self.publisher.publish(envelope)

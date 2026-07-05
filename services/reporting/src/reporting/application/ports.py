@@ -12,22 +12,24 @@ class EventEnvelope:
     eventType: str
     occurredAt: str
     correlationId: str
-    causationId: str
     producer: str
     schemaVersion: int
     payload: Mapping[str, Any]
+    causationId: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        envelope = {
             "eventId": self.eventId,
             "eventType": self.eventType,
             "occurredAt": self.occurredAt,
             "correlationId": self.correlationId,
-            "causationId": self.causationId,
             "producer": self.producer,
             "schemaVersion": self.schemaVersion,
             "payload": dict(self.payload),
         }
+        if self.causationId is not None:
+            envelope["causationId"] = self.causationId
+        return envelope
 
 
 class PublishFailed(RuntimeError):

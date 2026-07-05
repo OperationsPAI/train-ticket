@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-from uuid import uuid4
-
 from reporting.application.service import ReportingApplicationService
+from reporting.ids import uuid7
 
 from .publisher import RedisEventPublisher
 from .stream_config import CONSUMER_GROUP, reporting_subscription_streams
@@ -21,7 +20,7 @@ class MessagingRuntime:
         self.service = service
 
     def start(self) -> None:
-        consumer_name = f"reporting-{os.getenv('HOSTNAME') or uuid4()}"
+        consumer_name = f"reporting-{os.getenv('HOSTNAME') or uuid7()}"
         self.subscriber.subscribe(
             reporting_subscription_streams(),
             CONSUMER_GROUP,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import UTC, datetime
+from uuid import UUID
 from typing import Sequence
 
 from fastapi import FastAPI
@@ -102,7 +103,7 @@ class EndpointTest(unittest.TestCase):
             return {"result": "created"}
 
         client = TestClient(app)
-        headers = {"Idempotency-Key": "018ff000-0000-7000-8000-000000000001"}
+        headers = {"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c001"}
         first = client.post("/api/v1/test-command", json={"a": 1}, headers=headers)
         second = client.post("/api/v1/test-command", json={"a": 1}, headers=headers)
         reused = client.post("/api/v1/test-command", json={"a": 2}, headers=headers)
@@ -111,8 +112,14 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(second.json(), first.json())
         self.assertEqual(reused.status_code, 422)
         self.assertEqual(reused.json()["code"], "IDEMPOTENCY_KEY_REUSED")
+        malformed = client.post("/api/v1/test-command", json={"a": 1}, headers={"Idempotency-Key": "not-a-uuid"})
+        v4 = client.post("/api/v1/test-command", json={"a": 1}, headers={"Idempotency-Key": "550e8400-e29b-41d4-a716-446655440000"})
         self.assertEqual(missing.status_code, 400)
         self.assertEqual(missing.json()["code"], "VALIDATION_FAILED")
+        self.assertEqual(malformed.status_code, 400)
+        self.assertEqual(malformed.json()["code"], "VALIDATION_FAILED")
+        self.assertEqual(v4.status_code, 400)
+        self.assertEqual(v4.json()["code"], "VALIDATION_FAILED")
 
     def test_domain_error_surfaces_as_domain_rule_violation(self) -> None:
         app = FastAPI()
@@ -141,10 +148,12 @@ class MessagingTest(unittest.TestCase):
         )
         self.assertEqual(publisher.published, [envelope])
         self.assertTrue(envelope.eventId.startswith("evt-"))
+        self.assertEqual(UUID(envelope.eventId.removeprefix("evt-")).version, 7)
         self.assertEqual(envelope.eventType, "DashboardRefreshed")
         self.assertEqual(envelope.occurredAt, "2026-07-05T10:30:00.000Z")
         self.assertEqual(envelope.producer, "reporting")
         self.assertEqual(envelope.schemaVersion, 1)
+        self.assertEqual(UUID(envelope.correlationId.removeprefix("corr-")).version, 7)
         self.assertEqual(set(envelope.as_dict()), {"eventId", "eventType", "occurredAt", "correlationId", "causationId", "producer", "schemaVersion", "payload"})
 
     def test_redis_publisher_serializes_single_envelope_field(self) -> None:
@@ -155,10 +164,10 @@ class MessagingTest(unittest.TestCase):
             eventType="ReportGenerated",
             occurredAt="2026-07-05T10:30:00.000Z",
             correlationId="corr-018ff000-0000-7000-8000-000000000005",
-            causationId="cmd-018ff000-0000-7000-8000-000000000006",
             producer="reporting",
             schemaVersion=1,
             payload={"reportId": "report-1"},
+            causationId="cmd-018ff000-0000-7000-8000-000000000006",
         )
         publisher.publish(envelope)
         stream, fields, maxlen, approximate = publisher._client.entries[0]
@@ -167,6 +176,38 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(json.loads(fields["envelope"]), envelope.as_dict())
         self.assertEqual(maxlen, 100_000)
         self.assertTrue(approximate)
+
+    def test_application_publisher_omits_absent_optional_causation_id(self) -> None:
+        envelope = ReportingApplicationService(publisher=FakePublisher()).publish_domain_event(
+            event_type="DashboardRefreshed",
+            payload={"dashboardId": "dash-revenue"},
+            correlation_id=None,
+            causation_id=None,
+            occurred_at=datetime(2026, 7, 5, 10, 30, tzinfo=UTC),
+        )
+        self.assertIsNone(envelope.causationId)
+        self.assertNotIn("causationId", envelope.as_dict())
+        self.assertEqual(UUID(envelope.eventId.removeprefix("evt-")).version, 7)
+        self.assertEqual(UUID(envelope.correlationId.removeprefix("corr-")).version, 7)
+
+    def test_redis_subscriber_accepts_minimal_and_causation_envelopes(self) -> None:
+        subscriber = object.__new__(RedisEventSubscriber)
+        minimal = {
+            "eventId": "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c020",
+            "eventType": "PaymentCaptured",
+            "occurredAt": "2026-07-05T10:30:00.000Z",
+            "correlationId": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c021",
+            "producer": "payment",
+            "schemaVersion": 1,
+            "payload": {},
+        }
+        with_causation = {
+            **minimal,
+            "eventId": "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c022",
+            "causationId": "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c023",
+        }
+        self.assertIsNone(subscriber._deserialize_envelope(minimal).causationId)
+        self.assertEqual(subscriber._deserialize_envelope(with_causation).causationId, with_causation["causationId"])
 
     def test_subscriber_dedups_duplicate_event_id(self) -> None:
         service = ReportingApplicationService()
@@ -177,10 +218,10 @@ class MessagingTest(unittest.TestCase):
             eventType="PaymentCaptured",
             occurredAt="2026-07-05T10:30:00.000Z",
             correlationId="corr-1",
-            causationId="evt-1",
             producer="payment",
             schemaVersion=1,
             payload={},
+            causationId="evt-1",
         )
         self.assertEqual(subscriber.receive(envelope).status.value, "SUCCESS")
         self.assertEqual(subscriber.receive(envelope).status.value, "SUCCESS")
@@ -207,10 +248,10 @@ class MessagingTest(unittest.TestCase):
             eventType="PaymentCaptured",
             occurredAt="2026-07-05T10:30:00.000Z",
             correlationId="corr-1",
-            causationId="evt-1",
             producer="payment",
             schemaVersion=1,
             payload={},
+            causationId="evt-1",
         )
         calls: list[str] = []
 
