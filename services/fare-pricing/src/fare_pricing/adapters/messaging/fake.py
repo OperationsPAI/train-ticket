@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from ...ports import EventEnvelope
 from ...ports.messaging import (
     EventPublisher,
+    EventSubscriber,
     PublishFailed,
 )
 
@@ -18,6 +20,7 @@ class FakeEventPublisher(EventPublisher):
 
     def publish(self, envelope: EventEnvelope) -> None:
         if self._fail_on_publish:
+            self._fail_on_publish = False
             raise PublishFailed("Simulated publish failure")
         self.events.append(envelope)
 
@@ -44,3 +47,29 @@ class FakeEventPublisher(EventPublisher):
     def clear(self) -> None:
         self.events.clear()
         self._fail_on_publish = False
+
+
+class FakeEventSubscriber(EventSubscriber):
+    """In-memory subscriber fake that deduplicates by eventId."""
+
+    def __init__(self, envelopes: Sequence[EventEnvelope] | None = None) -> None:
+        self._envelopes = list(envelopes or [])
+        self._seen_event_ids: set[str] = set()
+        self.subscriptions: list[tuple[tuple[str, ...], str, str]] = []
+
+    def add(self, envelope: EventEnvelope) -> None:
+        self._envelopes.append(envelope)
+
+    def subscribe(
+        self,
+        streams: Sequence[str],
+        group: str,
+        consumer_name: str,
+        handler: Callable[[EventEnvelope], None],
+    ) -> None:
+        self.subscriptions.append((tuple(streams), group, consumer_name))
+        for envelope in self._envelopes:
+            if envelope.event_id in self._seen_event_ids:
+                continue
+            self._seen_event_ids.add(envelope.event_id)
+            handler(envelope)
