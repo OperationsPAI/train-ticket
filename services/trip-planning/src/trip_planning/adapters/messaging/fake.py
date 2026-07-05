@@ -38,11 +38,12 @@ class FakeEventSubscriber(EventSubscriber):
         self.handlers.append((streams, group, consumer_name, handler))
 
     def simulate_message(self, envelope: EventEnvelope) -> None:
-        """Simulate receiving a message from the stream."""
         if envelope.eventId in self.dedup_seen:
-            return  # dedup
+            return
         self.dedup_seen.add(envelope.eventId)
         self.received.append(envelope)
-        # Find the handler and call it
         for _streams, _group, _consumer_name, handler in self.handlers:
             handler(envelope)
+
+    def shutdown(self) -> None:
+        return None
