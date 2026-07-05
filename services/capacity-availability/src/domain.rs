@@ -1,54 +1,4 @@
-use axum::Router;
-use serde::Serialize;
-use shared_kernel::{OpenTelemetryObserver, RuntimeConfig, apply_runtime, router_with_config};
 use std::collections::{HashMap, HashSet};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ServiceProfile {
-    pub service_id: &'static str,
-    pub domain: &'static str,
-    pub language: &'static str,
-    pub phase: &'static str,
-    pub requirement: &'static str,
-    pub owns: &'static [&'static str],
-}
-
-pub fn profile() -> ServiceProfile {
-    ServiceProfile {
-        service_id: "capacity-availability",
-        domain: "Capacity & Availability",
-        language: "rust",
-        phase: "phase-1-core",
-        requirement: "REQ-006 Capacity & Availability domain foundation",
-        owns: &[
-            "InventoryPool",
-            "StationInterval",
-            "CapacityHold",
-            "AvailabilitySnapshot",
-        ],
-    }
-}
-
-pub fn health() -> &'static str {
-    "ok"
-}
-
-pub fn metadata() -> ServiceProfile {
-    profile()
-}
-
-pub fn runtime_config() -> RuntimeConfig {
-    RuntimeConfig::from_metadata(metadata())
-        .with_observer(OpenTelemetryObserver::from_env(profile().service_id))
-}
-
-pub fn router() -> Router {
-    router_with_config(runtime_config())
-}
-
-pub fn apply_service_runtime(router: Router) -> Router {
-    apply_runtime(router, runtime_config())
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainError {
@@ -1074,54 +1024,6 @@ mod tests {
             expires_at,
         )
         .unwrap()
-    }
-
-    #[test]
-    fn skeleton_profile_matches_domain() {
-        let profile = profile();
-        assert_eq!(profile.service_id, "capacity-availability");
-        assert_eq!(profile.domain, "Capacity & Availability");
-        assert_eq!(
-            profile.requirement,
-            "REQ-006 Capacity & Availability domain foundation"
-        );
-        assert_eq!(health(), "ok");
-    }
-
-    #[test]
-    fn axum_router_can_be_constructed() {
-        let _router = router();
-    }
-
-    #[tokio::test]
-    async fn standard_runtime_endpoints_and_request_ids_are_available() {
-        use axum::body::Body;
-        use axum::http::{Request, StatusCode};
-        use shared_kernel::{CORRELATION_ID_HEADER, REQUEST_ID_HEADER};
-        use tower::ServiceExt;
-
-        for path in [
-            "/health",
-            "/live",
-            "/livez",
-            "/ready",
-            "/readyz",
-            "/metadata",
-        ] {
-            let response = router()
-                .oneshot(
-                    Request::builder()
-                        .uri(path)
-                        .header(REQUEST_ID_HEADER, "capacity-req")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{path}");
-            assert_eq!(response.headers()[REQUEST_ID_HEADER], "capacity-req");
-            assert_eq!(response.headers()[CORRELATION_ID_HEADER], "capacity-req");
-        }
     }
 
     #[test]
