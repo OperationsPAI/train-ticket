@@ -35,13 +35,13 @@ describe("customer-service HTTP API", () => {
       url: "/readyz",
       headers: {
         "x-request-id": "req-customer-service-1",
-        "x-correlation-id": "corr-customer-service-1",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.headers["x-request-id"], "req-customer-service-1");
-    assert.equal(response.headers["x-correlation-id"], "corr-customer-service-1");
+    assert.equal(response.headers["x-correlation-id"], "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.deepEqual(response.json(), { status: "ok", probe: "ready" });
     assert.equal((await app.inject("/healthz")).statusCode, 200);
     assert.equal((await app.inject("/health")).json().service.serviceId, "customer-service");
@@ -75,7 +75,7 @@ describe("customer-service HTTP API", () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/v1/support-cases",
-      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c001", "x-correlation-id": "corr-http-test" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c001", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: openBody,
     });
 
@@ -310,11 +310,11 @@ describe("customer-service HTTP API", () => {
     const response = await app.inject({
       method: "GET",
       url: "/health",
-      headers: { "x-request-id": "req-customer-service-trace", "x-correlation-id": "corr-customer-service-trace" },
+      headers: { "x-request-id": "req-customer-service-trace", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
     });
 
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(seenRequests, [{ requestId: "req-customer-service-trace", correlationId: "corr-customer-service-trace" }]);
+    assert.deepEqual(seenRequests, [{ requestId: "req-customer-service-trace", correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" }]);
     assert.equal(endedSpans[0].statusCode, 200);
   });
 });

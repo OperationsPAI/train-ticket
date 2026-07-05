@@ -11,3 +11,4 @@ export declare function newCorrelationId(): string;
 export declare function canonicalEventId(value: string): string;
 export declare function canonicalCorrelationId(value: string): string;
 export declare function canonicalCausationId(value: string): string;
+export declare function isPrefixedUuidV7(value: string, allowedPrefixes?: readonly IdPrefix[]): boolean;

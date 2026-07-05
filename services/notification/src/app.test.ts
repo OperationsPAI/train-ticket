@@ -12,13 +12,13 @@ describe("notification service HTTP contract", () => {
       url: "/readyz",
       headers: {
         "x-request-id": "req-notification-1",
-        "x-correlation-id": "corr-notification-1",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.headers["x-request-id"], "req-notification-1");
-    assert.equal(response.headers["x-correlation-id"], "corr-notification-1");
+    assert.equal(response.headers["x-correlation-id"], "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.deepEqual(response.json(), { status: "ok", probe: "ready" });
 
     const healthz = await app.inject("/healthz");
@@ -57,14 +57,14 @@ describe("notification service HTTP contract", () => {
     const response = await app.inject({
       method: "GET",
       url: "/api/v1/notifications",
-      headers: { "x-request-id": "req-notification-404", "x-correlation-id": "corr-notification-404" },
+      headers: { "x-request-id": "req-notification-404", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
     });
 
     assert.equal(response.statusCode, 404);
     assert.deepEqual(response.json(), {
       code: "NOT_FOUND",
       message: "Route GET /api/v1/notifications was not found",
-      correlationId: "corr-notification-404",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       details: {},
     });
   });
@@ -99,30 +99,30 @@ describe("notification service HTTP contract", () => {
     const invalid = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-validation" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: {},
     });
     assert.equal(invalid.statusCode, 400);
     assert.equal(invalid.json().code, "VALIDATION_FAILED");
-    assert.equal(invalid.json().correlationId, "corr-validation");
+    assert.equal(invalid.json().correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.deepEqual(invalid.json().details, {});
 
     const first = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-idem" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: { name: "Alice" },
     });
     const replay = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-idem" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: { name: "Alice" },
     });
     const reused = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-idem" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: { name: "Bob" },
     });
 
@@ -156,19 +156,19 @@ describe("notification service HTTP contract", () => {
       url: "/health",
       headers: {
         "x-request-id": "req-notification-trace",
-        "x-correlation-id": "corr-notification-trace",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(seenRequests, [{ requestId: "req-notification-trace", correlationId: "corr-notification-trace" }]);
+    assert.deepEqual(seenRequests, [{ requestId: "req-notification-trace", correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" }]);
     assert.deepEqual(endedSpans, [
       {
         method: "GET",
         url: "/health",
         statusCode: 200,
         requestId: "req-notification-trace",
-        correlationId: "corr-notification-trace",
+        correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     ]);
 

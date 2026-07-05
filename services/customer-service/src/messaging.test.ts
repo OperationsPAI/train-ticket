@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { EvidenceRef, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
+import { isPrefixedUuidV7 } from "@trainticket/ts-kit";
 import { ConsumedEventDeduplicator, InMemoryEventSubscriber, toEventEnvelope, type EventEnvelope } from "./application/messaging.js";
 
 describe("customer-service messaging ports", () => {
@@ -13,8 +14,8 @@ describe("customer-service messaging ports", () => {
       channel: "WEB",
       priority: "NORMAL",
       description: "Need help",
-      correlationId: "corr-test-envelope",
-      causationId: "cmd-test-envelope",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       openedAt: new Date("2026-07-05T10:30:00.000Z"),
     });
 
@@ -30,11 +31,11 @@ describe("customer-service messaging ports", () => {
       "producer",
       "schemaVersion",
     ].sort());
-    assert.match(envelope.eventId, /^evt-/);
+    assert.equal(isPrefixedUuidV7(envelope.eventId, ["evt"]), true);
     assert.equal(envelope.eventType, "SupportCaseOpened");
     assert.equal(envelope.occurredAt, "2026-07-05T10:30:00.000Z");
-    assert.match(envelope.correlationId, /^corr-/);
-    assert.match(envelope.causationId, /^cmd-/);
+    assert.equal(isPrefixedUuidV7(envelope.correlationId, ["corr"]), true);
+    assert.equal(isPrefixedUuidV7(envelope.causationId, ["cmd"]), true);
     assert.equal(envelope.producer, "customer-service");
     assert.equal(envelope.schemaVersion, 1);
     assert.deepEqual(envelope.payload, {
@@ -87,11 +88,11 @@ describe("customer-service messaging ports", () => {
   it("deduplicates duplicate eventIds before handling", async () => {
     const deduplicator = new ConsumedEventDeduplicator();
     const envelope: EventEnvelope = {
-      eventId: "evt-duplicate",
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       eventType: "JourneyOrderCreated",
       occurredAt: "2026-07-05T10:30:00.000Z",
-      correlationId: "corr-duplicate",
-      causationId: "evt-upstream",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       producer: "journey-order",
       schemaVersion: 1,
       payload: { journeyOrderId: "ord-1" },
@@ -124,11 +125,11 @@ describe("customer-service messaging ports", () => {
   it("in-memory subscriber applies consumer-side deduplication", async () => {
     const subscriber = new InMemoryEventSubscriber();
     const envelope: EventEnvelope = {
-      eventId: "evt-subscriber-duplicate",
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       eventType: "JourneyOrderConfirmed",
       occurredAt: "2026-07-05T10:31:00.000Z",
-      correlationId: "corr-subscriber-duplicate",
-      causationId: "evt-upstream",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       producer: "journey-order",
       schemaVersion: 1,
       payload: {},
@@ -153,8 +154,8 @@ function buildDocumentedPayloadEvents(): CustomerServiceDomainEvent[] {
     priority: "HIGH" as const,
     description: "Need help",
     businessReferences: { journeyOrderId: "ord-doc" },
-    correlationId: "corr-doc",
-    causationId: "cmd-doc",
+    correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+    causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
     openedAt: new Date("2026-07-05T10:30:00.000Z"),
   };
   const opened = SupportCase.open(base);
@@ -166,8 +167,8 @@ function buildDocumentedPayloadEvents(): CustomerServiceDomainEvent[] {
     summary: "receipt",
     accessLevel: "SENSITIVE",
     attachedBy: "op-doc",
-    correlationId: "corr-doc",
-    causationId: "cmd-doc",
+    correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+    causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
     attachedAt: new Date("2026-07-05T10:31:00.000Z"),
   });
   const classified = opened.case.classify({ caseId: "sc-doc", classification: "PAYMENT_DISPUTE", priority: "URGENT", classifiedBy: "op-doc", classifiedAt: new Date("2026-07-05T10:32:00.000Z") });

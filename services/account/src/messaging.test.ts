@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ACCOUNT_STREAM } from "./adapters/messaging/stream-config.js";
 import { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { UserAccount } from "./domain.js";
+import { isPrefixedUuidV7 } from "@trainticket/ts-kit";
 import { toEventEnvelope, type EventEnvelope, type HandlerResult } from "./ports.js";
 
 class FakeRedisForSubscriber {
@@ -60,16 +61,18 @@ class FakeSubscriber {
 
 describe("account event ports", () => {
   it("wraps account domain events in the canonical event envelope", () => {
-    const { event } = UserAccount.create({ accountId: "acct_123", correlationId: "corr-test" });
+    const { event } = UserAccount.create({ accountId: "acct_123", correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" });
 
-    const envelope = toEventEnvelope(event, "corr-test", "cmd-test");
+    const envelope = toEventEnvelope(event, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
 
-    assert.match(envelope.eventId, /^evt-[0-9a-f-]{36}$/);
+    assert.equal(isPrefixedUuidV7(envelope.eventId, ["evt"]), true);
     assert.equal(envelope.eventType, "AccountCreated");
     assert.equal(envelope.schemaVersion, 1);
     assert.equal(envelope.producer, "account");
-    assert.equal(envelope.causationId, "cmd-test");
-    assert.equal(envelope.correlationId, "corr-test");
+    assert.equal(envelope.causationId, "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    assert.equal(isPrefixedUuidV7(envelope.causationId, ["cmd"]), true);
+    assert.equal(envelope.correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    assert.equal(isPrefixedUuidV7(envelope.correlationId, ["corr"]), true);
     assert.match(envelope.occurredAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
     assert.deepEqual(envelope.payload, { accountId: "acct_123" });
     assert.deepEqual(Object.keys(envelope), [
@@ -86,7 +89,7 @@ describe("account event ports", () => {
 
   it("deduplicates consumed events by eventId", async () => {
     const subscriber = new FakeSubscriber();
-    const envelope = toEventEnvelope(UserAccount.create({ accountId: "acct_dup" }).event, "corr-dup", "cmd-dup");
+    const envelope = toEventEnvelope(UserAccount.create({ accountId: "acct_dup" }).event, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     const seen: string[] = [];
 
     await subscriber.deliver(envelope, (message) => {
@@ -103,8 +106,8 @@ describe("account event ports", () => {
   });
 
   it("continues polling after handler throws and dead-letters the fatal message", async () => {
-    const firstEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_1" }).event, "corr-loop", "cmd-loop-1");
-    const secondEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_2" }).event, "corr-loop", "cmd-loop-2");
+    const firstEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_1" }).event, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    const secondEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_2" }).event, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     const redis = new FakeRedisForSubscriber([
       [[ACCOUNT_STREAM, [["1-0", ["envelope", JSON.stringify(firstEnvelope)]]]]],
       [[ACCOUNT_STREAM, [["2-0", ["envelope", JSON.stringify(secondEnvelope)]]]]],
