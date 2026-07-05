@@ -107,7 +107,7 @@ describe("EventSubscriber port — InMemoryEventSubscriber", () => {
     };
 
     const signal = new AbortController().signal;
-    await subscriber.subscribe(["events:test"], "test-group", "test-consumer", handler, signal);
+    await subscriber.subscribe(["test-stream"], "test-group", "test-consumer", handler, signal);
 
     const envelope = makeEnvelope();
     const result = await subscriber.simulateEvent(envelope);
@@ -129,7 +129,7 @@ describe("EventSubscriber port — InMemoryEventSubscriber", () => {
     };
 
     const signal = new AbortController().signal;
-    await subscriber.subscribe(["events:test"], "test-group", "test-consumer", handler, signal);
+    await subscriber.subscribe(["test-stream"], "test-group", "test-consumer", handler, signal);
 
     const envelope = makeEnvelope();
     const result1 = await subscriber.simulateEvent(envelope);
@@ -153,7 +153,7 @@ describe("EventSubscriber port — InMemoryEventSubscriber", () => {
     };
 
     const signal = new AbortController().signal;
-    await subscriber.subscribe(["events:test"], "test-group", "test-consumer", handler, signal);
+    await subscriber.subscribe(["test-stream"], "test-group", "test-consumer", handler, signal);
 
     const envelope = makeEnvelope();
 
