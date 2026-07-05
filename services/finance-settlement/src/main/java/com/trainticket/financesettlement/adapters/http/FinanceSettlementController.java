@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.adapters.http;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.application.DomainEventEnvelopeMapper;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService.Page;

@@ -37,7 +37,7 @@ public class AppConfig {
     @Bean
     @ConditionalOnMissingBean(EventSubscriber.class)
     public EventSubscriber redisEventSubscriber() {
-        return new com.trainticket.journeyorder.adapters.messaging.RedisEventSubscriber(redisUrl());
+        return new com.trainticket.journeyorder.adapters.messaging.RedisStreamSubscriberAdapter(redisUrl());
     }
 
     @Bean

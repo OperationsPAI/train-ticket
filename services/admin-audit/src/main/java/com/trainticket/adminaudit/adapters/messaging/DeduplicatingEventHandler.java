@@ -1,6 +1,6 @@
 package com.trainticket.adminaudit.adapters.messaging;
 
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventSubscriber;
 
 public class DeduplicatingEventHandler implements EventSubscriber.EventHandler {

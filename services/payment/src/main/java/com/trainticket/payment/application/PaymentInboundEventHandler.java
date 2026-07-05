@@ -1,5 +1,6 @@
 package com.trainticket.payment.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import java.util.Objects;
 import org.springframework.stereotype.Component;

@@ -1,5 +1,6 @@
 package com.trainticket.travelerprofile.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,7 +34,7 @@ class MessagingPortTest {
         assertEquals("TravelerProfileUpdated", published.eventType());
         assertEquals("traveler-profile", published.producer());
         assertEquals(1, published.schemaVersion());
-        assertEquals("tvl-018f0000-0000-7000-8000-000000000013", published.payload().get("travelerId").asText());
+        assertEquals("tvl-018f0000-0000-7000-8000-000000000013", ((com.fasterxml.jackson.databind.JsonNode) published.payload()).get("travelerId").asText());
     }
 
     @Test

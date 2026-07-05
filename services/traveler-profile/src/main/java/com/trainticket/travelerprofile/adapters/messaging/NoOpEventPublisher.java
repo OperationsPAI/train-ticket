@@ -1,6 +1,6 @@
 package com.trainticket.travelerprofile.adapters.messaging;
 
-import com.trainticket.travelerprofile.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.travelerprofile.application.EventPublisher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;

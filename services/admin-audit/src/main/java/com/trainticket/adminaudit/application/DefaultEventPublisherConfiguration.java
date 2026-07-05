@@ -1,6 +1,6 @@
 package com.trainticket.adminaudit.application;
 
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventPublisher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;

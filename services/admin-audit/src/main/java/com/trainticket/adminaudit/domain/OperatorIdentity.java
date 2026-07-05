@@ -1,5 +1,7 @@
 package com.trainticket.adminaudit.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -53,7 +55,7 @@ public final class OperatorIdentity {
         String operatorId = "op-" + UUID.randomUUID().toString();
         OperatorIdentity identity = new OperatorIdentity(operatorId, email, role, scopes, true, now);
         identity.domainEvents.add(new OperatorRegistered(
-            EventEnvelope.create("OperatorRegistered", now, sourceCommandId, correlationId, "admin-audit"),
+            EnvelopeFactory.create("OperatorRegistered", now, sourceCommandId, correlationId, "admin-audit"),
             operatorId,
             email,
             role.name(),

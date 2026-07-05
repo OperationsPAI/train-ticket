@@ -1,5 +1,6 @@
 package com.trainticket.travelerprofile.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.Objects;
 
 public final class DeduplicatingEventHandler implements EventSubscriber.EventHandler {

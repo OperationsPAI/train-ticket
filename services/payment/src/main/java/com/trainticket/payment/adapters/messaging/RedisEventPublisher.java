@@ -2,7 +2,7 @@ package com.trainticket.payment.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.payment.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.application.EventPublisher;
 import com.trainticket.payment.application.PublishFailedException;
 import io.lettuce.core.XAddArgs;

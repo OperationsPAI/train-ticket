@@ -8,7 +8,7 @@ import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
 
 @Component
-public class InMemoryIdempotencyStore implements IdempotencyStore {
+public class MemoryIdempotencyStore implements IdempotencyStore {
     private final ConcurrentMap<String, Entry> results = new ConcurrentHashMap<>();
 
     @Override

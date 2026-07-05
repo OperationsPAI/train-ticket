@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;

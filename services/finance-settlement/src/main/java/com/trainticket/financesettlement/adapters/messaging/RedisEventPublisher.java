@@ -2,7 +2,7 @@ package com.trainticket.financesettlement.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.financesettlement.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.application.EventPublisher;
 import com.trainticket.financesettlement.application.PublishFailedException;
 import io.lettuce.core.XAddArgs;

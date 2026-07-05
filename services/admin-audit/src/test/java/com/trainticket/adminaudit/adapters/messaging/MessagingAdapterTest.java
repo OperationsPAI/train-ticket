@@ -3,7 +3,7 @@ package com.trainticket.adminaudit.adapters.messaging;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.trainticket.adminaudit.application.AdminAuditService;
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventSubscriber;
 import com.trainticket.adminaudit.domain.ManualActionRequested;
 import java.time.Instant;
@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 class MessagingAdapterTest {
     @Test
     void wrapsDomainEventInCanonicalEnvelope() {
-        com.trainticket.adminaudit.domain.EventEnvelope domainEnvelope = new com.trainticket.adminaudit.domain.EventEnvelope(
+        com.trainticket.platformkit.messaging.EventEnvelope domainEnvelope = new com.trainticket.platformkit.messaging.EventEnvelope(
             "evt-11111111-1111-4111-8111-111111111111",
             "ManualActionRequested",
             1,

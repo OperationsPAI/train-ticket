@@ -1,5 +1,6 @@
 package com.trainticket.postsales.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import org.springframework.stereotype.Service;
 
 @Service

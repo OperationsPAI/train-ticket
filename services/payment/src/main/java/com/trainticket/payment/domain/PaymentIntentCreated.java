@@ -1,5 +1,6 @@
 package com.trainticket.payment.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 public record PaymentIntentCreated(
     EventEnvelope envelope,
     String paymentIntentId,

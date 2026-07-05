@@ -1,6 +1,6 @@
 package com.trainticket.postsales.adapters.messaging;
 
-import com.trainticket.postsales.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.postsales.application.EventSubscriber;
 import com.trainticket.postsales.application.SubscribeFailedException;
 import io.lettuce.core.Consumer;
@@ -30,7 +30,7 @@ import tools.jackson.databind.ObjectMapper;
 
 @Component
 @ConditionalOnProperty(name = "post-sales.messaging.redis.enabled", havingValue = "true")
-public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
+public class RedisStreamSubscriberAdapter implements EventSubscriber, AutoCloseable {
     private static final long MAXLEN = 100_000L;
     private static final long BLOCK_MILLIS = 2_000L;
     private static final long MIN_IDLE_MILLIS = 60_000L;
@@ -43,7 +43,7 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ExecutorService executor;
 
-    public RedisEventSubscriber(ObjectMapper objectMapper, RedisMessagingProperties properties) {
+    public RedisStreamSubscriberAdapter(ObjectMapper objectMapper, RedisMessagingProperties properties) {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.client = RedisClient.create(properties.redisUrl());

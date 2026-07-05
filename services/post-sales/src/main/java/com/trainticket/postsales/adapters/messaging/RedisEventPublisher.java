@@ -2,7 +2,7 @@ package com.trainticket.postsales.adapters.messaging;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
-import com.trainticket.postsales.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.postsales.application.EventPublisher;
 import com.trainticket.postsales.application.PublishFailedException;
 import io.lettuce.core.RedisClient;

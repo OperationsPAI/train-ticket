@@ -68,7 +68,7 @@ final class PaymentHttpMapper {
         return intent.domainEvents().stream()
             .filter(PaymentIntentCreated.class::isInstance)
             .map(PaymentEvent::envelope)
-            .map(com.trainticket.payment.domain.EventEnvelope::occurredAt)
+            .map(com.trainticket.platformkit.messaging.EventEnvelope::occurredAt)
             .findFirst()
             .orElse(Instant.EPOCH);
     }

@@ -1,5 +1,7 @@
 package com.trainticket.adminaudit.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -85,7 +87,7 @@ public final class ManualAction {
         );
         action.state = ManualActionState.REQUESTED;
         action.domainEvents.add(new ManualActionRequested(
-            EventEnvelope.create("ManualActionRequested", now, sourceCommandId, correlationId, "admin-audit"),
+            EnvelopeFactory.create("ManualActionRequested", now, sourceCommandId, correlationId, "admin-audit"),
             actionId,
             targetDomain,
             targetCommand,
@@ -144,7 +146,7 @@ public final class ManualAction {
         this.approvedAt = now;
         this.state = ManualActionState.APPROVED;
         this.domainEvents.add(new ManualActionApproved(
-            EventEnvelope.create("ManualActionApproved", now, sourceCommandId, correlationId, "admin-audit"),
+            EnvelopeFactory.create("ManualActionApproved", now, sourceCommandId, correlationId, "admin-audit"),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -165,7 +167,7 @@ public final class ManualAction {
 
         this.state = ManualActionState.REJECTED;
         this.domainEvents.add(new ManualActionRejected(
-            EventEnvelope.create("ManualActionRejected", now, sourceCommandId, correlationId, "admin-audit"),
+            EnvelopeFactory.create("ManualActionRejected", now, sourceCommandId, correlationId, "admin-audit"),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -186,7 +188,7 @@ public final class ManualAction {
         this.resultSummary = requireText(resultSummary, "resultSummary");
         this.state = ManualActionState.EXECUTED;
         this.domainEvents.add(new ManualActionExecuted(
-            EventEnvelope.create("ManualActionExecuted", now, sourceCommandId, correlationId, "admin-audit"),
+            EnvelopeFactory.create("ManualActionExecuted", now, sourceCommandId, correlationId, "admin-audit"),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -203,7 +205,7 @@ public final class ManualAction {
         this.resultSummary = requireText(failureSummary, "failureSummary");
         this.state = ManualActionState.FAILED;
         this.domainEvents.add(new ManualActionExecuted(
-            EventEnvelope.create("ManualActionExecuted", now, sourceCommandId, correlationId, "admin-audit"),
+            EnvelopeFactory.create("ManualActionExecuted", now, sourceCommandId, correlationId, "admin-audit"),
             manualActionId,
             targetDomain,
             targetCommand,
