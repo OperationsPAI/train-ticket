@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import {
@@ -13,7 +11,18 @@ import {
   type DomainErrorMapping,
 } from "./application.js";
 import { type EventPublisher } from "./ports.js";
-import { InMemoryIdempotencyStore, fingerprintRequest, type IdempotencyRecord } from "@trainticket/ts-kit";
+import {
+  InMemoryIdempotencyStore,
+  errorMessage,
+  handleIdempotency,
+  headerValue,
+  requestContext as kitRequestContext,
+  requestFingerprint,
+  sendError,
+  type ErrorEnvelope,
+  type IdempotencyStore,
+  type RequestContext,
+} from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -34,17 +43,7 @@ export type ServiceMetadata = Readonly<{
   }>;
 }>;
 
-export type ErrorEnvelope = Readonly<{
-  code: string;
-  message: string;
-  correlationId: string;
-  details: Record<string, unknown>;
-}>;
-
-export type RequestContext = Readonly<{
-  requestId: string;
-  correlationId: string;
-}>;
+export type { ErrorEnvelope, RequestContext };
 
 export type RequestTraceContext = RequestContext &
   Readonly<{
@@ -70,7 +69,7 @@ export type AppOptions = Readonly<{
   instrumentation?: InstrumentationHooks;
   repository?: AccountRepository;
   publisher?: EventPublisher;
-  idempotencyStore?: InMemoryIdempotencyStore;
+  idempotencyStore?: IdempotencyStore;
 }>;
 
 type OTelSpan = Readonly<{
@@ -166,7 +165,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   app.get("/readyz", async () => probeBody("ready"));
 
   app.post("/api/v1/accounts", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 201, async (context, causationId) => {
+    await runIdempotentOperation(request, reply, idempotencyStore, 201, async (context, causationId) => {
       const body = objectBody(request.body);
       assertOptionalString(body.accountId, "accountId");
       return accountService.createAccount({ accountId: body.accountId as string | undefined, correlationId: context.correlationId, causationId });
@@ -182,7 +181,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.post("/api/v1/accounts/:accountId/freeze", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, { preconditionDomainCodes: [] }, async (context, causationId) => {
+    await runIdempotentOperation(request, reply, idempotencyStore, 200, { preconditionDomainCodes: [] }, async (context, causationId) => {
       const body = objectBody(request.body);
       const reason = requiredString(body.reason, "reason");
       const operator = requiredString(body.operator, "operator");
@@ -192,7 +191,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.post("/api/v1/accounts/:accountId/unfreeze", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) => {
+    await runIdempotentOperation(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) => {
       const body = objectBody(request.body);
       const reason = requiredString(body.reason, "reason");
       return accountService.unfreezeAccount({ accountId: accountIdParam(request), reason, correlationId: context.correlationId, causationId });
@@ -200,7 +199,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.patch("/api/v1/accounts/:accountId/preferences", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, async (context, causationId) => {
+    await runIdempotentOperation(request, reply, idempotencyStore, 200, async (context, causationId) => {
       const body = objectBody(request.body);
       const preferenceKey = requiredString(body.preferenceKey, "preferenceKey");
       const value = requiredString(body.value, "value");
@@ -209,7 +208,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.post("/api/v1/accounts/:accountId/start-closure", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) =>
+    await runIdempotentOperation(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) =>
       accountService.startClosure({ accountId: accountIdParam(request), correlationId: context.correlationId, causationId }),
     );
   });
@@ -225,10 +224,10 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   return app;
 }
 
-async function withIdempotency(
+async function runIdempotentOperation(
   request: FastifyRequest,
   reply: FastifyReply,
-  store: InMemoryIdempotencyStore,
+  store: IdempotencyStore,
   successStatus: number,
   mappingOrHandler: DomainErrorMapping | ((context: RequestContext, causationId: string) => Promise<unknown>),
   maybeHandler?: (context: RequestContext, causationId: string) => Promise<unknown>,
@@ -239,35 +238,20 @@ async function withIdempotency(
     throw new ApplicationError("UNAVAILABLE", "Idempotent handler was not configured", 503);
   }
   const context = requestContext(request);
-  const key = headerValue(request.headers["idempotency-key"]);
-  if (!key) {
-    sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key header is required", context, { field: "Idempotency-Key" });
-    return;
-  }
-  if (!isUuidV7(key)) {
-    sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", context, { field: "Idempotency-Key" });
-    return;
-  }
-
-  const fingerprint = fingerprintRequest(request.method, request.url.split("?")[0] ?? request.url, request.body ?? {});
-  const existing = store.get(key);
-  if (existing) {
-    if (existing.fingerprint !== fingerprint) {
-      sendError(reply, 422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request", context);
-      return;
-    }
-    reply.status(existing.statusCode).send(existing.body);
-    return;
-  }
-
-  try {
-    const body = await handler(context, commandId());
-    const record: IdempotencyRecord = { fingerprint, statusCode: successStatus, body };
-    store.set(key, record);
-    reply.status(successStatus).send(body);
-  } catch (error) {
-    sendApplicationError(reply, mapError(error, mapping), context);
-  }
+  await handleIdempotency({
+    key: headerValue(request.headers["idempotency-key"]),
+    store,
+    fingerprint: requestFingerprint(request.method, request.url.split("?")[0] ?? request.url, request.body ?? {}),
+    context,
+    reply,
+    operation: async () => {
+      try {
+        return { statusCode: successStatus, body: await handler(context, commandId()) };
+      } catch (error) {
+        throw mapError(error, mapping);
+      }
+    },
+  });
 }
 
 function normalizeOptions(options: AppOptions | InstrumentationHooks): AppOptions {
@@ -275,10 +259,6 @@ function normalizeOptions(options: AppOptions | InstrumentationHooks): AppOption
     return options as AppOptions;
   }
   return { instrumentation: options as InstrumentationHooks };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
 }
 
 function healthBody(): HealthStatus {
@@ -307,31 +287,14 @@ function requestContext(request: AppRequest): RequestContext {
 }
 
 function resolveRequestContext(request: AppRequest): RequestContext {
-  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id ?? randomUUID();
-  const correlationId = headerValue(request.headers["x-correlation-id"]) ?? `corr-${randomUUID()}`;
-  return { requestId, correlationId };
+  return kitRequestContext(request);
 }
 
 type AppRequest = FastifyRequest & { ctx?: RequestContext };
 type AppReply = FastifyReply;
 
-function headerValue(value: string | string[] | undefined): string | undefined {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  return candidate && candidate.trim().length > 0 ? candidate : undefined;
-}
-
 function sendApplicationError(reply: AppReply, error: ApplicationError, context: RequestContext): void {
   sendError(reply, error.statusCode, error.code, errorMessage(error), context, error.details);
-}
-
-function sendError(reply: AppReply, statusCode: number, code: string, message: string, context: RequestContext, details: Record<string, unknown> = {}): void {
-  const envelope: ErrorEnvelope = {
-    code,
-    message,
-    correlationId: context.correlationId,
-    details,
-  };
-  reply.status(statusCode).send(envelope);
 }
 
 function objectBody(body: unknown): Record<string, unknown> {
@@ -356,17 +319,4 @@ function assertOptionalString(value: unknown, field: string): void {
 
 function accountIdParam(request: FastifyRequest): string {
   return requiredString((request.params as { accountId?: unknown }).accountId, "accountId");
-}
-
-function isUuidV7(value: string): boolean {
-  const parsed = parseUuid(value);
-  return parsed?.version === 7;
-}
-
-function parseUuid(value: string): { version: number } | undefined {
-  const match = /^(?<timeLow>[0-9a-f]{8})-(?<timeMid>[0-9a-f]{4})-(?<version>[0-9a-f])(?<timeHigh>[0-9a-f]{3})-(?<variant>[0-9a-f]{4})-(?<node>[0-9a-f]{12})$/iu.exec(value);
-  if (!match?.groups) {
-    return undefined;
-  }
-  return { version: Number.parseInt(match.groups.version, 16) };
 }

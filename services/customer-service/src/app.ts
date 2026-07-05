@@ -15,15 +15,18 @@ import {
   type ReopenCaseRequest,
   type ResolveCaseRequest,
 } from "./application/customer-service.js";
-import { InMemoryEventPublisher, newCommandId, newCorrelationId, type EventPublisher } from "./application/messaging.js";
+import { InMemoryEventPublisher, newCommandId, type EventPublisher } from "./application/messaging.js";
 import {
   InMemoryIdempotencyStore,
   errorMessage,
   handleIdempotency,
   headerValue,
   requestFingerprint,
+  requestContext as kitRequestContext,
   sendError,
-  type ErrorEnvelope as KitErrorEnvelope,
+  type ErrorEnvelope,
+  type IdempotencyStore,
+  type RequestContext,
 } from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 
@@ -45,12 +48,7 @@ export type ServiceMetadata = Readonly<{
   }>;
 }>;
 
-export type ErrorEnvelope = KitErrorEnvelope;
-
-export type RequestContext = Readonly<{
-  requestId: string;
-  correlationId: string;
-}>;
+export type { ErrorEnvelope, RequestContext };
 
 export type RequestTraceContext = RequestContext &
   Readonly<{
@@ -76,7 +74,7 @@ export type AppOptions = Readonly<{
   instrumentation?: InstrumentationHooks;
   publisher?: EventPublisher;
   application?: CustomerServiceApplication;
-  idempotencyStore?: InMemoryIdempotencyStore;
+  idempotencyStore?: IdempotencyStore;
 }>;
 
 type OTelSpan = Readonly<{
@@ -278,7 +276,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
 async function sendIdempotentUpdate(
   request: FastifyRequest,
   reply: FastifyReply,
-  idempotencyStore: InMemoryIdempotencyStore,
+  idempotencyStore: IdempotencyStore,
   fingerprintSource: unknown,
   update: () => Promise<Parameters<typeof supportCaseResponse>[0] | undefined>,
 ) {
@@ -294,7 +292,7 @@ async function sendIdempotentUpdate(
 
 async function withIdempotency(
   request: FastifyRequest,
-  idempotencyStore: InMemoryIdempotencyStore,
+  idempotencyStore: IdempotencyStore,
   fingerprintSource: unknown,
   operation: () => Promise<{ statusCode: number; body: unknown }>,
 ): Promise<{ statusCode: number; body: unknown } | undefined> {
@@ -534,10 +532,7 @@ function requestContext(request: AppRequest): RequestContext {
   if (existing) {
     return existing;
   }
-  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id;
-  const rawCorrelationId = headerValue(request.headers["x-correlation-id"]);
-  const correlationId = rawCorrelationId ? canonicalCorrelationId(rawCorrelationId) : newCorrelationId();
-  const context = { requestId, correlationId };
+  const context = kitRequestContext(request);
   requestContexts.set(request, context);
   return context;
 }
@@ -546,9 +541,6 @@ type AppRequest = FastifyRequest;
 
 const requestContexts = new WeakMap<AppRequest, RequestContext>();
 
-function canonicalCorrelationId(value: string): string {
-  return value.startsWith("corr-") ? value : `corr-${value}`;
-}
 
 function normalizeOptions(options: InstrumentationHooks | AppOptions): AppOptions {
   const candidate = options as AppOptions;

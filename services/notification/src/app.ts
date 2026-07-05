@@ -1,6 +1,13 @@
-import { randomUUID } from "node:crypto";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import {
+  errorMessage,
+  isFrameworkValidationError,
+  requestContext as kitRequestContext,
+  sendError,
+  type ErrorEnvelope,
+  type RequestContext,
+} from "@trainticket/ts-kit";
 
 import { serviceProfile } from "./profile.js";
 
@@ -22,17 +29,7 @@ export type ServiceMetadata = Readonly<{
   }>;
 }>;
 
-export type ErrorEnvelope = Readonly<{
-  code: string;
-  message: string;
-  correlationId: string;
-  details: Record<string, unknown>;
-}>;
-
-export type RequestContext = Readonly<{
-  requestId: string;
-  correlationId: string;
-}>;
+export type { ErrorEnvelope, RequestContext };
 
 export type RequestTraceContext = RequestContext &
   Readonly<{
@@ -146,7 +143,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
   });
 
   app.setErrorHandler((error, request, reply) => {
-    if (isValidationError(error)) {
+    if (isFrameworkValidationError(error)) {
       sendError(reply, 400, "VALIDATION_FAILED", errorMessage(error), requestContext(request));
       return;
     }
@@ -154,16 +151,6 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
   });
 
   return app;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
-}
-
-function isValidationError(error: unknown): error is Error & { statusCode?: number; validation?: unknown } {
-  return typeof error === "object" && error !== null && (
-    ("statusCode" in error && error.statusCode === 400) || "validation" in error
-  );
 }
 
 function healthBody(): HealthStatus {
@@ -183,28 +170,7 @@ function traceContext(request: AppRequest, context: RequestContext = requestCont
 }
 
 function requestContext(request: AppRequest): RequestContext {
-  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id ?? randomUUID();
-  const correlationId = headerValue(request.headers["x-correlation-id"]) ?? requestId;
-  return { requestId, correlationId };
+  return kitRequestContext(request);
 }
 
 type AppRequest = FastifyRequest;
-type AppReply = FastifyReply;
-
-function headerValue(value: string | string[] | undefined): string | undefined {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  return candidate && candidate.trim().length > 0 ? candidate : undefined;
-}
-
-function sendError(reply: AppReply, statusCode: number, code: string, message: string, context: RequestContext): void {
-  reply.status(statusCode).send(errorBody(code, message, context));
-}
-
-function errorBody(code: string, message: string, context: RequestContext): ErrorEnvelope {
-  return {
-    code,
-    message,
-    correlationId: context.correlationId,
-    details: {},
-  };
-}

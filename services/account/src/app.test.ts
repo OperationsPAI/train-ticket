@@ -115,7 +115,7 @@ describe("account HTTP API", () => {
     const create = await app.inject({
       method: "POST",
       url: "/api/v1/accounts",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c001", "x-correlation-id": "corr-http-create" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c001", "x-correlation-id": "corr-http-create" },
       payload: { accountId: "acct_http_001" },
     });
 
@@ -131,12 +131,12 @@ describe("account HTTP API", () => {
 
   it("freezes and unfreezes an account through the domain aggregate", async () => {
     const app = createApp();
-    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c002" }, payload: { accountId: "acct_freeze" } });
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c002" }, payload: { accountId: "acct_freeze" } });
 
     const freeze = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_freeze/freeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c003" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c003" },
       payload: { reason: "risk", operator: "ops", caseRef: "case-1" },
     });
     assert.equal(freeze.statusCode, 200);
@@ -145,7 +145,7 @@ describe("account HTTP API", () => {
     const unfreeze = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_freeze/unfreeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c004" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c004" },
       payload: { reason: "resolved" },
     });
     assert.equal(unfreeze.statusCode, 200);
@@ -154,12 +154,12 @@ describe("account HTTP API", () => {
 
   it("updates preferences and starts account closure", async () => {
     const app = createApp();
-    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c005" }, payload: { accountId: "acct_pref" } });
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c005" }, payload: { accountId: "acct_pref" } });
 
     const pref = await app.inject({
       method: "PATCH",
       url: "/api/v1/accounts/acct_pref/preferences",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c006" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c006" },
       payload: { preferenceKey: "language", value: "zh-CN" },
     });
     assert.equal(pref.statusCode, 200);
@@ -168,7 +168,7 @@ describe("account HTTP API", () => {
     const closure = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_pref/start-closure",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c007" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c007" },
       payload: {},
     });
     assert.equal(closure.statusCode, 200);
@@ -184,7 +184,7 @@ describe("account HTTP API", () => {
     const create = await app.inject({
       method: "POST",
       url: "/api/v1/accounts",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c017" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c017" },
       payload: { accountId: "acct_corr_once" },
     });
     const correlationId = String(create.headers["x-correlation-id"]);
@@ -194,7 +194,7 @@ describe("account HTTP API", () => {
     const invalid = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_corr_once/freeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c018" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c018" },
       payload: { reason: "risk" },
     });
     assert.equal(invalid.headers["x-correlation-id"], invalid.json().correlationId);
@@ -216,7 +216,7 @@ describe("account HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_missing/freeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c008", "x-correlation-id": "corr-validation" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c008", "x-correlation-id": "corr-validation" },
       payload: { reason: "risk" },
     });
 
@@ -236,24 +236,24 @@ describe("account HTTP API", () => {
     assert.equal(missing.statusCode, 400);
     assert.equal(missing.json().code, "VALIDATION_FAILED");
 
-    const first = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c009" }, payload: { accountId: "acct_idem" } });
-    const replay = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c009" }, payload: { accountId: "acct_idem" } });
+    const first = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c009" }, payload: { accountId: "acct_idem" } });
+    const replay = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c009" }, payload: { accountId: "acct_idem" } });
     assert.equal(replay.statusCode, 201);
     assert.deepEqual(replay.json(), first.json());
 
-    const reused = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c009" }, payload: { accountId: "acct_other" } });
+    const reused = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c009" }, payload: { accountId: "acct_other" } });
     assert.equal(reused.statusCode, 422);
     assert.equal(reused.json().code, "IDEMPOTENCY_KEY_REUSED");
   });
 
   it("maps unfreeze and start-closure invalid account states to PRECONDITION_FAILED", async () => {
     const app = createApp();
-    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c013" }, payload: { accountId: "acct_precondition" } });
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c013" }, payload: { accountId: "acct_precondition" } });
 
     const unfreeze = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_precondition/unfreeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c014" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c014" },
       payload: { reason: "not frozen" },
     });
     assert.equal(unfreeze.statusCode, 412);
@@ -263,7 +263,7 @@ describe("account HTTP API", () => {
     const closure = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_precondition/start-closure",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c015" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c015" },
       payload: {},
     });
     assert.equal(closure.statusCode, 200);
@@ -271,7 +271,7 @@ describe("account HTTP API", () => {
     const closureAgain = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_precondition/start-closure",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c016" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c016" },
       payload: {},
     });
     assert.equal(closureAgain.statusCode, 412);
@@ -281,13 +281,13 @@ describe("account HTTP API", () => {
 
   it("surfaces domain invariant violations as DOMAIN_RULE_VIOLATION", async () => {
     const app = createApp();
-    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c010" }, payload: { accountId: "acct_domain" } });
-    await app.inject({ method: "POST", url: "/api/v1/accounts/acct_domain/freeze", headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c011" }, payload: { reason: "risk", operator: "ops" } });
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c010" }, payload: { accountId: "acct_domain" } });
+    await app.inject({ method: "POST", url: "/api/v1/accounts/acct_domain/freeze", headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c011" }, payload: { reason: "risk", operator: "ops" } });
 
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_domain/freeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c012" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c012" },
       payload: { reason: "risk again", operator: "ops" },
     });
 
