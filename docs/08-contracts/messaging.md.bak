@@ -105,29 +105,35 @@ avoids field-level schema drift between producer and consumer.
 A `PaymentCaptured` event as stored in the `events:payment` stream:
 
 ```
-XADD events:payment 1720000000000-0 envelope "{\"eventId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c222\",\"eventType\":\"PaymentCaptured\",\"schemaVersion\":1,\"producer\":\"payment\",\"sourceCommandId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c333\",\"causationId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c555\",\"correlationId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c444\",\"occurredAt\":\"2026-07-03T10:30:00.000Z\",\"payload\":{\"paymentIntentId\":\"0194f2e0-7b3e-7610-0284-5c26e8b0c789\",\"capturedAmount\":{\"currency\":\"CNY\",\"minorUnits\":35000},\"channel\":\"wechat_pay\",\"channelTransactionId\":\"wx_txn_20260703_a1b2c3\"}}
+XADD events:payment 1720000000000-0 envelope "{\"eventId\":\"evt_pay_cap_20260703_a1b2c3d4\",\"eventType\":\"PaymentCaptured\",\"eventVersion\":1,\"source\":\"payment\",\"correlationId\":\"corr_journey_order_42\",\"causationId\":\"evt_pay_int_20260703_x1y2z3\",\"occurredAt\":\"2026-07-03T10:30:00.000Z\",\"payload\":{\"paymentId\":\"pay_98765\",\"paymentIntentId\":\"pi_12345\",\"journeyOrderId\":\"jo_42\",\"amount\":{\"currency\":\"CNY\",\"units\":35000,\"cents\":0},\"capturedAt\":\"2026-07-03T10:30:00.000Z\",\"channel\":\"wechat_pay\"},\"metadata\":{\"traceId\":\"trace_abc123\",\"tenantId\":\"default\"}}"
 ```
 
 The JSON value (formatted for readability) is:
 
 ```json
 {
-  "eventId": "0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+  "eventId": "evt_pay_cap_20260703_a1b2c3d4",
   "eventType": "PaymentCaptured",
-  "schemaVersion": 1,
-  "producer": "payment",
-  "sourceCommandId": "0194f2e0-7b3e-7610-0284-5c26e8b0c333",
-  "causationId": "0194f2e0-7b3e-7610-0284-5c26e8b0c555",
-  "correlationId": "0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+  "eventVersion": 1,
+  "source": "payment",
+  "correlationId": "corr_journey_order_42",
+  "causationId": "evt_pay_int_20260703_x1y2z3",
   "occurredAt": "2026-07-03T10:30:00.000Z",
   "payload": {
-    "paymentIntentId": "0194f2e0-7b3e-7610-0284-5c26e8b0c789",
-    "capturedAmount": {
+    "paymentId": "pay_98765",
+    "paymentIntentId": "pi_12345",
+    "journeyOrderId": "jo_42",
+    "amount": {
       "currency": "CNY",
-      "minorUnits": 35000
+      "units": 35000,
+      "cents": 0
     },
-    "channel": "wechat_pay",
-    "channelTransactionId": "wx_txn_20260703_a1b2c3"
+    "capturedAt": "2026-07-03T10:30:00.000Z",
+    "channel": "wechat_pay"
+  },
+  "metadata": {
+    "traceId": "trace_abc123",
+    "tenantId": "default"
   }
 }
 ```
@@ -168,7 +174,7 @@ consumer group (e.g., `journey-order-pod-0`, `payment-instance-a1b2`).
 Consumer groups are created at deployment time with:
 
 ```
-XGROUP CREATE events:<context> <group> $ MKSTREAM
+XGROUP CREATE events:<stream> <group> $ MKSTREAM
 ```
 
 - `$`: Start consuming only new messages (no historical replay). To replay from
@@ -386,8 +392,8 @@ interface EventPublisher {
      * Publish a domain event to the event bus.
      *
      * @param envelope  The fully-populated EventEnvelope (eventId, eventType,
-     *                  occurredAt, sourceCommandId, causationId, correlationId,
-     *                  schemaVersion, attributes, payload).
+     *                  source, correlationId, causationId, occurredAt, payload,
+     *                  metadata).
      *
      * Behavior:
      * - The implementation MUST determine the target stream from the `source`
@@ -557,7 +563,7 @@ must be redesigned in this document, not in the implementation task.
 ```
 Startup:
   for each required stream:
-    XGROUP CREATE events:<context> <group> $ MKSTREAM   (ignore "BUSYGROUP" error)
+    XGROUP CREATE events:<stream> <group> $ MKSTREAM   (ignore "BUSYGROUP" error)
 
 Polling loop:
   loop:
