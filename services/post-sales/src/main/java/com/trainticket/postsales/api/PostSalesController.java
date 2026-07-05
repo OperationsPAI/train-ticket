@@ -1,5 +1,6 @@
 package com.trainticket.postsales.api;
 
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.postsales.application.IdempotencyStore;
 import com.trainticket.postsales.application.PostSalesApplicationService;
 import com.trainticket.postsales.application.PostSalesMapper;
@@ -123,7 +124,7 @@ public class PostSalesController {
     }
 
     private static String commandId() {
-        return "cmd-" + UUID.randomUUID();
+        return PrefixedIds.newCommandId();
     }
 
     private static String fingerprint(Object request) {

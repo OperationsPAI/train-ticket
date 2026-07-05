@@ -11,13 +11,9 @@ class EventEnvelopeTest {
     @Test
     void createsValidEnvelope() {
         Instant now = Instant.now();
-        var envelope = new EventEnvelope(
-            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
-            "BookingSagaStarted", 1, "booking-orchestration",
-            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555",
-            "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444", now, new Object());
+        var envelope = new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "BookingSagaStarted", now, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c555", "booking-orchestration", 1, new Object());
 
-        assertEquals("evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222", envelope.eventId());
+        assertEquals("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222", envelope.eventId());
         assertEquals("BookingSagaStarted", envelope.eventType());
         assertEquals(1, envelope.schemaVersion());
         assertEquals("booking-orchestration", envelope.producer());
@@ -27,29 +23,21 @@ class EventEnvelopeTest {
 
     @Test
     void rejectsNullEventId() {
-        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope(
-            null, "BookingSagaStarted", 1, "booking-orchestration",
-            null, null, Instant.now(), null));
+        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope(null, "BookingSagaStarted", Instant.now(), null, null, "booking-orchestration", 1, null));
     }
 
     @Test
     void rejectsBlankEventType() {
-        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope(
-            "evt-123", "", 1, "booking-orchestration",
-            null, null, Instant.now(), null));
+        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope("evt-123", "", Instant.now(), null, null, "booking-orchestration", 1, null));
     }
 
     @Test
     void rejectsNullProducer() {
-        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope(
-            "evt-123", "BookingSagaStarted", 1, null,
-            null, null, Instant.now(), null));
+        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope("evt-123", "BookingSagaStarted", Instant.now(), null, null, null, 1, null));
     }
 
     @Test
     void rejectsNullOccurredAt() {
-        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope(
-            "evt-123", "BookingSagaStarted", 1, "booking-orchestration",
-            null, null, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new EventEnvelope("evt-123", "BookingSagaStarted", null, null, null, "booking-orchestration", 1, null));
     }
 }

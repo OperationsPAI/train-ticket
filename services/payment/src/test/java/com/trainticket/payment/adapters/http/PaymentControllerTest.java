@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.payment.RequestContextFilter;
+import com.trainticket.platformkit.http.ApiError;
+import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
 import com.trainticket.payment.application.PaymentCommandService;
 import java.time.Clock;
 import java.time.Instant;
@@ -17,13 +19,13 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class PaymentControllerTest {
     private PaymentController controller;
-    private PaymentExceptionHandler exceptionHandler;
+    private PlatformKitExceptionHandler exceptionHandler;
 
     @BeforeEach
     void setUp() {
         PaymentCommandService service = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), envelope -> { });
         controller = new PaymentController(service, new IdempotencyStore());
-        exceptionHandler = new PaymentExceptionHandler();
+        exceptionHandler = new PlatformKitExceptionHandler();
     }
 
     @Test
@@ -99,14 +101,15 @@ class PaymentControllerTest {
     void validationFailureReturnsCanonicalBody() {
         MockHttpServletRequest request = request("/api/v1/payment-intents");
         request.removeHeader(RequestContextFilter.CORRELATION_ID_HEADER);
-        request.addHeader(RequestContextFilter.CORRELATION_ID_HEADER, "corr-invalid");
+        request.addHeader(RequestContextFilter.CORRELATION_ID_HEADER, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a001");
+        request.setAttribute(com.trainticket.platformkit.http.CorrelationIds.CORRELATION_ATTRIBUTE, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a001");
         try {
             controller.createPaymentIntent("idem-invalid", new CreatePaymentIntentRequest("ord-1", null, null, null), request);
         } catch (ValidationException exception) {
-            ResponseEntity<ErrorResponse> response = exceptionHandler.validation(exception, request);
+            ResponseEntity<ApiError> response = exceptionHandler.handleApi(exception, request);
             assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
             assertEquals("VALIDATION_FAILED", response.getBody().code());
-            assertEquals("corr-invalid", response.getBody().correlationId());
+            assertEquals("corr-0194f2e0-7b3e-7610-8284-5c26e8b0a001", response.getBody().correlationId());
             assertTrue(response.getBody().details().isEmpty());
         }
     }
@@ -125,7 +128,8 @@ class PaymentControllerTest {
 
     private MockHttpServletRequest request(String uri) {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", uri);
-        request.addHeader(RequestContextFilter.CORRELATION_ID_HEADER, "corr-test");
+        request.addHeader(RequestContextFilter.CORRELATION_ID_HEADER, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a002");
+        request.setAttribute(com.trainticket.platformkit.http.CorrelationIds.CORRELATION_ATTRIBUTE, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a002");
         return request;
     }
 }

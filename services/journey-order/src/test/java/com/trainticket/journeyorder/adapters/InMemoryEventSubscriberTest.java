@@ -8,7 +8,7 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
+import java.util.Map;
 import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,13 +39,14 @@ class InMemoryEventSubscriberTest {
         );
 
         EventEnvelope envelope = new EventEnvelope(
-            "evt-" + UUID.randomUUID(),
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0b001",
             "JourneyOrderCreated",
-            1,
             Instant.now(),
-            "corr-" + UUID.randomUUID(),
-            "cmd-" + UUID.randomUUID(),
-            "journey-order"
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0b002",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0b003",
+            "journey-order",
+            1,
+            Map.of()
         );
 
         EventSubscriber.HandlerResult result1 = subscriber.simulateReceive(envelope);
@@ -68,13 +69,14 @@ class InMemoryEventSubscriberTest {
         );
 
         EventEnvelope envelope = new EventEnvelope(
-            "evt-" + UUID.randomUUID(),
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0b004",
             "PaymentCaptured",
-            1,
             Instant.now(),
-            "corr-" + UUID.randomUUID(),
-            "evt-" + UUID.randomUUID(),
-            "payment"
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0b005",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0b006",
+            "payment",
+            1,
+            Map.of()
         );
 
         for (int i = 0; i < 4; i++) {

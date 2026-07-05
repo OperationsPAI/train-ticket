@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
+import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -36,7 +37,7 @@ class TravelerControllerTest {
         );
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .addFilters(new RequestContextFilter(new NoOpRuntimeTracer()))
-            .setControllerAdvice(new ApiErrorHandler())
+            .setControllerAdvice(new PlatformKitExceptionHandler())
             .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
             .build();
     }
@@ -49,7 +50,7 @@ class TravelerControllerTest {
 
         MvcResult first = mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000001")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c001")
                 .header("X-Correlation-Id", "corr-018f0000-0000-7000-8000-000000000099")
                 .content(body))
             .andExpect(status().isCreated())
@@ -65,7 +66,7 @@ class TravelerControllerTest {
 
         mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000001")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c001")
                 .header("X-Correlation-Id", "corr-018f0000-0000-7000-8000-000000000099")
                 .content(body))
             .andExpect(status().isCreated())
@@ -83,7 +84,7 @@ class TravelerControllerTest {
 
         mockMvc.perform(patch("/api/v1/travelers/{travelerId}", travelerId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000002")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c002")
                 .content("{\"travelerType\":\"STUDENT\",\"contactPhone\":\"13900000000\"}"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.travelerType").value("STUDENT"))
@@ -91,7 +92,7 @@ class TravelerControllerTest {
 
         mockMvc.perform(post("/api/v1/travelers/{travelerId}/eligibility", travelerId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000003")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c003")
                 .content("{}"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.travelerId").value(travelerId))
@@ -103,12 +104,12 @@ class TravelerControllerTest {
     void validationFailureUsesCanonicalErrorShape() throws Exception {
         mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000004")
-                .header("X-Correlation-Id", "corr-err")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c004")
+                .header("X-Correlation-Id", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0e1")
                 .content("{\"travelerType\":\"ADULT\"}"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
-            .andExpect(jsonPath("$.correlationId").value("corr-err"))
+            .andExpect(jsonPath("$.correlationId").value("corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0e1"))
             .andExpect(jsonPath("$.details.accountId").exists());
     }
 
@@ -118,13 +119,13 @@ class TravelerControllerTest {
         String second = "{\"accountId\":\"acc-1\",\"travelerType\":\"CHILD\",\"givenName\":\"Wei\",\"familyName\":\"Zhang\"}";
         mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000005")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c005")
                 .content(first))
             .andExpect(status().isCreated());
 
         mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000005")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c005")
                 .content(second))
             .andExpect(status().isUnprocessableEntity())
             .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
@@ -143,7 +144,7 @@ class TravelerControllerTest {
 
         mockMvc.perform(patch("/api/v1/travelers/{travelerId}", travelerId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000007")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c007")
                 .content("{\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\"}"))
             .andExpect(status().isUnprocessableEntity())
             .andExpect(jsonPath("$.code").value("DOMAIN_RULE_VIOLATION"));
@@ -152,7 +153,7 @@ class TravelerControllerTest {
     private String createTraveler() throws Exception {
         MvcResult result = mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000006")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c006")
                 .content("{\"accountId\":\"acc-2\",\"travelerType\":\"ADULT\",\"givenName\":\"Mei\",\"familyName\":\"Li\",\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\"}"))
             .andExpect(status().isCreated())
             .andReturn();

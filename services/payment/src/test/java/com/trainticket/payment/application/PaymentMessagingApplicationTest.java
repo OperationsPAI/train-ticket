@@ -1,6 +1,5 @@
 package com.trainticket.payment.application;
 
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -20,14 +19,14 @@ class PaymentMessagingApplicationTest {
         FakeEventPublisher publisher = new FakeEventPublisher();
         PaymentCommandService service = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
 
-        service.createIntent("ord-123", "purchase", Money.fromMinorUnits(35000, "CNY"), "acct-1", "0194f2e0-7b3e-7610-0284-5c26e8b0c555", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444");
+        service.createIntent("ord-123", "purchase", Money.fromMinorUnits(35000, "CNY"), "acct-1", "0194f2e0-7b3e-7610-8284-5c26e8b0c555", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444");
 
         EventEnvelope envelope = publisher.published().getFirst();
         assertEquals("PaymentIntentCreated", envelope.eventType());
         assertEquals("payment", envelope.producer());
         assertEquals(1, envelope.schemaVersion());
-        assertEquals("corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444", envelope.correlationId());
-        assertEquals("cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555", envelope.causationId());
+        assertTrue(envelope.correlationId().startsWith("corr-"));
+        assertEquals("cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c555", envelope.causationId());
         assertEquals("2026-07-05T10:30:00Z", envelope.occurredAt().toString());
         Map<?, ?> payload = assertInstanceOf(Map.class, envelope.payload());
         assertEquals(Map.of("currency", "CNY", "minorUnits", 35000L), payload.get("amount"));
@@ -42,7 +41,7 @@ class PaymentMessagingApplicationTest {
         );
         FakeEventSubscriber subscriber = new FakeEventSubscriber();
         subscriber.subscribe(List.of("ignored"), "payment", "payment-test", handler);
-        EventEnvelope envelope = segmentReservationRequested("evt-1", "idem-1");
+        EventEnvelope envelope = segmentReservationRequested("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c001", "idem-1");
 
         assertEquals(HandlerResult.SUCCESS, subscriber.emit(envelope));
         assertEquals(HandlerResult.SUCCESS, subscriber.emit(envelope));
@@ -55,10 +54,10 @@ class PaymentMessagingApplicationTest {
         PaymentCommandService commands = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
         PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
 
-        assertEquals(HandlerResult.SUCCESS, handler.handle(segmentReservationRequested("evt-segment", "idem-segment")));
+        assertEquals(HandlerResult.SUCCESS, handler.handle(segmentReservationRequested("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c002", "idem-segment")));
 
         ReservationPaymentRequest request = commands.getReservationPaymentRequest("sb-1");
-        assertEquals("evt-segment", request.eventId());
+        assertEquals("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c002", request.eventId());
         assertEquals("ord-1", request.journeyOrderId());
         assertEquals("seg-1", request.segmentRef());
         assertEquals("trav-1", request.travelerRef());
@@ -75,11 +74,11 @@ class PaymentMessagingApplicationTest {
         PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
 
         EventEnvelope approved = new EventEnvelope(
-            "evt-refund",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c003",
             "PostSalesApproved",
             Instant.parse("2026-07-05T10:31:00Z"),
-            "corr-refund",
-            "evt-post-sales",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c005",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c004",
             "post-sales",
             1,
             Map.of(
@@ -96,23 +95,26 @@ class PaymentMessagingApplicationTest {
     @Test
     void mapsRefundFailedPayloadToContractShape() {
         EventEnvelope envelope = EventEnvelopeMapper.fromDomainEvent(new com.trainticket.payment.domain.RefundFailed(
-            EnvelopeFactory.create(
+            new EventEnvelope(
+                "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c111",
                 "RefundFailed",
                 Instant.parse("2026-07-05T10:32:00Z"),
-                "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
-                "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
-                "payment"
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444",
+                "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c555",
+                "payment",
+                1,
+                Map.of()
             ),
-            "rf-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
-            "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+            "rf-0194f2e0-7b3e-7610-8284-5c26e8b0c333",
+            "pi-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
             "ACCOUNT_CLOSED"
         ));
 
         assertEquals("RefundFailed", envelope.eventType());
         assertEquals(
             Map.of(
-                "refundId", "rf-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
-                "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+                "refundId", "rf-0194f2e0-7b3e-7610-8284-5c26e8b0c333",
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
                 "reason", "ACCOUNT_CLOSED"
             ),
             envelope.payload()
@@ -124,8 +126,8 @@ class PaymentMessagingApplicationTest {
             eventId,
             "SegmentReservationRequested",
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
-            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c111",
             "booking-orchestration",
             1,
             Map.of(

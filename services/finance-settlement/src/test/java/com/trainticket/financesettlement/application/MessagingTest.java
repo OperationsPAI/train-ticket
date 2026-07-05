@@ -24,8 +24,8 @@ class MessagingTest {
         FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
             new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
         RevenueRecognition recognition = RevenueRecognition.recognize(
-            "ord-1", "item-1", "fare", Money.of("CNY", "10.00"), "policy-v1", "evt-source",
-            Instant.parse("2026-07-05T10:00:00Z"), Instant.parse("2026-07-05T10:00:01Z"), "cmd-recognize", "corr-test");
+            "ord-1", "item-1", "fare", Money.of("CNY", "10.00"), "policy-v1", "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e205",
+            Instant.parse("2026-07-05T10:00:00Z"), Instant.parse("2026-07-05T10:00:01Z"), "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e201", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101");
 
         service.saveAndPublish(recognition);
 
@@ -33,8 +33,8 @@ class MessagingTest {
         assertTrue(envelope.eventId().startsWith("evt-"));
         assertEquals("RevenueRecognized", envelope.eventType());
         assertEquals("finance-settlement", envelope.producer());
-        assertEquals("corr-test", envelope.correlationId());
-        assertEquals("cmd-recognize", envelope.causationId());
+        assertEquals("corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101", envelope.correlationId());
+        assertEquals("cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e201", envelope.causationId());
         assertEquals(1, envelope.schemaVersion());
         assertEquals(8, EventEnvelope.class.getRecordComponents().length);
         assertEquals(1000L, ((Map<?, ?>) ((Map<?, ?>) envelope.payload()).get("amount")).get("minorUnits"));
@@ -45,11 +45,11 @@ class MessagingTest {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         String json = """
             {
-              \"eventId\": \"evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222\",
+              \"eventId\": \"evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222\",
               \"eventType\": \"PaymentCaptured\",
               \"schemaVersion\": 1,
               \"producer\": \"payment\",
-              \"correlationId\": \"corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444\",
+              \"correlationId\": \"corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444\",
               \"occurredAt\": \"2026-07-03T10:30:00.000Z\",
               \"payload\": {
                 \"paymentIntentId\": \"pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789\",
@@ -62,7 +62,7 @@ class MessagingTest {
 
         EventEnvelope envelope = objectMapper.readValue(json, EventEnvelope.class);
 
-        assertEquals("evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222", envelope.eventId());
+        assertEquals("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222", envelope.eventId());
         assertNull(envelope.causationId());
     }
 
@@ -74,7 +74,7 @@ class MessagingTest {
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC)
         );
         EventEnvelope envelope = new EventEnvelope(
-            "evt-duplicate", "PaymentCaptured", Instant.parse("2026-07-05T09:59:00Z"), "corr-test", "evt-source",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e003", "PaymentCaptured", Instant.parse("2026-07-05T09:59:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101", "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e205",
             "payment", 1, Map.of("paymentIntentId", "pi-1"));
 
         assertEquals(HandlerResult.SUCCESS, handler.handle(envelope));
@@ -98,7 +98,7 @@ class MessagingTest {
         );
 
         HandlerResult createdResult = handler.handle(new EventEnvelope(
-            "evt-intent-created", "PaymentIntentCreated", Instant.parse("2026-07-03T10:29:00Z"), "corr-payment", null,
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e006", "PaymentIntentCreated", Instant.parse("2026-07-03T10:29:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null,
             "payment", 1, Map.of(
                 "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
                 "businessRef", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321",
@@ -109,7 +109,7 @@ class MessagingTest {
                 "createdAt", "2026-07-03T10:29:00Z"
             )));
         HandlerResult capturedResult = handler.handle(new EventEnvelope(
-            "evt-captured", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"), "corr-payment", null,
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e007", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null,
             "payment", 1, Map.of(
                 "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
                 "capturedAmount", Map.of("currency", "CNY", "minorUnits", 35000),
@@ -139,7 +139,7 @@ class MessagingTest {
         );
 
         EventEnvelope captured = new EventEnvelope(
-            "evt-out-of-order", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"), "corr-payment", "cmd-payment",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e008", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e206",
             "payment", 1, Map.of(
                 "paymentIntentId", "pi-unknown",
                 "capturedAmount", Map.of("currency", "CNY", "minorUnits", 35000),
