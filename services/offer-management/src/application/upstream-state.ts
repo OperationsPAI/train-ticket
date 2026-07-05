@@ -17,6 +17,7 @@ type StoredItinerary = Readonly<{
   segmentRefs: readonly string[];
   modeBySegment: ReadonlyMap<string, OfferItem["mode"]>;
   availabilityBySegment: ReadonlyMap<string, StoredAvailability>;
+  inputHash?: string;
 }>;
 
 type StoredAvailability = Readonly<{
@@ -31,6 +32,7 @@ type StoredAvailability = Readonly<{
 
 type StoredFareQuote = Readonly<{
   quoteId: string;
+  inputHash: string;
   channelId: string;
   travelerRefs: readonly string[];
   currency: string;
@@ -56,7 +58,7 @@ export interface UpstreamStateRepository {
   saveItinerary(itinerary: StoredItinerary): Promise<void>;
   findItinerary(itineraryRef: string): Promise<StoredItinerary | undefined>;
   saveFareQuote(fareQuote: StoredFareQuote): Promise<void>;
-  findFareQuote(channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined>;
+  findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined>;
   saveTraveler(traveler: StoredTraveler): Promise<void>;
   findTraveler(travelerId: string): Promise<StoredTraveler | undefined>;
   removeTravelerEligibility(travelerId: string, eligibilityId: string): Promise<void>;
@@ -77,11 +79,11 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
   }
 
   async saveFareQuote(fareQuote: StoredFareQuote): Promise<void> {
-    this.fareQuotesByKey.set(fareQuoteKey(fareQuote.channelId, fareQuote.travelerRefs), fareQuote);
+    this.fareQuotesByKey.set(fareQuoteKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs), fareQuote);
   }
 
-  async findFareQuote(channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined> {
-    return this.fareQuotesByKey.get(fareQuoteKey(channelId, travelerRefs));
+  async findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined> {
+    return this.fareQuotesByKey.get(fareQuoteKey(itineraryRef, channelId, travelerRefs));
   }
 
   async saveTraveler(traveler: StoredTraveler): Promise<void> {
@@ -141,9 +143,10 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
     throw new DomainError("MISSING_ITINERARY_SNAPSHOT", `No consumed Trip Planning itinerary found for ${request.itineraryRef}`);
   }
 
-  const fareQuote = await repository.findFareQuote(request.channelId, request.travelerRefs);
+  const fareQuoteLookupKey = itinerary.inputHash ?? request.itineraryRef;
+  const fareQuote = await repository.findFareQuote(fareQuoteLookupKey, request.channelId, request.travelerRefs);
   if (!fareQuote) {
-    throw new DomainError("MISSING_FARE_QUOTE", "No consumed Fare Pricing quote matches channelId and travelerRefs");
+    throw new DomainError("MISSING_FARE_QUOTE", "No consumed Fare Pricing quote matches itinerary/fare input, channelId, and travelerRefs");
   }
 
   const travelers = await Promise.all(request.travelerRefs.map((travelerId) => repository.findTraveler(travelerId)));
@@ -249,6 +252,7 @@ async function storeItineraries(repository: UpstreamStateRepository, payload: Re
       segmentRefs,
       modeBySegment,
       availabilityBySegment,
+      inputHash: stringField(itinerary, "inputHash") ?? stringField(payload, "intentRef"),
     });
   }
 }
@@ -256,6 +260,7 @@ async function storeItineraries(repository: UpstreamStateRepository, payload: Re
 async function storeFareQuote(repository: UpstreamStateRepository, payload: Record<string, unknown>): Promise<void> {
   if (stringField(payload, "status") !== "QUOTED") return;
   const quoteId = stringField(payload, "quoteId");
+  const inputHash = stringField(payload, "inputHash");
   const channelId = stringField(payload, "channel") ?? stringField(payload, "channelId");
   const travelerRefs = stringArray(payload.travelerRefs);
   const currency = stringField(payload, "currency");
@@ -263,13 +268,18 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
   const validUntil = dateField(payload, "validUntil");
   const breakdown = objectField(payload, "breakdown");
   const ruleSnapshot = objectField(payload, "ruleSnapshot");
-  if (!quoteId || !channelId || travelerRefs.length === 0 || !currency || !validFrom || !validUntil || !breakdown) return;
+  if (!quoteId || !inputHash || !channelId || travelerRefs.length === 0 || !currency || !validFrom || !validUntil || !breakdown || !ruleSnapshot) return;
 
   const total = moneyField(breakdown, "total") ?? moneyField(payload, "total");
-  if (!total) return;
+  const ruleSnapshotRef = stringField(ruleSnapshot, "ruleSnapshotRef") ?? stringField(ruleSnapshot, "ruleSnapshotId") ?? stringField(ruleSnapshot, "snapshotId");
+  const pricingVersion = stringField(ruleSnapshot, "pricingVersion") ?? stringField(payload, "pricingVersion");
+  const ruleVersion = stringField(ruleSnapshot, "ruleVersion") ?? stringField(payload, "ruleVersion");
+  const priceSnapshotRef = stringField(breakdown, "priceSnapshotRef") ?? stringField(payload, "priceSnapshotRef");
+  if (!total || !ruleSnapshotRef || !pricingVersion || !ruleVersion || !priceSnapshotRef) return;
 
   await repository.saveFareQuote({
     quoteId,
+    inputHash,
     channelId,
     travelerRefs,
     currency,
@@ -277,10 +287,10 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
     validUntil,
     total,
     subtotal: moneyField(breakdown, "subtotal") ?? total,
-    ruleSnapshotRef: stringField(ruleSnapshot, "ruleSnapshotRef") ?? stringField(ruleSnapshot, "ruleSnapshotId") ?? stringField(ruleSnapshot, "snapshotId") ?? `${quoteId}:rules`,
-    pricingVersion: stringField(ruleSnapshot, "pricingVersion") ?? stringField(payload, "pricingVersion") ?? "pricing-v1",
-    ruleVersion: stringField(ruleSnapshot, "ruleVersion") ?? stringField(payload, "ruleVersion") ?? "rule-v1",
-    priceSnapshotRef: stringField(breakdown, "priceSnapshotRef") ?? stringField(payload, "priceSnapshotRef") ?? `${quoteId}:price`,
+    ruleSnapshotRef,
+    pricingVersion,
+    ruleVersion,
+    priceSnapshotRef,
     guaranteeLevel: priceGuarantee(stringField(payload, "priceGuaranteeLevel") ?? stringField(breakdown, "priceGuaranteeLevel")),
   });
 }
@@ -288,10 +298,12 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
 async function storeTravelerSnapshot(repository: UpstreamStateRepository, payload: Record<string, unknown>): Promise<void> {
   const travelerId = stringField(payload, "travelerId");
   if (!travelerId) return;
+  const parsedTravelerType = travelerType(stringField(payload, "travelerType"));
+  if (!parsedTravelerType) return;
   const existing = await repository.findTraveler(travelerId);
   await repository.saveTraveler({
     travelerId,
-    travelerType: travelerType(stringField(payload, "travelerType")),
+    travelerType: parsedTravelerType,
     maskedDocumentRef: stringField(payload, "maskedDocumentRef"),
     eligibilityRef: existing?.eligibilityRef,
   });
@@ -300,16 +312,20 @@ async function storeTravelerSnapshot(repository: UpstreamStateRepository, payloa
 async function storeEligibility(repository: UpstreamStateRepository, payload: Record<string, unknown>): Promise<void> {
   const travelerId = stringField(payload, "travelerId");
   const eligibility = objectField(payload, "eligibilityRef");
-  if (!travelerId || !eligibility) return;
+  const eligibilityId = stringField(eligibility, "eligibilityId") ?? stringField(eligibility, "id");
+  const eligibilityType = stringField(eligibility, "eligibilityType");
+  const eligibilitySource = stringField(eligibility, "eligibilitySource");
+  if (!travelerId || !eligibility || !eligibilityId || !eligibilityType || !eligibilitySource) return;
   const existing = await repository.findTraveler(travelerId);
+  if (!existing) return;
   await repository.saveTraveler({
     travelerId,
-    travelerType: existing?.travelerType ?? "ADULT",
-    maskedDocumentRef: existing?.maskedDocumentRef,
+    travelerType: existing.travelerType,
+    maskedDocumentRef: existing.maskedDocumentRef,
     eligibilityRef: {
-      eligibilityId: stringField(eligibility, "eligibilityId") ?? stringField(eligibility, "id") ?? "unknown",
-      eligibilityType: stringField(eligibility, "eligibilityType") ?? "UNKNOWN",
-      eligibilitySource: stringField(eligibility, "eligibilitySource") ?? "traveler-profile",
+      eligibilityId,
+      eligibilityType,
+      eligibilitySource,
       evidenceHash: stringField(eligibility, "evidenceHash"),
       verifiedAt: stringField(payload, "determinedAt"),
     },
@@ -327,27 +343,32 @@ async function expireEligibility(repository: UpstreamStateRepository, payload: R
 function availabilitySnapshots(itinerary: Record<string, unknown>, segmentRefs: readonly string[]): ReadonlyMap<string, StoredAvailability> {
   const bySegment = new Map<string, StoredAvailability>();
   for (const candidate of [...arrayOfObjects(itinerary.availabilitySnapshots), ...arrayOfObjects(itinerary.availabilityHint ? [itinerary.availabilityHint] : [])]) {
-    const segmentRef = stringField(candidate, "segmentRef") ?? stringField(candidate, "serviceSegmentRef") ?? (segmentRefs.length === 1 ? segmentRefs[0] : undefined);
+    const segmentRef = stringField(candidate, "segmentRef") ?? stringField(candidate, "serviceSegmentRef");
     if (!segmentRef) continue;
     const expiresAt = dateField(candidate, "expiresAt") ?? dateField(candidate, "validUntil");
     if (!expiresAt) continue;
-    const capturedAt = dateField(candidate, "capturedAt") ?? dateField(candidate, "updatedAt") ?? new Date();
+    const capturedAt = dateField(candidate, "capturedAt") ?? dateField(candidate, "updatedAt");
     const status = availabilityStatus(stringField(candidate, "status"));
+    const snapshotId = stringField(candidate, "snapshotId") ?? stringField(candidate, "availabilitySnapshotRef") ?? stringField(candidate, "availabilitySnapshotId");
+    const snapshotVersion = stringField(candidate, "snapshotVersion");
+    const sellable = booleanField(candidate, "sellable");
+    const confidence = availabilityConfidence(stringField(candidate, "confidence"));
+    if (!capturedAt || !status || !snapshotId || !snapshotVersion || sellable === undefined || !confidence) continue;
     bySegment.set(segmentRef, {
-      snapshotId: stringField(candidate, "snapshotId") ?? stringField(candidate, "availabilitySnapshotRef") ?? stringField(candidate, "availabilitySnapshotId") ?? `${segmentRef}:availability`,
-      snapshotVersion: stringField(candidate, "snapshotVersion") ?? "v1",
+      snapshotId,
+      snapshotVersion,
       capturedAt,
       expiresAt,
-      sellable: booleanField(candidate, "sellable") ?? status !== "UNAVAILABLE",
+      sellable,
       status,
-      confidence: mapStatusToConfidence(status, availabilityConfidence(stringField(candidate, "confidence"))),
+      confidence: mapStatusToConfidence(status, confidence),
     });
   }
   return bySegment;
 }
 
-function fareQuoteKey(channelId: string, travelerRefs: readonly string[]): string {
-  return `${channelId}:${travelerSetHash(travelerRefs)}`;
+function fareQuoteKey(inputHash: string, channelId: string, travelerRefs: readonly string[]): string {
+  return `${inputHash}:${channelId}:${travelerSetHash(travelerRefs)}`;
 }
 
 function travelerSetHash(travelerRefs: readonly string[]): string {
@@ -393,7 +414,7 @@ function moneyField(source: Record<string, unknown>, key: string): MoneyLike | u
   return currency && typeof minorUnits === "number" && Number.isFinite(minorUnits) ? { currency, minorUnits } : undefined;
 }
 
-function availabilityStatus(value: string | undefined): StoredAvailability["status"] {
+function availabilityStatus(value: string | undefined): StoredAvailability["status"] | undefined {
   switch (value) {
     case "AVAILABLE":
     case "LIMITED":
@@ -401,22 +422,22 @@ function availabilityStatus(value: string | undefined): StoredAvailability["stat
     case "UNAVAILABLE":
       return value;
     default:
-      return "AVAILABLE";
+      return undefined;
   }
 }
 
-function availabilityConfidence(value: string | undefined): AvailabilityConfidence {
+function availabilityConfidence(value: string | undefined): AvailabilityConfidence | undefined {
   switch (value) {
     case "confirmed-snapshot":
     case "low":
     case "estimated":
       return value;
     default:
-      return "estimated";
+      return undefined;
   }
 }
 
-function travelerType(value: string | undefined): TravelerType {
+function travelerType(value: string | undefined): TravelerType | undefined {
   switch (value) {
     case "ADULT":
     case "CHILD":
@@ -427,7 +448,7 @@ function travelerType(value: string | undefined): TravelerType {
     case "DISABLED":
       return value;
     default:
-      return "ADULT";
+      return undefined;
   }
 }
 
@@ -443,6 +464,9 @@ function transportMode(value: string | undefined): OfferItem["mode"] {
 
 function priceGuarantee(value: string | undefined): PriceGuaranteeLevel {
   switch (value) {
+    case "FIXED_UNTIL_EXPIRY":
+    case "FixedUntilExpiry":
+      return "FixedUntilExpiry";
     case "ESTIMATED_ONLY":
     case "EstimatedOnly":
       return "EstimatedOnly";

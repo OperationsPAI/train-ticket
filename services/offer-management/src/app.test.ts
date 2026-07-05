@@ -126,7 +126,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
   it("creates an offer and returns 201 with the expected response shape", async () => {
     const upstreamRepository = await seededUpstreamRepository();
     const app = createApp({}, { upstreamRepository });
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = uuidV7();
 
     const response = await app.inject({
       method: "POST",
@@ -170,7 +170,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
       method: "POST",
       url: "/api/v1/offers",
       headers: {
-        "idempotency-key": crypto.randomUUID(),
+        "idempotency-key": uuidV7(),
         "x-correlation-id": "corr-published-quote",
       },
       body: {
@@ -191,6 +191,25 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.ok(envelope.eventId.startsWith("evt-"));
     assert.equal((envelope.payload as { offerId: string }).offerId, response.json().offerId);
     assert.deepEqual((envelope.payload as { total: unknown }).total, response.json().total);
+    assert.deepEqual(Object.keys(envelope.payload).sort(), [
+      "accountId",
+      "availabilitySnapshotRefs",
+      "channelId",
+      "downstreamReference",
+      "expiresAt",
+      "fareQuoteRefs",
+      "itineraryId",
+      "itineraryVersion",
+      "offerId",
+      "offerVersion",
+      "priceGuaranteeLevel",
+      "priceSnapshotRef",
+      "quoteRequestId",
+      "ruleSnapshotRefs",
+      "total",
+      "travelerSetHash",
+    ].sort());
+    assert.equal(Object.hasOwn(envelope.payload, "boundaryProof"), false);
   });
 
   it("rejects request without Idempotency-Key with 400 VALIDATION_FAILED", async () => {
@@ -212,13 +231,55 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.ok(response.json().message.includes("Idempotency-Key"));
   });
 
+  it("rejects malformed Idempotency-Key values with 400 VALIDATION_FAILED", async () => {
+    const app = createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": "not-a-uuid-v7" },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().code, "VALIDATION_FAILED");
+    assert.ok(response.json().message.includes("UUID v7"));
+  });
+
+  it("maps publish failures to 503 UNAVAILABLE", async () => {
+    const publisher = new InMemoryEventPublisher();
+    publisher.failNext = true;
+    const upstreamRepository = await seededUpstreamRepository();
+    const app = createApp({}, { publisher, upstreamRepository });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": uuidV7() },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().code, "UNAVAILABLE");
+  });
+
   it("rejects missing required fields with 400 VALIDATION_FAILED", async () => {
     const app = createApp();
 
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/offers",
-      headers: { "idempotency-key": crypto.randomUUID() },
+      headers: { "idempotency-key": uuidV7() },
       body: { accountId: "acc-123" },
     });
 
@@ -232,7 +293,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/offers",
-      headers: { "idempotency-key": crypto.randomUUID() },
+      headers: { "idempotency-key": uuidV7() },
       body: {
         accountId: "acc-123",
         channelId: "web",
@@ -253,7 +314,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/offers",
-      headers: { "idempotency-key": crypto.randomUUID() },
+      headers: { "idempotency-key": uuidV7() },
       body: {
         accountId: "acc-123",
         channelId: "web",
@@ -270,7 +331,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
   it("idempotent replay returns the original 201 response", async () => {
     const upstreamRepository = await seededUpstreamRepository();
     const app = createApp({}, { upstreamRepository });
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = uuidV7();
 
     const request = {
       method: "POST" as const,
@@ -295,7 +356,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
   it("rejects idempotency key reused with different body using 422 IDEMPOTENCY_KEY_REUSED", async () => {
     const upstreamRepository = await seededUpstreamRepository();
     const app = createApp({}, { upstreamRepository });
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = uuidV7();
 
     await app.inject({
       method: "POST",
@@ -330,7 +391,7 @@ function makeInvalidQuoteCommand(request: { accountId: string; channelId: string
   const quotedAt = new Date("2026-07-05T10:00:00.000Z");
   const staleExpiry = new Date("2026-07-05T09:59:00.000Z");
   return {
-    offerId: `off-${crypto.randomUUID()}`,
+    offerId: `off-${uuidV7()}`,
     quoteRequestId: "quote-request-invalid",
     accountId: request.accountId,
     channelId: request.channelId,
@@ -405,7 +466,7 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   }));
   await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
     quoteId: "fq-1",
-    inputHash: "input-1",
+    inputHash: "intent-1",
     travelerRefs: ["tvl-001", "tvl-002"],
     channel: "web",
     currency: "CNY",
@@ -417,7 +478,7 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   }));
   await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
     quoteId: "fq-2",
-    inputHash: "input-2",
+    inputHash: "intent-1",
     travelerRefs: ["tvl-001"],
     channel: "web",
     currency: "CNY",
@@ -434,14 +495,31 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
 
 function makeEnvelope(eventType: string, producer: string, payload: Record<string, unknown>): EventEnvelope {
   return {
-    eventId: `evt-${crypto.randomUUID()}`,
+    eventId: `evt-${uuidV7()}`,
     eventType,
     schemaVersion: 1,
     producer,
-    correlationId: `corr-${crypto.randomUUID()}`,
+    correlationId: `corr-${uuidV7()}`,
     occurredAt: new Date().toISOString(),
     payload,
   };
+}
+
+function uuidV7(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const timestamp = BigInt(Date.now());
+
+  bytes[0] = Number((timestamp >> 40n) & 0xffn);
+  bytes[1] = Number((timestamp >> 32n) & 0xffn);
+  bytes[2] = Number((timestamp >> 24n) & 0xffn);
+  bytes[3] = Number((timestamp >> 16n) & 0xffn);
+  bytes[4] = Number((timestamp >> 8n) & 0xffn);
+  bytes[5] = Number(timestamp & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
@@ -453,7 +531,7 @@ describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
   it("returns 200 with full offer details for an existing offer", async () => {
     const upstreamRepository = await seededUpstreamRepository();
     const app = createApp({}, { upstreamRepository });
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = uuidV7();
 
     // Create an offer first
     const createResponse = await app.inject({

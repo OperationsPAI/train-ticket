@@ -19,9 +19,20 @@ export class RedisEventSubscriber implements EventSubscriber {
   private redis: Redis;
   private running = false;
   private readonly processedEventIds = new Set<string>();
+  private startedPromise: Promise<void>;
+  private resolveStarted!: () => void;
+  private rejectStarted!: (error: unknown) => void;
 
   constructor(redis: Redis) {
     this.redis = redis;
+    this.startedPromise = new Promise((resolve, reject) => {
+      this.resolveStarted = resolve;
+      this.rejectStarted = reject;
+    });
+  }
+
+  started(): Promise<void> {
+    return this.startedPromise;
   }
 
   async subscribe(
@@ -34,15 +45,22 @@ export class RedisEventSubscriber implements EventSubscriber {
     this.running = true;
 
     // Create consumer groups (ignore BUSYGROUP errors)
-    for (const stream of streams) {
-      try {
-        await (this.redis as any).xgroup("CREATE", stream, group, "$", "MKSTREAM");
-      } catch (err: any) {
-        // BUSYGROUP means the group already exists — that's fine
-        if (!String(err).includes("BUSYGROUP")) {
-          throw new SubscribeFailed(`Failed to create consumer group ${group} on ${stream}`, err);
+    try {
+      for (const stream of streams) {
+        try {
+          await (this.redis as any).xgroup("CREATE", stream, group, "$", "MKSTREAM");
+        } catch (err: any) {
+          // BUSYGROUP means the group already exists — that's fine
+          if (!String(err).includes("BUSYGROUP")) {
+            throw new SubscribeFailed(`Failed to create consumer group ${group} on ${stream}`, err);
+          }
         }
       }
+      this.resolveStarted();
+    } catch (error) {
+      this.running = false;
+      this.rejectStarted(error);
+      throw error;
     }
 
     // Start background recovery loop
