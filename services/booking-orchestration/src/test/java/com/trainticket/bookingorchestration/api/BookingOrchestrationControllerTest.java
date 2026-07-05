@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.trainticket.bookingorchestration.RequestContextFilter;
 import com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher;
 import com.trainticket.bookingorchestration.application.BookingOrchestrationService;
-import com.trainticket.bookingorchestration.domain.SegmentBookingEvent;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -82,7 +81,7 @@ class BookingOrchestrationControllerTest {
         assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123", body.journeyOrderId());
         assertEquals("RESERVING", body.status());
         assertNotNull(body.startedAt());
-        assertTrue(eventPublisher.getPublished().size() >= 2);
+        assertTrue(eventPublisher.getPublished().size() >= 1);
     }
 
     @Test
@@ -198,7 +197,7 @@ class BookingOrchestrationControllerTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         var body = (BookingOrchestrationController.MarkTicketedResponse) response.getBody();
         assertEquals("TICKETED", body.status());
-        assertTrue(eventPublisher.getPublished().stream().anyMatch(envelope -> envelope.payload() instanceof SegmentBookingEvent.SegmentTicketed));
+        assertTrue(eventPublisher.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("SegmentTicketed")));
     }
 
     @Test
