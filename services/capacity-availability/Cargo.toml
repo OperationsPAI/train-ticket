@@ -11,8 +11,19 @@ path = "src/lib.rs"
 opentelemetry = "0.32.0"
 axum = "0.8.9"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 shared-kernel = { path = "../../platform/shared-kernel-rust" }
+tokio = { version = "1.48", features = ["macros", "rt", "sync"] }
+uuid = { version = "1.0", features = ["v7", "fast-rng"] }
 
 [dev-dependencies]
-tokio = { version = "1.48", features = ["macros", "rt"] }
 tower = { version = "0.5.3", features = ["util"] }
+
+[features]
+default = []
+redis-impl = ["redis"]
+
+[dependencies.redis]
+version = "0.25"
+features = ["tokio-comp", "connection-manager"]
+optional = true
