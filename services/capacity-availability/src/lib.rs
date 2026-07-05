@@ -67,15 +67,15 @@ pub fn router() -> Router {
 
 /// Construct the full router with Redis Streams publisher/subscriber wiring.
 #[cfg(feature = "redis-impl")]
-pub fn router() -> Router {
+pub async fn build_runtime() -> Router {
     use crate::ports::EventSubscriber;
 
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.to_string());
-    let publisher = tokio::runtime::Handle::current()
-        .block_on(adapters::messaging::redis_publisher::RedisEventPublisher::new(&redis_url))
+    let publisher = adapters::messaging::redis_publisher::RedisEventPublisher::new(&redis_url)
+        .await
         .expect("failed to initialize Redis event publisher");
-    let subscriber = tokio::runtime::Handle::current()
-        .block_on(adapters::messaging::redis_subscriber::RedisEventSubscriber::new(&redis_url))
+    let subscriber = adapters::messaging::redis_subscriber::RedisEventSubscriber::new(&redis_url)
+        .await
         .expect("failed to initialize Redis event subscriber");
 
     let service = std::sync::Arc::new(CapacityService::new(std::sync::Arc::new(publisher)));
@@ -90,6 +90,14 @@ pub fn router() -> Router {
         .expect("failed to start Redis event subscriber");
 
     router_with_service(service)
+}
+
+/// Synchronous router construction is reserved for tests when redis-impl is enabled.
+#[cfg(all(feature = "redis-impl", test))]
+pub fn router() -> Router {
+    router_with_service(std::sync::Arc::new(CapacityService::new(
+        std::sync::Arc::new(adapters::messaging::InMemoryEventPublisher::new()),
+    )))
 }
 
 /// Construct a router for tests or alternate bootstraps that provide their own application service.

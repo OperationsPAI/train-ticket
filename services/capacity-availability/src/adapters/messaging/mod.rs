@@ -79,34 +79,40 @@ impl SubscriberState {
         self.dedup.lock().unwrap().contains(event_id)
     }
 
-    pub fn process_received(
+    pub fn decide_action(
         &self,
         event: &ReceivedEvent,
         handler: &dyn Fn(WireEnvelope) -> HandlerResult,
     ) -> SubscriberAction {
         if event.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
-            self.dedup
-                .lock()
-                .unwrap()
-                .insert(event.envelope.event_id.clone());
             return SubscriberAction::DeadLetterAndAck;
         }
 
-        {
-            let mut dedup = self.dedup.lock().unwrap();
-            if !dedup.insert(event.envelope.event_id.clone()) {
-                return SubscriberAction::Ack;
-            }
+        if self.has_seen(&event.envelope.event_id) {
+            return SubscriberAction::Ack;
         }
 
         match handler(event.envelope.clone()) {
             HandlerResult::Success => SubscriberAction::Ack,
-            HandlerResult::TransientError(_) => {
-                self.dedup.lock().unwrap().remove(&event.envelope.event_id);
-                SubscriberAction::LeavePending
-            }
+            HandlerResult::TransientError(_) => SubscriberAction::LeavePending,
             HandlerResult::FatalError(_) => SubscriberAction::DeadLetterAndAck,
         }
+    }
+
+    pub fn mark_consumed(&self, event_id: &str) {
+        self.dedup.lock().unwrap().insert(event_id.to_string());
+    }
+
+    pub fn process_received(
+        &self,
+        event: &ReceivedEvent,
+        handler: &dyn Fn(WireEnvelope) -> HandlerResult,
+    ) -> SubscriberAction {
+        let action = self.decide_action(event, handler);
+        if matches!(action, SubscriberAction::Ack | SubscriberAction::DeadLetterAndAck) {
+            self.mark_consumed(&event.envelope.event_id);
+        }
+        action
     }
 }
 
@@ -180,13 +186,13 @@ impl EventSubscriber for InMemoryEventSubscriber {
 pub mod redis_publisher {
     use super::*;
     use redis::RedisResult;
-    use std::sync::Arc;
-    use tokio::sync::Mutex as TokioMutex;
+    use tokio::sync::mpsc;
 
     const RETENTION_MAXLEN: usize = 100_000;
 
+    #[derive(Clone)]
     pub struct RedisEventPublisher {
-        connection: Arc<TokioMutex<redis::aio::ConnectionManager>>,
+        tx: mpsc::UnboundedSender<WireEnvelope>,
     }
 
     impl RedisEventPublisher {
@@ -197,49 +203,72 @@ pub mod redis_publisher {
                 .get_connection_manager()
                 .await
                 .map_err(|e| PublishFailed(format!("failed to connect to redis: {}", e)))?;
-            Ok(Self {
-                connection: Arc::new(TokioMutex::new(conn)),
-            })
+            Ok(Self::from_connection(conn))
+        }
+
+        pub fn from_connection(conn: redis::aio::ConnectionManager) -> Self {
+            let (tx, rx) = mpsc::unbounded_channel();
+            tokio::spawn(Self::drain_loop(conn, rx));
+            Self { tx }
+        }
+
+        async fn drain_loop(
+            mut conn: redis::aio::ConnectionManager,
+            mut rx: mpsc::UnboundedReceiver<WireEnvelope>,
+        ) {
+            while let Some(envelope) = rx.recv().await {
+                if let Err(error) = publish_with_retry(&mut conn, envelope).await {
+                    eprintln!(
+                        "capacity-availability publisher parked event after retries: {}",
+                        error.0
+                    );
+                }
+            }
         }
     }
 
     impl EventPublisher for RedisEventPublisher {
         fn publish(&self, envelope: &WireEnvelope) -> Result<(), PublishFailed> {
-            let json = serde_json::to_string(envelope)
-                .map_err(|e| PublishFailed(format!("serialization error: {}", e)))?;
-            let stream_key = format!("events:{}", envelope.producer);
-            let conn = self.connection.clone();
-
-            tokio::runtime::Handle::current().block_on(async move {
-                let mut last_error = None;
-                for attempt in 0..3 {
-                    let mut conn = conn.lock().await;
-                    let result: RedisResult<String> = redis::cmd("XADD")
-                        .arg(&stream_key)
-                        .arg("MAXLEN")
-                        .arg("~")
-                        .arg(RETENTION_MAXLEN)
-                        .arg("*")
-                        .arg("envelope")
-                        .arg(&json)
-                        .query_async(&mut *conn)
-                        .await;
-                    match result {
-                        Ok(_) => return Ok(()),
-                        Err(err) => last_error = Some(err.to_string()),
-                    }
-                    drop(conn);
-                    if attempt < 2 {
-                        let backoff_ms = 50u64 * (1u64 << attempt);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    }
-                }
-                Err(PublishFailed(format!(
-                    "redis XADD failed after retries: {}",
-                    last_error.unwrap_or_else(|| "unknown error".to_string())
-                )))
-            })
+            // At-least-once semantics: synchronous callers observe enqueue failure;
+            // a background task owns Redis I/O and retries transient XADD failures.
+            self.tx
+                .send(envelope.clone())
+                .map_err(|e| PublishFailed(format!("redis publish queue unavailable: {}", e)))
         }
+    }
+
+    pub async fn publish_with_retry(
+        conn: &mut redis::aio::ConnectionManager,
+        envelope: WireEnvelope,
+    ) -> Result<(), PublishFailed> {
+        let json = serde_json::to_string(&envelope)
+            .map_err(|e| PublishFailed(format!("serialization error: {}", e)))?;
+        let stream_key = format!("events:{}", envelope.producer);
+        let mut last_error = None;
+        for attempt in 0..5 {
+            let result: RedisResult<String> = redis::cmd("XADD")
+                .arg(&stream_key)
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(RETENTION_MAXLEN)
+                .arg("*")
+                .arg("envelope")
+                .arg(&json)
+                .query_async(conn)
+                .await;
+            match result {
+                Ok(_) => return Ok(()),
+                Err(err) => last_error = Some(err.to_string()),
+            }
+            if attempt < 4 {
+                let backoff_ms = 50u64 * (1u64 << attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+        }
+        Err(PublishFailed(format!(
+            "redis XADD failed after retries: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        )))
     }
 }
 
@@ -519,7 +548,7 @@ pub mod redis_subscriber {
                         envelope,
                         delivery_attempts,
                     };
-                    match state.process_received(&received, handler) {
+                    match state.decide_action(&received, handler) {
                         SubscriberAction::Ack => {
                             Self::ack(
                                 connection.clone(),
@@ -528,6 +557,7 @@ pub mod redis_subscriber {
                                 &received.entry_id,
                             )
                             .await?;
+                            state.mark_consumed(&received.envelope.event_id);
                         }
                         SubscriberAction::LeavePending => {}
                         SubscriberAction::DeadLetterAndAck => {
@@ -540,6 +570,7 @@ pub mod redis_subscriber {
                                 &received.entry_id,
                             )
                             .await?;
+                            state.mark_consumed(&received.envelope.event_id);
                         }
                     }
                 }
@@ -633,10 +664,23 @@ pub mod redis_subscriber {
             let connection = self.connection.clone();
             let state = self.state.clone();
 
-            tokio::runtime::Handle::current().block_on(async {
-                let mut conn = connection.lock().await;
-                Self::create_groups(&mut conn, &selected_streams, &selected_group).await
-            })?;
+            tokio::spawn({
+                let connection = connection.clone();
+                let streams = selected_streams.clone();
+                let group = selected_group.clone();
+                async move {
+                    let result = {
+                        let mut conn = connection.lock().await;
+                        Self::create_groups(&mut conn, &streams, &group).await
+                    };
+                    if let Err(err) = result {
+                        eprintln!(
+                            "capacity-availability subscriber group creation failed: {}",
+                            err.0
+                        );
+                    }
+                }
+            });
 
             tokio::spawn(Self::subscription_loop(
                 connection,
