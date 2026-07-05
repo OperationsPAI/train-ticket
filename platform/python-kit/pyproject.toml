@@ -1,0 +1,20 @@
+[project]
+name = "train-ticket-platform"
+version = "0.1.0"
+description = "Shared Python HTTP and messaging infrastructure for Train Ticket services"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.138.1",
+  "redis>=5.0.0",
+  "uuid6>=2024.7.10",
+]
+
+[dependency-groups]
+dev = [
+  "httpx2>=2.5.0",
+  "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12"]
+build-backend = "uv_build"
