@@ -117,7 +117,7 @@ class RedisEventSubscriber(EventSubscriber):
             return
         try:
             raw = json.loads(envelope_json)
-            envelope = EventEnvelope(**raw)
+            envelope = self._deserialize_envelope(raw)
             if self._already_seen(envelope.eventId):
                 self._client.xack(stream, group, entry_id)
                 return
@@ -132,6 +132,19 @@ class RedisEventSubscriber(EventSubscriber):
         elif result.status is HandlerStatus.FATAL_ERROR:
             self._move_to_dlq(stream, {"envelope": envelope_json})
             self._client.xack(stream, group, entry_id)
+
+    @staticmethod
+    def _deserialize_envelope(raw: dict[str, Any]) -> EventEnvelope:
+        return EventEnvelope(
+            eventId=raw["eventId"],
+            eventType=raw["eventType"],
+            occurredAt=raw["occurredAt"],
+            correlationId=raw["correlationId"],
+            producer=raw["producer"],
+            schemaVersion=raw["schemaVersion"],
+            payload=raw["payload"],
+            causationId=raw.get("causationId"),
+        )
 
     def _already_seen(self, event_id: str) -> bool:
         with self._seen_event_ids_lock:
