@@ -89,7 +89,10 @@ pub fn build_runtime() -> Result<(Router, JoinHandle<()>), application::Subscrib
                 streams,
                 group,
                 consumer_name,
-                Box::new(move |envelope| handler_service.handle_subscribed_event(envelope)),
+                Box::new(move |envelope| {
+                    let service = Arc::clone(&handler_service);
+                    Box::pin(async move { service.handle_subscribed_event(envelope).await })
+                }),
             )
             .await
             .expect("entitlement-ticketing Redis subscriber stopped");
@@ -2285,22 +2288,43 @@ impl InMemoryEntitlementService {
         );
     }
 
-    fn handle_subscribed_event(
+    fn pending_bus_publication(
+        &self,
+        key: &PendingEventKey,
+    ) -> ApiResult<Option<PendingBusPublication>> {
+        let state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        Ok(state.pending_events.get(key).cloned())
+    }
+
+    fn clear_pending_bus_publication(&self, key: &PendingEventKey) {
+        self.state
+            .lock()
+            .expect("entitlement service lock poisoned")
+            .pending_events
+            .remove(key);
+    }
+
+    async fn handle_subscribed_event(
         &self,
         envelope: application::EventEnvelope,
     ) -> Result<(), application::HandlerError> {
         self.apply_subscribed_event(envelope)
+            .await
             .map_err(|error| match error {
                 ApiErrorKind::Unavailable(message) => application::HandlerError::Transient(message),
                 other => application::HandlerError::Fatal(other.message().to_string()),
             })
     }
 
-    fn apply_subscribed_event(&self, envelope: application::EventEnvelope) -> ApiResult<()> {
+    async fn apply_subscribed_event(&self, envelope: application::EventEnvelope) -> ApiResult<()> {
         match envelope.event_type.as_str() {
             "BoardingVerified" => self.apply_boarding_verified(envelope.payload),
             "PostSalesApproved" => {
                 self.apply_post_sales_approved(envelope.payload, envelope.correlation_id)
+                    .await
             }
             "SegmentTicketed" => Ok(()),
             _ => Ok(()),
@@ -2342,7 +2366,11 @@ impl InMemoryEntitlementService {
         Ok(())
     }
 
-    fn apply_post_sales_approved(&self, payload: Value, correlation_id: String) -> ApiResult<()> {
+    async fn apply_post_sales_approved(
+        &self,
+        payload: Value,
+        correlation_id: String,
+    ) -> ApiResult<()> {
         let case_id = payload
             .get("caseId")
             .and_then(Value::as_str)
@@ -2360,24 +2388,30 @@ impl InMemoryEntitlementService {
             return Ok(());
         }
 
-        let payloads = self.void_entitlements_for_post_sales(&order_id, &case_id, &actions)?;
-        for payload in payloads {
-            publish_api_event_blocking(
-                Arc::clone(&self.publisher),
-                "EntitlementVoided",
-                serde_json::to_value(&payload).unwrap_or_else(|_| json!({})),
+        let pending_keys =
+            self.ensure_void_entitlements_for_post_sales(&order_id, &case_id, &actions)?;
+        for key in pending_keys {
+            let Some(pending) = self.pending_bus_publication(&key)? else {
+                continue;
+            };
+            publish_api_event_value(
+                self.publisher.as_ref(),
+                pending.event_type,
+                pending.payload.clone(),
                 correlation_id.clone(),
-            )?;
+            )
+            .await?;
+            self.clear_pending_bus_publication(&key);
         }
         Ok(())
     }
 
-    fn void_entitlements_for_post_sales(
+    fn ensure_void_entitlements_for_post_sales(
         &self,
         order_id: &str,
         case_id: &str,
         actions: &[ApprovedVoidAction],
-    ) -> ApiResult<Vec<EntitlementVoidedPayload>> {
+    ) -> ApiResult<Vec<PendingEventKey>> {
         let mut state = self
             .state
             .lock()
@@ -2392,7 +2426,7 @@ impl InMemoryEntitlementService {
             return Ok(Vec::new());
         }
 
-        let mut payloads = Vec::new();
+        let mut pending_keys = Vec::new();
         for entitlement_id in entitlement_ids {
             if !actions
                 .iter()
@@ -2400,14 +2434,13 @@ impl InMemoryEntitlementService {
             {
                 continue;
             }
-            let reason = actions
+            let action = actions
                 .iter()
-                .find(|action| action.matches_entitlement(&entitlement_id))
+                .find(|action| action.matches_entitlement(&entitlement_id));
+            let reason = action
                 .map(|action| action.reason.clone())
                 .unwrap_or(VoidReason::Refund);
-            let policy = actions
-                .iter()
-                .find(|action| action.matches_entitlement(&entitlement_id))
+            let policy = action
                 .map(|action| action.policy.clone())
                 .unwrap_or(VoidPolicy::Normal);
             let segment_booking_id = state
@@ -2415,6 +2448,12 @@ impl InMemoryEntitlementService {
                 .get(&entitlement_id)
                 .map(|entitlement| entitlement.segment_booking_id.clone())
                 .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?;
+            let pending_key = PendingEventKey::new(&entitlement_id, "EntitlementVoided");
+            if state.pending_events.contains_key(&pending_key) {
+                pending_keys.push(pending_key);
+                continue;
+            }
+
             let aggregate = state.aggregates.get_mut(&entitlement_id).ok_or_else(|| {
                 ApiErrorKind::NotFound("entitlement aggregate not found".to_string())
             })?;
@@ -2438,16 +2477,24 @@ impl InMemoryEntitlementService {
                 entitlement.status = EntitlementStatusDto::Voided;
                 entitlement.voided_at = Some(voided_at.clone());
             }
-            payloads.push(EntitlementVoidedPayload {
-                entitlement_id,
+            let payload = EntitlementVoidedPayload {
+                entitlement_id: entitlement_id.clone(),
                 segment_booking_id,
                 voided_at,
                 reason: reason_to_contract(&reason),
                 policy: policy_to_contract(&policy),
                 business_case_ref: Some(case_id.to_string()),
-            });
+            };
+            state.pending_events.insert(
+                pending_key.clone(),
+                PendingBusPublication {
+                    event_type: "EntitlementVoided",
+                    payload: serde_json::to_value(payload).unwrap_or_else(|_| json!({})),
+                },
+            );
+            pending_keys.push(pending_key);
         }
-        Ok(payloads)
+        Ok(pending_keys)
     }
 }
 
@@ -2458,6 +2505,7 @@ struct InMemoryState {
     credential_registry: CredentialRegistry,
     idempotency: HashMap<String, IdempotentRecord>,
     pending_publications: HashMap<String, PendingPublication>,
+    pending_events: HashMap<PendingEventKey, PendingBusPublication>,
     sequence: u64,
 }
 
@@ -2473,6 +2521,27 @@ struct PendingPublication {
     event_type: &'static str,
     payload: Value,
     response: IdempotentResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PendingEventKey {
+    aggregate_id: String,
+    event_type: &'static str,
+}
+
+impl PendingEventKey {
+    fn new(aggregate_id: &str, event_type: &'static str) -> Self {
+        Self {
+            aggregate_id: aggregate_id.to_string(),
+            event_type,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingBusPublication {
+    event_type: &'static str,
+    payload: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -2993,27 +3062,6 @@ fn credential_ref(credential_no: &str) -> Result<CredentialRef, EntitlementError
     )
 }
 
-fn publish_api_event_blocking(
-    publisher: Arc<dyn application::EventPublisher>,
-    event_type: &str,
-    payload: Value,
-    correlation_id: String,
-) -> ApiResult<()> {
-    let event_type = event_type.to_string();
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| ApiErrorKind::Unavailable(error.to_string()))?
-            .block_on(async move {
-                publish_api_event_value(publisher.as_ref(), &event_type, payload, correlation_id)
-                    .await
-            })
-    })
-    .join()
-    .map_err(|_| ApiErrorKind::Unavailable("publisher worker panicked".to_string()))?
-}
-
 async fn publish_api_event<T: Serialize>(
     publisher: &dyn application::EventPublisher,
     event_type: &str,
@@ -3126,6 +3174,65 @@ mod api_domain_wiring_tests {
     }
 
     #[tokio::test]
+    async fn post_sales_retry_after_publish_failure_publishes_pending_event_once() {
+        let publisher = Arc::new(adapters::messaging::InMemoryEventPublisher::default());
+        let service = InMemoryEntitlementService::new(publisher.clone());
+        let issue_response = service
+            .issue(
+                IssueEntitlementRequest {
+                    segment_booking_id: "sb-0194f2e0-7b3e-7610-0284-5c26e8b0e111".to_string(),
+                    journey_order_id: "ord-0194f2e0-7b3e-7610-0284-5c26e8b0e222".to_string(),
+                    traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0e333".to_string(),
+                    segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0e444".to_string(),
+                    issue_purpose: IssuePurposeDto::Initial,
+                },
+                "018f2e07-b3e7-7100-8284-5c26e8b0e001".to_string(),
+                "corr-post-sales-retry".to_string(),
+            )
+            .await
+            .unwrap();
+        publisher.fail_next("redis unavailable");
+        let envelope = application::EventEnvelope::new(
+            "PostSalesApproved",
+            current_rfc3339(),
+            "corr-0194f2e0-7b3e-7610-0284-5c26e8b0e555",
+            Some("evt-0194f2e0-7b3e-7610-0284-5c26e8b0e666"),
+            "post-sales",
+            json!({
+                "caseId": "psc-0194f2e0-7b3e-7610-0284-5c26e8b0e777",
+                "orderId": "ord-0194f2e0-7b3e-7610-0284-5c26e8b0e222",
+                "approvedActions": [
+                    {"type": "VOID_ENTITLEMENT", "entitlementId": issue_response.entitlement_id, "reason": "REFUND", "policy": "NORMAL"}
+                ]
+            }),
+        );
+
+        assert!(matches!(
+            service.handle_subscribed_event(envelope.clone()).await,
+            Err(application::HandlerError::Transient(_))
+        ));
+        assert_eq!(
+            publisher
+                .published()
+                .iter()
+                .filter(|envelope| envelope.event_type == "EntitlementVoided")
+                .count(),
+            0
+        );
+
+        service.handle_subscribed_event(envelope).await.unwrap();
+        assert_eq!(
+            publisher
+                .published()
+                .iter()
+                .filter(|envelope| envelope.event_type == "EntitlementVoided")
+                .count(),
+            1
+        );
+        assert!(service.state.lock().unwrap().pending_events.is_empty());
+    }
+
+    #[tokio::test]
     async fn post_sales_approved_contract_payload_voids_order_entitlement_and_publishes_event() {
         let publisher = Arc::new(adapters::messaging::InMemoryEventPublisher::default());
         let service = InMemoryEntitlementService::new(publisher.clone());
@@ -3159,6 +3266,7 @@ mod api_domain_wiring_tests {
                     ]
                 }),
             ))
+            .await
             .unwrap();
 
         let details = service
@@ -3188,8 +3296,8 @@ mod api_domain_wiring_tests {
         assert!(voided.payload.get("status").is_none());
     }
 
-    #[test]
-    fn post_sales_approved_without_void_actions_is_ackable_noop() {
+    #[tokio::test]
+    async fn post_sales_approved_without_void_actions_is_ackable_noop() {
         let service = InMemoryEntitlementService::default();
         service
             .apply_subscribed_event(application::EventEnvelope::new(
@@ -3204,6 +3312,7 @@ mod api_domain_wiring_tests {
                     "approvedActions": []
                 }),
             ))
+            .await
             .unwrap();
     }
 }

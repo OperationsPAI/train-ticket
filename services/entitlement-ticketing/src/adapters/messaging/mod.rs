@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use redis::RedisResult;
-use tokio::time::sleep;
+use tokio::{sync::mpsc, time::sleep};
 
 use crate::application::{
     EventEnvelope, EventPublisher, EventSubscriber, HandlerError, PublishFailed, SubscribeFailed,
@@ -20,7 +20,7 @@ const SUBSCRIBED_STREAMS: [&str; 3] = [
 
 #[derive(Clone)]
 pub struct RedisEventPublisher {
-    client: redis::Client,
+    tx: mpsc::UnboundedSender<EventEnvelope>,
 }
 
 impl RedisEventPublisher {
@@ -31,48 +31,69 @@ impl RedisEventPublisher {
     }
 
     pub fn new(url: &str) -> Result<Self, PublishFailed> {
-        Ok(Self {
-            client: redis::Client::open(url).map_err(|error| PublishFailed(error.to_string()))?,
-        })
+        let client = redis::Client::open(url).map_err(|error| PublishFailed(error.to_string()))?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(Self::drain_loop(client, rx));
+        Ok(Self { tx })
+    }
+
+    async fn drain_loop(client: redis::Client, mut rx: mpsc::UnboundedReceiver<EventEnvelope>) {
+        while let Some(envelope) = rx.recv().await {
+            if let Err(error) = publish_with_retry(&client, envelope).await {
+                eprintln!(
+                    "entitlement-ticketing publisher parked event after retries: {}",
+                    error.0
+                );
+            }
+        }
     }
 }
 
 #[async_trait]
 impl EventPublisher for RedisEventPublisher {
     async fn publish(&self, envelope: EventEnvelope) -> Result<(), PublishFailed> {
-        let stream = stream_for_producer(&envelope.producer);
-        let raw_envelope =
-            serde_json::to_string(&envelope).map_err(|error| PublishFailed(error.to_string()))?;
-        let mut last_error = None;
-        for attempt in 0..3 {
-            let result: RedisResult<()> = async {
-                let mut connection = self.client.get_multiplexed_async_connection().await?;
-                redis::cmd("XADD")
-                    .arg(&stream)
-                    .arg("MAXLEN")
-                    .arg("~")
-                    .arg(RETENTION_MAXLEN)
-                    .arg("*")
-                    .arg("envelope")
-                    .arg(&raw_envelope)
-                    .query_async(&mut connection)
-                    .await
-            }
-            .await;
-            match result {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    last_error = Some(error.to_string());
-                    if attempt < 2 {
-                        sleep(Duration::from_millis(50 * (1 << attempt))).await;
-                    }
+        self.tx
+            .send(envelope)
+            .map_err(|error| PublishFailed(format!("redis publish queue unavailable: {error}")))
+    }
+}
+
+async fn publish_with_retry(
+    client: &redis::Client,
+    envelope: EventEnvelope,
+) -> Result<(), PublishFailed> {
+    let stream = stream_for_producer(&envelope.producer);
+    let raw_envelope =
+        serde_json::to_string(&envelope).map_err(|error| PublishFailed(error.to_string()))?;
+    let mut last_error = None;
+    for attempt in 0..3 {
+        let result: RedisResult<()> = async {
+            let mut connection = client.get_multiplexed_async_connection().await?;
+            redis::cmd("XADD")
+                .arg(&stream)
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(RETENTION_MAXLEN)
+                .arg("*")
+                .arg("envelope")
+                .arg(&raw_envelope)
+                .query_async(&mut connection)
+                .await
+        }
+        .await;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                if attempt < 2 {
+                    sleep(Duration::from_millis(50 * (1 << attempt))).await;
                 }
             }
         }
-        Err(PublishFailed(last_error.unwrap_or_else(|| {
-            "unknown Redis publish failure".to_string()
-        })))
     }
+    Err(PublishFailed(last_error.unwrap_or_else(|| {
+        "unknown Redis publish failure".to_string()
+    })))
 }
 
 #[derive(Clone)]
@@ -114,7 +135,7 @@ impl EventSubscriber for RedisEventSubscriber {
         streams: Vec<String>,
         group: String,
         consumer_name: String,
-        handler: Box<dyn Fn(EventEnvelope) -> Result<(), HandlerError> + Send + Sync>,
+        handler: Box<dyn Fn(EventEnvelope) -> crate::application::HandlerFuture + Send + Sync>,
     ) -> Result<(), SubscribeFailed> {
         let mut connection = self
             .client
@@ -162,7 +183,7 @@ impl RedisEventSubscriber {
         streams: &[String],
         group: &str,
         consumer_name: &str,
-        handler: &(dyn Fn(EventEnvelope) -> Result<(), HandlerError> + Send + Sync),
+        handler: &(dyn Fn(EventEnvelope) -> crate::application::HandlerFuture + Send + Sync),
     ) -> Result<(), SubscribeFailed> {
         let mut connection = self
             .client
@@ -209,7 +230,7 @@ impl RedisEventSubscriber {
         connection: &mut redis::aio::MultiplexedConnection,
         group: &str,
         message: StreamMessage,
-        handler: &(dyn Fn(EventEnvelope) -> Result<(), HandlerError> + Send + Sync),
+        handler: &(dyn Fn(EventEnvelope) -> crate::application::HandlerFuture + Send + Sync),
     ) -> Result<(), SubscribeFailed> {
         let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
             .map_err(|error| SubscribeFailed(error.to_string()))?;
@@ -222,7 +243,7 @@ impl RedisEventSubscriber {
         if duplicate {
             return ack(connection, &message.stream, group, &message.id).await;
         }
-        match handler(envelope) {
+        match handler(envelope).await {
             Ok(()) => {
                 self.seen_event_ids
                     .lock()
