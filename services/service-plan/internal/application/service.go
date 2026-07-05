@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -120,12 +121,14 @@ type scheduledServiceState struct {
 
 type Service struct {
 	mu                 sync.Mutex
+	publishMu          sync.Mutex
 	now                func() time.Time
 	idGenerator        func(prefix string) string
 	publisher          EventPublisher
 	scheduledServices  map[string]scheduledServiceState
 	segments           map[string]ServiceSegment
 	idempotencyRecords map[string]idempotencyRecord
+	pendingEvents      []EventEnvelope
 }
 
 func NewService(publisher EventPublisher) *Service {
@@ -139,6 +142,7 @@ func NewService(publisher EventPublisher) *Service {
 		scheduledServices:  map[string]scheduledServiceState{},
 		segments:           map[string]ServiceSegment{},
 		idempotencyRecords: map[string]idempotencyRecord{},
+		pendingEvents:      []EventEnvelope{},
 	}
 }
 
@@ -146,7 +150,7 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 	if err := validateCreateScheduledService(command); err != nil {
 		return CreateScheduledServiceResult{}, nil, err
 	}
-	replay, err := s.idempotencyReplay(command.IdempotencyKey, command.RequestHash)
+	replay, err := s.idempotencyReplay(ctx, command.IdempotencyKey, command.RequestHash)
 	if err != nil || replay != nil {
 		return CreateScheduledServiceResult{}, replay, err
 	}
@@ -169,6 +173,8 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 		return CreateScheduledServiceResult{}, nil, err
 	}
 
+	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
+
 	s.mu.Lock()
 	if _, exists := s.scheduledServices[state.view.ScheduledServiceRef]; exists {
 		s.mu.Unlock()
@@ -176,10 +182,10 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 	}
 	s.scheduledServices[state.view.ScheduledServiceRef] = state
 	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
+	s.pendingEvents = append(s.pendingEvents, envelope)
 	s.mu.Unlock()
 
-	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
-	if err := s.publisher.Publish(ctx, envelope); err != nil {
+	if err := s.flushPendingEvents(ctx); err != nil {
 		return CreateScheduledServiceResult{}, nil, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
 	return result, nil, nil
@@ -316,7 +322,7 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 	if err := validateCreateServiceSegment(command); err != nil {
 		return CreateServiceSegmentResult{}, nil, err
 	}
-	replay, err := s.idempotencyReplay(command.IdempotencyKey, command.RequestHash)
+	replay, err := s.idempotencyReplay(ctx, command.IdempotencyKey, command.RequestHash)
 	if err != nil || replay != nil {
 		return CreateServiceSegmentResult{}, replay, err
 	}
@@ -340,10 +346,6 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		ArrivalTime:         command.ArrivalTime.UTC(),
 	}
 	result := CreateServiceSegmentResult{SegmentRef: segment.SegmentRef, ScheduledServiceRef: segment.ScheduledServiceRef}
-	s.segments[segment.SegmentRef] = segment
-	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
-	s.mu.Unlock()
-
 	payload, err := json.Marshal(map[string]any{
 		"segmentRef":          segment.SegmentRef,
 		"scheduledServiceRef": segment.ScheduledServiceRef,
@@ -353,30 +355,72 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		"arrivalTime":         segment.ArrivalTime,
 	})
 	if err != nil {
+		s.mu.Unlock()
 		return CreateServiceSegmentResult{}, nil, err
 	}
 	envelope := s.newEnvelope("ServicePlanChanged", command.CorrelationID, command.CausationID, payload)
-	if err := s.publisher.Publish(ctx, envelope); err != nil {
+	s.segments[segment.SegmentRef] = segment
+	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
+	s.pendingEvents = append(s.pendingEvents, envelope)
+	s.mu.Unlock()
+
+	if err := s.flushPendingEvents(ctx); err != nil {
 		return CreateServiceSegmentResult{}, nil, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
 	return result, nil, nil
 }
 
-func (s *Service) idempotencyReplay(key, requestHash string) (*IdempotencyResult, error) {
+func (s *Service) idempotencyReplay(ctx context.Context, key, requestHash string) (*IdempotencyResult, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil, ErrIdempotencyKeyRequired
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	record, exists := s.idempotencyRecords[key]
 	if !exists {
+		s.mu.Unlock()
 		return nil, nil
 	}
 	if record.requestHash != requestHash {
+		s.mu.Unlock()
 		return nil, ErrIdempotencyKeyReused
 	}
+	s.mu.Unlock()
+	if err := s.flushPendingEvents(ctx); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPublish, err)
+	}
 	return &IdempotencyResult{StatusCode: record.statusCode, Body: record.body}, nil
+}
+
+func (s *Service) flushPendingEvents(ctx context.Context) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	for {
+		s.mu.Lock()
+		if len(s.pendingEvents) == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		envelope := s.pendingEvents[0]
+		s.mu.Unlock()
+
+		if err := s.publisher.Publish(ctx, envelope); err != nil {
+			return err
+		}
+
+		s.mu.Lock()
+		if len(s.pendingEvents) > 0 && s.pendingEvents[0].EventID == envelope.EventID {
+			s.pendingEvents = append([]EventEnvelope{}, s.pendingEvents[1:]...)
+		} else {
+			for i, pending := range s.pendingEvents {
+				if pending.EventID == envelope.EventID {
+					s.pendingEvents = append(s.pendingEvents[:i], s.pendingEvents[i+1:]...)
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *Service) newEnvelope(eventType, correlationID, causationID string, payload []byte) EventEnvelope {
@@ -397,8 +441,17 @@ func validateCreateScheduledService(command CreateScheduledServiceCommand) error
 	if strings.TrimSpace(command.IdempotencyKey) == "" {
 		return ErrIdempotencyKeyRequired
 	}
+	if !validUUIDv7(strings.TrimSpace(command.IdempotencyKey)) {
+		return fmt.Errorf("%w: Idempotency-Key must be UUID v7", ErrValidation)
+	}
 	if strings.TrimSpace(command.CarrierID) == "" || strings.TrimSpace(command.ServiceNumber) == "" || strings.TrimSpace(command.OriginNodeID) == "" || strings.TrimSpace(command.DestinationNodeID) == "" {
 		return fmt.Errorf("%w: required field missing", ErrValidation)
+	}
+	if !validPrefixedUUIDv7(strings.TrimSpace(command.CarrierID), "car") {
+		return fmt.Errorf("%w: carrierId must be car-prefixed UUID v7", ErrValidation)
+	}
+	if strings.TrimSpace(command.ServiceRef) != "" && !validPrefixedUUIDv7(strings.TrimSpace(command.ServiceRef), "ss") {
+		return fmt.Errorf("%w: serviceRef must be ss-prefixed UUID v7", ErrValidation)
 	}
 	if command.DepartureTime.IsZero() || command.ArrivalTime.IsZero() {
 		return fmt.Errorf("%w: departureTime and arrivalTime are required", ErrValidation)
@@ -413,8 +466,14 @@ func validateCreateServiceSegment(command CreateServiceSegmentCommand) error {
 	if strings.TrimSpace(command.IdempotencyKey) == "" {
 		return ErrIdempotencyKeyRequired
 	}
+	if !validUUIDv7(strings.TrimSpace(command.IdempotencyKey)) {
+		return fmt.Errorf("%w: Idempotency-Key must be UUID v7", ErrValidation)
+	}
 	if strings.TrimSpace(command.ScheduledServiceRef) == "" || strings.TrimSpace(command.OriginStopRef) == "" || strings.TrimSpace(command.DestinationStopRef) == "" {
 		return fmt.Errorf("%w: required field missing", ErrValidation)
+	}
+	if !validPrefixedUUIDv7(strings.TrimSpace(command.ScheduledServiceRef), "ss") {
+		return fmt.Errorf("%w: scheduledServiceRef must be ss-prefixed UUID v7", ErrValidation)
 	}
 	if command.DepartureTime.IsZero() || command.ArrivalTime.IsZero() {
 		return fmt.Errorf("%w: departureTime and arrivalTime are required", ErrValidation)
@@ -456,10 +515,10 @@ func newCanonicalID(prefix string) string {
 
 func canonicalCorrelationID(value string) string {
 	value = strings.TrimSpace(value)
-	if validPrefixedUUID(value, "corr") {
+	if validPrefixedUUIDv7(value, "corr") {
 		return value
 	}
-	if validUUID(value) {
+	if validUUIDv7(value) {
 		return "corr-" + value
 	}
 	return newCanonicalID("corr")
@@ -467,7 +526,7 @@ func canonicalCorrelationID(value string) string {
 
 func canonicalCausationID(value string) string {
 	value = strings.TrimSpace(value)
-	if validPrefixedUUID(value, "cmd") || validPrefixedUUID(value, "evt") {
+	if validPrefixedUUIDv7(value, "cmd") || validPrefixedUUIDv7(value, "evt") {
 		return value
 	}
 	return newCanonicalID("cmd")
@@ -475,6 +534,14 @@ func canonicalCausationID(value string) string {
 
 func validPrefixedUUID(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix+"-") && validUUID(strings.TrimPrefix(value, prefix+"-"))
+}
+
+func validPrefixedUUIDv7(value, prefix string) bool {
+	return strings.HasPrefix(value, prefix+"-") && validUUIDv7(strings.TrimPrefix(value, prefix+"-"))
+}
+
+func validUUIDv7(value string) bool {
+	return validUUID(value) && value[14] == '7'
 }
 
 func validUUID(value string) bool {
@@ -499,10 +566,10 @@ func validUUID(value string) bool {
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		fallback := make([]byte, 16)
-		copy(fallback, fmt.Sprintf("%016x", time.Now().UTC().UnixNano()))
-		copy(b[:], fallback)
+		copy(b[:], fmt.Sprintf("%016x", time.Now().UTC().UnixNano()))
 	}
+	timestampMillis := uint64(time.Now().UTC().UnixMilli())
+	binary.BigEndian.PutUint64(b[0:8], timestampMillis<<16)
 	b[6] = (b[6] & 0x0f) | 0x70
 	b[8] = (b[8] & 0x3f) | 0x80
 	return hex.EncodeToString(b[0:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:16])

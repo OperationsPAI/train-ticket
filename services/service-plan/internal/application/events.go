@@ -27,7 +27,7 @@ type EventEnvelope struct {
 }
 
 func (e EventEnvelope) Validate() error {
-	if !validPrefixedUUID(e.EventID, "evt") {
+	if !validPrefixedUUIDv7(e.EventID, "evt") {
 		return fmt.Errorf("eventId must be evt-prefixed UUID")
 	}
 	if strings.TrimSpace(e.EventType) == "" {
@@ -36,10 +36,10 @@ func (e EventEnvelope) Validate() error {
 	if e.OccurredAt.IsZero() {
 		return fmt.Errorf("occurredAt is required")
 	}
-	if !validPrefixedUUID(e.CorrelationID, "corr") {
+	if !validPrefixedUUIDv7(e.CorrelationID, "corr") {
 		return fmt.Errorf("correlationId must be corr-prefixed UUID")
 	}
-	if e.CausationID != "" && !validPrefixedUUID(e.CausationID, "cmd") && !validPrefixedUUID(e.CausationID, "evt") {
+	if e.CausationID != "" && !validPrefixedUUIDv7(e.CausationID, "cmd") && !validPrefixedUUIDv7(e.CausationID, "evt") {
 		return fmt.Errorf("causationId must be cmd- or evt-prefixed UUID")
 	}
 	if strings.TrimSpace(e.Producer) == "" {
