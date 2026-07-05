@@ -1,5 +1,5 @@
-import { DeduplicatingEventHandler, successfulHandling } from "../../application/messaging.js";
-import { NotificationApplicationService } from "../../application/notification-service.js";
+import { DeduplicatingEventHandler, fatalHandling, successfulHandling } from "../../application/messaging.js";
+import { NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
 import { RedisStreamEventPublisher } from "./publisher.js";
 import { RedisStreamEventSubscriber } from "./subscriber.js";
 import {
@@ -19,8 +19,15 @@ export async function startNotificationMessaging(): Promise<NotificationMessagin
   const subscriber = new RedisStreamEventSubscriber();
   const application = new NotificationApplicationService(publisher);
   const handler = new DeduplicatingEventHandler(async (envelope) => {
-    await application.handleExternalTrigger(envelope);
-    return successfulHandling();
+    try {
+      await application.handleExternalTrigger(envelope);
+      return successfulHandling();
+    } catch (error) {
+      if (error instanceof NonConformantNotificationTrigger) {
+        return fatalHandling(error);
+      }
+      throw error;
+    }
   });
 
   await subscriber.subscribe(

@@ -49,39 +49,58 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
 
   private async poll(streams: readonly string[], group: string, consumerName: string, handler: EventHandler): Promise<void> {
     while (!this.stopped) {
-      const response = await this.redis.call("XREADGROUP",
-        "GROUP",
-        group,
-        consumerName,
-        "BLOCK",
-        READ_BLOCK_MS,
-        "COUNT",
-        READ_COUNT,
-        "STREAMS",
-        ...streams,
-        ...streams.map(() => ">"),
-      ) as RedisStreamReadResponse;
+      try {
+        const response = await this.redis.call("XREADGROUP",
+          "GROUP",
+          group,
+          consumerName,
+          "BLOCK",
+          READ_BLOCK_MS,
+          "COUNT",
+          READ_COUNT,
+          "STREAMS",
+          ...streams,
+          ...streams.map(() => ">"),
+        ) as RedisStreamReadResponse;
 
-      await this.handleReadResponse(response, group, handler);
+        await this.handleReadResponse(response, group, handler);
+      } catch (error) {
+        if (!this.stopped) {
+          logSubscriberError("notification subscriber poll iteration failed", error);
+        }
+      }
     }
   }
 
   private async recover(streams: readonly string[], group: string, consumerName: string, handler: EventHandler): Promise<void> {
     while (!this.stopped) {
-      await sleep(CLAIM_MIN_IDLE_MS);
-      for (const stream of streams) {
-        const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, "0", "COUNT", READ_COUNT) as unknown[];
-        const messages = Array.isArray(claimed[1]) ? claimed[1] as AutoClaimMessage[] : [];
-        for (const [entryId, fields] of messages) {
-          const deliveries = await this.deliveryCount(stream, group, entryId);
-          if (deliveries >= MAX_DELIVERIES) {
-            await this.moveToDlq(stream, fields);
-            await this.redis.xack(stream, group, entryId);
-            continue;
-          }
-          await this.handleMessage(stream, entryId, fields, group, handler);
+      await this.sleepUntilStopped(CLAIM_MIN_IDLE_MS);
+      if (this.stopped) {
+        return;
+      }
+      try {
+        for (const stream of streams) {
+          await this.recoverStream(stream, group, consumerName, handler);
+        }
+      } catch (error) {
+        if (!this.stopped) {
+          logSubscriberError("notification subscriber recovery iteration failed", error);
         }
       }
+    }
+  }
+
+  private async recoverStream(stream: string, group: string, consumerName: string, handler: EventHandler): Promise<void> {
+    const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, "0", "COUNT", READ_COUNT) as unknown[];
+    const messages = Array.isArray(claimed[1]) ? claimed[1] as AutoClaimMessage[] : [];
+    for (const [entryId, fields] of messages) {
+      const deliveries = await this.deliveryCount(stream, group, entryId);
+      if (deliveries >= MAX_DELIVERIES) {
+        await this.moveToDlq(stream, fields);
+        await this.redis.xack(stream, group, entryId);
+        continue;
+      }
+      await this.handleMessage(stream, entryId, fields, group, handler);
     }
   }
 
@@ -119,7 +138,13 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
       return;
     }
 
-    const result = await handler(envelope);
+    let result: EventHandlerResult;
+    try {
+      result = await handler(envelope);
+    } catch (error) {
+      logSubscriberError(`notification subscriber handler threw for ${envelope.eventType} (${envelope.eventId})`, error);
+      return;
+    }
     await this.applyResult(stream, entryId, fields, group, result);
   }
 
@@ -166,6 +191,13 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
       await this.redis.connect();
     }
   }
+
+  private async sleepUntilStopped(ms: number): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!this.stopped && Date.now() < deadline) {
+      await sleep(Math.min(100, deadline - Date.now()));
+    }
+  }
 }
 
 function envelopeField(fields: string[]): string | undefined {
@@ -179,4 +211,9 @@ function envelopeField(fields: string[]): string | undefined {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function logSubscriberError(message: string, error: unknown): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.error(`${message}: ${reason}`);
 }
