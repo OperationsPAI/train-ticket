@@ -87,11 +87,6 @@ class Money:
         """Construct Money from canonical minor units."""
         return cls(Decimal(amount_minor) / Decimal("100"), currency)
 
-    @classmethod
-    def from_minor(cls, amount_minor: int, currency: str) -> Self:
-        """Construct Money from canonical minor units."""
-        return cls(Decimal(amount_minor) / Decimal("100"), currency)
-
 
 @dataclass(frozen=True, slots=True)
 class ValidityWindow:
