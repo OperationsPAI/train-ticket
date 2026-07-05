@@ -75,9 +75,13 @@ public class RedisEventSubscriber implements EventSubscriber {
     private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
         while (running.get()) {
             for (String stream : streamNames) {
-                recover(stream, group, consumerName, handler);
-                for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
-                    handle(stream, group, message, handler, streams.deliveryCount(stream, group, message.id()));
+                try {
+                    recover(stream, group, consumerName, handler);
+                    for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
+                        handle(stream, group, message, handler, streams.deliveryCount(stream, group, message.id()));
+                    }
+                } catch (RuntimeException exception) {
+                    // Keep the subscriber alive; messages read but not acked remain in the Redis PEL for recovery/DLQ policy.
                 }
             }
         }
@@ -113,7 +117,12 @@ public class RedisEventSubscriber implements EventSubscriber {
             streams.ack(stream, group, message.id());
             return;
         }
-        HandlerResult result = handler.handle(envelope);
+        HandlerResult result;
+        try {
+            result = handler.handle(envelope);
+        } catch (RuntimeException exception) {
+            return;
+        }
         if (result == HandlerResult.SUCCESS) {
             consumedEvents.recordConsumed(group, envelope.eventId());
             streams.ack(stream, group, message.id());

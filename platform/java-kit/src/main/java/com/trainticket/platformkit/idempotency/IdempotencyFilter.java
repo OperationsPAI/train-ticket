@@ -8,6 +8,10 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.ContentCachingResponseWrapper;
@@ -53,11 +57,12 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             fingerprint,
             wrappedResponse.getStatus(),
             wrappedResponse.getContentType(),
+            responseHeaders(wrappedResponse),
             wrappedResponse.getContentAsByteArray()
         );
         IdempotencyStore.StoredResponse visible = store.saveIfAbsent(idempotencyKey, stored);
         if (visible != stored) {
-            wrappedResponse.resetBuffer();
+            wrappedResponse.reset();
             replayOrReject(request, wrappedResponse, fingerprint, visible);
         }
         wrappedResponse.copyBodyToResponse();
@@ -69,9 +74,26 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             return;
         }
         response.setStatus(stored.status());
+        for (Map.Entry<String, List<String>> header : stored.headers().entrySet()) {
+            if ("Content-Type".equalsIgnoreCase(header.getKey()) || "Content-Length".equalsIgnoreCase(header.getKey())) {
+                continue;
+            }
+            for (String value : header.getValue()) {
+                response.addHeader(header.getKey(), value);
+            }
+        }
         if (stored.contentType() != null) {
             response.setContentType(stored.contentType());
         }
         response.getOutputStream().write(stored.body());
+    }
+
+    private static Map<String, List<String>> responseHeaders(HttpServletResponse response) {
+        Map<String, List<String>> headers = new LinkedHashMap<>();
+        for (String headerName : response.getHeaderNames()) {
+            Collection<String> values = response.getHeaders(headerName);
+            headers.put(headerName, List.copyOf(values));
+        }
+        return headers;
     }
 }

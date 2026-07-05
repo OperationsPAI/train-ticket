@@ -22,7 +22,9 @@ public class EventEnvelopeFactory {
 
     public EventEnvelope create(String eventType, String correlationId, String causationId, Object payload) {
         PrefixedIds.requireCorrelationId(correlationId);
-        PrefixedIds.requireCausationId(causationId);
+        if (causationId != null) {
+            PrefixedIds.requireCausationId(causationId);
+        }
         return new EventEnvelope(
             PrefixedIds.newEventId(),
             eventType,

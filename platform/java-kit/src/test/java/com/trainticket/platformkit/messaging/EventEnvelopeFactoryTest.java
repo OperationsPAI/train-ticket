@@ -30,6 +30,29 @@ class EventEnvelopeFactoryTest {
     }
 
     @Test
+    void omitsAbsentOptionalCausationId() throws Exception {
+        EventEnvelopeFactory factory = new EventEnvelopeFactory("payment", Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC));
+        String correlationId = PrefixedIds.newCorrelationId();
+
+        EventEnvelope envelope = factory.create("PaymentCaptured", correlationId, null, Map.of("paymentIntentId", "pi-1"));
+
+        assertThat(envelope.causationId()).isNull();
+        String json = new ObjectMapper().registerModule(new JavaTimeModule()).writeValueAsString(envelope);
+        assertThat(new ObjectMapper().readValue(json, Map.class).keySet())
+            .containsExactlyInAnyOrder("eventId", "eventType", "occurredAt", "correlationId", "producer", "schemaVersion", "payload");
+    }
+
+    @Test
+    void acceptsEventCausationId() {
+        EventEnvelopeFactory factory = new EventEnvelopeFactory("payment");
+        String eventCausationId = PrefixedIds.newEventId();
+
+        EventEnvelope envelope = factory.create("PaymentCaptured", PrefixedIds.newCorrelationId(), eventCausationId, Map.of());
+
+        assertThat(envelope.causationId()).isEqualTo(eventCausationId);
+    }
+
+    @Test
     void rejectsInvalidProvidedIdsInsteadOfRegenerating() {
         EventEnvelopeFactory factory = new EventEnvelopeFactory("payment");
         assertThatThrownBy(() -> factory.create("PaymentCaptured", "corr-not-a-uuid", PrefixedIds.newCommandId(), Map.of()))
