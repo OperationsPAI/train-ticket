@@ -2,6 +2,7 @@ package com.trainticket.platformkit.messaging;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.Instant;
 import java.util.Objects;
@@ -11,7 +12,7 @@ public record EventEnvelope(
     String eventType,
     @JsonFormat(shape = JsonFormat.Shape.STRING) Instant occurredAt,
     String correlationId,
-    String causationId,
+    @JsonInclude(JsonInclude.Include.NON_NULL) String causationId,
     String producer,
     int schemaVersion,
     Object payload
@@ -29,7 +30,9 @@ public record EventEnvelope(
     ) {
         PrefixedIds.requireEventId(eventId);
         PrefixedIds.requireCorrelationId(correlationId);
-        PrefixedIds.requireCausationId(causationId);
+        if (causationId != null) {
+            PrefixedIds.requireCausationId(causationId);
+        }
         this.eventId = eventId;
         this.eventType = requireText(eventType, "eventType");
         this.occurredAt = Objects.requireNonNull(occurredAt, "occurredAt is required");

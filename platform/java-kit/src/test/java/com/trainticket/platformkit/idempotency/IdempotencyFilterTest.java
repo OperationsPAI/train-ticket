@@ -41,6 +41,7 @@ class IdempotencyFilterTest {
         assertThat(first.getContentAsString()).isEqualTo("created");
         assertThat(replay.getStatus()).isEqualTo(201);
         assertThat(replay.getContentAsString()).isEqualTo("created");
+        assertThat(replay.getHeader("Location")).isEqualTo("/api/v1/payments/pi-1");
         assertThat(reused.getStatus()).isEqualTo(422);
         assertThat(reused.getContentAsString()).contains("IDEMPOTENCY_KEY_REUSED");
     }
@@ -61,6 +62,7 @@ class IdempotencyFilterTest {
             HttpServletResponse httpResponse = (HttpServletResponse) response;
             httpResponse.setStatus(201);
             httpResponse.setContentType("application/json");
+            httpResponse.setHeader("Location", "/api/v1/payments/pi-1");
             httpResponse.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
         };
     }

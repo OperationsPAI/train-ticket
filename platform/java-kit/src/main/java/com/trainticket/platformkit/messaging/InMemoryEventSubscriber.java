@@ -41,7 +41,12 @@ public class InMemoryEventSubscriber implements EventSubscriber {
             bus.ack(stream, group, delivery.messageId());
             return;
         }
-        HandlerResult result = handler.handle(envelope);
+        HandlerResult result;
+        try {
+            result = handler.handle(envelope);
+        } catch (RuntimeException exception) {
+            return;
+        }
         if (result == HandlerResult.SUCCESS) {
             bus.recordConsumed(stream, group, envelope.eventId());
             bus.ack(stream, group, delivery.messageId());
