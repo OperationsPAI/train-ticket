@@ -1255,112 +1255,6 @@ impl fmt::Display for EntitlementError {
 
 impl std::error::Error for EntitlementError {}
 
-// ---------------------------------------------------------------------------
-// EventEnvelope -- contract-conformant event wrapper
-// ---------------------------------------------------------------------------
-
-/// Contract-conformant event envelope per docs/08-contracts/shared-primitives.md
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EventEnvelope {
-    pub event_id: String,
-    pub event_type: String,
-    pub schema_version: u32,
-    pub occurred_at: String, // RFC3339 UTC
-    pub correlation_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub causation_id: Option<String>,
-    pub producer: String,
-}
-
-impl EventEnvelope {
-    pub fn new(
-        event_type: impl Into<String>,
-        occurred_at: u64,
-        correlation_id: impl Into<String>,
-        causation_id: Option<impl Into<String>>,
-        producer: impl Into<String>,
-    ) -> Self {
-        Self {
-            event_id: format!("evt-{}", uuid::Uuid::now_v7()),
-            event_type: event_type.into(),
-            schema_version: 1,
-            occurred_at: unix_millis_to_rfc3339(occurred_at),
-            correlation_id: correlation_id.into(),
-            causation_id: causation_id.map(|v| v.into()),
-            producer: producer.into(),
-        }
-    }
-}
-
-/// Helper to wrap a serializable domain payload into a serde_json Value envelope
-pub fn wrap_domain_event<T: serde::Serialize>(
-    envelope: EventEnvelope,
-    payload: &T,
-) -> serde_json::Value {
-    use serde_json::json;
-    json!({
-        "eventId": envelope.event_id,
-        "eventType": envelope.event_type,
-        "schemaVersion": envelope.schema_version,
-        "occurredAt": envelope.occurred_at,
-        "correlationId": envelope.correlation_id,
-        "causationId": envelope.causation_id,
-        "producer": envelope.producer,
-        "payload": serde_json::to_value(payload).unwrap_or_default(),
-    })
-}
-
-/// Convert UnixMillis to RFC3339 UTC string
-pub fn unix_millis_to_rfc3339(ms: u64) -> String {
-    let secs = ms / 1000;
-    let naive = time_secs_to_datetime(secs);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        naive.0,
-        naive.1,
-        naive.2,
-        naive.3,
-        naive.4,
-        naive.5,
-        ms % 1000
-    )
-}
-
-fn time_secs_to_datetime(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let h = (time_secs / 3600) as u32;
-    let m = ((time_secs % 3600) / 60) as u32;
-    let s = (time_secs % 60) as u32;
-    let mut y = 1970i64;
-    let mut d = days as i64;
-    loop {
-        let days_in_year = if is_leap(y as u64) { 366 } else { 365 };
-        if d < days_in_year {
-            break;
-        }
-        d -= days_in_year;
-        y += 1;
-    }
-    let leap = is_leap(y as u64);
-    const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut mo = 1u32;
-    for &md in MONTH_DAYS.iter() {
-        let md_adj = if mo == 2 && leap { md + 1 } else { md };
-        if d < md_adj {
-            break;
-        }
-        d -= md_adj;
-        mo += 1;
-    }
-    (y as u64, mo, (d + 1) as u32, h, m, s)
-}
-
-fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1793,34 +1687,6 @@ mod tests {
                 .unwrap_err(),
             EntitlementError::VoidRequiresCompensation
         ));
-    }
-
-    #[test]
-    fn event_envelope_round_trip() {
-        let envelope = EventEnvelope::new(
-            "EntitlementIssued",
-            1800000000000,
-            "corr-1",
-            None::<String>,
-            "entitlement-ticketing",
-        );
-        assert_eq!(envelope.event_type, "EntitlementIssued");
-        assert_eq!(envelope.schema_version, 1);
-        assert_eq!(envelope.producer, "entitlement-ticketing");
-        assert!(
-            envelope.occurred_at.contains("2027-01-") || envelope.occurred_at.contains("2026-")
-        );
-        assert!(envelope.occurred_at.ends_with("Z"));
-
-        // Wrap a domain event
-        let payload = serde_json::json!({
-            "entitlementId": "ent-1",
-            "segmentBookingRef": "sb-1",
-        });
-        let wrapped = wrap_domain_event(envelope, &payload);
-        assert_eq!(wrapped["eventType"], "EntitlementIssued");
-        assert_eq!(wrapped["payload"]["entitlementId"], "ent-1");
-        assert_eq!(wrapped["schemaVersion"], 1);
     }
 }
 // ---------------------------------------------------------------------------
@@ -2424,13 +2290,18 @@ impl InMemoryEntitlementService {
         envelope: application::EventEnvelope,
     ) -> Result<(), application::HandlerError> {
         self.apply_subscribed_event(envelope)
-            .map_err(|error| application::HandlerError::Fatal(error.message().to_string()))
+            .map_err(|error| match error {
+                ApiErrorKind::Unavailable(message) => application::HandlerError::Transient(message),
+                other => application::HandlerError::Fatal(other.message().to_string()),
+            })
     }
 
     fn apply_subscribed_event(&self, envelope: application::EventEnvelope) -> ApiResult<()> {
         match envelope.event_type.as_str() {
             "BoardingVerified" => self.apply_boarding_verified(envelope.payload),
-            "PostSalesApproved" => self.apply_post_sales_approved(envelope.payload),
+            "PostSalesApproved" => {
+                self.apply_post_sales_approved(envelope.payload, envelope.correlation_id)
+            }
             "SegmentTicketed" => Ok(()),
             _ => Ok(()),
         }
@@ -2471,49 +2342,112 @@ impl InMemoryEntitlementService {
         Ok(())
     }
 
-    fn apply_post_sales_approved(&self, payload: Value) -> ApiResult<()> {
-        let Some(entitlement_id) = payload.get("entitlementId").and_then(Value::as_str) else {
-            return Ok(());
-        };
-        validate_prefixed_uuid(entitlement_id, "entitlementId", "ent-")?;
-        let reason = payload
-            .get("reason")
-            .and_then(Value::as_str)
-            .unwrap_or("REFUND");
-        let policy = payload
-            .get("policy")
-            .and_then(Value::as_str)
-            .unwrap_or("NORMAL");
-        let business_case_ref = payload
+    fn apply_post_sales_approved(&self, payload: Value, correlation_id: String) -> ApiResult<()> {
+        let case_id = payload
             .get("caseId")
             .and_then(Value::as_str)
-            .unwrap_or("post-sales-case")
+            .ok_or_else(|| ApiErrorKind::ValidationFailed("caseId is required".to_string()))?
             .to_string();
+        let order_id = payload
+            .get("orderId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiErrorKind::ValidationFailed("orderId is required".to_string()))?
+            .to_string();
+        validate_prefixed_uuid(&order_id, "orderId", "ord-")?;
+
+        let actions = approved_void_actions(payload.get("approvedActions"));
+        if actions.is_empty() {
+            return Ok(());
+        }
+
+        let payloads = self.void_entitlements_for_post_sales(&order_id, &case_id, &actions)?;
+        for payload in payloads {
+            publish_api_event_blocking(
+                Arc::clone(&self.publisher),
+                "EntitlementVoided",
+                serde_json::to_value(&payload).unwrap_or_else(|_| json!({})),
+                correlation_id.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn void_entitlements_for_post_sales(
+        &self,
+        order_id: &str,
+        case_id: &str,
+        actions: &[ApprovedVoidAction],
+    ) -> ApiResult<Vec<EntitlementVoidedPayload>> {
         let mut state = self
             .state
             .lock()
             .expect("entitlement service lock poisoned");
-        let aggregate = state
-            .aggregates
-            .get_mut(entitlement_id)
-            .ok_or_else(|| ApiErrorKind::NotFound("entitlement aggregate not found".to_string()))?;
-        aggregate
-            .void(VoidEntitlement {
-                command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
-                    .map_err(ApiErrorKind::from)?,
-                reason: parse_void_reason(reason),
-                policy: parse_void_policy(policy),
-                business_case_ref: BusinessCaseRef::new(business_case_ref)
-                    .map_err(ApiErrorKind::from)?,
-                audit: audit_builder("corr-subscriber", "event bus post-sales approved")
-                    .map_err(ApiErrorKind::from)?,
-            })
-            .map_err(ApiErrorKind::from)?;
-        if let Some(entitlement) = state.entitlements.get_mut(entitlement_id) {
-            entitlement.status = EntitlementStatusDto::Voided;
-            entitlement.voided_at = Some(current_rfc3339());
+        let entitlement_ids: Vec<String> = state
+            .entitlements
+            .values()
+            .filter(|entitlement| entitlement.journey_order_id == order_id)
+            .map(|entitlement| entitlement.entitlement_id.clone())
+            .collect();
+        if entitlement_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(())
+
+        let mut payloads = Vec::new();
+        for entitlement_id in entitlement_ids {
+            if !actions
+                .iter()
+                .any(|action| action.matches_entitlement(&entitlement_id))
+            {
+                continue;
+            }
+            let reason = actions
+                .iter()
+                .find(|action| action.matches_entitlement(&entitlement_id))
+                .map(|action| action.reason.clone())
+                .unwrap_or(VoidReason::Refund);
+            let policy = actions
+                .iter()
+                .find(|action| action.matches_entitlement(&entitlement_id))
+                .map(|action| action.policy.clone())
+                .unwrap_or(VoidPolicy::Normal);
+            let segment_booking_id = state
+                .entitlements
+                .get(&entitlement_id)
+                .map(|entitlement| entitlement.segment_booking_id.clone())
+                .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?;
+            let aggregate = state.aggregates.get_mut(&entitlement_id).ok_or_else(|| {
+                ApiErrorKind::NotFound("entitlement aggregate not found".to_string())
+            })?;
+            let events = aggregate
+                .void(VoidEntitlement {
+                    command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                        .map_err(ApiErrorKind::from)?,
+                    reason: reason.clone(),
+                    policy: policy.clone(),
+                    business_case_ref: BusinessCaseRef::new(case_id.to_string())
+                        .map_err(ApiErrorKind::from)?,
+                    audit: audit_builder("corr-subscriber", "event bus post-sales approved")
+                        .map_err(ApiErrorKind::from)?,
+                })
+                .map_err(ApiErrorKind::from)?;
+            if events.is_empty() {
+                continue;
+            }
+            let voided_at = current_rfc3339();
+            if let Some(entitlement) = state.entitlements.get_mut(&entitlement_id) {
+                entitlement.status = EntitlementStatusDto::Voided;
+                entitlement.voided_at = Some(voided_at.clone());
+            }
+            payloads.push(EntitlementVoidedPayload {
+                entitlement_id,
+                segment_booking_id,
+                voided_at,
+                reason: reason_to_contract(&reason),
+                policy: policy_to_contract(&policy),
+                business_case_ref: Some(case_id.to_string()),
+            });
+        }
+        Ok(payloads)
     }
 }
 
@@ -2859,6 +2793,82 @@ impl EntitlementApi for InMemoryEntitlementService {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApprovedVoidAction {
+    entitlement_ref: Option<String>,
+    reason: VoidReason,
+    policy: VoidPolicy,
+}
+
+impl ApprovedVoidAction {
+    fn matches_entitlement(&self, entitlement_id: &str) -> bool {
+        self.entitlement_ref
+            .as_deref()
+            .is_none_or(|reference| reference == entitlement_id)
+    }
+}
+
+fn approved_void_actions(value: Option<&Value>) -> Vec<ApprovedVoidAction> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+    collect_void_actions(value, &mut actions);
+    actions
+}
+
+fn collect_void_actions(value: &Value, actions: &mut Vec<ApprovedVoidAction>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_void_actions(item, actions);
+            }
+        }
+        Value::Object(map) => {
+            if action_type(map.get("type")).is_some_and(is_void_action_type)
+                || action_type(map.get("actionType")).is_some_and(is_void_action_type)
+                || action_type(map.get("stepType")).is_some_and(is_void_action_type)
+            {
+                actions.push(ApprovedVoidAction {
+                    entitlement_ref: map
+                        .get("entitlementId")
+                        .and_then(Value::as_str)
+                        .or_else(|| map.get("entitlementRef").and_then(Value::as_str))
+                        .or_else(|| map.get("targetRef").and_then(Value::as_str))
+                        .map(ToString::to_string),
+                    reason: map
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .map(parse_void_reason)
+                        .unwrap_or(VoidReason::Refund),
+                    policy: map
+                        .get("policy")
+                        .and_then(Value::as_str)
+                        .map(parse_void_policy)
+                        .unwrap_or(VoidPolicy::Normal),
+                });
+            }
+            for nested in map.values() {
+                if nested.is_array() || nested.is_object() {
+                    collect_void_actions(nested, actions);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn action_type(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str)
+}
+
+fn is_void_action_type(value: &str) -> bool {
+    matches!(
+        value,
+        "VOID" | "VOID_ENTITLEMENT" | "VOID_OLD_ENTITLEMENT" | "VOID_TICKET"
+    )
+}
+
 fn parse_void_reason(value: &str) -> VoidReason {
     match value {
         "CHANGE" => VoidReason::Change,
@@ -2869,10 +2879,27 @@ fn parse_void_reason(value: &str) -> VoidReason {
     }
 }
 
+fn reason_to_contract(value: &VoidReason) -> &'static str {
+    match value {
+        VoidReason::Refund => "REFUND",
+        VoidReason::Change => "CHANGE",
+        VoidReason::Disruption => "DISRUPTION",
+        VoidReason::Risk => "RISK",
+        VoidReason::ManualCorrection => "MANUAL_CORRECTION",
+    }
+}
+
 fn parse_void_policy(value: &str) -> VoidPolicy {
     match value {
         "EXCEPTIONAL_RULE" => VoidPolicy::ExceptionalRule,
         _ => VoidPolicy::Normal,
+    }
+}
+
+fn policy_to_contract(value: &VoidPolicy) -> &'static str {
+    match value {
+        VoidPolicy::Normal => "NORMAL",
+        VoidPolicy::ExceptionalRule => "EXCEPTIONAL_RULE",
     }
 }
 
@@ -2964,6 +2991,27 @@ fn credential_ref(credential_no: &str) -> Result<CredentialRef, EntitlementError
             Some("QR".to_string()),
         )?,
     )
+}
+
+fn publish_api_event_blocking(
+    publisher: Arc<dyn application::EventPublisher>,
+    event_type: &str,
+    payload: Value,
+    correlation_id: String,
+) -> ApiResult<()> {
+    let event_type = event_type.to_string();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| ApiErrorKind::Unavailable(error.to_string()))?
+            .block_on(async move {
+                publish_api_event_value(publisher.as_ref(), &event_type, payload, correlation_id)
+                    .await
+            })
+    })
+    .join()
+    .map_err(|_| ApiErrorKind::Unavailable("publisher worker panicked".to_string()))?
 }
 
 async fn publish_api_event<T: Serialize>(
@@ -3075,5 +3123,87 @@ mod api_domain_wiring_tests {
             .await
             .unwrap_err();
         assert!(matches!(error, ApiErrorKind::DomainRuleViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn post_sales_approved_contract_payload_voids_order_entitlement_and_publishes_event() {
+        let publisher = Arc::new(adapters::messaging::InMemoryEventPublisher::default());
+        let service = InMemoryEntitlementService::new(publisher.clone());
+        let issue_response = service
+            .issue(
+                IssueEntitlementRequest {
+                    segment_booking_id: "sb-0194f2e0-7b3e-7610-0284-5c26e8b0f111".to_string(),
+                    journey_order_id: "ord-0194f2e0-7b3e-7610-0284-5c26e8b0f222".to_string(),
+                    traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0f333".to_string(),
+                    segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0f444".to_string(),
+                    issue_purpose: IssuePurposeDto::Initial,
+                },
+                "018f2e07-b3e7-7100-8284-5c26e8b0f001".to_string(),
+                "corr-post-sales".to_string(),
+            )
+            .await
+            .unwrap();
+
+        service
+            .apply_subscribed_event(application::EventEnvelope::new(
+                "PostSalesApproved",
+                current_rfc3339(),
+                "corr-0194f2e0-7b3e-7610-0284-5c26e8b0f555",
+                Some("evt-0194f2e0-7b3e-7610-0284-5c26e8b0f666"),
+                "post-sales",
+                json!({
+                    "caseId": "psc-0194f2e0-7b3e-7610-0284-5c26e8b0f777",
+                    "orderId": "ord-0194f2e0-7b3e-7610-0284-5c26e8b0f222",
+                    "approvedActions": [
+                        {"type": "VOID_ENTITLEMENT", "reason": "REFUND", "policy": "NORMAL"}
+                    ]
+                }),
+            ))
+            .unwrap();
+
+        let details = service
+            .get(issue_response.entitlement_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(details.status, EntitlementStatusDto::Voided);
+        let published = publisher.published();
+        let voided = published
+            .iter()
+            .find(|envelope| envelope.event_type == "EntitlementVoided")
+            .expect("bus-triggered void publishes EntitlementVoided");
+        assert_eq!(
+            voided.payload["entitlementId"],
+            issue_response.entitlement_id
+        );
+        assert_eq!(
+            voided.payload["segmentBookingId"],
+            "sb-0194f2e0-7b3e-7610-0284-5c26e8b0f111"
+        );
+        assert_eq!(voided.payload["reason"], "REFUND");
+        assert_eq!(voided.payload["policy"], "NORMAL");
+        assert_eq!(
+            voided.payload["businessCaseRef"],
+            "psc-0194f2e0-7b3e-7610-0284-5c26e8b0f777"
+        );
+        assert!(voided.payload.get("status").is_none());
+    }
+
+    #[test]
+    fn post_sales_approved_without_void_actions_is_ackable_noop() {
+        let service = InMemoryEntitlementService::default();
+        service
+            .apply_subscribed_event(application::EventEnvelope::new(
+                "PostSalesApproved",
+                current_rfc3339(),
+                "corr-0194f2e0-7b3e-7610-0284-5c26e8b0f888",
+                Some("evt-0194f2e0-7b3e-7610-0284-5c26e8b0f999"),
+                "post-sales",
+                json!({
+                    "caseId": "psc-0194f2e0-7b3e-7610-0284-5c26e8b0faaa",
+                    "orderId": "ord-0194f2e0-7b3e-7610-0284-5c26e8b0fbbb",
+                    "approvedActions": []
+                }),
+            ))
+            .unwrap();
     }
 }
