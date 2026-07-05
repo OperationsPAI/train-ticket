@@ -46,8 +46,9 @@ public class PostSalesController {
         HttpServletRequest httpRequest,
         @Valid @RequestBody OpenCaseRequest request
     ) {
+        String validatedIdempotencyKey = requireUuid7(idempotencyKey);
         var result = idempotencyStore.execute(
-            "POST /api/v1/post-sales-cases " + idempotencyKey,
+            "POST /api/v1/post-sales-cases " + validatedIdempotencyKey,
             fingerprint(request),
             () -> {
                 PostSalesCase postSalesCase = service.open(new PostSalesApplicationService.OpenCaseCommand(
@@ -56,7 +57,7 @@ public class PostSalesController {
                     request.scope().toDomain(),
                     request.reasonCode(),
                     request.actorRef(),
-                    idempotencyKey,
+                    validatedIdempotencyKey,
                     commandId(),
                     requestCorrelationId(httpRequest)
                 ));
@@ -72,8 +73,9 @@ public class PostSalesController {
         @RequestHeader("Idempotency-Key") String idempotencyKey,
         HttpServletRequest httpRequest
     ) {
+        String validatedIdempotencyKey = requireUuid7(idempotencyKey);
         return idempotencyStore.execute(
-            "POST /api/v1/post-sales-cases/" + caseId + "/evaluate " + idempotencyKey,
+            "POST /api/v1/post-sales-cases/" + caseId + "/evaluate " + validatedIdempotencyKey,
             fingerprint(caseId),
             () -> PostSalesMapper.evaluateResponse(service.evaluate(caseId, commandId(), requestCorrelationId(httpRequest)))
         ).value();
@@ -85,8 +87,9 @@ public class PostSalesController {
         @RequestHeader("Idempotency-Key") String idempotencyKey,
         HttpServletRequest httpRequest
     ) {
+        String validatedIdempotencyKey = requireUuid7(idempotencyKey);
         return idempotencyStore.execute(
-            "POST /api/v1/post-sales-cases/" + caseId + "/approve " + idempotencyKey,
+            "POST /api/v1/post-sales-cases/" + caseId + "/approve " + validatedIdempotencyKey,
             fingerprint(caseId),
             () -> PostSalesMapper.approveResponse(service.approve(caseId, commandId(), requestCorrelationId(httpRequest)))
         ).value();
@@ -95,6 +98,19 @@ public class PostSalesController {
     @GetMapping("/{caseId}")
     public Map<String, Object> get(@PathVariable String caseId) {
         return PostSalesMapper.caseDetails(service.get(caseId));
+    }
+
+
+    static String requireUuid7(String key) {
+        try {
+            UUID parsed = UUID.fromString(key);
+            if (parsed.version() != 7) {
+                throw new IllegalArgumentException();
+            }
+            return key;
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Idempotency-Key must be a UUID v7");
+        }
     }
 
     private static String requestCorrelationId(HttpServletRequest request) {
