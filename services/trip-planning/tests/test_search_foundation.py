@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from trip_planning import create_app
+from trip_planning.adapters.messaging.fake import FakeEventPublisher
 from trip_planning.application import search_itineraries, search_itineraries_from_payload, trip_plan_to_dto
 from trip_planning.domain import (
     AvailabilityHint,
@@ -235,7 +236,7 @@ class SearchFoundationTest(unittest.TestCase):
         self.assertFalse(dto["candidates"][0]["priceHint"]["isOffer"])
 
     def test_fastapi_search_route_is_registered(self) -> None:
-        app = create_app()
+        app = create_app(event_publisher=FakeEventPublisher(), start_event_subscriber=False)
         routes = {route.path for route in app.routes}
         self.assertIn("/search", routes)
 

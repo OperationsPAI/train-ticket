@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import json
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from datetime import datetime, timedelta
 from hashlib import sha256
+import threading
 from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException, Request
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .application import search_itineraries, search_itineraries_from_payload
 from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIntent, TripPlanningValidationError
-from .application_ports import EventPublisher
+from .application_ports import EventPublisher, EventSubscriber
 from .events import PublishFailed, build_itinerary_proposed_event, new_uuid7
 from .runtime import health, profile
 
@@ -273,19 +274,81 @@ def _search_contract_response(payload: Mapping[str, object]) -> tuple[dict[str, 
     }, planning_snapshot_refs
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def _idempotency_fingerprint(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _canonical_json(dict(payload))
+
+
+def _default_publisher() -> EventPublisher:
+    from .adapters.messaging.redis_streams import RedisEventPublisher
+
+    return RedisEventPublisher()
+
+
+def _default_subscriber() -> EventSubscriber:
+    from .adapters.messaging.redis_streams import RedisEventSubscriber
+
+    return RedisEventSubscriber()
+
+
+def _handle_upstream_event(app: FastAPI, envelope: Any) -> None:
+    app.state.consumed_events[envelope.eventId] = {
+        "eventType": envelope.eventType,
+        "producer": envelope.producer,
+        "occurredAt": envelope.occurredAt.isoformat(),
+    }
+    app.state.upstream_event_payloads[envelope.eventId] = dict(envelope.payload)
+
+
+def _start_subscriber(subscriber: EventSubscriber, handler: Callable[[Any], None]) -> threading.Thread | None:
+    from .adapters.messaging.subscriber import start_trip_planning_subscription
+
+    return start_trip_planning_subscription(subscriber, handler)
+
+
+def _stop_subscriber(subscriber: EventSubscriber | None, thread: threading.Thread | None) -> None:
+    if subscriber is None:
+        return
+    stop = getattr(subscriber, "shutdown", None) or getattr(subscriber, "stop", None)
+    if callable(stop):
+        stop()
+    if thread is not None:
+        thread.join(timeout=5)
 
 
 def create_app(
     tracer: TraceHook | None = None,
     otel_tracer: RuntimeTracer | None = None,
     event_publisher: EventPublisher | None = None,
+    event_subscriber: EventSubscriber | None = None,
+    start_event_subscriber: bool = True,
 ) -> FastAPI:
-    app = FastAPI(title="Trip Planning", version="0.1.0")
+    publisher = event_publisher if event_publisher is not None else _default_publisher()
+    subscriber = event_subscriber if event_subscriber is not None else None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        active_subscriber = subscriber
+        if active_subscriber is None and start_event_subscriber:
+            active_subscriber = _default_subscriber()
+        handler = lambda envelope: _handle_upstream_event(app, envelope)
+        subscriber_thread = _start_subscriber(active_subscriber, handler) if active_subscriber is not None and start_event_subscriber else None
+        app.state.event_subscriber = active_subscriber
+        app.state.subscriber_thread = subscriber_thread
+        try:
+            yield
+        finally:
+            _stop_subscriber(getattr(app.state, "event_subscriber", None), subscriber_thread)
+
+    app = FastAPI(title="Trip Planning", version="0.1.0", lifespan=lifespan)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     app.state.itineraries = {}
     app.state.idempotency_cache = {}
+    app.state.consumed_events = {}
+    app.state.upstream_event_payloads = {}
 
     @app.post("/search")
     def search_endpoint(payload: dict[str, object], request: Request) -> dict[str, object]:
@@ -321,18 +384,17 @@ def create_app(
         for itinerary in response["itineraries"]:
             if isinstance(itinerary, dict):
                 app.state.itineraries[itinerary["itineraryRef"]] = itinerary
-        if event_publisher is not None:
-            try:
-                event_publisher.publish(
-                    build_itinerary_proposed_event(
-                        str(response["intentRef"]),
-                        tuple(response["itineraries"]),  # type: ignore[arg-type]
-                        planning_snapshot_refs,
-                        correlation_id=correlation_id,
-                    )
+        try:
+            publisher.publish(
+                build_itinerary_proposed_event(
+                    str(response["intentRef"]),
+                    tuple(response["itineraries"]),  # type: ignore[arg-type]
+                    planning_snapshot_refs,
+                    correlation_id=correlation_id,
                 )
-            except PublishFailed:
-                return _canonical_error(503, "UNAVAILABLE", "Event bus is unavailable", correlation_id)
+            )
+        except PublishFailed:
+            return _canonical_error(503, "UNAVAILABLE", "Event bus is unavailable", correlation_id)
         if idempotency_key:
             app.state.idempotency_cache[idempotency_key] = (fingerprint, response)
         return response
