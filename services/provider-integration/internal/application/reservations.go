@@ -184,8 +184,8 @@ func (s *InMemoryReservationService) RequestReservation(ctx context.Context, cmd
 }
 
 func (s *InMemoryReservationService) CancelReservation(ctx context.Context, cmd CancelProviderReservationCommand) (CancelProviderReservationResult, error) {
-	if strings.TrimSpace(cmd.SegmentBookingID) == "" || !strings.HasPrefix(strings.TrimSpace(cmd.SegmentBookingID), "sb-") {
-		return CancelProviderReservationResult{}, fmt.Errorf("%w: segmentBookingId is required", ErrValidation)
+	if err := ValidateSegmentBookingID(cmd.SegmentBookingID); err != nil {
+		return CancelProviderReservationResult{}, err
 	}
 	s.mu.Lock()
 	_, exists := s.results[cmd.SegmentBookingID]
@@ -233,9 +233,21 @@ func (s *InMemoryReservationService) mapProviderStatus(cmd RequestProviderReserv
 	return decision, nil
 }
 
+func ValidateSegmentBookingID(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "sb-") {
+		return fmt.Errorf("%w: segmentBookingId must be sb-<uuid-v7>", ErrValidation)
+	}
+	id, err := uuid.Parse(strings.TrimPrefix(trimmed, "sb-"))
+	if err != nil || id.Version() != 7 {
+		return fmt.Errorf("%w: segmentBookingId must be sb-<uuid-v7>", ErrValidation)
+	}
+	return nil
+}
+
 func validateReservationCommand(cmd RequestProviderReservationCommand) error {
-	if strings.TrimSpace(cmd.SegmentBookingID) == "" || !strings.HasPrefix(strings.TrimSpace(cmd.SegmentBookingID), "sb-") {
-		return fmt.Errorf("%w: segmentBookingId is required", ErrValidation)
+	if err := ValidateSegmentBookingID(cmd.SegmentBookingID); err != nil {
+		return err
 	}
 	if strings.TrimSpace(cmd.ProviderConfigRef) == "" {
 		return fmt.Errorf("%w: providerConfigRef is required", ErrValidation)

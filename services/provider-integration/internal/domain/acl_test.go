@@ -5,8 +5,10 @@ import (
 	"time"
 )
 
+const segmentBookingBusinessRef = "segment-booking:sb-018f0000-0000-7000-8000-000000000201"
+
 func TestProviderIdentityAndRawArchiveValidation(t *testing.T) {
-	identity, err := NewProviderRequestIdentity(" rail-cr ", " req-1 ", OperationConfirmReservation, " idem-1 ", " corr-1 ", " segment-booking:sb-1 ")
+	identity, err := NewProviderRequestIdentity(" rail-cr ", " req-1 ", OperationConfirmReservation, " idem-1 ", " corr-1 ", " "+segmentBookingBusinessRef+" ")
 	if err != nil {
 		t.Fatalf("identity should be valid: %v", err)
 	}
@@ -33,7 +35,7 @@ func TestProviderIdentityAndRawArchiveValidation(t *testing.T) {
 		t.Fatalf("unexpected archive kind: %s", archive.Kind)
 	}
 
-	if _, err := NewProviderRequestIdentity("", "req-1", OperationConfirmReservation, "idem-1", "corr-1", "segment-booking:sb-1"); err == nil {
+	if _, err := NewProviderRequestIdentity("", "req-1", OperationConfirmReservation, "idem-1", "corr-1", segmentBookingBusinessRef); err == nil {
 		t.Fatalf("missing provider id should be rejected")
 	}
 	if _, err := NewRawArchiveReference("raw-1", "RAW_MUTABLE_PAYLOAD", "archive://provider/raw-1", "abc123", "provider.schema.v1"); err == nil {
@@ -111,7 +113,7 @@ func TestMapsExternalStatusesToInternalFacts(t *testing.T) {
 			if decision.Fact.Kind != tc.wantFact {
 				t.Fatalf("unexpected fact: got %s want %s", decision.Fact.Kind, tc.wantFact)
 			}
-			if decision.Fact.BusinessRef != "segment-booking:sb-1" {
+			if decision.Fact.BusinessRef != segmentBookingBusinessRef {
 				t.Fatalf("business ref should remain a reference, got %q", decision.Fact.BusinessRef)
 			}
 			if decision.Fact.Archive.ArchiveID == "" {
@@ -172,7 +174,7 @@ func TestAmbiguousStatusProducesReviewDirective(t *testing.T) {
 	if decision.Error != ErrorAmbiguousResult {
 		t.Fatalf("expected ambiguous result classification, got %s", decision.Error)
 	}
-	if decision.Review == nil || decision.Review.BusinessRef != "segment-booking:sb-1" {
+	if decision.Review == nil || decision.Review.BusinessRef != segmentBookingBusinessRef {
 		t.Fatalf("review directive should carry traceable references: %+v", decision.Review)
 	}
 }
@@ -256,7 +258,7 @@ func mustExternalStatus(t *testing.T, operation Operation, rawStatus string, pro
 
 func mustIdentity(t *testing.T, operation Operation) ProviderRequestIdentity {
 	t.Helper()
-	identity, err := NewProviderRequestIdentity("rail-cr", "req-1", operation, "idem-1", "corr-1", "segment-booking:sb-1")
+	identity, err := NewProviderRequestIdentity("rail-cr", "req-1", operation, "idem-1", "corr-1", segmentBookingBusinessRef)
 	if err != nil {
 		t.Fatalf("identity should be valid: %v", err)
 	}
