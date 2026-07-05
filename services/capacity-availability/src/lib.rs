@@ -1,6 +1,6 @@
 pub mod adapters;
-pub mod application;
 pub mod api;
+pub mod application;
 pub mod domain;
 pub mod ports;
 
@@ -53,17 +53,13 @@ pub fn runtime_config() -> RuntimeConfig {
 
 /// Construct the full router with API routes and standard runtime middleware.
 pub fn router() -> Router {
-    let service = std::sync::Arc::new(CapacityService::new(
-        std::sync::Arc::new(adapters::messaging::InMemoryEventPublisher::new()),
-    ));
+    let service = std::sync::Arc::new(CapacityService::new(std::sync::Arc::new(
+        adapters::messaging::InMemoryEventPublisher::new(),
+    )));
     let api_router = api::router(service.clone());
     let standard_router = router_with_config(runtime_config());
-    // Merge routers - axum 0.8 supports merging routers with different state types.
-    // The standard router handles health/live/ready/metadata with RuntimeConfig.
-    // The api router uses Extension<Arc<CapacityService>> for its handlers.
-    axum::Router::new()
-        .merge(standard_router)
-        .merge(api_router)
+    let full_router = axum::Router::new().merge(standard_router).merge(api_router);
+    apply_runtime(full_router, runtime_config())
 }
 
 pub fn apply_service_runtime(router: Router) -> Router {
