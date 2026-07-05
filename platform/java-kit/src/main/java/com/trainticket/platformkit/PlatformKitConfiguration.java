@@ -2,6 +2,7 @@ package com.trainticket.platformkit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.http.CanonicalErrorWriter;
+import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
 import com.trainticket.platformkit.idempotency.IdempotencyFilter;
 import com.trainticket.platformkit.idempotency.IdempotencyStore;
 import com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore;
@@ -18,8 +19,20 @@ import org.springframework.context.annotation.Configuration;
 public class PlatformKitConfiguration {
     @Bean
     @ConditionalOnMissingBean
+    ObjectMapper objectMapper() {
+        return new ObjectMapper().findAndRegisterModules();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     CanonicalErrorWriter canonicalErrorWriter(ObjectMapper objectMapper) {
         return new CanonicalErrorWriter(objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    PlatformKitExceptionHandler platformKitExceptionHandler() {
+        return new PlatformKitExceptionHandler();
     }
 
     @Bean
