@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const ProducerName = "provider-integration"
@@ -48,7 +50,7 @@ type EventEnvelope struct {
 	EventType     string          `json:"eventType"`
 	OccurredAt    string          `json:"occurredAt"`
 	CorrelationID string          `json:"correlationId"`
-	CausationID   string          `json:"causationId,omitempty"`
+	CausationID   string          `json:"causationId"`
 	Producer      string          `json:"producer"`
 	SchemaVersion int             `json:"schemaVersion"`
 	Payload       json.RawMessage `json:"payload"`
@@ -71,19 +73,47 @@ func NewEventEnvelope(eventType, correlationID, causationID string, payload any)
 	}
 	now := time.Now().UTC()
 	return EventEnvelope{
-		EventID:       newPrefixedID("evt", now),
+		EventID:       newPrefixedID("evt"),
 		EventType:     strings.TrimSpace(eventType),
 		OccurredAt:    now.Format(time.RFC3339Nano),
-		CorrelationID: strings.TrimSpace(correlationID),
-		CausationID:   strings.TrimSpace(causationID),
+		CorrelationID: canonicalCorrelationID(correlationID),
+		CausationID:   canonicalCausationID(causationID),
 		Producer:      ProducerName,
 		SchemaVersion: 1,
 		Payload:       payloadBytes,
 	}, nil
 }
 
-func newPrefixedID(prefix string, now time.Time) string {
-	return fmt.Sprintf("%s-%d", prefix, now.UnixNano())
+func canonicalCorrelationID(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if hasPrefixedUUID(trimmed, "corr") {
+		return trimmed
+	}
+	if id, err := uuid.Parse(trimmed); err == nil {
+		return "corr-" + id.String()
+	}
+	return newPrefixedID("corr")
+}
+
+func canonicalCausationID(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if hasPrefixedUUID(trimmed, "cmd") || hasPrefixedUUID(trimmed, "evt") {
+		return trimmed
+	}
+	return newPrefixedID("cmd")
+}
+
+func hasPrefixedUUID(value, prefix string) bool {
+	id, err := uuid.Parse(strings.TrimPrefix(value, prefix+"-"))
+	return err == nil && strings.HasPrefix(value, prefix+"-") && id != uuid.Nil
+}
+
+func newPrefixedID(prefix string) string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		id = uuid.New()
+	}
+	return fmt.Sprintf("%s-%s", prefix, id.String())
 }
 
 type ConsumedEventLog interface {

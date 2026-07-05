@@ -45,9 +45,10 @@ type RequestProviderReservationCommand struct {
 }
 
 type ProviderReservationResult struct {
-	SegmentBookingID  string            `json:"segmentBookingId"`
-	Status            ReservationStatus `json:"status"`
-	ProviderReference string            `json:"providerReference,omitempty"`
+	SegmentBookingID   string            `json:"segmentBookingId"`
+	Status             ReservationStatus `json:"status"`
+	ProviderReference  string            `json:"providerReference,omitempty"`
+	NormalizedEvidence string            `json:"-"`
 }
 
 type CancelProviderReservationCommand struct {
@@ -138,17 +139,18 @@ func (s *InMemoryReservationService) RequestReservation(ctx context.Context, cmd
 		return ProviderReservationResult{}, err
 	}
 	result := ProviderReservationResult{
-		SegmentBookingID:  strings.TrimSpace(cmd.SegmentBookingID),
-		Status:            ReservationConfirmed,
-		ProviderReference: "prv-" + strings.TrimPrefix(strings.TrimSpace(cmd.SegmentBookingID), "sb-"),
+		SegmentBookingID:   strings.TrimSpace(cmd.SegmentBookingID),
+		Status:             ReservationConfirmed,
+		ProviderReference:  "prv-" + strings.TrimPrefix(strings.TrimSpace(cmd.SegmentBookingID), "sb-"),
+		NormalizedEvidence: "normalized provider confirmation",
 	}
 	s.mu.Lock()
 	s.results[result.SegmentBookingID] = result
 	s.mu.Unlock()
 	if err := s.publish(ctx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.HeaderKey, map[string]any{
-		"segmentBookingId":  result.SegmentBookingID,
-		"providerReference": result.ProviderReference,
-		"status":            result.Status,
+		"segmentBookingId":   result.SegmentBookingID,
+		"providerReference":  result.ProviderReference,
+		"normalizedEvidence": result.NormalizedEvidence,
 	}); err != nil {
 		return ProviderReservationResult{}, ErrUnavailable
 	}
