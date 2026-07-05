@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -292,13 +293,7 @@ func TestInboundSegmentReservationRequestedInvokesReservationFlow(t *testing.T) 
 	publisher := &fakePublisher{}
 	service := application.NewInMemoryReservationService(publisher)
 	handler := application.DeduplicatingHandler(application.NewInMemoryConsumedEventLog(), application.NewInboundEventHandler(service))
-	payload := map[string]any{
-		"segmentBookingId": segmentBookingID1,
-		"journeyOrderId":   "jo-018f0000-0000-7000-8000-000000000201",
-		"segmentRef":       "cr-rail:G1234:2026-07-05",
-		"travelerRef":      "trav-018f0000-0000-7000-8000-000000000301",
-		"idempotencyKey":   testUUIDv7(41),
-	}
+	payload := validSegmentReservationRequestedPayload()
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -337,6 +332,50 @@ func TestInboundSegmentReservationRequestedInvokesReservationFlow(t *testing.T) 
 	}
 	if len(outcomePayload) != 3 || outcomePayload["segmentBookingId"] != segmentBookingID1 || outcomePayload["providerReference"] != providerReferenceFor(segmentBookingID1) || outcomePayload["normalizedEvidence"] != normalizedEvidenceFor(segmentBookingID1) {
 		t.Fatalf("unexpected outcome payload: %#v", outcomePayload)
+	}
+}
+
+func TestInboundSegmentReservationRequestedMissingSegmentRefIsFatal(t *testing.T) {
+	publisher := &fakePublisher{}
+	service := application.NewInMemoryReservationService(publisher)
+	handler := application.NewInboundEventHandler(service)
+	payload := validSegmentReservationRequestedPayload()
+	delete(payload, "segmentRef")
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := application.EventEnvelope{
+		EventID:       "evt-" + testUUIDv7(45),
+		EventType:     "SegmentReservationRequested",
+		OccurredAt:    "2026-07-05T00:00:00Z",
+		CorrelationID: "corr-" + testUUIDv7(46),
+		CausationID:   "cmd-" + testUUIDv7(47),
+		Producer:      "booking-orchestration",
+		SchemaVersion: 1,
+		Payload:       payloadBytes,
+	}
+
+	err = handler(context.Background(), envelope)
+	if err == nil {
+		t.Fatal("expected fatal handler error")
+	}
+	var handlerErr application.HandlerError
+	if !errors.As(err, &handlerErr) || handlerErr.Kind != application.HandlerErrorFatal {
+		t.Fatalf("expected fatal handler error, got %T %[1]v", err)
+	}
+	if len(publisher.envelopes) != 0 {
+		t.Fatalf("missing required ingress field must not publish outcome events, got %d", len(publisher.envelopes))
+	}
+}
+
+func validSegmentReservationRequestedPayload() map[string]any {
+	return map[string]any{
+		"segmentBookingId": segmentBookingID1,
+		"journeyOrderId":   "ord-" + testUUIDv7(201),
+		"segmentRef":       "cr-rail:G1234:2026-07-05",
+		"travelerRef":      "tvl-" + testUUIDv7(301),
+		"idempotencyKey":   testUUIDv7(41),
 	}
 }
 
