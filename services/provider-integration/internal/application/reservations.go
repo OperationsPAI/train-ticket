@@ -39,9 +39,8 @@ type RequestProviderReservationCommand struct {
 	SegmentBookingID   string         `json:"segmentBookingId"`
 	ProviderConfigRef  string         `json:"providerConfigRef"`
 	ReservationPayload map[string]any `json:"reservationPayload"`
-	IdempotencyKey     string         `json:"idempotencyKey"`
-	HeaderKey          string         `json:"-"`
 	CorrelationID      string         `json:"-"`
+	CausationID        string         `json:"-"`
 }
 
 type ProviderReservationResult struct {
@@ -53,8 +52,8 @@ type ProviderReservationResult struct {
 
 type CancelProviderReservationCommand struct {
 	SegmentBookingID string `json:"segmentBookingId"`
-	IdempotencyKey   string `json:"-"`
 	CorrelationID    string `json:"-"`
+	CausationID      string `json:"-"`
 }
 
 type CancelProviderReservationResult struct {
@@ -147,7 +146,7 @@ func (s *InMemoryReservationService) RequestReservation(ctx context.Context, cmd
 	s.mu.Lock()
 	s.results[result.SegmentBookingID] = result
 	s.mu.Unlock()
-	if err := s.publish(ctx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.HeaderKey, map[string]any{
+	if err := s.publish(ctx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
 		"segmentBookingId":   result.SegmentBookingID,
 		"providerReference":  result.ProviderReference,
 		"normalizedEvidence": result.NormalizedEvidence,
@@ -171,7 +170,7 @@ func (s *InMemoryReservationService) CancelReservation(ctx context.Context, cmd 
 	s.mu.Lock()
 	s.cancellations[result.SegmentBookingID] = result
 	s.mu.Unlock()
-	if err := s.publish(ctx, "ProviderReservationCancelled", cmd.CorrelationID, cmd.IdempotencyKey, map[string]any{
+	if err := s.publish(ctx, "ProviderReservationCancelled", cmd.CorrelationID, cmd.CausationID, map[string]any{
 		"segmentBookingId":   result.SegmentBookingID,
 		"cancellationStatus": result.CancellationStatus,
 	}); err != nil {
@@ -200,15 +199,6 @@ func validateReservationCommand(cmd RequestProviderReservationCommand) error {
 	}
 	if len(cmd.ReservationPayload) == 0 {
 		return fmt.Errorf("%w: reservationPayload is required", ErrValidation)
-	}
-	if strings.TrimSpace(cmd.IdempotencyKey) == "" {
-		return fmt.Errorf("%w: idempotencyKey is required", ErrValidation)
-	}
-	if strings.TrimSpace(cmd.HeaderKey) == "" {
-		return fmt.Errorf("%w: Idempotency-Key header is required", ErrValidation)
-	}
-	if cmd.IdempotencyKey != cmd.HeaderKey {
-		return fmt.Errorf("%w: idempotencyKey must match Idempotency-Key header", ErrValidation)
 	}
 	return nil
 }
