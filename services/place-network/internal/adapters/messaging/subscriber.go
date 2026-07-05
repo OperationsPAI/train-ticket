@@ -12,8 +12,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/trainticket/greenfield/services/place-network/internal/application"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
-	"github.com/trainticket/greenfield/services/place-network/internal/domain/ports"
 )
 
 type RedisSubscriber struct {
@@ -29,7 +29,7 @@ func NewRedisSubscriber(client *redis.Client) *RedisSubscriber {
 	return &RedisSubscriber{client: client, consumed: make(map[string]struct{}), stopCh: make(chan struct{})}
 }
 
-func (s *RedisSubscriber) Subscribe(streams []string, group string, consumerName string, handler ports.EventHandler) error {
+func (s *RedisSubscriber) Subscribe(streams []string, group string, consumerName string, handler application.EventHandler) error {
 	ctx := context.Background()
 	for _, stream := range streams {
 		err := s.client.XGroupCreateMkStream(ctx, stream, group, "$").Err()
@@ -54,7 +54,7 @@ func (s *RedisSubscriber) Stop() {
 	s.wg.Wait()
 }
 
-func (s *RedisSubscriber) pollLoop(streams []string, group, consumerName string, handler ports.EventHandler) {
+func (s *RedisSubscriber) pollLoop(streams []string, group, consumerName string, handler application.EventHandler) {
 	for {
 		select {
 		case <-s.stopCh:
@@ -79,7 +79,7 @@ func (s *RedisSubscriber) pollLoop(streams []string, group, consumerName string,
 	}
 }
 
-func (s *RedisSubscriber) recoveryLoop(streams []string, group, consumerName string, handler ports.EventHandler) {
+func (s *RedisSubscriber) recoveryLoop(streams []string, group, consumerName string, handler application.EventHandler) {
 	ticker := time.NewTicker(ClaimMinIdle)
 	defer ticker.Stop()
 	for {
@@ -101,7 +101,7 @@ func (s *RedisSubscriber) recoveryLoop(streams []string, group, consumerName str
 	}
 }
 
-func (s *RedisSubscriber) processMessage(stream, group string, msg redis.XMessage, handler ports.EventHandler) {
+func (s *RedisSubscriber) processMessage(stream, group string, msg redis.XMessage, handler application.EventHandler) {
 	ctx := context.Background()
 	envelopeJSON, ok := msg.Values["envelope"].(string)
 	if !ok {
@@ -124,10 +124,10 @@ func (s *RedisSubscriber) processMessage(stream, group string, msg redis.XMessag
 		return
 	}
 	switch handler(envelope) {
-	case ports.HandlerSuccess:
+	case application.HandlerSuccess:
 		s.markConsumed(envelope.EventID)
 		_, _ = s.client.XAck(ctx, stream, group, msg.ID).Result()
-	case ports.HandlerFatalError:
+	case application.HandlerFatalError:
 		s.moveToDLQ(ctx, stream, envelopeJSON)
 		_, _ = s.client.XAck(ctx, stream, group, msg.ID).Result()
 	}
@@ -135,10 +135,14 @@ func (s *RedisSubscriber) processMessage(stream, group string, msg redis.XMessag
 
 func (s *RedisSubscriber) deliveryAttempts(ctx context.Context, stream, group, id string) int64 {
 	entries, err := s.client.XPendingExt(ctx, &redis.XPendingExtArgs{Stream: stream, Group: group, Start: id, End: id, Count: 1}).Result()
+	return pendingRetryCount(entries, err)
+}
+
+func pendingRetryCount(entries []redis.XPendingExt, err error) int64 {
 	if err != nil || len(entries) == 0 {
 		return 0
 	}
-	return entries[0].RetryCount + 1
+	return entries[0].RetryCount
 }
 
 func (s *RedisSubscriber) moveToDLQ(ctx context.Context, stream, envelopeJSON string) {
