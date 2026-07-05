@@ -91,9 +91,10 @@ public class BookingOrchestrationController {
                  produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> startSaga(
             @RequestBody StartSagaRequest request,
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             HttpServletRequest httpRequest) {
-        List<String> errors = validateStartSaga(request);
+        List<String> errors = validateIdempotencyKey(idempotencyKey);
+        errors.addAll(validateStartSaga(request));
         if (!errors.isEmpty()) {
             return validationError(errors, httpRequest);
         }
@@ -144,16 +145,17 @@ public class BookingOrchestrationController {
     public ResponseEntity<?> requestReservation(
             @PathVariable String sagaId,
             @RequestBody RequestReservationRequest request,
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             HttpServletRequest httpRequest) {
+        List<String> errors = validateIdempotencyKey(idempotencyKey);
+        errors.addAll(validateRequestReservation(request));
+        if (!errors.isEmpty()) {
+            return validationError(errors, httpRequest);
+        }
+
         Optional<BookingSaga> sagaOpt = sagaStore.get(sagaId);
         if (sagaOpt.isEmpty()) {
             return notFound("Booking saga not found: " + sagaId, httpRequest);
-        }
-
-        List<String> errors = validateRequestReservation(request);
-        if (!errors.isEmpty()) {
-            return validationError(errors, httpRequest);
         }
 
         var existing = idempotencyStore.get(idempotencyKey, request);
@@ -183,16 +185,17 @@ public class BookingOrchestrationController {
     public ResponseEntity<?> markTicketed(
             @PathVariable String sagaId,
             @RequestBody MarkTicketedRequest request,
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             HttpServletRequest httpRequest) {
+        List<String> errors = validateIdempotencyKey(idempotencyKey);
+        errors.addAll(validateMarkTicketed(request));
+        if (!errors.isEmpty()) {
+            return validationError(errors, httpRequest);
+        }
+
         Optional<BookingSaga> sagaOpt = sagaStore.get(sagaId);
         if (sagaOpt.isEmpty()) {
             return notFound("Booking saga not found: " + sagaId, httpRequest);
-        }
-
-        List<String> errors = validateMarkTicketed(request);
-        if (!errors.isEmpty()) {
-            return validationError(errors, httpRequest);
         }
 
         var existing = idempotencyStore.get(idempotencyKey, request);
@@ -262,6 +265,14 @@ public class BookingOrchestrationController {
             "booking-orchestration", "cmd-" + UUID.randomUUID(),
             getCorrelationId(request), clock.instant(), event);
         eventPublisher.publish(envelope);
+    }
+
+    private List<String> validateIdempotencyKey(String idempotencyKey) {
+        List<String> errors = new ArrayList<>();
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            errors.add("Idempotency-Key header is required");
+        }
+        return errors;
     }
 
     private List<String> validateStartSaga(StartSagaRequest request) {
