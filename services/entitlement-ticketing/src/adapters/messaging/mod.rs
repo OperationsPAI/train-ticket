@@ -181,7 +181,11 @@ impl RedisEventSubscriber {
                 .query_async(&mut connection)
                 .await
                 .map_err(|error| SubscribeFailed(error.to_string()))?;
-            for message in parse_autoclaim_messages(stream, response) {
+            for mut message in parse_autoclaim_messages(stream, response) {
+                message.delivery_count =
+                    pending_delivery_count(&mut connection, stream, group, &message.id)
+                        .await
+                        .unwrap_or(message.delivery_count);
                 if message.delivery_count >= 5 {
                     move_to_dlq(
                         &mut connection,
@@ -256,6 +260,37 @@ async fn ack(
     Ok(())
 }
 
+async fn pending_delivery_count(
+    connection: &mut redis::aio::MultiplexedConnection,
+    stream: &str,
+    group: &str,
+    id: &str,
+) -> Result<u64, SubscribeFailed> {
+    let value: redis::Value = redis::cmd("XPENDING")
+        .arg(stream)
+        .arg(group)
+        .arg(id)
+        .arg(id)
+        .arg(1)
+        .query_async(connection)
+        .await
+        .map_err(|error| SubscribeFailed(error.to_string()))?;
+    Ok(parse_xpending_delivery_count(value).unwrap_or(1))
+}
+
+fn parse_xpending_delivery_count(value: redis::Value) -> Option<u64> {
+    let redis::Value::Bulk(entries) = value else {
+        return None;
+    };
+    let redis::Value::Bulk(entry) = entries.first()? else {
+        return None;
+    };
+    match entry.get(3)? {
+        redis::Value::Int(count) => Some((*count).try_into().ok()?),
+        other => redis_value_to_string(other)?.parse().ok(),
+    }
+}
+
 async fn move_to_dlq(
     connection: &mut redis::aio::MultiplexedConnection,
     stream: &str,
@@ -322,7 +357,7 @@ fn parse_autoclaim_messages(stream: &str, value: redis::Value) -> Vec<StreamMess
                         stream: stream.to_string(),
                         id,
                         raw_envelope,
-                        delivery_count: 1,
+                        delivery_count: 0,
                     });
                 }
             }
@@ -406,5 +441,21 @@ impl DeduplicatingEventHandler {
 
     pub fn handled_count(&self) -> usize {
         self.handled.lock().expect("handled lock poisoned").len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xpending_delivery_count_controls_dlq_threshold() {
+        let value = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+            redis::Value::Data(b"1700000000000-0".to_vec()),
+            redis::Value::Data(b"consumer-a".to_vec()),
+            redis::Value::Int(42),
+            redis::Value::Int(5),
+        ])]);
+        assert_eq!(parse_xpending_delivery_count(value), Some(5));
     }
 }
