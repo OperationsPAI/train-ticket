@@ -93,6 +93,18 @@ class FailingPublisher(InMemoryEventPublisher):
         raise PublishFailed("downstream unavailable")
 
 
+class FlakyPublisher(InMemoryEventPublisher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def publish(self, envelope: EventEnvelope) -> None:
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise PublishFailed("downstream unavailable")
+        super().publish(envelope)
+
+
 def test_malformed_idempotency_key_is_validation_error() -> None:
     response = TestClient(fake_app()).post(
         "/api/v1/risk-assessments",
@@ -122,6 +134,28 @@ def test_publish_failure_returns_unavailable_body_after_save() -> None:
     assert response.json()["code"] == "UNAVAILABLE"
     assert response.json()["details"] == {"deliverySemantics": "AT_LEAST_ONCE"}
     assert len(repository._assessments) == 1
+    assert len(repository._idempotency) == 0
+    assert len(repository._pending_publications) == 1
+
+
+def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
+    repository = InMemoryAssessmentRepository()
+    publisher = FlakyPublisher()
+    app = create_app(service=RiskComplianceService(publisher, repository))
+    client = TestClient(app)
+    headers = {"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())}
+    payload = {"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 120}}
+
+    first = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
+    retry = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
+
+    assert first.status_code == 503
+    assert retry.status_code == 201
+    assert len(repository._assessments) == 1
+    assert len(repository._pending_publications) == 0
+    assert len(repository._idempotency) == 1
+    assert len(publisher.envelopes) == 1
+    assert retry.json()["assessmentId"] == next(iter(repository._assessments))
 
 
 def test_idempotent_replay_returns_original_result() -> None:
