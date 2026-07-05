@@ -1,0 +1,82 @@
+package domain
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"time"
+)
+
+const ProducerPlaceNetwork = "place-network"
+
+// Domain event payloads for Place & Network.
+
+type PlaceUpdatedEvent struct {
+	PlaceID       PlaceID     `json:"placeId"`
+	PlaceType     PlaceType   `json:"placeType"`
+	CanonicalName string      `json:"canonicalName"`
+	Code          string      `json:"code,omitempty"`
+	Timezone      string      `json:"timezone,omitempty"`
+	Status        PlaceStatus `json:"status"`
+	UpdatedAt     string      `json:"updatedAt"`
+}
+
+type TransportNodeUpdatedEvent struct {
+	NodeID       TransportNodeID `json:"nodeId"`
+	PlaceID      PlaceID         `json:"placeId"`
+	DisplayName  string          `json:"displayName"`
+	ServingModes []TransportMode `json:"servingModes"`
+	UpdatedAt    string          `json:"updatedAt"`
+}
+
+// EventEnvelope is the shared-primitives event envelope used on the event bus.
+type EventEnvelope struct {
+	EventID       string `json:"eventId"`
+	EventType     string `json:"eventType"`
+	SchemaVersion int    `json:"schemaVersion"`
+	Producer      string `json:"producer"`
+	CausationID   string `json:"causationId,omitempty"`
+	CorrelationID string `json:"correlationId"`
+	OccurredAt    string `json:"occurredAt"`
+	Payload       any    `json:"payload"`
+}
+
+func NewEventEnvelope(eventType string, occurredAt time.Time, correlationID string, causationID string, producer string, payload any) EventEnvelope {
+	return EventEnvelope{
+		EventID:       "evt-" + randomHexID(),
+		EventType:     eventType,
+		SchemaVersion: 1,
+		Producer:      producer,
+		CausationID:   causationID,
+		CorrelationID: correlationID,
+		OccurredAt:    FormatTimestamp(occurredAt),
+		Payload:       payload,
+	}
+}
+
+func FormatTimestamp(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func NewPlaceID() PlaceID {
+	return PlaceID("plc-" + randomHexID())
+}
+
+func NewTransportNodeID() TransportNodeID {
+	return TransportNodeID("tnd-" + randomHexID())
+}
+
+func randomHexID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("secure random id generation failed: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+type Clock interface {
+	Now() time.Time
+}
+
+type RealClock struct{}
+
+func (RealClock) Now() time.Time { return time.Now() }
