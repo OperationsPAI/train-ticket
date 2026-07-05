@@ -37,6 +37,8 @@ public class RequestContextFilter extends OncePerRequestFilter {
             request.getRequestURI()
         );
 
+        request.setAttribute(REQUEST_ID_HEADER, requestId);
+        request.setAttribute(CORRELATION_ID_HEADER, correlationId);
         response.setHeader(REQUEST_ID_HEADER, requestId);
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
         MDC.put("requestId", requestId);
