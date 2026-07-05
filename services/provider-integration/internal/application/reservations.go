@@ -197,12 +197,6 @@ func (s *InMemoryReservationService) CancelReservation(ctx context.Context, cmd 
 	s.mu.Lock()
 	s.cancellations[result.SegmentBookingID] = result
 	s.mu.Unlock()
-	if err := s.publish(ctx, "ProviderReservationCancelled", cmd.CorrelationID, cmd.CausationID, map[string]any{
-		"segmentBookingId":   result.SegmentBookingID,
-		"cancellationStatus": result.CancellationStatus,
-	}); err != nil {
-		return CancelProviderReservationResult{}, ErrUnavailable
-	}
 	return result, nil
 }
 
