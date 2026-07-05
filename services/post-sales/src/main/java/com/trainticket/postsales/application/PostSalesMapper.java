@@ -9,6 +9,7 @@ import com.trainticket.postsales.domain.PostSalesApproved;
 import com.trainticket.postsales.domain.PostSalesCase;
 import com.trainticket.postsales.domain.PostSalesCaseOpened;
 import com.trainticket.postsales.domain.PostSalesCaseStatus;
+import com.trainticket.postsales.domain.PostSalesCaseType;
 import com.trainticket.postsales.domain.PostSalesDecision;
 import com.trainticket.postsales.domain.PostSalesEvaluated;
 import com.trainticket.postsales.domain.PostSalesEvent;
@@ -120,25 +121,44 @@ public final class PostSalesMapper {
             payload.put("reasonCode", opened.reasonCode());
             payload.put("actorRef", opened.actorRef());
         } else if (event instanceof PostSalesRequested requested) {
-            payload.put("journeyOrderId", requested.journeyOrderId());
-            payload.put("caseType", requested.caseType().name());
-            payload.put("scope", requested.scope());
-            payload.put("reasonCode", requested.reasonCode());
+            payload.put("orderId", requested.journeyOrderId());
+            payload.put("requestType", requestType(requested.caseType()));
+            payload.put("requestedAt", requested.metadata().occurredAt().toString());
         } else if (event instanceof PostSalesEvaluated evaluated) {
             payload.put("decisionKind", evaluated.decisionKind().name());
             payload.put("eligible", evaluated.eligible());
             payload.put("adjustmentQuoteId", evaluated.farePricingEvaluationRef());
         } else if (event instanceof PostSalesApproved approved) {
-            payload.put("decisionKind", approved.decisionKind().name());
-            payload.put("approvalRef", approved.approvalRef());
+            payload.put("orderId", approved.journeyOrderId());
+            payload.put("approvedActions", approvedActions(approved));
         } else if (event instanceof PostSalesRejected rejected) {
             payload.put("reason", rejected.reasonCode());
         } else if (event instanceof PostSalesApplied applied) {
-            payload.put("journeyOrderId", applied.journeyOrderId());
-            payload.put("caseType", applied.caseType().name());
-            payload.put("resultSummary", applied.resultSummary());
+            payload.put("orderId", applied.journeyOrderId());
+            payload.put("resultSummary", resultSummary(applied));
         }
         return payload;
+    }
+
+    private static String requestType(PostSalesCaseType caseType) {
+        return switch (caseType) {
+            case CANCELLATION -> "CANCELLATION";
+            case CHANGE, REBOOK -> "CHANGE";
+            case REFUND, COMPENSATION -> "REFUND_BY_RULE";
+        };
+    }
+
+    private static Map<String, Object> approvedActions(PostSalesApproved approved) {
+        Map<String, Object> actions = new LinkedHashMap<>();
+        actions.put("decisionKind", approved.decisionKind().name());
+        actions.put("approvalRef", approved.approvalRef());
+        return actions;
+    }
+
+    private static Map<String, Object> resultSummary(PostSalesApplied applied) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("description", applied.resultSummary());
+        return summary;
     }
 
     private static Map<String, Object> decisionDetails(PostSalesDecision decision) {

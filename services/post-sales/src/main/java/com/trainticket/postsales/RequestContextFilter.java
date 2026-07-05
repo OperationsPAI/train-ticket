@@ -29,7 +29,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
         FilterChain filterChain
     ) throws ServletException, IOException {
         String requestId = headerOrGenerated(request, REQUEST_ID_HEADER);
-        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, requestId);
+        String correlationId = headerOrGenerated(request, CORRELATION_ID_HEADER, "corr-");
         RequestTraceContext context = new RequestTraceContext(
             requestId,
             correlationId,
@@ -54,16 +54,13 @@ public class RequestContextFilter extends OncePerRequestFilter {
     }
 
     private static String headerOrGenerated(HttpServletRequest request, String headerName) {
-        return Optional.ofNullable(request.getHeader(headerName))
-            .map(String::trim)
-            .filter(value -> !value.isEmpty())
-            .orElseGet(() -> UUID.randomUUID().toString());
+        return headerOrGenerated(request, headerName, "");
     }
 
-    private static String headerOrDefault(HttpServletRequest request, String headerName, String defaultValue) {
+    private static String headerOrGenerated(HttpServletRequest request, String headerName, String generatedPrefix) {
         return Optional.ofNullable(request.getHeader(headerName))
             .map(String::trim)
             .filter(value -> !value.isEmpty())
-            .orElse(defaultValue);
+            .orElseGet(() -> generatedPrefix + UUID.randomUUID());
     }
 }
