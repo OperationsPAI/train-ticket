@@ -19,8 +19,8 @@ public class ConsumedEventLog {
         this.clock = clock;
     }
 
-    public boolean recordIfFirstSeen(String eventId) {
-        return consumedEventIds.add(eventId);
+    public void record(String eventId) {
+        consumedEventIds.add(eventId);
     }
 
     public boolean hasConsumed(String eventId) {

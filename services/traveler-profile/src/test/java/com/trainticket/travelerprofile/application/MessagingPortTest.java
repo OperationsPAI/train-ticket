@@ -62,6 +62,34 @@ class MessagingPortTest {
         assertTrue(log.hasConsumed("evt-duplicate"));
     }
 
+    @Test
+    void transientFailureIsNotRecordedAndRedeliveryInvokesDelegateAgain() {
+        ConsumedEventLog log = new ConsumedEventLog();
+        List<String> handled = new ArrayList<>();
+        DeduplicatingEventHandler handler = new DeduplicatingEventHandler(log, envelope -> {
+            handled.add(envelope.eventId());
+            return handled.size() == 1
+                ? EventSubscriber.HandlerResult.TRANSIENT_FAILURE
+                : EventSubscriber.HandlerResult.SUCCESS;
+        });
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-redelivered",
+            "TravelerProfileUpdated",
+            Instant.parse("2026-07-05T10:30:00Z"),
+            "corr-1",
+            "cmd-1",
+            "traveler-profile",
+            1,
+            objectMapper.createObjectNode()
+        );
+
+        assertEquals(EventSubscriber.HandlerResult.TRANSIENT_FAILURE, handler.handle(envelope));
+        assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
+
+        assertEquals(List.of("evt-redelivered", "evt-redelivered"), handled);
+        assertTrue(log.hasConsumed("evt-redelivered"));
+    }
+
     private static final class InMemoryPublisher implements EventPublisher {
         private final List<EventEnvelope> envelopes = new ArrayList<>();
 

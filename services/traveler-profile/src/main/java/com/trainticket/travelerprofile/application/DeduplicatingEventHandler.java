@@ -13,9 +13,13 @@ public final class DeduplicatingEventHandler implements EventSubscriber.EventHan
 
     @Override
     public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
-        if (!consumedEventLog.recordIfFirstSeen(envelope.eventId())) {
+        if (consumedEventLog.hasConsumed(envelope.eventId())) {
             return EventSubscriber.HandlerResult.SUCCESS;
         }
-        return delegate.handle(envelope);
+        EventSubscriber.HandlerResult result = delegate.handle(envelope);
+        if (result == EventSubscriber.HandlerResult.SUCCESS) {
+            consumedEventLog.record(envelope.eventId());
+        }
+        return result;
     }
 }
