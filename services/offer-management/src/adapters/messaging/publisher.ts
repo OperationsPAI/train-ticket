@@ -7,6 +7,7 @@
 import { type Redis } from "ioredis";
 
 import { EventPublisher, PublishFailed, type EventEnvelope } from "../../ports/messaging.js";
+import { streamKey } from "./stream-config.js";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 100; // base delay, doubles each retry
@@ -19,13 +20,13 @@ export class RedisEventPublisher implements EventPublisher {
   constructor(private readonly redis: Redis) {}
 
   async publish(envelope: EventEnvelope): Promise<void> {
-    const streamKey = `events:${envelope.producer}`;
+    const targetStream = streamKey(envelope.producer);
     const envelopeJson = JSON.stringify(envelope);
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        await this.redis.xadd(streamKey, "MAXLEN", "~", "100000", "*", "envelope", envelopeJson);
+        await this.redis.xadd(targetStream, "MAXLEN", "~", "100000", "*", "envelope", envelopeJson);
         return;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -36,7 +37,7 @@ export class RedisEventPublisher implements EventPublisher {
     }
 
     throw new PublishFailed(
-      `Failed to publish event ${envelope.eventId} to ${streamKey} after ${MAX_RETRIES} attempts`,
+      `Failed to publish event ${envelope.eventId} to ${targetStream} after ${MAX_RETRIES} attempts`,
       lastError,
     );
   }

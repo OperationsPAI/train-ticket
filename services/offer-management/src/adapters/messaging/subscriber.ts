@@ -7,6 +7,7 @@
 import { type Redis } from "ioredis";
 
 import { SubscribeFailed, type EventEnvelope, type EventHandler, type EventSubscriber } from "../../ports/messaging.js";
+import { dlqStreamKey } from "./stream-config.js";
 
 const POLL_TIMEOUT_MS = 2000;
 const BATCH_SIZE = 10;
@@ -17,6 +18,7 @@ const MIN_IDLE_MS = 60000;
 export class RedisEventSubscriber implements EventSubscriber {
   private redis: Redis;
   private running = false;
+  private readonly processedEventIds = new Set<string>();
 
   constructor(redis: Redis) {
     this.redis = redis;
@@ -129,17 +131,20 @@ export class RedisEventSubscriber implements EventSubscriber {
       return;
     }
 
+    if (this.processedEventIds.has(envelope.eventId)) {
+      await (this.redis as any).xack(stream, group, entryId);
+      return;
+    }
+
     const result = await handler(envelope);
 
     switch (result) {
       case "ack":
+        this.processedEventIds.add(envelope.eventId);
         await (this.redis as any).xack(stream, group, entryId);
         break;
       case "dlq": {
-        // Move to dead-letter stream
-        const dlqStream = `${stream}:dlq`;
-        await (this.redis as any).xadd(dlqStream, "MAXLEN", "~", "100000", "*", "envelope", JSON.stringify(envelope));
-        await (this.redis as any).xack(stream, group, entryId);
+        await this.moveToDlq(stream, group, [entryId, fields], JSON.stringify(envelope));
         break;
       }
       case "retry":
@@ -154,7 +159,6 @@ export class RedisEventSubscriber implements EventSubscriber {
     consumerName: string,
     handler: EventHandler,
   ): Promise<void> {
-    // XAUTOCLAIM recovers pending messages from other consumers
     const result: any = await (this.redis as any).xautoclaim(
       stream,
       group,
@@ -165,38 +169,47 @@ export class RedisEventSubscriber implements EventSubscriber {
       100,
     );
 
-    // result is [nextStartId, [entries]]
-    const entries = result[1] as Array<[string, string[]]>;
+    const entries = result[1] as Array<[string, string[], number?]>;
     if (!entries || entries.length === 0) return;
 
-    for (const entry of entries) {
-      // Check delivery count from the raw entry info
-      let deliveryCount = 1;
-      try {
-        const pendingInfo: any = await (this.redis as any).xpending(stream, group, "-", "+", 100);
-        for (const pentry of pendingInfo) {
-          if (pentry[0] === entry[0]) {
-            deliveryCount = pentry[3]; // delivery count
-            break;
-          }
-        }
-      } catch {
-        // ignore
+    for (const [entryId, fields, claimedDeliveryCount] of entries) {
+      const deliveryCount = Number(claimedDeliveryCount ?? 1);
+      if (deliveryCount >= MAX_DELIVERY_COUNT) {
+        await this.moveToDlq(stream, group, [entryId, fields]);
+        continue;
       }
 
-      if (deliveryCount >= MAX_DELIVERY_COUNT) {
-        // Move to DLQ
-        const dlqStream = `${stream}:dlq`;
-        const fields = entry[1];
-        const envelopeIdx = fields.indexOf("envelope");
-        if (envelopeIdx !== -1 && envelopeIdx + 1 < fields.length) {
-          await (this.redis as any).xadd(dlqStream, "MAXLEN", "~", "100000", "*", "envelope", fields[envelopeIdx + 1]);
-        }
-        await (this.redis as any).xack(stream, group, entry[0]);
-      } else {
-        // Process normally
-        await this.processEntry(stream, group, entry, handler);
-      }
+      await this.processEntry(stream, group, [entryId, fields], handler);
     }
   }
+
+  private async moveToDlq(
+    stream: string,
+    group: string,
+    entry: [string, string[]],
+    envelopeJson?: string,
+  ): Promise<void> {
+    const [entryId, fields] = entry;
+    const envelopeIdx = fields.indexOf("envelope");
+    const serializedEnvelope = envelopeJson ?? (envelopeIdx !== -1 ? fields[envelopeIdx + 1] : undefined);
+
+    if (serializedEnvelope) {
+      await (this.redis as any).xadd(
+        dlqStreamKey(producerFromStream(stream)),
+        "MAXLEN",
+        "~",
+        "100000",
+        "*",
+        "envelope",
+        serializedEnvelope,
+      );
+    }
+
+    await (this.redis as any).xack(stream, group, entryId);
+  }
+
+}
+
+function producerFromStream(stream: string): string {
+  return stream.startsWith("events:") ? stream.slice("events:".length).replace(/:dlq$/, "") : stream;
 }
