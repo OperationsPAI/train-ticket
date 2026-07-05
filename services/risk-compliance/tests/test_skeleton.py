@@ -64,7 +64,7 @@ class SkeletonTest(unittest.TestCase):
         self.assertIn("/ready", routes)
         self.assertIn("/metadata", routes)
 
-    def test_request_and_correlation_ids_are_propagated(self) -> None:
+    def test_correlation_id_is_propagated_and_request_id_is_server_assigned(self) -> None:
         client = TestClient(create_app())
         correlation_id = str(uuid7())
         response = client.get(
@@ -72,7 +72,8 @@ class SkeletonTest(unittest.TestCase):
             headers={"X-Request-ID": "req-123", "X-Correlation-ID": correlation_id},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["X-Request-ID"], "req-123")
+        self.assertNotEqual(response.headers["X-Request-ID"], "req-123")
+        self.assertTrue(is_uuid7(response.headers["X-Request-ID"]))
         self.assertEqual(response.headers["X-Correlation-ID"], correlation_id)
 
     def test_request_and_correlation_ids_are_generated(self) -> None:
@@ -94,7 +95,8 @@ class SkeletonTest(unittest.TestCase):
         response = client.get("/metadata", headers={"X-Request-ID": "req-trace"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual([event for event, _ in events], ["http.request.start", "http.request.complete"])
-        self.assertEqual(events[0][1]["request_id"], "req-trace")
+        self.assertNotEqual(events[0][1]["request_id"], "req-trace")
+        self.assertTrue(is_uuid7(str(events[0][1]["request_id"])))
         self.assertEqual(events[1][1]["status_code"], 200)
 
 

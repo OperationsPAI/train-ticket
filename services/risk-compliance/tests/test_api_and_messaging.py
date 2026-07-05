@@ -268,3 +268,21 @@ def test_correlation_id_policy_absent_valid_and_malformed() -> None:
     assert valid_response.json()["correlationId"] == valid
     assert is_uuid7(malformed.json()["correlationId"])
     assert malformed.json()["correlationId"] != "corr-bad"
+
+
+def test_request_id_is_server_assigned_and_caller_value_is_not_echoed() -> None:
+    caller_request_id = str(uuid7())
+
+    response = TestClient(fake_app()).post(
+        "/api/v1/risk-assessments",
+        headers={
+            "Idempotency-Key": str(uuid7()),
+            "X-Correlation-Id": str(uuid7()),
+            "X-Request-Id": caller_request_id,
+        },
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 10}},
+    )
+
+    assert response.status_code == 201
+    assert response.headers["X-Request-Id"] != caller_request_id
+    assert is_uuid7(response.headers["X-Request-Id"])
