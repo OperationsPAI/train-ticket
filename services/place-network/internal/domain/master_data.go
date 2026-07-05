@@ -69,8 +69,11 @@ type Place struct {
 	ID            PlaceID
 	Type          PlaceType
 	CanonicalName string
+	Code          string
+	Timezone      string
 	Status        PlaceStatus
 	Coordinate    *Coordinate
+	CreatedAt     time.Time
 }
 
 // NewPlace validates the minimum invariants required before a Place can be
@@ -87,6 +90,15 @@ func NewPlace(id PlaceID, placeType PlaceType, canonicalName string, status Plac
 		return Place{}, err
 	}
 	return place, nil
+}
+
+func (p *Place) SetOptionalReferenceData(code, timezone string) {
+	p.Code = strings.TrimSpace(code)
+	p.Timezone = strings.TrimSpace(timezone)
+}
+
+func (p *Place) MarkCreatedAt(createdAt time.Time) {
+	p.CreatedAt = createdAt.UTC()
 }
 
 func (p Place) Validate() error {
@@ -120,6 +132,7 @@ type TransportNode struct {
 	PlaceID      PlaceID
 	DisplayName  string
 	ServingModes []TransportMode
+	CreatedAt    time.Time
 }
 
 func NewTransportNode(id TransportNodeID, placeID PlaceID, displayName string, servingModes []TransportMode) (TransportNode, error) {
@@ -133,6 +146,10 @@ func NewTransportNode(id TransportNodeID, placeID PlaceID, displayName string, s
 		return TransportNode{}, err
 	}
 	return node, nil
+}
+
+func (n *TransportNode) MarkCreatedAt(createdAt time.Time) {
+	n.CreatedAt = createdAt.UTC()
 }
 
 func (n TransportNode) Validate() error {

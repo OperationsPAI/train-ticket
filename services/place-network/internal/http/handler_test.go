@@ -54,7 +54,7 @@ func setupTestRouter(publisher ports.EventPublisher) *gin.Engine {
 
 func TestCreatePlaceHappyPath(t *testing.T) {
 	router := setupTestRouter(nil)
-	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "Shanghai"}, "idem-place")
+	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "Shanghai"}, "0194f2e0-7b3e-7001-8284-5c26e8b00001")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -67,37 +67,37 @@ func TestCreatePlaceHappyPath(t *testing.T) {
 
 func TestGetPlaceHappyPath(t *testing.T) {
 	router := setupTestRouter(nil)
-	created := createPlace(t, router, "Station", "STATION", "idem-get-place")
+	created := createPlace(t, router, "Station", "STATION", "0194f2e0-7b3e-7002-8284-5c26e8b00002")
 	rec := perform(router, http.MethodGet, "/api/v1/places/"+created.PlaceID, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp application.GetPlaceResponse
 	decode(t, rec, &resp)
-	if resp.PlaceID != created.PlaceID || resp.PlaceType != "STATION" || len(resp.Nodes) != 0 {
+	if resp.PlaceID != created.PlaceID || resp.PlaceType != "STATION" || resp.Code != "STN" || resp.Timezone != "Asia/Shanghai" || len(resp.Nodes) != 0 {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
 
 func TestListPlacesHappyPath(t *testing.T) {
 	router := setupTestRouter(nil)
-	createPlace(t, router, "Beijing", "CITY", "idem-list-1")
-	createPlace(t, router, "Shanghai", "CITY", "idem-list-2")
+	createPlaceWithReferenceData(t, router, "Beijing", "CITY", "BJS", "Asia/Shanghai", "0194f2e0-7b3e-7003-8284-5c26e8b00003")
+	createPlace(t, router, "Shanghai", "CITY", "0194f2e0-7b3e-7004-8284-5c26e8b00004")
 	rec := perform(router, http.MethodGet, "/api/v1/places?limit=1&offset=0&status=ACTIVE", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp application.ListPlacesResponse
 	decode(t, rec, &resp)
-	if resp.Total != 2 || resp.Limit != 1 || resp.Offset != 0 || len(resp.Items) != 1 {
+	if resp.Total != 2 || resp.Limit != 1 || resp.Offset != 0 || len(resp.Items) != 1 || resp.Items[0].Code != "BJS" {
 		t.Fatalf("unexpected list: %#v", resp)
 	}
 }
 
 func TestCreateTransportNodeHappyPath(t *testing.T) {
 	router := setupTestRouter(nil)
-	place := createPlace(t, router, "Beijing South", "STATION", "idem-node-place")
-	rec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Platform 1", "servingModes": []string{"TRAIN"}}, "idem-node")
+	place := createPlace(t, router, "Beijing South", "STATION", "0194f2e0-7b3e-7005-8284-5c26e8b00005")
+	rec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Platform 1", "servingModes": []string{"TRAIN"}}, "0194f2e0-7b3e-7006-8284-5c26e8b00006")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -110,8 +110,8 @@ func TestCreateTransportNodeHappyPath(t *testing.T) {
 
 func TestGetTransportNodeHappyPath(t *testing.T) {
 	router := setupTestRouter(nil)
-	place := createPlace(t, router, "Beijing South", "STATION", "idem-node-get-place")
-	createdRec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Platform 2", "servingModes": []string{"TRAIN"}}, "idem-node-get")
+	place := createPlace(t, router, "Beijing South", "STATION", "0194f2e0-7b3e-7007-8284-5c26e8b00007")
+	createdRec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Platform 2", "servingModes": []string{"TRAIN"}}, "0194f2e0-7b3e-7008-8284-5c26e8b00008")
 	var created application.CreateTransportNodeResponse
 	decode(t, createdRec, &created)
 	rec := perform(router, http.MethodGet, "/api/v1/transport-nodes/"+created.NodeID, nil)
@@ -120,14 +120,14 @@ func TestGetTransportNodeHappyPath(t *testing.T) {
 	}
 	var resp application.GetTransportNodeResponse
 	decode(t, rec, &resp)
-	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID {
+	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
 
 func TestValidationFailureErrorBody(t *testing.T) {
 	router := setupTestRouter(nil)
-	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY"}, "idem-invalid")
+	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY"}, "0194f2e0-7b3e-7009-8284-5c26e8b00009")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -143,11 +143,20 @@ func TestMissingIdempotencyKey(t *testing.T) {
 	assertError(t, rec, "VALIDATION_FAILED")
 }
 
+func TestInvalidIdempotencyKeyFormat(t *testing.T) {
+	router := setupTestRouter(nil)
+	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "Shanghai"}, "not-a-uuid-v7")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertError(t, rec, "VALIDATION_FAILED")
+}
+
 func TestIdempotentReplayReturnsOriginalResult(t *testing.T) {
 	router := setupTestRouter(nil)
 	body := map[string]any{"placeType": "CITY", "canonicalName": "Shenzhen"}
-	first := performJSON(router, http.MethodPost, "/api/v1/places", body, "idem-replay")
-	second := performJSON(router, http.MethodPost, "/api/v1/places", body, "idem-replay")
+	first := performJSON(router, http.MethodPost, "/api/v1/places", body, "0194f2e0-7b3e-700a-8284-5c26e8b0000a")
+	second := performJSON(router, http.MethodPost, "/api/v1/places", body, "0194f2e0-7b3e-700a-8284-5c26e8b0000a")
 	if first.Code != http.StatusCreated || second.Code != http.StatusCreated || first.Body.String() != second.Body.String() {
 		t.Fatalf("expected identical 201 replay, first=%d %s second=%d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
 	}
@@ -155,8 +164,8 @@ func TestIdempotentReplayReturnsOriginalResult(t *testing.T) {
 
 func TestIdempotencyKeyReusedWithDifferentBody(t *testing.T) {
 	router := setupTestRouter(nil)
-	_ = performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "A"}, "idem-reused")
-	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "B"}, "idem-reused")
+	_ = performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "A"}, "0194f2e0-7b3e-700b-8284-5c26e8b0000b")
+	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": "CITY", "canonicalName": "B"}, "0194f2e0-7b3e-700b-8284-5c26e8b0000b")
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -166,9 +175,9 @@ func TestIdempotencyKeyReusedWithDifferentBody(t *testing.T) {
 func TestPublisherWrapsEventsInEnvelope(t *testing.T) {
 	publisher := &recordingPublisher{}
 	router := setupTestRouter(publisher)
-	createPlace(t, router, "Shanghai", "CITY", "idem-envelope")
+	createPlace(t, router, "Shanghai", "CITY", "0194f2e0-7b3e-700c-8284-5c26e8b0000c")
 	envelope := publisher.last()
-	if !strings.HasPrefix(envelope.EventID, "evt-") || envelope.EventType != "PlaceUpdated" || envelope.SchemaVersion != 1 || envelope.Producer != "place-network" || envelope.CorrelationID != "corr-test" || envelope.OccurredAt != "2026-07-05T10:30:00Z" {
+	if !validPrefixedUUIDv7(envelope.EventID, "evt-") || envelope.EventType != "PlaceUpdated" || envelope.SchemaVersion != 1 || envelope.Producer != "place-network" || envelope.CorrelationID != "corr-test" || envelope.OccurredAt != "2026-07-05T10:30:00Z" {
 		t.Fatalf("unexpected envelope: %#v", envelope)
 	}
 	payload, ok := envelope.Payload.(domain.PlaceUpdatedEvent)
@@ -203,7 +212,12 @@ func TestNotFoundErrorBody(t *testing.T) {
 
 func createPlace(t *testing.T, router *gin.Engine, name, placeType, key string) application.CreatePlaceResponse {
 	t.Helper()
-	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": placeType, "canonicalName": name}, key)
+	return createPlaceWithReferenceData(t, router, name, placeType, "STN", "Asia/Shanghai", key)
+}
+
+func createPlaceWithReferenceData(t *testing.T, router *gin.Engine, name, placeType, code, timezone, key string) application.CreatePlaceResponse {
+	t.Helper()
+	rec := performJSON(router, http.MethodPost, "/api/v1/places", map[string]any{"placeType": placeType, "canonicalName": name, "code": code, "timezone": timezone}, key)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create place failed: %d %s", rec.Code, rec.Body.String())
 	}
@@ -243,6 +257,10 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode failed: %v; body=%s", err, rec.Body.String())
 	}
+}
+
+func validPrefixedUUIDv7(value, prefix string) bool {
+	return strings.HasPrefix(value, prefix) && validUUIDv7(strings.TrimPrefix(value, prefix))
 }
 
 func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
