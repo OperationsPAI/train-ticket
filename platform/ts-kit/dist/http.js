@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { isUuidV7, newCorrelationId } from "./ids.js";
+import { isUuidV7, newCorrelationId, canonicalCorrelationId } from "./ids.js";
 export class InMemoryIdempotencyStore {
     records = new Map();
     get(key) {
@@ -32,7 +32,12 @@ export function canonicalHttpCorrelationId(value) {
     if (!value) {
         return newCorrelationId();
     }
-    return value.startsWith("corr-") ? value : `corr-${value}`;
+    try {
+        return canonicalCorrelationId(value);
+    }
+    catch {
+        return newCorrelationId();
+    }
 }
 export function errorBody(code, message, context, details = {}) {
     return { code, message, correlationId: context.correlationId, details };

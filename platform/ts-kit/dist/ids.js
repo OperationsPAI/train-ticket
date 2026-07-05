@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+const PREFIXED_UUID_V7 = /^(?<prefix>evt|cmd|corr)-(?<uuid>[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/iu;
 export function uuidV7(now = new Date()) {
     const bytes = randomBytes(16);
     const timestamp = BigInt(now.getTime());
@@ -24,7 +25,7 @@ export function isUuidV7(value) {
     return parseUuid(value)?.version === 7;
 }
 export function prefixedId(prefix, id = uuidV7()) {
-    return id.startsWith(`${prefix}-`) ? id : `${prefix}-${id}`;
+    return `${prefix}-${validatedUuidV7(id, prefix)}`;
 }
 export function newEventId() {
     return prefixedId("evt");
@@ -36,17 +37,40 @@ export function newCorrelationId() {
     return prefixedId("corr");
 }
 export function canonicalEventId(value) {
-    return prefixedId("evt", stripKnownPrefix(value));
+    return prefixedId("evt", value);
 }
 export function canonicalCorrelationId(value) {
-    return prefixedId("corr", stripKnownPrefix(value));
+    return prefixedId("corr", value);
 }
 export function canonicalCausationId(value) {
-    if (value.startsWith("cmd-") || value.startsWith("evt-")) {
+    const prefix = prefixOf(value);
+    if (prefix !== undefined && prefix !== "cmd" && prefix !== "evt") {
+        throw new Error("Causation ID must use cmd- or evt- prefix");
+    }
+    return `${prefix ?? "cmd"}-${validatedUuidV7(value, prefix ?? "cmd")}`;
+}
+export function isPrefixedUuidV7(value, allowedPrefixes = ["evt", "cmd", "corr"]) {
+    const match = PREFIXED_UUID_V7.exec(value);
+    return match?.groups !== undefined && allowedPrefixes.includes(match.groups.prefix);
+}
+function validatedUuidV7(value, expectedPrefix) {
+    const uuid = stripExpectedPrefix(value, expectedPrefix);
+    if (!isUuidV7(uuid)) {
+        throw new Error(`${expectedPrefix}- ID must contain a UUID v7`);
+    }
+    return uuid.toLowerCase();
+}
+function stripExpectedPrefix(value, expectedPrefix) {
+    const prefix = prefixOf(value);
+    if (prefix === undefined) {
         return value;
     }
-    return `cmd-${value}`;
+    if (prefix !== expectedPrefix) {
+        throw new Error(`ID must use ${expectedPrefix}- prefix`);
+    }
+    return value.slice(value.indexOf("-") + 1);
 }
-function stripKnownPrefix(value) {
-    return /^(evt|cmd|corr)-/.test(value) ? value.slice(value.indexOf("-") + 1) : value;
+function prefixOf(value) {
+    const match = /^(evt|cmd|corr)-/u.exec(value);
+    return match?.[1];
 }

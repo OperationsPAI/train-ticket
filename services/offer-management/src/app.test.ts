@@ -22,13 +22,13 @@ describe("offer-management service operational foundation", () => {
       url: "/readyz",
       headers: {
         "x-request-id": "req-offer-management-1",
-        "x-correlation-id": "corr-offer-management-1",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.headers["x-request-id"], "req-offer-management-1");
-    assert.equal(response.headers["x-correlation-id"], "corr-offer-management-1");
+    assert.equal(response.headers["x-correlation-id"], "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.deepEqual(response.json(), { status: "ok", probe: "ready" });
 
     const health = await app.inject("/health");
@@ -97,19 +97,19 @@ describe("offer-management service operational foundation", () => {
       url: "/health",
       headers: {
         "x-request-id": "req-offer-management-trace",
-        "x-correlation-id": "corr-offer-management-trace",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(seenRequests, [{ requestId: "req-offer-management-trace", correlationId: "corr-offer-management-trace" }]);
+    assert.deepEqual(seenRequests, [{ requestId: "req-offer-management-trace", correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" }]);
     assert.deepEqual(endedSpans, [
       {
         method: "GET",
         url: "/health",
         statusCode: 200,
         requestId: "req-offer-management-trace",
-        correlationId: "corr-offer-management-trace",
+        correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     ]);
 
@@ -133,7 +133,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
       url: "/api/v1/offers",
       headers: {
         "idempotency-key": idempotencyKey,
-        "x-correlation-id": "corr-quote-1",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
       body: {
         accountId: "acc-123",
@@ -157,7 +157,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.equal(body.downstreamReference.offerVersion, 1);
     assert.equal(body.itineraryRef, "itin-456");
     assert.equal(body.travelerSetHash, "tvl-001,tvl-002");
-    assert.equal(response.headers["x-correlation-id"], "corr-quote-1");
+    assert.equal(response.headers["x-correlation-id"], "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.ok(response.headers["x-request-id"]);
   });
 
@@ -171,7 +171,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
       url: "/api/v1/offers",
       headers: {
         "idempotency-key": uuidV7(),
-        "x-correlation-id": "corr-published-quote",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
       body: {
         accountId: "acc-123",
@@ -187,7 +187,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.equal(envelope.producer, "offer-management");
     assert.equal(envelope.eventType, "OfferQuoted");
     assert.equal(envelope.schemaVersion, 1);
-    assert.equal(envelope.correlationId, "corr-published-quote");
+    assert.equal(envelope.correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.ok(envelope.eventId.startsWith("evt-"));
     assert.equal((envelope.payload as { offerId: string }).offerId, response.json().offerId);
     assert.deepEqual((envelope.payload as { total: unknown }).total, response.json().total);
