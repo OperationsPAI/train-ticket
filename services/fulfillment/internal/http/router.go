@@ -111,6 +111,10 @@ func (h *Handler) idempotentPost(next gin.HandlerFunc) gin.HandlerFunc {
 			writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Idempotency-Key header is required", nil)
 			return
 		}
+		if !isUUIDv7(key) {
+			writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", nil)
+			return
+		}
 		body, err := io.ReadAll(ctx.Request.Body)
 		if err != nil {
 			writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "request body could not be read", nil)
@@ -133,6 +137,33 @@ func (h *Handler) idempotentPost(next gin.HandlerFunc) gin.HandlerFunc {
 			h.idempotency.Put(key, idempotencyEntry{Fingerprint: fingerprint, Status: capture.Status(), Body: append([]byte(nil), capture.body.Bytes()...)})
 		}
 	}
+}
+
+func isUUIDv7(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, ch := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+		case 14:
+			if ch != '7' {
+				return false
+			}
+		case 19:
+			if !strings.ContainsRune("89abAB", ch) {
+				return false
+			}
+		default:
+			if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func requestFingerprint(method, path string, body []byte) string {
