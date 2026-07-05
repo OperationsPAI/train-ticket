@@ -6,7 +6,10 @@ from typing import Protocol
 from . import EventEnvelope
 
 
-class PublishFailed(Exception):
+from train_ticket_platform.messaging import PublishFailed as _KitPublishFailed
+
+
+class PublishFailed(_KitPublishFailed):
     """Raised when the event bus could not accept a published event."""
 
 
