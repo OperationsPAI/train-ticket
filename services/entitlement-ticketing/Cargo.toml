@@ -10,10 +10,14 @@ path = "src/lib.rs"
 [dependencies]
 opentelemetry = "0.32.0"
 axum = "0.8.9"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 shared-kernel = { path = "../../platform/shared-kernel-rust" }
+tokio = { version = "1.48", features = ["macros", "rt", "sync", "time"] }
+uuid = { version = "1.0", features = ["v7", "fast-rng"] }
 
 [dev-dependencies]
-tokio = { version = "1.48", features = ["macros", "rt"] }
 tower = { version = "0.5.3", features = ["util"] }

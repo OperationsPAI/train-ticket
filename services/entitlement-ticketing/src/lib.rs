@@ -1,9 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
-use axum::Router;
-use serde::Serialize;
-use shared_kernel::{OpenTelemetryObserver, RuntimeConfig, apply_runtime, router_with_config};
+use axum::{
+    Json, Router,
+    extract::{Extension, Path, Query, State, rejection::JsonRejection},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use shared_kernel::{
+    OpenTelemetryObserver, RequestContext, RuntimeConfig, apply_runtime, router_with_config,
+};
+
+pub mod adapters;
+pub mod application;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceProfile {
@@ -46,7 +59,29 @@ pub fn runtime_config() -> RuntimeConfig {
 }
 
 pub fn router() -> Router {
-    router_with_config(runtime_config())
+    router_with_state(Arc::new(InMemoryEntitlementService::default()))
+}
+
+pub fn router_with_state<S>(service: Arc<S>) -> Router
+where
+    S: EntitlementApi + 'static,
+{
+    let app_state = ApiState { service };
+    let routes = Router::new()
+        .route(
+            "/api/v1/entitlements",
+            post(issue_entitlement::<S>).get(list_entitlements::<S>),
+        )
+        .route(
+            "/api/v1/entitlements/{entitlement_id}",
+            get(get_entitlement::<S>),
+        )
+        .route(
+            "/api/v1/entitlements/{entitlement_id}/void",
+            post(void_entitlement::<S>),
+        )
+        .with_state(app_state);
+    apply_service_runtime(router_with_config(runtime_config()).merge(routes))
 }
 
 pub fn apply_service_runtime(router: Router) -> Router {
@@ -1191,6 +1226,7 @@ impl std::error::Error for EntitlementError {}
 
 /// Contract-conformant event envelope per docs/08-contracts/shared-primitives.md
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EventEnvelope {
     pub event_id: String,
     pub event_type: String,
@@ -1211,7 +1247,7 @@ impl EventEnvelope {
         producer: impl Into<String>,
     ) -> Self {
         Self {
-            event_id: format!("evt-{:x}", occurred_at),
+            event_id: format!("evt-{}", uuid::Uuid::now_v7()),
             event_type: event_type.into(),
             schema_version: 1,
             occurred_at: unix_millis_to_rfc3339(occurred_at),
@@ -1236,7 +1272,7 @@ pub fn wrap_domain_event<T: serde::Serialize>(
         "correlationId": envelope.correlation_id,
         "causationId": envelope.causation_id,
         "producer": envelope.producer,
-        "data": serde_json::to_value(payload).unwrap_or_default(),
+        "payload": serde_json::to_value(payload).unwrap_or_default(),
     })
 }
 
@@ -1246,7 +1282,13 @@ pub fn unix_millis_to_rfc3339(ms: u64) -> String {
     let naive = time_secs_to_datetime(secs);
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        naive.0, naive.1, naive.2, naive.3, naive.4, naive.5, ms % 1000
+        naive.0,
+        naive.1,
+        naive.2,
+        naive.3,
+        naive.4,
+        naive.5,
+        ms % 1000
     )
 }
 
@@ -1283,7 +1325,6 @@ fn time_secs_to_datetime(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1731,7 +1772,9 @@ mod tests {
         assert_eq!(envelope.event_type, "EntitlementIssued");
         assert_eq!(envelope.schema_version, 1);
         assert_eq!(envelope.producer, "entitlement-ticketing");
-        assert!(envelope.occurred_at.contains("2027-01-") || envelope.occurred_at.contains("2026-"));
+        assert!(
+            envelope.occurred_at.contains("2027-01-") || envelope.occurred_at.contains("2026-")
+        );
         assert!(envelope.occurred_at.ends_with("Z"));
 
         // Wrap a domain event
@@ -1741,8 +1784,605 @@ mod tests {
         });
         let wrapped = wrap_domain_event(envelope, &payload);
         assert_eq!(wrapped["eventType"], "EntitlementIssued");
-        assert_eq!(wrapped["data"]["entitlementId"], "ent-1");
+        assert_eq!(wrapped["payload"]["entitlementId"], "ent-1");
         assert_eq!(wrapped["schemaVersion"], 1);
     }
+}
+// ---------------------------------------------------------------------------
+// HTTP API and in-memory application service
+// ---------------------------------------------------------------------------
 
+pub struct ApiState<S: EntitlementApi + 'static> {
+    service: Arc<S>,
+}
+
+impl<S: EntitlementApi + 'static> Clone for ApiState<S> {
+    fn clone(&self) -> Self {
+        Self {
+            service: Arc::clone(&self.service),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait EntitlementApi: Send + Sync {
+    async fn issue(
+        &self,
+        command: IssueEntitlementRequest,
+        key: String,
+        correlation_id: String,
+    ) -> ApiResult<IssueEntitlementResponse>;
+    async fn void(
+        &self,
+        entitlement_id: String,
+        command: VoidEntitlementRequest,
+        key: String,
+        correlation_id: String,
+    ) -> ApiResult<VoidEntitlementResponse>;
+    async fn get(&self, entitlement_id: String) -> ApiResult<EntitlementDetails>;
+    async fn list(
+        &self,
+        journey_order_id: String,
+        limit: usize,
+        offset: usize,
+    ) -> ApiResult<PaginatedEntitlements>;
+}
+
+type ApiResult<T> = Result<T, ApiErrorKind>;
+
+#[derive(Debug, Clone)]
+pub enum ApiErrorKind {
+    ValidationFailed(String),
+    NotFound(String),
+    Conflict(String),
+    IdempotencyKeyReused(String),
+    PreconditionFailed(String),
+    DomainRuleViolation(String),
+    Unavailable(String),
+}
+
+impl ApiErrorKind {
+    fn status(&self) -> StatusCode {
+        match self {
+            Self::ValidationFailed(_) => StatusCode::BAD_REQUEST,
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::IdempotencyKeyReused(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
+            Self::DomainRuleViolation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::ValidationFailed(_) => "VALIDATION_FAILED",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::Conflict(_) => "CONFLICT",
+            Self::IdempotencyKeyReused(_) => "IDEMPOTENCY_KEY_REUSED",
+            Self::PreconditionFailed(_) => "PRECONDITION_FAILED",
+            Self::DomainRuleViolation(_) => "DOMAIN_RULE_VIOLATION",
+            Self::Unavailable(_) => "UNAVAILABLE",
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::ValidationFailed(message)
+            | Self::NotFound(message)
+            | Self::Conflict(message)
+            | Self::IdempotencyKeyReused(message)
+            | Self::PreconditionFailed(message)
+            | Self::DomainRuleViolation(message)
+            | Self::Unavailable(message) => message,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorBody {
+    code: &'static str,
+    message: String,
+    correlation_id: String,
+    details: Value,
+}
+
+fn api_error_response(error: ApiErrorKind, correlation_id: String) -> Response {
+    let status = error.status();
+    let body = ErrorBody {
+        code: error.code(),
+        message: error.message().to_string(),
+        correlation_id,
+        details: json!({}),
+    };
+    (status, Json(body)).into_response()
+}
+
+fn validation_error(correlation_id: String, message: impl Into<String>) -> Response {
+    api_error_response(
+        ApiErrorKind::ValidationFailed(message.into()),
+        correlation_id,
+    )
+}
+
+fn idempotency_key(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueEntitlementRequest {
+    pub segment_booking_id: String,
+    pub journey_order_id: String,
+    pub traveler_ref: String,
+    pub segment_ref: String,
+    pub issue_purpose: IssuePurposeDto,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum IssuePurposeDto {
+    Initial,
+    Replacement,
+    ManualRecovery,
+    ProviderRebuild,
+    DisruptionReplacement,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoidEntitlementRequest {
+    pub reason: VoidReasonDto,
+    pub policy: VoidPolicyDto,
+    pub business_case_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VoidReasonDto {
+    Refund,
+    Change,
+    Disruption,
+    Risk,
+    ManualCorrection,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VoidPolicyDto {
+    Normal,
+    ExceptionalRule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueEntitlementResponse {
+    pub entitlement_id: String,
+    pub segment_booking_id: String,
+    pub journey_order_id: String,
+    pub credential_no: String,
+    pub credential_type: CredentialTypeDto,
+    pub status: EntitlementStatusDto,
+    pub issued_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoidEntitlementResponse {
+    pub entitlement_id: String,
+    pub status: EntitlementStatusDto,
+    pub voided_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementDetails {
+    pub entitlement_id: String,
+    pub segment_booking_id: String,
+    pub journey_order_id: String,
+    pub traveler_ref: String,
+    pub segment_ref: String,
+    pub credential_no: String,
+    pub credential_type: CredentialTypeDto,
+    pub status: EntitlementStatusDto,
+    pub issued_at: String,
+    pub voided_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaginatedEntitlements {
+    pub items: Vec<EntitlementDetails>,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CredentialTypeDto {
+    ETicket,
+    PaperTicket,
+    PickupCode,
+    BoardingPass,
+    FerryTicket,
+    CoachETicket,
+    RideCode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EntitlementStatusDto {
+    Issued,
+    Voided,
+    Boarded,
+    NoShow,
+    Suspended,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListEntitlementsQuery {
+    journey_order_id: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn issue_entitlement<S>(
+    State(state): State<ApiState<S>>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    body: Result<Json<IssueEntitlementRequest>, JsonRejection>,
+) -> Response
+where
+    S: EntitlementApi + 'static,
+{
+    let correlation_id = context.correlation_id().to_string();
+    let Some(key) = idempotency_key(&headers) else {
+        return validation_error(correlation_id, "Idempotency-Key header is required");
+    };
+    let Json(request) = match body {
+        Ok(body) => body,
+        Err(rejection) => return validation_error(correlation_id, rejection.body_text()),
+    };
+    match state
+        .service
+        .issue(request, key, correlation_id.clone())
+        .await
+    {
+        Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
+        Err(error) => api_error_response(error, correlation_id),
+    }
+}
+
+async fn void_entitlement<S>(
+    State(state): State<ApiState<S>>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Path(entitlement_id): Path<String>,
+    body: Result<Json<VoidEntitlementRequest>, JsonRejection>,
+) -> Response
+where
+    S: EntitlementApi + 'static,
+{
+    let correlation_id = context.correlation_id().to_string();
+    let Some(key) = idempotency_key(&headers) else {
+        return validation_error(correlation_id, "Idempotency-Key header is required");
+    };
+    let Json(request) = match body {
+        Ok(body) => body,
+        Err(rejection) => return validation_error(correlation_id, rejection.body_text()),
+    };
+    match state
+        .service
+        .void(entitlement_id, request, key, correlation_id.clone())
+        .await
+    {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => api_error_response(error, correlation_id),
+    }
+}
+
+async fn get_entitlement<S>(
+    State(state): State<ApiState<S>>,
+    Extension(context): Extension<RequestContext>,
+    Path(entitlement_id): Path<String>,
+) -> Response
+where
+    S: EntitlementApi + 'static,
+{
+    let correlation_id = context.correlation_id().to_string();
+    match state.service.get(entitlement_id).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => api_error_response(error, correlation_id),
+    }
+}
+
+async fn list_entitlements<S>(
+    State(state): State<ApiState<S>>,
+    Extension(context): Extension<RequestContext>,
+    Query(query): Query<ListEntitlementsQuery>,
+) -> Response
+where
+    S: EntitlementApi + 'static,
+{
+    let correlation_id = context.correlation_id().to_string();
+    let limit = query.limit.unwrap_or(20).min(100);
+    let offset = query.offset.unwrap_or(0);
+    match state
+        .service
+        .list(query.journey_order_id, limit, offset)
+        .await
+    {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => api_error_response(error, correlation_id),
+    }
+}
+
+pub struct InMemoryEntitlementService {
+    state: Mutex<InMemoryState>,
+    publisher: Arc<dyn application::EventPublisher>,
+}
+
+impl Default for InMemoryEntitlementService {
+    fn default() -> Self {
+        Self::new(Arc::new(
+            adapters::messaging::InMemoryEventPublisher::default(),
+        ))
+    }
+}
+
+impl InMemoryEntitlementService {
+    pub fn new(publisher: Arc<dyn application::EventPublisher>) -> Self {
+        Self {
+            state: Mutex::new(InMemoryState::default()),
+            publisher,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct InMemoryState {
+    entitlements: HashMap<String, EntitlementDetails>,
+    idempotency: HashMap<String, IdempotentRecord>,
+    sequence: u64,
+}
+
+#[derive(Debug, Clone)]
+struct IdempotentRecord {
+    fingerprint: String,
+    response: IdempotentResponse,
+}
+
+#[derive(Debug, Clone)]
+enum IdempotentResponse {
+    Issue(IssueEntitlementResponse),
+    Void(VoidEntitlementResponse),
+}
+
+#[async_trait::async_trait]
+impl EntitlementApi for InMemoryEntitlementService {
+    async fn issue(
+        &self,
+        command: IssueEntitlementRequest,
+        key: String,
+        correlation_id: String,
+    ) -> ApiResult<IssueEntitlementResponse> {
+        validate_non_empty(&command.segment_booking_id, "segmentBookingId")?;
+        validate_non_empty(&command.journey_order_id, "journeyOrderId")?;
+        validate_non_empty(&command.traveler_ref, "travelerRef")?;
+        validate_non_empty(&command.segment_ref, "segmentRef")?;
+        let fingerprint = serde_json::to_string(&command).unwrap_or_default();
+        let response = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("entitlement service lock poisoned");
+            if let Some(record) = state.idempotency.get(&key) {
+                if record.fingerprint != fingerprint {
+                    return Err(ApiErrorKind::IdempotencyKeyReused(
+                        "Idempotency-Key was reused with a different request body".to_string(),
+                    ));
+                }
+                if let IdempotentResponse::Issue(response) = &record.response {
+                    return Ok(response.clone());
+                }
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused for a different operation".to_string(),
+                ));
+            }
+            state.sequence += 1;
+            let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
+            let issued_at = current_rfc3339();
+            let response = IssueEntitlementResponse {
+                entitlement_id: entitlement_id.clone(),
+                segment_booking_id: command.segment_booking_id.clone(),
+                journey_order_id: command.journey_order_id.clone(),
+                credential_no: format!("ETK-{:012}", state.sequence),
+                credential_type: CredentialTypeDto::ETicket,
+                status: EntitlementStatusDto::Issued,
+                issued_at: issued_at.clone(),
+            };
+            let details = EntitlementDetails {
+                entitlement_id: entitlement_id.clone(),
+                segment_booking_id: command.segment_booking_id,
+                journey_order_id: command.journey_order_id,
+                traveler_ref: command.traveler_ref,
+                segment_ref: command.segment_ref,
+                credential_no: response.credential_no.clone(),
+                credential_type: response.credential_type.clone(),
+                status: response.status.clone(),
+                issued_at,
+                voided_at: None,
+            };
+            state.entitlements.insert(entitlement_id, details);
+            state.idempotency.insert(
+                key,
+                IdempotentRecord {
+                    fingerprint,
+                    response: IdempotentResponse::Issue(response.clone()),
+                },
+            );
+            response
+        };
+        publish_api_event(
+            self.publisher.as_ref(),
+            "EntitlementIssued",
+            &response,
+            correlation_id,
+        )
+        .await?;
+        Ok(response)
+    }
+
+    async fn void(
+        &self,
+        entitlement_id: String,
+        command: VoidEntitlementRequest,
+        key: String,
+        correlation_id: String,
+    ) -> ApiResult<VoidEntitlementResponse> {
+        if command
+            .business_case_ref
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(ApiErrorKind::ValidationFailed(
+                "businessCaseRef must not be blank when provided".to_string(),
+            ));
+        }
+        let fingerprint = format!(
+            "{}:{}",
+            entitlement_id,
+            serde_json::to_string(&command).unwrap_or_default()
+        );
+        let response = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("entitlement service lock poisoned");
+            if let Some(record) = state.idempotency.get(&key) {
+                if record.fingerprint != fingerprint {
+                    return Err(ApiErrorKind::IdempotencyKeyReused(
+                        "Idempotency-Key was reused with a different request body".to_string(),
+                    ));
+                }
+                if let IdempotentResponse::Void(response) = &record.response {
+                    return Ok(response.clone());
+                }
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused for a different operation".to_string(),
+                ));
+            }
+            let entitlement = state
+                .entitlements
+                .get_mut(&entitlement_id)
+                .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?;
+            if entitlement.status == EntitlementStatusDto::Voided {
+                return Err(ApiErrorKind::PreconditionFailed(
+                    "entitlement is already voided".to_string(),
+                ));
+            }
+            let voided_at = current_rfc3339();
+            entitlement.status = EntitlementStatusDto::Voided;
+            entitlement.voided_at = Some(voided_at.clone());
+            let response = VoidEntitlementResponse {
+                entitlement_id,
+                status: EntitlementStatusDto::Voided,
+                voided_at,
+            };
+            state.idempotency.insert(
+                key,
+                IdempotentRecord {
+                    fingerprint,
+                    response: IdempotentResponse::Void(response.clone()),
+                },
+            );
+            response
+        };
+        publish_api_event(
+            self.publisher.as_ref(),
+            "EntitlementVoided",
+            &response,
+            correlation_id,
+        )
+        .await?;
+        Ok(response)
+    }
+
+    async fn get(&self, entitlement_id: String) -> ApiResult<EntitlementDetails> {
+        self.state
+            .lock()
+            .expect("entitlement service lock poisoned")
+            .entitlements
+            .get(&entitlement_id)
+            .cloned()
+            .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))
+    }
+
+    async fn list(
+        &self,
+        journey_order_id: String,
+        limit: usize,
+        offset: usize,
+    ) -> ApiResult<PaginatedEntitlements> {
+        validate_non_empty(&journey_order_id, "journeyOrderId")?;
+        let mut items: Vec<_> = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned")
+            .entitlements
+            .values()
+            .filter(|entitlement| entitlement.journey_order_id == journey_order_id)
+            .cloned()
+            .collect();
+        items.sort_by(|left, right| left.entitlement_id.cmp(&right.entitlement_id));
+        let total = items.len();
+        Ok(PaginatedEntitlements {
+            items: items.into_iter().skip(offset).take(limit).collect(),
+            total,
+            limit,
+            offset,
+        })
+    }
+}
+
+fn validate_non_empty(value: &str, field: &'static str) -> ApiResult<()> {
+    if value.trim().is_empty() {
+        Err(ApiErrorKind::ValidationFailed(format!(
+            "{field} must not be blank"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn current_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+async fn publish_api_event<T: Serialize>(
+    publisher: &dyn application::EventPublisher,
+    event_type: &str,
+    payload: &T,
+    correlation_id: String,
+) -> ApiResult<()> {
+    let envelope = application::EventEnvelope::new(
+        event_type,
+        current_rfc3339(),
+        correlation_id,
+        None::<String>,
+        profile().service_id,
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({})),
+    );
+    publisher
+        .publish(envelope)
+        .await
+        .map_err(|error| ApiErrorKind::Unavailable(error.to_string()))
 }
