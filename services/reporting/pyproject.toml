@@ -3,12 +3,7 @@ name = "reporting"
 version = "0.1.0"
 description = "Reporting service skeleton"
 requires-python = ">=3.11"
-dependencies = [
-  "train-ticket-platform @ file:///workspace/tasks/REQ-057-python-platform-kit---extract-shared-HTTP/messaging-infrastructure/platform/python-kit",
-  "fastapi==0.138.1",
-  "redis==5.2.1",
-  "uuid6==2024.7.10",
-]
+dynamic = ["dependencies"]
 
 [dependency-groups]
 dev = [
@@ -19,3 +14,6 @@ dev = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+train-ticket-platform = { path = "../../platform/python-kit" }

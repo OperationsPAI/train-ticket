@@ -27,6 +27,13 @@ class IdempotencyKeyReusedError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class IdempotencyDecision:
+    scope: str
+    key: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class IdempotencyRecord:
     fingerprint: str
     status_code: int
@@ -188,6 +195,7 @@ class IdempotencyMiddleware:
         body = await request.body()
         fingerprint = http_request_fingerprint(request.method, request.url.path, request.url.query, body)
         scope = idempotency_scope(request)
+        request.state.idempotency_decision = IdempotencyDecision(scope=scope, key=canonical_key, fingerprint=fingerprint)
         existing = self._store.get(scope, canonical_key)
         if existing is None:
             existing = self._store.get(f"{request.method.upper()} {request.url.path}", canonical_key)
