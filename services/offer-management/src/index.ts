@@ -15,7 +15,7 @@ export {
   type TraceResult,
   type TraceSpan,
 } from "./app.js";
-export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
+export { bootstrap, runtimeHost, runtimePort, runtimeRedisUrl, type BootstrapOptions } from "./bootstrap.js";
 export {
   DomainError,
   Offer,
