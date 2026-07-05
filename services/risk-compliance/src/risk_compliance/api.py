@@ -12,13 +12,15 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .application import (
     AssessmentNotFoundError,
-    IdempotencyKeyReusedError,
     InMemoryAssessmentRepository,
     PublishFailed,
     RiskComplianceService,
     is_uuid7,
     uuid7,
 )
+from train_ticket_platform.http import canonical_error_body
+from train_ticket_platform.idempotency import configure_idempotency_middleware, request_fingerprint
+
 from .runtime import health, profile
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -90,7 +92,11 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
     request_id = str(uuid7())
-    supplied_correlation_id = request.headers.get(CORRELATION_ID_HEADER)
+    supplied_correlation_id = None
+    for name, value in request.headers.items():
+        if name.lower() == "x-correlation-id":
+            supplied_correlation_id = value
+            break
     correlation_id = supplied_correlation_id if supplied_correlation_id and is_uuid7(supplied_correlation_id) else str(uuid7())
     return request_id, correlation_id
 
@@ -106,6 +112,10 @@ def error_response(request: Request, status_code: int, code: str, message: str, 
             details=details or {},
         ).model_dump(),
     )
+
+
+def _risk_error_body(request: Request, code: str, message: str) -> dict[str, Any]:
+    return canonical_error_body(code, message, getattr(request.state, "correlation_id", str(uuid7())))
 
 
 def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None) -> None:
@@ -198,10 +208,8 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
         payload: AssessRiskRequest,
         idempotency_key: str | None = Header(default=None, alias=IDEMPOTENCY_KEY_HEADER),
     ) -> JSONResponse | dict[str, Any]:
-        if not idempotency_key:
+        if idempotency_key is None:
             return error_response(request, 400, "VALIDATION_FAILED", "Idempotency-Key header is required")
-        if not is_uuid7(idempotency_key):
-            return error_response(request, 400, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7")
         try:
             result, _ = service.assess(
                 subject_ref=payload.subjectRef,
@@ -209,9 +217,8 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
                 context=payload.context,
                 idempotency_key=idempotency_key,
                 correlation_id=request.state.correlation_id,
+                request_hash=request_fingerprint(payload.model_dump()),
             )
-        except IdempotencyKeyReusedError as exc:
-            return error_response(request, 422, "IDEMPOTENCY_KEY_REUSED", str(exc))
         except PublishFailed:
             return error_response(
                 request,
@@ -250,5 +257,11 @@ def create_app(
         app.state.publisher = service.publisher
     configure_error_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
+    configure_idempotency_middleware(
+        app,
+        require_key=True,
+        include_path_prefixes=("/api/v1/risk-assessments",),
+        error_body_factory=_risk_error_body,
+    )
     configure_risk_endpoints(app, app.state.risk_service)
     return app
