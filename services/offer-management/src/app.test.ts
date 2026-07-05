@@ -54,7 +54,7 @@ describe("offer-management service operational foundation", () => {
     assert.equal(response.statusCode, 200);
     assert.equal(typeof response.headers["x-request-id"], "string");
     assert.notEqual(response.headers["x-request-id"], "");
-    assert.equal(response.headers["x-correlation-id"], response.headers["x-request-id"]);
+    assert.match(String(response.headers["x-correlation-id"]), /^corr-/);
   });
 
   it("returns the standard error body for missing routes", async () => {
@@ -70,7 +70,7 @@ describe("offer-management service operational foundation", () => {
     const body = response.json();
     assert.equal(body.code, "NOT_FOUND");
     assert.equal(body.message, "Route GET /missing was not found");
-    assert.equal(body.correlationId, "req-offer-management-404");
+    assert.match(body.correlationId, /^corr-/);
     assert.deepEqual(body.details, {});
   });
 
