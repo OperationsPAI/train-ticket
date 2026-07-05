@@ -212,6 +212,39 @@ describe("account HTTP API", () => {
     assert.equal(reused.json().code, "IDEMPOTENCY_KEY_REUSED");
   });
 
+  it("maps unfreeze and start-closure invalid account states to PRECONDITION_FAILED", async () => {
+    const app = createApp();
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "create-precondition" }, payload: { accountId: "acct_precondition" } });
+
+    const unfreeze = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_precondition/unfreeze",
+      headers: { "idempotency-key": "unfreeze-precondition" },
+      payload: { reason: "not frozen" },
+    });
+    assert.equal(unfreeze.statusCode, 412);
+    assert.equal(unfreeze.json().code, "PRECONDITION_FAILED");
+    assert.equal(unfreeze.json().details.domainCode, "ACCOUNT_NOT_FROZEN");
+
+    const closure = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_precondition/start-closure",
+      headers: { "idempotency-key": "closure-precondition-1" },
+      payload: {},
+    });
+    assert.equal(closure.statusCode, 200);
+
+    const closureAgain = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_precondition/start-closure",
+      headers: { "idempotency-key": "closure-precondition-2" },
+      payload: {},
+    });
+    assert.equal(closureAgain.statusCode, 412);
+    assert.equal(closureAgain.json().code, "PRECONDITION_FAILED");
+    assert.equal(closureAgain.json().details.domainCode, "CLOSURE_ALREADY_PENDING");
+  });
+
   it("surfaces domain invariant violations as DOMAIN_RULE_VIOLATION", async () => {
     const app = createApp();
     await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "create-domain" }, payload: { accountId: "acct_domain" } });
