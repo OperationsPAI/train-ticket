@@ -11,15 +11,22 @@ import java.util.Map;
 
 public class FinanceSettlementEventHandler implements EventSubscriber.EventHandler {
     private final ConsumedEventLogRepository consumedEvents;
+    private final PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
     private final Clock clock;
     private final FinanceSettlementApplicationService service;
 
     public FinanceSettlementEventHandler(ConsumedEventLogRepository consumedEvents, Clock clock) {
-        this(consumedEvents, clock, null);
+        this(consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), clock, null);
     }
 
-    public FinanceSettlementEventHandler(ConsumedEventLogRepository consumedEvents, Clock clock, FinanceSettlementApplicationService service) {
+    public FinanceSettlementEventHandler(
+        ConsumedEventLogRepository consumedEvents,
+        PaymentIntentOrderReferenceRepository paymentIntentOrderReferences,
+        Clock clock,
+        FinanceSettlementApplicationService service
+    ) {
         this.consumedEvents = consumedEvents;
+        this.paymentIntentOrderReferences = paymentIntentOrderReferences;
         this.clock = clock;
         this.service = service;
     }
@@ -38,7 +45,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
                 clock.instant()
             ));
             return HandlerResult.SUCCESS;
-        } catch (PublishFailedException ex) {
+        } catch (PublishFailedException | OutOfOrderEventException ex) {
             return HandlerResult.TRANSIENT_FAILURE;
         } catch (DomainRuleViolation | IllegalArgumentException ex) {
             return HandlerResult.FATAL_FAILURE;
@@ -46,32 +53,40 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private void dispatch(EventEnvelope envelope) {
-        if (service == null) {
+        if ("PaymentIntentCreated".equals(envelope.eventType())) {
+            rememberPaymentIntentOrderReference(envelope.payload());
             return;
         }
-        if ("PaymentCaptured".equals(envelope.eventType())) {
+        if (service != null && "PaymentCaptured".equals(envelope.eventType())) {
             recognizeCapturedPayment(envelope);
         }
     }
 
+    private void rememberPaymentIntentOrderReference(Map<String, Object> payload) {
+        paymentIntentOrderReferences.save(text(payload, "paymentIntentId"), text(payload, "businessRef"));
+    }
+
     private void recognizeCapturedPayment(EventEnvelope envelope) {
         Map<String, Object> payload = envelope.payload();
+        String paymentIntentId = text(payload, "paymentIntentId");
+        String orderReference = paymentIntentOrderReferences.findOrderReference(paymentIntentId)
+            .orElseThrow(() -> new OutOfOrderEventException("PaymentCaptured received before PaymentIntentCreated"));
         RevenueRecognition recognition = RevenueRecognition.recognize(
-            text(payload, "orderId"),
-            optionalText(payload, "orderItemId", optionalText(payload, "paymentIntentId", envelope.eventId())),
-            optionalText(payload, "componentCode", "fare"),
+            orderReference,
+            paymentIntentId,
+            "fare",
             money(payload.get("capturedAmount"), "capturedAmount"),
-            optionalText(payload, "recognitionPolicyVersion", "payment-capture-v1"),
+            "payment-capture-v1",
             envelope.eventId(),
             envelope.occurredAt(),
             clock.instant(),
-            causationIdOrSourceEventId(envelope),
+            causationIdOrEventId(envelope),
             envelope.correlationId()
         );
         service.saveAndPublish(recognition);
     }
 
-    private static String causationIdOrSourceEventId(EventEnvelope envelope) {
+    private static String causationIdOrEventId(EventEnvelope envelope) {
         return envelope.causationId() == null ? envelope.eventId() : envelope.causationId();
     }
 
@@ -81,11 +96,6 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             throw new IllegalArgumentException(name + " is required");
         }
         return text;
-    }
-
-    private static String optionalText(Map<String, Object> payload, String name, String defaultValue) {
-        Object value = payload.get(name);
-        return value instanceof String text && !text.isBlank() ? text : defaultValue;
     }
 
     @SuppressWarnings("unchecked")
@@ -102,5 +112,11 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         int fractionDigits = Currency.getInstance(currencyCode).getDefaultFractionDigits();
         BigDecimal majorUnits = BigDecimal.valueOf(minorUnits.longValue()).movePointLeft(fractionDigits);
         return Money.of(currencyCode, majorUnits.toPlainString());
+    }
+
+    private static final class OutOfOrderEventException extends RuntimeException {
+        private OutOfOrderEventException(String message) {
+            super(message);
+        }
     }
 }
