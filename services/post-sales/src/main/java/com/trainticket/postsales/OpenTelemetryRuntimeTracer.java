@@ -9,11 +9,13 @@ import io.opentelemetry.api.trace.Tracer;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Optional;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
 @Component
 // Spring relaxed binding also accepts OTEL_TRACES_EXPORTER=otlp.
 @ConditionalOnProperty(name = "otel.traces.exporter", havingValue = "otlp")
+@Primary
 public class OpenTelemetryRuntimeTracer implements RuntimeTracer {
     private static final AttributeKey<String> SERVICE_NAME = AttributeKey.stringKey("service.name");
     private static final AttributeKey<String> HTTP_METHOD = AttributeKey.stringKey("http.request.method");
