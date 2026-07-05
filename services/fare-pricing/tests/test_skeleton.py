@@ -14,7 +14,7 @@ class SkeletonTest(unittest.TestCase):
 
     def test_fastapi_runtime_routes_are_registered(self) -> None:
         app = create_app()
-        routes = {route.path for route in app.routes}
+        from fastapi.routing import APIRoute; routes = {route.path for route in app.routes if isinstance(route, APIRoute)}
         self.assertIn("/health", routes)
         self.assertIn("/live", routes)
         self.assertIn("/ready", routes)
