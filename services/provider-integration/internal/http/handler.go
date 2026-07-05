@@ -50,7 +50,7 @@ func (h Handler) requestReservation(ctx *gin.Context) {
 		Method string `json:"method"`
 		Path   string `json:"path"`
 		Body   string `json:"body"`
-	}{ctx.Request.Method, ctx.FullPath(), string(body)})
+	}{ctx.Request.Method, ctx.Request.URL.Path, string(body)})
 	if h.replay(ctx, idempotencyKey, requestHash) {
 		return
 	}
@@ -74,7 +74,7 @@ func (h Handler) cancelReservation(ctx *gin.Context) {
 	requestHash, _ := application.HashJSON(struct {
 		Method string `json:"method"`
 		Path   string `json:"path"`
-	}{ctx.Request.Method, ctx.FullPath()})
+	}{ctx.Request.Method, ctx.Request.URL.Path})
 	if h.replay(ctx, key, requestHash) {
 		return
 	}
