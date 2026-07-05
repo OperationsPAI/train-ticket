@@ -1,6 +1,15 @@
 package com.trainticket.travelerprofile.application;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.trainticket.travelerprofile.domain.Document;
+import com.trainticket.travelerprofile.domain.DocumentAdded;
+import com.trainticket.travelerprofile.domain.DocumentType;
+import com.trainticket.travelerprofile.domain.DocumentVerified;
+import com.trainticket.travelerprofile.domain.EligibilityExpired;
+import com.trainticket.travelerprofile.domain.EligibilityGranted;
+import com.trainticket.travelerprofile.domain.EligibilityRevoked;
+import com.trainticket.travelerprofile.domain.EligibilitySummary;
 import com.trainticket.travelerprofile.domain.TravelerProfile;
 import com.trainticket.travelerprofile.domain.TravelerProfileEvent;
 import java.nio.charset.StandardCharsets;
@@ -11,6 +20,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,10 +54,10 @@ public class TravelerProfileService {
             return replay.responseAs(TravelerCreatedView.class, requestFingerprint);
         }
 
-        Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
+        Instant now = now();
         String commandId = commandId();
         TravelerProfile aggregate = TravelerProfile.create(
-            command.accountId(),
+            command.accountId().trim(),
             displayName(command.givenName(), command.familyName()),
             "1970-01-01",
             command.idempotencyKey(),
@@ -55,25 +65,39 @@ public class TravelerProfileService {
             commandId,
             command.correlationId()
         );
+        if (command.documentType() != null) {
+            aggregate.addDocument(
+                toDomainDocumentType(command.documentType()),
+                command.documentNumber(),
+                "CN",
+                now.minus(1, ChronoUnit.DAYS),
+                now.plus(3650, ChronoUnit.DAYS),
+                displayName(command.givenName(), command.familyName()),
+                true,
+                now,
+                commandId,
+                commandId,
+                command.correlationId()
+            );
+        }
         String travelerId = canonicalTravelerId(aggregate.profileId());
         StoredTraveler stored = new StoredTraveler(
+            aggregate,
             travelerId,
             "sv-1",
             command.accountId().trim(),
             command.travelerType(),
             command.givenName().trim(),
             command.familyName().trim(),
-            command.documentType(),
-            command.documentNumber(),
             command.contactEmail(),
             command.contactPhone(),
             now,
             now
         );
         travelers.put(travelerId, stored);
-        publish(aggregate.domainEvents().getLast(), stored);
+        publishNewEvents(aggregate.domainEvents(), 0, stored);
         TravelerCreatedView response = new TravelerCreatedView(travelerId, stored.snapshotVersion(), stored.travelerType(), stored.createdAt());
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response, objectMapper));
+        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response));
         return response;
     }
 
@@ -89,12 +113,36 @@ public class TravelerProfileService {
             return replay.responseAs(TravelerProfileView.class, requestFingerprint);
         }
         StoredTraveler current = find(command.travelerId());
-        Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
+        TravelerProfile aggregate = current.aggregate();
+        int eventOffset = aggregate.domainEvents().size();
+        Instant now = now();
+        String commandId = commandId();
+
+        if (command.documentType() != null) {
+            aggregate.addDocument(
+                toDomainDocumentType(command.documentType()),
+                command.documentNumber(),
+                "CN",
+                now.minus(1, ChronoUnit.DAYS),
+                now.plus(3650, ChronoUnit.DAYS),
+                displayName(
+                    command.givenName() != null ? command.givenName() : current.givenName(),
+                    command.familyName() != null ? command.familyName() : current.familyName()
+                ),
+                true,
+                now,
+                commandId,
+                commandId,
+                command.correlationId()
+            );
+        }
+        updateAggregatePreferences(command, current, aggregate, eventOffset, now, commandId);
+
         StoredTraveler updated = current.updatedWith(command, nextSnapshotVersion(current.snapshotVersion()), now);
         travelers.put(command.travelerId(), updated);
-        publishProfileUpdated(updated, command.correlationId(), commandId());
+        publishNewEvents(aggregate.domainEvents(), eventOffset, updated);
         TravelerProfileView response = updated.toView();
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response, objectMapper));
+        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response));
         return response;
     }
 
@@ -105,15 +153,33 @@ public class TravelerProfileService {
             return replay.responseAs(EligibilityResult.class, requestFingerprint);
         }
         StoredTraveler traveler = find(travelerId);
-        Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
+        TravelerProfile aggregate = traveler.aggregate();
+        int eventOffset = aggregate.domainEvents().size();
+        Instant now = now();
         boolean eligible = switch (traveler.travelerType()) {
             case STUDENT, SENIOR, MILITARY, CHILD, INFANT -> true;
             case ADULT -> false;
         };
-        String eligibilityRef = "elig-" + UUID.randomUUID();
+
+        EligibilitySummary summary = null;
+        String commandId = commandId();
+        if (eligible) {
+            summary = aggregate.grantEligibility(
+                traveler.travelerType().name(),
+                "TRAVELER_PROFILE_API",
+                fingerprint("eligibility", travelerId, objectMapper.createObjectNode().put("travelerType", traveler.travelerType().name())),
+                now,
+                now.plus(365, ChronoUnit.DAYS),
+                now,
+                commandId,
+                commandId,
+                correlationId
+            );
+        }
+        String eligibilityRef = summary == null ? "elig-" + UUID.randomUUID() : canonicalEligibilityRef(summary.eligibilityId());
         EligibilityResult result = new EligibilityResult(travelerId, eligibilityRef, eligible, now, now.plus(365, ChronoUnit.DAYS));
-        publishEligibilityChanged(traveler, result, correlationId, commandId());
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, result, objectMapper));
+        publishNewEvents(aggregate.domainEvents(), eventOffset, traveler);
+        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, result));
         return result;
     }
 
@@ -162,54 +228,114 @@ public class TravelerProfileService {
         return value == null || value.isBlank();
     }
 
+    private void updateAggregatePreferences(
+        UpdateTravelerCommand command,
+        StoredTraveler current,
+        TravelerProfile aggregate,
+        int eventOffset,
+        Instant now,
+        String commandId
+    ) {
+        if (command.accountId() != null && !command.accountId().trim().equals(current.accountId())) {
+            aggregate.updatePreference("accountId", command.accountId().trim(), now, commandId, commandId, command.correlationId());
+        }
+        if (command.travelerType() != null && command.travelerType() != current.travelerType()) {
+            aggregate.updatePreference("travelerType", command.travelerType().name(), now, commandId, commandId, command.correlationId());
+        }
+        if (command.givenName() != null || command.familyName() != null) {
+            String nextGiven = command.givenName() != null ? command.givenName().trim() : current.givenName();
+            String nextFamily = command.familyName() != null ? command.familyName().trim() : current.familyName();
+            String nextDisplayName = displayName(nextGiven, nextFamily);
+            if (!nextDisplayName.equals(displayName(current.givenName(), current.familyName()))) {
+                aggregate.updatePreference("displayName", nextDisplayName, now, commandId, commandId, command.correlationId());
+            }
+        }
+        if (command.contactEmail() != null && !command.contactEmail().equals(current.contactEmail())) {
+            aggregate.updatePreference("contactEmail", command.contactEmail(), now, commandId, commandId, command.correlationId());
+        }
+        if (command.contactPhone() != null && !command.contactPhone().equals(current.contactPhone())) {
+            aggregate.updatePreference("contactPhone", command.contactPhone(), now, commandId, commandId, command.correlationId());
+        }
+        if (command.documentType() == null && aggregate.domainEvents().size() == eventOffset) {
+            aggregate.updatePreference("snapshotTouchedAt", now.toString(), now, commandId, commandId, command.correlationId());
+        }
+    }
+
+    private void publishNewEvents(List<TravelerProfileEvent> events, int eventOffset, StoredTraveler traveler) {
+        for (int index = eventOffset; index < events.size(); index++) {
+            publish(events.get(index), traveler);
+        }
+    }
+
     private void publish(TravelerProfileEvent event, StoredTraveler traveler) {
         eventPublisher.publish(new EventEnvelope(
             canonicalEventId(event.eventId()),
-            "TravelerProfileUpdated",
+            externalEventType(event),
             event.occurredAt(),
             canonicalCorrelationId(event.correlationId()),
-            canonicalCommandId(event.causationId()),
+            canonicalCausationId(event.causationId()),
             PRODUCER,
             event.schemaVersion(),
-            objectMapper.valueToTree(Map.of(
-                "travelerId", traveler.travelerId(),
-                "snapshotVersion", traveler.snapshotVersion(),
-                "travelerType", traveler.travelerType().name(),
-                "updatedAt", traveler.updatedAt().toString()
-            ))
+            payloadFor(event, traveler)
         ));
     }
 
-    private void publishProfileUpdated(StoredTraveler traveler, String correlationId, String causationId) {
-        eventPublisher.publish(new EventEnvelope(
-            canonicalEventId(UUID.randomUUID().toString()),
-            "TravelerProfileUpdated",
-            clock.instant().truncatedTo(ChronoUnit.MILLIS),
-            canonicalCorrelationId(correlationId),
-            canonicalCommandId(causationId),
-            PRODUCER,
-            1,
-            objectMapper.valueToTree(traveler.toView())
-        ));
+    private ObjectNode payloadFor(TravelerProfileEvent event, StoredTraveler traveler) {
+        if (event instanceof EligibilityGranted granted) {
+            return objectMapper.createObjectNode()
+                .put("travelerId", traveler.travelerId())
+                .put("eligibilityRef", canonicalEligibilityRef(granted.eligibilityId()))
+                .put("eligible", true)
+                .put("validFrom", granted.validFrom().toString())
+                .put("validUntil", granted.validUntil().toString())
+                .put("determinedAt", granted.occurredAt().toString());
+        }
+        if (event instanceof EligibilityExpired expired) {
+            return objectMapper.createObjectNode()
+                .put("travelerId", traveler.travelerId())
+                .put("eligibilityRef", canonicalEligibilityRef(expired.eligibilityId()))
+                .put("expiredAt", expired.occurredAt().toString());
+        }
+        if (event instanceof EligibilityRevoked revoked) {
+            return objectMapper.createObjectNode()
+                .put("travelerId", traveler.travelerId())
+                .put("eligibilityRef", canonicalEligibilityRef(revoked.eligibilityId()))
+                .put("revokedAt", revoked.occurredAt().toString())
+                .put("reason", revoked.reason());
+        }
+        if (event instanceof DocumentVerified verified) {
+            return objectMapper.createObjectNode()
+                .put("travelerId", traveler.travelerId())
+                .put("documentId", verified.documentId())
+                .put("documentType", verified.documentType().name())
+                .put("verifiedAt", verified.occurredAt().toString());
+        }
+        ObjectNode payload = objectMapper.createObjectNode()
+            .put("travelerId", traveler.travelerId())
+            .put("snapshotVersion", traveler.snapshotVersion())
+            .put("updatedAt", traveler.updatedAt().toString())
+            .put("travelerType", traveler.travelerType().name());
+        if (traveler.maskedDocumentRef() != null) {
+            payload.put("maskedDocumentRef", traveler.maskedDocumentRef());
+        }
+        if (event instanceof DocumentAdded added) {
+            payload.put("documentType", toApiDocumentType(added.documentType()).name());
+        }
+        return payload;
     }
 
-    private void publishEligibilityChanged(StoredTraveler traveler, EligibilityResult result, String correlationId, String causationId) {
-        eventPublisher.publish(new EventEnvelope(
-            canonicalEventId(UUID.randomUUID().toString()),
-            "TravelerEligibilityChanged",
-            clock.instant().truncatedTo(ChronoUnit.MILLIS),
-            canonicalCorrelationId(correlationId),
-            canonicalCommandId(causationId),
-            PRODUCER,
-            1,
-            objectMapper.valueToTree(Map.of(
-                "travelerId", traveler.travelerId(),
-                "eligibilityRef", result.eligibilityRef(),
-                "eligible", result.eligible(),
-                "validFrom", result.validFrom().toString(),
-                "validUntil", result.validUntil().toString()
-            ))
-        ));
+    private static String externalEventType(TravelerProfileEvent event) {
+        if (event instanceof EligibilityGranted || event instanceof EligibilityExpired || event instanceof EligibilityRevoked) {
+            return "TravelerEligibilityChanged";
+        }
+        if (event instanceof DocumentVerified) {
+            return "TravelerDocumentVerified";
+        }
+        return "TravelerProfileUpdated";
+    }
+
+    private Instant now() {
+        return clock.instant().truncatedTo(ChronoUnit.MILLIS);
     }
 
     private static String displayName(String givenName, String familyName) {
@@ -217,7 +343,11 @@ public class TravelerProfileService {
     }
 
     private static String canonicalTravelerId(String profileId) {
-        return "tvl-" + profileId;
+        return profileId.startsWith("tvl-") ? profileId : "tvl-" + profileId;
+    }
+
+    private static String canonicalEligibilityRef(String eligibilityId) {
+        return eligibilityId.startsWith("elig-") ? eligibilityId : "elig-" + eligibilityId;
     }
 
     private static String commandId() {
@@ -230,6 +360,10 @@ public class TravelerProfileService {
 
     private static String canonicalCommandId(String id) {
         return id.startsWith("cmd-") ? id : "cmd-" + id;
+    }
+
+    private static String canonicalCausationId(String id) {
+        return id.startsWith("cmd-") || id.startsWith("evt-") ? id : "cmd-" + id;
     }
 
     private static String canonicalCorrelationId(String id) {
@@ -245,6 +379,22 @@ public class TravelerProfileService {
         return "sv-" + (value + 1);
     }
 
+    private static DocumentType toDomainDocumentType(ApiDocumentType documentType) {
+        return switch (documentType) {
+            case ID_CARD -> DocumentType.IDENTITY_CARD;
+            case PASSPORT -> DocumentType.PASSPORT;
+            case OTHER -> DocumentType.OTHER;
+        };
+    }
+
+    private static ApiDocumentType toApiDocumentType(DocumentType documentType) {
+        return switch (documentType) {
+            case IDENTITY_CARD -> ApiDocumentType.ID_CARD;
+            case PASSPORT -> ApiDocumentType.PASSPORT;
+            default -> ApiDocumentType.OTHER;
+        };
+    }
+
     public static String fingerprint(String method, String path, com.fasterxml.jackson.databind.JsonNode body) {
         String input = method + " " + path + " " + (body == null ? "" : body.toString());
         try {
@@ -256,7 +406,7 @@ public class TravelerProfileService {
     }
 
     private record IdempotencyRecord(String requestFingerprint, Object response) {
-        static IdempotencyRecord of(String requestFingerprint, Object response, ObjectMapper objectMapper) {
+        static IdempotencyRecord of(String requestFingerprint, Object response) {
             return new IdempotencyRecord(requestFingerprint, response);
         }
 
@@ -269,14 +419,13 @@ public class TravelerProfileService {
     }
 
     private record StoredTraveler(
+        TravelerProfile aggregate,
         String travelerId,
         String snapshotVersion,
         String accountId,
         TravelerType travelerType,
         String givenName,
         String familyName,
-        ApiDocumentType documentType,
-        String documentNumber,
         String contactEmail,
         String contactPhone,
         Instant createdAt,
@@ -290,8 +439,8 @@ public class TravelerProfileService {
                 travelerType,
                 givenName,
                 familyName,
-                documentType,
-                mask(documentNumber),
+                documentType(),
+                maskedDocumentRef(),
                 contactEmail,
                 contactPhone,
                 createdAt,
@@ -301,14 +450,13 @@ public class TravelerProfileService {
 
         StoredTraveler updatedWith(UpdateTravelerCommand command, String nextVersion, Instant now) {
             return new StoredTraveler(
+                aggregate,
                 travelerId,
                 nextVersion,
                 command.accountId() != null ? command.accountId().trim() : accountId,
                 command.travelerType() != null ? command.travelerType() : travelerType,
                 command.givenName() != null ? command.givenName().trim() : givenName,
                 command.familyName() != null ? command.familyName().trim() : familyName,
-                command.documentType() != null ? command.documentType() : documentType,
-                command.documentNumber() != null ? command.documentNumber() : documentNumber,
                 command.contactEmail() != null ? command.contactEmail() : contactEmail,
                 command.contactPhone() != null ? command.contactPhone() : contactPhone,
                 createdAt,
@@ -316,15 +464,14 @@ public class TravelerProfileService {
             );
         }
 
-        private static String mask(String documentNumber) {
-            if (documentNumber == null || documentNumber.isBlank()) {
-                return null;
-            }
-            if (documentNumber.length() <= 4) {
-                return "***" + documentNumber;
-            }
-            return documentNumber.substring(0, Math.min(2, documentNumber.length())) + "***" + documentNumber.substring(documentNumber.length() - 4);
+        ApiDocumentType documentType() {
+            Document document = aggregate.primaryDocument();
+            return document == null ? null : toApiDocumentType(document.documentType());
+        }
+
+        String maskedDocumentRef() {
+            Document document = aggregate.primaryDocument();
+            return document == null ? null : document.maskedDocumentRef();
         }
     }
-
 }

@@ -60,6 +60,8 @@ class TravelerControllerTest {
             .andReturn();
         org.junit.jupiter.api.Assertions.assertEquals("TravelerProfileUpdated", publisher.envelopes.getFirst().eventType());
         org.junit.jupiter.api.Assertions.assertEquals("traveler-profile", publisher.envelopes.getFirst().producer());
+        org.junit.jupiter.api.Assertions.assertTrue(publisher.envelopes.stream().allMatch(envelope -> envelope.eventId().startsWith("evt-")));
+        org.junit.jupiter.api.Assertions.assertTrue(publisher.envelopes.stream().allMatch(envelope -> envelope.causationId().startsWith("cmd-") || envelope.causationId().startsWith("evt-")));
 
         mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -133,6 +135,18 @@ class TravelerControllerTest {
         mockMvc.perform(get("/api/v1/travelers/tvl-missing"))
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+    }
+
+    @Test
+    void updateDomainInvariantViolationSurfacesCanonicalDomainError() throws Exception {
+        String travelerId = createTraveler();
+
+        mockMvc.perform(patch("/api/v1/travelers/{travelerId}", travelerId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "018f0000-0000-7000-8000-000000000007")
+                .content("{\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\"}"))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("DOMAIN_RULE_VIOLATION"));
     }
 
     private String createTraveler() throws Exception {
