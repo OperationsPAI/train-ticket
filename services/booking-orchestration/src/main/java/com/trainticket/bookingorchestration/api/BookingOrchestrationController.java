@@ -2,7 +2,6 @@ package com.trainticket.bookingorchestration.api;
 
 import com.trainticket.bookingorchestration.RequestContextFilter;
 import com.trainticket.bookingorchestration.application.BookingOrchestrationService;
-import com.trainticket.bookingorchestration.application.BookingOrchestrationService.IdempotencyKeyReusedException;
 import com.trainticket.bookingorchestration.application.BookingOrchestrationService.MarkTicketedCommand;
 import com.trainticket.bookingorchestration.application.BookingOrchestrationService.NotFoundException;
 import com.trainticket.bookingorchestration.application.BookingOrchestrationService.PreconditionFailedException;
@@ -134,13 +133,6 @@ public class BookingOrchestrationController {
     public ResponseEntity<ErrorBody> handleIllegalArgument(IllegalArgumentException ex,
                                                            HttpServletRequest httpRequest) {
         return error(HttpStatus.UNPROCESSABLE_ENTITY, "DOMAIN_RULE_VIOLATION", ex.getMessage(), httpRequest);
-    }
-
-    @ExceptionHandler(IdempotencyKeyReusedException.class)
-    public ResponseEntity<ErrorBody> handleIdempotencyKeyReused(IdempotencyKeyReusedException ex,
-                                                                HttpServletRequest httpRequest) {
-        return error(HttpStatus.UNPROCESSABLE_ENTITY, "IDEMPOTENCY_KEY_REUSED",
-            "Idempotency-Key was reused with a different request body", httpRequest);
     }
 
     @ExceptionHandler(NotFoundException.class)
