@@ -112,12 +112,20 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
     def health_endpoint() -> dict[str, object]:
         return {"status": health(), "service": profile()}
 
+    @app.get("/healthz")
+    def healthz_endpoint() -> dict[str, str]:
+        return {"status": health()}
+
     @app.get("/live")
     def live_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/ready")
     def ready_endpoint() -> dict[str, str]:
+        return {"status": health()}
+
+    @app.get("/readyz")
+    def readyz_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/metadata")
