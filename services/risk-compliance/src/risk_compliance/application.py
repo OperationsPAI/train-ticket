@@ -2,11 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from secrets import randbits
-from time import time
-from typing import Any, Protocol, TypeAlias
-from uuid import UUID
+from typing import Any, TypeAlias
+
+from train_ticket_platform.events import EventEnvelope, envelope_factory, rfc3339_utc
+from train_ticket_platform.ids import is_prefixed_uuid7, is_uuid7, new_prefixed_uuid7, new_uuid7
+from train_ticket_platform.messaging import (
+    EventPublisher,
+    EventSubscriber,
+    FatalHandlerError,
+    HandlerError,
+    InMemoryEventPublisher,
+    InMemoryEventSubscriber as PlatformInMemoryEventSubscriber,
+    PublishFailed,
+    SubscribeFailed,
+    TransientHandlerError,
+)
 
 from .domain import Decision, PolicyVersionRef, RiskAssessment, RiskLevel, assess_risk
 
@@ -14,88 +24,8 @@ PRODUCER = "risk-compliance"
 SCHEMA_VERSION = 1
 DEFAULT_POLICY_VERSION = PolicyVersionRef(policy_set_id="risk-rules", version="1.0.0")
 RiskScenario: TypeAlias = str
-
-
-class PublishFailed(RuntimeError):
-    """Raised when an event cannot be published after adapter retries."""
-
-
-class SubscribeFailed(RuntimeError):
-    """Raised when an event subscriber cannot start or poll its source."""
-
-
-class HandlerError(RuntimeError):
-    """Base class for subscriber handler failures."""
-
-
-class TransientHandlerError(HandlerError):
-    """A retryable event handler failure; the message must not be acked."""
-
-
-class FatalHandlerError(HandlerError):
-    """A non-retryable event handler failure; the message should be sent to DLQ."""
-
-
-@dataclass(frozen=True, slots=True)
-class EventEnvelope:
-    eventId: str
-    eventType: str
-    occurredAt: str
-    correlationId: str
-    causationId: str | None
-    producer: str
-    schemaVersion: int
-    payload: Mapping[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        envelope = {
-            "eventId": self.eventId,
-            "eventType": self.eventType,
-            "occurredAt": self.occurredAt,
-            "correlationId": self.correlationId,
-            "producer": self.producer,
-            "schemaVersion": self.schemaVersion,
-            "payload": dict(self.payload),
-        }
-        if self.causationId is not None:
-            envelope["causationId"] = self.causationId
-        return envelope
-
-    @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> EventEnvelope:
-        return cls(
-            eventId=str(data["eventId"]),
-            eventType=str(data["eventType"]),
-            occurredAt=str(data["occurredAt"]),
-            correlationId=str(data["correlationId"]),
-            causationId=str(data["causationId"]) if "causationId" in data else None,
-            producer=str(data["producer"]),
-            schemaVersion=int(data["schemaVersion"]),
-            payload=dict(data["payload"]),
-        )
-
-
-class EventPublisher(Protocol):
-    """Abstract event publishing port defined by docs/08-contracts/messaging.md."""
-
-    def publish(self, envelope: EventEnvelope) -> None:
-        """Publish a fully-populated EventEnvelope."""
-
-
 EventHandler: TypeAlias = Callable[[EventEnvelope], None]
-
-
-class EventSubscriber(Protocol):
-    """Abstract event subscriber port defined by docs/08-contracts/messaging.md."""
-
-    def subscribe(
-        self,
-        streams: list[str],
-        group: str,
-        consumerName: str,
-        handler: EventHandler,
-    ) -> None:
-        """Subscribe to event streams as a consumer group member."""
+InMemoryEventSubscriber = PlatformInMemoryEventSubscriber
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,47 +83,6 @@ class InMemoryAssessmentRepository:
         self._assessments[assessment.assessmentId] = assessment
 
 
-
-class InMemoryEventPublisher:
-    def __init__(self) -> None:
-        self.envelopes: list[EventEnvelope] = []
-
-    def publish(self, envelope: EventEnvelope) -> None:
-        self.envelopes.append(envelope)
-
-
-class ConsumedEventDeduplicator:
-    def __init__(self) -> None:
-        self._seen: set[str] = set()
-
-    def handle_once(self, envelope: EventEnvelope, handler: EventHandler) -> bool:
-        if envelope.eventId in self._seen:
-            return False
-        handler(envelope)
-        self._seen.add(envelope.eventId)
-        return True
-
-    def seen(self, event_id: str) -> bool:
-        return event_id in self._seen
-
-
-class InMemoryEventSubscriber:
-    def __init__(self, envelopes: list[EventEnvelope] | None = None) -> None:
-        self.envelopes = envelopes or []
-        self.deduplicator = ConsumedEventDeduplicator()
-
-    def subscribe(
-        self,
-        streams: list[str],
-        group: str,
-        consumerName: str,
-        handler: EventHandler,
-    ) -> None:
-        del streams, group, consumerName
-        for envelope in self.envelopes:
-            self.deduplicator.handle_once(envelope, handler)
-
-
 @dataclass(slots=True)
 class RiskComplianceService:
     publisher: EventPublisher
@@ -228,44 +117,15 @@ class RiskComplianceService:
 
 
 def prefixed_id(prefix: str) -> str:
-    return f"{prefix}-{uuid7()}"
+    return new_prefixed_uuid7(prefix)
 
 
-def uuid7() -> UUID:
-    unix_ts_ms = int(time() * 1000) & ((1 << 48) - 1)
-    uuid_int = unix_ts_ms << 80
-    uuid_int |= 0x7 << 76
-    uuid_int |= randbits(12) << 64
-    uuid_int |= 0b10 << 62
-    uuid_int |= randbits(62)
-    return UUID(int=uuid_int)
-
-
-def is_uuid7(value: str) -> bool:
-    try:
-        parsed = UUID(value)
-    except (TypeError, ValueError, AttributeError):
-        return False
-    return parsed.version == 7
+def uuid7() -> str:
+    return new_uuid7()
 
 
 def prefixed_uuid7(prefix: str) -> str:
-    return f"{prefix}-{uuid7()}"
-
-
-def is_prefixed_uuid7(value: str, prefix: str) -> bool:
-    expected = f"{prefix}-"
-    return value.startswith(expected) and is_uuid7(value[len(expected):])
-
-
-def datetime_to_rfc3339(value: datetime) -> str:
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    return aware.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def canonical_correlation_id(correlation_id: str) -> str:
-    return correlation_id if correlation_id.startswith("corr-") else f"corr-{correlation_id}"
-
+    return new_prefixed_uuid7(prefix)
 
 
 def _evaluate(assessment: RiskAssessment) -> RiskAssessment:
@@ -329,20 +189,19 @@ def _to_result(assessment: RiskAssessment) -> RiskAssessmentResult:
         policyVersion=assessment.policy_version.version,
         reasonCode=assessment.reason_code,
         reasonExplanation=assessment.reason_explanation or "",
-        assessedAt=datetime_to_rfc3339(assessment.assessed_at),
+        assessedAt=rfc3339_utc(assessment.assessed_at),
         evidenceRef=assessment.evidence_bundle.bundle_id if assessment.evidence_bundle is not None else f"evid-{assessment.assessment_id}",
         assessmentSnapshotHash=assessment.input_snapshot.digest,
     )
 
 
 def _assessment_envelope(result: RiskAssessmentResult, correlation_id: str, causation_id: str) -> EventEnvelope:
-    return EventEnvelope(
-        eventId=prefixed_id("evt"),
-        eventType="RiskAssessed",
-        occurredAt=result.assessedAt,
-        correlationId=canonical_correlation_id(correlation_id),
-        causationId=causation_id,
+    return envelope_factory(
+        event_type="RiskAssessed",
         producer=PRODUCER,
-        schemaVersion=SCHEMA_VERSION,
         payload=result.to_event_payload(),
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        occurred_at=result.assessedAt,
+        schema_version=SCHEMA_VERSION,
     )

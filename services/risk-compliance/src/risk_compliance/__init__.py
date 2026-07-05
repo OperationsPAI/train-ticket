@@ -26,7 +26,6 @@ from .domain import (
     resolve_challenge,
 )
 from .application import (
-    ConsumedEventDeduplicator,
     EventEnvelope,
     EventPublisher,
     EventSubscriber,
@@ -69,7 +68,6 @@ __all__ = [
     "record_evidence",
     "resolve_challenge",
     # Application
-    "ConsumedEventDeduplicator",
     "EventEnvelope",
     "EventPublisher",
     "EventSubscriber",
