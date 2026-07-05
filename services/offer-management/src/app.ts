@@ -21,8 +21,11 @@ import {
   handleIdempotency,
   headerValue,
   requestFingerprint,
+  requestContext as kitRequestContext,
   sendError,
   type ErrorEnvelope,
+  type IdempotencyStore,
+  type RequestContext,
 } from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 
@@ -46,10 +49,7 @@ export type ServiceMetadata = Readonly<{
 
 export type ErrorBody = ErrorEnvelope;
 
-export type RequestContext = Readonly<{
-  requestId: string;
-  correlationId: string;
-}>;
+export type { RequestContext };
 
 export type RequestTraceContext = RequestContext &
   Readonly<{
@@ -142,7 +142,7 @@ type AppDependencies = Readonly<{
   publisher?: EventPublisher;
   quoteCommandFactory?: (request: QuoteOfferRequest) => QuoteOfferCommand | Promise<QuoteOfferCommand>;
   upstreamRepository?: UpstreamStateRepository;
-  idempotencyStore?: InMemoryIdempotencyStore;
+  idempotencyStore?: IdempotencyStore;
 }>;
 
 const defaultOfferRepository = new InMemoryOfferRepository();
@@ -330,9 +330,7 @@ function traceContext(request: AppRequest, context: RequestContext = requestCont
 }
 
 function requestContext(request: AppRequest): RequestContext {
-  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id;
-  const correlationId = headerValue(request.headers["x-correlation-id"]) ?? requestId;
-  return { requestId, correlationId };
+  return kitRequestContext(request);
 }
 
 type AppRequest = FastifyRequest;

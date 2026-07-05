@@ -48,7 +48,7 @@ describe("notification service HTTP contract", () => {
     assert.equal(response.statusCode, 200);
     assert.equal(typeof response.headers["x-request-id"], "string");
     assert.notEqual(response.headers["x-request-id"], "");
-    assert.equal(response.headers["x-correlation-id"], response.headers["x-request-id"]);
+    assert.match(String(response.headers["x-correlation-id"]), /^corr-/);
   });
 
   it("returns the canonical error body for missing routes", async () => {
