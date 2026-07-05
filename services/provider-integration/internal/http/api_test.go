@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 )
@@ -117,12 +120,45 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	envelope := publisher.envelopes[0]
-	if envelope.EventID == "" || envelope.EventType != "ProviderReservationConfirmed" || envelope.Producer != application.ProducerName || envelope.SchemaVersion != 1 || envelope.CorrelationID != "corr-1" {
-		t.Fatalf("bad envelope: %#v", envelope)
+	assertCanonicalPrefixedUUID(t, envelope.EventID, "evt-")
+	assertCanonicalPrefixedUUID(t, envelope.CorrelationID, "corr-")
+	assertCanonicalPrefixedUUID(t, envelope.CausationID, "cmd-")
+	if envelope.EventType != "ProviderReservationConfirmed" || envelope.Producer != application.ProducerName || envelope.SchemaVersion != 1 {
+		t.Fatalf("bad envelope metadata: %#v", envelope)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, envelope.OccurredAt); err != nil {
+		t.Fatalf("occurredAt is not RFC3339: %q", envelope.OccurredAt)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(envelope.Payload, &payload); err != nil || payload["segmentBookingId"] != "sb-123" {
-		t.Fatalf("bad payload %#v err=%v", payload, err)
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatalf("bad payload JSON: %v", err)
+	}
+	wantPayload := map[string]any{
+		"segmentBookingId":   "sb-123",
+		"providerReference":  "prv-123",
+		"normalizedEvidence": "normalized provider confirmation",
+	}
+	if len(payload) != len(wantPayload) {
+		t.Fatalf("payload has non-contract fields: %#v", payload)
+	}
+	for field, want := range wantPayload {
+		if payload[field] != want {
+			t.Fatalf("payload[%s]=%#v, want %#v (payload %#v)", field, payload[field], want, payload)
+		}
+	}
+}
+
+func assertCanonicalPrefixedUUID(t *testing.T, value, prefix string) {
+	t.Helper()
+	if !strings.HasPrefix(value, prefix) {
+		t.Fatalf("%q does not have prefix %q", value, prefix)
+	}
+	parsed, err := uuid.Parse(strings.TrimPrefix(value, prefix))
+	if err != nil {
+		t.Fatalf("%q does not contain a UUID: %v", value, err)
+	}
+	if parsed.Version() != 7 {
+		t.Fatalf("%q UUID version = %d, want 7", value, parsed.Version())
 	}
 }
 
