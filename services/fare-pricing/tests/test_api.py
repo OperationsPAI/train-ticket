@@ -135,7 +135,9 @@ class FarePricingApiTest(unittest.TestCase):
         data = resp.json()
         self.assertEqual(data["code"], "VALIDATION_FAILED")
         self.assertIn("correlationId", data)
-
+        for error in data["details"]["errors"]:
+            self.assertEqual(set(error), {"loc", "type", "msg"})
+            self.assertNotIn("input", error)
 
     def test_fare_quote_requires_idempotency_key(self) -> None:
         resp = self.client.post(
@@ -217,6 +219,7 @@ class FarePricingApiTest(unittest.TestCase):
             headers={"Idempotency-Key": str(uuid4())},
         )
         self.assertEqual(create_resp.status_code, 201)
+        quote_id = create_resp.json()["quoteId"]
 
         # Add refund fee rule
         self.store.fare_rule_sets[self.rs.rule_set_id] = published_rule_set(
@@ -229,6 +232,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-123"],
                 "journeyOrderId": "ord-456",
+                "fareQuoteRef": quote_id,
             },
             headers={"Idempotency-Key": str(uuid4())},
         )
@@ -242,6 +246,8 @@ class FarePricingApiTest(unittest.TestCase):
         adjustment_events = [e for e in self.publisher.published_events if e.event_type == "AdjustmentQuoteComputed"]
         self.assertEqual(len(adjustment_events), 1)
         self.assertEqual(adjustment_events[0].payload["adjustmentQuoteId"], data["adjustmentQuoteId"])
+        self.assertEqual(adjustment_events[0].payload["fareQuoteRef"], quote_id)
+        self.assertEqual(adjustment_events[0].payload["entitlementIds"], ["ent-123"])
 
     def test_adjustment_quote_not_found(self) -> None:
         """No original quote leads to 404."""
@@ -405,6 +411,17 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(d["payload"]["ruleSetId"], "rs-main")
         self.assertEqual(set(d.keys()), {"eventId", "eventType", "occurredAt", "correlationId", "causationId", "producer", "schemaVersion", "payload"})
 
+        without_cause = EventEnvelope(
+            event_id="evt-test-no-cause",
+            event_type="FareRuleSetPublished",
+            schema_version=1,
+            producer="fare-pricing",
+            correlation_id="corr-test-000",
+            occurred_at=NOW,
+            payload={"ruleSetId": "rs-main"},
+        ).to_json_dict()
+        self.assertNotIn("causationId", without_cause)
+
     def test_publisher_roundtrip_json(self) -> None:
         """Envelope survives to_json_dict -> from_json_dict roundtrip."""
         envelope = EventEnvelope(
@@ -422,6 +439,35 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(restored.event_id, envelope.event_id)
         self.assertEqual(restored.event_type, envelope.event_type)
         self.assertEqual(restored.producer, envelope.producer)
+
+
+    def test_envelope_from_json_validates_contract_shape(self) -> None:
+        with self.assertRaises(ValueError):
+            EventEnvelope.from_json_dict({})
+
+        with self.assertRaises(ValueError):
+            EventEnvelope.from_json_dict({
+                "eventId": "evt-test-extra",
+                "eventType": "FareRuleSetPublished",
+                "occurredAt": "2026-07-03T12:00:00.000Z",
+                "correlationId": "corr-test",
+                "producer": "fare-pricing",
+                "schemaVersion": 1,
+                "payload": {},
+                "legacyCommandId": "cmd-legacy",
+            })
+
+        restored = EventEnvelope.from_json_dict({
+            "eventId": "evt-test-minimal",
+            "eventType": "FareRuleSetPublished",
+            "occurredAt": "2026-07-03T12:00:00.000Z",
+            "correlationId": "corr-test",
+            "producer": "fare-pricing",
+            "schemaVersion": 1,
+            "payload": {},
+        })
+        self.assertEqual(restored.event_id, "evt-test-minimal")
+        self.assertEqual(restored.causation_id, "")
 
     def test_subscriber_deduplication_by_event_id(self) -> None:
         """FakeEventSubscriber can deliver events to a handler that deduplicates."""
@@ -442,6 +488,8 @@ class FarePricingMessagingTest(unittest.TestCase):
             event_id="evt-dedup-1",
             event_type="FareRuleSetPublished",
             producer="fare-pricing",
+            correlation_id="corr-test",
+            payload={},
         )
 
         # Deliver twice

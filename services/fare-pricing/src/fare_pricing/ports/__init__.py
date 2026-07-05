@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Mapping
+from typing import Any
 
 
 def _format_rfc3339_utc(dt: datetime) -> str:
@@ -10,13 +11,18 @@ def _format_rfc3339_utc(dt: datetime) -> str:
     return utc_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc_dt.microsecond // 1000:03d}Z"
 
 
+class MalformedEnvelopeError(ValueError):
+    """Raised when an inbound event envelope violates the wire contract."""
+
+
 @dataclass(frozen=True)
 class EventEnvelope:
-    """Contract EventEnvelope with the exact eight wire fields.
+    """Contract EventEnvelope wire shape.
 
-    JSON field names follow docs/08-contracts/shared-primitives.md §1:
-    eventId, eventType, occurredAt, correlationId, causationId, producer,
-    schemaVersion, payload.
+    Required JSON fields follow docs/08-contracts/messaging.md and
+    shared-primitives.md: eventId, eventType, occurredAt, correlationId,
+    producer, schemaVersion, payload. causationId is included only when an
+    immediate cause is available. Unknown fields are rejected on ingress.
     """
 
     event_id: str
@@ -29,31 +35,73 @@ class EventEnvelope:
     payload: Mapping[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "eventId": self.event_id,
             "eventType": self.event_type,
             "occurredAt": _format_rfc3339_utc(self.occurred_at),
             "correlationId": self.correlation_id,
-            "causationId": self.causation_id,
             "producer": self.producer,
             "schemaVersion": self.schema_version,
             "payload": dict(self.payload),
         }
+        if self.causation_id:
+            data["causationId"] = self.causation_id
+        return data
 
     @classmethod
     def from_json_dict(cls, data: dict[str, Any]) -> EventEnvelope:
-        occurred_at_raw = data.get("occurredAt")
-        if isinstance(occurred_at_raw, str):
-            occurred_at = datetime.fromisoformat(occurred_at_raw.replace("Z", "+00:00")).astimezone(UTC)
+        if not isinstance(data, dict):
+            raise MalformedEnvelopeError("event envelope must be a JSON object")
+
+        required_fields = {"eventId", "eventType", "occurredAt", "correlationId", "producer", "schemaVersion", "payload"}
+        allowed_fields = required_fields | {"causationId"}
+        unknown_fields = set(data) - allowed_fields
+        if unknown_fields:
+            raise MalformedEnvelopeError(f"event envelope contains unknown fields: {sorted(unknown_fields)}")
+
+        missing_fields = [field_name for field_name in required_fields if field_name not in data]
+        if missing_fields:
+            raise MalformedEnvelopeError(f"event envelope missing required fields: {missing_fields}")
+
+        def required_text(field_name: str) -> str:
+            value = data[field_name]
+            if not isinstance(value, str) or not value.strip():
+                raise MalformedEnvelopeError(f"event envelope field {field_name} must be a non-empty string")
+            return value
+
+        event_id = required_text("eventId")
+        event_type = required_text("eventType")
+        correlation_id = required_text("correlationId")
+        producer = required_text("producer")
+        causation_id_raw = data.get("causationId", "")
+        if causation_id_raw is None:
+            causation_id = ""
+        elif isinstance(causation_id_raw, str):
+            causation_id = causation_id_raw
         else:
-            occurred_at = datetime.now(UTC)
+            raise MalformedEnvelopeError("event envelope field causationId must be a string when present")
+
+        occurred_at_raw = required_text("occurredAt")
+        try:
+            occurred_at = datetime.fromisoformat(occurred_at_raw.replace("Z", "+00:00")).astimezone(UTC)
+        except ValueError as exc:
+            raise MalformedEnvelopeError("event envelope field occurredAt must be an RFC3339 timestamp") from exc
+
+        schema_version = data["schemaVersion"]
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version < 1:
+            raise MalformedEnvelopeError("event envelope field schemaVersion must be a positive integer")
+
+        payload = data["payload"]
+        if not isinstance(payload, Mapping):
+            raise MalformedEnvelopeError("event envelope field payload must be an object")
+
         return cls(
-            event_id=data.get("eventId", ""),
-            event_type=data.get("eventType", ""),
+            event_id=event_id,
+            event_type=event_type,
             occurred_at=occurred_at,
-            correlation_id=data.get("correlationId", ""),
-            causation_id=data.get("causationId", ""),
-            producer=data.get("producer", ""),
-            schema_version=data.get("schemaVersion", 1),
-            payload=data.get("payload") or {},
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+            producer=producer,
+            schema_version=schema_version,
+            payload=payload,
         )
