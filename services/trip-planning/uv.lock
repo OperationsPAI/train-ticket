@@ -311,7 +311,7 @@ wheels = [
 [[package]]
 name = "train-ticket-platform"
 version = "0.1.1"
-source = { directory = "../../platform/python-kit" }
+source = { editable = "../../platform/python-kit" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx2" },
@@ -338,9 +338,6 @@ name = "trip-planning"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastapi" },
-    { name = "pydantic" },
-    { name = "redis" },
     { name = "train-ticket-platform" },
 ]
 
@@ -358,12 +355,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = "==0.138.1" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.5.0" },
-    { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.1.1" },
-    { name = "redis", specifier = ">=5.0.0" },
-    { name = "train-ticket-platform", directory = "../../platform/python-kit" },
+    { name = "train-ticket-platform", editable = "../../platform/python-kit" },
 ]
 provides-extras = ["dev"]
 

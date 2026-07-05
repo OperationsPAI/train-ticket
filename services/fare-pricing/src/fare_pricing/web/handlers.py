@@ -95,13 +95,6 @@ def _command_id() -> str:
     return prefixed_uuid7("cmd")
 
 
-def _idempotency_fingerprint(request: Request) -> str:
-    decision = getattr(request.state, "idempotency_decision", None)
-    if decision is None:
-        raise ApiError("VALIDATION_FAILED", "Idempotency-Key header is required", 400)
-    return str(decision.fingerprint)
-
-
 def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any]) -> None:
     event_service: DomainEventService = request.app.state.domain_event_service
     try:
@@ -130,7 +123,7 @@ def compute_fare_quote(
     try:
         quote = service.compute_fare_quote(
             quote_id=prefixed_uuid7("fq"),
-            input_hash=_idempotency_fingerprint(request),
+            input_hash=request.headers["Idempotency-Key"],
             traveler_refs=req.travelerRefs,
             channel=req.channel,
             rule_set_id=rule_set_id,

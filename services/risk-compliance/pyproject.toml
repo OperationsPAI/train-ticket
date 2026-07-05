@@ -3,7 +3,9 @@ name = "risk-compliance"
 version = "0.1.0"
 description = "Risk & Compliance service skeleton"
 requires-python = ">=3.11"
-dynamic = ["dependencies"]
+dependencies = [
+  "train-ticket-platform",
+]
 
 [dependency-groups]
 dev = [
@@ -16,4 +18,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
-train-ticket-platform = { path = "../../platform/python-kit" }
+train-ticket-platform = { path = "../../platform/python-kit", editable = true }

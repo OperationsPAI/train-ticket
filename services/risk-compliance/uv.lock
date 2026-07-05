@@ -300,8 +300,6 @@ name = "risk-compliance"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastapi" },
-    { name = "redis" },
     { name = "train-ticket-platform" },
 ]
 
@@ -312,11 +310,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = "==0.138.1" },
-    { name = "redis", specifier = "==5.2.1" },
-    { name = "train-ticket-platform", directory = "../../platform/python-kit" },
-]
+requires-dist = [{ name = "train-ticket-platform", editable = "../../platform/python-kit" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -340,7 +334,7 @@ wheels = [
 [[package]]
 name = "train-ticket-platform"
 version = "0.1.1"
-source = { directory = "../../platform/python-kit" }
+source = { editable = "../../platform/python-kit" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx2" },
