@@ -3,10 +3,10 @@
 // ---------------------------------------------------------------------------
 
 use crate::domain::*;
-use crate::ports::{EventPublisher, PublishFailed, WireEnvelope};
+use crate::ports::{EventPublisher, HandlerResult, PublishFailed, WireEnvelope};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,82 @@ impl CapacityService {
             publisher,
             producer: "capacity-availability".to_string(),
             idempotency_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Handle an inbound event from subscribed streams. The operation is idempotent at
+    /// the subscriber adapter by eventId; unknown events are safely ignored.
+    pub fn handle_inbound_event(&self, envelope: WireEnvelope) -> HandlerResult {
+        match envelope.event_type.as_str() {
+            "SegmentReservationRequested" => self.handle_segment_reservation_requested(&envelope),
+            "SegmentReservationConfirmed" => self.handle_segment_reservation_confirmed(&envelope),
+            "SegmentBookingCancelled" | "PostSalesApplied" => {
+                self.handle_release_trigger(&envelope)
+            }
+            _ => HandlerResult::Success,
+        }
+    }
+
+    fn handle_segment_reservation_requested(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId") else {
+            return HandlerResult::Success;
+        };
+        let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
+            return HandlerResult::FatalError("missing segmentRef".into());
+        };
+        let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
+            return HandlerResult::FatalError("missing travelerRef".into());
+        };
+        let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
+            .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
+        let request = HoldCapacityRequest {
+            segment_ref,
+            traveler_ref,
+            class_ref: string_field(&envelope.payload, "classRef")
+                .or_else(|| string_field(&envelope.payload, "seatClassRef"))
+                .unwrap_or_else(|| "standard".to_string()),
+            quantity: quantity_field(&envelope.payload).unwrap_or(1),
+            segment_booking_id,
+        };
+
+        match self.hold_capacity(request, &idempotency_key, &envelope.correlation_id) {
+            Ok(_) => HandlerResult::Success,
+            Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
+                HandlerResult::TransientError(message)
+            }
+            Err(error) => HandlerResult::FatalError(error.message().to_string()),
+        }
+    }
+
+    fn handle_segment_reservation_confirmed(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
+            return HandlerResult::Success;
+        };
+        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
+        match self.confirm_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
+            Ok(_) | Err(AppError::PreconditionFailed(_)) | Err(AppError::NotFound(_)) => {
+                HandlerResult::Success
+            }
+            Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
+                HandlerResult::TransientError(message)
+            }
+            Err(error) => HandlerResult::FatalError(error.message().to_string()),
+        }
+    }
+
+    fn handle_release_trigger(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
+            .or_else(|| string_field(&envelope.payload, "holdId"))
+        else {
+            return HandlerResult::Success;
+        };
+        let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
+        match self.release_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
+            Ok(_) | Err(AppError::NotFound(_)) => HandlerResult::Success,
+            Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
+                HandlerResult::TransientError(message)
+            }
+            Err(error) => HandlerResult::FatalError(error.message().to_string()),
         }
     }
 
@@ -631,6 +707,23 @@ impl AppError {
             AppError::Internal(m) => m,
         }
     }
+}
+
+fn quantity_field(value: &Value) -> Option<usize> {
+    value
+        .get("quantity")
+        .and_then(Value::as_u64)
+        .and_then(|quantity| usize::try_from(quantity).ok())
+        .filter(|quantity| *quantity > 0)
+}
+
+fn string_field(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn now_millis() -> u64 {
