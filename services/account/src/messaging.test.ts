@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { ACCOUNT_STREAM } from "./adapters/messaging/stream-config.js";
 import { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { UserAccount } from "./domain.js";
 import { toEventEnvelope, type EventEnvelope, type HandlerResult } from "./ports.js";
@@ -105,8 +106,8 @@ describe("account event ports", () => {
     const firstEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_1" }).event, "corr-loop", "cmd-loop-1");
     const secondEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_2" }).event, "corr-loop", "cmd-loop-2");
     const redis = new FakeRedisForSubscriber([
-      [["events:account", [["1-0", ["envelope", JSON.stringify(firstEnvelope)]]]]],
-      [["events:account", [["2-0", ["envelope", JSON.stringify(secondEnvelope)]]]]],
+      [[ACCOUNT_STREAM, [["1-0", ["envelope", JSON.stringify(firstEnvelope)]]]]],
+      [[ACCOUNT_STREAM, [["2-0", ["envelope", JSON.stringify(secondEnvelope)]]]]],
     ]);
     const subscriber = new RedisStreamEventSubscriber(redis as never);
     const handled: string[] = [];
@@ -117,7 +118,7 @@ describe("account event ports", () => {
     };
 
     try {
-      await subscriber.subscribe(["events:account"], "account", "account-test", (envelope) => {
+      await subscriber.subscribe([ACCOUNT_STREAM], "account", "account-test", (envelope) => {
         handled.push(envelope.eventId);
         if (envelope.eventId === firstEnvelope.eventId) {
           throw new Error("handler exploded");
