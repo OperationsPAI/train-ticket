@@ -74,7 +74,7 @@ export {
   type EventPublisher,
   type EventSubscriber,
 } from "./application/messaging.js";
-export { NotificationApplicationService } from "./application/notification-service.js";
+export { NonConformantNotificationTrigger, NotificationApplicationService, type ExternalTriggerResult } from "./application/notification-service.js";
 export {
   NOTIFICATION_CONSUMER_GROUP,
   NOTIFICATION_PRODUCER,
