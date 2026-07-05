@@ -32,3 +32,27 @@ func TestNewEventEnvelopeCanonicalShape(t *testing.T) {
 		}
 	}
 }
+
+func TestNewEventEnvelopeOmitsOptionalCausationID(t *testing.T) {
+	envelope, err := NewEventEnvelope("ThingHappened", "test-producer", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"thingId": "thing-1"}, EnvelopeOptions{Now: time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.CausationID != "" {
+		t.Fatalf("causationId should be absent, got %q", envelope.CausationID)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["causationId"]; ok {
+		t.Fatalf("causationId must be omitted when absent: %s", body)
+	}
+	if len(fields) != 7 {
+		t.Fatalf("envelope without causationId must have 7 fields, got %d: %s", len(fields), body)
+	}
+}

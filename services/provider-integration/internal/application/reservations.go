@@ -2,9 +2,6 @@ package application
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,11 +13,10 @@ import (
 )
 
 var (
-	ErrValidation          = errors.New("validation failed")
-	ErrDomainRule          = errors.New("domain rule violation")
-	ErrNotFound            = errors.New("not found")
-	ErrUnavailable         = errors.New("unavailable")
-	ErrIdempotencyConflict = errors.New("idempotency key reused")
+	ErrValidation  = errors.New("validation failed")
+	ErrDomainRule  = errors.New("domain rule violation")
+	ErrNotFound    = errors.New("not found")
+	ErrUnavailable = errors.New("unavailable")
 )
 
 type ReservationStatus string
@@ -71,58 +67,6 @@ type CancelProviderReservationResult struct {
 type ProviderReservationService interface {
 	RequestReservation(context.Context, RequestProviderReservationCommand) (ProviderReservationResult, error)
 	CancelReservation(context.Context, CancelProviderReservationCommand) (CancelProviderReservationResult, error)
-}
-
-type idempotencyRecord struct {
-	requestHash string
-	statusCode  int
-	body        []byte
-}
-
-type IdempotencyStore struct {
-	mu      sync.Mutex
-	records map[string]idempotencyRecord
-}
-
-func NewIdempotencyStore() *IdempotencyStore {
-	return &IdempotencyStore{records: map[string]idempotencyRecord{}}
-}
-
-func (s *IdempotencyStore) Replay(key, requestHash string) (int, []byte, bool, error) {
-	if s == nil {
-		return 0, nil, false, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[key]
-	if !ok {
-		return 0, nil, false, nil
-	}
-	if record.requestHash != requestHash {
-		return 0, nil, false, ErrIdempotencyConflict
-	}
-	return record.statusCode, append([]byte(nil), record.body...), true, nil
-}
-
-func (s *IdempotencyStore) Save(key, requestHash string, statusCode int, body []byte) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.records[key]; exists {
-		return
-	}
-	s.records[key] = idempotencyRecord{requestHash: requestHash, statusCode: statusCode, body: append([]byte(nil), body...)}
-}
-
-func HashJSON(value any) (string, error) {
-	bytes, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(bytes)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 type InMemoryReservationService struct {

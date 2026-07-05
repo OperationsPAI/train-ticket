@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-
+	"github.com/trainticket/greenfield/platform/go-kit/httpkit"
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
 	"github.com/trainticket/greenfield/services/supplier-catalog/internal/application"
@@ -21,15 +21,10 @@ import (
 
 type Handler struct {
 	service     *application.Service
-	idempotency *application.IdempotencyStore
+	idempotency idempotency.Store
 }
 
-type ErrorBody struct {
-	Code          string                 `json:"code"`
-	Message       string                 `json:"message"`
-	CorrelationID string                 `json:"correlationId"`
-	Details       map[string]interface{} `json:"details"`
-}
+type ErrorBody = httpkit.ErrorBody
 
 func Router() *gin.Engine {
 	return RouterWithService(application.NewService(nil))
@@ -43,12 +38,13 @@ func RouterWithService(service *application.Service) *gin.Engine {
 		HealthStatus: domain.Health(),
 		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
-	h := Handler{service: service, idempotency: application.NewIdempotencyStore()}
-	router.POST("/api/v1/suppliers", h.postSupplier)
+	h := Handler{service: service, idempotency: idempotency.NewMemoryStore()}
+	idempotent := idempotency.Middleware(h.idempotency)
+	router.POST("/api/v1/suppliers", idempotent, h.postSupplier)
 	router.GET("/api/v1/suppliers/:supplierId", h.getSupplier)
 	router.GET("/api/v1/suppliers", h.listSuppliers)
-	router.POST("/api/v1/carriers", h.postCarrier)
-	router.POST("/api/v1/contracts", h.postContract)
+	router.POST("/api/v1/carriers", idempotent, h.postCarrier)
+	router.POST("/api/v1/contracts", idempotent, h.postContract)
 	return router
 }
 
@@ -148,27 +144,9 @@ func (h Handler) postContract(c *gin.Context) {
 }
 
 func (h Handler) withIdempotency(c *gin.Context, run func([]byte) (int, interface{}, error)) {
-	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	if key == "" {
-		h.writeError(c, validationError("Idempotency-Key header is required"))
-		return
-	}
-	if !isUUIDv7(key) {
-		h.writeError(c, validationError("Idempotency-Key header must be a UUIDv7"))
-		return
-	}
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readRequestBody(c)
 	if err != nil {
-		h.writeError(c, validationError("request body is required"))
-		return
-	}
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	fingerprint := application.RequestFingerprint(c.Request.Method, c.FullPath(), body)
-	if record, ok, err := h.idempotency.Replay(key, fingerprint); err != nil {
 		h.writeError(c, err)
-		return
-	} else if ok {
-		c.Data(record.Status, "application/json", record.Body)
 		return
 	}
 	status, response, err := run(body)
@@ -180,12 +158,22 @@ func (h Handler) withIdempotency(c *gin.Context, run func([]byte) (int, interfac
 		h.writeError(c, err)
 		return
 	}
-	encoded, err := h.idempotency.StoreJSON(key, fingerprint, status, response)
+	metadata, _ := idempotency.FromContext(c)
+	encoded, err := idempotency.StoreJSON(h.idempotency, metadata.Key, metadata.Fingerprint, status, response)
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
 	c.Data(status, "application/json", encoded)
+}
+
+func readRequestBody(c *gin.Context) ([]byte, error) {
+	body, err := c.GetRawData()
+	if err != nil {
+		return nil, validationError("request body is required")
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 func decode(body []byte, out interface{}) error {
@@ -217,7 +205,7 @@ func (e validationError) Error() string { return string(e) }
 
 func (h Handler) writeError(c *gin.Context, err error) {
 	status, code := errorStatus(err)
-	c.JSON(status, ErrorBody{Code: code, Message: err.Error(), CorrelationID: correlationID(c), Details: map[string]interface{}{}})
+	httpkit.WriteError(c, status, code, err.Error(), nil)
 }
 
 func correlationID(c *gin.Context) string {
@@ -228,11 +216,6 @@ func correlationID(c *gin.Context) string {
 		return value
 	}
 	return strings.TrimSpace(c.GetHeader(goruntime.CorrelationIDHeader))
-}
-
-func isUUIDv7(value string) bool {
-	parsed, err := uuid.Parse(strings.TrimSpace(value))
-	return err == nil && parsed.Version() == 7
 }
 
 func validTransportMode(value string) bool {
@@ -246,7 +229,7 @@ func validTransportMode(value string) bool {
 
 func errorStatus(err error) (int, string) {
 	switch {
-	case errors.Is(err, application.ErrIdempotencyKeyReused):
+	case errors.Is(err, idempotency.ErrKeyReused):
 		return http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSED"
 	case errors.Is(err, application.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND"

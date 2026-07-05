@@ -317,7 +317,7 @@ func assertEnvelope(t *testing.T, envelope application.EventEnvelope, eventType 
 	if !strings.HasPrefix(envelope.EventID, "evt-") || envelope.EventType != eventType || envelope.Producer != "supplier-catalog" || envelope.SchemaVersion != 1 {
 		t.Fatalf("bad envelope: %#v", envelope)
 	}
-	if !strings.HasPrefix(envelope.CorrelationID, "corr-") || !strings.HasPrefix(envelope.CausationID, "cmd-") || envelope.Payload == nil {
+	if !strings.HasPrefix(envelope.CorrelationID, "corr-") || len(envelope.Payload) == 0 {
 		t.Fatalf("bad envelope IDs/payload: %#v", envelope)
 	}
 }

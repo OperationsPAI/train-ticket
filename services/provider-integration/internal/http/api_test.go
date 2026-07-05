@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 )
@@ -33,7 +34,7 @@ func (p *fakePublisher) Publish(_ context.Context, envelope application.EventEnv
 func TestRequestProviderReservationHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	publisher := &fakePublisher{}
-	router := RouterWithDependencies(application.NewInMemoryReservationService(publisher), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(publisher), idempotency.NewMemoryStore())
 	body := reservationRequestBody(segmentBookingID1, "1A")
 
 	recorder := post(router, "/api/v1/internal/provider-reservations", body, testUUIDv7(1))
@@ -57,7 +58,7 @@ func TestCancelProviderReservationHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	publisher := &fakePublisher{}
 	service := application.NewInMemoryReservationService(publisher)
-	router := RouterWithDependencies(service, application.NewIdempotencyStore())
+	router := RouterWithDependencies(service, idempotency.NewMemoryStore())
 	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID1, "1A"), testUUIDv7(1))
 
 	recorder := post(router, "/api/v1/internal/provider-reservations/"+segmentBookingID1+"/cancel", ``, testUUIDv7(2))
@@ -79,7 +80,7 @@ func TestCancelProviderReservationHappyPath(t *testing.T) {
 
 func TestValidationFailureReturnsCanonicalBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 
 	recorder := post(router, "/api/v1/internal/provider-reservations", `{"providerConfigRef":"cr-rail"}`, testUUIDv7(1))
 
@@ -97,7 +98,7 @@ func TestValidationFailureReturnsCanonicalBody(t *testing.T) {
 
 func TestDomainRuleViolationSurfacesCanonicalBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 
 	recorder := post(router, "/api/v1/internal/provider-reservations", reservationRequestBodyWithProvider(segmentBookingID1, "bad provider", "1A"), testUUIDv7(1))
 
@@ -115,7 +116,7 @@ func TestDomainRuleViolationSurfacesCanonicalBody(t *testing.T) {
 
 func TestSegmentBookingIDValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 
 	cases := []struct {
 		name string
@@ -143,7 +144,7 @@ func TestSegmentBookingIDValidation(t *testing.T) {
 
 func TestCancelSegmentBookingIDValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 
 	cases := []struct {
 		name string
@@ -171,7 +172,7 @@ func TestCancelSegmentBookingIDValidation(t *testing.T) {
 
 func TestIdempotencyKeyHeaderValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 	body := reservationRequestBody(segmentBookingID1, "1A")
 
 	missing := post(router, "/api/v1/internal/provider-reservations", body, "")
@@ -192,7 +193,7 @@ func TestIdempotencyKeyHeaderValidation(t *testing.T) {
 
 func TestIdempotencyKeyBodyFieldIsRejected(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 
 	recorder := post(router, "/api/v1/internal/provider-reservations", reservationRequestBodyWithIdempotencyKey(segmentBookingID1, testUUIDv7(1)), testUUIDv7(1))
 
@@ -203,7 +204,7 @@ func TestIdempotencyKeyBodyFieldIsRejected(t *testing.T) {
 
 func TestIdempotentReplayReturnsOriginalResult(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 	body := reservationRequestBody(segmentBookingID1, "1A")
 
 	first := post(router, "/api/v1/internal/provider-reservations", body, testUUIDv7(1))
@@ -216,7 +217,7 @@ func TestIdempotentReplayReturnsOriginalResult(t *testing.T) {
 
 func TestIdempotencyKeyReuseWithDifferentBodyFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), idempotency.NewMemoryStore())
 	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID1, "1A"), testUUIDv7(1))
 
 	recorder := post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID2, "1A"), testUUIDv7(1))
@@ -229,7 +230,7 @@ func TestIdempotencyKeyReuseWithDifferentBodyFails(t *testing.T) {
 func TestIdempotencyKeyReuseAcrossResolvedCancelPathsFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := application.NewInMemoryReservationService(&fakePublisher{})
-	router := RouterWithDependencies(service, application.NewIdempotencyStore())
+	router := RouterWithDependencies(service, idempotency.NewMemoryStore())
 	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID1, "1A"), testUUIDv7(1))
 	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID2, "2A"), testUUIDv7(2))
 
@@ -267,8 +268,8 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 	if envelope.EventType != "ProviderReservationConfirmed" || envelope.Producer != application.ProducerName || envelope.SchemaVersion != 1 {
 		t.Fatalf("bad envelope metadata: %#v", envelope)
 	}
-	if _, err := time.Parse(time.RFC3339Nano, envelope.OccurredAt); err != nil {
-		t.Fatalf("occurredAt is not RFC3339: %q", envelope.OccurredAt)
+	if envelope.OccurredAt.IsZero() {
+		t.Fatalf("occurredAt is required")
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
@@ -301,7 +302,7 @@ func TestInboundSegmentReservationRequestedInvokesReservationFlow(t *testing.T) 
 	envelope := application.EventEnvelope{
 		EventID:       "evt-" + testUUIDv7(42),
 		EventType:     "SegmentReservationRequested",
-		OccurredAt:    "2026-07-05T00:00:00Z",
+		OccurredAt:    time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC),
 		CorrelationID: "corr-" + testUUIDv7(43),
 		CausationID:   "cmd-" + testUUIDv7(44),
 		Producer:      "booking-orchestration",
@@ -348,7 +349,7 @@ func TestInboundSegmentReservationRequestedMissingSegmentRefIsFatal(t *testing.T
 	envelope := application.EventEnvelope{
 		EventID:       "evt-" + testUUIDv7(45),
 		EventType:     "SegmentReservationRequested",
-		OccurredAt:    "2026-07-05T00:00:00Z",
+		OccurredAt:    time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC),
 		CorrelationID: "corr-" + testUUIDv7(46),
 		CausationID:   "cmd-" + testUUIDv7(47),
 		Producer:      "booking-orchestration",

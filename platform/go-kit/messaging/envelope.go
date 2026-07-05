@@ -17,7 +17,7 @@ type EventEnvelope struct {
 	EventType     string          `json:"eventType"`
 	OccurredAt    time.Time       `json:"occurredAt"`
 	CorrelationID string          `json:"correlationId"`
-	CausationID   string          `json:"causationId"`
+	CausationID   string          `json:"causationId,omitempty"`
 	Producer      string          `json:"producer"`
 	SchemaVersion int             `json:"schemaVersion"`
 	Payload       json.RawMessage `json:"payload"`
@@ -41,7 +41,10 @@ func NewEventEnvelope(eventType, producer, correlationID string, payload any, op
 		}
 		causationID = options[0].CausationID
 	}
-	envelope := EventEnvelope{EventID: ids.NewEventID(), EventType: strings.TrimSpace(eventType), OccurredAt: now, CorrelationID: ids.CanonicalCorrelationID(correlationID), CausationID: ids.CanonicalCausationID(causationID), Producer: strings.TrimSpace(producer), SchemaVersion: SchemaVersion, Payload: body}
+	envelope := EventEnvelope{EventID: ids.NewEventID(), EventType: strings.TrimSpace(eventType), OccurredAt: now, CorrelationID: ids.CanonicalCorrelationID(correlationID), Producer: strings.TrimSpace(producer), SchemaVersion: SchemaVersion, Payload: body}
+	if strings.TrimSpace(causationID) != "" {
+		envelope.CausationID = ids.CanonicalCausationID(causationID)
+	}
 	return envelope, envelope.Validate()
 }
 
@@ -61,7 +64,7 @@ func (e EventEnvelope) Validate() error {
 	if !ids.ValidPrefixedUUIDv7(e.CorrelationID, "corr") {
 		return fmt.Errorf("correlationId must be corr-prefixed UUID v7")
 	}
-	if !ids.ValidPrefixedUUIDv7(e.CausationID, "cmd") && !ids.ValidPrefixedUUIDv7(e.CausationID, "evt") {
+	if strings.TrimSpace(e.CausationID) != "" && !ids.ValidPrefixedUUIDv7(e.CausationID, "cmd") && !ids.ValidPrefixedUUIDv7(e.CausationID, "evt") {
 		return fmt.Errorf("causationId must be cmd- or evt-prefixed UUID v7")
 	}
 	if strings.TrimSpace(e.Producer) == "" {

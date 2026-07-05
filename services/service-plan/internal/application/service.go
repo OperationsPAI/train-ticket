@@ -424,17 +424,15 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 }
 
 func (s *Service) newEnvelope(eventType, correlationID, causationID string, payload []byte) EventEnvelope {
-	now := s.now().UTC()
-	return kitmsg.EventEnvelope{
-		EventID:       ids.NewEventID(),
-		EventType:     eventType,
-		OccurredAt:    now,
-		CorrelationID: ids.CanonicalCorrelationID(correlationID),
-		CausationID:   ids.CanonicalCausationID(causationID),
-		Producer:      ProducerServicePlan,
-		SchemaVersion: SchemaVersion,
-		Payload:       append(json.RawMessage(nil), payload...),
+	options := []kitmsg.EnvelopeOptions{{Now: s.now().UTC()}}
+	if strings.TrimSpace(causationID) != "" {
+		options[0].CausationID = causationID
 	}
+	envelope, err := kitmsg.NewEventEnvelope(eventType, ProducerServicePlan, correlationID, json.RawMessage(payload), options...)
+	if err != nil {
+		return kitmsg.EventEnvelope{}
+	}
+	return envelope
 }
 
 func validateCreateScheduledService(command CreateScheduledServiceCommand) error {
@@ -511,7 +509,6 @@ func NewPrefixedID(prefix string) string {
 
 func newCanonicalID(prefix string) string        { return ids.NewPrefixed(prefix) }
 func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
-func canonicalCausationID(value string) string   { return ids.CanonicalCausationID(value) }
 
 func validPrefixedUUID(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix+"-") && validUUID(strings.TrimPrefix(value, prefix+"-"))

@@ -11,11 +11,16 @@ import (
 
 const DefaultRedisURL = "redis://localhost:6379"
 
-func RedisOptionsFromEnv() (*redis.Options, error) {
+func RedisURLFromEnv() string {
 	url := strings.TrimSpace(os.Getenv("REDIS_URL"))
 	if url == "" {
-		url = DefaultRedisURL
+		return DefaultRedisURL
 	}
+	return url
+}
+
+func RedisOptionsFromEnv() (*redis.Options, error) {
+	url := RedisURLFromEnv()
 	options, err := redis.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("invalid REDIS_URL (credentials redacted): %w", errors.New(sanitizeRedisParseError(err)))
