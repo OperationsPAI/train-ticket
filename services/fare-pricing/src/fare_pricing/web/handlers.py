@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, Request
 
+from fare_pricing.application import DomainEventService
 from fare_pricing.application.idempotency import IdempotencyRecord, request_fingerprint
 from fare_pricing.application.service import (
     FarePricingService,
@@ -24,6 +25,8 @@ from fare_pricing.domain import (
     QuoteStatus,
     RuleSnapshot,
 )
+
+from fare_pricing.ports.messaging import PublishFailed
 
 from .errors import ApiError
 from .schemas import AdjustmentQuoteRequest, FareQuoteRequest
@@ -73,7 +76,8 @@ def _snapshot_to_schema(snapshot: RuleSnapshot | None) -> dict[str, Any] | None:
 
 
 def _timestamp_str(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+    utc_dt = dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    return utc_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc_dt.microsecond // 1000:03d}Z"
 
 
 def _validation_error(message: str) -> ApiError:
@@ -101,6 +105,28 @@ def _check_idempotency(request: Request, scope: str, key: str, body: dict[str, A
     return dict(record.response_body)
 
 
+def _correlation_id(request: Request) -> str:
+    return str(getattr(request.state, "correlation_id", "") or f"corr-{uuid4()}")
+
+
+def _command_id() -> str:
+    return f"cmd-{uuid4()}"
+
+
+def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any]) -> None:
+    event_service: DomainEventService = request.app.state.domain_event_service
+    try:
+        event_service.publish_event(
+            event_type=event_type,
+            causation_id=causation_id,
+            correlation_id=_correlation_id(request),
+            payload=payload,
+            occurred_at=datetime.now(UTC),
+        )
+    except PublishFailed as exc:
+        raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
+
+
 def _store_idempotency(request: Request, scope: str, key: str, body: dict[str, Any], response: dict[str, Any]) -> None:
     request.app.state.idempotency_store.put(
         scope,
@@ -126,6 +152,7 @@ def compute_fare_quote(
     if rule_set_id is None:
         raise _validation_error("No applicable fare rule set found")
 
+    causation_id = _command_id()
     try:
         quote = service.compute_fare_quote(
             quote_id=f"fq-{uuid4()}",
@@ -139,6 +166,7 @@ def compute_fare_quote(
         raise _domain_error(exc) from exc
 
     resp = _fare_quote_to_response(quote)
+    _publish_event(request, "FareQuoteComputed", causation_id, _fare_quote_event_payload(quote))
     _store_idempotency(request, "POST /api/v1/fare-quotes", key, body_dict, resp)
     return resp
 
@@ -177,6 +205,7 @@ def compute_adjustment_quote(
     if rule_set_id is None:
         raise _validation_error("No applicable fare rule set found")
 
+    causation_id = _command_id()
     try:
         aq = service.compute_adjustment_quote(
             assessment_id=f"fa-{uuid4()}",
@@ -190,6 +219,7 @@ def compute_adjustment_quote(
         raise _domain_error(exc) from exc
 
     resp = _adjustment_quote_to_response(aq)
+    _publish_event(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq))
     _store_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict, resp)
     return resp
 
@@ -224,3 +254,16 @@ def _adjustment_quote_to_response(aq: AdjustmentQuote) -> dict[str, Any]:
     if aq.failed_reason is not None:
         resp["failedReason"] = aq.failed_reason
     return resp
+
+
+def _fare_quote_event_payload(quote: FareQuote) -> dict[str, Any]:
+    payload = _fare_quote_to_response(quote)
+    payload["inputHash"] = quote.input_hash
+    payload["travelerRefs"] = list(quote.traveler_refs)
+    payload["channel"] = quote.channel
+    payload["currency"] = quote.currency
+    return payload
+
+
+def _adjustment_quote_event_payload(aq: AdjustmentQuote) -> dict[str, Any]:
+    return _adjustment_quote_to_response(aq)
