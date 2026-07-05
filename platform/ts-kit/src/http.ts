@@ -100,11 +100,11 @@ export async function handleIdempotency<T>(options: {
   operation: () => Promise<Readonly<{ statusCode: number; body: T }>>;
 }): Promise<void> {
   if (!options.key) {
-    options.reply.status(400).send(errorBody("VALIDATION_FAILED", "Idempotency-Key header is required", options.context, { field: "Idempotency-Key" }));
+    options.reply.status(400).send(errorBody("VALIDATION_FAILED", "Idempotency-Key header is required", options.context, { field: "Idempotency-Key", header: "Idempotency-Key" }));
     return;
   }
   if (!isUuidV7(options.key)) {
-    options.reply.status(400).send(errorBody("VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", options.context, { field: "Idempotency-Key" }));
+    options.reply.status(400).send(errorBody("VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", options.context, { field: "Idempotency-Key", header: "Idempotency-Key", format: "UUID_V7" }));
     return;
   }
 

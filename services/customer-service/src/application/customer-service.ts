@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import {
   DomainError,
@@ -46,36 +46,6 @@ export class NotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NotFoundError";
-  }
-}
-
-export class IdempotencyKeyReusedError extends Error {
-  constructor() {
-    super("Idempotency-Key was reused with a different request body");
-    this.name = "IdempotencyKeyReusedError";
-  }
-}
-
-export type CachedHttpResponse = Readonly<{
-  statusCode: number;
-  body: unknown;
-}>;
-
-export class IdempotencyStore {
-  private readonly records = new Map<string, Readonly<{ fingerprint: string; response: CachedHttpResponse }>>();
-
-  async execute(key: string, fingerprintSource: unknown, operation: () => Promise<CachedHttpResponse>): Promise<CachedHttpResponse> {
-    const fingerprint = requestFingerprint(fingerprintSource);
-    const existing = this.records.get(key);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) {
-        throw new IdempotencyKeyReusedError();
-      }
-      return existing.response;
-    }
-    const response = await operation();
-    this.records.set(key, { fingerprint, response });
-    return response;
   }
 }
 
@@ -251,23 +221,6 @@ export class CustomerServiceApplication {
     }
     return supportCase;
   }
-}
-
-export function requestFingerprint(value: unknown): string {
-  return createHash("sha256").update(stableJson(value)).digest("hex");
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 export function isDomainError(error: unknown): error is DomainError {

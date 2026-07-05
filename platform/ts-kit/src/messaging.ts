@@ -404,7 +404,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       const rawResult = await handler(envelope);
       result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
     } catch (error) {
-      console.error(error);
+      console.error(sanitizedErrorForLog(error));
       result = error instanceof HandlerError
         ? (error.kind === "fatal" ? "dlq" : "retry")
         : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
@@ -509,6 +509,13 @@ export function redisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
 }
 
+function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> {
+  if (error instanceof Error) {
+    return { name: error.name || "Error", message: error.message || "Handler failed" };
+  }
+  return { name: typeof error, message: "Handler failed" };
+}
+
 function normalizeHandlerResult(result: EventHandlerResult | StringHandlerResult): "ack" | "retry" | "dlq" {
   if (result === "ack" || result === "retry" || result === "dlq") {
     return result;
@@ -568,5 +575,5 @@ async function sleepUntil(stopped: () => boolean, milliseconds: number): Promise
 }
 
 function defaultLoopFailureHandler(error: unknown): void {
-  console.error(error);
+  console.error(sanitizedErrorForLog(error));
 }
