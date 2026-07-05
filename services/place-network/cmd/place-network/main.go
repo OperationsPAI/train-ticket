@@ -38,16 +38,8 @@ func main() {
 		Clock:     domain.RealClock{},
 	})
 
-	subscriber := eventBus.Subscriber()
-	consumerName := "place-network-" + goruntime.GenerateRequestID()
-	dedupHandler := ports.NewDeduplicatingEventHandler(func(envelope domain.EventEnvelope) ports.HandlerResult {
-		log.Printf("place-network consumed event type=%s eventId=%s producer=%s", envelope.EventType, envelope.EventID, envelope.Producer)
-		return ports.HandlerSuccess
-	})
-	if err := subscriber.Subscribe([]string{messaging.StreamPlaceNetwork}, messaging.ConsumerGroup, consumerName, dedupHandler.Handle); err != nil {
-		log.Fatalf("subscriber start failed: %v", err)
-	}
-	defer subscriber.Stop()
+	// place-network is a phase-1 event producer only; messaging.md assigns no
+	// Redis Streams subscriptions to the place-network consumer group.
 
 	profile := domain.Profile()
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})

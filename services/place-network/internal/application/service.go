@@ -60,6 +60,8 @@ func (s *Service) CreatePlace(req CreatePlaceRequest) (*CreatePlaceResponse, err
 	if err != nil {
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
+	place.SetOptionalReferenceData(req.Code, req.Timezone)
+	place.MarkCreatedAt(now)
 	if err := s.places.Save(place); err != nil {
 		return nil, NewDomainError("CONFLICT", err.Error())
 	}
@@ -116,6 +118,8 @@ func (s *Service) GetPlace(id domain.PlaceID) (*GetPlaceResponse, error) {
 		PlaceID:       string(place.ID),
 		PlaceType:     string(place.Type),
 		CanonicalName: place.CanonicalName,
+		Code:          place.Code,
+		Timezone:      place.Timezone,
 		Status:        string(place.Status),
 		Nodes:         nodeSummaries(nodes),
 	}, nil
@@ -175,7 +179,7 @@ func (s *Service) ListPlaces(req ListPlacesRequest) (*ListPlacesResponse, error)
 	}
 	items := make([]PlaceSummary, 0, end-offset)
 	for _, place := range filtered[offset:end] {
-		items = append(items, PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Status: string(place.Status)})
+		items = append(items, PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Code: place.Code, Timezone: place.Timezone, Status: string(place.Status)})
 	}
 	return &ListPlacesResponse{Items: items, Total: len(filtered), Limit: limit, Offset: responseOffset}, nil
 }
@@ -210,6 +214,7 @@ func (s *Service) CreateTransportNode(req CreateTransportNodeRequest) (*CreateTr
 	if err != nil {
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
+	node.MarkCreatedAt(now)
 	if err := s.nodes.Save(node); err != nil {
 		return nil, NewDomainError("CONFLICT", err.Error())
 	}
@@ -227,6 +232,7 @@ type GetTransportNodeResponse struct {
 	PlaceID      string   `json:"placeId"`
 	DisplayName  string   `json:"displayName"`
 	ServingModes []string `json:"servingModes"`
+	CreatedAt    string   `json:"createdAt"`
 }
 
 func (s *Service) GetTransportNode(id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
@@ -234,7 +240,7 @@ func (s *Service) GetTransportNode(id domain.TransportNodeID) (*GetTransportNode
 	if err != nil || node == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
-	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes)}, nil
+	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
 }
 
 type DomainError struct {
