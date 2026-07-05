@@ -1,33 +1,32 @@
 package com.trainticket.postsales.application;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
-import java.util.Map;
 import java.util.Objects;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record EventEnvelope(
     String eventId,
     String eventType,
-    int schemaVersion,
-    String producer,
-    String sourceCommandId,
-    String causationId,
-    String correlationId,
     Instant occurredAt,
-    Map<String, String> attributes,
+    String correlationId,
+    String causationId,
+    String producer,
+    int schemaVersion,
     Object payload
 ) {
     public EventEnvelope {
         eventId = requirePrefixed(eventId, "eventId", "evt-");
         eventType = requireText(eventType, "eventType");
+        Objects.requireNonNull(occurredAt, "occurredAt is required");
+        correlationId = requirePrefixed(correlationId, "correlationId", "corr-");
+        if (causationId != null) {
+            causationId = requirePrefixed(causationId, "causationId", "cmd-", "evt-");
+        }
+        producer = requireText(producer, "producer");
         if (schemaVersion < 1) {
             throw new IllegalArgumentException("schemaVersion must be positive");
         }
-        producer = requireText(producer, "producer");
-        sourceCommandId = requirePrefixed(sourceCommandId, "sourceCommandId", "cmd-");
-        causationId = requirePrefixed(causationId, "causationId", "cmd-", "evt-");
-        correlationId = requirePrefixed(correlationId, "correlationId", "corr-");
-        Objects.requireNonNull(occurredAt, "occurredAt is required");
-        attributes = Map.copyOf(Objects.requireNonNull(attributes, "attributes are required"));
         Objects.requireNonNull(payload, "payload is required");
     }
 

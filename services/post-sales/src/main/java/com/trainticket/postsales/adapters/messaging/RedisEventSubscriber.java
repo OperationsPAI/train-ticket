@@ -4,18 +4,23 @@ import com.trainticket.postsales.application.EventEnvelope;
 import com.trainticket.postsales.application.EventSubscriber;
 import com.trainticket.postsales.application.SubscribeFailedException;
 import io.lettuce.core.Consumer;
+import io.lettuce.core.Limit;
+import io.lettuce.core.Range;
 import io.lettuce.core.RedisBusyException;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.StreamMessage;
 import io.lettuce.core.XAddArgs;
 import io.lettuce.core.XAutoClaimArgs;
 import io.lettuce.core.XGroupCreateArgs;
+import io.lettuce.core.XPendingArgs;
 import io.lettuce.core.XReadArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
-import io.lettuce.core.models.stream.ClaimedMessages;
 import io.lettuce.core.api.sync.RedisCommands;
+import io.lettuce.core.models.stream.ClaimedMessages;
+import io.lettuce.core.models.stream.PendingMessage;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -80,7 +85,7 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
                     XReadArgs.StreamOffset.lastConsumed(stream)
                 );
                 for (StreamMessage<String, String> message : messages) {
-                    handle(commands, stream, group, message, handler, 1);
+                    handle(commands, stream, group, message, handler);
                 }
             }
         }
@@ -97,25 +102,45 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
             return;
         }
         for (StreamMessage<String, String> message : claimed.getMessages()) {
-            handle(commands, stream, group, message, handler, 2);
+            handle(commands, stream, group, message, handler);
         }
     }
 
-    private void handle(RedisCommands<String, String> commands, String stream, String group, StreamMessage<String, String> message, EventHandler handler, int deliveryCount) {
+    private void handle(RedisCommands<String, String> commands, String stream, String group, StreamMessage<String, String> message, EventHandler handler) {
         String envelopeJson = message.getBody().get("envelope");
         try {
+            int deliveryCount = deliveryCount(commands, stream, group, message.getId()).orElse(1);
             EventEnvelope envelope = objectMapper.readValue(envelopeJson, EventEnvelope.class);
             HandlerResult result = deliveryCount >= MAX_DELIVERIES ? HandlerResult.FATAL_FAILURE : handler.handle(envelope);
             if (result == HandlerResult.SUCCESS) {
                 commands.xack(stream, group, message.getId());
             } else if (result == HandlerResult.FATAL_FAILURE) {
-                commands.xadd(RedisStreamNames.dlq(stream), XAddArgs.Builder.maxlen(MAXLEN).approximateTrimming(), Map.of("envelope", envelopeJson));
+                moveToDlq(commands, stream, envelopeJson);
                 commands.xack(stream, group, message.getId());
             }
         } catch (Exception fatal) {
-            commands.xadd(RedisStreamNames.dlq(stream), XAddArgs.Builder.maxlen(MAXLEN).approximateTrimming(), Map.of("envelope", envelopeJson == null ? "" : envelopeJson));
+            moveToDlq(commands, stream, envelopeJson == null ? "" : envelopeJson);
             commands.xack(stream, group, message.getId());
         }
+    }
+
+    private OptionalInt deliveryCount(RedisCommands<String, String> commands, String stream, String group, String messageId) {
+        List<PendingMessage> pending = commands.xpending(
+            stream,
+            new XPendingArgs<String>()
+                .group(group)
+                .range(Range.create(messageId, messageId))
+                .limit(Limit.create(0, 1))
+        );
+        if (pending == null || pending.isEmpty()) {
+            return OptionalInt.empty();
+        }
+        long deliveryCount = pending.getFirst().getRedeliveryCount();
+        return OptionalInt.of(Math.toIntExact(deliveryCount));
+    }
+
+    private void moveToDlq(RedisCommands<String, String> commands, String stream, String envelopeJson) {
+        commands.xadd(RedisStreamNames.dlq(stream), XAddArgs.Builder.maxlen(MAXLEN).approximateTrimming(), Map.of("envelope", envelopeJson));
     }
 
     private void createGroup(RedisCommands<String, String> commands, String stream, String group) {
