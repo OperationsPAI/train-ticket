@@ -2,6 +2,7 @@ package com.trainticket.postsales.api;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -77,6 +78,58 @@ class PostSalesControllerTest {
         openCase("cmd-test-replay")
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.caseId", equalTo(first.getResponse().getContentAsString().split("\"caseId\":\"")[1].split("\"")[0])));
+    }
+
+
+    @Test
+    void idempotencyKeyReuseWithDifferentBodyReturns422() throws Exception {
+        openCase("cmd-test-reused").andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/post-sales-cases")
+                .header("Idempotency-Key", "cmd-test-reused")
+                .header("X-Correlation-Id", "corr-test-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "journeyOrderId": "ord-test-different",
+                      "caseType": "REFUND",
+                      "scope": {
+                        "orderItemRefs": ["oi-test-1"],
+                        "segmentRefs": ["seg-test-1"],
+                        "travelerRefs": ["tvl-test-1"],
+                        "entitlementRefs": ["ent-test-1"]
+                      },
+                      "reasonCode": "CUSTOMER_REQUEST",
+                      "actorRef": "acct-test-1"
+                    }
+                    """))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code", equalTo("IDEMPOTENCY_KEY_REUSED")))
+            .andExpect(jsonPath("$.correlationId", equalTo("corr-test-1")));
+    }
+
+    @Test
+    void missingCorrelationHeaderUsesGeneratedRequestCorrelationId() throws Exception {
+        mockMvc.perform(post("/api/v1/post-sales-cases")
+                .header("Idempotency-Key", "cmd-test-generated-correlation")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "journeyOrderId": "ord-generated-correlation",
+                      "caseType": "REFUND",
+                      "scope": {
+                        "orderItemRefs": ["oi-test-1"],
+                        "segmentRefs": ["seg-test-1"],
+                        "travelerRefs": ["tvl-test-1"],
+                        "entitlementRefs": ["ent-test-1"]
+                      },
+                      "reasonCode": "CUSTOMER_REQUEST",
+                      "actorRef": "acct-test-1"
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(header().exists("X-Correlation-Id"))
+            .andExpect(header().string("X-Correlation-Id", not(equalTo("cmd-test-generated-correlation"))));
     }
 
     private org.springframework.test.web.servlet.ResultActions openCase(String idempotencyKey) throws Exception {

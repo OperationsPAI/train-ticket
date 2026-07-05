@@ -1,6 +1,7 @@
 package com.trainticket.postsales.api;
 
 import com.trainticket.postsales.application.CaseNotFoundException;
+import com.trainticket.postsales.application.IdempotencyKeyReusedException;
 import com.trainticket.postsales.domain.DomainRuleViolation;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
@@ -22,6 +23,11 @@ public class ApiErrorHandler {
     @ExceptionHandler(CaseNotFoundException.class)
     ResponseEntity<ErrorBody> notFound(CaseNotFoundException exception, HttpServletRequest request) {
         return error(HttpStatus.NOT_FOUND, "NOT_FOUND", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(IdempotencyKeyReusedException.class)
+    ResponseEntity<ErrorBody> idempotency(IdempotencyKeyReusedException exception, HttpServletRequest request) {
+        return error(HttpStatus.UNPROCESSABLE_ENTITY, "IDEMPOTENCY_KEY_REUSED", exception.getMessage(), request);
     }
 
     @ExceptionHandler(DomainRuleViolation.class)

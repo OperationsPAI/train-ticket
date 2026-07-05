@@ -28,13 +28,11 @@ public final class PostSalesMapper {
         return new EventEnvelope(
             prefixed(metadata.eventId(), "evt-"),
             event.getClass().getSimpleName(),
-            metadata.schemaVersion(),
-            PRODUCER,
-            prefixed(metadata.sourceCommandId(), "cmd-"),
-            prefixedCausation(metadata.causationId()),
-            prefixed(metadata.correlationId(), "corr-"),
             metadata.occurredAt(),
-            metadata.attributes(),
+            prefixed(metadata.correlationId(), "corr-"),
+            prefixedCausation(metadata.causationId()),
+            PRODUCER,
+            metadata.schemaVersion(),
             payload(event)
         );
     }
