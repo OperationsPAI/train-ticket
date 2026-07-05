@@ -13,9 +13,9 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderService;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -43,7 +43,7 @@ public class JourneyOrderController {
     @PostMapping
     public ResponseEntity<?> createOrder(
             @Valid @RequestBody CreateJourneyOrderRequest body,
-            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         String correlationId = resolveCorrelationId();
 
         var appRequest = new com.trainticket.journeyorder.application.port.in.JourneyOrderRequest(
@@ -97,7 +97,7 @@ public class JourneyOrderController {
     public ResponseEntity<?> cancelOrder(
             @PathVariable String orderId,
             @Valid @RequestBody CancelJourneyOrderRequest body,
-            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         String correlationId = resolveCorrelationId();
 
         var appRequest = new com.trainticket.journeyorder.application.port.in.CancelJourneyOrderRequest(orderId, body.reason());
@@ -126,6 +126,6 @@ public class JourneyOrderController {
             String fromHeader = request.getHeader("X-Correlation-Id");
             if (fromHeader != null && !fromHeader.isBlank()) return fromHeader;
         }
-        return "corr-" + UUID.randomUUID();
+        return PrefixedIds.newCorrelationId();
     }
 }

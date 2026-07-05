@@ -1,7 +1,6 @@
 package com.trainticket.postsales.api;
 
 import com.trainticket.platformkit.messaging.PrefixedIds;
-import com.trainticket.postsales.application.IdempotencyStore;
 import com.trainticket.postsales.application.PostSalesApplicationService;
 import com.trainticket.postsales.application.PostSalesMapper;
 import com.trainticket.postsales.domain.PostSalesCase;
@@ -11,11 +10,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-import java.util.UUID;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -34,11 +28,9 @@ import org.springframework.web.bind.annotation.RestController;
 @Validated
 public class PostSalesController {
     private final PostSalesApplicationService service;
-    private final IdempotencyStore idempotencyStore;
 
-    public PostSalesController(PostSalesApplicationService service, IdempotencyStore idempotencyStore) {
+    public PostSalesController(PostSalesApplicationService service) {
         this.service = service;
-        this.idempotencyStore = idempotencyStore;
     }
 
     @PostMapping
@@ -47,25 +39,17 @@ public class PostSalesController {
         HttpServletRequest httpRequest,
         @Valid @RequestBody OpenCaseRequest request
     ) {
-        String validatedIdempotencyKey = requireUuid7(idempotencyKey);
-        var result = idempotencyStore.execute(
-            "POST /api/v1/post-sales-cases " + validatedIdempotencyKey,
-            fingerprint(request),
-            () -> {
-                PostSalesCase postSalesCase = service.open(new PostSalesApplicationService.OpenCaseCommand(
-                    request.journeyOrderId(),
-                    request.caseType(),
-                    request.scope().toDomain(),
-                    request.reasonCode(),
-                    request.actorRef(),
-                    validatedIdempotencyKey,
-                    commandId(),
-                    requestCorrelationId(httpRequest)
-                ));
-                return PostSalesMapper.openResponse(postSalesCase);
-            }
-        );
-        return ResponseEntity.status(HttpStatus.CREATED).body(result.value());
+        PostSalesCase postSalesCase = service.open(new PostSalesApplicationService.OpenCaseCommand(
+            request.journeyOrderId(),
+            request.caseType(),
+            request.scope().toDomain(),
+            request.reasonCode(),
+            request.actorRef(),
+            idempotencyKey,
+            commandId(),
+            requestCorrelationId(httpRequest)
+        ));
+        return ResponseEntity.status(HttpStatus.CREATED).body(PostSalesMapper.openResponse(postSalesCase));
     }
 
     @PostMapping("/{caseId}/evaluate")
@@ -74,12 +58,7 @@ public class PostSalesController {
         @RequestHeader("Idempotency-Key") String idempotencyKey,
         HttpServletRequest httpRequest
     ) {
-        String validatedIdempotencyKey = requireUuid7(idempotencyKey);
-        return idempotencyStore.execute(
-            "POST /api/v1/post-sales-cases/" + caseId + "/evaluate " + validatedIdempotencyKey,
-            fingerprint(caseId),
-            () -> PostSalesMapper.evaluateResponse(service.evaluate(caseId, commandId(), requestCorrelationId(httpRequest)))
-        ).value();
+        return PostSalesMapper.evaluateResponse(service.evaluate(caseId, commandId(), requestCorrelationId(httpRequest)));
     }
 
     @PostMapping("/{caseId}/approve")
@@ -88,12 +67,7 @@ public class PostSalesController {
         @RequestHeader("Idempotency-Key") String idempotencyKey,
         HttpServletRequest httpRequest
     ) {
-        String validatedIdempotencyKey = requireUuid7(idempotencyKey);
-        return idempotencyStore.execute(
-            "POST /api/v1/post-sales-cases/" + caseId + "/approve " + validatedIdempotencyKey,
-            fingerprint(caseId),
-            () -> PostSalesMapper.approveResponse(service.approve(caseId, commandId(), requestCorrelationId(httpRequest)))
-        ).value();
+        return PostSalesMapper.approveResponse(service.approve(caseId, commandId(), requestCorrelationId(httpRequest)));
     }
 
     @GetMapping("/{caseId}")
@@ -101,18 +75,6 @@ public class PostSalesController {
         return PostSalesMapper.caseDetails(service.get(caseId));
     }
 
-
-    static String requireUuid7(String key) {
-        try {
-            UUID parsed = UUID.fromString(key);
-            if (parsed.version() != 7) {
-                throw new IllegalArgumentException();
-            }
-            return key;
-        } catch (Exception ex) {
-            throw new IllegalArgumentException("Idempotency-Key must be a UUID v7");
-        }
-    }
 
     private static String requestCorrelationId(HttpServletRequest request) {
         Object correlationId = request.getAttribute("correlationId");
@@ -125,16 +87,6 @@ public class PostSalesController {
 
     private static String commandId() {
         return PrefixedIds.newCommandId();
-    }
-
-    private static String fingerprint(Object request) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(String.valueOf(request).getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(bytes);
-        } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("SHA-256 is unavailable", ex);
-        }
     }
 
     public record OpenCaseRequest(

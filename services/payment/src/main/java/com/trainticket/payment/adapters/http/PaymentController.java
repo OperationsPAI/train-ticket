@@ -20,46 +20,36 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1")
 public class PaymentController {
     private final PaymentCommandService service;
-    private final IdempotencyStore idempotencyStore;
 
-    public PaymentController(PaymentCommandService service, IdempotencyStore idempotencyStore) {
+    public PaymentController(PaymentCommandService service) {
         this.service = Objects.requireNonNull(service, "service is required");
-        this.idempotencyStore = Objects.requireNonNull(idempotencyStore, "idempotencyStore is required");
     }
 
     @PostMapping("/payment-intents")
     public ResponseEntity<?> createPaymentIntent(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CreatePaymentIntentRequest request, HttpServletRequest httpRequest) {
-        requireIdempotencyKey(idempotencyKey);
         validateCreate(request);
-        return idempotencyStore.replayOrRecord("POST", httpRequest.getRequestURI(), idempotencyKey, request, () -> {
-            PaymentIntent intent = service.createIntent(request.businessRef(), request.purpose(), PaymentHttpMapper.toMoney(request.amount()), request.payerRef(), idempotencyKey, correlationId(httpRequest));
-            return ResponseEntity.created(URI.create("/api/v1/payment-intents/" + intent.paymentIntentId())).body(PaymentHttpMapper.intentResponse(intent));
-        });
+        PaymentIntent intent = service.createIntent(request.businessRef(), request.purpose(), PaymentHttpMapper.toMoney(request.amount()), request.payerRef(), idempotencyKey, correlationId(httpRequest));
+        return ResponseEntity.created(URI.create("/api/v1/payment-intents/" + intent.paymentIntentId())).body(PaymentHttpMapper.intentResponse(intent));
     }
 
     @PostMapping("/payment-intents/{paymentIntentId}/cancel")
     public ResponseEntity<?> cancelPaymentIntent(@PathVariable String paymentIntentId, @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CancelPaymentIntentRequest request, HttpServletRequest httpRequest) {
-        requireIdempotencyKey(idempotencyKey);
         if (request == null || isBlank(request.reason())) {
             throw new ValidationException("reason is required");
         }
-        return idempotencyStore.replayOrRecord("POST", httpRequest.getRequestURI(), idempotencyKey, request, () -> ResponseEntity.ok(PaymentHttpMapper.cancelResponse(service.cancelIntent(paymentIntentId, request.reason(), idempotencyKey, correlationId(httpRequest)))));
+        return ResponseEntity.ok(PaymentHttpMapper.cancelResponse(service.cancelIntent(paymentIntentId, request.reason(), idempotencyKey, correlationId(httpRequest))));
     }
 
     @PostMapping("/payment-intents/{paymentIntentId}/capture")
     public ResponseEntity<?> capturePayment(@PathVariable String paymentIntentId, @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, HttpServletRequest httpRequest) {
-        requireIdempotencyKey(idempotencyKey);
-        return idempotencyStore.replayOrRecord("POST", httpRequest.getRequestURI(), idempotencyKey, "", () -> ResponseEntity.ok(PaymentHttpMapper.captureResponse(service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest)))));
+        return ResponseEntity.ok(PaymentHttpMapper.captureResponse(service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest))));
     }
 
     @PostMapping("/refunds")
     public ResponseEntity<?> requestRefund(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) RequestRefundRequest request, HttpServletRequest httpRequest) {
-        requireIdempotencyKey(idempotencyKey);
         validateRefund(request);
-        return idempotencyStore.replayOrRecord("POST", httpRequest.getRequestURI(), idempotencyKey, request, () -> {
-            Refund refund = service.requestRefund(request.paymentIntentId(), PaymentHttpMapper.toMoney(request.amount()), request.reason(), request.businessCaseRef(), idempotencyKey, correlationId(httpRequest));
-            return ResponseEntity.created(URI.create("/api/v1/refunds/" + refund.refundId())).body(PaymentHttpMapper.refundResponse(refund));
-        });
+        Refund refund = service.requestRefund(request.paymentIntentId(), PaymentHttpMapper.toMoney(request.amount()), request.reason(), request.businessCaseRef(), idempotencyKey, correlationId(httpRequest));
+        return ResponseEntity.created(URI.create("/api/v1/refunds/" + refund.refundId())).body(PaymentHttpMapper.refundResponse(refund));
     }
 
     @GetMapping("/payment-intents/{paymentIntentId}")
@@ -91,9 +81,6 @@ public class PaymentController {
         requireText(request.reason(), "reason");
     }
 
-    private static void requireIdempotencyKey(String idempotencyKey) {
-        requireText(idempotencyKey, "Idempotency-Key");
-    }
 
     private static String requireText(String value, String field) {
         if (isBlank(value)) {
