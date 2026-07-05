@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 from train_ticket_platform.events import EventEnvelope, envelope_factory, rfc3339_utc
+from train_ticket_platform.idempotency import IdempotencyRecord, IdempotencyStore
 from train_ticket_platform.ids import is_prefixed_uuid7, is_uuid7, new_prefixed_uuid7, new_uuid7
 from train_ticket_platform.messaging import (
     EventPublisher,
@@ -87,6 +88,7 @@ class InMemoryAssessmentRepository:
 class RiskComplianceService:
     publisher: EventPublisher
     repository: InMemoryAssessmentRepository = field(default_factory=InMemoryAssessmentRepository)
+    idempotency_store: IdempotencyStore | None = None
 
     def assess(
         self,
@@ -96,7 +98,26 @@ class RiskComplianceService:
         context: Mapping[str, Any],
         idempotency_key: str,
         correlation_id: str,
+        idempotency_scope: str | None = None,
+        idempotency_fingerprint: str | None = None,
     ) -> tuple[RiskAssessmentResult, bool]:
+        if self.idempotency_store is not None and idempotency_scope is not None and idempotency_fingerprint is not None:
+            existing = self.idempotency_store.get(idempotency_scope, idempotency_key)
+            if existing is not None and existing.pending_events:
+                for pending_event in existing.pending_events:
+                    self.publisher.publish(EventEnvelope.from_json_dict(pending_event))
+                self.idempotency_store.put(
+                    idempotency_scope,
+                    idempotency_key,
+                    IdempotencyRecord(
+                        fingerprint=existing.fingerprint,
+                        status_code=existing.status_code,
+                        response_body=existing.response_body,
+                        headers=existing.headers,
+                    ),
+                )
+                return _result_from_response_body(existing.response_body), True
+
         assessment_id = prefixed_id("asmt")
         requested = assess_risk(
             assessment_id=assessment_id,
@@ -109,7 +130,22 @@ class RiskComplianceService:
         result = _to_result(completed)
         envelope = _assessment_envelope(result, correlation_id, prefixed_id("cmd"))
         self.repository.save(result)
-        self.publisher.publish(envelope)
+        try:
+            self.publisher.publish(envelope)
+        except PublishFailed:
+            if self.idempotency_store is not None and idempotency_scope is not None and idempotency_fingerprint is not None:
+                self.idempotency_store.put(
+                    idempotency_scope,
+                    idempotency_key,
+                    IdempotencyRecord(
+                        fingerprint=idempotency_fingerprint,
+                        status_code=201,
+                        response_body=result.to_dict(),
+                        headers={"content-type": "application/json"},
+                        pending_events=(envelope.to_json_dict(),),
+                    ),
+                )
+            raise
         return result, False
 
     def get_assessment(self, assessment_id: str) -> RiskAssessmentResult:
@@ -172,6 +208,25 @@ def _score(assessment: RiskAssessment) -> int:
         return explicit
     digest = assessment.input_snapshot.digest
     return int(digest[:8], 16) % 350
+
+
+def _result_from_response_body(body: Any) -> RiskAssessmentResult:
+    if not isinstance(body, Mapping):
+        raise ValueError("stored idempotency response body must be an object")
+    return RiskAssessmentResult(
+        assessmentId=str(body["assessmentId"]),
+        subjectRef=str(body["subjectRef"]),
+        scenario=str(body["scenario"]),
+        decision=str(body["decision"]),
+        score=int(body["score"]),
+        level=str(body["level"]),
+        policyVersion=str(body["policyVersion"]),
+        reasonCode=str(body["reasonCode"]),
+        reasonExplanation=str(body.get("reasonExplanation", "")),
+        assessedAt=str(body["assessedAt"]),
+        evidenceRef=str(body.get("evidenceRef", f"evid-{body['assessmentId']}")),
+        assessmentSnapshotHash=str(body.get("assessmentSnapshotHash", "")),
+    )
 
 
 def _to_result(assessment: RiskAssessment) -> RiskAssessmentResult:

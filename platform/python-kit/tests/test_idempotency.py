@@ -48,3 +48,35 @@ def test_key_is_required_and_must_be_uuid7() -> None:
     assert missing.json()["code"] == "VALIDATION_FAILED"
     assert malformed.json()["code"] == "VALIDATION_FAILED"
     assert v4.json()["code"] == "VALIDATION_FAILED"
+
+
+def test_replay_preserves_current_runtime_headers() -> None:
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def runtime_headers(request, call_next):
+        request.state.request_id = "req-current"
+        request.state.correlation_id = "corr-current"
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request.state.request_id
+        response.headers["X-Correlation-Id"] = request.state.correlation_id
+        return response
+
+    configure_idempotency_middleware(app, include_path_prefixes=("/commands",))
+    calls = {"count": 0}
+
+    @app.post("/commands", status_code=201)
+    async def command(payload: dict[str, object]) -> dict[str, object]:
+        calls["count"] += 1
+        return {"calls": calls["count"], "payload": payload}
+
+    client = TestClient(app)
+
+    created = client.post("/commands", json={"a": 1}, headers={"Idempotency-Key": VALID_KEY})
+    replayed = client.post("/commands", json={"a": 1}, headers={"Idempotency-Key": VALID_KEY})
+
+    assert created.status_code == 201
+    assert replayed.status_code == 201
+    assert replayed.json() == created.json()
+    assert replayed.headers["X-Request-Id"] == "req-current"
+    assert replayed.headers["X-Correlation-Id"] == "corr-current"

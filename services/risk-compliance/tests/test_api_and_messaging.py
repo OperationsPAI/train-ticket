@@ -167,9 +167,9 @@ def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
 
     assert first.status_code == 503
     assert retry.status_code == 201
-    assert len(repository._assessments) == 2
+    assert len(repository._assessments) == 1
     assert len(publisher.envelopes) == 1
-    assert retry.json()["assessmentId"] in repository._assessments
+    assert retry.json() == next(iter(repository._assessments.values())).to_dict()
 
 
 def test_idempotent_replay_returns_original_result() -> None:
@@ -183,6 +183,8 @@ def test_idempotent_replay_returns_original_result() -> None:
     assert created.status_code == 201
     assert replayed.status_code == 201
     assert replayed.json() == created.json()
+    assert replayed.headers["X-Request-Id"]
+    assert replayed.headers["X-Correlation-Id"]
 
 
 def test_idempotency_key_reused_with_different_body_is_rejected() -> None:

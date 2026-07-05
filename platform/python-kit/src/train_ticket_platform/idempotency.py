@@ -39,6 +39,7 @@ class IdempotencyRecord:
     status_code: int
     response_body: dict[str, Any] | list[Any] | str | int | float | bool | None
     headers: dict[str, str] | None = None
+    pending_events: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def request_hash(self) -> str:
@@ -142,11 +143,19 @@ def decode_response_body(body: bytes) -> Any:
         return text
 
 
-def replay_response(record: IdempotencyRecord) -> JSONResponse:
+def replay_response(record: IdempotencyRecord, request: Request | None = None) -> JSONResponse:
+    headers = dict(record.headers or {})
+    if request is not None:
+        request_id = getattr(request.state, "request_id", None)
+        correlation_id = getattr(request.state, "correlation_id", None)
+        if request_id is not None:
+            headers["X-Request-Id"] = str(request_id)
+        if correlation_id is not None:
+            headers["X-Correlation-Id"] = str(correlation_id)
     return JSONResponse(
         status_code=record.status_code,
         content=record.response_body,
-        headers=dict(record.headers or {}),
+        headers=headers,
     )
 
 
@@ -202,7 +211,18 @@ class IdempotencyMiddleware:
         if existing is not None:
             if existing.fingerprint != fingerprint:
                 return key_reused_response(request, self._error_body_factory)
-            return replay_response(existing)
+            if existing.pending_events:
+                response = await call_next(request)
+                raw_body = await response_body(response)
+                return Response(
+                    content=raw_body,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.media_type,
+                    background=response.background,
+                )
+            self._ensure_request_state(request)
+            return replay_response(existing, request)
 
         response = await call_next(request)
         raw_body = await response_body(response)
@@ -258,8 +278,14 @@ def configure_idempotency_middleware(
         error_body_factory=error_body_factory,
     )
 
+    prior_middleware_count = len(getattr(app, "user_middleware", ()))
+
     @app.middleware("http")
     async def idempotency_middleware(request: Request, call_next: Any) -> Response:
         return await middleware(request, call_next)
+
+    if prior_middleware_count:
+        app.user_middleware.append(app.user_middleware.pop(0))
+        app.middleware_stack = None
 
     return configured_store
