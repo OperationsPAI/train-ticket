@@ -1,3 +1,3 @@
-from .redis_streams import RedisEventPublisher
+from train_ticket_platform.messaging import RedisEventPublisher
 
 __all__ = ["RedisEventPublisher"]
