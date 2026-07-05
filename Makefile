@@ -5,12 +5,15 @@ AGENT_ENV_IMAGE ?= train-ticket-agent-env:local
 OTEL_COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib:latest
 OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 
-.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict java-kit-install list-services observability-config observability-down observability-up observability-validate skeleton-check
 
-check: skeleton-check contract-lint
+check: java-kit-install skeleton-check contract-lint
 
 contract-lint:
 	python3 scripts/contract_lint.py
+
+java-kit-install:
+	mvn -q -f platform/java-kit/pom.xml install
 
 build-devcontainer:
 	docker build -f .devcontainer/Dockerfile -t $(DEVCONTAINER_IMAGE) .

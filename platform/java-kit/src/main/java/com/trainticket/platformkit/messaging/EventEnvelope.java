@@ -19,11 +19,11 @@ public record EventEnvelope(
     Object payload
 ) {
     public EventEnvelope {
-        eventId = requirePrefixed(eventId, "eventId", "evt-");
+        eventId = requirePrefixedUuidV7(eventId, "eventId", "evt-");
         eventType = requireText(eventType, "eventType");
         Objects.requireNonNull(occurredAt, "occurredAt is required");
-        correlationId = requirePrefixed(correlationId, "correlationId", "corr-");
-        if (causationId != null) causationId = requirePrefixed(causationId, "causationId", "cmd-", "evt-");
+        correlationId = requirePrefixedUuidV7(correlationId, "correlationId", "corr-");
+        if (causationId != null) causationId = requirePrefixedUuidV7(causationId, "causationId", "cmd-", "evt-");
         producer = requireText(producer, "producer");
         if (schemaVersion < 1) throw new IllegalArgumentException("schemaVersion must be positive");
         payload = payload == null ? Map.of() : payload;
@@ -46,19 +46,19 @@ public record EventEnvelope(
     }
 
     private static String canonicalCorrelationId(String value) {
-        if (value != null && value.startsWith("corr-")) return value;
-        return UuidV7.correlationId();
+        return value == null ? UuidV7.correlationId() : requirePrefixedUuidV7(value, "correlationId", "corr-");
     }
 
     private static String canonicalCausationId(String value) {
-        if (value != null && (value.startsWith("cmd-") || value.startsWith("evt-"))) return value;
-        return UuidV7.commandId();
+        return value == null ? UuidV7.commandId() : requirePrefixedUuidV7(value, "causationId", "cmd-", "evt-");
     }
 
-    private static String requirePrefixed(String value, String name, String... prefixes) {
+    static String requirePrefixedUuidV7(String value, String name, String... prefixes) {
         String text = requireText(value, name);
-        for (String prefix : prefixes) if (text.startsWith(prefix)) return text;
-        throw new IllegalArgumentException(name + " must start with " + String.join(" or ", prefixes));
+        for (String prefix : prefixes) {
+            if (text.startsWith(prefix) && UuidV7.isUuidV7(text.substring(prefix.length()))) return text;
+        }
+        throw new IllegalArgumentException(name + " must be " + String.join(" or ", prefixes) + " followed by a UUID v7");
     }
 
     private static String requireText(String value, String name) {
