@@ -1,7 +1,6 @@
 package com.trainticket.payment.application;
 
 import com.trainticket.payment.domain.DomainRuleViolation;
-import com.trainticket.payment.domain.Money;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
 
@@ -41,13 +40,16 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
 
     private void handleSegmentReservationRequested(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
-        Money amount = payload.requiredMoney("amount");
-        String segmentBookingId = payload.requiredText("segmentBookingId");
-        String journeyOrderId = payload.requiredText("journeyOrderId");
-        String travelerRef = payload.requiredText("travelerRef");
-        String idempotencyKey = payload.requiredText("idempotencyKey");
-        String paymentIntentId = paymentCommands.createIntent(journeyOrderId, "purchase", amount, travelerRef, idempotencyKey, envelope.correlationId()).paymentIntentId();
-        paymentCommands.authorizeIntent(paymentIntentId, idempotencyKey + ":authorize", envelope.correlationId(), segmentBookingId);
+        paymentCommands.recordReservationPaymentRequest(
+            envelope.eventId(),
+            payload.requiredText("segmentBookingId"),
+            payload.requiredText("journeyOrderId"),
+            payload.requiredText("segmentRef"),
+            payload.requiredText("travelerRef"),
+            payload.requiredText("idempotencyKey"),
+            envelope.correlationId(),
+            envelope.occurredAt()
+        );
     }
 
     private void handlePostSalesApproved(EventEnvelope envelope) {
