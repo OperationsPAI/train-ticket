@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/place-network/internal/application"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
@@ -48,7 +49,7 @@ func setupTestRouter(publisher application.EventPublisher) *gin.Engine {
 		ctx.Writer.Header().Set(goruntime.CorrelationIDHeader, "corr-test")
 		ctx.Next()
 	})
-	NewHandler(service, ports.NewInMemoryIdempotencyStore()).RegisterRoutes(router)
+	NewHandler(service, idempotency.NewMemoryStore()).RegisterRoutes(router)
 	return router
 }
 
@@ -260,7 +261,7 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 }
 
 func validPrefixedUUIDv7(value, prefix string) bool {
-	return strings.HasPrefix(value, prefix) && validUUIDv7(strings.TrimPrefix(value, prefix))
+	return strings.HasPrefix(value, prefix) && idempotency.ValidateKey(strings.TrimPrefix(value, prefix))
 }
 
 func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
