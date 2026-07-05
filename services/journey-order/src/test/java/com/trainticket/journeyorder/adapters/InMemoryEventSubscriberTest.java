@@ -26,7 +26,6 @@ class InMemoryEventSubscriberTest {
 
     @Test
     void subscriberDeduplicatesDuplicateEventId() {
-        // Set up handler that records events
         Function<EventEnvelope, EventSubscriber.HandlerResult> handler = envelope -> {
             handled.add(envelope);
             return new EventSubscriber.Success();
@@ -39,30 +38,49 @@ class InMemoryEventSubscriberTest {
             handler
         );
 
-        Instant now = Instant.now();
-        String eventId = "evt-" + UUID.randomUUID();
-
         EventEnvelope envelope = new EventEnvelope(
-            eventId,
+            "evt-" + UUID.randomUUID(),
             "JourneyOrderCreated",
             1,
-            now,
-            "corr-1",
-            "cmd-1",
+            Instant.now(),
+            "corr-" + UUID.randomUUID(),
+            "cmd-" + UUID.randomUUID(),
             "journey-order"
         );
 
-        // First delivery — handler invoked
         EventSubscriber.HandlerResult result1 = subscriber.simulateReceive(envelope);
         assertTrue(result1 instanceof EventSubscriber.Success);
         assertEquals(1, handled.size());
-        assertEquals(eventId, handled.getFirst().eventId());
+        assertEquals(envelope.eventId(), handled.getFirst().eventId());
 
-        // Second delivery with same eventId — handler invoked again (InMemoryEventSubscriber
-        // doesn't dedup; the real RedisEventSubscriber does via its dedupCache).
-        // This test verifies the handler interface contract works correctly for duplicates.
         EventSubscriber.HandlerResult result2 = subscriber.simulateReceive(envelope);
         assertTrue(result2 instanceof EventSubscriber.Success);
-        assertEquals(2, handled.size());
+        assertEquals(1, handled.size());
+    }
+
+    @Test
+    void subscriberMovesMessageToDlqAfterFiveDeliveryAttempts() {
+        subscriber.subscribe(
+            List.of("events:payment"),
+            "journey-order",
+            "journey-order-test",
+            envelope -> new EventSubscriber.TransientError("temporary")
+        );
+
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-" + UUID.randomUUID(),
+            "PaymentCaptured",
+            1,
+            Instant.now(),
+            "corr-" + UUID.randomUUID(),
+            "evt-" + UUID.randomUUID(),
+            "payment"
+        );
+
+        for (int i = 0; i < 4; i++) {
+            assertTrue(subscriber.simulateReceive(envelope) instanceof EventSubscriber.TransientError);
+        }
+        assertTrue(subscriber.simulateReceive(envelope) instanceof EventSubscriber.FatalError);
+        assertEquals(1, subscriber.dlq().size());
     }
 }

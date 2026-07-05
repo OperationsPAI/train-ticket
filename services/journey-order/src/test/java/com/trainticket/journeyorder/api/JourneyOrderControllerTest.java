@@ -52,8 +52,9 @@ class JourneyOrderControllerTest {
         CreateJourneyOrderResponse body = (CreateJourneyOrderResponse) response.getBody();
         assertEquals("account-1", body.accountId());
         assertEquals("offer-1", body.offerId());
-        assertEquals("PENDING_CONFIRMATION", body.status());
+        assertEquals("CREATED", body.status());
         assertNotNull(body.orderId());
+        assertTrue(body.orderId().startsWith("ord-"));
 
         // Verify event was published
         assertEquals(1, eventPublisher.published().size());
@@ -84,9 +85,12 @@ class JourneyOrderControllerTest {
     }
 
     @Test
-    void getOrderReturnsNotFound() {
-        ResponseEntity<?> response = controller.getOrder("nonexistent");
-        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+    void getOrderReturnsNotFoundThroughCanonicalHandler() {
+        var ex = org.junit.jupiter.api.Assertions.assertThrows(
+            OrderManagementService.NotFoundException.class,
+            () -> controller.getOrder("nonexistent")
+        );
+        assertTrue(ex.getMessage().contains("Order not found"));
     }
 
     @Test
@@ -184,6 +188,7 @@ class JourneyOrderControllerTest {
         assertNotNull(envelope.correlationId());
         assertNotNull(envelope.causationId());
         assertTrue(envelope.payload().containsKey("orderId"));
+        assertTrue(String.valueOf(envelope.payload().get("orderId")).startsWith("ord-"));
         assertTrue(envelope.payload().containsKey("monetarySummary"));
     }
 }

@@ -57,7 +57,7 @@ public record EventEnvelope(
             1,
             occurredAt,
             correlationId,
-            sourceCommandId != null ? sourceCommandId : correlationId,
+            canonicalCausationId(sourceCommandId, correlationId),
             producer,
             Map.of()
         );
@@ -65,6 +65,16 @@ public record EventEnvelope(
 
     public EventEnvelope withPayload(Map<String, Object> payload) {
         return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, correlationId, causationId, producer, payload);
+    }
+
+    private static String canonicalCausationId(String sourceCommandId, String correlationId) {
+        if (sourceCommandId != null && (sourceCommandId.startsWith("cmd-") || sourceCommandId.startsWith("evt-"))) {
+            return sourceCommandId;
+        }
+        if (correlationId != null && (correlationId.startsWith("cmd-") || correlationId.startsWith("evt-"))) {
+            return correlationId;
+        }
+        return "cmd-" + UUID.randomUUID();
     }
 
     private static String requireText(String value, String name) {
