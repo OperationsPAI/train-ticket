@@ -140,7 +140,8 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
   app.addHook("onRequest", async (request, reply) => {
-    const context = requestContext(request);
+    const context = resolveRequestContext(request);
+    request.ctx = context;
     reply.header("x-request-id", context.requestId);
     reply.header("x-correlation-id", context.correlationId);
     await instrumentation.onRequest?.(context);
@@ -245,6 +246,10 @@ async function withIdempotency(
     sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key header is required", context, { field: "Idempotency-Key" });
     return;
   }
+  if (!isUuidV7(key)) {
+    sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", context, { field: "Idempotency-Key" });
+    return;
+  }
 
   const fingerprint = fingerprintRequest(request.method, request.url.split("?")[0] ?? request.url, request.body ?? {});
   const existing = store.get(key);
@@ -295,12 +300,21 @@ function traceContext(request: AppRequest, context: RequestContext = requestCont
 }
 
 function requestContext(request: AppRequest): RequestContext {
+  if (request.ctx) {
+    return request.ctx;
+  }
+  const context = resolveRequestContext(request);
+  request.ctx = context;
+  return context;
+}
+
+function resolveRequestContext(request: AppRequest): RequestContext {
   const requestId = headerValue(request.headers["x-request-id"]) ?? request.id ?? randomUUID();
   const correlationId = headerValue(request.headers["x-correlation-id"]) ?? `corr-${randomUUID()}`;
   return { requestId, correlationId };
 }
 
-type AppRequest = FastifyRequest;
+type AppRequest = FastifyRequest & { ctx?: RequestContext };
 type AppReply = FastifyReply;
 
 function headerValue(value: string | string[] | undefined): string | undefined {
@@ -344,4 +358,17 @@ function assertOptionalString(value: unknown, field: string): void {
 
 function accountIdParam(request: FastifyRequest): string {
   return requiredString((request.params as { accountId?: unknown }).accountId, "accountId");
+}
+
+function isUuidV7(value: string): boolean {
+  const parsed = parseUuid(value);
+  return parsed?.version === 7;
+}
+
+function parseUuid(value: string): { version: number } | undefined {
+  const match = /^(?<timeLow>[0-9a-f]{8})-(?<timeMid>[0-9a-f]{4})-(?<version>[0-9a-f])(?<timeHigh>[0-9a-f]{3})-(?<variant>[0-9a-f]{4})-(?<node>[0-9a-f]{12})$/iu.exec(value);
+  if (!match?.groups) {
+    return undefined;
+  }
+  return { version: Number.parseInt(match.groups.version, 16) };
 }
