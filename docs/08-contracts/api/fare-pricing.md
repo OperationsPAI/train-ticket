@@ -55,6 +55,7 @@ timestamps, and cross-context IDs.
 | `purpose` | enum | yes | `REFUND`, `CHANGE` |
 | `entitlementIds` | string[] | yes | Entitlements to adjust. |
 | `journeyOrderId` | string | yes | Parent order ID. |
+| `segmentRefs` | string[] | yes | Segment references of the entitlements being adjusted (the caller — post-sales — holds these from the entitlement records). Used to resolve the original fare quote; unresolvable refs -> 412 PRECONDITION_FAILED. |
 
 **Response (201):**
 
