@@ -24,7 +24,7 @@ class PaymentControllerTest {
     @BeforeEach
     void setUp() {
         PaymentCommandService service = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), envelope -> { });
-        controller = new PaymentController(service, new IdempotencyStore());
+        controller = new PaymentController(service);
         exceptionHandler = new PlatformKitExceptionHandler();
     }
 
@@ -112,14 +112,6 @@ class PaymentControllerTest {
             assertEquals("corr-0194f2e0-7b3e-7610-8284-5c26e8b0a001", response.getBody().correlationId());
             assertTrue(response.getBody().details().isEmpty());
         }
-    }
-
-    @Test
-    void idempotentReplayReturnsOriginalResult() {
-        CreatePaymentIntentRequest body = new CreatePaymentIntentRequest("ord-replay", "purchase", new MoneyJson("CNY", 12345L), "acct-1");
-        ResponseEntity<?> first = controller.createPaymentIntent("idem-replay", body, request("/api/v1/payment-intents"));
-        ResponseEntity<?> second = controller.createPaymentIntent("idem-replay", body, request("/api/v1/payment-intents"));
-        assertEquals(first, second);
     }
 
     private ResponseEntity<?> createIntent(String key, String businessRef) {
