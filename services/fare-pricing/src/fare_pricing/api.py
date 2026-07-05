@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol
@@ -6,6 +8,8 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 
 from .runtime import health, profile
+from .application.service import FarePricingService, InMemoryStore
+from .web.handlers import router as fare_pricing_router
 
 REQUEST_ID_HEADER = "X-Request-ID"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
@@ -121,7 +125,22 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"service": profile(), "observability": {"tracing": "opt-in", "default": "noop"}}
 
 
-def create_app(tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None) -> FastAPI:
+def configure_fare_pricing_routes(app: FastAPI, store: InMemoryStore | None = None) -> None:
+    """Register the fare-pricing business API routes and application service."""
+    if store is None:
+        store = InMemoryStore()
+    service = FarePricingService(store)
+    app.state.fare_pricing_service = service
+    app.state.fare_pricing_store = store
+    app.include_router(fare_pricing_router)
+
+
+def create_app(
+    tracer: TraceHook | None = None,
+    otel_tracer: RuntimeTracer | None = None,
+    store: InMemoryStore | None = None,
+) -> FastAPI:
     app = FastAPI(title='Fare & Pricing', version="0.1.0")
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
+    configure_fare_pricing_routes(app, store)
     return app
