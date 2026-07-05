@@ -11,10 +11,18 @@ import (
 type InMemoryPlaceRepository struct {
 	mu     sync.RWMutex
 	places map[domain.PlaceID]domain.Place
+	// seq preserves insertion order: map iteration is randomized and
+	// same-millisecond UUIDv7 ids do not sort by creation, but paginated
+	// listings need a stable oldest-first order.
+	seq    map[domain.PlaceID]uint64
+	nextSeq uint64
 }
 
 func NewInMemoryPlaceRepository() *InMemoryPlaceRepository {
-	return &InMemoryPlaceRepository{places: make(map[domain.PlaceID]domain.Place)}
+	return &InMemoryPlaceRepository{
+		places: make(map[domain.PlaceID]domain.Place),
+		seq:    make(map[domain.PlaceID]uint64),
+	}
 }
 
 func (r *InMemoryPlaceRepository) Save(place domain.Place) error {
@@ -24,6 +32,8 @@ func (r *InMemoryPlaceRepository) Save(place domain.Place) error {
 		return fmt.Errorf("place already exists: %s", place.ID)
 	}
 	r.places[place.ID] = place
+	r.seq[place.ID] = r.nextSeq
+	r.nextSeq++
 	return nil
 }
 
@@ -44,7 +54,7 @@ func (r *InMemoryPlaceRepository) FindAll() ([]domain.Place, error) {
 	for _, place := range r.places {
 		places = append(places, place)
 	}
-	sort.Slice(places, func(i, j int) bool { return places[i].ID < places[j].ID })
+	sort.Slice(places, func(i, j int) bool { return r.seq[places[i].ID] < r.seq[places[j].ID] })
 	return places, nil
 }
 
