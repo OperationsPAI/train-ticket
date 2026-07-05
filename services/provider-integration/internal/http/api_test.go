@@ -86,6 +86,24 @@ func TestValidationFailureReturnsCanonicalBody(t *testing.T) {
 	}
 }
 
+func TestDomainRuleViolationSurfacesCanonicalBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+
+	recorder := post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"bad provider","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
+
+	if recorder.Code != 422 {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body ErrorBody
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "DOMAIN_RULE_VIOLATION" {
+		t.Fatalf("unexpected error body: %#v", body)
+	}
+}
+
 func TestIdempotencyKeyHeaderValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
@@ -167,7 +185,7 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 	publisher := &fakePublisher{}
 	service := application.NewInMemoryReservationService(publisher)
 	_, err := service.RequestReservation(context.Background(), application.RequestProviderReservationCommand{
-		SegmentBookingID: "sb-123", ProviderConfigRef: "cr-rail", ReservationPayload: map[string]any{"seat": "1A"}, CorrelationID: testUUIDv7(3), CausationID: "cmd-" + testUUIDv7(4),
+		SegmentBookingID: "sb-123", ProviderConfigRef: "cr-rail", ReservationPayload: map[string]any{"seat": "1A"}, CorrelationID: testUUIDv7(3), CausationID: "cmd-" + testUUIDv7(4), IdempotencyKey: testUUIDv7(5),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +207,7 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 	wantPayload := map[string]any{
 		"segmentBookingId":   "sb-123",
 		"providerReference":  "prv-123",
-		"normalizedEvidence": "normalized provider confirmation",
+		"normalizedEvidence": "raw-123:prv-123",
 	}
 	if len(payload) != len(wantPayload) {
 		t.Fatalf("payload has non-contract fields: %#v", payload)
