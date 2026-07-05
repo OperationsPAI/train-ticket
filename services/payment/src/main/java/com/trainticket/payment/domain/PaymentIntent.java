@@ -64,7 +64,7 @@ public final class PaymentIntent {
         if (!Objects.requireNonNull(expiresAt, "expiresAt is required").isAfter(Objects.requireNonNull(occurredAt, "occurredAt is required"))) {
             throw new DomainRuleViolation("payment intent expiry must be in the future");
         }
-        PaymentIntent intent = new PaymentIntent(UUID.randomUUID().toString(), businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey);
+        PaymentIntent intent = new PaymentIntent("pi-" + UUID.randomUUID(), businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey);
         intent.domainEvents.add(new PaymentIntentCreated(
             EventEnvelope.create("PaymentIntentCreated", occurredAt, sourceCommandId, correlationId, "payment"),
             intent.paymentIntentId, intent.businessRef, intent.purpose, intent.amount, intent.payerRef, intent.idempotencyKey

@@ -1,0 +1,119 @@
+package com.trainticket.payment.application;
+
+import com.trainticket.payment.domain.ChannelCallbackReceived;
+import com.trainticket.payment.domain.DuplicateChannelCallbackDetected;
+import com.trainticket.payment.domain.LatePaymentDetected;
+import com.trainticket.payment.domain.Money;
+import com.trainticket.payment.domain.PaymentAuthorized;
+import com.trainticket.payment.domain.PaymentCaptured;
+import com.trainticket.payment.domain.PaymentEvent;
+import com.trainticket.payment.domain.PaymentFailed;
+import com.trainticket.payment.domain.PaymentIntentCancelled;
+import com.trainticket.payment.domain.PaymentIntentCreated;
+import com.trainticket.payment.domain.PaymentIntentExpired;
+import com.trainticket.payment.domain.RefundFailed;
+import com.trainticket.payment.domain.RefundRequested;
+import com.trainticket.payment.domain.RefundSettled;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public final class EventEnvelopeMapper {
+    private EventEnvelopeMapper() {
+    }
+
+    public static EventEnvelope fromDomainEvent(PaymentEvent event) {
+        com.trainticket.payment.domain.EventEnvelope envelope = event.envelope();
+        return new EventEnvelope(
+            envelope.eventId(),
+            envelope.eventType(),
+            envelope.occurredAt(),
+            envelope.correlationId(),
+            envelope.causationId(),
+            envelope.producer(),
+            envelope.schemaVersion(),
+            payload(event)
+        );
+    }
+
+    private static Map<String, Object> payload(PaymentEvent event) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        switch (event) {
+            case PaymentIntentCreated created -> {
+                payload.put("paymentIntentId", created.paymentIntentId());
+                payload.put("businessRef", created.businessRef());
+                payload.put("purpose", created.purpose());
+                payload.put("amount", money(created.amount()));
+                payload.put("payerRef", created.payerRef());
+                payload.put("idempotencyKey", created.idempotencyKey());
+                payload.put("createdAt", created.envelope().occurredAt());
+            }
+            case PaymentAuthorized authorized -> {
+                payload.put("paymentIntentId", authorized.paymentIntentId());
+                payload.put("authorizedAmount", money(authorized.authorizedAmount()));
+                payload.put("channel", authorized.channel());
+                payload.put("channelTransactionId", authorized.channelTransactionId());
+            }
+            case PaymentCaptured captured -> {
+                payload.put("paymentIntentId", captured.paymentIntentId());
+                payload.put("capturedAmount", money(captured.capturedAmount()));
+                payload.put("channel", captured.channel());
+                payload.put("channelTransactionId", captured.channelTransactionId());
+            }
+            case PaymentFailed failed -> {
+                payload.put("paymentIntentId", failed.paymentIntentId());
+                payload.put("reasonCode", failed.reasonCode());
+                payload.put("retryable", failed.retryable());
+            }
+            case PaymentIntentCancelled cancelled -> {
+                payload.put("paymentIntentId", cancelled.paymentIntentId());
+                payload.put("reason", cancelled.reason());
+            }
+            case PaymentIntentExpired expired -> payload.put("paymentIntentId", expired.paymentIntentId());
+            case RefundRequested requested -> {
+                payload.put("refundId", requested.refundId());
+                payload.put("paymentIntentId", requested.paymentIntentId());
+                payload.put("amount", money(requested.amount()));
+                payload.put("businessCaseRef", requested.sourceCaseRef());
+                payload.put("reason", requested.reasonCode());
+                payload.put("idempotencyKey", requested.idempotencyKey());
+            }
+            case RefundSettled settled -> {
+                payload.put("refundId", settled.refundId());
+                payload.put("paymentIntentId", settled.paymentIntentId());
+                payload.put("amount", money(settled.amount()));
+                payload.put("channelRefundTransactionId", settled.channelRefundTransactionId());
+            }
+            case RefundFailed failed -> {
+                payload.put("refundId", failed.refundId());
+                payload.put("paymentIntentId", failed.paymentIntentId());
+                payload.put("reasonCode", failed.reasonCode());
+                payload.put("retryable", failed.retryable());
+            }
+            case ChannelCallbackReceived received -> {
+                payload.put("callbackRecordId", received.callbackRecordId());
+                payload.put("channel", received.channel());
+                payload.put("callbackId", received.callbackId());
+                payload.put("payloadDigest", received.payloadDigest());
+                payload.put("processingStatus", received.processingStatus().name());
+            }
+            case DuplicateChannelCallbackDetected duplicate -> {
+                payload.put("callbackRecordId", duplicate.callbackRecordId());
+                payload.put("channel", duplicate.channel());
+                payload.put("callbackId", duplicate.callbackId());
+                payload.put("firstCallbackRecordId", duplicate.firstCallbackRecordId());
+            }
+            case LatePaymentDetected late -> {
+                payload.put("latePaymentCaseId", late.latePaymentCaseId());
+                payload.put("paymentIntentId", late.paymentIntentId());
+                payload.put("capturedAmount", money(late.capturedAmount()));
+                payload.put("channel", late.channel());
+                payload.put("channelTransactionId", late.channelTransactionId());
+            }
+        }
+        return payload;
+    }
+
+    public static Map<String, Object> money(Money money) {
+        return Map.of("currency", money.currency().getCurrencyCode(), "minorUnits", money.toMinorUnits());
+    }
+}
