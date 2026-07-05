@@ -49,7 +49,7 @@ public final class Refund {
         if (amount.isGreaterThan(capturedIntent.refundableBalance())) {
             throw new DomainRuleViolation("refund amount cannot exceed captured-and-not-refunded balance");
         }
-        Refund refund = new Refund(UUID.randomUUID().toString(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
+        Refund refund = new Refund("rf-" + UUID.randomUUID(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
         refund.domainEvents.add(new RefundRequested(
             EventEnvelope.create("RefundRequested", occurredAt, sourceCommandId, correlationId, "payment"),
             refund.refundId, refund.paymentIntentId, refund.amount, refund.sourceCaseRef, refund.reasonCode, refund.idempotencyKey
