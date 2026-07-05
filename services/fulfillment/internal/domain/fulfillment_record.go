@@ -22,7 +22,7 @@ type FulfillmentRecord struct {
 	BoardingFact *BoardingFact
 
 	// No-show details.
-	NoShowReason    *NoShowReason
+	NoShowReason     *NoShowReason
 	NoShowAssessedAt *time.Time
 
 	// Completion details.
@@ -250,10 +250,28 @@ func (r *FulfillmentRecord) CompleteFulfillment(source CompletionSource, complet
 // Event Sink
 // ============================================================
 
+// PendingEvents returns the domain events waiting to be published without
+// clearing them. Application services use this before publishing so failures do
+// not lose events.
+func (r *FulfillmentRecord) PendingEvents() []DomainEvent {
+	return append([]DomainEvent(nil), r.events...)
+}
+
+// ClearEvents marks all pending domain events as published.
+func (r *FulfillmentRecord) ClearEvents() {
+	r.events = nil
+}
+
+// RestorePendingEvents replaces the aggregate's pending event list. It is used
+// by repositories when cloning aggregates for in-memory persistence.
+func (r *FulfillmentRecord) RestorePendingEvents(events []DomainEvent) {
+	r.events = append([]DomainEvent(nil), events...)
+}
+
 // Events returns the pending domain events and clears the event log.
 func (r *FulfillmentRecord) Events() []DomainEvent {
-	events := r.events
-	r.events = nil
+	events := r.PendingEvents()
+	r.ClearEvents()
 	return events
 }
 

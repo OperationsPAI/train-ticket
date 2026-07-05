@@ -141,11 +141,7 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 	if err := record.VerifyBoarding(cmd.EntitlementID, cmd.Source, cmd.SourceEventID, cmd.OccurredAt.UTC(), receivedAt, nil); err != nil {
 		return BoardingResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
 	}
-	events := record.Events()
-	if err := s.repo.Save(ctx, record); err != nil {
-		return BoardingResult{}, err
-	}
-	if err := s.publishEvents(ctx, events, meta); err != nil {
+	if err := s.saveAndPublishPending(ctx, record, meta); err != nil {
 		return BoardingResult{}, err
 	}
 	return BoardingResult{FulfillmentRecordID: record.FulfillmentRecordID, EntitlementID: record.EntitlementID, Status: record.Status, OccurredAt: cmd.OccurredAt.UTC()}, nil
@@ -170,13 +166,9 @@ func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, met
 	}
 	assessedAt := s.clock().UTC()
 	if err := record.RecordNoShow(cmd.Reason, assessedAt); err != nil {
-		return NoShowResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+		return NoShowResult{}, fmt.Errorf("%w: %v", ErrConflict, err)
 	}
-	events := record.Events()
-	if err := s.repo.Save(ctx, record); err != nil {
-		return NoShowResult{}, err
-	}
-	if err := s.publishEvents(ctx, events, meta); err != nil {
+	if err := s.saveAndPublishPending(ctx, record, meta); err != nil {
 		return NoShowResult{}, err
 	}
 	return NoShowResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, AssessedAt: assessedAt}, nil
@@ -206,6 +198,17 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvel
 		}
 	}
 	return nil
+}
+
+func (s *Service) saveAndPublishPending(ctx context.Context, record *domain.FulfillmentRecord, meta CommandMetadata) error {
+	if err := s.repo.Save(ctx, record); err != nil {
+		return err
+	}
+	if err := s.publishEvents(ctx, record.PendingEvents(), meta); err != nil {
+		return err
+	}
+	record.ClearEvents()
+	return s.repo.Save(ctx, record)
 }
 
 func (s *Service) publishEvents(ctx context.Context, events []domain.DomainEvent, meta CommandMetadata) error {
@@ -465,7 +468,7 @@ func cloneRecord(record *domain.FulfillmentRecord) *domain.FulfillmentRecord {
 		copy.CompletionSource = &source
 	}
 	copy.AuditTrail = append([]domain.AuditEntry(nil), record.AuditTrail...)
-	copy.Events()
+	copy.RestorePendingEvents(record.PendingEvents())
 	return &copy
 }
 
