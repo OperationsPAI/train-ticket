@@ -74,8 +74,7 @@ func (h Handler) createScheduledService(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
 		return
 	}
-	metadata := idempotencyMetadata(ctx)
-	result, _, err := h.service.CreateScheduledService(ctx.Request.Context(), application.CreateScheduledServiceCommand{
+	result, err := h.service.CreateScheduledService(ctx.Request.Context(), application.CreateScheduledServiceCommand{
 		ServiceRef:        request.ServiceRef,
 		CarrierID:         request.CarrierID,
 		ServiceNumber:     request.ServiceNumber,
@@ -84,10 +83,8 @@ func (h Handler) createScheduledService(ctx *gin.Context) {
 		OriginNodeID:      request.OriginNodeID,
 		DestinationNodeID: request.DestinationNodeID,
 		Status:            request.Status,
-		IdempotencyKey:    metadata.Key,
 		CorrelationID:     httpkit.CorrelationID(ctx),
 		CausationID:       ctx.GetHeader("X-Causation-Id"),
-		RequestHash:       metadata.Fingerprint,
 	})
 	if err != nil {
 		writeMappedError(ctx, err)
@@ -125,17 +122,14 @@ func (h Handler) createServiceSegment(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
 		return
 	}
-	metadata := idempotencyMetadata(ctx)
-	result, _, err := h.service.CreateServiceSegment(ctx.Request.Context(), application.CreateServiceSegmentCommand{
+	result, err := h.service.CreateServiceSegment(ctx.Request.Context(), application.CreateServiceSegmentCommand{
 		ScheduledServiceRef: request.ScheduledServiceRef,
 		OriginStopRef:       request.OriginStopRef,
 		DestinationStopRef:  request.DestinationStopRef,
 		DepartureTime:       request.DepartureTime,
 		ArrivalTime:         request.ArrivalTime,
-		IdempotencyKey:      metadata.Key,
 		CorrelationID:       httpkit.CorrelationID(ctx),
 		CausationID:         ctx.GetHeader("X-Causation-Id"),
-		RequestHash:         metadata.Fingerprint,
 	})
 	if err != nil {
 		writeMappedError(ctx, err)
@@ -153,21 +147,14 @@ func bindBody(ctx *gin.Context, target any) error {
 	return jsonUnmarshalStrict(body, target)
 }
 
-func idempotencyMetadata(ctx *gin.Context) idempotency.ContextValue {
-	metadata, _ := idempotency.FromContext(ctx)
-	return metadata
-}
-
 func writeMappedError(ctx *gin.Context, err error) {
 	switch {
-	case errors.Is(err, application.ErrValidation), errors.Is(err, application.ErrIdempotencyKeyRequired):
+	case errors.Is(err, application.ErrValidation):
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
 	case errors.Is(err, application.ErrNotFound):
 		httpkit.WriteError(ctx, http.StatusNotFound, httpkit.NotFound, err.Error(), nil)
 	case errors.Is(err, application.ErrConflict):
 		httpkit.WriteError(ctx, http.StatusConflict, httpkit.Conflict, err.Error(), nil)
-	case errors.Is(err, application.ErrIdempotencyKeyReused):
-		httpkit.WriteIdempotencyReused(ctx)
 	case errors.Is(err, application.ErrDomainRule):
 		httpkit.WriteError(ctx, http.StatusUnprocessableEntity, httpkit.DomainRuleViolation, err.Error(), nil)
 	case errors.Is(err, application.ErrPublish):
