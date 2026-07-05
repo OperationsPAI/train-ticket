@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
+
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 )
 
 const ProducerPlaceNetwork = "place-network"
@@ -43,7 +45,7 @@ type EventEnvelope struct {
 
 func NewEventEnvelope(eventType string, occurredAt time.Time, correlationID string, causationID string, producer string, payload any) EventEnvelope {
 	return EventEnvelope{
-		EventID:       "evt-" + newUUIDv7(),
+		EventID:       ids.NewEventID(),
 		EventType:     eventType,
 		SchemaVersion: 1,
 		Producer:      producer,

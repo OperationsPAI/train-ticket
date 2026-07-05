@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
@@ -229,10 +230,10 @@ func (s *Service) WrapDomainEvent(event domain.DomainEvent, meta CommandMetadata
 	if err != nil {
 		return EventEnvelope{}, err
 	}
-	correlationID := normalizePrefixed(meta.CorrelationID, "corr", s.idGen)
-	causationID := normalizeCausationID(meta.CausationID, s.idGen)
+	correlationID := ids.CanonicalCorrelationID(meta.CorrelationID)
+	causationID := ids.CanonicalCausationID(meta.CausationID)
 	return EventEnvelope{
-		EventID:       s.idGen("evt"),
+		EventID:       ids.NewEventID(),
 		EventType:     event.EventType(),
 		OccurredAt:    event.OccurredAt().UTC(),
 		CorrelationID: correlationID,
@@ -376,28 +377,9 @@ func isUUIDLike(value string) bool {
 	return uuidPattern.MatchString(value)
 }
 
-func NewPrefixedID(prefix string) string {
-	return prefix + "-" + newUUIDLike()
-}
+func NewPrefixedID(prefix string) string { return ids.NewPrefixed(prefix) }
 
-func newUUIDLike() string {
-	var b [16]byte
-	if _, err := randRead(b[:]); err != nil {
-		return fmt.Sprintf("%08x-%04x-7000-8000-%012x", uint32(time.Now().Unix()), uint16(time.Now().UnixNano()), time.Now().UnixNano())
-	}
-	millis := uint64(time.Now().UTC().UnixMilli())
-	b[0] = byte(millis >> 40)
-	b[1] = byte(millis >> 32)
-	b[2] = byte(millis >> 24)
-	b[3] = byte(millis >> 16)
-	b[4] = byte(millis >> 8)
-	b[5] = byte(millis)
-	b[6] = (b[6] & 0x0f) | 0x70
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-var randRead = rand.Read
+func newUUIDLike() string { return ids.NewUUIDv7() }
 
 // InMemoryRepository is the default process-local repository used by the HTTP runtime.
 type InMemoryRepository struct {
