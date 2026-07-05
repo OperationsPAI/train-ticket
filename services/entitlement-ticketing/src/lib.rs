@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use tokio::task::JoinHandle;
 
 use axum::{
     Json, Router,
@@ -59,7 +60,41 @@ pub fn runtime_config() -> RuntimeConfig {
 }
 
 pub fn router() -> Router {
-    router_with_state(Arc::new(InMemoryEntitlementService::default()))
+    let publisher = Arc::new(
+        adapters::messaging::RedisEventPublisher::from_env()
+            .expect("REDIS_URL must be a valid Redis connection URL"),
+    );
+    router_with_state(Arc::new(InMemoryEntitlementService::new(publisher)))
+}
+
+pub fn build_runtime() -> Result<(Router, JoinHandle<()>), application::SubscribeFailed> {
+    use crate::application::EventSubscriber;
+
+    let publisher = Arc::new(
+        adapters::messaging::RedisEventPublisher::from_env()
+            .map_err(|error| application::SubscribeFailed(error.to_string()))?,
+    );
+    let service = Arc::new(InMemoryEntitlementService::new(publisher));
+    let subscriber = adapters::messaging::RedisEventSubscriber::from_env()?;
+    let streams = adapters::messaging::RedisEventSubscriber::entitlement_streams();
+    let group = adapters::messaging::RedisEventSubscriber::entitlement_group().to_string();
+    let consumer_name = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("entitlement-ticketing-{}", uuid::Uuid::now_v7()));
+    let handler_service = Arc::clone(&service);
+    let subscriber_handle = tokio::spawn(async move {
+        subscriber
+            .subscribe(
+                streams,
+                group,
+                consumer_name,
+                Box::new(move |envelope| handler_service.handle_subscribed_event(envelope)),
+            )
+            .await
+            .expect("entitlement-ticketing Redis subscriber stopped");
+    });
+    Ok((router_with_state(service), subscriber_handle))
 }
 
 pub fn router_with_state<S>(service: Arc<S>) -> Router
@@ -1437,7 +1472,7 @@ mod tests {
 
     #[test]
     fn axum_router_can_be_constructed() {
-        let _router = router();
+        let _router = router_with_state(Arc::new(InMemoryEntitlementService::default()));
     }
 
     #[tokio::test]
@@ -1455,7 +1490,7 @@ mod tests {
             "/readyz",
             "/metadata",
         ] {
-            let response = router()
+            let response = router_with_state(Arc::new(InMemoryEntitlementService::default()))
                 .oneshot(
                     Request::builder()
                         .uri(path)
@@ -2315,6 +2350,171 @@ impl InMemoryEntitlementService {
             publisher,
         }
     }
+
+    fn replayed_response(
+        &self,
+        key: &str,
+        fingerprint: &str,
+    ) -> ApiResult<Option<IdempotentResponse>> {
+        let state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        if let Some(record) = state.idempotency.get(key) {
+            if record.fingerprint != fingerprint {
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused with a different request body".to_string(),
+                ));
+            }
+            return Ok(Some(record.response.clone()));
+        }
+        Ok(None)
+    }
+
+    fn pending_publication(
+        &self,
+        key: &str,
+        fingerprint: &str,
+    ) -> ApiResult<Option<PendingPublication>> {
+        let state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        if let Some(record) = state.idempotency.get(key) {
+            if record.fingerprint != fingerprint {
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused with a different request body".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+        if let Some(pending) = state.pending_publications.get(key) {
+            if pending.fingerprint != fingerprint {
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused with a different request body".to_string(),
+                ));
+            }
+            return Ok(Some(pending.clone()));
+        }
+        Ok(None)
+    }
+
+    fn record_idempotent_success(
+        &self,
+        key: String,
+        fingerprint: String,
+        response: IdempotentResponse,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        state.pending_publications.remove(&key);
+        state.idempotency.insert(
+            key,
+            IdempotentRecord {
+                fingerprint,
+                response,
+            },
+        );
+    }
+
+    fn handle_subscribed_event(
+        &self,
+        envelope: application::EventEnvelope,
+    ) -> Result<(), application::HandlerError> {
+        self.apply_subscribed_event(envelope)
+            .map_err(|error| application::HandlerError::Fatal(error.message().to_string()))
+    }
+
+    fn apply_subscribed_event(&self, envelope: application::EventEnvelope) -> ApiResult<()> {
+        match envelope.event_type.as_str() {
+            "BoardingVerified" => self.apply_boarding_verified(envelope.payload),
+            "PostSalesApproved" => self.apply_post_sales_approved(envelope.payload),
+            "SegmentTicketed" => Ok(()),
+            _ => Ok(()),
+        }
+    }
+
+    fn apply_boarding_verified(&self, payload: Value) -> ApiResult<()> {
+        let entitlement_id = payload
+            .get("entitlementId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiErrorKind::ValidationFailed("entitlementId is required".to_string()))?
+            .to_string();
+        validate_prefixed_uuid(&entitlement_id, "entitlementId", "ent-")?;
+        let fact_ref = payload
+            .get("sourceEventId")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("fulfillmentRecordId").and_then(Value::as_str))
+            .unwrap_or("fulfillment-fact");
+        let mut state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        let aggregate = state
+            .aggregates
+            .get_mut(&entitlement_id)
+            .ok_or_else(|| ApiErrorKind::NotFound("entitlement aggregate not found".to_string()))?;
+        aggregate
+            .accept_fulfillment_fact(AcceptFulfillmentFact {
+                command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                    .map_err(ApiErrorKind::from)?,
+                fact: FulfillmentFact::BoardingVerified {
+                    fact_ref: FulfillmentFactRef::new(fact_ref.to_string())
+                        .map_err(ApiErrorKind::from)?,
+                },
+                audit: audit_builder("corr-subscriber", "event bus boarding verified")
+                    .map_err(ApiErrorKind::from)?,
+            })
+            .map_err(ApiErrorKind::from)?;
+        Ok(())
+    }
+
+    fn apply_post_sales_approved(&self, payload: Value) -> ApiResult<()> {
+        let Some(entitlement_id) = payload.get("entitlementId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        validate_prefixed_uuid(entitlement_id, "entitlementId", "ent-")?;
+        let reason = payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("REFUND");
+        let policy = payload
+            .get("policy")
+            .and_then(Value::as_str)
+            .unwrap_or("NORMAL");
+        let business_case_ref = payload
+            .get("caseId")
+            .and_then(Value::as_str)
+            .unwrap_or("post-sales-case")
+            .to_string();
+        let mut state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        let aggregate = state
+            .aggregates
+            .get_mut(entitlement_id)
+            .ok_or_else(|| ApiErrorKind::NotFound("entitlement aggregate not found".to_string()))?;
+        aggregate
+            .void(VoidEntitlement {
+                command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                    .map_err(ApiErrorKind::from)?,
+                reason: parse_void_reason(reason),
+                policy: parse_void_policy(policy),
+                business_case_ref: BusinessCaseRef::new(business_case_ref)
+                    .map_err(ApiErrorKind::from)?,
+                audit: audit_builder("corr-subscriber", "event bus post-sales approved")
+                    .map_err(ApiErrorKind::from)?,
+            })
+            .map_err(ApiErrorKind::from)?;
+        if let Some(entitlement) = state.entitlements.get_mut(entitlement_id) {
+            entitlement.status = EntitlementStatusDto::Voided;
+            entitlement.voided_at = Some(current_rfc3339());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2323,12 +2523,21 @@ struct InMemoryState {
     aggregates: HashMap<String, Entitlement>,
     credential_registry: CredentialRegistry,
     idempotency: HashMap<String, IdempotentRecord>,
+    pending_publications: HashMap<String, PendingPublication>,
     sequence: u64,
 }
 
 #[derive(Debug, Clone)]
 struct IdempotentRecord {
     fingerprint: String,
+    response: IdempotentResponse,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPublication {
+    fingerprint: String,
+    event_type: &'static str,
+    payload: Value,
     response: IdempotentResponse,
 }
 
@@ -2346,29 +2555,40 @@ impl EntitlementApi for InMemoryEntitlementService {
         key: String,
         correlation_id: String,
     ) -> ApiResult<IssueEntitlementResponse> {
-        validate_non_empty(&command.segment_booking_id, "segmentBookingId")?;
-        validate_non_empty(&command.journey_order_id, "journeyOrderId")?;
-        validate_non_empty(&command.traveler_ref, "travelerRef")?;
-        validate_non_empty(&command.segment_ref, "segmentRef")?;
+        validate_prefixed_uuid(&command.segment_booking_id, "segmentBookingId", "sb-")?;
+        validate_prefixed_uuid(&command.journey_order_id, "journeyOrderId", "ord-")?;
+        validate_prefixed_uuid(&command.traveler_ref, "travelerRef", "tvl-")?;
+        validate_prefixed_uuid(&command.segment_ref, "segmentRef", "seg-")?;
         let fingerprint = serde_json::to_string(&command).unwrap_or_default();
+        if let Some(replayed) = self.replayed_response(&key, &fingerprint)? {
+            if let IdempotentResponse::Issue(response) = replayed {
+                return Ok(response);
+            }
+            return Err(ApiErrorKind::IdempotencyKeyReused(
+                "Idempotency-Key was reused for a different operation".to_string(),
+            ));
+        }
+        if let Some(pending) = self.pending_publication(&key, &fingerprint)? {
+            let IdempotentResponse::Issue(response) = pending.response.clone() else {
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused for a different operation".to_string(),
+                ));
+            };
+            publish_api_event_value(
+                self.publisher.as_ref(),
+                pending.event_type,
+                pending.payload.clone(),
+                correlation_id,
+            )
+            .await?;
+            self.record_idempotent_success(key, fingerprint, pending.response);
+            return Ok(response);
+        }
         let (response, event_payload) = {
             let mut state = self
                 .state
                 .lock()
                 .expect("entitlement service lock poisoned");
-            if let Some(record) = state.idempotency.get(&key) {
-                if record.fingerprint != fingerprint {
-                    return Err(ApiErrorKind::IdempotencyKeyReused(
-                        "Idempotency-Key was reused with a different request body".to_string(),
-                    ));
-                }
-                if let IdempotentResponse::Issue(response) = &record.response {
-                    return Ok(response.clone());
-                }
-                return Err(ApiErrorKind::IdempotencyKeyReused(
-                    "Idempotency-Key was reused for a different operation".to_string(),
-                ));
-            }
             state.sequence += 1;
             let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
             let issued_at = current_rfc3339();
@@ -2445,10 +2665,14 @@ impl EntitlementApi for InMemoryEntitlementService {
                 .map_err(ApiErrorKind::from)?;
             state.aggregates.insert(entitlement_id.clone(), aggregate);
             state.entitlements.insert(entitlement_id, details);
-            state.idempotency.insert(
-                key,
-                IdempotentRecord {
-                    fingerprint,
+            let pending_payload =
+                serde_json::to_value(&event_payload).unwrap_or_else(|_| json!({}));
+            state.pending_publications.insert(
+                key.clone(),
+                PendingPublication {
+                    fingerprint: fingerprint.clone(),
+                    event_type: "EntitlementIssued",
+                    payload: pending_payload,
                     response: IdempotentResponse::Issue(response.clone()),
                 },
             );
@@ -2461,6 +2685,11 @@ impl EntitlementApi for InMemoryEntitlementService {
             correlation_id,
         )
         .await?;
+        self.record_idempotent_success(
+            key,
+            fingerprint,
+            IdempotentResponse::Issue(response.clone()),
+        );
         Ok(response)
     }
 
@@ -2471,6 +2700,7 @@ impl EntitlementApi for InMemoryEntitlementService {
         key: String,
         correlation_id: String,
     ) -> ApiResult<VoidEntitlementResponse> {
+        validate_prefixed_uuid(&entitlement_id, "entitlementId", "ent-")?;
         if command
             .business_case_ref
             .as_deref()
@@ -2485,24 +2715,35 @@ impl EntitlementApi for InMemoryEntitlementService {
             entitlement_id,
             serde_json::to_string(&command).unwrap_or_default()
         );
+        if let Some(replayed) = self.replayed_response(&key, &fingerprint)? {
+            if let IdempotentResponse::Void(response) = replayed {
+                return Ok(response);
+            }
+            return Err(ApiErrorKind::IdempotencyKeyReused(
+                "Idempotency-Key was reused for a different operation".to_string(),
+            ));
+        }
+        if let Some(pending) = self.pending_publication(&key, &fingerprint)? {
+            let IdempotentResponse::Void(response) = pending.response.clone() else {
+                return Err(ApiErrorKind::IdempotencyKeyReused(
+                    "Idempotency-Key was reused for a different operation".to_string(),
+                ));
+            };
+            publish_api_event_value(
+                self.publisher.as_ref(),
+                pending.event_type,
+                pending.payload.clone(),
+                correlation_id,
+            )
+            .await?;
+            self.record_idempotent_success(key, fingerprint, pending.response);
+            return Ok(response);
+        }
         let (response, event_payload) = {
             let mut state = self
                 .state
                 .lock()
                 .expect("entitlement service lock poisoned");
-            if let Some(record) = state.idempotency.get(&key) {
-                if record.fingerprint != fingerprint {
-                    return Err(ApiErrorKind::IdempotencyKeyReused(
-                        "Idempotency-Key was reused with a different request body".to_string(),
-                    ));
-                }
-                if let IdempotentResponse::Void(response) = &record.response {
-                    return Ok(response.clone());
-                }
-                return Err(ApiErrorKind::IdempotencyKeyReused(
-                    "Idempotency-Key was reused for a different operation".to_string(),
-                ));
-            }
             let segment_booking_id = state
                 .entitlements
                 .get(&entitlement_id)
@@ -2552,10 +2793,14 @@ impl EntitlementApi for InMemoryEntitlementService {
                 status: EntitlementStatusDto::Voided,
                 voided_at,
             };
-            state.idempotency.insert(
-                key,
-                IdempotentRecord {
-                    fingerprint,
+            let pending_payload =
+                serde_json::to_value(&event_payload).unwrap_or_else(|_| json!({}));
+            state.pending_publications.insert(
+                key.clone(),
+                PendingPublication {
+                    fingerprint: fingerprint.clone(),
+                    event_type: "EntitlementVoided",
+                    payload: pending_payload,
                     response: IdempotentResponse::Void(response.clone()),
                 },
             );
@@ -2568,10 +2813,16 @@ impl EntitlementApi for InMemoryEntitlementService {
             correlation_id,
         )
         .await?;
+        self.record_idempotent_success(
+            key,
+            fingerprint,
+            IdempotentResponse::Void(response.clone()),
+        );
         Ok(response)
     }
 
     async fn get(&self, entitlement_id: String) -> ApiResult<EntitlementDetails> {
+        validate_prefixed_uuid(&entitlement_id, "entitlementId", "ent-")?;
         self.state
             .lock()
             .expect("entitlement service lock poisoned")
@@ -2587,7 +2838,7 @@ impl EntitlementApi for InMemoryEntitlementService {
         limit: usize,
         offset: usize,
     ) -> ApiResult<PaginatedEntitlements> {
-        validate_non_empty(&journey_order_id, "journeyOrderId")?;
+        validate_prefixed_uuid(&journey_order_id, "journeyOrderId", "ord-")?;
         let mut items: Vec<_> = self
             .state
             .lock()
@@ -2608,6 +2859,23 @@ impl EntitlementApi for InMemoryEntitlementService {
     }
 }
 
+fn parse_void_reason(value: &str) -> VoidReason {
+    match value {
+        "CHANGE" => VoidReason::Change,
+        "DISRUPTION" => VoidReason::Disruption,
+        "RISK" => VoidReason::Risk,
+        "MANUAL_CORRECTION" => VoidReason::ManualCorrection,
+        _ => VoidReason::Refund,
+    }
+}
+
+fn parse_void_policy(value: &str) -> VoidPolicy {
+    match value {
+        "EXCEPTIONAL_RULE" => VoidPolicy::ExceptionalRule,
+        _ => VoidPolicy::Normal,
+    }
+}
+
 fn validate_non_empty(value: &str, field: &'static str) -> ApiResult<()> {
     if value.trim().is_empty() {
         Err(ApiErrorKind::ValidationFailed(format!(
@@ -2616,6 +2884,19 @@ fn validate_non_empty(value: &str, field: &'static str) -> ApiResult<()> {
     } else {
         Ok(())
     }
+}
+
+fn validate_prefixed_uuid(value: &str, field: &'static str, prefix: &'static str) -> ApiResult<()> {
+    validate_non_empty(value, field)?;
+    let Some(uuid_part) = value.strip_prefix(prefix) else {
+        return Err(ApiErrorKind::ValidationFailed(format!(
+            "{field} must use {prefix}<uuid> format"
+        )));
+    };
+    uuid::Uuid::parse_str(uuid_part).map_err(|_| {
+        ApiErrorKind::ValidationFailed(format!("{field} must use {prefix}<uuid> format"))
+    })?;
+    Ok(())
 }
 
 fn current_rfc3339() -> String {
@@ -2691,13 +2972,28 @@ async fn publish_api_event<T: Serialize>(
     payload: &T,
     correlation_id: String,
 ) -> ApiResult<()> {
+    publish_api_event_value(
+        publisher,
+        event_type,
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({})),
+        correlation_id,
+    )
+    .await
+}
+
+async fn publish_api_event_value(
+    publisher: &dyn application::EventPublisher,
+    event_type: &str,
+    payload: Value,
+    correlation_id: String,
+) -> ApiResult<()> {
     let envelope = application::EventEnvelope::new(
         event_type,
         current_rfc3339(),
         correlation_id,
         None::<String>,
         profile().service_id,
-        serde_json::to_value(payload).unwrap_or_else(|_| json!({})),
+        payload,
     );
     publisher
         .publish(envelope)
@@ -2739,10 +3035,10 @@ mod api_domain_wiring_tests {
         let response = service
             .issue(
                 IssueEntitlementRequest {
-                    segment_booking_id: "sb-domain-invariant".to_string(),
-                    journey_order_id: "ord-domain-invariant".to_string(),
-                    traveler_ref: "tvl-domain-invariant".to_string(),
-                    segment_ref: "seg-domain-invariant".to_string(),
+                    segment_booking_id: "sb-0194f2e0-7b3e-7610-0284-5c26e8b0e111".to_string(),
+                    journey_order_id: "ord-0194f2e0-7b3e-7610-0284-5c26e8b0e222".to_string(),
+                    traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0e333".to_string(),
+                    segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0e444".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
                 },
                 "018f2e07-b3e7-7100-8284-5c26e8b0d001".to_string(),
