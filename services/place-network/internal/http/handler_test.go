@@ -35,10 +35,10 @@ func (p *recordingPublisher) last() domain.EventEnvelope {
 	return p.events[len(p.events)-1]
 }
 
-func setupTestRouter(publisher ports.EventPublisher) *gin.Engine {
+func setupTestRouter(publisher application.EventPublisher) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	if publisher == nil {
-		publisher = ports.NewNoopPublisher()
+		publisher = application.NewNoopPublisher()
 	}
 	service := application.NewService(application.ServiceConfig{Places: ports.NewInMemoryPlaceRepository(), Nodes: ports.NewInMemoryTransportNodeRepository(), Publisher: publisher, Clock: fixedClock{time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)}})
 	router := gin.New()
@@ -188,12 +188,12 @@ func TestPublisherWrapsEventsInEnvelope(t *testing.T) {
 
 func TestSubscriberHandlerDeduplicatesDuplicateEventID(t *testing.T) {
 	calls := 0
-	handler := ports.NewDeduplicatingEventHandler(func(envelope domain.EventEnvelope) ports.HandlerResult {
+	handler := application.NewDeduplicatingEventHandler(func(envelope domain.EventEnvelope) application.HandlerResult {
 		calls++
-		return ports.HandlerSuccess
+		return application.HandlerSuccess
 	})
 	envelope := domain.EventEnvelope{EventID: "evt-duplicate", EventType: "PlaceUpdated"}
-	if handler.Handle(envelope) != ports.HandlerSuccess || handler.Handle(envelope) != ports.HandlerSuccess {
+	if handler.Handle(envelope) != application.HandlerSuccess || handler.Handle(envelope) != application.HandlerSuccess {
 		t.Fatal("expected success")
 	}
 	if calls != 1 {

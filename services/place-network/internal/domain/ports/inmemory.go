@@ -118,9 +118,3 @@ func (s *InMemoryIdempotencyStore) Put(key string, record IdempotencyRecord) err
 	s.records[key] = record
 	return nil
 }
-
-type NoopPublisher struct{}
-
-func NewNoopPublisher() *NoopPublisher { return &NoopPublisher{} }
-
-func (p *NoopPublisher) Publish(envelope domain.EventEnvelope) error { return nil }
