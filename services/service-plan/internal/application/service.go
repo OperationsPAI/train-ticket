@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 )
 
 const (
@@ -23,6 +25,7 @@ var (
 	ErrNotFound               = errors.New("not found")
 	ErrConflict               = errors.New("conflict")
 	ErrValidation             = errors.New("validation failed")
+	ErrDomainRule             = errors.New("domain rule violation")
 	ErrIdempotencyKeyReused   = errors.New("idempotency key reused")
 	ErrIdempotencyKeyRequired = errors.New("idempotency key required")
 	ErrPublish                = errors.New("publish failed")
@@ -110,12 +113,17 @@ type IdempotencyResult struct {
 	Body       any
 }
 
+type scheduledServiceState struct {
+	aggregate domain.ScheduledService
+	view      ScheduledService
+}
+
 type Service struct {
 	mu                 sync.Mutex
 	now                func() time.Time
 	idGenerator        func(prefix string) string
 	publisher          EventPublisher
-	scheduledServices  map[string]ScheduledService
+	scheduledServices  map[string]scheduledServiceState
 	segments           map[string]ServiceSegment
 	idempotencyRecords map[string]idempotencyRecord
 }
@@ -128,7 +136,7 @@ func NewService(publisher EventPublisher) *Service {
 		now:                func() time.Time { return time.Now().UTC() },
 		idGenerator:        NewPrefixedID,
 		publisher:          publisher,
-		scheduledServices:  map[string]ScheduledService{},
+		scheduledServices:  map[string]scheduledServiceState{},
 		segments:           map[string]ServiceSegment{},
 		idempotencyRecords: map[string]idempotencyRecord{},
 	}
@@ -142,66 +150,134 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 	if err != nil || replay != nil {
 		return CreateScheduledServiceResult{}, replay, err
 	}
-	ref := strings.TrimSpace(command.ServiceRef)
-	if ref == "" {
-		ref = s.idGenerator("ss")
+
+	state, result, err := s.buildScheduledService(command)
+	if err != nil {
+		return CreateScheduledServiceResult{}, nil, err
 	}
-	service := ScheduledService{
-		ScheduledServiceRef: ref,
-		ServiceNumber:       strings.TrimSpace(command.ServiceNumber),
-		Status:              normalizedStatus(command.Status),
-		CarrierID:           strings.TrimSpace(command.CarrierID),
-		DepartureTime:       command.DepartureTime.UTC(),
-		ArrivalTime:         command.ArrivalTime.UTC(),
-		OriginNodeID:        strings.TrimSpace(command.OriginNodeID),
-		DestinationNodeID:   strings.TrimSpace(command.DestinationNodeID),
-	}
-	result := CreateScheduledServiceResult{ScheduledServiceRef: service.ScheduledServiceRef, ServiceNumber: service.ServiceNumber, Status: service.Status}
 	payload, err := json.Marshal(map[string]any{
-		"scheduledServiceRef": service.ScheduledServiceRef,
-		"serviceNumber":       service.ServiceNumber,
-		"status":              service.Status,
-		"carrierId":           service.CarrierID,
-		"departureTime":       service.DepartureTime,
-		"arrivalTime":         service.ArrivalTime,
-		"originNodeId":        service.OriginNodeID,
-		"destinationNodeId":   service.DestinationNodeID,
+		"scheduledServiceRef": state.view.ScheduledServiceRef,
+		"serviceNumber":       state.view.ServiceNumber,
+		"status":              state.view.Status,
+		"carrierId":           state.view.CarrierID,
+		"departureTime":       state.view.DepartureTime,
+		"arrivalTime":         state.view.ArrivalTime,
+		"originNodeId":        state.view.OriginNodeID,
+		"destinationNodeId":   state.view.DestinationNodeID,
 	})
 	if err != nil {
 		return CreateScheduledServiceResult{}, nil, err
 	}
-	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
 
 	s.mu.Lock()
-	if _, exists := s.scheduledServices[service.ScheduledServiceRef]; exists {
+	if _, exists := s.scheduledServices[state.view.ScheduledServiceRef]; exists {
 		s.mu.Unlock()
 		return CreateScheduledServiceResult{}, nil, fmt.Errorf("%w: scheduled service already exists", ErrConflict)
 	}
+	s.scheduledServices[state.view.ScheduledServiceRef] = state
+	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
 	s.mu.Unlock()
 
+	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
 	if err := s.publisher.Publish(ctx, envelope); err != nil {
 		return CreateScheduledServiceResult{}, nil, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.scheduledServices[service.ScheduledServiceRef]; exists {
-		return CreateScheduledServiceResult{}, nil, fmt.Errorf("%w: scheduled service already exists", ErrConflict)
-	}
-	s.scheduledServices[service.ScheduledServiceRef] = service
-	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
 	return result, nil, nil
+}
+
+func (s *Service) buildScheduledService(command CreateScheduledServiceCommand) (scheduledServiceState, CreateScheduledServiceResult, error) {
+	ref := strings.TrimSpace(command.ServiceRef)
+	if ref == "" {
+		ref = s.idGenerator("ss")
+	}
+	departure := command.DepartureTime.UTC()
+	arrival := command.ArrivalTime.UTC()
+	origin := strings.TrimSpace(command.OriginNodeID)
+	destination := strings.TrimSpace(command.DestinationNodeID)
+	status := normalizedStatus(command.Status)
+
+	originStop, err := domain.NewServiceStop(1, domain.TransportNodeID(origin), "nodes-snapshot-unknown", true, false)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	destinationStop, err := domain.NewServiceStop(2, domain.TransportNodeID(destination), "nodes-snapshot-unknown", false, true)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	patternID := domain.ServicePatternID(s.idGenerator("sp"))
+	pattern, err := domain.NewServicePattern(patternID, domain.ServiceModeTrain, domain.CarrierID(command.CarrierID), []domain.ServiceStop{originStop, destinationStop})
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	calendar, err := domain.NewCalendar(domain.CalendarID(s.idGenerator("cal")), serviceDate(departure), serviceDate(departure), []time.Weekday{departure.Weekday()})
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	departureTime, err := plannedTimeFor(departure, departure)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	arrivalTime, err := plannedTimeFor(departure, arrival)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	departureStopTime, err := domain.NewStopTime(1, nil, &departureTime)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	arrivalStopTime, err := domain.NewStopTime(2, &arrivalTime, nil)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	timetable, err := domain.NewTimetable(domain.TimetableID(s.idGenerator("tt")), "UTC", []domain.StopTime{departureStopTime, arrivalStopTime})
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	draft, err := domain.NewDraftPlanVersion(domain.PlanVersionID(s.idGenerator("pv")), serviceDate(departure), serviceDate(departure), pattern, calendar, timetable)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	validated, _, err := draft.MarkValidated()
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	plan, _, err := domain.NewServicePlan(domain.ServicePlanID(s.idGenerator("plan")), domain.ServicePlanKey(ref), validated)
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	plan, _, err = plan.PublishVersion(validated.ID(), s.now().UTC())
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+	published := plan.Versions()[0]
+	aggregate, _, err := domain.NewScheduledService(domain.ScheduledServiceID(ref), domain.ScheduledServiceKey(command.ServiceNumber), published, serviceDate(departure))
+	if err != nil {
+		return scheduledServiceState{}, CreateScheduledServiceResult{}, domainRule(err)
+	}
+
+	view := ScheduledService{
+		ScheduledServiceRef: string(aggregate.ID()),
+		ServiceNumber:       strings.TrimSpace(command.ServiceNumber),
+		Status:              status,
+		CarrierID:           strings.TrimSpace(command.CarrierID),
+		DepartureTime:       departure,
+		ArrivalTime:         arrival,
+		OriginNodeID:        origin,
+		DestinationNodeID:   destination,
+	}
+	result := CreateScheduledServiceResult{ScheduledServiceRef: view.ScheduledServiceRef, ServiceNumber: view.ServiceNumber, Status: view.Status}
+	return scheduledServiceState{aggregate: aggregate, view: view}, result, nil
 }
 
 func (s *Service) GetScheduledService(serviceRef string) (ScheduledService, error) {
 	serviceRef = strings.TrimSpace(serviceRef)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	service, exists := s.scheduledServices[serviceRef]
+	state, exists := s.scheduledServices[serviceRef]
 	if !exists {
 		return ScheduledService{}, fmt.Errorf("%w: scheduled service", ErrNotFound)
 	}
-	return service, nil
+	return state.view, nil
 }
 
 func (s *Service) ListScheduledServices(query ListScheduledServicesQuery) PaginatedScheduledServices {
@@ -216,9 +292,9 @@ func (s *Service) ListScheduledServices(query ListScheduledServicesQuery) Pagina
 	}
 	s.mu.Lock()
 	items := make([]ScheduledService, 0, len(s.scheduledServices))
-	for _, service := range s.scheduledServices {
-		if query.CarrierID == "" || service.CarrierID == query.CarrierID {
-			items = append(items, service)
+	for _, state := range s.scheduledServices {
+		if query.CarrierID == "" || state.view.CarrierID == query.CarrierID {
+			items = append(items, state.view)
 		}
 	}
 	s.mu.Unlock()
@@ -244,6 +320,17 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 	if err != nil || replay != nil {
 		return CreateServiceSegmentResult{}, replay, err
 	}
+
+	s.mu.Lock()
+	state, exists := s.scheduledServices[strings.TrimSpace(command.ScheduledServiceRef)]
+	if !exists {
+		s.mu.Unlock()
+		return CreateServiceSegmentResult{}, nil, fmt.Errorf("%w: scheduled service", ErrNotFound)
+	}
+	if !hasDomainSegment(state.aggregate, command.OriginStopRef, command.DestinationStopRef) {
+		s.mu.Unlock()
+		return CreateServiceSegmentResult{}, nil, fmt.Errorf("%w: requested segment is not part of scheduled service", ErrDomainRule)
+	}
 	segment := ServiceSegment{
 		SegmentRef:          s.idGenerator("seg"),
 		ScheduledServiceRef: strings.TrimSpace(command.ScheduledServiceRef),
@@ -253,6 +340,10 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		ArrivalTime:         command.ArrivalTime.UTC(),
 	}
 	result := CreateServiceSegmentResult{SegmentRef: segment.SegmentRef, ScheduledServiceRef: segment.ScheduledServiceRef}
+	s.segments[segment.SegmentRef] = segment
+	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
+	s.mu.Unlock()
+
 	payload, err := json.Marshal(map[string]any{
 		"segmentRef":          segment.SegmentRef,
 		"scheduledServiceRef": segment.ScheduledServiceRef,
@@ -265,25 +356,9 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		return CreateServiceSegmentResult{}, nil, err
 	}
 	envelope := s.newEnvelope("ServicePlanChanged", command.CorrelationID, command.CausationID, payload)
-
-	s.mu.Lock()
-	if _, exists := s.scheduledServices[segment.ScheduledServiceRef]; !exists {
-		s.mu.Unlock()
-		return CreateServiceSegmentResult{}, nil, fmt.Errorf("%w: scheduled service", ErrNotFound)
-	}
-	s.mu.Unlock()
-
 	if err := s.publisher.Publish(ctx, envelope); err != nil {
 		return CreateServiceSegmentResult{}, nil, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.scheduledServices[segment.ScheduledServiceRef]; !exists {
-		return CreateServiceSegmentResult{}, nil, fmt.Errorf("%w: scheduled service", ErrNotFound)
-	}
-	s.segments[segment.SegmentRef] = segment
-	s.idempotencyRecords[command.IdempotencyKey] = idempotencyRecord{requestHash: command.RequestHash, statusCode: 201, body: result}
 	return result, nil, nil
 }
 
@@ -307,11 +382,11 @@ func (s *Service) idempotencyReplay(key, requestHash string) (*IdempotencyResult
 func (s *Service) newEnvelope(eventType, correlationID, causationID string, payload []byte) EventEnvelope {
 	now := s.now().UTC()
 	return EventEnvelope{
-		EventID:       s.idGenerator("evt"),
+		EventID:       newCanonicalID("evt"),
 		EventType:     eventType,
 		OccurredAt:    now,
-		CorrelationID: strings.TrimSpace(correlationID),
-		CausationID:   strings.TrimSpace(causationID),
+		CorrelationID: canonicalCorrelationID(correlationID),
+		CausationID:   canonicalCausationID(causationID),
 		Producer:      ProducerServicePlan,
 		SchemaVersion: SchemaVersion,
 		Payload:       append(json.RawMessage(nil), payload...),
@@ -327,9 +402,6 @@ func validateCreateScheduledService(command CreateScheduledServiceCommand) error
 	}
 	if command.DepartureTime.IsZero() || command.ArrivalTime.IsZero() {
 		return fmt.Errorf("%w: departureTime and arrivalTime are required", ErrValidation)
-	}
-	if !command.ArrivalTime.After(command.DepartureTime) {
-		return fmt.Errorf("%w: arrivalTime must be after departureTime", ErrValidation)
 	}
 	if !validStatus(normalizedStatus(command.Status)) {
 		return fmt.Errorf("%w: unsupported status", ErrValidation)
@@ -375,9 +447,91 @@ type NoopPublisher struct{}
 func (NoopPublisher) Publish(context.Context, EventEnvelope) error { return nil }
 
 func NewPrefixedID(prefix string) string {
+	return prefix + "-" + newUUID()
+}
+
+func newCanonicalID(prefix string) string {
+	return prefix + "-" + newUUID()
+}
+
+func canonicalCorrelationID(value string) string {
+	value = strings.TrimSpace(value)
+	if validPrefixedUUID(value, "corr") {
+		return value
+	}
+	if validUUID(value) {
+		return "corr-" + value
+	}
+	return newCanonicalID("corr")
+}
+
+func canonicalCausationID(value string) string {
+	value = strings.TrimSpace(value)
+	if validPrefixedUUID(value, "cmd") || validPrefixedUUID(value, "evt") {
+		return value
+	}
+	return newCanonicalID("cmd")
+}
+
+func validPrefixedUUID(value, prefix string) bool {
+	return strings.HasPrefix(value, prefix+"-") && validUUID(strings.TrimPrefix(value, prefix+"-"))
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+		fallback := make([]byte, 16)
+		copy(fallback, fmt.Sprintf("%016x", time.Now().UTC().UnixNano()))
+		copy(b[:], fallback)
 	}
-	return prefix + "-" + hex.EncodeToString(b[:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:])
+	b[6] = (b[6] & 0x0f) | 0x70
+	b[8] = (b[8] & 0x3f) | 0x80
+	return hex.EncodeToString(b[0:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:16])
+}
+
+func plannedTimeFor(serviceStart, value time.Time) (domain.PlannedTime, error) {
+	serviceStart = serviceDate(serviceStart)
+	value = value.UTC()
+	dayOffset := int(serviceDate(value).Sub(serviceStart).Hours() / 24)
+	minuteOfDay := time.Duration(value.Hour()*60+value.Minute()) * time.Minute
+	return domain.NewPlannedTime(dayOffset, minuteOfDay)
+}
+
+func serviceDate(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func domainRule(err error) error {
+	return fmt.Errorf("%w: %v", ErrDomainRule, err)
+}
+
+func hasDomainSegment(service domain.ScheduledService, originStopRef, destinationStopRef string) bool {
+	originStopRef = strings.TrimSpace(originStopRef)
+	destinationStopRef = strings.TrimSpace(destinationStopRef)
+	for _, segment := range service.Segments() {
+		if string(segment.FromNodeID) == originStopRef && string(segment.ToNodeID) == destinationStopRef {
+			return true
+		}
+	}
+	return false
 }

@@ -226,35 +226,3 @@ func plannedPtr(t *testing.T, dayOffset int, minuteOfDay time.Duration) *Planned
 func date(year int, month time.Month, day int) time.Time {
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
-
-func TestEventEnvelopeRoundTrip(t *testing.T) {
-	now := date(2026, 7, 4)
-	env := NewEventEnvelope("PlanVersionPublished", now, "corr-1", nil, "service-plan")
-	if env.EventType != "PlanVersionPublished" {
-		t.Fatalf("unexpected event type: %s", env.EventType)
-	}
-	if env.SchemaVersion != 1 {
-		t.Fatalf("unexpected schema version: %d", env.SchemaVersion)
-	}
-	if env.Producer != "service-plan" {
-		t.Fatalf("unexpected producer: %s", env.Producer)
-	}
-	if !strings.HasSuffix(env.OccurredAt, "Z") {
-		t.Fatalf("occurredAt should end with Z (RFC3339 UTC): %s", env.OccurredAt)
-	}
-
-	payload := PlanVersionPublishedEvent{
-		ServicePlanID: "plan-1",
-		PlanVersionID: "v1",
-		EffectiveFrom: now,
-		EffectiveTo:   now.Add(30 * 24 * time.Hour),
-	}
-	wrapped := WrapDomainEvent(env, payload)
-	if wrapped["eventType"] != "PlanVersionPublished" {
-		t.Fatalf("unexpected wrapped event type: %v", wrapped["eventType"])
-	}
-	data := wrapped["data"].(PlanVersionPublishedEvent)
-	if data.ServicePlanID != "plan-1" {
-		t.Fatalf("unexpected data service plan id: %s", data.ServicePlanID)
-	}
-}

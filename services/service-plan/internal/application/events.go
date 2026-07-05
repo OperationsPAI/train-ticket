@@ -20,15 +20,15 @@ type EventEnvelope struct {
 	EventType     string          `json:"eventType"`
 	OccurredAt    time.Time       `json:"occurredAt"`
 	CorrelationID string          `json:"correlationId"`
-	CausationID   string          `json:"causationId"`
+	CausationID   string          `json:"causationId,omitempty"`
 	Producer      string          `json:"producer"`
 	SchemaVersion int             `json:"schemaVersion"`
 	Payload       json.RawMessage `json:"payload"`
 }
 
 func (e EventEnvelope) Validate() error {
-	if strings.TrimSpace(e.EventID) == "" {
-		return fmt.Errorf("eventId is required")
+	if !validPrefixedUUID(e.EventID, "evt") {
+		return fmt.Errorf("eventId must be evt-prefixed UUID")
 	}
 	if strings.TrimSpace(e.EventType) == "" {
 		return fmt.Errorf("eventType is required")
@@ -36,11 +36,11 @@ func (e EventEnvelope) Validate() error {
 	if e.OccurredAt.IsZero() {
 		return fmt.Errorf("occurredAt is required")
 	}
-	if strings.TrimSpace(e.CorrelationID) == "" {
-		return fmt.Errorf("correlationId is required")
+	if !validPrefixedUUID(e.CorrelationID, "corr") {
+		return fmt.Errorf("correlationId must be corr-prefixed UUID")
 	}
-	if strings.TrimSpace(e.CausationID) == "" {
-		return fmt.Errorf("causationId is required")
+	if e.CausationID != "" && !validPrefixedUUID(e.CausationID, "cmd") && !validPrefixedUUID(e.CausationID, "evt") {
+		return fmt.Errorf("causationId must be cmd- or evt-prefixed UUID")
 	}
 	if strings.TrimSpace(e.Producer) == "" {
 		return fmt.Errorf("producer is required")
