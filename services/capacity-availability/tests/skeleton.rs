@@ -34,7 +34,7 @@ async fn api_query_availability_returns_200() {
         app.oneshot(
             Request::builder()
                 .uri("/api/v1/availability-snapshots?scheduledServiceRef=test&segmentRef=test")
-                .header("x-request-id", "test-req")
+                .header("x-correlation-id", "test-req")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -54,9 +54,9 @@ async fn api_hold_capacity_rejects_missing_idempotency_key() {
                 .method("POST")
                 .uri("/api/v1/capacity-holds")
                 .header("content-type", "application/json")
-                .header("x-request-id", "test-req")
+                .header("x-correlation-id", "test-req")
                 .body(Body::from(
-                    r#"{"segmentRef":"seg-1","travelerRef":"tvl-1","classRef":"first","quantity":1}"#,
+                    r#"{"segmentRef":"seg-1","travelerRef":"tvl-1","classRef":"first","quantity":1,"segmentBookingId":"sb-1"}"#,
                 ))
                 .unwrap(),
         )
@@ -65,6 +65,7 @@ async fn api_hold_capacity_rejects_missing_idempotency_key() {
     ).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "Got status {} body: {:?}", status, json);
     assert_eq!(json["code"], "VALIDATION_FAILED");
+    assert_eq!(json["correlationId"], "test-req");
 }
 
 #[tokio::test]
@@ -76,8 +77,8 @@ async fn api_hold_capacity_succeeds_with_idempotency_key() {
                 .method("POST")
                 .uri("/api/v1/capacity-holds")
                 .header("content-type", "application/json")
-                .header("idempotency-key", "idem-test-1")
-                .header("x-request-id", "test-req")
+                .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0caa1")
+                .header("x-correlation-id", "test-req")
                 .body(Body::from(
                     r#"{"segmentRef":"seg-A","travelerRef":"tvl-1","classRef":"first","quantity":1,"segmentBookingId":"sb-1"}"#,
                 ))
@@ -100,7 +101,7 @@ async fn api_get_hold_returns_404_for_unknown() {
         app.oneshot(
             Request::builder()
                 .uri("/api/v1/capacity-holds/hold-unknown")
-                .header("x-request-id", "test-req")
+                .header("x-correlation-id", "test-req")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -122,8 +123,8 @@ async fn api_full_hold_lifecycle() {
                     .method("POST")
                     .uri("/api/v1/capacity-holds")
                     .header("content-type", "application/json")
-                    .header("idempotency-key", "idem-lifecycle-1")
-                    .header("x-request-id", "lifecycle-req")
+                    .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0caa2")
+                    .header("x-correlation-id", "lifecycle-req")
                     .body(Body::from(
                         r#"{"segmentRef":"seg-life","travelerRef":"tvl-1","classRef":"first","quantity":1,"segmentBookingId":"sb-life"}"#,
                     ))
@@ -143,8 +144,8 @@ async fn api_full_hold_lifecycle() {
                     .method("POST")
                     .uri(format!("/api/v1/capacity-holds/{}/confirm", hold_id))
                     .header("content-type", "application/json")
-                    .header("idempotency-key", "idem-confirm-1")
-                    .header("x-request-id", "confirm-req")
+                    .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0caa3")
+                    .header("x-correlation-id", "confirm-req")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -162,8 +163,8 @@ async fn api_full_hold_lifecycle() {
                     .method("POST")
                     .uri(format!("/api/v1/capacity-holds/{}/release", hold_id))
                     .header("content-type", "application/json")
-                    .header("idempotency-key", "idem-release-1")
-                    .header("x-request-id", "release-req")
+                    .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0caa4")
+                    .header("x-correlation-id", "release-req")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -185,8 +186,8 @@ async fn api_idempotent_replay_returns_original() {
                     .method("POST")
                     .uri("/api/v1/capacity-holds")
                     .header("content-type", "application/json")
-                    .header("idempotency-key", "idem-replay-1")
-                    .header("x-request-id", "first-req")
+                    .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0caa5")
+                    .header("x-correlation-id", "first-req")
                     .body(Body::from(
                         r#"{"segmentRef":"seg-replay","travelerRef":"tvl-1","classRef":"first","quantity":1,"segmentBookingId":"sb-replay"}"#,
                     ))
@@ -204,8 +205,8 @@ async fn api_idempotent_replay_returns_original() {
                     .method("POST")
                     .uri("/api/v1/capacity-holds")
                     .header("content-type", "application/json")
-                    .header("idempotency-key", "idem-replay-1")
-                    .header("x-request-id", "second-req")
+                    .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0caa5")
+                    .header("x-correlation-id", "second-req")
                     .body(Body::from(
                         r#"{"segmentRef":"seg-replay","travelerRef":"tvl-1","classRef":"first","quantity":1,"segmentBookingId":"sb-replay"}"#,
                     ))
@@ -276,7 +277,7 @@ fn subscriber_deduplicates_duplicate_event_id() {
 
 #[test]
 fn endpoint_validation_failure_returns_400_with_correct_body_shape() {
-        use capacity_availability::application::AppError;
+    use capacity_availability::application::AppError;
     use capacity_availability::application::CapacityService;
     use capacity_availability::adapters::messaging::InMemoryEventPublisher;
     use std::sync::Arc;
@@ -292,7 +293,7 @@ fn endpoint_validation_failure_returns_400_with_correct_body_shape() {
             quantity: 0,
             segment_booking_id: "".to_string(),
         },
-        "test-key",
+        "0194f2e0-7b3e-7610-0284-5c26e8b0caa6",
         "corr-test",
     );
     match result {
@@ -301,4 +302,120 @@ fn endpoint_validation_failure_returns_400_with_correct_body_shape() {
         }
         other => panic!("Expected ValidationFailed, got {:?}", other),
     }
+}
+
+#[tokio::test]
+async fn api_hold_capacity_rejects_missing_segment_booking_id() {
+    let app = router();
+    let (status, json) = get_body(
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/capacity-holds")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "0194f2e0-7b3e-7610-0284-5c26e8b0cab1")
+                .header("x-correlation-id", "0194f2e0-7b3e-7610-0284-5c26e8b0cab2")
+                .body(Body::from(
+                    r#"{"segmentRef":"seg-1","travelerRef":"tvl-1","classRef":"first","quantity":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "Got status {} body: {:?}", status, json);
+    assert_eq!(json["code"], "VALIDATION_FAILED");
+    assert_eq!(json["correlationId"], "0194f2e0-7b3e-7610-0284-5c26e8b0cab2");
+}
+
+#[tokio::test]
+async fn api_rejects_malformed_idempotency_key() {
+    let app = router();
+    let (status, json) = get_body(
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/capacity-holds")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "not-a-uuid")
+                .header("x-correlation-id", "0194f2e0-7b3e-7610-0284-5c26e8b0cab3")
+                .body(Body::from(
+                    r#"{"segmentRef":"seg-1","travelerRef":"tvl-1","classRef":"first","quantity":1,"segmentBookingId":"sb-1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "Got status {} body: {:?}", status, json);
+    assert_eq!(json["code"], "VALIDATION_FAILED");
+    assert_eq!(json["correlationId"], "0194f2e0-7b3e-7610-0284-5c26e8b0cab3");
+}
+
+#[test]
+fn subscriber_decision_logic_retries_dlqs_and_dedups() {
+    use capacity_availability::adapters::messaging::{
+        InMemoryEventSubscriber, ReceivedEvent, SubscriberAction,
+    };
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    let subscriber = InMemoryEventSubscriber::new();
+    let envelope = WireEnvelope {
+        event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0cd01".to_string(),
+        event_type: "PostSalesApplied".to_string(),
+        schema_version: 1,
+        producer: "post-sales".to_string(),
+        causation_id: None,
+        correlation_id: "0194f2e0-7b3e-7610-0284-5c26e8b0cd02".to_string(),
+        occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        payload: json!({"segmentBookingId": "sb-1"}),
+    };
+    let transient = ReceivedEvent {
+        entry_id: "1-0".to_string(),
+        stream: "events:post-sales".to_string(),
+        envelope: envelope.clone(),
+        delivery_attempts: 1,
+    };
+    assert_eq!(
+        subscriber.process_received(&transient, &|_| HandlerResult::TransientError("try again".into())),
+        SubscriberAction::LeavePending
+    );
+    assert!(!subscriber.has_seen(&envelope.event_id));
+
+    let poison = ReceivedEvent {
+        delivery_attempts: 5,
+        ..transient.clone()
+    };
+    assert_eq!(
+        subscriber.process_received(&poison, &|_| panic!("poison should not dispatch")),
+        SubscriberAction::DeadLetterAndAck
+    );
+
+    let second_envelope = WireEnvelope {
+        event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0cd03".to_string(),
+        ..envelope
+    };
+    let success = ReceivedEvent {
+        envelope: second_envelope,
+        delivery_attempts: 1,
+        ..transient
+    };
+    let calls = Arc::new(Mutex::new(0));
+    let calls_for_handler = calls.clone();
+    assert_eq!(
+        subscriber.process_received(&success, &move |_| {
+            *calls_for_handler.lock().unwrap() += 1;
+            HandlerResult::Success
+        }),
+        SubscriberAction::Ack
+    );
+    assert_eq!(
+        subscriber.process_received(&success, &|_| panic!("duplicate should not dispatch")),
+        SubscriberAction::Ack
+    );
+    assert_eq!(*calls.lock().unwrap(), 1);
 }

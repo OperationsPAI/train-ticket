@@ -6,8 +6,8 @@ use crate::application::{AppError, AvailabilitySnapshotResponse, CapacityService
 
 use axum::{
     Json, Router,
-    extract::{Extension, Query},
-    http::StatusCode,
+    extract::{rejection::JsonRejection, Extension, Query},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
 };
@@ -62,11 +62,14 @@ pub struct RemainingByClassJson {
 
 async fn query_availability(
     Extension(service): Extension<Arc<CapacityService>>,
+    headers: HeaderMap,
     Query(query): Query<AvailabilityQuery>,
 ) -> Result<Json<AvailabilitySnapshotJson>, AppErrorResponse> {
+    let correlation_id = get_correlation_id(&headers);
     let ss_ref = query.scheduled_service_ref.unwrap_or_default();
     let seg_ref = query.segment_ref.unwrap_or_default();
-    let result = service.query_availability(&ss_ref, &seg_ref)?;
+    let result = service.query_availability(&ss_ref, &seg_ref)
+        .map_err(|e| AppErrorResponse(e, correlation_id))?;
     Ok(Json(to_availability_json(result)))
 }
 
@@ -101,7 +104,7 @@ pub struct HoldCapacityJson {
     pub traveler_ref: String,
     pub class_ref: String,
     pub quantity: usize,
-    pub segment_booking_id: Option<String>,
+    pub segment_booking_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,20 +119,27 @@ pub struct HoldCapacityResponseJson {
 async fn hold_capacity(
     Extension(service): Extension<Arc<CapacityService>>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<HoldCapacityJson>,
+    body: Result<Json<HoldCapacityJson>, JsonRejection>,
 ) -> Result<(StatusCode, Json<HoldCapacityResponseJson>), AppErrorResponse> {
-    let idempotency_key = get_idempotency_key(&headers)?;
     let correlation_id = get_correlation_id(&headers);
+    let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
+    let Json(body) = body.map_err(|e| {
+        AppErrorResponse(
+            AppError::ValidationFailed(e.body_text()),
+            correlation_id.clone(),
+        )
+    })?;
 
     let req = HoldCapacityRequest {
         segment_ref: body.segment_ref,
         traveler_ref: body.traveler_ref,
         class_ref: body.class_ref,
         quantity: body.quantity,
-        segment_booking_id: body.segment_booking_id.unwrap_or_default(),
+        segment_booking_id: body.segment_booking_id,
     };
 
-    let result = service.hold_capacity(req, &idempotency_key, &correlation_id)?;
+    let result = service.hold_capacity(req, &idempotency_key, &correlation_id)
+        .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
     Ok((
         StatusCode::CREATED,
         Json(HoldCapacityResponseJson {
@@ -157,9 +167,10 @@ async fn confirm_hold(
     headers: axum::http::HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<ConfirmHoldResponseJson>, AppErrorResponse> {
-    let idempotency_key = get_idempotency_key(&headers)?;
     let correlation_id = get_correlation_id(&headers);
-    let result = service.confirm_hold(&hold_id, &idempotency_key, &correlation_id)?;
+    let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
+    let result = service.confirm_hold(&hold_id, &idempotency_key, &correlation_id)
+        .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
     Ok(Json(ConfirmHoldResponseJson {
         hold_id: result.hold_id,
         status: result.status,
@@ -182,9 +193,10 @@ async fn release_hold(
     headers: axum::http::HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<ReleaseHoldResponseJson>, AppErrorResponse> {
-    let idempotency_key = get_idempotency_key(&headers)?;
     let correlation_id = get_correlation_id(&headers);
-    let result = service.release_hold(&hold_id, &idempotency_key, &correlation_id)?;
+    let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
+    let result = service.release_hold(&hold_id, &idempotency_key, &correlation_id)
+        .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
     Ok(Json(ReleaseHoldResponseJson {
         hold_id: result.hold_id,
         status: result.status,
@@ -209,9 +221,12 @@ pub struct GetHoldResponseJson {
 
 async fn get_hold(
     Extension(service): Extension<Arc<CapacityService>>,
+    headers: HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<GetHoldResponseJson>, AppErrorResponse> {
-    let result = service.get_hold(&hold_id)?;
+    let correlation_id = get_correlation_id(&headers);
+    let result = service.get_hold(&hold_id)
+        .map_err(|e| AppErrorResponse(e, correlation_id))?;
     Ok(Json(GetHoldResponseJson {
         hold_id: result.hold_id,
         segment_ref: result.segment_ref,
@@ -227,7 +242,7 @@ async fn get_hold(
 // Error handling
 // ---------------------------------------------------------------------------
 
-pub struct AppErrorResponse(pub AppError);
+pub struct AppErrorResponse(pub AppError, pub String); // (error, correlation_id)
 
 impl IntoResponse for AppErrorResponse {
     fn into_response(self) -> axum::response::Response {
@@ -235,16 +250,10 @@ impl IntoResponse for AppErrorResponse {
         let body = json!({
             "code": self.0.code(),
             "message": self.0.message(),
-            "correlationId": "",
+            "correlationId": self.1,
             "details": {}
         });
         (status_code, Json(body)).into_response()
-    }
-}
-
-impl From<AppError> for AppErrorResponse {
-    fn from(err: AppError) -> Self {
-        AppErrorResponse(err)
     }
 }
 
@@ -255,13 +264,53 @@ impl From<AppError> for AppErrorResponse {
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const CORRELATION_ID_HEADER: &str = "x-correlation-id";
 
-fn get_idempotency_key(headers: &axum::http::HeaderMap) -> Result<String, AppErrorResponse> {
-    headers
+/// Validate that a string looks like a UUID v7 (hex with hyphens, version digit 7).
+fn is_uuid_v7(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
+        return false;
+    }
+    // Version nibble at position 14 must be '7'
+    if bytes[14] != b'7' {
+        return false;
+    }
+    // Check all hex chars
+    for (i, &b) in bytes.iter().enumerate() {
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            continue;
+        }
+        if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn get_idempotency_key(headers: &axum::http::HeaderMap, correlation_id: &str) -> Result<String, AppErrorResponse> {
+    let key = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppErrorResponse(AppError::ValidationFailed("Idempotency-Key header is required on state-changing POST".into())))
+        .ok_or_else(|| {
+            AppErrorResponse(
+                AppError::ValidationFailed("Idempotency-Key header is required on state-changing POST".into()),
+                correlation_id.to_string(),
+            )
+        })?;
+
+    // Validate UUID v7 format per api/README.md
+    if !is_uuid_v7(&key) {
+        return Err(AppErrorResponse(
+            AppError::ValidationFailed("Idempotency-Key must be a valid UUID v7".into()),
+            correlation_id.to_string(),
+        ));
+    }
+
+    Ok(key)
 }
 
 fn get_correlation_id(headers: &axum::http::HeaderMap) -> String {
