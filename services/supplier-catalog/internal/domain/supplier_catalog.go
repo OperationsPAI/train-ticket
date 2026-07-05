@@ -49,13 +49,13 @@ const (
 type ContractStatus string
 
 const (
-	ContractStatusDraft       ContractStatus = "DRAFT"
-	ContractStatusValidating  ContractStatus = "VALIDATING"
-	ContractStatusPublished   ContractStatus = "PUBLISHED"
-	ContractStatusSuspended   ContractStatus = "SUSPENDED"
-	ContractStatusSuperseded  ContractStatus = "SUPERSEDED"
-	ContractStatusTerminated  ContractStatus = "TERMINATED"
-	ContractStatusExpired     ContractStatus = "EXPIRED"
+	ContractStatusDraft      ContractStatus = "DRAFT"
+	ContractStatusValidating ContractStatus = "VALIDATING"
+	ContractStatusPublished  ContractStatus = "PUBLISHED"
+	ContractStatusSuspended  ContractStatus = "SUSPENDED"
+	ContractStatusSuperseded ContractStatus = "SUPERSEDED"
+	ContractStatusTerminated ContractStatus = "TERMINATED"
+	ContractStatusExpired    ContractStatus = "EXPIRED"
 )
 
 // ProductCapabilityStatus represents the lifecycle state of a product capability.
@@ -72,12 +72,12 @@ const (
 type ExternalCodeType string
 
 const (
-	ExternalCodeTypeStation     ExternalCodeType = "STATION"
+	ExternalCodeTypeStation      ExternalCodeType = "STATION"
 	ExternalCodeTypeServiceClass ExternalCodeType = "SERVICE_CLASS"
-	ExternalCodeTypeFareFamily  ExternalCodeType = "FARE_FAMILY"
-	ExternalCodeTypeProduct     ExternalCodeType = "PRODUCT"
-	ExternalCodeTypeAncillary   ExternalCodeType = "ANCILLARY"
-	ExternalCodeTypeRule        ExternalCodeType = "RULE"
+	ExternalCodeTypeFareFamily   ExternalCodeType = "FARE_FAMILY"
+	ExternalCodeTypeProduct      ExternalCodeType = "PRODUCT"
+	ExternalCodeTypeAncillary    ExternalCodeType = "ANCILLARY"
+	ExternalCodeTypeRule         ExternalCodeType = "RULE"
 )
 
 // ExternalCodeMappingStatus represents the state of an external-code mapping.
@@ -95,8 +95,8 @@ const (
 
 // TimeWindow is a closed-open interval [start, end).
 type TimeWindow struct {
-	Start time.Time
-	End   time.Time
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
 }
 
 // Validate checks TimeWindow invariants.
@@ -264,13 +264,13 @@ func validSupplierStatus(s SupplierStatus) bool {
 
 // Carrier represents a carrier (e.g. a railway bureau, airline, coach company).
 type Carrier struct {
-	CarrierID     CarrierID  `json:"carrierId"`
-	SupplierID    SupplierID `json:"supplierId"`
-	Name          string     `json:"name"`
-	Code          string     `json:"code"`
-	TransportMode string    `json:"transportMode"`
-	RegisteredAt  time.Time  `json:"registeredAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	CarrierID     CarrierID     `json:"carrierId"`
+	SupplierID    SupplierID    `json:"supplierId"`
+	Name          string        `json:"name"`
+	Code          string        `json:"code"`
+	TransportMode string        `json:"transportMode"`
+	RegisteredAt  time.Time     `json:"registeredAt"`
+	UpdatedAt     time.Time     `json:"updatedAt"`
 	events        []interface{} `json:"-"`
 }
 
@@ -316,7 +316,19 @@ func (c Carrier) Validate() error {
 	if c.TransportMode == "" {
 		return fmt.Errorf("transport mode is required")
 	}
+	if !validTransportMode(c.TransportMode) {
+		return fmt.Errorf("unsupported transport mode: %q", c.TransportMode)
+	}
 	return nil
+}
+
+func validTransportMode(mode string) bool {
+	switch mode {
+	case "RAIL", "AIR", "COACH", "FERRY", "RIDE_HAILING":
+		return true
+	default:
+		return false
+	}
 }
 
 // Events returns the recorded domain events and clears the internal buffer.
