@@ -17,7 +17,17 @@ fn profile_exports_contract_metadata() {
     assert!(profile.owns.contains(&"InventoryPool"));
     assert!(profile.owns.contains(&"CapacityHold"));
     assert_eq!(health(), "ok");
-    let _router = router();
+    let _router = test_router();
+}
+
+fn test_router() -> axum::Router {
+    use capacity_availability::adapters::messaging::InMemoryEventPublisher;
+    use capacity_availability::application::CapacityService;
+    use std::sync::Arc;
+
+    capacity_availability::router_with_service(Arc::new(CapacityService::new(Arc::new(
+        InMemoryEventPublisher::new(),
+    ))))
 }
 
 async fn get_body(response: axum::response::Response) -> (StatusCode, Value) {
@@ -31,7 +41,7 @@ async fn get_body(response: axum::response::Response) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn api_query_availability_returns_200() {
-    let app = router();
+    let app = test_router();
     let (status, json) = get_body(
         app.oneshot(
             Request::builder()
@@ -56,7 +66,7 @@ async fn api_query_availability_returns_200() {
 
 #[tokio::test]
 async fn api_hold_capacity_rejects_missing_idempotency_key() {
-    let app = router();
+    let app = test_router();
     let (status, json) = get_body(
         app.oneshot(
             Request::builder()
@@ -85,7 +95,7 @@ async fn api_hold_capacity_rejects_missing_idempotency_key() {
 
 #[tokio::test]
 async fn api_hold_capacity_succeeds_with_idempotency_key() {
-    let app = router();
+    let app = test_router();
     let (status, json) = get_body(
         app.oneshot(
             Request::builder()
@@ -117,7 +127,7 @@ async fn api_hold_capacity_succeeds_with_idempotency_key() {
 
 #[tokio::test]
 async fn api_get_hold_returns_404_for_unknown() {
-    let app = router();
+    let app = test_router();
     let (status, json) = get_body(
         app.oneshot(
             Request::builder()
@@ -141,7 +151,7 @@ async fn api_get_hold_returns_404_for_unknown() {
 
 #[tokio::test]
 async fn api_full_hold_lifecycle() {
-    let app = router();
+    let app = test_router();
 
     // Hold
     let (status, json) = get_body(
@@ -225,7 +235,7 @@ async fn api_full_hold_lifecycle() {
 
 #[tokio::test]
 async fn api_idempotent_replay_returns_original() {
-    let app = router();
+    let app = test_router();
 
     let (status1, json1) = get_body(
         app.clone()
@@ -380,7 +390,7 @@ fn endpoint_validation_failure_returns_400_with_correct_body_shape() {
 
 #[tokio::test]
 async fn api_hold_capacity_rejects_missing_segment_booking_id() {
-    let app = router();
+    let app = test_router();
     let (status, json) = get_body(
         app.oneshot(
             Request::builder()
@@ -414,7 +424,7 @@ async fn api_hold_capacity_rejects_missing_segment_booking_id() {
 
 #[tokio::test]
 async fn api_rejects_malformed_idempotency_key() {
-    let app = router();
+    let app = test_router();
     let (status, json) = get_body(
         app.oneshot(
             Request::builder()
@@ -516,7 +526,7 @@ fn subscriber_decision_logic_retries_dlqs_and_dedups() {
 
 #[tokio::test]
 async fn api_responses_include_runtime_correlation_and_request_headers() {
-    let app = router();
+    let app = test_router();
     let response = app
         .oneshot(
             Request::builder()
@@ -536,7 +546,7 @@ async fn api_responses_include_runtime_correlation_and_request_headers() {
 
 #[tokio::test]
 async fn api_idempotency_key_reused_with_different_hold_body_returns_422() {
-    let app = router();
+    let app = test_router();
     let key = "0194f2e0-7b3e-7610-0284-5c26e8b0cf01";
 
     let first = get_body(
@@ -582,7 +592,7 @@ async fn api_idempotency_key_reused_with_different_hold_body_returns_422() {
 
 #[tokio::test]
 async fn api_confirm_replay_returns_original_200_response() {
-    let app = router();
+    let app = test_router();
 
     let (_, hold_json) = get_body(
         app.clone()
@@ -642,7 +652,7 @@ async fn api_confirm_replay_returns_original_200_response() {
 
 #[tokio::test]
 async fn api_release_replay_returns_original_200_response() {
-    let app = router();
+    let app = test_router();
 
     let (_, hold_json) = get_body(
         app.clone()
@@ -763,4 +773,33 @@ fn publish_failure_surfaces_as_unavailable() {
             other
         ),
     }
+}
+
+#[cfg(feature = "redis-impl")]
+#[test]
+fn xautoclaim_raw_reply_parses_tuple_shape() {
+    use capacity_availability::adapters::messaging::redis_subscriber::parse_xautoclaim_reply;
+    use redis::Value;
+
+    let raw = Value::Bulk(vec![
+        Value::Data(b"0-0".to_vec()),
+        Value::Bulk(vec![Value::Bulk(vec![
+            Value::Data(b"1680000000000-0".to_vec()),
+            Value::Bulk(vec![
+                Value::Data(b"envelope".to_vec()),
+                Value::Data(br#"{"eventId":"evt-1"}"#.to_vec()),
+            ]),
+        ])]),
+        Value::Bulk(vec![Value::Data(b"1679999999999-0".to_vec())]),
+    ]);
+
+    let parsed = parse_xautoclaim_reply("events:booking-orchestration", &raw).unwrap();
+    assert_eq!(parsed.next_cursor, "0-0");
+    assert_eq!(parsed.key, "events:booking-orchestration");
+    assert_eq!(parsed.ids.len(), 1);
+    assert_eq!(parsed.ids[0].id, "1680000000000-0");
+    assert_eq!(parsed.deleted_ids, vec!["1679999999999-0"]);
+    let envelope: String =
+        redis::from_redis_value(parsed.ids[0].map.get("envelope").unwrap()).unwrap();
+    assert_eq!(envelope, r#"{"eventId":"evt-1"}"#);
 }

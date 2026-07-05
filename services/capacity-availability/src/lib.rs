@@ -12,6 +12,12 @@ pub use application::CapacityService;
 pub use domain::*;
 pub use ports::*;
 
+#[cfg(feature = "redis-impl")]
+const DEFAULT_REDIS_URL: &str = "redis://localhost:6379";
+
+#[cfg(feature = "redis-impl")]
+const CONSUMER_GROUP: &str = "capacity-availability";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceProfile {
     pub service_id: &'static str,
@@ -52,14 +58,53 @@ pub fn runtime_config() -> RuntimeConfig {
 }
 
 /// Construct the full router with API routes and standard runtime middleware.
+#[cfg(not(feature = "redis-impl"))]
 pub fn router() -> Router {
-    let service = std::sync::Arc::new(CapacityService::new(std::sync::Arc::new(
-        adapters::messaging::InMemoryEventPublisher::new(),
-    )));
-    let api_router = api::router(service.clone());
+    router_with_service(std::sync::Arc::new(CapacityService::new(
+        std::sync::Arc::new(adapters::messaging::InMemoryEventPublisher::new()),
+    )))
+}
+
+/// Construct the full router with Redis Streams publisher/subscriber wiring.
+#[cfg(feature = "redis-impl")]
+pub fn router() -> Router {
+    use crate::ports::EventSubscriber;
+
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.to_string());
+    let publisher = tokio::runtime::Handle::current()
+        .block_on(adapters::messaging::redis_publisher::RedisEventPublisher::new(&redis_url))
+        .expect("failed to initialize Redis event publisher");
+    let subscriber = tokio::runtime::Handle::current()
+        .block_on(adapters::messaging::redis_subscriber::RedisEventSubscriber::new(&redis_url))
+        .expect("failed to initialize Redis event subscriber");
+
+    let service = std::sync::Arc::new(CapacityService::new(std::sync::Arc::new(publisher)));
+    let handler_service = service.clone();
+    subscriber
+        .subscribe(
+            &[],
+            CONSUMER_GROUP,
+            &consumer_name(),
+            Box::new(move |envelope| handler_service.handle_inbound_event(envelope)),
+        )
+        .expect("failed to start Redis event subscriber");
+
+    router_with_service(service)
+}
+
+/// Construct a router for tests or alternate bootstraps that provide their own application service.
+pub fn router_with_service(service: std::sync::Arc<CapacityService>) -> Router {
+    let api_router = api::router(service);
     let standard_router = router_with_config(runtime_config());
     let full_router = axum::Router::new().merge(standard_router).merge(api_router);
     apply_runtime(full_router, runtime_config())
+}
+
+#[cfg(feature = "redis-impl")]
+fn consumer_name() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("CONSUMER_NAME"))
+        .unwrap_or_else(|_| format!("capacity-availability-{}", std::process::id()))
 }
 
 pub fn apply_service_runtime(router: Router) -> Router {

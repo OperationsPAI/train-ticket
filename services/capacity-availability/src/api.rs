@@ -9,12 +9,13 @@ use crate::application::{
 use axum::{
     Json, Router,
     extract::{Extension, Query, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use shared_kernel::RequestContext;
 use std::sync::Arc;
 
 pub fn router(service: Arc<CapacityService>) -> Router {
@@ -70,10 +71,10 @@ pub struct RemainingByClassJson {
 
 async fn query_availability(
     Extension(service): Extension<Arc<CapacityService>>,
-    headers: HeaderMap,
+    Extension(context): Extension<RequestContext>,
     Query(query): Query<AvailabilityQuery>,
 ) -> Result<Json<AvailabilitySnapshotJson>, AppErrorResponse> {
-    let correlation_id = get_correlation_id(&headers);
+    let correlation_id = context.correlation_id().to_string();
     let ss_ref = query.scheduled_service_ref.unwrap_or_default();
     let seg_ref = query.segment_ref.unwrap_or_default();
     let result = service
@@ -131,10 +132,11 @@ pub struct HoldCapacityResponseJson {
 
 async fn hold_capacity(
     Extension(service): Extension<Arc<CapacityService>>,
+    Extension(context): Extension<RequestContext>,
     headers: axum::http::HeaderMap,
     body: Result<Json<HoldCapacityJson>, JsonRejection>,
 ) -> Result<(StatusCode, Json<HoldCapacityResponseJson>), AppErrorResponse> {
-    let correlation_id = get_correlation_id(&headers);
+    let correlation_id = context.correlation_id().to_string();
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
     let Json(body) = body.map_err(|e| {
         AppErrorResponse(
@@ -178,10 +180,11 @@ pub struct ConfirmHoldResponseJson {
 
 async fn confirm_hold(
     Extension(service): Extension<Arc<CapacityService>>,
+    Extension(context): Extension<RequestContext>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<ConfirmHoldResponseJson>, AppErrorResponse> {
-    let correlation_id = get_correlation_id(&headers);
+    let correlation_id = context.correlation_id().to_string();
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
     let result = service
         .confirm_hold(&hold_id, &idempotency_key, &correlation_id)
@@ -205,10 +208,11 @@ pub struct ReleaseHoldResponseJson {
 
 async fn release_hold(
     Extension(service): Extension<Arc<CapacityService>>,
+    Extension(context): Extension<RequestContext>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<ReleaseHoldResponseJson>, AppErrorResponse> {
-    let correlation_id = get_correlation_id(&headers);
+    let correlation_id = context.correlation_id().to_string();
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
     let result = service
         .release_hold(&hold_id, &idempotency_key, &correlation_id)
@@ -237,10 +241,10 @@ pub struct GetHoldResponseJson {
 
 async fn get_hold(
     Extension(service): Extension<Arc<CapacityService>>,
-    headers: HeaderMap,
+    Extension(context): Extension<RequestContext>,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<GetHoldResponseJson>, AppErrorResponse> {
-    let correlation_id = get_correlation_id(&headers);
+    let correlation_id = context.correlation_id().to_string();
     let result = service
         .get_hold(&hold_id)
         .map_err(|e| AppErrorResponse(e, correlation_id))?;
@@ -280,8 +284,6 @@ impl IntoResponse for AppErrorResponse {
 // ---------------------------------------------------------------------------
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
-const CORRELATION_ID_HEADER: &str = "x-correlation-id";
-
 /// Validate that a string looks like a UUID v7 (hex with hyphens, version digit 7).
 fn is_uuid_v7(s: &str) -> bool {
     let bytes = s.as_bytes();
@@ -334,13 +336,4 @@ fn get_idempotency_key(
     }
 
     Ok(key)
-}
-
-fn get_correlation_id(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get(CORRELATION_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("corr-{}", uuid::Uuid::now_v7()))
 }
