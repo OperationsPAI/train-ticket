@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { EventEnvelope, EventSubscriber, HandlerResult } from "../../ports.js";
 import { moveToDlq } from "./dlq-handler.js";
@@ -78,20 +79,25 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     handler: (envelope: EventEnvelope) => Promise<HandlerResult> | HandlerResult,
   ): Promise<void> {
     while (!this.closed) {
-      const response = await this.redis.call(
-        "XREADGROUP",
-        "GROUP",
-        group,
-        consumerName,
-        "BLOCK",
-        pollBlockMs,
-        "COUNT",
-        pollCount,
-        "STREAMS",
-        ...streams,
-        ...streams.map(() => ">"),
-      ) as StreamRead;
-      await this.processRead(response, group, handler);
+      try {
+        const response = await this.redis.call(
+          "XREADGROUP",
+          "GROUP",
+          group,
+          consumerName,
+          "BLOCK",
+          pollBlockMs,
+          "COUNT",
+          pollCount,
+          "STREAMS",
+          ...streams,
+          ...streams.map(() => ">"),
+        ) as StreamRead;
+        await this.processRead(response, group, handler);
+      } catch (error) {
+        this.reportLoopError(error);
+        await delay(10);
+      }
     }
   }
 
@@ -101,23 +107,37 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     consumerName: string,
     handler: (envelope: EventEnvelope) => Promise<HandlerResult> | HandlerResult,
   ): Promise<void> {
-    for (const stream of streams) {
-      const claimed = await this.redis.xautoclaim(stream, group, consumerName, recoveryMinIdleMs, "0", "COUNT", 100) as AutoClaimResult;
-      for (const entry of claimed[1] ?? []) {
-        const attempts = await this.deliveryAttempts(stream, group, entry[0]);
-        if (attempts >= maxDeliveryAttempts) {
-          await this.deadLetterAndAck(stream, group, entry);
-        } else {
-          await this.processEntry(stream, group, entry, handler);
+    try {
+      for (const stream of streams) {
+        const claimed = await this.redis.xautoclaim(stream, group, consumerName, recoveryMinIdleMs, "0", "COUNT", 100) as AutoClaimResult;
+        for (const entry of claimed[1] ?? []) {
+          try {
+            const attempts = await this.deliveryAttempts(stream, group, entry[0]);
+            if (attempts >= maxDeliveryAttempts) {
+            await this.deadLetterAndAck(stream, group, entry);
+            } else {
+              await this.processEntry(stream, group, entry, handler);
+            }
+          } catch (error) {
+            this.reportLoopError(error);
+            await this.deadLetterAndAck(stream, group, entry);
+          }
         }
       }
+    } catch (error) {
+      this.reportLoopError(error);
     }
   }
 
   private async processRead(response: StreamRead, group: string, handler: (envelope: EventEnvelope) => Promise<HandlerResult> | HandlerResult): Promise<void> {
     for (const [stream, entries] of response ?? []) {
       for (const entry of entries) {
-        await this.processEntry(stream, group, entry, handler);
+        try {
+          await this.processEntry(stream, group, entry, handler);
+        } catch (error) {
+          this.reportLoopError(error);
+          await this.deadLetterAndAck(stream, group, entry);
+        }
       }
     }
   }
@@ -133,7 +153,7 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     try {
       envelope = JSON.parse(serializedEnvelope) as EventEnvelope;
     } catch {
-      await this.deadLetterAndAck(stream, group, entry);
+            await this.deadLetterAndAck(stream, group, entry);
       return;
     }
 
@@ -150,7 +170,7 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     }
 
     if (result.errorType === "fatal") {
-      await this.deadLetterAndAck(stream, group, entry);
+            await this.deadLetterAndAck(stream, group, entry);
     }
   }
 
@@ -158,6 +178,12 @@ export class RedisStreamEventSubscriber implements EventSubscriber {
     const serializedEnvelope = field(entry[1], "envelope") ?? "{}";
     await moveToDlq(this.redis, stream, serializedEnvelope);
     await this.redis.xack(stream, group, entry[0]);
+  }
+
+  private reportLoopError(error: unknown): void {
+    if (!this.closed) {
+      console.error("Account event subscriber poll iteration failed", error);
+    }
   }
 
   private async deliveryAttempts(stream: string, group: string, entryId: string): Promise<number> {

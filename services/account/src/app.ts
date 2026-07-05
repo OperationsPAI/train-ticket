@@ -12,6 +12,7 @@ import {
   fingerprintRequest,
   mapError,
   type AccountRepository,
+  type DomainErrorMapping,
   type IdempotencyRecord,
 } from "./application.js";
 import { type EventPublisher } from "./ports.js";
@@ -182,7 +183,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.post("/api/v1/accounts/:accountId/freeze", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, async (context, causationId) => {
+    await withIdempotency(request, reply, idempotencyStore, 200, { preconditionDomainCodes: [] }, async (context, causationId) => {
       const body = objectBody(request.body);
       const reason = requiredString(body.reason, "reason");
       const operator = requiredString(body.operator, "operator");
@@ -192,7 +193,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.post("/api/v1/accounts/:accountId/unfreeze", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, async (context, causationId) => {
+    await withIdempotency(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) => {
       const body = objectBody(request.body);
       const reason = requiredString(body.reason, "reason");
       return accountService.unfreezeAccount({ accountId: accountIdParam(request), reason, correlationId: context.correlationId, causationId });
@@ -209,7 +210,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   });
 
   app.post("/api/v1/accounts/:accountId/start-closure", async (request, reply) => {
-    await withIdempotency(request, reply, idempotencyStore, 200, async (context, causationId) =>
+    await withIdempotency(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) =>
       accountService.startClosure({ accountId: accountIdParam(request), correlationId: context.correlationId, causationId }),
     );
   });
@@ -230,8 +231,14 @@ async function withIdempotency(
   reply: FastifyReply,
   store: InMemoryIdempotencyStore,
   successStatus: number,
-  handler: (context: RequestContext, causationId: string) => Promise<unknown>,
+  mappingOrHandler: DomainErrorMapping | ((context: RequestContext, causationId: string) => Promise<unknown>),
+  maybeHandler?: (context: RequestContext, causationId: string) => Promise<unknown>,
 ): Promise<void> {
+  const mapping = typeof mappingOrHandler === "function" ? {} : mappingOrHandler;
+  const handler = typeof mappingOrHandler === "function" ? mappingOrHandler : maybeHandler;
+  if (!handler) {
+    throw new ApplicationError("UNAVAILABLE", "Idempotent handler was not configured", 503);
+  }
   const context = requestContext(request);
   const key = headerValue(request.headers["idempotency-key"]);
   if (!key) {
@@ -256,7 +263,7 @@ async function withIdempotency(
     store.set(key, record);
     reply.status(successStatus).send(body);
   } catch (error) {
-    sendApplicationError(reply, mapError(error), context);
+    sendApplicationError(reply, mapError(error, mapping), context);
   }
 }
 

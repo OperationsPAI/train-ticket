@@ -1,8 +1,45 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
+import { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { UserAccount } from "./domain.js";
 import { toEventEnvelope, type EventEnvelope, type HandlerResult } from "./ports.js";
+
+class FakeRedisForSubscriber {
+  readonly acked: Array<{ stream: string; group: string; entryId: string }> = [];
+  readonly dlqEnvelopes: string[] = [];
+  private readonly reads: unknown[] = [];
+
+  constructor(reads: unknown[]) {
+    this.reads = [...reads];
+  }
+
+  async xgroup(): Promise<void> {}
+
+  async call(): Promise<unknown> {
+    const next = this.reads.shift();
+    if (next instanceof Error) {
+      throw next;
+    }
+    await delay(1);
+    return next ?? null;
+  }
+
+  async xack(stream: string, group: string, entryId: string): Promise<void> {
+    this.acked.push({ stream, group, entryId });
+  }
+
+  async xadd(stream: string, _maxlen: string, _approximate: string, _length: number, _id: string, _field: string, envelope: string): Promise<void> {
+    this.dlqEnvelopes.push(`${stream}:${envelope}`);
+  }
+
+  async xautoclaim(): Promise<[string, unknown[]]> {
+    return ["0-0", []];
+  }
+
+  disconnect(): void {}
+}
 
 class FakeSubscriber {
   private readonly seen = new Set<string>();
@@ -62,5 +99,44 @@ describe("account event ports", () => {
 
     assert.deepEqual(seen, [envelope.eventId]);
     assert.equal(subscriber.handled, 1);
+  });
+
+  it("continues polling after handler throws and dead-letters the fatal message", async () => {
+    const firstEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_1" }).event, "corr-loop", "cmd-loop-1");
+    const secondEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_2" }).event, "corr-loop", "cmd-loop-2");
+    const redis = new FakeRedisForSubscriber([
+      [["events:account", [["1-0", ["envelope", JSON.stringify(firstEnvelope)]]]]],
+      [["events:account", [["2-0", ["envelope", JSON.stringify(secondEnvelope)]]]]],
+    ]);
+    const subscriber = new RedisStreamEventSubscriber(redis as never);
+    const handled: string[] = [];
+    const loggedErrors: unknown[] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      loggedErrors.push(args);
+    };
+
+    try {
+      await subscriber.subscribe(["events:account"], "account", "account-test", (envelope) => {
+        handled.push(envelope.eventId);
+        if (envelope.eventId === firstEnvelope.eventId) {
+          throw new Error("handler exploded");
+        }
+        return { ok: true };
+      });
+
+      for (let index = 0; index < 20 && redis.acked.length < 2; index += 1) {
+        await delay(10);
+      }
+    } finally {
+      await subscriber.close();
+      console.error = originalConsoleError;
+    }
+
+    assert.equal(loggedErrors.length, 1);
+    assert.deepEqual(handled, [firstEnvelope.eventId, secondEnvelope.eventId]);
+    assert.deepEqual(redis.acked.map((ack) => ack.entryId), ["1-0", "2-0"]);
+    assert.equal(redis.dlqEnvelopes.length, 1);
+    assert.ok(redis.dlqEnvelopes[0].includes(firstEnvelope.eventId));
   });
 });
