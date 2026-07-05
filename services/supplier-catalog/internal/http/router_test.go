@@ -260,14 +260,14 @@ func TestPublishFailureRetainsEventAndRetryWithSameIdempotencyKeySucceeds(t *tes
 	}
 }
 
-func TestCarrierTransportModeDomainViolationUsesCanonicalError(t *testing.T) {
+func TestCarrierTransportModeValidationFailureUsesCanonicalError(t *testing.T) {
 	router, _ := newTestRouter()
 	created := doJSON(router, http.MethodPost, "/api/v1/suppliers", `{"legalName":"China Railway","brandName":"CR","supplierCode":"CR"}`, "0194f2e0-7b3e-7000-8000-000000000008")
 	var supplier map[string]interface{}
 	mustJSON(t, created.Body.Bytes(), &supplier)
 	body := `{"supplierId":"` + supplier["supplierId"].(string) + `","name":"Bad Carrier","code":"BAD","transportMode":"SPACESHIP"}`
 	response := doJSON(router, http.MethodPost, "/api/v1/carriers", body, "0194f2e0-7b3e-7000-8000-000000000009")
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "DOMAIN_RULE_VIOLATION") {
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_FAILED") {
 		t.Fatalf("unexpected status/body: %d %s", response.Code, response.Body.String())
 	}
 }

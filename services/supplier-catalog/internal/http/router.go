@@ -108,6 +108,9 @@ func (h Handler) postCarrier(c *gin.Context) {
 		if err := decode(body, &req); err != nil {
 			return http.StatusBadRequest, nil, err
 		}
+		if !validTransportMode(req.TransportMode) {
+			return http.StatusBadRequest, nil, validationError("transportMode must be one of RAIL, AIR, COACH, FERRY, RIDE_HAILING")
+		}
 		resp, err := h.service.RegisterCarrier(c.Request.Context(), application.RegisterCarrierCommand{
 			SupplierID: req.SupplierID, Name: req.Name, Code: req.Code, TransportMode: req.TransportMode,
 			CorrelationID: correlationID(c), CausationID: "",
@@ -230,6 +233,15 @@ func correlationID(c *gin.Context) string {
 func isUUIDv7(value string) bool {
 	parsed, err := uuid.Parse(strings.TrimSpace(value))
 	return err == nil && parsed.Version() == 7
+}
+
+func validTransportMode(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "RAIL", "AIR", "COACH", "FERRY", "RIDE_HAILING":
+		return true
+	default:
+		return false
+	}
 }
 
 func errorStatus(err error) (int, string) {
