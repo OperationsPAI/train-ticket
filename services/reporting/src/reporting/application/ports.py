@@ -2,67 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Protocol
 
-
-@dataclass(frozen=True, slots=True)
-class EventEnvelope:
-    eventId: str
-    eventType: str
-    occurredAt: str
-    correlationId: str
-    producer: str
-    schemaVersion: int
-    payload: Mapping[str, Any]
-    causationId: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        envelope = {
-            "eventId": self.eventId,
-            "eventType": self.eventType,
-            "occurredAt": self.occurredAt,
-            "correlationId": self.correlationId,
-            "producer": self.producer,
-            "schemaVersion": self.schemaVersion,
-            "payload": dict(self.payload),
-        }
-        if self.causationId is not None:
-            envelope["causationId"] = self.causationId
-        return envelope
-
-
-class PublishFailed(RuntimeError):
-    pass
-
-
-class SubscribeFailed(RuntimeError):
-    pass
-
-
-class HandlerStatus(str, Enum):
-    SUCCESS = "SUCCESS"
-    TRANSIENT_ERROR = "TRANSIENT_ERROR"
-    FATAL_ERROR = "FATAL_ERROR"
-
-
-@dataclass(frozen=True, slots=True)
-class HandlerResult:
-    status: HandlerStatus
-    message: str = ""
-
-    @classmethod
-    def success(cls) -> "HandlerResult":
-        return cls(HandlerStatus.SUCCESS)
-
-    @classmethod
-    def transient_error(cls, message: str) -> "HandlerResult":
-        return cls(HandlerStatus.TRANSIENT_ERROR, message)
-
-    @classmethod
-    def fatal_error(cls, message: str) -> "HandlerResult":
-        return cls(HandlerStatus.FATAL_ERROR, message)
-
+from train_ticket_platform.events import EventEnvelope
+from train_ticket_platform.messaging import HandlerResult, HandlerStatus, PublishFailed, SubscribeFailed
 
 EventHandler = Callable[[EventEnvelope], HandlerResult]
 
@@ -84,3 +27,14 @@ class EventSubscriber(Protocol):
 
     def stop(self) -> None:
         """Stop background polling and finish in-flight processing."""
+
+__all__ = [
+    "EventEnvelope",
+    "EventHandler",
+    "EventPublisher",
+    "EventSubscriber",
+    "HandlerResult",
+    "HandlerStatus",
+    "PublishFailed",
+    "SubscribeFailed",
+]

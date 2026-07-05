@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-from uuid6 import uuid7 as _uuid7
+from train_ticket_platform.ids import new_prefixed_uuid7 as prefixed_uuid7, new_uuid7 as uuid7
 
-
-def uuid7() -> str:
-    """Return a canonical UUID version 7 string."""
-    return str(_uuid7())
-
-
-def prefixed_uuid7(prefix: str) -> str:
-    """Return a contract identifier using the given prefix and a UUID v7."""
-    return f"{prefix}-{uuid7()}"
+__all__ = ["prefixed_uuid7", "uuid7"]

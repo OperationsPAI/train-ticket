@@ -1,109 +1,50 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-import random
 from typing import Any, Mapping
-from uuid import UUID
+
+from train_ticket_platform.events import EventEnvelope as _PlatformEventEnvelope, canonical_correlation_id, envelope_factory
+from train_ticket_platform.ids import new_uuid7
+from train_ticket_platform.messaging import FatalHandlerError, HandlerError, PublishFailed, SubscribeFailed, TransientHandlerError
 
 
-def new_uuid7() -> str:
-    try:
-        from uuid6 import uuid7
-
-        return str(uuid7())
-    except ImportError:
-        unix_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        random_bits = random.getrandbits(74)
-        value = (unix_ms & ((1 << 48) - 1)) << 80
-        value |= 0x7 << 76
-        value |= ((random_bits >> 62) & 0xFFF) << 64
-        value |= 0b10 << 62
-        value |= random_bits & ((1 << 62) - 1)
-        return str(UUID(int=value))
-
-
-def _new_event_id() -> str:
-    return f"evt-{new_uuid7()}"
-
-
-def _format_occurred_at(dt: datetime) -> str:
-    """Format a datetime as an RFC3339 UTC timestamp with milliseconds."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
-
-
-@dataclass(frozen=True)
-class EventEnvelope:
-    """Event bus wire envelope from shared-primitives.md §1."""
-
-    eventId: str
-    eventType: str
-    schemaVersion: int = 1
-    producer: str = "trip-planning"
-    causationId: str = ""
-    correlationId: str = ""
-    occurredAt: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    payload: Mapping[str, Any] = field(default_factory=dict)
-
-    def to_json_dict(self) -> dict[str, Any]:
-        envelope = {
-            "eventId": self.eventId,
-            "eventType": self.eventType,
-            "schemaVersion": self.schemaVersion,
-            "producer": self.producer,
-            "correlationId": self.correlationId,
-            "occurredAt": _format_occurred_at(self.occurredAt),
-            "payload": dict(self.payload),
-        }
-        if self.causationId:
-            envelope["causationId"] = self.causationId
-        return envelope
+class EventEnvelope(_PlatformEventEnvelope):
+    def __init__(
+        self,
+        eventId: str | None = None,
+        eventType: str | None = None,
+        producer: str = "trip-planning",
+        causationId: str | None = None,
+        correlationId: str | None = None,
+        occurredAt: Any = None,
+        payload: Mapping[str, Any] | None = None,
+        schemaVersion: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            eventId=eventId,
+            eventType=eventType,
+            producer=producer,
+            causationId=causationId,
+            correlationId=correlationId,
+            occurredAt=occurredAt,
+            payload=payload,
+            schemaVersion=schemaVersion,
+            **kwargs,
+        )
 
     @classmethod
     def from_json_dict(cls, data: Mapping[str, Any]) -> "EventEnvelope":
-        occurred_at = data.get("occurredAt", "")
-        if isinstance(occurred_at, str):
-            occurred_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+        restored = _PlatformEventEnvelope.from_json_dict(data)
         return cls(
-            eventId=str(data["eventId"]),
-            eventType=str(data["eventType"]),
-            schemaVersion=int(data.get("schemaVersion", 1)),
-            producer=str(data.get("producer", "trip-planning")),
-            causationId=str(data.get("causationId", "")),
-            correlationId=str(data.get("correlationId", "")),
-            occurredAt=occurred_at,
-            payload=data.get("payload", {}),
+            eventId=restored.eventId,
+            eventType=restored.eventType,
+            producer=restored.producer or "trip-planning",
+            causationId=restored.causationId,
+            correlationId=restored.correlationId,
+            occurredAt=restored.occurredAt,
+            payload=restored.payload,
+            schemaVersion=restored.schemaVersion,
         )
-
-
-class PublishFailed(Exception):
-    """The event was not published."""
-
-
-class SubscribeFailed(Exception):
-    """The subscriber could not start."""
-
-
-class HandlerError(Exception):
-    """Raised by event handlers to indicate transient or fatal errors."""
-
-
-class TransientHandlerError(HandlerError):
-    """Transient error: message should be retried without XACK."""
-
-
-class FatalHandlerError(HandlerError):
-    """Fatal error: message should be moved to DLQ."""
-
-
-def _canonical_correlation_id(value: str) -> str:
-    if not value:
-        return f"corr-{new_uuid7()}"
-    if value.startswith("corr-"):
-        return value
-    return f"corr-{value}"
 
 
 def build_itinerary_proposed_event(
@@ -114,7 +55,6 @@ def build_itinerary_proposed_event(
     correlation_id: str = "",
     causation_id: str = "",
 ) -> EventEnvelope:
-    """Build an ItineraryProposed domain event envelope."""
     payload = {
         "intentRef": intent_ref,
         "itineraries": [
@@ -128,11 +68,11 @@ def build_itinerary_proposed_event(
         ],
         "planningSnapshotRefs": list(planning_snapshot_refs),
     }
-    return EventEnvelope(
-        eventId=_new_event_id(),
-        eventType="ItineraryProposed",
+    envelope = envelope_factory(
+        event_type="ItineraryProposed",
         producer="trip-planning",
-        causationId=causation_id,
-        correlationId=_canonical_correlation_id(correlation_id),
         payload=payload,
+        correlation_id=canonical_correlation_id(correlation_id),
+        causation_id=causation_id or None,
     )
+    return EventEnvelope.from_json_dict(envelope.to_json_dict())
