@@ -3,6 +3,7 @@ export {
   health,
   metadata,
   opentelemetryInstrumentationFromEnv,
+  type AppOptions,
   type ErrorEnvelope,
   type HealthStatus,
   type InstrumentationHooks,
@@ -15,6 +16,35 @@ export {
 } from "./app.js";
 export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
 export { serviceProfile, type ServiceProfile } from "./profile.js";
+export {
+  CustomerServiceApplication,
+  IdempotencyKeyReusedError,
+  IdempotencyStore,
+  NotFoundError,
+  type AssignSupportCaseRequest,
+  type AttachEvidenceRequest,
+  type ClassifySupportCaseRequest,
+  type CloseCaseRequest,
+  type EscalateCaseRequest,
+  type OpenSupportCaseRequest,
+  type ReopenCaseRequest,
+  type ResolveCaseRequest,
+  type SupportCaseDetails,
+} from "./application/customer-service.js";
+export {
+  ConsumedEventDeduplicator,
+  HandlerError,
+  InMemoryEventPublisher,
+  InMemoryEventSubscriber,
+  PublishFailed,
+  SubscribeFailed,
+  newCommandId,
+  newCorrelationId,
+  toEventEnvelope,
+  type EventEnvelope,
+  type EventPublisher,
+  type EventSubscriber,
+} from "./application/messaging.js";
 export {
   DomainError,
   SupportCase,
