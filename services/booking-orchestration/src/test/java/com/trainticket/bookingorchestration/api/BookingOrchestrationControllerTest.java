@@ -98,6 +98,23 @@ class BookingOrchestrationControllerTest {
     }
 
     @Test
+    void startSagaRequiresIdempotencyKey() {
+        var req = new BookingOrchestrationController.StartSagaRequest(
+            "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123",
+            "acc-0194f2e0-7b3e-7610-0284-5c26e8b0c456",
+            "off-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
+            List.of("tvl-user1"),
+            List.of("seg-001"));
+
+        ResponseEntity<?> response = controller.startSaga(req, null, request);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        var error = (BookingOrchestrationController.ErrorBody) response.getBody();
+        assertEquals("VALIDATION_FAILED", error.code());
+        assertTrue(error.message().contains("Idempotency-Key"));
+    }
+
+    @Test
     void getSagaReturnsSagaDetail() {
         String sagaId = createTestSaga();
 
