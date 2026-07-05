@@ -4,8 +4,6 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 
 import {
   CustomerServiceApplication,
-  IdempotencyKeyReusedError,
-  IdempotencyStore,
   NotFoundError,
   isDomainError,
   type AssignSupportCaseRequest,
@@ -18,6 +16,15 @@ import {
   type ResolveCaseRequest,
 } from "./application/customer-service.js";
 import { InMemoryEventPublisher, newCommandId, newCorrelationId, type EventPublisher } from "./application/messaging.js";
+import {
+  InMemoryIdempotencyStore,
+  errorMessage,
+  handleIdempotency,
+  headerValue,
+  requestFingerprint,
+  sendError,
+  type ErrorEnvelope as KitErrorEnvelope,
+} from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -38,12 +45,7 @@ export type ServiceMetadata = Readonly<{
   }>;
 }>;
 
-export type ErrorEnvelope = Readonly<{
-  code: string;
-  message: string;
-  correlationId: string;
-  details: Readonly<Record<string, unknown>>;
-}>;
+export type ErrorEnvelope = KitErrorEnvelope;
 
 export type RequestContext = Readonly<{
   requestId: string;
@@ -74,7 +76,7 @@ export type AppOptions = Readonly<{
   instrumentation?: InstrumentationHooks;
   publisher?: EventPublisher;
   application?: CustomerServiceApplication;
-  idempotencyStore?: IdempotencyStore;
+  idempotencyStore?: InMemoryIdempotencyStore;
 }>;
 
 type OTelSpan = Readonly<{
@@ -142,7 +144,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
   const appOptions = normalizeOptions(options);
   const publisher = appOptions.publisher ?? new InMemoryEventPublisher();
   const application = appOptions.application ?? new CustomerServiceApplication(publisher);
-  const idempotencyStore = appOptions.idempotencyStore ?? new IdempotencyStore();
+  const idempotencyStore = appOptions.idempotencyStore ?? new InMemoryIdempotencyStore();
   const instrumentation = appOptions.instrumentation ?? {};
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
@@ -173,12 +175,12 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
   app.get("/readyz", async () => probeBody("ready"));
 
   app.post("/api/v1/support-cases", async (request, reply) => {
-    const body = validateOpenSupportCase(request.body);
-    const response = await withIdempotency(request, idempotencyStore, body, async () => {
+    const response = await withIdempotency(request, idempotencyStore, request.body ?? null, async () => {
+      const body = validateOpenSupportCase(request.body);
       const created = await application.openSupportCase(body, requestContext(request).correlationId, newCommandId());
       return { statusCode: 201, body: openSupportCaseResponse(created) };
     });
-    return reply.status(response.statusCode).send(response.body);
+    return reply.status(response!.statusCode).send(response!.body);
   });
 
   app.get("/api/v1/support-cases/:caseId", async (request) => {
@@ -188,60 +190,60 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
 
   app.post("/api/v1/support-cases/:caseId/evidence", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateAttachEvidence(request.body);
-    const response = await withIdempotency(request, idempotencyStore, { caseId, body }, async () => {
+    const response = await withIdempotency(request, idempotencyStore, { caseId, body: request.body ?? null }, async () => {
+      const body = validateAttachEvidence(request.body);
       const evidence = await application.attachEvidence(caseId, body, requestContext(request).correlationId, newCommandId());
       return { statusCode: 201, body: { evidenceId: evidence.evidenceId, caseId: evidence.caseId, evidenceType: evidence.evidenceType } };
     });
-    return reply.status(response.statusCode).send(response.body);
+    return reply.status(response!.statusCode).send(response!.body);
   });
 
   app.post("/api/v1/support-cases/:caseId/classify", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateClassify(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.classifySupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
-    );
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateClassify(request.body);
+      return application.classifySupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+    });
   });
 
   app.post("/api/v1/support-cases/:caseId/assign", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateAssign(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.assignSupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
-    );
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateAssign(request.body);
+      return application.assignSupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+    });
   });
 
   app.post("/api/v1/support-cases/:caseId/escalate", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateEscalate(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
-    );
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateEscalate(request.body);
+      return application.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+    });
   });
 
   app.post("/api/v1/support-cases/:caseId/resolve", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateResolve(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.resolveCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
-    );
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateResolve(request.body);
+      return application.resolveCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+    });
   });
 
   app.post("/api/v1/support-cases/:caseId/close", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateClose(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.closeCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
-    );
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateClose(request.body);
+      return application.closeCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+    });
   });
 
   app.post("/api/v1/support-cases/:caseId/reopen", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
-    const body = validateReopen(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.reopenCase(caseId, body, requestContext(request).correlationId, newCommandId()),
-    );
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateReopen(request.body);
+      return application.reopenCase(caseId, body, requestContext(request).correlationId, newCommandId());
+    });
   });
 
   app.setNotFoundHandler((request, reply) => {
@@ -252,14 +254,6 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const context = requestContext(request);
     if (error instanceof ValidationError) {
       sendError(reply, 400, "VALIDATION_FAILED", error.message, context, error.details);
-      return;
-    }
-    if (error instanceof MissingIdempotencyKeyError) {
-      sendError(reply, 400, "VALIDATION_FAILED", error.message, context);
-      return;
-    }
-    if (error instanceof IdempotencyKeyReusedError) {
-      sendError(reply, 422, "IDEMPOTENCY_KEY_REUSED", error.message, context);
       return;
     }
     if (error instanceof NotFoundError) {
@@ -284,38 +278,44 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
 async function sendIdempotentUpdate(
   request: FastifyRequest,
   reply: FastifyReply,
-  idempotencyStore: IdempotencyStore,
+  idempotencyStore: InMemoryIdempotencyStore,
   fingerprintSource: unknown,
-  update: () => Promise<Parameters<typeof supportCaseResponse>[0]>,
+  update: () => Promise<Parameters<typeof supportCaseResponse>[0] | undefined>,
 ) {
-  const response = await withIdempotency(request, idempotencyStore, fingerprintSource, async () => ({
-    statusCode: 200,
-    body: supportCaseResponse(await update()),
-  }));
-  return reply.status(response.statusCode).send(response.body);
+  const response = await withIdempotency(request, idempotencyStore, fingerprintSource, async () => {
+    const updated = await update();
+    return {
+      statusCode: 200,
+      body: updated === undefined ? {} : supportCaseResponse(updated),
+    };
+  });
+  return reply.status(response!.statusCode).send(response!.body);
 }
 
 async function withIdempotency(
   request: FastifyRequest,
-  idempotencyStore: IdempotencyStore,
+  idempotencyStore: InMemoryIdempotencyStore,
   fingerprintSource: unknown,
   operation: () => Promise<{ statusCode: number; body: unknown }>,
-): Promise<{ statusCode: number; body: unknown }> {
-  const key = headerValue(request.headers["idempotency-key"]);
-  if (!key) {
-    throw new MissingIdempotencyKeyError();
-  }
-  if (!isUuidV7(key)) {
-    throw new ValidationError("Idempotency-Key header must be a UUID v7", { header: "Idempotency-Key", format: "UUID_V7" });
-  }
-  return idempotencyStore.execute(key, fingerprintSource, operation);
+): Promise<{ statusCode: number; body: unknown } | undefined> {
+  let response: { statusCode: number; body: unknown } | undefined;
+  await handleIdempotency({
+    key: headerValue(request.headers["idempotency-key"]),
+    store: idempotencyStore,
+    fingerprint: requestFingerprint(request.method, request.url.split("?")[0] ?? request.url, fingerprintSource),
+    context: requestContext(request),
+    reply: {
+      status: (statusCode) => ({
+        send: (body) => {
+          response = { statusCode, body };
+        },
+      }),
+    },
+    operation,
+  });
+  return response;
 }
 
-const uuidV7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isUuidV7(value: string): boolean {
-  return uuidV7Pattern.test(value);
-}
 
 class ValidationError extends Error {
   constructor(message: string, public readonly details: Readonly<Record<string, unknown>> = {}) {
@@ -324,12 +324,6 @@ class ValidationError extends Error {
   }
 }
 
-class MissingIdempotencyKeyError extends Error {
-  constructor() {
-    super("Idempotency-Key header is required for state-changing POST requests");
-    this.name = "MissingIdempotencyKeyError";
-  }
-}
 
 function validateOpenSupportCase(value: unknown): OpenSupportCaseRequest {
   const body = objectBody(value);
@@ -519,10 +513,6 @@ function operatorRef(request: FastifyRequest): string {
   return headerValue(request.headers["x-operator-ref"]) ?? `op-${randomUUID()}`;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
-}
-
 function healthBody(): HealthStatus {
   return { status: health(), service: serviceProfile };
 }
@@ -544,7 +534,7 @@ function requestContext(request: AppRequest): RequestContext {
   if (existing) {
     return existing;
   }
-  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id ?? randomUUID();
+  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id;
   const rawCorrelationId = headerValue(request.headers["x-correlation-id"]);
   const correlationId = rawCorrelationId ? canonicalCorrelationId(rawCorrelationId) : newCorrelationId();
   const context = { requestId, correlationId };
@@ -553,34 +543,11 @@ function requestContext(request: AppRequest): RequestContext {
 }
 
 type AppRequest = FastifyRequest;
-type AppReply = FastifyReply;
 
 const requestContexts = new WeakMap<AppRequest, RequestContext>();
 
-function headerValue(value: string | string[] | undefined): string | undefined {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  return candidate && candidate.trim().length > 0 ? candidate : undefined;
-}
-
 function canonicalCorrelationId(value: string): string {
   return value.startsWith("corr-") ? value : `corr-${value}`;
-}
-
-function sendError(
-  reply: AppReply,
-  statusCode: number,
-  code: string,
-  message: string,
-  context: RequestContext,
-  details: Readonly<Record<string, unknown>> = {},
-): void {
-  const envelope: ErrorEnvelope = {
-    code,
-    message,
-    correlationId: context.correlationId,
-    details,
-  };
-  reply.status(statusCode).send(envelope);
 }
 
 function normalizeOptions(options: InstrumentationHooks | AppOptions): AppOptions {

@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
-
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import {
   InMemoryOfferRepository,
@@ -17,6 +15,15 @@ import {
 } from "./application/upstream-state.js";
 import { type QuoteOfferCommand } from "./domain.js";
 import { type EventPublisher } from "./ports/messaging.js";
+import {
+  InMemoryIdempotencyStore,
+  errorMessage,
+  handleIdempotency,
+  headerValue,
+  requestFingerprint,
+  sendError,
+  type ErrorEnvelope,
+} from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -37,12 +44,7 @@ export type ServiceMetadata = Readonly<{
   }>;
 }>;
 
-export type ErrorBody = Readonly<{
-  code: string;
-  message: string;
-  correlationId: string;
-  details: Readonly<Record<string, unknown>>;
-}>;
+export type ErrorBody = ErrorEnvelope;
 
 export type RequestContext = Readonly<{
   requestId: string;
@@ -126,16 +128,10 @@ export function metadata(): ServiceMetadata {
 // ---------------------------------------------------------------------------
 // In-memory idempotency store (single-instance only)
 // ---------------------------------------------------------------------------
-type IdempotencyRecord = Readonly<{
-  requestBody: unknown;
-  responseBody: unknown;
-  statusCode: number;
-}>;
-
-const idempotencyStore = new Map<string, IdempotencyRecord>();
+const defaultIdempotencyStore = new InMemoryIdempotencyStore();
 
 export function resetIdempotencyStore(): void {
-  idempotencyStore.clear();
+  defaultIdempotencyStore.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +142,7 @@ type AppDependencies = Readonly<{
   publisher?: EventPublisher;
   quoteCommandFactory?: (request: QuoteOfferRequest) => QuoteOfferCommand | Promise<QuoteOfferCommand>;
   upstreamRepository?: UpstreamStateRepository;
+  idempotencyStore?: InMemoryIdempotencyStore;
 }>;
 
 const defaultOfferRepository = new InMemoryOfferRepository();
@@ -167,6 +164,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
     dependencies.publisher,
     dependencies.quoteCommandFactory ?? ((request) => buildQuoteOfferCommand(upstreamRepository, request)),
   );
+  const idempotencyStore = dependencies.idempotencyStore ?? defaultIdempotencyStore;
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
   app.addHook("onRequest", async (request, reply) => {
@@ -209,54 +207,38 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
     };
   }>("/api/v1/offers", async (request, reply) => {
     const ctx = requestContext(request);
-    const idempotencyKey = request.headers["idempotency-key"] as string | undefined;
-
-    if (!idempotencyKey) {
-      sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key header is required on state-changing POST", ctx);
-      return reply;
-    }
-    if (!isUuidV7(idempotencyKey)) {
-      sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", ctx);
-      return reply;
-    }
-
-    // Idempotency replay check
-    const existing = idempotencyStore.get(idempotencyKey);
-    if (existing) {
-      // Validate request body matches (IDEMPOTENCY_KEY_REUSED if different)
-      if (JSON.stringify(existing.requestBody) !== JSON.stringify(request.body)) {
-        sendError(reply, 422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body", ctx);
-        return reply;
-      }
-      return reply.status(existing.statusCode).send(existing.responseBody);
-    }
-
-    // Validate request body
-    const validationError = validateQuoteOfferRequest(request.body);
-    if (validationError) {
-      sendError(reply, 400, "VALIDATION_FAILED", validationError, ctx);
-      return reply;
-    }
-
-    const { accountId, channelId, itineraryRef, travelerRefs, quoteRequestId } = request.body;
 
     try {
-      const { response: responseBody } = await offerService.quoteOffer({
-        accountId: accountId!,
-        channelId: channelId!,
-        itineraryRef: itineraryRef!,
-        travelerRefs: travelerRefs!,
-        quoteRequestId,
-      }, ctx.correlationId);
+      await handleIdempotency({
+        key: headerValue(request.headers["idempotency-key"]),
+        store: idempotencyStore,
+        fingerprint: requestFingerprint(request.method, request.url.split("?")[0] ?? request.url, request.body ?? null),
+        context: ctx,
+        reply,
+        operation: async () => {
+          const validationError = validateQuoteOfferRequest(request.body);
+          if (validationError) {
+            throw new ValidationError(validationError);
+          }
 
-      idempotencyStore.set(idempotencyKey, {
-        requestBody: request.body,
-        responseBody,
-        statusCode: 201,
+          const { accountId, channelId, itineraryRef, travelerRefs, quoteRequestId } = request.body;
+          const { response: responseBody } = await offerService.quoteOffer({
+            accountId: accountId!,
+            channelId: channelId!,
+            itineraryRef: itineraryRef!,
+            travelerRefs: travelerRefs!,
+            quoteRequestId,
+          }, ctx.correlationId);
+
+          return { statusCode: 201, body: responseBody };
+        },
       });
-
-      return reply.status(201).send(responseBody);
+      return reply;
     } catch (error) {
+      if (error instanceof ValidationError) {
+        sendError(reply, 400, "VALIDATION_FAILED", error.message, ctx);
+        return reply;
+      }
       if (isDomainError(error)) {
         sendError(reply, 422, "DOMAIN_RULE_VIOLATION", error.message, ctx, { domainCode: error.code });
         return reply;
@@ -300,6 +282,13 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
   return app;
 }
 
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
 function validateQuoteOfferRequest(body: Record<string, unknown>): string | null {
   if (!body || typeof body !== "object") {
     return "Request body must be a JSON object";
@@ -324,14 +313,6 @@ function validateQuoteOfferRequest(body: Record<string, unknown>): string | null
   return null;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
-}
-
-function isUuidV7(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
 function healthBody(): HealthStatus {
   return { status: health(), service: serviceProfile };
 }
@@ -349,32 +330,9 @@ function traceContext(request: AppRequest, context: RequestContext = requestCont
 }
 
 function requestContext(request: AppRequest): RequestContext {
-  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id ?? randomUUID();
+  const requestId = headerValue(request.headers["x-request-id"]) ?? request.id;
   const correlationId = headerValue(request.headers["x-correlation-id"]) ?? requestId;
   return { requestId, correlationId };
 }
 
 type AppRequest = FastifyRequest;
-type AppReply = FastifyReply;
-
-function headerValue(value: string | string[] | undefined): string | undefined {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  return candidate && candidate.trim().length > 0 ? candidate : undefined;
-}
-
-function sendError(
-  reply: AppReply,
-  statusCode: number,
-  code: string,
-  message: string,
-  context: RequestContext,
-  details: Readonly<Record<string, unknown>> = {},
-): void {
-  const body: ErrorBody = {
-    code,
-    message,
-    correlationId: context.correlationId,
-    details,
-  };
-  reply.status(statusCode).send(body);
-}

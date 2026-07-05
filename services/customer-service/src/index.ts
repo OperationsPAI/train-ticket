@@ -18,8 +18,6 @@ export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bo
 export { serviceProfile, type ServiceProfile } from "./profile.js";
 export {
   CustomerServiceApplication,
-  IdempotencyKeyReusedError,
-  IdempotencyStore,
   NotFoundError,
   type AssignSupportCaseRequest,
   type AttachEvidenceRequest,
