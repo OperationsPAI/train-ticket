@@ -39,7 +39,7 @@ async fn http_entitlement_endpoints_happy_path_and_idempotency() {
                 .method(Method::POST)
                 .uri("/api/v1/entitlements")
                 .header("content-type", "application/json")
-                .header("idempotency-key", "018f2e07b3e761002845c26e8b0caaa")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0caaa")
                 .header("x-correlation-id", "corrtest")
                 .body(Body::from(issue_body.to_string()))
                 .unwrap(),
@@ -65,7 +65,7 @@ async fn http_entitlement_endpoints_happy_path_and_idempotency() {
                 .method(Method::POST)
                 .uri("/api/v1/entitlements")
                 .header("content-type", "application/json")
-                .header("idempotency-key", "018f2e07b3e761002845c26e8b0caaa")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0caaa")
                 .body(Body::from(issue_body.to_string()))
                 .unwrap(),
         )
@@ -109,7 +109,7 @@ async fn http_entitlement_endpoints_happy_path_and_idempotency() {
                 .method(Method::POST)
                 .uri(format!("/api/v1/entitlements/{entitlement_id}/void"))
                 .header("content-type", "application/json")
-                .header("idempotency-key", "018f2e07b3e761002845c26e8b0cbbb")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0cbbb")
                 .body(Body::from(
                     json!({"reason":"REFUND","policy":"NORMAL","businessCaseRef":"case-1"})
                         .to_string(),
@@ -193,4 +193,133 @@ async fn in_memory_publisher_wraps_contract_envelope_and_dedup_handler_skips_dup
     handler.handle(envelope.clone()).unwrap();
     handler.handle(envelope).unwrap();
     assert_eq!(handler.handled_count(), 1);
+}
+
+#[tokio::test]
+async fn invalid_list_query_uses_canonical_error_shape() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    let response = router()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/entitlements?limit=not-a-number")
+                .header("x-correlation-id", "corrlistvalidation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["code"], "VALIDATION_FAILED");
+    assert_eq!(body["correlationId"], "corrlistvalidation");
+}
+
+#[tokio::test]
+async fn invalid_idempotency_key_is_rejected() {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    let response = router()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/entitlements")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "not-a-uuid-v7")
+                .body(Body::from(
+                    json!({
+                        "segmentBookingId":"sb-1",
+                        "journeyOrderId":"ord-1",
+                        "travelerRef":"tvl-1",
+                        "segmentRef":"seg-1",
+                        "issuePurpose":"INITIAL"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn domain_invariant_violation_surfaces_as_domain_rule_violation() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request, StatusCode};
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    let app = router();
+    let issue_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/entitlements")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0c101")
+                .body(Body::from(
+                    json!({
+                        "segmentBookingId":"sb-domain-1",
+                        "journeyOrderId":"ord-domain-1",
+                        "travelerRef":"tvl-domain-1",
+                        "segmentRef":"seg-domain-1",
+                        "issuePurpose":"INITIAL"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let issued: Value = serde_json::from_slice(
+        &to_bytes(issue_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let entitlement_id = issued["entitlementId"].as_str().unwrap();
+
+    let first_void = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/entitlements/{entitlement_id}/void"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0c102")
+                .body(Body::from(
+                    json!({"reason":"REFUND","policy":"NORMAL","businessCaseRef":"case-domain"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first_void.status(), StatusCode::OK);
+
+    let second_void = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/entitlements/{entitlement_id}/void"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0c103")
+                .body(Body::from(
+                    json!({"reason":"REFUND","policy":"NORMAL","businessCaseRef":"case-domain-2"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_void.status(), StatusCode::PRECONDITION_FAILED);
 }
