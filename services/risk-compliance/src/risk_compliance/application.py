@@ -111,6 +111,8 @@ class RiskAssessmentResult:
     reasonCode: str
     reasonExplanation: str
     assessedAt: str
+    evidenceRef: str
+    assessmentSnapshotHash: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +126,13 @@ class RiskAssessmentResult:
             "reasonCode": self.reasonCode,
             "reasonExplanation": self.reasonExplanation,
             "assessedAt": self.assessedAt,
+        }
+
+    def to_event_payload(self) -> dict[str, Any]:
+        return {
+            **self.to_dict(),
+            "evidenceRef": self.evidenceRef,
+            "assessmentSnapshotHash": self.assessmentSnapshotHash,
         }
 
 
@@ -239,7 +248,7 @@ class RiskComplianceService:
         self.repository.save(result)
         self.repository.save_replay(
             idempotency_key,
-            IdempotencyRecord(request_hash=request_hash, body=result.to_dict()),
+            IdempotencyRecord(request_hash=request_hash, body=result.to_event_payload()),
         )
         self.publisher.publish(_assessment_envelope(result, correlation_id, prefixed_id("cmd")))
         return result, False
@@ -265,9 +274,18 @@ def uuid7() -> UUID:
 def is_uuid7(value: str) -> bool:
     try:
         parsed = UUID(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError):
         return False
     return parsed.version == 7
+
+
+def prefixed_uuid7(prefix: str) -> str:
+    return f"{prefix}-{uuid7()}"
+
+
+def is_prefixed_uuid7(value: str, prefix: str) -> bool:
+    expected = f"{prefix}-"
+    return value.startswith(expected) and is_uuid7(value[len(expected):])
 
 
 def datetime_to_rfc3339(value: datetime) -> str:
@@ -348,17 +366,19 @@ def _to_result(assessment: RiskAssessment) -> RiskAssessmentResult:
         reasonCode=assessment.reason_code,
         reasonExplanation=assessment.reason_explanation or "",
         assessedAt=datetime_to_rfc3339(assessment.assessed_at),
+        evidenceRef=assessment.evidence_bundle.bundle_id if assessment.evidence_bundle is not None else f"evid-{assessment.assessment_id}",
+        assessmentSnapshotHash=assessment.input_snapshot.digest,
     )
 
 
 def _assessment_envelope(result: RiskAssessmentResult, correlation_id: str, causation_id: str) -> EventEnvelope:
     return EventEnvelope(
         eventId=prefixed_id("evt"),
-        eventType="RiskAssessmentResult",
+        eventType="RiskAssessed",
         occurredAt=result.assessedAt,
         correlationId=canonical_correlation_id(correlation_id),
         causationId=causation_id,
         producer=PRODUCER,
         schemaVersion=SCHEMA_VERSION,
-        payload=result.to_dict(),
+        payload=result.to_event_payload(),
     )

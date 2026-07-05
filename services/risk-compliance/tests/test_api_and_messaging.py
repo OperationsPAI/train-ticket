@@ -11,6 +11,7 @@ from risk_compliance import (
     RiskComplianceService,
     create_app,
 )
+from risk_compliance.application import is_prefixed_uuid7, is_uuid7, uuid7
 
 
 def fake_app():
@@ -23,7 +24,7 @@ def test_assess_risk_happy_path_and_get() -> None:
 
     response = client.post(
         "/api/v1/risk-assessments",
-        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c333", "X-Correlation-Id": "corr-test"},
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
         json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 120}},
     )
 
@@ -50,21 +51,21 @@ def test_assess_risk_happy_path_and_get() -> None:
 
 
 def test_get_unknown_assessment_returns_not_found_error_body() -> None:
-    response = TestClient(fake_app()).get("/api/v1/risk-assessments/asmt-missing", headers={"X-Correlation-Id": "corr-404"})
+    response = TestClient(fake_app()).get("/api/v1/risk-assessments/asmt-missing", headers={"X-Correlation-Id": str(uuid7())})
 
     assert response.status_code == 404
-    assert response.json() == {
-        "code": "NOT_FOUND",
-        "message": "Risk assessment was not found",
-        "correlationId": "corr-404",
-        "details": {},
-    }
+    body = response.json()
+    assert body["code"] == "NOT_FOUND"
+    assert body["message"] == "Risk assessment was not found"
+    assert body["correlationId"] == response.headers["X-Correlation-Id"]
+    assert is_uuid7(body["correlationId"])
+    assert body["details"] == {}
 
 
 def test_validation_failure_uses_canonical_400_body() -> None:
     response = TestClient(fake_app()).post(
         "/api/v1/risk-assessments",
-        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c334", "X-Correlation-Id": "corr-validation"},
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
         json={"subjectRef": "ord-123", "scenario": "invalid", "context": {}},
     )
 
@@ -72,14 +73,14 @@ def test_validation_failure_uses_canonical_400_body() -> None:
     body = response.json()
     assert body["code"] == "VALIDATION_FAILED"
     assert body["message"] == "Request validation failed"
-    assert body["correlationId"] == "corr-validation"
+    assert is_uuid7(body["correlationId"])
     assert "errors" in body["details"]
 
 
 def test_missing_idempotency_key_is_validation_error() -> None:
     response = TestClient(fake_app()).post(
         "/api/v1/risk-assessments",
-        headers={"X-Correlation-Id": "corr-idem"},
+        headers={"X-Correlation-Id": str(uuid7())},
         json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
     )
 
@@ -95,17 +96,16 @@ class FailingPublisher(InMemoryEventPublisher):
 def test_malformed_idempotency_key_is_validation_error() -> None:
     response = TestClient(fake_app()).post(
         "/api/v1/risk-assessments",
-        headers={"Idempotency-Key": "not-a-uuid-v7", "X-Correlation-Id": "corr-idem-format"},
+        headers={"Idempotency-Key": "not-a-uuid-v7", "X-Correlation-Id": str(uuid7())},
         json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
     )
 
     assert response.status_code == 400
-    assert response.json() == {
-        "code": "VALIDATION_FAILED",
-        "message": "Idempotency-Key must be a UUID v7",
-        "correlationId": "corr-idem-format",
-        "details": {},
-    }
+    body = response.json()
+    assert body["code"] == "VALIDATION_FAILED"
+    assert body["message"] == "Idempotency-Key must be a UUID v7"
+    assert is_uuid7(body["correlationId"])
+    assert body["details"] == {}
 
 
 def test_publish_failure_returns_unavailable_body_after_save() -> None:
@@ -114,7 +114,7 @@ def test_publish_failure_returns_unavailable_body_after_save() -> None:
 
     response = TestClient(app).post(
         "/api/v1/risk-assessments",
-        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c338", "X-Correlation-Id": "corr-publish"},
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
         json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 120}},
     )
 
@@ -126,7 +126,7 @@ def test_publish_failure_returns_unavailable_body_after_save() -> None:
 
 def test_idempotent_replay_returns_original_result() -> None:
     client = TestClient(fake_app())
-    headers = {"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c335", "X-Correlation-Id": "corr-replay"}
+    headers = {"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())}
     payload = {"subjectRef": "pi-123", "scenario": "payment_risk", "context": {"riskScore": 910}}
 
     created = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
@@ -139,7 +139,7 @@ def test_idempotent_replay_returns_original_result() -> None:
 
 def test_idempotency_key_reused_with_different_body_is_rejected() -> None:
     client = TestClient(fake_app())
-    headers = {"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c336", "X-Correlation-Id": "corr-reused"}
+    headers = {"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())}
     first = {"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 10}}
     second = {"subjectRef": "ord-456", "scenario": "order_risk", "context": {"riskScore": 10}}
 
@@ -153,10 +153,11 @@ def test_idempotency_key_reused_with_different_body_is_rejected() -> None:
 def test_publisher_wraps_domain_event_in_contract_envelope() -> None:
     app = fake_app()
     client = TestClient(app)
+    valid_correlation_id = str(uuid7())
 
     response = client.post(
         "/api/v1/risk-assessments",
-        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c337", "X-Correlation-Id": "corr-envelope"},
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": valid_correlation_id},
         json={"subjectRef": "acct-123", "scenario": "account_risk", "context": {"riskScore": 650}},
     )
 
@@ -165,23 +166,42 @@ def test_publisher_wraps_domain_event_in_contract_envelope() -> None:
     assert envelope.eventId.startswith("evt-")
     assert envelope.eventId.split("-", 1)[1][14] == "7"
     assert response.json()["assessmentId"].split("-", 1)[1][14] == "7"
-    assert envelope.eventType == "RiskAssessmentResult"
+    assert envelope.eventType == "RiskAssessed"
     assert envelope.producer == "risk-compliance"
     assert envelope.schemaVersion == 1
-    assert envelope.correlationId == "corr-envelope"
-    assert envelope.causationId.startswith("cmd-")
-    assert envelope.causationId.split("-", 1)[1][14] == "7"
+    assert envelope.correlationId == f"corr-{valid_correlation_id}"
+    event_payload_keys = set(envelope.payload)
+    assert event_payload_keys == {
+        "assessmentId",
+        "subjectRef",
+        "scenario",
+        "decision",
+        "score",
+        "level",
+        "policyVersion",
+        "reasonCode",
+        "reasonExplanation",
+        "assessedAt",
+        "evidenceRef",
+        "assessmentSnapshotHash",
+    }
+    assert envelope.causationId is not None and is_prefixed_uuid7(envelope.causationId, "cmd")
     assert envelope.occurredAt == response.json()["assessedAt"]
-    assert envelope.payload == response.json()
+    assert envelope.payload == {
+        **response.json(),
+        "evidenceRef": f"evid-{response.json()['assessmentId']}",
+        "assessmentSnapshotHash": envelope.payload["assessmentSnapshotHash"],
+    }
+    assert envelope.payload["assessmentSnapshotHash"]
 
 
 def test_subscriber_deduplicates_duplicate_event_id() -> None:
     envelope = EventEnvelope(
         eventId="evt-duplicate",
-        eventType="RiskAssessmentResult",
+        eventType="RiskAssessed",
         occurredAt="2026-07-05T10:30:00.000Z",
-        correlationId="corr-duplicate",
-        causationId="cmd-duplicate",
+        correlationId=str(uuid7()),
+        causationId=f"cmd-{uuid7()}",
         producer="risk-compliance",
         schemaVersion=1,
         payload={"assessmentId": "asmt-1"},
@@ -215,10 +235,36 @@ def test_envelope_accepts_optional_causation_id() -> None:
 def test_risk_score_zero_is_respected_when_score_fallback_present() -> None:
     response = TestClient(fake_app()).post(
         "/api/v1/risk-assessments",
-        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c341", "X-Correlation-Id": "corr-zero"},
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
         json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 0, "score": 999}},
     )
 
     assert response.status_code == 201
     assert response.json()["score"] == 0
     assert response.json()["decision"] == "ALLOW"
+
+
+def test_correlation_id_policy_absent_valid_and_malformed() -> None:
+    client = TestClient(fake_app())
+    valid = str(uuid7())
+
+    absent = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-v7"},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+    valid_response = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-v7", "X-Correlation-Id": valid},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+    malformed = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-v7", "X-Correlation-Id": "corr-bad"},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+
+    assert is_uuid7(absent.json()["correlationId"])
+    assert valid_response.json()["correlationId"] == valid
+    assert is_uuid7(malformed.json()["correlationId"])
+    assert malformed.json()["correlationId"] != "corr-bad"

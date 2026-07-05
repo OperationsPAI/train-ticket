@@ -91,12 +91,13 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
     request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid7())
-    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request_id
+    supplied_correlation_id = request.headers.get(CORRELATION_ID_HEADER)
+    correlation_id = supplied_correlation_id if supplied_correlation_id and is_uuid7(supplied_correlation_id) else str(uuid7())
     return request_id, correlation_id
 
 
 def error_response(request: Request, status_code: int, code: str, message: str, details: dict[str, Any] | None = None) -> JSONResponse:
-    correlation_id = getattr(request.state, "correlation_id", request.headers.get(CORRELATION_ID_HEADER) or str(uuid7()))
+    correlation_id = getattr(request.state, "correlation_id", str(uuid7()))
     return JSONResponse(
         status_code=status_code,
         content=ErrorBody(

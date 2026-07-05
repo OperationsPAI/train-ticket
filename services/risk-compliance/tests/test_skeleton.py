@@ -22,6 +22,7 @@ from risk_compliance import (
     record_evidence,
     resolve_challenge,
 )
+from risk_compliance.application import is_uuid7, uuid7
 
 
 class SkeletonTest(unittest.TestCase):
@@ -65,13 +66,14 @@ class SkeletonTest(unittest.TestCase):
 
     def test_request_and_correlation_ids_are_propagated(self) -> None:
         client = TestClient(create_app())
+        correlation_id = str(uuid7())
         response = client.get(
             "/health",
-            headers={"X-Request-ID": "req-123", "X-Correlation-ID": "corr-456"},
+            headers={"X-Request-ID": "req-123", "X-Correlation-ID": correlation_id},
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["X-Request-ID"], "req-123")
-        self.assertEqual(response.headers["X-Correlation-ID"], "corr-456")
+        self.assertEqual(response.headers["X-Correlation-ID"], correlation_id)
 
     def test_request_and_correlation_ids_are_generated(self) -> None:
         client = TestClient(create_app())
@@ -79,7 +81,8 @@ class SkeletonTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         request_id = response.headers["X-Request-ID"]
         self.assertTrue(request_id)
-        self.assertEqual(response.headers["X-Correlation-ID"], request_id)
+        self.assertTrue(is_uuid7(request_id))
+        self.assertTrue(is_uuid7(response.headers["X-Correlation-ID"]))
 
     def test_observability_trace_hook_is_opt_in(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []
