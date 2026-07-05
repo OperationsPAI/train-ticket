@@ -48,16 +48,18 @@ class EventEnvelope:
     payload: Mapping[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {
+        envelope = {
             "eventId": self.eventId,
             "eventType": self.eventType,
             "schemaVersion": self.schemaVersion,
             "producer": self.producer,
-            "causationId": self.causationId,
             "correlationId": self.correlationId,
             "occurredAt": _format_occurred_at(self.occurredAt),
             "payload": dict(self.payload),
         }
+        if self.causationId:
+            envelope["causationId"] = self.causationId
+        return envelope
 
     @classmethod
     def from_json_dict(cls, data: Mapping[str, Any]) -> "EventEnvelope":
@@ -96,6 +98,14 @@ class FatalHandlerError(HandlerError):
     """Fatal error: message should be moved to DLQ."""
 
 
+def _canonical_correlation_id(value: str) -> str:
+    if not value:
+        return f"corr-{new_uuid7()}"
+    if value.startswith("corr-"):
+        return value
+    return f"corr-{value}"
+
+
 def build_itinerary_proposed_event(
     intent_ref: str,
     itineraries: tuple[dict[str, Any], ...],
@@ -123,6 +133,6 @@ def build_itinerary_proposed_event(
         eventType="ItineraryProposed",
         producer="trip-planning",
         causationId=causation_id,
-        correlationId=correlation_id,
+        correlationId=_canonical_correlation_id(correlation_id),
         payload=payload,
     )

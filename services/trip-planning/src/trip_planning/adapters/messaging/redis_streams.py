@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -38,6 +39,12 @@ TRIP_PLANNING_SUBSCRIPTIONS = (
     "events:capacity-availability",
 )
 TRIP_PLANNING_CONSUMER_GROUP = "trip-planning"
+
+
+def default_consumer_name() -> str:
+    instance = os.getenv("HOSTNAME") or socket.gethostname() or "local"
+    safe_instance = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in instance)
+    return f"{TRIP_PLANNING_CONSUMER_GROUP}-{safe_instance}"
 
 
 class RedisEventPublisher:
@@ -121,6 +128,26 @@ class RedisEventSubscriber:
 
     def shutdown(self) -> None:
         self.stop()
+
+    def start_in_background(
+        self,
+        handler: Callable[[EventEnvelope], None],
+        *,
+        consumer_name: str | None = None,
+    ) -> threading.Thread:
+        thread = threading.Thread(
+            target=self.subscribe,
+            args=(
+                list(TRIP_PLANNING_SUBSCRIPTIONS),
+                TRIP_PLANNING_CONSUMER_GROUP,
+                consumer_name or default_consumer_name(),
+                handler,
+            ),
+            daemon=True,
+            name="trip-planning-redis-subscriber",
+        )
+        thread.start()
+        return thread
 
     def _ensure_group(self, stream: str, group: str) -> None:
         try:
