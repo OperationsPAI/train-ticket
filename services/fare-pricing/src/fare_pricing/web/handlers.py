@@ -201,9 +201,9 @@ def compute_adjustment_quote(
 
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
-    original_quote_id = service.find_fare_quote_id_for_entitlements(req.entitlementIds)
+    original_quote_id = service.find_fare_quote_id_for_segments(req.segmentRefs)
     if original_quote_id is None:
-        raise ApiError("PRECONDITION_FAILED", "Original fare quote not found for requested entitlements", 412)
+        raise ApiError("PRECONDITION_FAILED", "Original fare quote not found for requested segments", 412)
     original_quote = service.get_fare_quote(original_quote_id)
     rule_set_id = service.find_published_rule_set_id(original_quote.channel)
     if rule_set_id is None:
@@ -277,4 +277,5 @@ def _adjustment_quote_event_payload(aq: AdjustmentQuote, request_body: Adjustmen
     if request_body is not None:
         payload["journeyOrderId"] = request_body.journeyOrderId
         payload["entitlementIds"] = list(request_body.entitlementIds)
+        payload["segmentRefs"] = list(request_body.segmentRefs)
     return payload

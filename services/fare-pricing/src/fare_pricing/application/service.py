@@ -154,30 +154,14 @@ class FarePricingService:
         if normalized_refs:
             self._store.fare_quote_segment_links[quote_id] = normalized_refs
 
-    def find_fare_quote_id_for_entitlements(self, entitlement_ids: list[str]) -> str | None:
-        requested_segments = self._segment_refs_from_entitlements(entitlement_ids)
+    def find_fare_quote_id_for_segments(self, segment_refs: list[str]) -> str | None:
+        requested_segments = {ref.strip() for ref in segment_refs if ref.strip()}
         if not requested_segments:
             return None
-        requested_set = set(requested_segments)
-        for quote_id, segment_refs in self._store.fare_quote_segment_links.items():
-            if requested_set.issubset(set(segment_refs)):
+        for quote_id, linked_segments in self._store.fare_quote_segment_links.items():
+            if requested_segments.issubset(set(linked_segments)):
                 return quote_id
         return None
-
-    @staticmethod
-    def _segment_refs_from_entitlements(entitlement_ids: list[str]) -> tuple[str, ...]:
-        segment_refs: list[str] = []
-        for entitlement_id in entitlement_ids:
-            if not entitlement_id.strip():
-                continue
-            if entitlement_id.startswith("seg-"):
-                segment_refs.append(entitlement_id)
-                continue
-            if entitlement_id.startswith("ent-"):
-                segment_refs.append("seg-" + entitlement_id.removeprefix("ent-"))
-                continue
-            segment_refs.append(entitlement_id)
-        return tuple(sorted(segment_refs))
 
     def get_fare_quote(self, quote_id: str) -> FareQuote:
         return self._store.get_quote(quote_id)

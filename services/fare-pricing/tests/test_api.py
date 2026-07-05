@@ -27,7 +27,7 @@ from fare_pricing.ids import uuid7
 from fare_pricing.application.service import InMemoryStore
 from fare_pricing.ports import EventEnvelope
 from fare_pricing.ports.messaging import PublishFailed
-from fare_pricing.adapters.messaging.fake import FakeEventPublisher
+from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
 
@@ -162,6 +162,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
+                "segmentRefs": ["seg-456"],
             },
         )
         self.assertEqual(resp.status_code, 400)
@@ -201,6 +202,7 @@ class FarePricingApiTest(unittest.TestCase):
                     "purpose": "REFUND",
                     "entitlementIds": ["ent-456"],
                     "journeyOrderId": "ord-456",
+                    "segmentRefs": ["seg-456"],
                 },
                 headers={"Idempotency-Key": bad_key},
             )
@@ -227,6 +229,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
+                "segmentRefs": ["seg-456"],
             },
             headers={"Idempotency-Key": uuid7_key(998)},
         )
@@ -290,7 +293,7 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(create_resp.status_code, 201)
         quote_id = create_resp.json()["quoteId"]
 
-        # Add refund fee rule; entitlement ent-456 resolves to the quoted segment seg-456.
+        # Add refund fee rule; request segmentRefs resolve to the quoted segment seg-456.
         self.store.fare_rule_sets[self.rs.rule_set_id] = published_rule_set(
             rule("refund", RuleKind.REFUND_FEE, "20.00"),
         )
@@ -300,6 +303,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
+                "segmentRefs": ["seg-456"],
             },
             headers={"Idempotency-Key": uuid7_key()},
         )
@@ -315,15 +319,17 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(adjustment_events[0].payload["adjustmentQuoteId"], data["adjustmentQuoteId"])
         self.assertEqual(adjustment_events[0].payload["originalQuoteId"], quote_id)
         self.assertEqual(adjustment_events[0].payload["entitlementIds"], ["ent-456"])
+        self.assertEqual(adjustment_events[0].payload["segmentRefs"], ["seg-456"])
 
     def test_adjustment_quote_not_found(self) -> None:
-        """No entitlement-matching original quote fails the precondition."""
+        """No segment-matching original quote fails the precondition."""
         resp = self.client.post(
             "/api/v1/adjustment-quotes",
             json={
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
+                "segmentRefs": ["seg-456"],
             },
             headers={"Idempotency-Key": uuid7_key()},
         )
@@ -337,6 +343,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
+                "segmentRefs": ["seg-456"],
                 "fareQuoteRef": "fq-contract-forbidden",
             },
             headers={"Idempotency-Key": uuid7_key()},
@@ -609,6 +616,27 @@ class FarePricingMessagingTest(unittest.TestCase):
         stream_events = publisher.published_envelopes_on_stream("events:fare-pricing")
         self.assertEqual(len(stream_events), 1)
         self.assertEqual(stream_events[0].event_id, "evt-stream-test")
+
+    def test_fake_subscriber_deduplicates_duplicate_event_ids(self) -> None:
+        duplicate = EventEnvelope(
+            event_id="evt-duplicate",
+            event_type="FareRuleSetPublished",
+            producer="fare-pricing",
+            correlation_id="corr-test",
+            occurred_at=NOW,
+            payload={"ruleSetId": "rs-main"},
+        )
+        subscriber = FakeEventSubscriber([duplicate, duplicate])
+        handled: list[str] = []
+
+        subscriber.subscribe(
+            ["events:fare-pricing"],
+            "fare-pricing",
+            "fare-pricing-test",
+            lambda envelope: handled.append(envelope.event_id),
+        )
+
+        self.assertEqual(handled, ["evt-duplicate"])
 
 
 if __name__ == "__main__":
