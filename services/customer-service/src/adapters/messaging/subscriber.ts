@@ -17,11 +17,17 @@ import {
 type StreamEntry = [id: string, fields: string[]];
 type StreamMessages = [stream: string, entries: StreamEntry[]];
 
+export type SubscriberLoopFailureHandler = (error: unknown) => void;
+
 export class RedisEventSubscriber implements EventSubscriber {
   private stopped = false;
   private readonly consumedEventIds = new Set<string>();
+  private readonly backgroundLoops = new Set<Promise<void>>();
 
-  constructor(private readonly redis: Redis = new Redis(process.env.REDIS_URL ?? DEFAULT_REDIS_URL)) {}
+  constructor(
+    private readonly redis: Redis = new Redis(process.env.REDIS_URL ?? DEFAULT_REDIS_URL),
+    private readonly onLoopFailure: SubscriberLoopFailureHandler = defaultLoopFailureHandler,
+  ) {}
 
   async subscribe(
     streams: readonly string[],
@@ -31,8 +37,8 @@ export class RedisEventSubscriber implements EventSubscriber {
   ): Promise<void> {
     try {
       await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
-      void this.poll(streams, group, consumerName, handler);
-      void this.recover(streams, group, consumerName, handler);
+      this.startLoop(this.poll(streams, group, consumerName, handler));
+      this.startLoop(this.recover(streams, group, consumerName, handler));
     } catch (error) {
       throw new SubscribeFailed("Failed to subscribe to event streams", { cause: error });
     }
@@ -41,6 +47,18 @@ export class RedisEventSubscriber implements EventSubscriber {
   async stop(): Promise<void> {
     this.stopped = true;
     this.redis.disconnect();
+  }
+
+  private startLoop(loop: Promise<void>): void {
+    this.backgroundLoops.add(loop);
+    loop.catch((error) => {
+      if (!this.stopped) {
+        this.stopped = true;
+        this.onLoopFailure(new SubscribeFailed("Redis subscriber background loop failed", { cause: error }));
+      }
+    }).finally(() => {
+      this.backgroundLoops.delete(loop);
+    });
   }
 
   private async createGroup(stream: string, group: string): Promise<void> {
@@ -173,5 +191,13 @@ function fieldValue(fields: string[], name: string): string | undefined {
 }
 
 function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref?.();
+  });
+}
+
+function defaultLoopFailureHandler(error: unknown): void {
+  console.error(error);
+  process.exit(1);
 }
