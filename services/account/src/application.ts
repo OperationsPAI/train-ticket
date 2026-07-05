@@ -200,7 +200,11 @@ export function fingerprintRequest(method: string, path: string, body: unknown):
   return createHash("sha256").update(JSON.stringify({ method, path, body: normalizeJson(body) })).digest("hex");
 }
 
-export function mapError(error: unknown): ApplicationError {
+export type DomainErrorMapping = Readonly<{
+  preconditionDomainCodes?: readonly string[] | "all";
+}>;
+
+export function mapError(error: unknown, mapping: DomainErrorMapping = {}): ApplicationError {
   if (error instanceof ApplicationError) {
     return error;
   }
@@ -208,9 +212,16 @@ export function mapError(error: unknown): ApplicationError {
     if (error.code === "MISSING_REQUIRED_FIELD") {
       return new ApplicationError("VALIDATION_FAILED", error.message, 400, { domainCode: error.code });
     }
+    if (isPreconditionFailure(error.code, mapping)) {
+      return new ApplicationError("PRECONDITION_FAILED", error.message, 412, { domainCode: error.code });
+    }
     return new ApplicationError("DOMAIN_RULE_VIOLATION", error.message, 422, { domainCode: error.code });
   }
   return new ApplicationError("UNAVAILABLE", "The account service is temporarily unavailable", 503);
+}
+
+function isPreconditionFailure(domainCode: string, mapping: DomainErrorMapping): boolean {
+  return mapping.preconditionDomainCodes === "all" || mapping.preconditionDomainCodes?.includes(domainCode) === true;
 }
 
 function accountDetails(snapshot: UserAccountSnapshot, preferences: Record<string, string>): AccountDetailsDto {
