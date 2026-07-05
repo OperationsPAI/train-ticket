@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
 from .domain import DashboardReadModel, MetricCategory, MetricDefinition, ReportingError
@@ -362,6 +363,21 @@ def configure_error_handlers(app: FastAPI) -> None:
             status_code=400,
             content=_error_body(request, "VALIDATION_FAILED", "request validation failed", {"errors": exc.errors()}),
         )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def framework_http_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        code_by_status = {
+            400: "VALIDATION_FAILED",
+            404: "NOT_FOUND",
+            405: "VALIDATION_FAILED",
+            409: "CONFLICT",
+            412: "PRECONDITION_FAILED",
+            422: "DOMAIN_RULE_VIOLATION",
+            503: "UNAVAILABLE",
+        }
+        code = code_by_status.get(exc.status_code, "UNAVAILABLE")
+        message = exc.detail if isinstance(exc.detail, str) else "request failed"
+        return JSONResponse(status_code=exc.status_code, content=_error_body(request, code, message))
 
 
 def create_app(

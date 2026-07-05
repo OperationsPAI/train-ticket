@@ -95,6 +95,11 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["code"], "NOT_FOUND")
 
+    def test_unknown_route_uses_canonical_not_found_body(self) -> None:
+        response = self.client.get("/api/v1/does-not-exist", headers={"X-Correlation-Id": "corr-route-test"})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"code": "NOT_FOUND", "message": "Not Found", "correlationId": "corr-route-test", "details": {}})
+
     def test_idempotent_replay_returns_original_result(self) -> None:
         app = create_app()
 
