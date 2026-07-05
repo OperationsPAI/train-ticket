@@ -10,11 +10,9 @@ use axum::{
     Json, Router,
     extract::{Extension, Query, rejection::JsonRejection},
     http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use shared_kernel::RequestContext;
 use std::sync::Arc;
 
@@ -79,7 +77,7 @@ async fn query_availability(
     let seg_ref = query.segment_ref.unwrap_or_default();
     let result = service
         .query_availability(&ss_ref, &seg_ref)
-        .map_err(|e| AppErrorResponse(e, correlation_id))?;
+        .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
     Ok(Json(to_availability_json(result)))
 }
 
@@ -139,7 +137,7 @@ async fn hold_capacity(
     let correlation_id = context.correlation_id().to_string();
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
     let Json(body) = body.map_err(|e| {
-        AppErrorResponse(
+        AppErrorResponse::new(
             AppError::ValidationFailed(e.body_text()),
             correlation_id.clone(),
         )
@@ -155,7 +153,7 @@ async fn hold_capacity(
 
     let result = service
         .hold_capacity(req, &idempotency_key, &correlation_id)
-        .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
+        .map_err(|e| AppErrorResponse::new(e, correlation_id.clone()))?;
     Ok((
         StatusCode::CREATED,
         Json(HoldCapacityResponseJson {
@@ -188,7 +186,7 @@ async fn confirm_hold(
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
     let result = service
         .confirm_hold(&hold_id, &idempotency_key, &correlation_id)
-        .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
+        .map_err(|e| AppErrorResponse::new(e, correlation_id.clone()))?;
     Ok(Json(ConfirmHoldResponseJson {
         hold_id: result.hold_id,
         status: result.status,
@@ -216,7 +214,7 @@ async fn release_hold(
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
     let result = service
         .release_hold(&hold_id, &idempotency_key, &correlation_id)
-        .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
+        .map_err(|e| AppErrorResponse::new(e, correlation_id.clone()))?;
     Ok(Json(ReleaseHoldResponseJson {
         hold_id: result.hold_id,
         status: result.status,
@@ -247,7 +245,7 @@ async fn get_hold(
     let correlation_id = context.correlation_id().to_string();
     let result = service
         .get_hold(&hold_id)
-        .map_err(|e| AppErrorResponse(e, correlation_id))?;
+        .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
     Ok(Json(GetHoldResponseJson {
         hold_id: result.hold_id,
         segment_ref: result.segment_ref,
@@ -263,19 +261,19 @@ async fn get_hold(
 // Error handling
 // ---------------------------------------------------------------------------
 
-pub struct AppErrorResponse(pub AppError, pub String); // (error, correlation_id)
+pub type AppErrorResponse = rust_kit::http::AppErrorResponse<AppError>;
 
-impl IntoResponse for AppErrorResponse {
-    fn into_response(self) -> axum::response::Response {
-        let status_code =
-            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let body = json!({
-            "code": self.0.code(),
-            "message": self.0.message(),
-            "correlationId": self.1,
-            "details": {}
-        });
-        (status_code, Json(body)).into_response()
+impl rust_kit::http::ContractErrorStatus for AppError {
+    fn status_code(&self) -> u16 {
+        AppError::status_code(self)
+    }
+
+    fn code(&self) -> &str {
+        AppError::code(self)
+    }
+
+    fn message(&self) -> &str {
+        AppError::message(self)
     }
 }
 
@@ -284,31 +282,6 @@ impl IntoResponse for AppErrorResponse {
 // ---------------------------------------------------------------------------
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
-/// Validate that a string looks like a UUID v7 (hex with hyphens, version digit 7).
-fn is_uuid_v7(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.len() != 36 {
-        return false;
-    }
-    if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
-        return false;
-    }
-    // Version nibble at position 14 must be '7'
-    if bytes[14] != b'7' {
-        return false;
-    }
-    // Check all hex chars
-    for (i, &b) in bytes.iter().enumerate() {
-        if i == 8 || i == 13 || i == 18 || i == 23 {
-            continue;
-        }
-        if !b.is_ascii_hexdigit() {
-            return false;
-        }
-    }
-    true
-}
-
 fn get_idempotency_key(
     headers: &axum::http::HeaderMap,
     correlation_id: &str,
@@ -319,7 +292,7 @@ fn get_idempotency_key(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            AppErrorResponse(
+            AppErrorResponse::new(
                 AppError::ValidationFailed(
                     "Idempotency-Key header is required on state-changing POST".into(),
                 ),
@@ -328,8 +301,8 @@ fn get_idempotency_key(
         })?;
 
     // Validate UUID v7 format per api/README.md
-    if !is_uuid_v7(&key) {
-        return Err(AppErrorResponse(
+    if !rust_kit::idempotency::validate_uuid_v7(&key) {
+        return Err(AppErrorResponse::new(
             AppError::ValidationFailed("Idempotency-Key must be a valid UUID v7".into()),
             correlation_id.to_string(),
         ));
