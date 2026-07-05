@@ -1,4 +1,4 @@
-package ports
+package application
 
 import (
 	"sync"
@@ -50,3 +50,9 @@ func (h *DeduplicatingEventHandler) Handle(envelope domain.EventEnvelope) Handle
 	}
 	return result
 }
+
+type NoopPublisher struct{}
+
+func NewNoopPublisher() *NoopPublisher { return &NoopPublisher{} }
+
+func (p *NoopPublisher) Publish(envelope domain.EventEnvelope) error { return nil }

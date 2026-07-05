@@ -15,7 +15,7 @@ func Router() *gin.Engine {
 	service := application.NewService(application.ServiceConfig{
 		Places:    ports.NewInMemoryPlaceRepository(),
 		Nodes:     ports.NewInMemoryTransportNodeRepository(),
-		Publisher: ports.NewNoopPublisher(),
+		Publisher: application.NewNoopPublisher(),
 		Clock:     domain.RealClock{},
 	})
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})

@@ -10,21 +10,21 @@ import (
 type ServiceConfig struct {
 	Places    ports.PlaceRepository
 	Nodes     ports.TransportNodeRepository
-	Publisher ports.EventPublisher
+	Publisher EventPublisher
 	Clock     domain.Clock
 }
 
 type Service struct {
 	places    ports.PlaceRepository
 	nodes     ports.TransportNodeRepository
-	publisher ports.EventPublisher
+	publisher EventPublisher
 	clock     domain.Clock
 }
 
 func NewService(cfg ServiceConfig) *Service {
 	publisher := cfg.Publisher
 	if publisher == nil {
-		publisher = ports.NewNoopPublisher()
+		publisher = NewNoopPublisher()
 	}
 	clock := cfg.Clock
 	if clock == nil {
