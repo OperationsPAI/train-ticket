@@ -17,6 +17,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -173,6 +174,109 @@ class BookingOrchestrationServicePayloadContractTest {
         assertTrue(service.toContractEvent(new BookingEvent.BookingSagaStepSucceeded(
             "domain-event-internal-2", "saga-123", Instant.parse("2026-07-05T10:00:09Z"),
             "reserve-seg-001", "idem-123")).isEmpty());
+    }
+
+    @Test
+    void paymentCapturedPayloadFromContractAdvancesSagaByStoredPaymentIntentId() {
+        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-payment", "corr-start");
+        published.clear();
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c201", "PaymentIntentCreated", 1, "payment",
+            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c202", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c203",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            Map.of(
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c204",
+                "businessRef", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123",
+                "purpose", "purchase",
+                "amount", Map.of("currency", "CNY", "minorUnits", 35000),
+                "payerRef", "acc-123",
+                "idempotencyKey", "payment-idem-123",
+                "createdAt", "2026-07-05T10:01:00Z"))));
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c211", "PaymentCaptured", 1, "payment",
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c201", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c203",
+            Instant.parse("2026-07-05T10:02:00Z"),
+            Map.of(
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c204",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 35000),
+                "channel", "wechat_pay",
+                "channelTransactionId", "wx_txn_20260703_a1b2c3"))));
+
+        var detail = service.getSaga(start.sagaId()).orElseThrow();
+        assertEquals("TICKETING", detail.status());
+    }
+
+    @Test
+    void capacityReleasePayloadFromContractAdvancesSegmentByStoredHoldId() {
+        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-capacity", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-capacity", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c301"),
+            "idem-reservation-capacity", "corr-start");
+        published.clear();
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c302", "CapacityHeld", 1, "capacity-availability",
+            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c303", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c304",
+            Instant.parse("2026-07-05T10:03:00Z"),
+            Map.of(
+                "holdId", "hold-0194f2e0-7b3e-7610-0284-5c26e8b0c305",
+                "inventoryPoolId", "pool-123",
+                "capacityUnitRef", "cu-123",
+                "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+                "idempotencyKey", "ord-capacity:seg-001:tvl-123:purchase",
+                "expiresAt", "2026-07-05T10:08:00Z",
+                "idempotentReplay", false))));
+        published.clear();
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c306", "CapacityReleased", 1, "capacity-availability",
+            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c307", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c304",
+            Instant.parse("2026-07-05T10:04:00Z"),
+            Map.of(
+                "holdId", "hold-0194f2e0-7b3e-7610-0284-5c26e8b0c305",
+                "inventoryPoolId", "pool-123",
+                "capacityUnitRef", "cu-123",
+                "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+                "releasedAt", "2026-07-05T10:04:00Z",
+                "releaseReason", "payment-expired"))));
+
+        assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("SegmentBookingCancelled")));
+    }
+
+    @Test
+    void failurePathsPropagateConsumedEnvelopeCorrelationId() {
+        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-provider-failure", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-provider-failure", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c401"),
+            "idem-reservation-provider-failure", "corr-start");
+        published.clear();
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c402", "ProviderReservationFailed", 1, "provider-integration",
+            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c403", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c404",
+            Instant.parse("2026-07-05T10:05:00Z"),
+            Map.of("segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c401", "reason", "provider-unavailable"))));
+
+        assertTrue(published.getPublished().stream().anyMatch(envelope ->
+            envelope.eventType().equals("SegmentReservationFailed")
+                && "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c404".equals(envelope.correlationId())));
     }
 
 }
