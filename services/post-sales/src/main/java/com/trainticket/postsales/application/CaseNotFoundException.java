@@ -1,7 +1,10 @@
 package com.trainticket.postsales.application;
 
-public class CaseNotFoundException extends RuntimeException {
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
+
+public class CaseNotFoundException extends ApiException {
     public CaseNotFoundException(String caseId) {
-        super("post-sales case not found: " + caseId);
+        super(ApiErrorCode.NOT_FOUND, "post-sales case not found: " + caseId);
     }
 }

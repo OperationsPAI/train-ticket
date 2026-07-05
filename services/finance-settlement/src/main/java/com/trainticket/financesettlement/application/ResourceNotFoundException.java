@@ -1,7 +1,10 @@
 package com.trainticket.financesettlement.application;
 
-public class ResourceNotFoundException extends RuntimeException {
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
+
+public class ResourceNotFoundException extends ApiException {
     public ResourceNotFoundException(String message) {
-        super(message);
+        super(ApiErrorCode.NOT_FOUND, message);
     }
 }

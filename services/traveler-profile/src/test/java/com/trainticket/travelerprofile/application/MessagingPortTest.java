@@ -46,11 +46,11 @@ class MessagingPortTest {
             return EventSubscriber.HandlerResult.SUCCESS;
         });
         EventEnvelope envelope = new EventEnvelope(
-            "evt-duplicate",
+            "evt-018f0000-0000-7000-8000-000000000020",
             "TravelerProfileUpdated",
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-1",
-            "cmd-1",
+            "corr-018f0000-0000-7000-8000-000000000021",
+            "cmd-018f0000-0000-7000-8000-000000000022",
             "traveler-profile",
             1,
             objectMapper.createObjectNode()
@@ -59,8 +59,8 @@ class MessagingPortTest {
         assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
         assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
 
-        assertEquals(List.of("evt-duplicate"), handled);
-        assertTrue(log.hasConsumed("evt-duplicate"));
+        assertEquals(List.of("evt-018f0000-0000-7000-8000-000000000020"), handled);
+        assertTrue(log.hasConsumed("evt-018f0000-0000-7000-8000-000000000020"));
     }
 
     @Test
@@ -74,11 +74,11 @@ class MessagingPortTest {
                 : EventSubscriber.HandlerResult.SUCCESS;
         });
         EventEnvelope envelope = new EventEnvelope(
-            "evt-redelivered",
+            "evt-018f0000-0000-7000-8000-000000000030",
             "TravelerProfileUpdated",
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-1",
-            "cmd-1",
+            "corr-018f0000-0000-7000-8000-000000000021",
+            "cmd-018f0000-0000-7000-8000-000000000022",
             "traveler-profile",
             1,
             objectMapper.createObjectNode()
@@ -87,8 +87,8 @@ class MessagingPortTest {
         assertEquals(EventSubscriber.HandlerResult.TRANSIENT_FAILURE, handler.handle(envelope));
         assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
 
-        assertEquals(List.of("evt-redelivered", "evt-redelivered"), handled);
-        assertTrue(log.hasConsumed("evt-redelivered"));
+        assertEquals(List.of("evt-018f0000-0000-7000-8000-000000000030", "evt-018f0000-0000-7000-8000-000000000030"), handled);
+        assertTrue(log.hasConsumed("evt-018f0000-0000-7000-8000-000000000030"));
     }
 
     private static final class InMemoryPublisher implements EventPublisher {

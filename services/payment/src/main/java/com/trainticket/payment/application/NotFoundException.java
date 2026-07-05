@@ -1,7 +1,10 @@
 package com.trainticket.payment.application;
 
-public class NotFoundException extends RuntimeException {
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
+
+public class NotFoundException extends ApiException {
     public NotFoundException(String message) {
-        super(message);
+        super(ApiErrorCode.NOT_FOUND, message);
     }
 }

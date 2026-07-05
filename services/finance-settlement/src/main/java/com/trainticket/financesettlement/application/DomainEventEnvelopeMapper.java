@@ -1,6 +1,7 @@
 package com.trainticket.financesettlement.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCaseOpened;
@@ -83,14 +84,17 @@ public final class DomainEventEnvelopeMapper {
     }
 
     private static String canonicalEventId(String eventId) {
-        return eventId.startsWith("evt-") ? eventId : "evt-" + eventId;
+        String prefixed = eventId.startsWith("evt-") ? eventId : "evt-" + eventId;
+        return PrefixedIds.isEventId(prefixed) ? prefixed : PrefixedIds.newEventId();
     }
 
     private static String canonicalCorrelationId(String correlationId) {
-        return correlationId.startsWith("corr-") ? correlationId : "corr-" + correlationId;
+        String prefixed = correlationId.startsWith("corr-") ? correlationId : "corr-" + correlationId;
+        return PrefixedIds.isCorrelationId(prefixed) ? prefixed : PrefixedIds.newCorrelationId();
     }
 
     private static String canonicalCausationId(String causationId) {
-        return (causationId.startsWith("cmd-") || causationId.startsWith("evt-")) ? causationId : "cmd-" + causationId;
+        String prefixed = (causationId.startsWith("cmd-") || causationId.startsWith("evt-")) ? causationId : "cmd-" + causationId;
+        return PrefixedIds.isCausationId(prefixed) ? prefixed : PrefixedIds.newCommandId();
     }
 }

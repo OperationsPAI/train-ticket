@@ -1,7 +1,7 @@
 package com.trainticket.postsales.application;
 
-public class IdempotencyKeyReusedException extends RuntimeException {
+public class IdempotencyKeyReusedException extends com.trainticket.platformkit.idempotency.IdempotencyKeyReusedException {
     public IdempotencyKeyReusedException(String key) {
-        super("Idempotency-Key was reused with a different request body: " + key);
+        super();
     }
 }

@@ -171,7 +171,17 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private static EventEnvelope envelopeWithPayload(JourneyOrderEvent event) {
-        return event.envelope().withPayload(eventPayload(event));
+        EventEnvelope envelope = event.envelope();
+        return new EventEnvelope(
+            envelope.eventId(),
+            envelope.eventType(),
+            envelope.occurredAt(),
+            envelope.correlationId(),
+            envelope.causationId(),
+            envelope.producer(),
+            envelope.schemaVersion(),
+            eventPayload(event)
+        );
     }
 
     private static Map<String, Object> eventPayload(JourneyOrderEvent event) {

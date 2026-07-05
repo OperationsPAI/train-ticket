@@ -115,11 +115,11 @@ class MessagingPortsTest {
         RecordingConsumedEventLog log = new RecordingConsumedEventLog();
         PostSalesEventHandler handler = new PostSalesEventHandler(log);
         EventEnvelope envelope = new EventEnvelope(
-            "evt-duplicate",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d001",
             "JourneyOrderCancelled",
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-duplicate",
-            "evt-source",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d002",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d003",
             "journey-order",
             1,
             Map.of("journeyOrderId", "ord-test-3")
@@ -134,11 +134,11 @@ class MessagingPortsTest {
     void fakeSubscriberUsesDeliveryCountForDlqDecision() {
         FakeDeliveryCounterSubscriber subscriber = new FakeDeliveryCounterSubscriber();
         EventEnvelope envelope = new EventEnvelope(
-            "evt-retry",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d004",
             "JourneyOrderCancelled",
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-retry",
-            "evt-source",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d005",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d003",
             "journey-order",
             1,
             Map.of("journeyOrderId", "ord-test-4")
@@ -150,7 +150,7 @@ class MessagingPortsTest {
         subscriber.deliver(envelope, 5, ignored -> EventSubscriber.HandlerResult.TRANSIENT_FAILURE);
 
         assertEquals(1, subscriber.dlq.size());
-        assertEquals("evt-retry", subscriber.dlq.getFirst().eventId());
+        assertEquals("evt-0194f2e0-7b3e-7610-8284-5c26e8b0d004", subscriber.dlq.getFirst().eventId());
     }
 
     private static PostSalesCase approvedCase() {

@@ -1,5 +1,6 @@
 package com.trainticket.payment;
 
+import com.trainticket.platformkit.http.CorrelationIds;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -41,6 +42,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
 
         request.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
         request.setAttribute(CORRELATION_ID_ATTRIBUTE, correlationId);
+        request.setAttribute(CorrelationIds.CORRELATION_ATTRIBUTE, correlationId);
         response.setHeader(REQUEST_ID_HEADER, requestId);
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
         MDC.put("requestId", requestId);

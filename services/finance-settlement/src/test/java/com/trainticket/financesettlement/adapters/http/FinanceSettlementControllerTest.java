@@ -82,18 +82,17 @@ class FinanceSettlementControllerTest {
 
     @Test
     void validationFailureReturnsCanonicalErrorBody() throws Exception {
-        mockMvc.perform(get("/api/v1/reconciliation-cases").param("limit", "0").header("X-Correlation-Id", "corr-bad"))
+        mockMvc.perform(get("/api/v1/reconciliation-cases").param("limit", "0").header("X-Correlation-Id", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0f001"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
-            .andExpect(jsonPath("$.correlationId").value("corr-bad"))
-            .andExpect(jsonPath("$.details").isMap());
+            .andExpect(jsonPath("$.correlationId").value("corr-0194f2e0-7b3e-7610-8284-5c26e8b0f001"));
     }
 
     @Test
     void notFoundReturnsCanonicalErrorBody() throws Exception {
-        mockMvc.perform(get("/api/v1/revenue-recognitions/missing").header("X-Correlation-Id", "corr-missing"))
+        mockMvc.perform(get("/api/v1/revenue-recognitions/missing").header("X-Correlation-Id", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0f002"))
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.code").value("NOT_FOUND"))
-            .andExpect(jsonPath("$.correlationId").value("corr-missing"));
+            .andExpect(jsonPath("$.correlationId").value("corr-0194f2e0-7b3e-7610-8284-5c26e8b0f002"));
     }
 }

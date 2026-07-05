@@ -1,6 +1,7 @@
 package com.trainticket.travelerprofile.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.trainticket.travelerprofile.domain.Document;
@@ -270,7 +271,7 @@ public class TravelerProfileService {
 
     private void publish(TravelerProfileEvent event, StoredTraveler traveler) {
         eventPublisher.publish(new EventEnvelope(
-            canonicalEventId(event.eventId()),
+            PrefixedIds.newEventId(),
             externalEventType(event),
             event.occurredAt(),
             canonicalCorrelationId(event.correlationId()),
@@ -352,23 +353,15 @@ public class TravelerProfileService {
     }
 
     private static String commandId() {
-        return canonicalCommandId(UUID.randomUUID().toString());
-    }
-
-    private static String canonicalEventId(String id) {
-        return id.startsWith("evt-") ? id : "evt-" + id;
-    }
-
-    private static String canonicalCommandId(String id) {
-        return id.startsWith("cmd-") ? id : "cmd-" + id;
+        return PrefixedIds.newCommandId();
     }
 
     private static String canonicalCausationId(String id) {
-        return id.startsWith("cmd-") || id.startsWith("evt-") ? id : "cmd-" + id;
+        return PrefixedIds.isCausationId(id) ? id : PrefixedIds.newCommandId();
     }
 
     private static String canonicalCorrelationId(String id) {
-        return id.startsWith("corr-") ? id : "corr-" + id;
+        return PrefixedIds.isCorrelationId(id) ? id : PrefixedIds.newCorrelationId();
     }
 
     private static String scopedKey(String scope, String idempotencyKey) {

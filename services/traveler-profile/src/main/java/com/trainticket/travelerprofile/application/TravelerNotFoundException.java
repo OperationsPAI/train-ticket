@@ -1,7 +1,10 @@
 package com.trainticket.travelerprofile.application;
 
-public class TravelerNotFoundException extends RuntimeException {
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
+
+public class TravelerNotFoundException extends ApiException {
     public TravelerNotFoundException(String travelerId) {
-        super("Traveler profile not found: " + travelerId);
+        super(ApiErrorCode.NOT_FOUND, "traveler profile not found: " + travelerId);
     }
 }

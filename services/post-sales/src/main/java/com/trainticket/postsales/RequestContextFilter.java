@@ -1,12 +1,13 @@
 package com.trainticket.postsales;
 
+import com.trainticket.platformkit.http.CorrelationIds;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Optional;
-import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -38,6 +39,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
         );
         request.setAttribute("requestId", requestId);
         request.setAttribute("correlationId", correlationId);
+        request.setAttribute(CorrelationIds.CORRELATION_ATTRIBUTE, correlationId);
 
         response.setHeader(REQUEST_ID_HEADER, requestId);
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
@@ -61,6 +63,6 @@ public class RequestContextFilter extends OncePerRequestFilter {
         return Optional.ofNullable(request.getHeader(headerName))
             .map(String::trim)
             .filter(value -> !value.isEmpty())
-            .orElseGet(() -> generatedPrefix + UUID.randomUUID());
+            .orElseGet(() -> generatedPrefix.isEmpty() ? com.trainticket.platformkit.idempotency.UuidV7.generate() : PrefixedIds.newCorrelationId());
     }
 }

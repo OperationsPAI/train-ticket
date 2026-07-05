@@ -1,6 +1,7 @@
 package com.trainticket.bookingorchestration.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.bookingorchestration.domain.BookingEvent;
 import com.trainticket.bookingorchestration.domain.BookingSaga;
 import com.trainticket.bookingorchestration.domain.BookingSagaStatus;
@@ -390,10 +391,14 @@ public class BookingOrchestrationService {
                 continue;
             }
             eventPublisher.publish(new EventEnvelope(
-                "evt-" + UUID.randomUUID(), contractEvent.get().eventType(), 1, PRODUCER,
-                causationId == null || causationId.isBlank() ? "cmd-" + UUID.randomUUID() : causationId,
-                correlationId == null || correlationId.isBlank() ? "corr-" + UUID.randomUUID() : correlationId,
-                clock.instant(), contractEvent.get().payload()));
+                PrefixedIds.newEventId(),
+                contractEvent.get().eventType(),
+                clock.instant(),
+                PrefixedIds.isCorrelationId(correlationId) ? correlationId : PrefixedIds.newCorrelationId(),
+                PrefixedIds.isCausationId(causationId) ? causationId : PrefixedIds.newCommandId(),
+                PRODUCER,
+                1,
+                contractEvent.get().payload()));
         }
     }
 

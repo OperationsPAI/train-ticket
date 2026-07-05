@@ -32,12 +32,12 @@ class BookingOrchestrationControllerTest {
         bookingService = new BookingOrchestrationService(clock, eventPublisher);
         controller = new BookingOrchestrationController(bookingService);
         request = new MockHttpServletRequest();
-        request.setAttribute(RequestContextFilter.CORRELATION_ID_HEADER, "corr-" + UUID.randomUUID());
+        request.setAttribute(RequestContextFilter.CORRELATION_ID_HEADER, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a032");
     }
 
     private String createTestSaga() {
         var req = new BookingOrchestrationController.StartSagaRequest(
-            "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123",
+            "ord-0194f2e0-7b3e-7610-8284-5c26e8b0c123",
             "acc-123",
             "off-123",
             List.of("tvl-user1"),
@@ -53,9 +53,10 @@ class BookingOrchestrationControllerTest {
             new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", segmentBookingId),
             UUID.randomUUID().toString(), request);
         bookingService.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
-            "evt-" + UUID.randomUUID(), "ProviderReservationConfirmed", 1, "provider-integration",
-            "evt-" + UUID.randomUUID(), (String) request.getAttribute(RequestContextFilter.CORRELATION_ID_HEADER),
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a031", "ProviderReservationConfirmed",
             Instant.parse("2026-07-05T10:00:01Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a032", "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a033",
+            "provider-integration", 1,
             Map.of("segmentBookingId", segmentBookingId,
                 "providerReference", Map.of("providerId", "provider-1", "reservationId", "res-1", "displayReference", "PNR1"),
                 "normalizedEvidence", "confirmed")));
@@ -66,9 +67,9 @@ class BookingOrchestrationControllerTest {
     @Test
     void startSagaHappyPath() {
         var req = new BookingOrchestrationController.StartSagaRequest(
-            "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123",
-            "acc-0194f2e0-7b3e-7610-0284-5c26e8b0c456",
-            "off-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
+            "ord-0194f2e0-7b3e-7610-8284-5c26e8b0c123",
+            "acc-0194f2e0-7b3e-7610-8284-5c26e8b0c456",
+            "off-0194f2e0-7b3e-7610-8284-5c26e8b0c789",
             List.of("tvl-user1"),
             List.of("seg-001", "seg-002"));
 
@@ -77,7 +78,7 @@ class BookingOrchestrationControllerTest {
         var body = (BookingOrchestrationController.StartSagaResponse) response.getBody();
         assertNotNull(body.sagaId());
         assertTrue(body.sagaId().startsWith("saga-"));
-        assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123", body.journeyOrderId());
+        assertEquals("ord-0194f2e0-7b3e-7610-8284-5c26e8b0c123", body.journeyOrderId());
         assertEquals("RESERVING", body.status());
         assertNotNull(body.startedAt());
         assertTrue(eventPublisher.getPublished().size() >= 1);
@@ -86,9 +87,9 @@ class BookingOrchestrationControllerTest {
     @Test
     void startSagaReturnsIdempotentResponse() {
         var req = new BookingOrchestrationController.StartSagaRequest(
-            "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c123",
-            "acc-0194f2e0-7b3e-7610-0284-5c26e8b0c456",
-            "off-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
+            "ord-0194f2e0-7b3e-7610-8284-5c26e8b0c123",
+            "acc-0194f2e0-7b3e-7610-8284-5c26e8b0c456",
+            "off-0194f2e0-7b3e-7610-8284-5c26e8b0c789",
             List.of("tvl-user1"),
             List.of("seg-001"));
         String idempotencyKey = UUID.randomUUID().toString();
