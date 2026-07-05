@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 
 	"github.com/trainticket/greenfield/services/supplier-catalog/internal/domain"
 )
@@ -315,28 +316,25 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 func wrapDomainEvents(events []interface{}, correlationID, causationID string) []EventEnvelope {
 	envelopes := make([]EventEnvelope, 0, len(events))
 	for _, event := range events {
-		envelopes = append(envelopes, WrapDomainEvent(event, correlationID, causationID))
+		envelope, err := WrapDomainEvent(event, correlationID, causationID)
+		if err == nil {
+			envelopes = append(envelopes, envelope)
+		}
 	}
 	return envelopes
 }
 
-func WrapDomainEvent(event interface{}, correlationID, causationID string) EventEnvelope {
-	return EventEnvelope{
-		EventID:       ids.NewEventID(),
-		EventType:     eventType(event),
-		OccurredAt:    time.Now().UTC(),
-		CorrelationID: canonicalCorrelationID(correlationID),
-		CausationID:   canonicalCausationID(causationID),
-		Producer:      producerName,
-		SchemaVersion: 1,
-		Payload:       event,
+func WrapDomainEvent(event interface{}, correlationID, causationID string) (EventEnvelope, error) {
+	options := []kitmsg.EnvelopeOptions{}
+	if strings.TrimSpace(causationID) != "" {
+		options = append(options, kitmsg.EnvelopeOptions{CausationID: causationID})
 	}
+	return kitmsg.NewEventEnvelope(eventType(event), producerName, correlationID, event, options...)
 }
 
 func newUUIDString() string                      { return ids.NewUUIDv7() }
 func formatUTC(t time.Time) string               { return ids.FormatUTC(t) }
 func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
-func canonicalCausationID(value string) string   { return ids.CanonicalCausationID(value) }
 
 func eventType(event interface{}) string {
 	switch event.(type) {

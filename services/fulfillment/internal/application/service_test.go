@@ -49,7 +49,7 @@ func TestPublisherWrapsDomainEventInCanonicalEnvelope(t *testing.T) {
 		Source:           domain.FulfillmentSourceGate,
 		SourceEventID:    "gate-scan-1",
 		OccurredAt:       occurredAt,
-	}, CommandMetadata{CorrelationID: "corr-00000000-0000-4000-8000-00000000c0aa", CausationID: "cmd-00000000-0000-4000-8000-00000000c0bb"})
+	}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa", CausationID: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c0bb"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

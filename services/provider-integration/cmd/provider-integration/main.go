@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/adapters/messaging"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
@@ -35,7 +36,7 @@ func main() {
 
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{
 		Address: ":" + cfg.HTTPPort,
-		Handler: apphttp.RouterWithDependencies(service, application.NewIdempotencyStore()),
+		Handler: apphttp.RouterWithDependencies(service, idempotency.NewMemoryStore()),
 	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)

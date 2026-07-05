@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/redis/go-redis/v9"
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 
 	"github.com/trainticket/greenfield/services/supplier-catalog/internal/application"
 )
@@ -13,21 +13,21 @@ import (
 // bootstrap. Stream names and consumer-group wiring remain inside this adapter
 // package so application and runtime code stay broker-neutral.
 type RedisRuntime struct {
-	client     *redis.Client
+	eventBus   *kitmsg.RedisEventBus
 	publisher  *RedisPublisher
 	subscriber *RedisSubscriber
 }
 
 func NewRedisRuntimeFromEnv(ctx context.Context) (*RedisRuntime, error) {
-	client, err := NewRedisClientFromEnv()
+	eventBus, err := kitmsg.NewRedisEventBus(RedisURLFromEnv())
 	if err != nil {
 		return nil, err
 	}
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
+	if err := eventBus.Ping(ctx); err != nil {
+		_ = eventBus.Close()
 		return nil, fmt.Errorf("redis connection failed: %w", err)
 	}
-	return &RedisRuntime{client: client, publisher: NewRedisPublisher(client), subscriber: NewRedisSubscriber(client, nil)}, nil
+	return &RedisRuntime{eventBus: eventBus, publisher: eventBus, subscriber: NewRedisSubscriber(eventBus)}, nil
 }
 
 func (r *RedisRuntime) Publisher() application.EventPublisher { return r.publisher }
@@ -40,7 +40,7 @@ func (r *RedisRuntime) StartSupplierCatalogSubscriptions(ctx context.Context, co
 }
 
 func (r *RedisRuntime) Close() error {
-	return r.client.Close()
+	return r.eventBus.Close()
 }
 
 const supplierCatalogConsumerGroup = "supplier-catalog"
