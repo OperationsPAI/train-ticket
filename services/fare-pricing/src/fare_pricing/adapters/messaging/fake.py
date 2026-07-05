@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
 from ...ports import EventEnvelope
 from ...ports.messaging import (
     EventPublisher,
     EventSubscriber,
-    FatalHandlerError,
     PublishFailed,
-    SubscribeFailed,
-    TransientHandlerError,
 )
 
 
@@ -62,6 +58,7 @@ class FakeEventSubscriber(EventSubscriber):
         self.group: str = ""
         self.consumer_name: str = ""
         self._started = False
+        self._seen_event_ids: set[str] = set()
 
     def subscribe(
         self,
@@ -77,9 +74,12 @@ class FakeEventSubscriber(EventSubscriber):
         self._started = True
 
     def deliver(self, envelope: EventEnvelope) -> None:
-        """Simulate delivering an event to all registered handlers."""
+        """Simulate delivering an event with consumer-side eventId deduplication."""
+        if envelope.event_id in self._seen_event_ids:
+            return
         for handler in self.handlers:
             handler(envelope)
+        self._seen_event_ids.add(envelope.event_id)
 
     def deliver_raw(self, envelope_json: str) -> None:
         """Simulate delivering a raw JSON event to all registered handlers."""

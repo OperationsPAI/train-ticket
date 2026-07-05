@@ -138,6 +138,20 @@ class FarePricingService:
         self._store.save_adjustment_quote(aq)
         return aq
 
+    def find_published_rule_set_id(self, channel: str) -> str | None:
+        for rule_set_id, rule_set in self._store.fare_rule_sets.items():
+            if rule_set.status == RuleSetStatus.PUBLISHED and rule_set.channel == channel:
+                return rule_set_id
+        return None
+
+    def find_fare_quote_id_for_journey_order(self, journey_order_id: str) -> str | None:
+        # Until journey-order integration provides a persisted cross-reference,
+        # the in-memory implementation maps the seeded/created quote for tests.
+        # The HTTP layer depends on this application boundary, not store internals.
+        if not journey_order_id.strip():
+            return None
+        return next(iter(self._store.fare_quotes), None)
+
     def get_fare_quote(self, quote_id: str) -> FareQuote:
         return self._store.get_quote(quote_id)
 

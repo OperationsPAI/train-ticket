@@ -13,7 +13,7 @@ class EventPublisher(Protocol):
     """Abstract port for publishing domain events to the event bus.
 
     Implementation rules (see docs/08-contracts/messaging.md):
-    - Target stream is derived from envelope.producer -> "events:<producer>".
+    - Target destination is derived from envelope.producer by the adapter.
     - Serialize the entire envelope as a single JSON value in the "envelope" field.
     - Apply retention policy (MAXLEN ~ 100000) on publish.
     - Retry with exponential backoff (3 attempts) on transient failure.

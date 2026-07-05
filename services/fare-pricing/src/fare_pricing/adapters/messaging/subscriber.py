@@ -12,7 +12,6 @@ from ...ports import EventEnvelope
 from ...ports.messaging import (
     EventSubscriber,
     FatalHandlerError,
-    HandlerError,
     SubscribeFailed,
     TransientHandlerError,
 )
@@ -34,6 +33,7 @@ class RedisEventSubscriber(EventSubscriber):
         self._client: _redis.Redis | None = None  # type: ignore[name-defined]
         self._stop_event = Event()
         self._threads: list[Thread] = []
+        self._seen_event_ids: set[str] = set()
 
     def _get_client(self) -> Any:  # type: ignore[type-arg]
         import redis as _redis  # type: ignore[import-untyped]
@@ -118,7 +118,11 @@ class RedisEventSubscriber(EventSubscriber):
                             continue
 
                         try:
+                            if self._already_processed(envelope):
+                                client.xack(stream_key, group, msg_id)
+                                continue
                             handler(envelope)
+                            self._mark_processed(envelope)
                             client.xack(stream_key, group, msg_id)
                         except TransientHandlerError:
                             # Do not XACK; let XAUTOCLAIM retry
@@ -179,7 +183,11 @@ class RedisEventSubscriber(EventSubscriber):
                         try:
                             envelope_data = json.loads(envelope_json)
                             envelope = EventEnvelope.from_json_dict(envelope_data)
+                            if self._already_processed(envelope):
+                                client.xack(stream_key, group, msg_id)
+                                continue
                             handler(envelope)
+                            self._mark_processed(envelope)
                             client.xack(stream_key, group, msg_id)
                         except TransientHandlerError:
                             pass
@@ -190,6 +198,12 @@ class RedisEventSubscriber(EventSubscriber):
                             pass
                 except _redis.RedisError as exc:
                     logger.error("Redis error in recovery loop: %s", exc)
+
+    def _already_processed(self, envelope: EventEnvelope) -> bool:
+        return envelope.event_id in self._seen_event_ids
+
+    def _mark_processed(self, envelope: EventEnvelope) -> None:
+        self._seen_event_ids.add(envelope.event_id)
 
     def _get_delivery_count(
         self,
