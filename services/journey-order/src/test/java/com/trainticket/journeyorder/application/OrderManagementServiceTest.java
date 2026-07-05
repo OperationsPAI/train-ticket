@@ -69,6 +69,19 @@ class OrderManagementServiceTest {
     }
 
     @Test
+    void reusedIdempotencyKeyWithDifferentCreateRequestThrows() {
+        var request = new JourneyOrderRequest("account-1", "offer-1", 1,
+            List.of("tvl-1"), List.of("seg-1"));
+        var differentRequest = new JourneyOrderRequest("account-1", "offer-2", 1,
+            List.of("tvl-1"), List.of("seg-1"));
+
+        service.createOrder(request, "idem-reused", "corr-1");
+
+        assertThrows(OrderManagementService.IdempotencyKeyReused.class, () ->
+            service.createOrder(differentRequest, "idem-reused", "corr-1"));
+    }
+
+    @Test
     void getOrderReturnsEmptyForMissing() {
         Optional<JourneyOrderResult> result = service.getOrder("nonexistent");
         assertTrue(result.isEmpty());

@@ -1,6 +1,7 @@
 package com.trainticket.journeyorder.domain;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -15,8 +16,21 @@ public record EventEnvelope(
     Instant occurredAt,
     String correlationId,
     String causationId,
-    String producer
+    String producer,
+    Map<String, Object> payload
 ) {
+    public EventEnvelope(
+        String eventId,
+        String eventType,
+        int schemaVersion,
+        Instant occurredAt,
+        String correlationId,
+        String causationId,
+        String producer
+    ) {
+        this(eventId, eventType, schemaVersion, occurredAt, correlationId, causationId, producer, Map.of());
+    }
+
     public EventEnvelope {
         eventId = requireText(eventId, "eventId");
         eventType = requireText(eventType, "eventType");
@@ -27,6 +41,7 @@ public record EventEnvelope(
         correlationId = requireText(correlationId, "correlationId");
         causationId = requireText(causationId, "causationId");
         producer = requireText(producer, "producer");
+        payload = payload == null ? Map.of() : Map.copyOf(payload);
     }
 
     public static EventEnvelope create(
@@ -43,8 +58,13 @@ public record EventEnvelope(
             occurredAt,
             correlationId,
             sourceCommandId != null ? sourceCommandId : correlationId,
-            producer
+            producer,
+            Map.of()
         );
+    }
+
+    public EventEnvelope withPayload(Map<String, Object> payload) {
+        return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, correlationId, causationId, producer, payload);
     }
 
     private static String requireText(String value, String name) {

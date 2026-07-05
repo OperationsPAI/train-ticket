@@ -7,7 +7,6 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderService;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
-import com.trainticket.journeyorder.domain.DomainRuleViolation;
 import com.trainticket.journeyorder.domain.EventEnvelope;
 import com.trainticket.journeyorder.domain.JourneyOrder;
 import com.trainticket.journeyorder.domain.JourneyOrderEvent;
@@ -20,20 +19,20 @@ import com.trainticket.journeyorder.domain.TravelerRef;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 @Service
 public class OrderManagementService implements JourneyOrderService {
 
     private final Map<String, StoredOrder> orderStore = new LinkedHashMap<>();
-    private final Map<String, StoredOrder> idempotencyStore = new LinkedHashMap<>();
+    private final Map<String, IdempotencyEntry<JourneyOrderResult>> createIdempotencyStore = new LinkedHashMap<>();
+    private final Map<String, IdempotencyEntry<CancelJourneyOrderResult>> cancelIdempotencyStore = new LinkedHashMap<>();
     private final EventPublisher eventPublisher;
     private final Clock clock;
 
@@ -48,10 +47,13 @@ public class OrderManagementService implements JourneyOrderService {
 
     @Override
     public JourneyOrderResult createOrder(JourneyOrderRequest request, String idempotencyKey, String correlationId) {
-        // Idempotency check
-        StoredOrder existing = idempotencyStore.get(idempotencyKey);
+        String fingerprint = createFingerprint(request);
+        IdempotencyEntry<JourneyOrderResult> existing = createIdempotencyStore.get(idempotencyKey);
         if (existing != null) {
-            return toResult(existing.order);
+            if (!existing.requestFingerprint().equals(fingerprint)) {
+                throw new IdempotencyKeyReused("Idempotency-Key was reused with a different create order request");
+            }
+            return existing.result();
         }
 
         Instant now = Instant.now(clock);
@@ -77,7 +79,7 @@ public class OrderManagementService implements JourneyOrderService {
         for (int i = 0; i < travelers.size(); i++) {
             String itemId = "fare-" + request.offerId() + "-" + i;
             String travelerId = request.travelerRefs().get(i);
-            String segmentRef = request.segmentRefs().isEmpty() ? request.segmentRefs().getFirst() : request.segmentRefs().get(0);
+            String segmentRef = request.segmentRefs().get(0);
             orderItems.add(new OrderItem(
                 itemId, com.trainticket.journeyorder.domain.OrderItemType.SEGMENT_FARE,
                 "fare", Money.of("CNY", "100.00"), "segment-1",
@@ -91,17 +93,16 @@ public class OrderManagementService implements JourneyOrderService {
             sourceCommandId, correlationId
         );
 
-        // Publish domain events
         for (JourneyOrderEvent event : order.domainEvents()) {
-            EventEnvelope envelope = event.envelope();
-            eventPublisher.publish(envelope);
+            eventPublisher.publish(envelopeWithPayload(event));
         }
 
         StoredOrder stored = new StoredOrder(order, idempotencyKey);
         orderStore.put(order.orderId(), stored);
-        idempotencyStore.put(idempotencyKey, stored);
+        JourneyOrderResult result = toResult(order);
+        createIdempotencyStore.put(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
 
-        return toResult(order);
+        return result;
     }
 
     @Override
@@ -136,19 +137,16 @@ public class OrderManagementService implements JourneyOrderService {
             throw new NotFoundException("Order not found: " + request.orderId());
         }
 
-        JourneyOrder order = stored.order;
-
-        // Idempotency: if already cancelled with same key, return original result
-        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CANCELLED) {
-            return new CancelJourneyOrderResult(
-                order.orderId(), "CANCELLED",
-                order.timeline().stream()
-                    .filter(f -> f.factType().equals("JourneyOrderCancelled"))
-                    .findFirst()
-                    .map(com.trainticket.journeyorder.domain.TimelineFact::occurredAt)
-                    .orElse(Instant.now(clock))
-            );
+        String fingerprint = cancelFingerprint(request);
+        IdempotencyEntry<CancelJourneyOrderResult> existing = cancelIdempotencyStore.get(idempotencyKey);
+        if (existing != null) {
+            if (!existing.requestFingerprint().equals(fingerprint)) {
+                throw new IdempotencyKeyReused("Idempotency-Key was reused with a different cancel order request");
+            }
+            return existing.result();
         }
+
+        JourneyOrder order = stored.order;
 
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
@@ -156,11 +154,85 @@ public class OrderManagementService implements JourneyOrderService {
 
         for (JourneyOrderEvent event : order.domainEvents()) {
             if (event instanceof com.trainticket.journeyorder.domain.JourneyOrderCancelled) {
-                eventPublisher.publish(event.envelope());
+                eventPublisher.publish(envelopeWithPayload(event));
             }
         }
 
-        return new CancelJourneyOrderResult(order.orderId(), "CANCELLED", now);
+        CancelJourneyOrderResult result = new CancelJourneyOrderResult(order.orderId(), "CANCELLED", now);
+        cancelIdempotencyStore.put(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+        return result;
+    }
+
+    private static EventEnvelope envelopeWithPayload(JourneyOrderEvent event) {
+        return event.envelope().withPayload(eventPayload(event));
+    }
+
+    private static Map<String, Object> eventPayload(JourneyOrderEvent event) {
+        return switch (event) {
+            case com.trainticket.journeyorder.domain.JourneyOrderCreated created -> Map.of(
+                "orderId", created.orderId(),
+                "accountId", created.accountId(),
+                "offerId", created.offerId(),
+                "monetarySummary", monetaryPayload(created.monetarySummary())
+            );
+            case com.trainticket.journeyorder.domain.JourneyOrderPendingPayment pending -> Map.of(
+                "orderId", pending.orderId(),
+                "accountId", pending.accountId(),
+                "paymentPurpose", pending.paymentPurpose(),
+                "monetarySummary", monetaryPayload(pending.monetarySummary())
+            );
+            case com.trainticket.journeyorder.domain.JourneyOrderPaymentRecorded payment -> Map.of(
+                "orderId", payment.orderId(),
+                "accountId", payment.accountId(),
+                "paymentIntentId", payment.paymentIntentId()
+            );
+            case com.trainticket.journeyorder.domain.JourneyOrderConfirmed confirmed -> Map.of(
+                "orderId", confirmed.orderId(),
+                "accountId", confirmed.accountId(),
+                "monetarySummary", monetaryPayload(confirmed.monetarySummary())
+            );
+            case com.trainticket.journeyorder.domain.JourneyOrderCancelled cancelled -> Map.of(
+                "orderId", cancelled.orderId(),
+                "accountId", cancelled.accountId(),
+                "reason", cancelled.reason()
+            );
+            case com.trainticket.journeyorder.domain.JourneyOrderPostSalesAdjusted adjusted -> Map.of(
+                "orderId", adjusted.orderId(),
+                "accountId", adjusted.accountId(),
+                "postSalesCaseId", adjusted.postSalesCaseId(),
+                "monetarySummary", monetaryPayload(adjusted.monetarySummary())
+            );
+        };
+    }
+
+    private static Map<String, Object> monetaryPayload(MonetarySummary summary) {
+        String currency = summary.currency().getCurrencyCode();
+        return Map.of(
+            "subtotal", moneyPayload(currency, summary.itemSubtotal().toMinorUnits()),
+            "taxTotal", moneyPayload(currency, summary.taxTotal().toMinorUnits()),
+            "feeTotal", moneyPayload(currency, summary.feeTotal().toMinorUnits()),
+            "discountTotal", moneyPayload(currency, summary.discountTotal().toMinorUnits()),
+            "cancelledTotal", moneyPayload(currency, summary.cancelledTotal().toMinorUnits()),
+            "payableTotal", moneyPayload(currency, summary.payableTotal().toMinorUnits()),
+            "total", moneyPayload(currency, summary.payableTotal().toMinorUnits()),
+            "currency", currency
+        );
+    }
+
+    private static Map<String, Object> moneyPayload(String currency, long minorUnits) {
+        return Map.of("currency", currency, "minorUnits", minorUnits);
+    }
+
+    private static String createFingerprint(JourneyOrderRequest request) {
+        return Objects.requireNonNull(request.accountId()) + "|"
+            + Objects.requireNonNull(request.offerId()) + "|"
+            + request.offerVersion() + "|"
+            + String.join(",", request.travelerRefs()) + "|"
+            + String.join(",", request.segmentRefs());
+    }
+
+    private static String cancelFingerprint(CancelJourneyOrderRequest request) {
+        return Objects.requireNonNull(request.orderId()) + "|" + Objects.requireNonNull(request.reason());
     }
 
     private static JourneyOrderResult toResult(JourneyOrder order) {
@@ -186,6 +258,14 @@ public class OrderManagementService implements JourneyOrderService {
     }
 
     private record StoredOrder(JourneyOrder order, String idempotencyKey) {}
+
+    private record IdempotencyEntry<T>(String requestFingerprint, T result) {}
+
+    public static final class IdempotencyKeyReused extends RuntimeException {
+        public IdempotencyKeyReused(String message) {
+            super(message);
+        }
+    }
 
     public static final class NotFoundException extends RuntimeException {
         public NotFoundException(String message) {

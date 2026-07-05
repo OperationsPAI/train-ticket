@@ -8,6 +8,7 @@ import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.domain.EventEnvelope;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisFuture;
+import io.lettuce.core.XAddArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
 import java.util.Map;
@@ -56,7 +57,8 @@ public class RedisEventPublisher implements EventPublisher {
         Exception lastError = null;
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                RedisFuture<String> future = async.xadd(stream, Map.of("envelope", json));
+                XAddArgs args = new XAddArgs().maxlen(100_000).approximateTrimming();
+                RedisFuture<String> future = async.xadd(stream, args, Map.of("envelope", json));
                 future.get(5, TimeUnit.SECONDS);
                 log.debug("Published event {} to stream {}", envelope.eventId(), stream);
                 return;
@@ -94,7 +96,8 @@ public class RedisEventPublisher implements EventPublisher {
                 "producer", envelope.producer(),
                 "causationId", envelope.causationId(),
                 "correlationId", envelope.correlationId(),
-                "occurredAt", envelope.occurredAt().toString()
+                "occurredAt", envelope.occurredAt().toString(),
+                "payload", envelope.payload()
             );
             return objectMapper.writeValueAsString(map);
         } catch (JsonProcessingException e) {
