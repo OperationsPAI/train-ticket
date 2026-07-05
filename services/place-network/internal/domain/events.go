@@ -2,7 +2,8 @@ package domain
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/binary"
+	"fmt"
 	"time"
 )
 
@@ -42,7 +43,7 @@ type EventEnvelope struct {
 
 func NewEventEnvelope(eventType string, occurredAt time.Time, correlationID string, causationID string, producer string, payload any) EventEnvelope {
 	return EventEnvelope{
-		EventID:       "evt-" + randomHexID(),
+		EventID:       "evt-" + newUUIDv7(),
 		EventType:     eventType,
 		SchemaVersion: 1,
 		Producer:      producer,
@@ -58,19 +59,27 @@ func FormatTimestamp(value time.Time) string {
 }
 
 func NewPlaceID() PlaceID {
-	return PlaceID("plc-" + randomHexID())
+	return PlaceID("plc-" + newUUIDv7())
 }
 
 func NewTransportNodeID() TransportNodeID {
-	return TransportNodeID("tnd-" + randomHexID())
+	return TransportNodeID("tnd-" + newUUIDv7())
 }
 
-func randomHexID() string {
+func newUUIDv7() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic("secure random id generation failed: " + err.Error())
 	}
-	return hex.EncodeToString(b[:])
+
+	ms := uint64(time.Now().UTC().UnixMilli())
+	binary.BigEndian.PutUint32(b[0:4], uint32(ms>>16))
+	binary.BigEndian.PutUint16(b[4:6], uint16(ms))
+	b[6] = (b[6] & 0x0f) | 0x70
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 type Clock interface {

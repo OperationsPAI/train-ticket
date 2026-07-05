@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -49,8 +50,14 @@ func correlationID(ctx *gin.Context) string {
 	return goruntime.CorrelationID(ctx.Request.Context())
 }
 
+var uuidV7Pattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+
 func idempotencyKey(ctx *gin.Context) string {
 	return strings.TrimSpace(ctx.GetHeader("Idempotency-Key"))
+}
+
+func validUUIDv7(value string) bool {
+	return uuidV7Pattern.MatchString(value)
 }
 
 type idempotencyOutcome struct {
@@ -63,6 +70,10 @@ func (h *Handler) beginIdempotent(ctx *gin.Context, body any) (*idempotencyOutco
 	key := idempotencyKey(ctx)
 	if key == "" {
 		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Idempotency-Key header is required")
+		return nil, false
+	}
+	if !validUUIDv7(key) {
+		writeError(ctx, http.StatusBadRequest, "VALIDATION_FAILED", "Idempotency-Key header must be a UUID v7")
 		return nil, false
 	}
 	hash, err := requestHash(body)
