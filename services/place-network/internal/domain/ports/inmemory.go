@@ -14,7 +14,7 @@ type InMemoryPlaceRepository struct {
 	// seq preserves insertion order: map iteration is randomized and
 	// same-millisecond UUIDv7 ids do not sort by creation, but paginated
 	// listings need a stable oldest-first order.
-	seq    map[domain.PlaceID]uint64
+	seq     map[domain.PlaceID]uint64
 	nextSeq uint64
 }
 
@@ -98,33 +98,4 @@ func (r *InMemoryTransportNodeRepository) FindByPlaceID(placeID domain.PlaceID) 
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return nodes, nil
-}
-
-type InMemoryIdempotencyStore struct {
-	mu      sync.RWMutex
-	records map[string]IdempotencyRecord
-}
-
-func NewInMemoryIdempotencyStore() *InMemoryIdempotencyStore {
-	return &InMemoryIdempotencyStore{records: make(map[string]IdempotencyRecord)}
-}
-
-func (s *InMemoryIdempotencyStore) Get(key string) (*IdempotencyRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	record, exists := s.records[key]
-	if !exists {
-		return nil, false
-	}
-	return &record, true
-}
-
-func (s *InMemoryIdempotencyStore) Put(key string, record IdempotencyRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if existing, exists := s.records[key]; exists && existing.RequestHash != record.RequestHash {
-		return fmt.Errorf("idempotency key reused with different request")
-	}
-	s.records[key] = record
-	return nil
 }

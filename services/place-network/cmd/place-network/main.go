@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/place-network/internal/adapters/messaging"
 	"github.com/trainticket/greenfield/services/place-network/internal/application"
@@ -30,7 +31,7 @@ func main() {
 	}
 	defer eventBus.Close()
 
-	idempotency := ports.NewInMemoryIdempotencyStore()
+	idempotencyStore := idempotency.NewMemoryStore()
 	service := application.NewService(application.ServiceConfig{
 		Places:    ports.NewInMemoryPlaceRepository(),
 		Nodes:     ports.NewInMemoryTransportNodeRepository(),
@@ -43,7 +44,7 @@ func main() {
 
 	profile := domain.Profile()
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
-	apphttp.NewHandler(service, idempotency).RegisterRoutes(router)
+	apphttp.NewHandler(service, idempotencyStore).RegisterRoutes(router)
 
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + port, Handler: router})
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
