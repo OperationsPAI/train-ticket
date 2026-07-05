@@ -25,6 +25,16 @@ from .domain import (
     record_evidence,
     resolve_challenge,
 )
+from .application import (
+    ConsumedEventDeduplicator,
+    EventEnvelope,
+    EventPublisher,
+    EventSubscriber,
+    InMemoryAssessmentRepository,
+    InMemoryEventPublisher,
+    InMemoryEventSubscriber,
+    RiskComplianceService,
+)
 from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
 
 __all__ = [
@@ -57,6 +67,15 @@ __all__ = [
     "issue_challenge",
     "record_evidence",
     "resolve_challenge",
+    # Application
+    "ConsumedEventDeduplicator",
+    "EventEnvelope",
+    "EventPublisher",
+    "EventSubscriber",
+    "InMemoryAssessmentRepository",
+    "InMemoryEventPublisher",
+    "InMemoryEventSubscriber",
+    "RiskComplianceService",
     # Runtime
     "SERVICE_PROFILE",
     "ServiceProfile",
