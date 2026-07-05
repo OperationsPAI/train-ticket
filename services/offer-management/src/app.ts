@@ -7,8 +7,13 @@ import {
   OfferApplicationService,
   isDomainError,
   type OfferRepository,
-  type QuoteOfferRequest,
 } from "./application/offers.js";
+import {
+  InMemoryUpstreamStateRepository,
+  buildQuoteOfferCommand,
+  type QuoteOfferRequest,
+  type UpstreamStateRepository,
+} from "./application/upstream-state.js";
 import { type QuoteOfferCommand } from "./domain.js";
 import { type EventPublisher } from "./ports/messaging.js";
 import { serviceProfile } from "./profile.js";
@@ -138,13 +143,16 @@ export function resetIdempotencyStore(): void {
 type AppDependencies = Readonly<{
   repository?: OfferRepository;
   publisher?: EventPublisher;
-  quoteCommandFactory?: (request: QuoteOfferRequest) => QuoteOfferCommand;
+  quoteCommandFactory?: (request: QuoteOfferRequest) => QuoteOfferCommand | Promise<QuoteOfferCommand>;
+  upstreamRepository?: UpstreamStateRepository;
 }>;
 
 const defaultOfferRepository = new InMemoryOfferRepository();
+const defaultUpstreamRepository = new InMemoryUpstreamStateRepository();
 
 export function resetOfferStore(): void {
   defaultOfferRepository.clear();
+  defaultUpstreamRepository.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -152,10 +160,11 @@ export function resetOfferStore(): void {
 // ---------------------------------------------------------------------------
 export function createApp(instrumentation: InstrumentationHooks = {}, dependencies: AppDependencies = {}): FastifyInstance {
   const app: FastifyInstance = Fastify({ logger: false });
+  const upstreamRepository = dependencies.upstreamRepository ?? defaultUpstreamRepository;
   const offerService = new OfferApplicationService(
     dependencies.repository ?? defaultOfferRepository,
     dependencies.publisher,
-    dependencies.quoteCommandFactory,
+    dependencies.quoteCommandFactory ?? ((request) => buildQuoteOfferCommand(upstreamRepository, request)),
   );
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 

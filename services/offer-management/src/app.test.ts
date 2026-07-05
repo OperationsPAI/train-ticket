@@ -4,6 +4,8 @@ import { beforeEach, describe, it } from "node:test";
 
 import { createApp, resetIdempotencyStore, resetOfferStore } from "./app.js";
 import { InMemoryEventPublisher } from "./adapters/messaging/in-memory.js";
+import { applyUpstreamEvent, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
+import { type EventEnvelope } from "./ports/messaging.js";
 import { type QuoteOfferCommand } from "./domain.js";
 
 describe("offer-management service operational foundation", () => {
@@ -122,7 +124,8 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
   });
 
   it("creates an offer and returns 201 with the expected response shape", async () => {
-    const app = createApp();
+    const upstreamRepository = await seededUpstreamRepository();
+    const app = createApp({}, { upstreamRepository });
     const idempotencyKey = crypto.randomUUID();
 
     const response = await app.inject({
@@ -160,7 +163,8 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
 
   it("publishes the quoted domain event envelope through the configured port", async () => {
     const publisher = new InMemoryEventPublisher();
-    const app = createApp({}, { publisher });
+    const upstreamRepository = await seededUpstreamRepository();
+    const app = createApp({}, { publisher, upstreamRepository });
 
     const response = await app.inject({
       method: "POST",
@@ -264,7 +268,8 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
   });
 
   it("idempotent replay returns the original 201 response", async () => {
-    const app = createApp();
+    const upstreamRepository = await seededUpstreamRepository();
+    const app = createApp({}, { upstreamRepository });
     const idempotencyKey = crypto.randomUUID();
 
     const request = {
@@ -288,7 +293,8 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
   });
 
   it("rejects idempotency key reused with different body using 422 IDEMPOTENCY_KEY_REUSED", async () => {
-    const app = createApp();
+    const upstreamRepository = await seededUpstreamRepository();
+    const app = createApp({}, { upstreamRepository });
     const idempotencyKey = crypto.randomUUID();
 
     await app.inject({
@@ -381,6 +387,63 @@ function makeInvalidQuoteCommand(request: { accountId: string; channelId: string
   };
 }
 
+async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateRepository> {
+  const repository = new InMemoryUpstreamStateRepository();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+  const occurredAt = now.toISOString();
+
+  await applyUpstreamEvent(repository, makeEnvelope("ItineraryProposed", "trip-planning", {
+    intentRef: "intent-1",
+    planningSnapshotRefs: ["plan-1"],
+    itineraries: [{
+      itineraryRef: "itin-456",
+      itineraryVersion: "itinerary-v1",
+      legs: [{ servicePlanRef: "sp-1", serviceSegmentRef: "seg-1", originStopRef: "stop-a", destinationStopRef: "stop-b", departureTime: occurredAt, arrivalTime: expiresAt, mode: "train" }],
+      availabilitySnapshots: [{ segmentRef: "seg-1", snapshotId: "availability-1", snapshotVersion: "capacity-v1", capturedAt: occurredAt, expiresAt, sellable: true, status: "AVAILABLE", confidence: "confirmed-snapshot" }],
+    }],
+  }));
+  await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
+    quoteId: "fq-1",
+    inputHash: "input-1",
+    travelerRefs: ["tvl-001", "tvl-002"],
+    channel: "web",
+    currency: "CNY",
+    status: "QUOTED",
+    validFrom: occurredAt,
+    validUntil: expiresAt,
+    breakdown: { subtotal: { currency: "CNY", minorUnits: 20000 }, total: { currency: "CNY", minorUnits: 20000 }, priceSnapshotRef: "price-1" },
+    ruleSnapshot: { ruleSnapshotRef: "rule-1", pricingVersion: "pricing-v1", ruleVersion: "rule-v1" },
+  }));
+  await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
+    quoteId: "fq-2",
+    inputHash: "input-2",
+    travelerRefs: ["tvl-001"],
+    channel: "web",
+    currency: "CNY",
+    status: "QUOTED",
+    validFrom: occurredAt,
+    validUntil: expiresAt,
+    breakdown: { subtotal: { currency: "CNY", minorUnits: 10000 }, total: { currency: "CNY", minorUnits: 10000 }, priceSnapshotRef: "price-2" },
+    ruleSnapshot: { ruleSnapshotRef: "rule-2", pricingVersion: "pricing-v1", ruleVersion: "rule-v1" },
+  }));
+  await applyUpstreamEvent(repository, makeEnvelope("TravelerSnapshotUpdated", "traveler-profile", { travelerId: "tvl-001", snapshotVersion: "1", updatedAt: occurredAt, travelerType: "ADULT" }));
+  await applyUpstreamEvent(repository, makeEnvelope("TravelerSnapshotUpdated", "traveler-profile", { travelerId: "tvl-002", snapshotVersion: "1", updatedAt: occurredAt, travelerType: "ADULT" }));
+  return repository;
+}
+
+function makeEnvelope(eventType: string, producer: string, payload: Record<string, unknown>): EventEnvelope {
+  return {
+    eventId: `evt-${crypto.randomUUID()}`,
+    eventType,
+    schemaVersion: 1,
+    producer,
+    correlationId: `corr-${crypto.randomUUID()}`,
+    occurredAt: new Date().toISOString(),
+    payload,
+  };
+}
+
 describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
   beforeEach(() => {
     resetIdempotencyStore();
@@ -388,7 +451,8 @@ describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
   });
 
   it("returns 200 with full offer details for an existing offer", async () => {
-    const app = createApp();
+    const upstreamRepository = await seededUpstreamRepository();
+    const app = createApp({}, { upstreamRepository });
     const idempotencyKey = crypto.randomUUID();
 
     // Create an offer first

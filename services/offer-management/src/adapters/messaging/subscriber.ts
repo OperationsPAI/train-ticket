@@ -169,18 +169,37 @@ export class RedisEventSubscriber implements EventSubscriber {
       100,
     );
 
-    const entries = result[1] as Array<[string, string[], number?]>;
+    const entries = result[1] as Array<[string, string[]]>;
     if (!entries || entries.length === 0) return;
 
-    for (const [entryId, fields, claimedDeliveryCount] of entries) {
-      const deliveryCount = Number(claimedDeliveryCount ?? 1);
-      if (deliveryCount >= MAX_DELIVERY_COUNT) {
+    const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
+    for (const [entryId, fields] of entries) {
+      if ((deliveryCounts.get(entryId) ?? 1) >= MAX_DELIVERY_COUNT) {
         await this.moveToDlq(stream, group, [entryId, fields]);
         continue;
       }
 
       await this.processEntry(stream, group, [entryId, fields], handler);
     }
+  }
+
+  private async deliveryCounts(stream: string, group: string, entryIds: readonly string[]): Promise<Map<string, number>> {
+    if (entryIds.length === 0) {
+      return new Map();
+    }
+
+    const counts = new Map<string, number>();
+    await Promise.all(entryIds.map(async (entryId) => {
+      const pending: any = await (this.redis as any).xpending(stream, group, entryId, entryId, 1);
+      const row = Array.isArray(pending) ? pending[0] : undefined;
+      if (Array.isArray(row) && row[0] === entryId) {
+        const deliveries = Number(row[3]);
+        if (Number.isFinite(deliveries)) {
+          counts.set(entryId, deliveries);
+        }
+      }
+    }));
+    return counts;
   }
 
   private async moveToDlq(

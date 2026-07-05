@@ -6,6 +6,7 @@ import {
   InMemoryEventPublisher,
   InMemoryEventSubscriber,
 } from "./adapters/messaging/in-memory.js";
+import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
 import {
   PublishFailed,
   type EventEnvelope,
@@ -167,3 +168,53 @@ describe("EventSubscriber port — InMemoryEventSubscriber", () => {
     assert.equal(callCount, 3);
   });
 });
+
+
+describe("RedisEventSubscriber recovery", () => {
+  it("uses Redis pending delivery counts for XAUTOCLAIM recovery DLQ decisions", async () => {
+    const envelope = makeEnvelope({ eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222" });
+    const redis = new FakeRedisForRecovery("5-0", JSON.stringify(envelope), 5);
+    const subscriber = new RedisEventSubscriber(redis as never);
+
+    await (subscriber as unknown as { claimAndProcess: (stream: string, group: string, consumer: string, handler: EventHandler) => Promise<void> })
+      .claimAndProcess("events:fare-pricing", "offer-management", "offer-management-test", async () => {
+        throw new Error("handler should not run for poison message");
+      });
+
+    assert.deepEqual(redis.xpendingCalls, [["events:fare-pricing", "offer-management", "5-0", "5-0", 1]]);
+    assert.equal(redis.xaddCalls.length, 1);
+    assert.equal(redis.xaddCalls[0][0], "events:fare-pricing:dlq");
+    assert.deepEqual(redis.xackCalls, [["events:fare-pricing", "offer-management", "5-0"]]);
+  });
+});
+
+class FakeRedisForRecovery {
+  readonly xaddCalls: unknown[][] = [];
+  readonly xackCalls: unknown[][] = [];
+  readonly xpendingCalls: unknown[][] = [];
+
+  constructor(
+    private readonly entryId: string,
+    private readonly envelopeJson: string,
+    private readonly deliveryCount: number,
+  ) {}
+
+  async xautoclaim(): Promise<unknown[]> {
+    return ["0-0", [[this.entryId, ["envelope", this.envelopeJson]]]];
+  }
+
+  async xpending(...args: unknown[]): Promise<unknown[]> {
+    this.xpendingCalls.push(args);
+    return [[this.entryId, "offer-management-test", 60000, this.deliveryCount]];
+  }
+
+  async xadd(...args: unknown[]): Promise<string> {
+    this.xaddCalls.push(args);
+    return "6-0";
+  }
+
+  async xack(...args: unknown[]): Promise<number> {
+    this.xackCalls.push(args);
+    return 1;
+  }
+}
