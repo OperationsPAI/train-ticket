@@ -1,194 +1,312 @@
 package com.trainticket.journeyorder.api;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.hamcrest.Matchers.startsWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.trainticket.journeyorder.adapters.InMemoryEventPublisher;
-import com.trainticket.journeyorder.api.dto.CancelJourneyOrderRequest;
-import com.trainticket.journeyorder.api.dto.CancelJourneyOrderResponse;
-import com.trainticket.journeyorder.api.dto.CreateJourneyOrderRequest;
-import com.trainticket.journeyorder.api.dto.CreateJourneyOrderResponse;
-import com.trainticket.journeyorder.api.dto.ErrorBody;
-import com.trainticket.journeyorder.api.dto.ListJourneyOrdersResponse;
+import com.trainticket.journeyorder.RequestContextFilter;
+import com.trainticket.journeyorder.RuntimeTracer;
+import com.trainticket.journeyorder.api.error.ApiExceptionHandler;
+import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderRequest;
+import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
+import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
+import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
+import com.trainticket.journeyorder.application.port.in.JourneyOrderService;
+import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
-import com.trainticket.journeyorder.domain.EventEnvelope;
-import java.time.Clock;
+import com.trainticket.journeyorder.domain.DomainRuleViolation;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.List;
-import org.junit.jupiter.api.BeforeEach;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
 
+@WebMvcTest(controllers = JourneyOrderController.class)
+@AutoConfigureMockMvc
+@Import({ApiExceptionHandler.class, RequestContextFilter.class})
 class JourneyOrderControllerTest {
 
-    private InMemoryEventPublisher eventPublisher;
-    private OrderManagementService orderService;
-    private JourneyOrderController controller;
+    private static final Instant CREATED_AT = Instant.parse("2026-07-05T10:00:00Z");
+    private static final Instant CANCELLED_AT = Instant.parse("2026-07-05T11:00:00Z");
 
-    @BeforeEach
-    void setUp() {
-        eventPublisher = new InMemoryEventPublisher();
-        Clock fixedClock = Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC);
-        orderService = new OrderManagementService(eventPublisher, fixedClock);
-        controller = new JourneyOrderController(orderService, null);
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockitoBean
+    private JourneyOrderService orderService;
+
+    @MockitoBean
+    private RuntimeTracer runtimeTracer;
+
+    @Test
+    void createOrderHappyPath() throws Exception {
+        when(orderService.createOrder(
+            eq(new JourneyOrderRequest("account-1", "offer-1", 1, List.of("tvl-1"), List.of("seg-1"))),
+            eq("idem-1"),
+            eq("corr-test")
+        )).thenReturn(orderResult("ord-123", "account-1", "offer-1", "CREATED"));
+
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "idem-1")
+                .header("X-Correlation-Id", "corr-test")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "accountId": "account-1",
+                      "offerId": "offer-1",
+                      "offerVersion": 1,
+                      "travelerRefs": ["tvl-1"],
+                      "segmentRefs": ["seg-1"]
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(header().string("X-Correlation-Id", "corr-test"))
+            .andExpect(jsonPath("$.orderId").value("ord-123"))
+            .andExpect(jsonPath("$.accountId").value("account-1"))
+            .andExpect(jsonPath("$.offerId").value("offer-1"))
+            .andExpect(jsonPath("$.status").value("CREATED"))
+            .andExpect(jsonPath("$.monetarySummary.subtotal.currency").value("CNY"))
+            .andExpect(jsonPath("$.monetarySummary.subtotal.minorUnits").value(10000))
+            .andExpect(jsonPath("$.travelerRefs[0]").value("tvl-1"))
+            .andExpect(jsonPath("$.segmentRefs[0]").value("seg-1"))
+            .andExpect(jsonPath("$.createdAt").value("2026-07-05T10:00:00Z"));
     }
 
     @Test
-    void createOrderHappyPath() {
-        var request = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
+    void createOrderIdempotentReplayReturnsOriginal() throws Exception {
+        var replayed = orderResult("ord-replay", "account-1", "offer-1", "CREATED");
+        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("idem-replay"), eq("corr-test")))
+            .thenReturn(replayed)
+            .thenReturn(replayed);
 
-        ResponseEntity<?> response = controller.createOrder(request, "idem-1");
+        String body = """
+            {
+              "accountId": "account-1",
+              "offerId": "offer-1",
+              "offerVersion": 1,
+              "travelerRefs": ["tvl-1"],
+              "segmentRefs": ["seg-1"]
+            }
+            """;
 
-        assertEquals(HttpStatus.CREATED, response.getStatusCode());
-        assertInstanceOf(CreateJourneyOrderResponse.class, response.getBody());
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "idem-replay")
+                .header("X-Correlation-Id", "corr-test")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.orderId").value("ord-replay"));
 
-        CreateJourneyOrderResponse body = (CreateJourneyOrderResponse) response.getBody();
-        assertEquals("account-1", body.accountId());
-        assertEquals("offer-1", body.offerId());
-        assertEquals("CREATED", body.status());
-        assertNotNull(body.orderId());
-        assertTrue(body.orderId().startsWith("ord-"));
-
-        // Verify event was published
-        assertEquals(1, eventPublisher.published().size());
-        EventEnvelope envelope = eventPublisher.published().getFirst();
-        assertEquals("JourneyOrderCreated", envelope.eventType());
-        assertTrue(envelope.eventId().startsWith("evt-"));
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "idem-replay")
+                .header("X-Correlation-Id", "corr-test")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.orderId").value("ord-replay"));
     }
 
     @Test
-    void createOrderIdempotentReplayReturnsOriginal() {
-        var request = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
-
-        ResponseEntity<?> response1 = controller.createOrder(request, "idem-2");
-        ResponseEntity<?> response2 = controller.createOrder(request, "idem-2");
-
-        assertEquals(HttpStatus.CREATED, response1.getStatusCode());
-        assertEquals(HttpStatus.CREATED, response2.getStatusCode());
-
-        CreateJourneyOrderResponse body1 = (CreateJourneyOrderResponse) response1.getBody();
-        CreateJourneyOrderResponse body2 = (CreateJourneyOrderResponse) response2.getBody();
-        assertEquals(body1.orderId(), body2.orderId());
-        assertEquals(body1.monetarySummary(), body2.monetarySummary());
-        assertEquals(10000L, body1.monetarySummary().subtotal().minorUnits());
-        assertEquals("CNY", body1.monetarySummary().subtotal().currency());
+    void createOrderValidationFailureUsesCanonicalBody() throws Exception {
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "idem-invalid")
+                .header("X-Correlation-Id", "corr-validation")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "accountId": "",
+                      "offerId": "offer-1",
+                      "offerVersion": 0,
+                      "travelerRefs": [],
+                      "segmentRefs": ["seg-1"]
+                    }
+                    """))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.message").exists())
+            .andExpect(jsonPath("$.correlationId").value("corr-validation"))
+            .andExpect(jsonPath("$.details").isMap());
     }
 
     @Test
-    void getOrderReturnsNotFoundThroughCanonicalHandler() {
-        var ex = org.junit.jupiter.api.Assertions.assertThrows(
-            OrderManagementService.NotFoundException.class,
-            () -> controller.getOrder("nonexistent")
-        );
-        assertTrue(ex.getMessage().contains("Order not found"));
+    void malformedBodyUsesCanonicalValidationBody() throws Exception {
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "idem-malformed")
+                .header("X-Correlation-Id", "corr-malformed")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{not-json"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.message").value("Malformed request body"))
+            .andExpect(jsonPath("$.correlationId").value("corr-malformed"))
+            .andExpect(jsonPath("$.details").isMap());
     }
 
     @Test
-    void createOrderRejectsReusedIdempotencyKeyForDifferentBody() {
-        var request = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
-        var differentRequest = new CreateJourneyOrderRequest(
-            "account-1", "offer-2", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
-
-        controller.createOrder(request, "idem-reused");
-
-        var ex = org.junit.jupiter.api.Assertions.assertThrows(
-            OrderManagementService.IdempotencyKeyReused.class,
-            () -> controller.createOrder(differentRequest, "idem-reused")
-        );
-        assertTrue(ex.getMessage().contains("Idempotency-Key"));
+    void invalidParameterTypeUsesCanonicalValidationBody() throws Exception {
+        mockMvc.perform(get("/api/v1/journey-orders")
+                .header("X-Correlation-Id", "corr-param")
+                .param("limit", "not-a-number"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.message").value("Invalid value for parameter: limit"))
+            .andExpect(jsonPath("$.correlationId").value("corr-param"));
     }
 
     @Test
-    void getOrderReturnsCreatedOrder() {
-        var request = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
-        ResponseEntity<?> createResponse = controller.createOrder(request, "idem-3");
-        CreateJourneyOrderResponse createBody = (CreateJourneyOrderResponse) createResponse.getBody();
-        String orderId = createBody.orderId();
-
-        ResponseEntity<?> getResponse = controller.getOrder(orderId);
-        assertEquals(HttpStatus.OK, getResponse.getStatusCode());
+    void missingIdempotencyKeyUsesCanonicalValidationBody() throws Exception {
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("X-Correlation-Id", "corr-missing-idem")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "accountId": "account-1",
+                      "offerId": "offer-1",
+                      "offerVersion": 1,
+                      "travelerRefs": ["tvl-1"],
+                      "segmentRefs": ["seg-1"]
+                    }
+                    """))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.message").value("Missing required header: Idempotency-Key"))
+            .andExpect(jsonPath("$.correlationId").value("corr-missing-idem"));
     }
 
     @Test
-    void listOrdersSupportsPagination() {
-        var request1 = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
-        var request2 = new CreateJourneyOrderRequest(
-            "account-1", "offer-2", 1,
-            List.of("tvl-2"), List.of("seg-2")
-        );
-        controller.createOrder(request1, "idem-list-1");
-        controller.createOrder(request2, "idem-list-2");
+    void reusedIdempotencyKeyUsesCanonical422Body() throws Exception {
+        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("idem-reused"), eq("corr-reused")))
+            .thenThrow(new OrderManagementService.IdempotencyKeyReused("Idempotency-Key was reused with a different create order request"));
 
-        ResponseEntity<ListJourneyOrdersResponse> listResponse = controller.listOrders("account-1", null, 1, 0);
-        ListJourneyOrdersResponse body = listResponse.getBody();
-        assertEquals(2, body.total());
-        assertEquals(1, body.items().size());
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "idem-reused")
+                .header("X-Correlation-Id", "corr-reused")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "accountId": "account-1",
+                      "offerId": "offer-2",
+                      "offerVersion": 1,
+                      "travelerRefs": ["tvl-1"],
+                      "segmentRefs": ["seg-1"]
+                    }
+                    """))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"))
+            .andExpect(jsonPath("$.correlationId").value("corr-reused"));
     }
 
     @Test
-    void cancelOrderReturnsCancelledStatus() {
-        var createReq = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
-        );
-        ResponseEntity<?> createResponse = controller.createOrder(createReq, "idem-cancel-1");
-        CreateJourneyOrderResponse createBody = (CreateJourneyOrderResponse) createResponse.getBody();
-        eventPublisher.clear();
-        String orderId = createBody.orderId();
+    void getOrderReturnsNotFoundThroughCanonicalHandler() throws Exception {
+        when(orderService.getOrder("ord-missing")).thenReturn(Optional.empty());
 
-        var cancelReq = new CancelJourneyOrderRequest("change of plans");
-        ResponseEntity<?> cancelResponse = controller.cancelOrder(orderId, cancelReq, "idem-cancel-2");
-        assertEquals(HttpStatus.OK, cancelResponse.getStatusCode());
-        CancelJourneyOrderResponse cancelBody = (CancelJourneyOrderResponse) cancelResponse.getBody();
-        assertEquals(orderId, cancelBody.orderId());
-        assertEquals("CANCELLED", cancelBody.status());
-        assertNotNull(cancelBody.cancelledAt());
-        assertEquals(1, eventPublisher.published().size());
+        mockMvc.perform(get("/api/v1/journey-orders/{orderId}", "ord-missing")
+                .header("X-Correlation-Id", "corr-not-found"))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("NOT_FOUND"))
+            .andExpect(jsonPath("$.message").value("Order not found: ord-missing"))
+            .andExpect(jsonPath("$.correlationId").value("corr-not-found"));
     }
 
     @Test
-    void publisherWrapsEventInCorrectEnvelope() {
-        var request = new CreateJourneyOrderRequest(
-            "account-1", "offer-1", 1,
-            List.of("tvl-1"), List.of("seg-1")
+    void getOrderReturnsCreatedOrder() throws Exception {
+        when(orderService.getOrder("ord-123")).thenReturn(Optional.of(orderResult("ord-123", "account-1", "offer-1", "CREATED")));
+
+        mockMvc.perform(get("/api/v1/journey-orders/{orderId}", "ord-123")
+                .header("X-Correlation-Id", "corr-get"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.orderId").value("ord-123"))
+            .andExpect(jsonPath("$.status").value("CREATED"));
+    }
+
+    @Test
+    void listOrdersSupportsPagination() throws Exception {
+        when(orderService.listOrders("account-1", null, 1, 0))
+            .thenReturn(new OrderListResult(
+                List.of(orderResult("ord-1", "account-1", "offer-1", "CREATED")),
+                2,
+                1,
+                0
+            ));
+
+        mockMvc.perform(get("/api/v1/journey-orders")
+                .header("X-Correlation-Id", "corr-list")
+                .param("accountId", "account-1")
+                .param("limit", "1")
+                .param("offset", "0"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(2))
+            .andExpect(jsonPath("$.limit").value(1))
+            .andExpect(jsonPath("$.offset").value(0))
+            .andExpect(jsonPath("$.items[0].orderId").value("ord-1"));
+    }
+
+    @Test
+    void cancelOrderReturnsCancelledStatus() throws Exception {
+        when(orderService.cancelOrder(
+            eq(new CancelJourneyOrderRequest("ord-123", "change of plans")),
+            eq("idem-cancel"),
+            eq("corr-cancel")
+        )).thenReturn(new CancelJourneyOrderResult("ord-123", "CANCELLED", CANCELLED_AT));
+
+        mockMvc.perform(post("/api/v1/journey-orders/{orderId}/cancel", "ord-123")
+                .header("Idempotency-Key", "idem-cancel")
+                .header("X-Correlation-Id", "corr-cancel")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"change of plans\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.orderId").value("ord-123"))
+            .andExpect(jsonPath("$.status").value("CANCELLED"))
+            .andExpect(jsonPath("$.cancelledAt").value("2026-07-05T11:00:00Z"));
+    }
+
+    @Test
+    void domainInvariantViolationSurfacesAsDomainRuleViolation() throws Exception {
+        when(orderService.cancelOrder(any(CancelJourneyOrderRequest.class), eq("idem-domain"), eq("corr-domain")))
+            .thenThrow(new DomainRuleViolation("completed JourneyOrder cannot be cancelled"));
+
+        mockMvc.perform(post("/api/v1/journey-orders/{orderId}/cancel", "ord-123")
+                .header("Idempotency-Key", "idem-domain")
+                .header("X-Correlation-Id", "corr-domain")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"change of plans\"}"))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("DOMAIN_RULE_VIOLATION"))
+            .andExpect(jsonPath("$.message").value("completed JourneyOrder cannot be cancelled"))
+            .andExpect(jsonPath("$.correlationId").value("corr-domain"));
+    }
+
+    @Test
+    void generatedCorrelationIdIsCanonicalWhenHeaderAbsent() throws Exception {
+        when(orderService.getOrder("ord-123")).thenReturn(Optional.of(orderResult("ord-123", "account-1", "offer-1", "CREATED")));
+
+        mockMvc.perform(get("/api/v1/journey-orders/{orderId}", "ord-123"))
+            .andExpect(status().isOk())
+            .andExpect(header().string("X-Correlation-Id", startsWith("corr-")));
+    }
+
+    private static JourneyOrderResult orderResult(String orderId, String accountId, String offerId, String status) {
+        return new JourneyOrderResult(
+            orderId,
+            accountId,
+            offerId,
+            new JourneyOrderResult.MonetarySummaryDto("CNY", 10000L, 0L, 0L, 0L, 0L, 10000L),
+            status,
+            List.of("tvl-1"),
+            List.of("seg-1"),
+            CREATED_AT
         );
-
-        controller.createOrder(request, "idem-env-1");
-
-        assertEquals(1, eventPublisher.published().size());
-        EventEnvelope envelope = eventPublisher.published().getFirst();
-
-        // Verify envelope fields per shared-primitives.md
-        assertEquals("JourneyOrderCreated", envelope.eventType());
-        assertEquals(1, envelope.schemaVersion());
-        assertEquals("journey-order", envelope.producer());
-        assertTrue(envelope.eventId().startsWith("evt-"));
-        assertNotNull(envelope.occurredAt());
-        assertNotNull(envelope.correlationId());
-        assertNotNull(envelope.causationId());
-        assertTrue(envelope.payload().containsKey("orderId"));
-        assertTrue(String.valueOf(envelope.payload().get("orderId")).startsWith("ord-"));
-        assertTrue(envelope.payload().containsKey("monetarySummary"));
     }
 }

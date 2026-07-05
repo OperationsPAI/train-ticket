@@ -7,7 +7,6 @@ import java.util.UUID;
 
 /**
  * Canonical cross-context event envelope per contract shared-primitives.md.
- * Replaces the previous EventMetadata record.
  */
 public record EventEnvelope(
     String eventId,
