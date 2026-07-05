@@ -213,18 +213,23 @@ impl RedisEventSubscriber {
     ) -> Result<(), SubscribeFailed> {
         let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
             .map_err(|error| SubscribeFailed(error.to_string()))?;
-        let duplicate = {
-            let mut seen = self
-                .seen_event_ids
-                .lock()
-                .expect("seen-event lock poisoned");
-            !seen.insert(envelope.event_id.clone())
-        };
+        let event_id = envelope.event_id.clone();
+        let duplicate = self
+            .seen_event_ids
+            .lock()
+            .expect("seen-event lock poisoned")
+            .contains(&event_id);
         if duplicate {
             return ack(connection, &message.stream, group, &message.id).await;
         }
         match handler(envelope) {
-            Ok(()) => ack(connection, &message.stream, group, &message.id).await,
+            Ok(()) => {
+                self.seen_event_ids
+                    .lock()
+                    .expect("seen-event lock poisoned")
+                    .insert(event_id);
+                ack(connection, &message.stream, group, &message.id).await
+            }
             Err(HandlerError::Transient(_)) => Ok(()),
             Err(HandlerError::Fatal(_)) => {
                 move_to_dlq(
@@ -429,13 +434,47 @@ pub struct DeduplicatingEventHandler {
 
 impl DeduplicatingEventHandler {
     pub fn handle(&self, envelope: EventEnvelope) -> Result<(), HandlerError> {
-        let mut seen = self.seen.lock().expect("dedup lock poisoned");
-        if seen.insert(envelope.event_id.clone()) {
-            self.handled
-                .lock()
-                .expect("handled lock poisoned")
-                .push(envelope);
+        if self
+            .seen
+            .lock()
+            .expect("dedup lock poisoned")
+            .contains(&envelope.event_id)
+        {
+            return Ok(());
         }
+        self.handled
+            .lock()
+            .expect("handled lock poisoned")
+            .push(envelope.clone());
+        self.seen
+            .lock()
+            .expect("dedup lock poisoned")
+            .insert(envelope.event_id);
+        Ok(())
+    }
+
+    pub fn handle_with_result(
+        &self,
+        envelope: EventEnvelope,
+        result: Result<(), HandlerError>,
+    ) -> Result<(), HandlerError> {
+        if self
+            .seen
+            .lock()
+            .expect("dedup lock poisoned")
+            .contains(&envelope.event_id)
+        {
+            return Ok(());
+        }
+        result?;
+        self.handled
+            .lock()
+            .expect("handled lock poisoned")
+            .push(envelope.clone());
+        self.seen
+            .lock()
+            .expect("dedup lock poisoned")
+            .insert(envelope.event_id);
         Ok(())
     }
 
@@ -457,5 +496,31 @@ mod tests {
             redis::Value::Int(5),
         ])]);
         assert_eq!(parse_xpending_delivery_count(value), Some(5));
+    }
+
+    #[test]
+    fn dedup_records_event_id_only_after_successful_handling() {
+        let handler = DeduplicatingEventHandler::default();
+        let envelope = EventEnvelope::new(
+            "EntitlementIssued",
+            "2026-07-05T10:30:00.000Z",
+            "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+            Some("cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555"),
+            "entitlement-ticketing",
+            serde_json::json!({"entitlementId":"ent-0194f2e0-7b3e-7610-0284-5c26e8b0c111"}),
+        );
+
+        assert!(matches!(
+            handler.handle_with_result(
+                envelope.clone(),
+                Err(HandlerError::Transient("temporary outage".to_string()))
+            ),
+            Err(HandlerError::Transient(_))
+        ));
+        assert_eq!(handler.handled_count(), 0);
+
+        handler.handle(envelope.clone()).unwrap();
+        handler.handle(envelope).unwrap();
+        assert_eq!(handler.handled_count(), 1);
     }
 }

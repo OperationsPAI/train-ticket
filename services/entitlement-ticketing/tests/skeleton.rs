@@ -196,6 +196,79 @@ async fn in_memory_publisher_wraps_contract_envelope_and_dedup_handler_skips_dup
 }
 
 #[tokio::test]
+async fn published_entitlement_events_use_contract_payload_shapes() {
+    use entitlement_ticketing::adapters::messaging::InMemoryEventPublisher;
+    use entitlement_ticketing::{
+        EntitlementApi, InMemoryEntitlementService, IssueEntitlementRequest, IssuePurposeDto,
+        VoidEntitlementRequest, VoidPolicyDto, VoidReasonDto,
+    };
+    use std::sync::Arc;
+
+    let publisher = Arc::new(InMemoryEventPublisher::default());
+    let service = InMemoryEntitlementService::new(publisher.clone());
+    let issued = service
+        .issue(
+            IssueEntitlementRequest {
+                segment_booking_id: "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111".to_string(),
+                journey_order_id: "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222".to_string(),
+                traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c333".to_string(),
+                segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0c444".to_string(),
+                issue_purpose: IssuePurposeDto::Initial,
+            },
+            "018f2e07-b3e7-7100-8284-5c26e8b0d101".to_string(),
+            "corr-event-payload".to_string(),
+        )
+        .await
+        .unwrap();
+    let issued_payload = &publisher.published()[0].payload;
+    assert_eq!(issued_payload["entitlementId"], issued.entitlement_id);
+    assert_eq!(
+        issued_payload["segmentBookingId"],
+        "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111"
+    );
+    assert_eq!(
+        issued_payload["journeyOrderId"],
+        "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222"
+    );
+    assert_eq!(
+        issued_payload["travelerRef"],
+        "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c333"
+    );
+    assert_eq!(
+        issued_payload["segmentRef"],
+        "seg-0194f2e0-7b3e-7610-0284-5c26e8b0c444"
+    );
+    assert_eq!(issued_payload["issuePurpose"], "INITIAL");
+    assert_eq!(issued_payload["credentialType"], "E_TICKET");
+    assert!(issued_payload.get("status").is_none());
+
+    service
+        .void(
+            issued.entitlement_id.clone(),
+            VoidEntitlementRequest {
+                reason: VoidReasonDto::Refund,
+                policy: VoidPolicyDto::Normal,
+                business_case_ref: Some("case-event-payload".to_string()),
+            },
+            "018f2e07-b3e7-7100-8284-5c26e8b0d102".to_string(),
+            "corr-event-payload".to_string(),
+        )
+        .await
+        .unwrap();
+    let voided_payload = &publisher.published()[1].payload;
+    assert_eq!(voided_payload["entitlementId"], issued.entitlement_id);
+    assert_eq!(
+        voided_payload["segmentBookingId"],
+        "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111"
+    );
+    assert!(voided_payload["voidedAt"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(voided_payload["reason"], "REFUND");
+    assert_eq!(voided_payload["policy"], "NORMAL");
+    assert_eq!(voided_payload["businessCaseRef"], "case-event-payload");
+    assert!(voided_payload.get("status").is_none());
+}
+
+#[tokio::test]
 async fn invalid_list_query_uses_canonical_error_shape() {
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
