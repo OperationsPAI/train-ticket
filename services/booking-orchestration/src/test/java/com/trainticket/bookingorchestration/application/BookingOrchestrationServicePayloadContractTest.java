@@ -279,4 +279,60 @@ class BookingOrchestrationServicePayloadContractTest {
                 && "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c404".equals(envelope.correlationId())));
     }
 
+    @Test
+    void entitlementIssueFailedPayloadFromContractAdvancesSagaFailureByEnvelopeCorrelationIdAndCausationId() {
+        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-entitlement-failure", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-entitlement-failure", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c501");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c502"),
+            "idem-reservation-entitlement-failure", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c501");
+        published.clear();
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c503", "EntitlementIssueFailed", 1, "entitlement-ticketing",
+            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c504", "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c501",
+            Instant.parse("2026-07-05T10:06:00Z"),
+            Map.of(
+                "entitlementId", "ent-0194f2e0-7b3e-7610-0284-5c26e8b0c505",
+                "retryable", false,
+                "failureCode", "PROVIDER_REJECTED",
+                "failureMessage", "provider rejected ticket issue",
+                "failedAt", "2026-07-05T10:06:00Z"))));
+
+        var detail = service.getSaga(start.sagaId()).orElseThrow();
+        assertEquals("FAILED", detail.status());
+        assertTrue(published.getPublished().stream().anyMatch(envelope ->
+            envelope.eventType().equals("SegmentReservationFailed")
+                && "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c501".equals(envelope.correlationId())
+                && "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c503".equals(envelope.causationId())));
+        assertTrue(published.getPublished().stream().anyMatch(envelope ->
+            envelope.eventType().equals("BookingSagaFailed")
+                && "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c501".equals(envelope.correlationId())
+                && "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c503".equals(envelope.causationId())));
+    }
+
+    @Test
+    void entitlementIssueFailedWithUnknownCorrelationIdIsAcknowledgedWithoutPublishing() {
+        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c601", "EntitlementIssueFailed", 1, "entitlement-ticketing",
+            "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c602", "corr-unknown",
+            Instant.parse("2026-07-05T10:07:00Z"),
+            Map.of(
+                "entitlementId", "ent-0194f2e0-7b3e-7610-0284-5c26e8b0c603",
+                "retryable", true,
+                "failureCode", "TEMPORARY_PROVIDER_TIMEOUT",
+                "failureMessage", "provider timeout",
+                "failedAt", "2026-07-05T10:07:00Z"))));
+
+        assertTrue(published.getPublished().isEmpty());
+    }
+
 }
