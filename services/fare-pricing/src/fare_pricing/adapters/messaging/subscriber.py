@@ -115,9 +115,9 @@ class RedisEventSubscriber(EventSubscriber):
                             envelope = EventEnvelope.from_json_dict(envelope_data)
                         except (json.JSONDecodeError, KeyError, MalformedEnvelopeError) as exc:
                             logger.warning("Failed to deserialize event from %s: %s", msg_id, exc)
-                            # Move unparseable messages to DLQ
-                            self._move_to_dlq(client, stream_key, msg_id, envelope_json)
-                            client.xack(stream_key, group, msg_id)
+                            # Move unparseable messages to DLQ; leave pending if DLQ write fails.
+                            if self._move_to_dlq(client, stream_key, msg_id, envelope_json):
+                                client.xack(stream_key, group, msg_id)
                             continue
 
                         try:
@@ -131,9 +131,9 @@ class RedisEventSubscriber(EventSubscriber):
                             # Do not XACK; let XAUTOCLAIM retry
                             logger.info("Transient error processing %s, leaving in PEL", msg_id)
                         except FatalHandlerError:
-                            # Move to DLQ and XACK
-                            self._move_to_dlq(client, stream_key, msg_id, envelope_json)
-                            client.xack(stream_key, group, msg_id)
+                            # Move to DLQ and XACK only after the DLQ write succeeds.
+                            if self._move_to_dlq(client, stream_key, msg_id, envelope_json):
+                                client.xack(stream_key, group, msg_id)
                         except Exception as exc:
                             logger.exception("Unexpected error processing %s: %s", msg_id, exc)
                             # Treat as transient
@@ -179,8 +179,8 @@ class RedisEventSubscriber(EventSubscriber):
                         envelope_json = msg_data.get("envelope", "{}")
 
                         if delivery_count >= 5:
-                            self._move_to_dlq(client, stream_key, msg_id, envelope_json)
-                            client.xack(stream_key, group, msg_id)
+                            if self._move_to_dlq(client, stream_key, msg_id, envelope_json):
+                                client.xack(stream_key, group, msg_id)
                             continue
 
                         try:
@@ -193,13 +193,13 @@ class RedisEventSubscriber(EventSubscriber):
                             self._mark_processed(envelope)
                             client.xack(stream_key, group, msg_id)
                         except (json.JSONDecodeError, KeyError, MalformedEnvelopeError):
-                            self._move_to_dlq(client, stream_key, msg_id, envelope_json)
-                            client.xack(stream_key, group, msg_id)
+                            if self._move_to_dlq(client, stream_key, msg_id, envelope_json):
+                                client.xack(stream_key, group, msg_id)
                         except TransientHandlerError:
                             pass
                         except FatalHandlerError:
-                            self._move_to_dlq(client, stream_key, msg_id, envelope_json)
-                            client.xack(stream_key, group, msg_id)
+                            if self._move_to_dlq(client, stream_key, msg_id, envelope_json):
+                                client.xack(stream_key, group, msg_id)
                         except Exception:
                             pass
                 except _redis.RedisError as exc:
@@ -241,13 +241,15 @@ class RedisEventSubscriber(EventSubscriber):
         stream_key: str,
         msg_id: str,
         envelope_json: str,
-    ) -> None:
+    ) -> bool:
         """Move a poison message to the dead-letter stream."""
         dlq_key = f"{stream_key}:dlq"
         try:
             client.xadd(dlq_key, {"envelope": envelope_json}, maxlen=100000, approximate=True)
         except Exception as exc:
             logger.error("Failed to move message %s to DLQ: %s", msg_id, exc)
+            return False
+        return True
 
     def stop(self) -> None:
         """Graceful shutdown."""

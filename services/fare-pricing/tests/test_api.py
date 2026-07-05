@@ -25,11 +25,15 @@ from fare_pricing import (
 from fare_pricing.api import create_app
 from fare_pricing.application.service import InMemoryStore
 from fare_pricing.ports import EventEnvelope
-from fare_pricing.ports.messaging import PublishFailed
+from fare_pricing.ports.messaging import FatalHandlerError, PublishFailed
 from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
 from fare_pricing.adapters.messaging.subscriber import RedisEventSubscriber
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+
+
+def uuid7_key(suffix: int = 1) -> str:
+    return f"0194f2e0-7b3e-7610-8284-{suffix:012d}"
 
 
 def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True) -> FareRule:
@@ -95,7 +99,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "channel": "web",
                 "segmentRefs": ["seg-456"],
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
@@ -129,7 +133,7 @@ class FarePricingApiTest(unittest.TestCase):
         resp = self.client.post(
             "/api/v1/fare-quotes",
             json={"travelerRefs": [], "channel": "web", "segmentRefs": []},
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         self.assertEqual(resp.status_code, 400)
         data = resp.json()
@@ -163,6 +167,75 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["code"], "VALIDATION_FAILED")
 
+    def test_fare_quote_rejects_non_uuid7_idempotency_key(self) -> None:
+        for bad_key in ["not-a-uuid-v7", str(uuid4())]:
+            resp = self.client.post(
+                "/api/v1/fare-quotes",
+                json={
+                    "travelerRefs": ["tvl-123"],
+                    "channel": "web",
+                    "segmentRefs": ["seg-456"],
+                },
+                headers={"Idempotency-Key": bad_key},
+            )
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.json()["code"], "VALIDATION_FAILED")
+
+    def test_fare_quote_accepts_uuid7_idempotency_key(self) -> None:
+        resp = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-123"],
+                "channel": "web",
+                "segmentRefs": ["seg-456"],
+            },
+            headers={"Idempotency-Key": uuid7_key(999)},
+        )
+        self.assertEqual(resp.status_code, 201)
+
+    def test_adjustment_quote_rejects_non_uuid7_idempotency_key(self) -> None:
+        for bad_key in ["not-a-uuid-v7", str(uuid4())]:
+            resp = self.client.post(
+                "/api/v1/adjustment-quotes",
+                json={
+                    "purpose": "REFUND",
+                    "entitlementIds": ["ent-123"],
+                    "journeyOrderId": "ord-456",
+                    "fareQuoteRef": "fq-missing",
+                },
+                headers={"Idempotency-Key": bad_key},
+            )
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.json()["code"], "VALIDATION_FAILED")
+
+    def test_adjustment_quote_accepts_uuid7_idempotency_key(self) -> None:
+        create_resp = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-123"],
+                "channel": "web",
+                "segmentRefs": ["seg-456"],
+            },
+            headers={"Idempotency-Key": uuid7_key(997)},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        quote_id = create_resp.json()["quoteId"]
+        self.store.fare_rule_sets[self.rs.rule_set_id] = published_rule_set(
+            rule("refund", RuleKind.REFUND_FEE, "20.00"),
+        )
+
+        resp = self.client.post(
+            "/api/v1/adjustment-quotes",
+            json={
+                "purpose": "REFUND",
+                "entitlementIds": ["ent-123"],
+                "journeyOrderId": "ord-456",
+                "fareQuoteRef": quote_id,
+            },
+            headers={"Idempotency-Key": uuid7_key(998)},
+        )
+        self.assertEqual(resp.status_code, 201)
+
     def test_fare_quote_no_rule_set(self) -> None:
         """Request with channel that has no published rule set returns error."""
         store = InMemoryStore()
@@ -175,7 +248,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "channel": "mobile",
                 "segmentRefs": ["seg-456"],
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         self.assertEqual(resp.status_code, 400)
 
@@ -189,7 +262,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "channel": "web",
                 "segmentRefs": ["seg-456"],
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         quote_id = create_resp.json()["quoteId"]
 
@@ -216,7 +289,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "channel": "web",
                 "segmentRefs": ["seg-456"],
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         self.assertEqual(create_resp.status_code, 201)
         quote_id = create_resp.json()["quoteId"]
@@ -234,7 +307,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "journeyOrderId": "ord-456",
                 "fareQuoteRef": quote_id,
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
@@ -258,13 +331,13 @@ class FarePricingApiTest(unittest.TestCase):
                 "entitlementIds": ["ent-123"],
                 "journeyOrderId": "ord-456",
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         self.assertEqual(resp.status_code, 404)
 
     def test_idempotent_replay_returns_original_result(self) -> None:
         """Same Idempotency-Key returns the original response."""
-        idempotency_key = str(uuid4())
+        idempotency_key = uuid7_key()
 
         body = {
             "travelerRefs": ["tvl-123"],
@@ -293,7 +366,7 @@ class FarePricingApiTest(unittest.TestCase):
 
     def test_idempotency_key_reused_with_different_body(self) -> None:
         """Different body with same Idempotency-Key returns 422."""
-        idempotency_key = str(uuid4())
+        idempotency_key = uuid7_key()
 
         self.client.post(
             "/api/v1/fare-quotes",
@@ -327,7 +400,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "segmentRefs": ["seg-456"],
             },
             headers={
-                "Idempotency-Key": str(uuid4()),
+                "Idempotency-Key": uuid7_key(),
                 "X-Correlation-Id": corr_id,
             },
         )
@@ -343,7 +416,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "channel": "web",
                 "segmentRefs": ["seg-456"],
             },
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": uuid7_key()},
         )
         data = resp.json()
         total = data["breakdown"]["total"]
@@ -563,6 +636,66 @@ class FarePricingMessagingTest(unittest.TestCase):
         subscriber._poll_stream("events:fare-pricing", "fare-pricing", "fare-pricing-test", lambda envelope: None)
 
         self.assertEqual(client.xadd_calls, [("events:fare-pricing:dlq", {"envelope": "{bad-json"})])
+        self.assertEqual(client.xack_calls, [("events:fare-pricing", "fare-pricing", "1-0")])
+
+    def test_redis_subscriber_does_not_ack_when_dlq_write_fails_for_malformed_message(self) -> None:
+        subscriber = RedisEventSubscriber(dedup_max_entries=2)
+
+        class Client:
+            def __init__(self) -> None:
+                self.xack_calls: list[tuple[str, str, str]] = []
+
+            def xreadgroup(self, *args: object, **kwargs: object) -> list[tuple[str, list[tuple[str, dict[str, str]]]]]:
+                return [("events:fare-pricing", [("1-0", {"envelope": "{bad-json"})])]
+
+            def xadd(self, stream: str, fields: dict[str, str], **kwargs: object) -> None:
+                subscriber.stop()
+                raise RuntimeError("dlq unavailable")
+
+            def xack(self, stream: str, group: str, msg_id: str) -> None:
+                self.xack_calls.append((stream, group, msg_id))
+
+        client = Client()
+        subscriber._get_client = lambda: client  # type: ignore[method-assign]
+
+        subscriber._poll_stream("events:fare-pricing", "fare-pricing", "fare-pricing-test", lambda envelope: None)
+
+        self.assertEqual(client.xack_calls, [])
+
+    def test_redis_subscriber_acks_when_dlq_write_succeeds_for_fatal_handler_error(self) -> None:
+        subscriber = RedisEventSubscriber(dedup_max_entries=2)
+        envelope = EventEnvelope(
+            event_id="evt-fatal",
+            event_type="FareRuleSetPublished",
+            producer="fare-pricing",
+            correlation_id="corr-test",
+            payload={},
+        ).to_json_dict()
+
+        class Client:
+            def __init__(self) -> None:
+                self.xadd_calls: list[tuple[str, dict[str, str]]] = []
+                self.xack_calls: list[tuple[str, str, str]] = []
+
+            def xreadgroup(self, *args: object, **kwargs: object) -> list[tuple[str, list[tuple[str, dict[str, str]]]]]:
+                return [("events:fare-pricing", [("1-0", {"envelope": json.dumps(envelope)})])]
+
+            def xadd(self, stream: str, fields: dict[str, str], **kwargs: object) -> None:
+                self.xadd_calls.append((stream, fields))
+
+            def xack(self, stream: str, group: str, msg_id: str) -> None:
+                self.xack_calls.append((stream, group, msg_id))
+                subscriber.stop()
+
+        client = Client()
+        subscriber._get_client = lambda: client  # type: ignore[method-assign]
+
+        def handler(envelope: EventEnvelope) -> None:
+            raise FatalHandlerError("poison")
+
+        subscriber._poll_stream("events:fare-pricing", "fare-pricing", "fare-pricing-test", handler)
+
+        self.assertEqual(len(client.xadd_calls), 1)
         self.assertEqual(client.xack_calls, [("events:fare-pricing", "fare-pricing", "1-0")])
 
     def test_redis_subscriber_dedup_log_is_bounded(self) -> None:
