@@ -5,5 +5,13 @@ public record JourneyOrderCreated(
     String orderId,
     String accountId,
     String offerId,
-    MonetarySummary monetarySummary
-) implements JourneyOrderEvent {}
+    MonetarySummary monetarySummary,
+    java.util.List<TravelerRef> travelerRefs,
+    java.util.List<String> segmentRefs,
+    java.time.Instant createdAt
+) implements JourneyOrderEvent {
+    public JourneyOrderCreated {
+        travelerRefs = java.util.List.copyOf(travelerRefs);
+        segmentRefs = java.util.List.copyOf(segmentRefs);
+    }
+}

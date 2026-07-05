@@ -178,7 +178,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 "orderId", created.orderId(),
                 "accountId", created.accountId(),
                 "offerId", created.offerId(),
-                "monetarySummary", monetaryPayload(created.monetarySummary())
+                "monetarySummary", monetaryPayload(created.monetarySummary()),
+                "travelerRefs", created.travelerRefs().stream().map(OrderManagementService::travelerPayload).toList(),
+                "segmentRefs", created.segmentRefs(),
+                "createdAt", created.createdAt().toString()
             );
             case com.trainticket.journeyorder.domain.JourneyOrderPendingPayment pending -> Map.of(
                 "orderId", pending.orderId(),
@@ -194,7 +197,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             case com.trainticket.journeyorder.domain.JourneyOrderConfirmed confirmed -> Map.of(
                 "orderId", confirmed.orderId(),
                 "accountId", confirmed.accountId(),
-                "monetarySummary", monetaryPayload(confirmed.monetarySummary())
+                "monetarySummary", monetaryPayload(confirmed.monetarySummary()),
+                "confirmedAt", confirmed.confirmedAt().toString()
             );
             case com.trainticket.journeyorder.domain.JourneyOrderCancelled cancelled -> Map.of(
                 "orderId", cancelled.orderId(),
@@ -208,6 +212,29 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 "monetarySummary", monetaryPayload(adjusted.monetarySummary())
             );
         };
+    }
+
+    private static Map<String, Object> travelerPayload(TravelerRef traveler) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("travelerId", traveler.travelerId());
+        payload.put("travelerType", traveler.travelerType());
+        if (traveler.maskedDocumentRef() != null && !traveler.maskedDocumentRef().isBlank()) {
+            payload.put("maskedDocumentNo", traveler.maskedDocumentRef());
+        }
+        if (traveler.eligibilityRef() != null) {
+            Map<String, Object> eligibility = new LinkedHashMap<>();
+            eligibility.put("eligibilityId", traveler.eligibilityRef().eligibilityId());
+            eligibility.put("eligibilityType", traveler.eligibilityRef().eligibilityType());
+            eligibility.put("eligibilitySource", traveler.eligibilityRef().eligibilitySource());
+            if (traveler.eligibilityRef().evidenceHash() != null) {
+                eligibility.put("evidenceHash", traveler.eligibilityRef().evidenceHash());
+            }
+            if (traveler.eligibilityRef().verifiedAt() != null) {
+                eligibility.put("verifiedAt", traveler.eligibilityRef().verifiedAt().toString());
+            }
+            payload.put("eligibilityRef", eligibility);
+        }
+        return payload;
     }
 
     private static Map<String, Object> monetaryPayload(MonetarySummary summary) {

@@ -1,7 +1,6 @@
 package com.trainticket.journeyorder.application;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -13,11 +12,11 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
 import com.trainticket.journeyorder.domain.EventEnvelope;
-import com.trainticket.journeyorder.domain.DomainRuleViolation;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +50,29 @@ class OrderManagementServiceTest {
         EventEnvelope envelope = eventPublisher.published().getFirst();
         assertEquals("JourneyOrderCreated", envelope.eventType());
         assertEquals("journey-order", envelope.producer());
+    }
+
+
+    @Test
+    void createdEventPayloadMatchesContractShape() {
+        var request = new JourneyOrderRequest("account-1", "offer-1", 1,
+            List.of("tvl-1"), List.of("seg-1"));
+
+        service.createOrder(request, "idem-contract-created", "corr-1");
+
+        Map<String, Object> payload = eventPublisher.published().getFirst().payload();
+        assertEquals(java.util.Set.of("orderId", "accountId", "offerId", "monetarySummary", "travelerRefs", "segmentRefs", "createdAt"), payload.keySet());
+        assertTrue(String.valueOf(payload.get("orderId")).startsWith("ord-"));
+        assertEquals("account-1", payload.get("accountId"));
+        assertEquals("offer-1", payload.get("offerId"));
+        assertEquals("2026-07-05T10:00:00Z", payload.get("createdAt"));
+        assertEquals(List.of("seg-1"), payload.get("segmentRefs"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> travelerRefs = (List<Map<String, Object>>) payload.get("travelerRefs");
+        assertEquals(1, travelerRefs.size());
+        assertEquals(java.util.Set.of("travelerId", "travelerType"), travelerRefs.getFirst().keySet());
+        assertEquals("tvl-1", travelerRefs.getFirst().get("travelerId"));
+        assertEquals("ADULT", travelerRefs.getFirst().get("travelerType"));
     }
 
     @Test
