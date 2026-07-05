@@ -9,6 +9,7 @@ import com.trainticket.bookingorchestration.application.EventPublisher;
 import com.trainticket.bookingorchestration.application.PublishFailed;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisException;
+import io.lettuce.core.XAddArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
 import java.time.Duration;
@@ -23,13 +24,11 @@ public class RedisStreamsEventPublisher implements EventPublisher {
     private static final int MAX_RETRIES = 3;
     private static final Duration BASE_BACKOFF = Duration.ofMillis(100);
 
-    private final RedisClient redisClient;
     private final StatefulRedisConnection<String, String> connection;
     private final RedisCommands<String, String> commands;
     private final ObjectMapper objectMapper;
 
     public RedisStreamsEventPublisher(RedisClient redisClient) {
-        this.redisClient = redisClient;
         this.connection = redisClient.connect();
         this.commands = connection.sync();
         this.objectMapper = new ObjectMapper()
@@ -50,12 +49,8 @@ public class RedisStreamsEventPublisher implements EventPublisher {
         RedisException lastException = null;
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                commands.xadd(stream, Map.of("envelope", envelopeJson));
-                try {
-                    commands.xtrim(stream, true, MAXLEN);
-                } catch (Exception ignored) {
-                    // Trimming is best-effort
-                }
+                var args = XAddArgs.Builder.maxlen(MAXLEN);
+                commands.xadd(stream, args, Map.of("envelope", envelopeJson));
                 return;
             } catch (RedisException e) {
                 lastException = e;
@@ -80,8 +75,10 @@ public class RedisStreamsEventPublisher implements EventPublisher {
         }
     }
 
+    /**
+     * Close only the connection — the RedisClient is shared and managed elsewhere.
+     */
     public void shutdown() {
         if (connection != null) connection.close();
-        if (redisClient != null) redisClient.shutdown();
     }
 }
