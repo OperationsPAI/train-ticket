@@ -79,7 +79,7 @@ func TestCreateScheduledServiceHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := Router()
 	body := `{"carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
-	recorder := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "idem-1")
+	recorder := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "0194f2e0-7b3e-7610-0284-5c26e8b0c101")
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -98,7 +98,21 @@ func TestCreateScheduledServiceHappyPath(t *testing.T) {
 
 func TestScheduledServiceValidationFailureUsesCanonicalError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	recorder := performJSON(Router(), http.MethodPost, "/api/v1/scheduled-services", `{"carrierId":"car-1"}`, "idem-2")
+	recorder := performJSON(Router(), http.MethodPost, "/api/v1/scheduled-services", `{"carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001"}`, "0194f2e0-7b3e-7610-0284-5c26e8b0c102")
+	assertCanonicalError(t, recorder, http.StatusBadRequest, "VALIDATION_FAILED")
+}
+
+func TestInvalidIdempotencyKeyRejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	recorder := performJSON(Router(), http.MethodPost, "/api/v1/scheduled-services", body, "idem-invalid")
+	assertCanonicalError(t, recorder, http.StatusBadRequest, "VALIDATION_FAILED")
+}
+
+func TestInvalidCarrierIDRejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"carrierId":"car-invalid","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	recorder := performJSON(Router(), http.MethodPost, "/api/v1/scheduled-services", body, "0194f2e0-7b3e-7610-0284-5c26e8b0c110")
 	assertCanonicalError(t, recorder, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
@@ -106,35 +120,35 @@ func TestCreateScheduledServiceIdempotentReplayReturnsOriginalResult(t *testing.
 	gin.SetMode(gin.TestMode)
 	router := Router()
 	body := `{"carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
-	first := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "idem-replay")
-	second := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "idem-replay")
+	first := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "0194f2e0-7b3e-7610-0284-5c26e8b0c103")
+	second := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "0194f2e0-7b3e-7610-0284-5c26e8b0c103")
 	if first.Code != http.StatusCreated || second.Code != http.StatusCreated {
 		t.Fatalf("unexpected statuses: %d %d", first.Code, second.Code)
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("expected identical replay response\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	reused := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", strings.Replace(body, "G1234", "G5678", 1), "idem-replay")
+	reused := performJSON(router, http.MethodPost, "/api/v1/scheduled-services", strings.Replace(body, "G1234", "G5678", 1), "0194f2e0-7b3e-7610-0284-5c26e8b0c103")
 	assertCanonicalError(t, reused, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSED")
 }
 
 func TestGetAndListScheduledServicesHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := Router()
-	body := `{"serviceRef":"ss-fixed","carrierId":"car-1","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
-	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "idem-get")
+	body := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c201","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", body, "0194f2e0-7b3e-7610-0284-5c26e8b0c104")
 
-	getRecorder := performJSON(router, http.MethodGet, "/api/v1/scheduled-services/ss-fixed", "", "")
+	getRecorder := performJSON(router, http.MethodGet, "/api/v1/scheduled-services/ss-0194f2e0-7b3e-7610-0284-5c26e8b0c201", "", "")
 	if getRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected get status: %d", getRecorder.Code)
 	}
 	var service map[string]any
 	_ = json.Unmarshal(getRecorder.Body.Bytes(), &service)
-	if service["scheduledServiceRef"] != "ss-fixed" || service["carrierId"] != "car-1" {
+	if service["scheduledServiceRef"] != "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c201" || service["carrierId"] != "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001" {
 		t.Fatalf("unexpected service body: %#v", service)
 	}
 
-	listRecorder := performJSON(router, http.MethodGet, "/api/v1/scheduled-services?limit=20&offset=0&carrierId=car-1", "", "")
+	listRecorder := performJSON(router, http.MethodGet, "/api/v1/scheduled-services?limit=20&offset=0&carrierId=car-0194f2e0-7b3e-7610-0284-5c26e8b0c001", "", "")
 	if listRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected list status: %d", listRecorder.Code)
 	}
@@ -155,10 +169,10 @@ func TestGetAndListScheduledServicesHappyPath(t *testing.T) {
 func TestCreateServiceSegmentHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := Router()
-	serviceBody := `{"serviceRef":"ss-seg","carrierId":"car-1","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
-	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "idem-service")
-	segmentBody := `{"scheduledServiceRef":"ss-seg","originStopRef":"node-a","destinationStopRef":"node-b","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z"}`
-	recorder := performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "idem-segment")
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c202","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c105")
+	segmentBody := `{"scheduledServiceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c202","originStopRef":"node-a","destinationStopRef":"node-b","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z"}`
+	recorder := performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c106")
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -169,24 +183,24 @@ func TestCreateServiceSegmentHappyPath(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("response is not json: %v", err)
 	}
-	if response.SegmentRef == "" || response.ScheduledServiceRef != "ss-seg" {
+	if response.SegmentRef == "" || response.ScheduledServiceRef != "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c202" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
 
 func TestCreateServiceSegmentValidationFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	recorder := performJSON(Router(), http.MethodPost, "/api/v1/service-segments", `{"scheduledServiceRef":"ss-missing"}`, "idem-seg-bad")
+	recorder := performJSON(Router(), http.MethodPost, "/api/v1/service-segments", `{"scheduledServiceRef":"ss-missing"}`, "0194f2e0-7b3e-7610-0284-5c26e8b0c107")
 	assertCanonicalError(t, recorder, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 func TestDomainInvariantViolationSurfacesAsDomainRuleViolation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := Router()
-	serviceBody := `{"serviceRef":"ss-domain-rule","carrierId":"car-1","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
-	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "idem-domain-rule-service")
-	segmentBody := `{"scheduledServiceRef":"ss-domain-rule","originStopRef":"node-a","destinationStopRef":"node-a","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T11:30:00Z"}`
-	recorder := performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "idem-domain-rule-segment")
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c203","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c108")
+	segmentBody := `{"scheduledServiceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c203","originStopRef":"node-a","destinationStopRef":"node-a","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T11:30:00Z"}`
+	recorder := performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c109")
 	assertCanonicalError(t, recorder, http.StatusUnprocessableEntity, "DOMAIN_RULE_VIOLATION")
 }
 
@@ -196,7 +210,7 @@ func performJSON(router http.Handler, method, path, body, idempotencyKey string)
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	request.Header.Set(goruntime.CorrelationIDHeader, "corr-test")
+	request.Header.Set(goruntime.CorrelationIDHeader, "0194f2e0-7b3e-7610-0284-5c26e8b0c401")
 	if idempotencyKey != "" {
 		request.Header.Set("Idempotency-Key", idempotencyKey)
 	}
