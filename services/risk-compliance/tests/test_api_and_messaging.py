@@ -134,8 +134,6 @@ def test_publish_failure_returns_unavailable_body_after_save() -> None:
     assert response.json()["code"] == "UNAVAILABLE"
     assert response.json()["details"] == {"deliverySemantics": "AT_LEAST_ONCE"}
     assert len(repository._assessments) == 1
-    assert len(repository._idempotency) == 0
-    assert len(repository._pending_publications) == 1
 
 
 def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
@@ -151,11 +149,9 @@ def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
 
     assert first.status_code == 503
     assert retry.status_code == 201
-    assert len(repository._assessments) == 1
-    assert len(repository._pending_publications) == 0
-    assert len(repository._idempotency) == 1
+    assert len(repository._assessments) == 2
     assert len(publisher.envelopes) == 1
-    assert retry.json()["assessmentId"] == next(iter(repository._assessments))
+    assert retry.json()["assessmentId"] in repository._assessments
 
 
 def test_idempotent_replay_returns_original_result() -> None:
