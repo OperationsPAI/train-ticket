@@ -56,11 +56,7 @@ name = "fare-pricing"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastapi" },
-    { name = "pydantic" },
-    { name = "redis" },
     { name = "train-ticket-platform" },
-    { name = "uuid6" },
 ]
 
 [package.dev-dependencies]
@@ -71,13 +67,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = "==0.138.1" },
-    { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "redis", specifier = ">=5.0.0" },
-    { name = "train-ticket-platform", directory = "../../platform/python-kit" },
-    { name = "uuid6", specifier = ">=2024.7.10" },
-]
+requires-dist = [{ name = "train-ticket-platform", editable = "../../platform/python-kit" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -359,7 +349,7 @@ wheels = [
 [[package]]
 name = "train-ticket-platform"
 version = "0.1.1"
-source = { directory = "../../platform/python-kit" }
+source = { editable = "../../platform/python-kit" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx2" },
