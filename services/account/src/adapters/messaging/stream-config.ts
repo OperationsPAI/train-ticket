@@ -1,4 +1,5 @@
-export const accountStream = "events:account";
+export const ACCOUNT_STREAM = "events:account";
+export const accountStream = ACCOUNT_STREAM;
 export const accountConsumerGroup = "account";
 export const maxStreamLength = 100_000;
 export const maxDeliveryAttempts = 5;
