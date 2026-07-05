@@ -15,16 +15,16 @@ import org.springframework.stereotype.Component;
  * Subscribes to all streams relevant to booking-orchestration per the messaging contract.
  */
 @Component
-@ConditionalOnBean(RedisStreamsEventSubscriber.class)
+@ConditionalOnBean(com.trainticket.bookingorchestration.application.EventSubscriber.class)
 public class RedisEventBusInitializer {
 
     private static final Logger log = LoggerFactory.getLogger(RedisEventBusInitializer.class);
 
-    private final RedisStreamsEventSubscriber subscriber;
+    private final com.trainticket.bookingorchestration.application.EventSubscriber subscriber;
     private final BookingOrchestrationService bookingService;
     private final String consumerName;
 
-    public RedisEventBusInitializer(RedisStreamsEventSubscriber subscriber,
+    public RedisEventBusInitializer(com.trainticket.bookingorchestration.application.EventSubscriber subscriber,
                                     BookingOrchestrationService bookingService,
                                     @Value("${booking-orchestration.subscriber.consumer-name:booking-orchestration-local}") String consumerName) {
         this.subscriber = subscriber;

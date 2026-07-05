@@ -1,7 +1,7 @@
 package com.trainticket.payment.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -68,7 +68,7 @@ public final class PaymentIntent {
         }
         PaymentIntent intent = new PaymentIntent("pi-" + UUID.randomUUID(), businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey);
         intent.domainEvents.add(new PaymentIntentCreated(
-            EnvelopeFactory.create("PaymentIntentCreated", occurredAt, sourceCommandId, correlationId, "payment"),
+            createEnvelope("PaymentIntentCreated", occurredAt, sourceCommandId, correlationId),
             intent.paymentIntentId, intent.businessRef, intent.purpose, intent.amount, intent.payerRef, intent.idempotencyKey
         ));
         return intent;
@@ -105,7 +105,7 @@ public final class PaymentIntent {
         this.status = PaymentIntentStatus.AUTHORIZED;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
         domainEvents.add(new PaymentAuthorized(
-            EnvelopeFactory.create("PaymentAuthorized", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("PaymentAuthorized", occurredAt, causationId, correlationId),
             paymentIntentId, authorizedAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
         ));
     }
@@ -133,7 +133,7 @@ public final class PaymentIntent {
         }
         status = PaymentIntentStatus.FAILED;
         domainEvents.add(new PaymentFailed(
-            EnvelopeFactory.create("PaymentFailed", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("PaymentFailed", occurredAt, causationId, correlationId),
             paymentIntentId, requireText(reasonCode, "reasonCode"), retryable
         ));
     }
@@ -147,7 +147,7 @@ public final class PaymentIntent {
         }
         status = PaymentIntentStatus.CANCELLED;
         domainEvents.add(new PaymentIntentCancelled(
-            EnvelopeFactory.create("PaymentIntentCancelled", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("PaymentIntentCancelled", occurredAt, causationId, correlationId),
             paymentIntentId, requireText(reason, "reason")
         ));
     }
@@ -164,7 +164,7 @@ public final class PaymentIntent {
         }
         status = PaymentIntentStatus.EXPIRED;
         domainEvents.add(new PaymentIntentExpired(
-            EnvelopeFactory.create("PaymentIntentExpired", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("PaymentIntentExpired", occurredAt, causationId, correlationId),
             paymentIntentId
         ));
     }
@@ -192,7 +192,7 @@ public final class PaymentIntent {
         this.status = capturedAmount.equals(amount) ? PaymentIntentStatus.CAPTURED : status;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
         domainEvents.add(new PaymentCaptured(
-            EnvelopeFactory.create("PaymentCaptured", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("PaymentCaptured", occurredAt, causationId, correlationId),
             paymentIntentId, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
         ));
     }
@@ -233,4 +233,30 @@ public final class PaymentIntent {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "payment",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }

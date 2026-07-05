@@ -12,7 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.trainticket.journeyorder.RequestContextFilter;
 import com.trainticket.journeyorder.RuntimeTracer;
-import com.trainticket.journeyorder.api.error.ApiErrorHandler;
+import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
@@ -35,7 +35,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(controllers = JourneyOrderController.class)
 @AutoConfigureMockMvc
-@Import({ApiErrorHandler.class, RequestContextFilter.class})
+@Import({PlatformKitExceptionHandler.class, RequestContextFilter.class})
 class JourneyOrderControllerTest {
 
     private static final Instant CREATED_AT = Instant.parse("2026-07-05T10:00:00Z");

@@ -1,7 +1,7 @@
 package com.trainticket.adminaudit.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,7 +55,7 @@ public final class OperatorIdentity {
         String operatorId = "op-" + UUID.randomUUID().toString();
         OperatorIdentity identity = new OperatorIdentity(operatorId, email, role, scopes, true, now);
         identity.domainEvents.add(new OperatorRegistered(
-            EnvelopeFactory.create("OperatorRegistered", now, sourceCommandId, correlationId, "admin-audit"),
+            createEnvelope("OperatorRegistered", now, sourceCommandId, correlationId),
             operatorId,
             email,
             role.name(),
@@ -102,4 +102,30 @@ public final class OperatorIdentity {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "admin-audit",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }

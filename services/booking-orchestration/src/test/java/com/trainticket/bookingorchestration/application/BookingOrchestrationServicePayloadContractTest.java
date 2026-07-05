@@ -179,7 +179,7 @@ class BookingOrchestrationServicePayloadContractTest {
 
     @Test
     void paymentCapturedPayloadFromContractAdvancesSagaByStoredPaymentIntentId() {
-        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var published = new TestEventPublisher();
         var service = new BookingOrchestrationService(
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
         var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
@@ -216,7 +216,7 @@ class BookingOrchestrationServicePayloadContractTest {
 
     @Test
     void capacityReleasePayloadFromContractAdvancesSegmentByStoredHoldId() {
-        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var published = new TestEventPublisher();
         var service = new BookingOrchestrationService(
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
         var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
@@ -258,7 +258,7 @@ class BookingOrchestrationServicePayloadContractTest {
 
     @Test
     void failurePathsPropagateConsumedEnvelopeCorrelationId() {
-        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var published = new TestEventPublisher();
         var service = new BookingOrchestrationService(
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
         var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
@@ -282,7 +282,7 @@ class BookingOrchestrationServicePayloadContractTest {
 
     @Test
     void entitlementIssueFailedPayloadFromContractAdvancesSagaFailureByEnvelopeCorrelationIdAndCausationId() {
-        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var published = new TestEventPublisher();
         var service = new BookingOrchestrationService(
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
         var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
@@ -318,7 +318,7 @@ class BookingOrchestrationServicePayloadContractTest {
 
     @Test
     void entitlementIssueFailedWithUnknownCorrelationIdIsAcknowledgedWithoutPublishing() {
-        var published = new com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher();
+        var published = new TestEventPublisher();
         var service = new BookingOrchestrationService(
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
 
@@ -334,6 +334,24 @@ class BookingOrchestrationServicePayloadContractTest {
                 "failedAt", "2026-07-05T10:07:00Z"))));
 
         assertTrue(published.getPublished().isEmpty());
+    }
+
+
+    private static final class TestEventPublisher implements com.trainticket.bookingorchestration.application.EventPublisher {
+        private final java.util.List<com.trainticket.platformkit.messaging.EventEnvelope> published = new java.util.ArrayList<>();
+
+        @Override
+        public void publish(com.trainticket.platformkit.messaging.EventEnvelope envelope) {
+            published.add(envelope);
+        }
+
+        java.util.List<com.trainticket.platformkit.messaging.EventEnvelope> getPublished() {
+            return java.util.List.copyOf(published);
+        }
+
+        void clear() {
+            published.clear();
+        }
     }
 
 }

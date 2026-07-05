@@ -1,7 +1,7 @@
 package com.trainticket.payment.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -53,7 +53,7 @@ public final class LatePaymentCase {
     ) {
         String id = UUID.randomUUID().toString();
         LatePaymentDetected event = new LatePaymentDetected(
-            EnvelopeFactory.create("LatePaymentDetected", detectedAt, causationId, correlationId, "payment"),
+            createEnvelope("LatePaymentDetected", detectedAt, causationId, correlationId),
             id, paymentIntentId, capturedAmount, channel, channelTransactionId);
         return new LatePaymentCase(id, paymentIntentId, capturedAmount, channel, channelTransactionId, reason, detectedAt, event);
     }
@@ -83,4 +83,30 @@ public final class LatePaymentCase {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "payment",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }

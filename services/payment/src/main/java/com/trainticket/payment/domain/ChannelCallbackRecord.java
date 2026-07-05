@@ -1,7 +1,7 @@
 package com.trainticket.payment.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -57,11 +57,11 @@ public final class ChannelCallbackRecord {
             .findFirst()
             .map(first -> new ChannelCallbackRecord(id, channel, callbackId, payloadDigest, callbackType, receivedAt, CallbackProcessingStatus.DUPLICATE, first.callbackRecordId,
                 new DuplicateChannelCallbackDetected(
-                    EnvelopeFactory.create("DuplicateChannelCallbackDetected", receivedAt, sourceCommandId, correlationId, "payment"),
+                    createEnvelope("DuplicateChannelCallbackDetected", receivedAt, sourceCommandId, correlationId),
                     id, channel, callbackId, first.callbackRecordId)))
             .orElseGet(() -> new ChannelCallbackRecord(id, channel, callbackId, payloadDigest, callbackType, receivedAt, CallbackProcessingStatus.RECEIVED, null,
                 new ChannelCallbackReceived(
-                    EnvelopeFactory.create("ChannelCallbackReceived", receivedAt, sourceCommandId, correlationId, "payment"),
+                    createEnvelope("ChannelCallbackReceived", receivedAt, sourceCommandId, correlationId),
                     id, channel, callbackId, payloadDigest, CallbackProcessingStatus.RECEIVED)));
     }
 
@@ -98,4 +98,30 @@ public final class ChannelCallbackRecord {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "payment",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }

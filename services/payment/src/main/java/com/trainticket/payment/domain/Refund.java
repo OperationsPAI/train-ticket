@@ -1,7 +1,7 @@
 package com.trainticket.payment.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -53,7 +53,7 @@ public final class Refund {
         }
         Refund refund = new Refund("rf-" + UUID.randomUUID(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
         refund.domainEvents.add(new RefundRequested(
-            EnvelopeFactory.create("RefundRequested", occurredAt, sourceCommandId, correlationId, "payment"),
+            createEnvelope("RefundRequested", occurredAt, sourceCommandId, correlationId),
             refund.refundId, refund.paymentIntentId, refund.amount, refund.sourceCaseRef, refund.reasonCode, refund.idempotencyKey
         ));
         return refund;
@@ -102,7 +102,7 @@ public final class Refund {
         capturedIntent.markRefunded(amount);
         this.status = RefundStatus.SETTLED;
         domainEvents.add(new RefundSettled(
-            EnvelopeFactory.create("RefundSettled", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("RefundSettled", occurredAt, causationId, correlationId),
             refundId, paymentIntentId, amount, this.channelRefundTransactionId
         ));
     }
@@ -116,7 +116,7 @@ public final class Refund {
         }
         status = retryable ? RefundStatus.FAILED : RefundStatus.MANUAL_REVIEW_REQUIRED;
         domainEvents.add(new RefundFailed(
-            EnvelopeFactory.create("RefundFailed", occurredAt, causationId, correlationId, "payment"),
+            createEnvelope("RefundFailed", occurredAt, causationId, correlationId),
             refundId, paymentIntentId, requireText(reasonCode, "reasonCode")
         ));
     }
@@ -127,4 +127,30 @@ public final class Refund {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "payment",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }

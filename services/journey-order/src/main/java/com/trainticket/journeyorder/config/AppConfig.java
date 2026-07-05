@@ -6,6 +6,8 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
+import com.trainticket.platformkit.messaging.RedisEventPublisher;
+import com.trainticket.platformkit.messaging.RedisEventSubscriber;
 import java.time.Clock;
 import java.util.UUID;
 import org.springframework.beans.factory.SmartInitializingSingleton;
@@ -28,16 +30,49 @@ public class AppConfig {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
+    @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(RedisEventPublisher.class)
+    public RedisEventPublisher platformRedisEventPublisher(ObjectMapper objectMapper) {
+        return RedisEventPublisher.fromUrl(redisUrl(), objectMapper);
+    }
+
     @Bean
     @ConditionalOnMissingBean(EventPublisher.class)
-    public EventPublisher redisEventPublisher() {
-        return new com.trainticket.journeyorder.adapters.messaging.RedisEventPublisher(redisUrl());
+    public EventPublisher journeyOrderEventPublisher(RedisEventPublisher publisher) {
+        return envelope -> {
+            try {
+                publisher.publish(envelope);
+            } catch (com.trainticket.platformkit.messaging.PublishFailedException exception) {
+                throw new EventPublisher.PublishFailed(exception.getMessage(), exception);
+            }
+        };
+    }
+
+    @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(RedisEventSubscriber.class)
+    public RedisEventSubscriber platformRedisEventSubscriber(ObjectMapper objectMapper) {
+        return RedisEventSubscriber.fromUrl(redisUrl(), objectMapper);
     }
 
     @Bean
     @ConditionalOnMissingBean(EventSubscriber.class)
-    public EventSubscriber redisEventSubscriber() {
-        return new com.trainticket.journeyorder.adapters.messaging.RedisStreamSubscriberAdapter(redisUrl());
+    public EventSubscriber journeyOrderEventSubscriber(RedisEventSubscriber subscriber) {
+        return new EventSubscriber() {
+            @Override
+            public void subscribe(java.util.List<String> streams, String group, String consumerName,
+                                  java.util.function.Function<com.trainticket.platformkit.messaging.EventEnvelope, HandlerResult> handler) {
+                subscriber.subscribe(streams, group, consumerName, envelope -> switch (handler.apply(envelope)) {
+                    case Success ignored -> com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
+                    case TransientError ignored -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
+                    case FatalError ignored -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
+                });
+            }
+
+            @Override
+            public void shutdown() {
+                subscriber.close();
+            }
+        };
     }
 
     @Bean

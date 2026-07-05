@@ -6,14 +6,12 @@ import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-@Component
-@ConditionalOnProperty(name = "post-sales.messaging.redis.enabled", havingValue = "true")
 public class RedisSubscriptionLifecycle {
-    private final RedisStreamSubscriberAdapter subscriber;
+    private final com.trainticket.postsales.application.EventSubscriber subscriber;
     private final RedisMessagingProperties properties;
     private final PostSalesEventHandler handler;
 
-    public RedisSubscriptionLifecycle(RedisStreamSubscriberAdapter subscriber, RedisMessagingProperties properties, PostSalesEventHandler handler) {
+    public RedisSubscriptionLifecycle(com.trainticket.postsales.application.EventSubscriber subscriber, RedisMessagingProperties properties, PostSalesEventHandler handler) {
         this.subscriber = subscriber;
         this.properties = properties;
         this.handler = handler;

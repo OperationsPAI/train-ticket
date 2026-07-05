@@ -14,11 +14,11 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class IdempotencyService {
-    private final IdempotencyStore store;
+    private final com.trainticket.platformkit.idempotency.IdempotencyStore store;
     private final ObjectMapper objectMapper;
 
     @Autowired
-    public IdempotencyService(IdempotencyStore store, ObjectMapper objectMapper) {
+    public IdempotencyService(com.trainticket.platformkit.idempotency.IdempotencyStore store, ObjectMapper objectMapper) {
         this.store = store;
         this.objectMapper = objectMapper;
     }
@@ -32,16 +32,29 @@ public class IdempotencyService {
             .map(stored -> replayOrReject(stored, fingerprint))
             .orElseGet(() -> {
                 Object body = action.get();
-                store.save(key, fingerprint, successStatus, body);
+                byte[] bytes = serialize(body);
+                store.saveIfAbsent(key, new com.trainticket.platformkit.idempotency.IdempotencyStore.StoredResponse(fingerprint, successStatus, "application/json", java.util.Map.of(), bytes));
                 return ResponseEntity.status(successStatus).body(body);
             });
     }
 
-    private ResponseEntity<Object> replayOrReject(IdempotencyStore.StoredResponse stored, String fingerprint) {
+    private ResponseEntity<Object> replayOrReject(com.trainticket.platformkit.idempotency.IdempotencyStore.StoredResponse stored, String fingerprint) {
         if (!stored.fingerprint().equals(fingerprint)) {
-            throw new IdempotencyKeyReusedException("Idempotency-Key reused with a different request body");
+            throw new com.trainticket.platformkit.idempotency.IdempotencyKeyReusedException();
         }
-        return ResponseEntity.status(stored.status()).body(stored.body());
+        try {
+            return ResponseEntity.status(stored.status()).body(objectMapper.readValue(stored.body(), Object.class));
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("could not replay idempotent response", exception);
+        }
+    }
+
+    private byte[] serialize(Object body) {
+        try {
+            return objectMapper.writeValueAsBytes(body);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("could not serialize idempotent response", exception);
+        }
     }
 
     private String fingerprint(Object request) {

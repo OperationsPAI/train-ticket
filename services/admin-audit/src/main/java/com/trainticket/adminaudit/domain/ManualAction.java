@@ -1,7 +1,7 @@
 package com.trainticket.adminaudit.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -87,7 +87,7 @@ public final class ManualAction {
         );
         action.state = ManualActionState.REQUESTED;
         action.domainEvents.add(new ManualActionRequested(
-            EnvelopeFactory.create("ManualActionRequested", now, sourceCommandId, correlationId, "admin-audit"),
+            createEnvelope("ManualActionRequested", now, sourceCommandId, correlationId),
             actionId,
             targetDomain,
             targetCommand,
@@ -146,7 +146,7 @@ public final class ManualAction {
         this.approvedAt = now;
         this.state = ManualActionState.APPROVED;
         this.domainEvents.add(new ManualActionApproved(
-            EnvelopeFactory.create("ManualActionApproved", now, sourceCommandId, correlationId, "admin-audit"),
+            createEnvelope("ManualActionApproved", now, sourceCommandId, correlationId),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -167,7 +167,7 @@ public final class ManualAction {
 
         this.state = ManualActionState.REJECTED;
         this.domainEvents.add(new ManualActionRejected(
-            EnvelopeFactory.create("ManualActionRejected", now, sourceCommandId, correlationId, "admin-audit"),
+            createEnvelope("ManualActionRejected", now, sourceCommandId, correlationId),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -188,7 +188,7 @@ public final class ManualAction {
         this.resultSummary = requireText(resultSummary, "resultSummary");
         this.state = ManualActionState.EXECUTED;
         this.domainEvents.add(new ManualActionExecuted(
-            EnvelopeFactory.create("ManualActionExecuted", now, sourceCommandId, correlationId, "admin-audit"),
+            createEnvelope("ManualActionExecuted", now, sourceCommandId, correlationId),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -205,7 +205,7 @@ public final class ManualAction {
         this.resultSummary = requireText(failureSummary, "failureSummary");
         this.state = ManualActionState.FAILED;
         this.domainEvents.add(new ManualActionExecuted(
-            EnvelopeFactory.create("ManualActionExecuted", now, sourceCommandId, correlationId, "admin-audit"),
+            createEnvelope("ManualActionExecuted", now, sourceCommandId, correlationId),
             manualActionId,
             targetDomain,
             targetCommand,
@@ -226,4 +226,30 @@ public final class ManualAction {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "admin-audit",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }

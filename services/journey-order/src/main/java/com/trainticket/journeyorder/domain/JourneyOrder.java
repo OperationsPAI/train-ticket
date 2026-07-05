@@ -1,7 +1,7 @@
 package com.trainticket.journeyorder.domain;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -78,7 +78,7 @@ public final class JourneyOrder {
         );
         order.recordTimeline("JourneyOrderCreated", now, "journey-order", "valid offer accepted", Map.of("offerId", offerSnapshot.offerId()));
         order.domainEvents.add(new JourneyOrderCreated(
-            EnvelopeFactory.create("JourneyOrderCreated", now, sourceCommandId, correlationId, "journey-order"),
+            createEnvelope("JourneyOrderCreated", now, sourceCommandId, correlationId),
             order.orderId,
             order.accountId,
             offerSnapshot.offerId(),
@@ -118,7 +118,7 @@ public final class JourneyOrder {
         state = OrderLifecycleState.PENDING_PAYMENT;
         recordTimeline("JourneyOrderPendingPayment", occurredAt, "journey-order", "waiting for payment", Map.of("paymentPurpose", paymentPurpose));
         domainEvents.add(new JourneyOrderPendingPayment(
-            EnvelopeFactory.create("JourneyOrderPendingPayment", occurredAt, sourceCommandId, correlationId, "journey-order"),
+            createEnvelope("JourneyOrderPendingPayment", occurredAt, sourceCommandId, correlationId),
             orderId, accountId, paymentPurpose, monetarySummary
         ));
     }
@@ -129,7 +129,7 @@ public final class JourneyOrder {
         state = OrderLifecycleState.CONFIRMING;
         recordTimeline("PaymentCaptured", occurredAt, "payment", "payment condition satisfied; awaiting entitlement summary", Map.of("paymentIntentId", paymentIntentId));
         domainEvents.add(new JourneyOrderPaymentRecorded(
-            EnvelopeFactory.create("JourneyOrderPaymentRecorded", occurredAt, causationId, correlationId, "journey-order"),
+            createEnvelope("JourneyOrderPaymentRecorded", occurredAt, causationId, correlationId),
             orderId, accountId, paymentIntentId
         ));
     }
@@ -148,7 +148,7 @@ public final class JourneyOrder {
         state = OrderLifecycleState.CONFIRMED;
         recordTimeline("JourneyOrderConfirmed", occurredAt, "journey-order", "all confirmation conditions satisfied", Map.of("confirmationAttempt", confirmationAttempt));
         domainEvents.add(new JourneyOrderConfirmed(
-            EnvelopeFactory.create("JourneyOrderConfirmed", occurredAt, causationId, correlationId, "journey-order"),
+            createEnvelope("JourneyOrderConfirmed", occurredAt, causationId, correlationId),
             orderId, accountId, monetarySummary, occurredAt
         ));
     }
@@ -163,7 +163,7 @@ public final class JourneyOrder {
         state = OrderLifecycleState.CANCELLED;
         recordTimeline("JourneyOrderCancelled", occurredAt, "journey-order", reason, Map.of());
         domainEvents.add(new JourneyOrderCancelled(
-            EnvelopeFactory.create("JourneyOrderCancelled", occurredAt, causationId, correlationId, "journey-order"),
+            createEnvelope("JourneyOrderCancelled", occurredAt, causationId, correlationId),
             orderId, accountId, reason
         ));
     }
@@ -186,7 +186,7 @@ public final class JourneyOrder {
         state = OrderLifecycleState.POST_SALES_ADJUSTED;
         recordTimeline("PostSalesAdjustmentApplied", occurredAt, "post-sales", reason, Map.of("postSalesCaseId", postSalesCaseId, "orderItemId", orderItemId));
         domainEvents.add(new JourneyOrderPostSalesAdjusted(
-            EnvelopeFactory.create("JourneyOrderPostSalesAdjusted", occurredAt, causationId, correlationId, "journey-order"),
+            createEnvelope("JourneyOrderPostSalesAdjusted", occurredAt, causationId, correlationId),
             orderId, accountId, postSalesCaseId, monetarySummary
         ));
     }
@@ -243,4 +243,30 @@ public final class JourneyOrder {
         }
         return value;
     }
+    private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            eventType,
+            occurredAt,
+            canonicalCorrelationId(correlationId),
+            canonicalCausationId(causationId),
+            "journey-order",
+            1,
+            java.util.Map.of()
+        );
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId
+            : PrefixedIds.newCorrelationId();
+    }
+
+    private static String canonicalCausationId(String causationId) {
+        if (PrefixedIds.isCausationId(causationId)) {
+            return causationId;
+        }
+        return PrefixedIds.newCommandId();
+    }
+
 }
