@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import crypto from "node:crypto";
+import { beforeEach, describe, it } from "node:test";
 
-import { createApp } from "./index.js";
+import { createApp, resetIdempotencyStore, resetOfferStore } from "./app.js";
 
 describe("offer-management service operational foundation", () => {
+  beforeEach(() => {
+    resetIdempotencyStore();
+    resetOfferStore();
+  });
+
   it("serves health, liveness, readiness, and metadata with request correlation headers", async () => {
     const app = createApp();
 
@@ -47,7 +53,7 @@ describe("offer-management service operational foundation", () => {
     assert.equal(response.headers["x-correlation-id"], response.headers["x-request-id"]);
   });
 
-  it("returns the standard error envelope for missing routes", async () => {
+  it("returns the standard error body for missing routes", async () => {
     const app = createApp();
 
     const response = await app.inject({
@@ -57,14 +63,11 @@ describe("offer-management service operational foundation", () => {
     });
 
     assert.equal(response.statusCode, 404);
-    assert.deepEqual(response.json(), {
-      error: {
-        code: "NOT_FOUND",
-        message: "Route GET /missing was not found",
-        requestId: "req-offer-management-404",
-        correlationId: "req-offer-management-404",
-      },
-    });
+    const body = response.json();
+    assert.equal(body.code, "NOT_FOUND");
+    assert.equal(body.message, "Route GET /missing was not found");
+    assert.equal(body.correlationId, "req-offer-management-404");
+    assert.deepEqual(body.details, {});
   });
 
   it("exposes a no-op-by-default opt-in tracing seam", async () => {
@@ -107,5 +110,217 @@ describe("offer-management service operational foundation", () => {
     ]);
 
     assert.equal((await createApp().inject("/health")).statusCode, 200);
+  });
+});
+
+describe("Offer Management HTTP API — POST /api/v1/offers", () => {
+  beforeEach(() => {
+    resetIdempotencyStore();
+    resetOfferStore();
+  });
+
+  it("creates an offer and returns 201 with the expected response shape", async () => {
+    const app = createApp();
+    const idempotencyKey = crypto.randomUUID();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: {
+        "idempotency-key": idempotencyKey,
+        "x-correlation-id": "corr-quote-1",
+      },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001", "tvl-002"],
+        quoteRequestId: "qr-789",
+      },
+    });
+
+    assert.equal(response.statusCode, 201);
+    const body = response.json();
+    assert.ok(body.offerId.startsWith("off-"));
+    assert.equal(body.offerVersion, 1);
+    assert.equal(typeof body.total, "object");
+    assert.equal(typeof body.total.currency, "string");
+    assert.equal(typeof body.total.minorUnits, "number");
+    assert.equal(typeof body.expiresAt, "string");
+    assert.equal(body.priceGuaranteeLevel, "FIXED_UNTIL_EXPIRY");
+    assert.ok(body.downstreamReference.offerId.startsWith("off-"));
+    assert.equal(body.downstreamReference.offerVersion, 1);
+    assert.equal(body.itineraryRef, "itin-456");
+    assert.equal(body.travelerSetHash, "tvl-001,tvl-002");
+    assert.equal(response.headers["x-correlation-id"], "corr-quote-1");
+    assert.ok(response.headers["x-request-id"]);
+  });
+
+  it("rejects request without Idempotency-Key with 400 VALIDATION_FAILED", async () => {
+    const app = createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().code, "VALIDATION_FAILED");
+    assert.ok(response.json().message.includes("Idempotency-Key"));
+  });
+
+  it("rejects missing required fields with 400 VALIDATION_FAILED", async () => {
+    const app = createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": crypto.randomUUID() },
+      body: { accountId: "acc-123" },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().code, "VALIDATION_FAILED");
+  });
+
+  it("rejects empty travelerRefs with 400 VALIDATION_FAILED", async () => {
+    const app = createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": crypto.randomUUID() },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: [],
+      },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().code, "VALIDATION_FAILED");
+  });
+
+  it("idempotent replay returns the original 201 response", async () => {
+    const app = createApp();
+    const idempotencyKey = crypto.randomUUID();
+
+    const request = {
+      method: "POST" as const,
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": idempotencyKey },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    };
+
+    const first = await app.inject(request);
+    assert.equal(first.statusCode, 201);
+
+    const second = await app.inject(request);
+    assert.equal(second.statusCode, 201);
+    assert.deepEqual(second.json(), first.json());
+  });
+
+  it("rejects idempotency key reused with different body using 422 IDEMPOTENCY_KEY_REUSED", async () => {
+    const app = createApp();
+    const idempotencyKey = crypto.randomUUID();
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": idempotencyKey },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": idempotencyKey },
+      body: {
+        accountId: "acc-456",
+        channelId: "mobile",
+        itineraryRef: "itin-789",
+        travelerRefs: ["tvl-002"],
+      },
+    });
+
+    assert.equal(response.statusCode, 422);
+    assert.equal(response.json().code, "IDEMPOTENCY_KEY_REUSED");
+  });
+});
+
+describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
+  beforeEach(() => {
+    resetIdempotencyStore();
+    resetOfferStore();
+  });
+
+  it("returns 200 with full offer details for an existing offer", async () => {
+    const app = createApp();
+    const idempotencyKey = crypto.randomUUID();
+
+    // Create an offer first
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": idempotencyKey },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+    const { offerId } = createResponse.json();
+
+    // Get the offer
+    const getResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/offers/${offerId}`,
+    });
+
+    assert.equal(getResponse.statusCode, 200);
+    const body = getResponse.json();
+    assert.equal(body.offerId, offerId);
+    assert.equal(body.offerVersion, 1);
+    assert.equal(body.status, "Quoted");
+    assert.equal(body.accountId, "acc-123");
+    assert.equal(body.channelId, "web");
+    assert.equal(body.itineraryRef, "itin-456");
+    assert.equal(typeof body.total, "object");
+    assert.equal(typeof body.expiresAt, "string");
+    assert.equal(typeof body.priceGuaranteeLevel, "string");
+    assert.equal(typeof body.downstreamReference, "object");
+    assert.equal(typeof body.items, "object");
+    assert.equal(typeof body.createdAt, "string");
+  });
+
+  it("returns 404 NOT_FOUND for a non-existent offer", async () => {
+    const app = createApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/offers/non-existent-id",
+    });
+
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.json().code, "NOT_FOUND");
+    assert.ok(response.json().message.includes("non-existent-id"));
   });
 });
