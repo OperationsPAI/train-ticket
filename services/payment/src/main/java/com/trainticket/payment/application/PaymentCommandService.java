@@ -52,6 +52,14 @@ public class PaymentCommandService {
         return intent;
     }
 
+    public PaymentIntent authorizeIntent(String paymentIntentId, String idempotencyKey, String correlationId, String channelTransactionRef) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        int before = intent.domainEvents().size();
+        intent.authorize(intent.amount(), DEFAULT_CHANNEL, "auth-" + requireText(channelTransactionRef, "channelTransactionRef"), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        publishNewEvents(intent.domainEvents(), before);
+        return intent;
+    }
+
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         Refund refund = Refund.request(intent, amount, businessCaseRef == null || businessCaseRef.isBlank() ? "case-" + idempotencyKey : businessCaseRef, reason, idempotencyKey, Instant.now(clock), commandId(idempotencyKey), correlationId);
