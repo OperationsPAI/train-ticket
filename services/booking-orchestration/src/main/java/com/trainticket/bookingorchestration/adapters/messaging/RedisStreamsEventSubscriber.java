@@ -10,6 +10,8 @@ import com.trainticket.bookingorchestration.application.HandlerResult;
 import com.trainticket.bookingorchestration.application.SubscribeFailed;
 import com.trainticket.bookingorchestration.application.SubscriberConfig;
 import io.lettuce.core.Consumer;
+import io.lettuce.core.Limit;
+import io.lettuce.core.Range;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisException;
 import io.lettuce.core.StreamMessage;
@@ -28,6 +30,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import io.lettuce.core.models.stream.PendingMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,7 +48,6 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
     private final ObjectMapper objectMapper;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Set<String> consumedEventIds = ConcurrentHashMap.newKeySet();
-    private final ConcurrentHashMap<String, Integer> deliveryCounts = new ConcurrentHashMap<>();
     private ExecutorService executor;
     private volatile SubscriberConfig currentConfig;
 
@@ -187,12 +189,11 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
             return;
         }
 
-        int deliveryCount = deliveryCounts.merge(messageId, 1, Integer::sum);
+        long deliveryCount = redisDeliveryCount(stream, group, messageId);
         if (deliveryCount >= MAX_DELIVERY_ATTEMPTS) {
             log.warn("Message {} on {} exceeded max delivery, moving to DLQ", messageId, stream);
             moveToDlq(stream, envelopeJson);
             commands.xack(stream, group, messageId);
-            deliveryCounts.remove(messageId);
             return;
         }
 
@@ -202,18 +203,29 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
         } catch (JsonProcessingException e) {
             moveToDlq(stream, envelopeJson);
             commands.xack(stream, group, messageId);
-            deliveryCounts.remove(messageId);
             return;
         }
 
         if (consumedEventIds.contains(envelope.eventId())) {
             commands.xack(stream, group, messageId);
-            deliveryCounts.remove(messageId);
             return;
         }
 
         processAndAck(stream, group, messageId, envelope, envelopeJson);
-        deliveryCounts.remove(messageId);
+    }
+
+    private long redisDeliveryCount(String stream, String group, String messageId) {
+        try {
+            List<PendingMessage> pending = commands.xpending(
+                stream, group, Range.create(messageId, messageId), Limit.create(0, 1));
+            if (pending == null || pending.isEmpty()) {
+                return 1L;
+            }
+            return pending.getFirst().getRedeliveryCount() + 1L;
+        } catch (RedisException e) {
+            log.warn("XPENDING failed for message {} on {}: {}", messageId, stream, e.getMessage());
+            return 1L;
+        }
     }
 
     private void processAndAck(String stream, String group, String messageId,
