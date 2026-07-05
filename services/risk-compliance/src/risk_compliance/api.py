@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol
-from uuid import uuid4
 
 from fastapi import FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,7 +15,10 @@ from .application import (
     IdempotencyKeyReusedError,
     InMemoryAssessmentRepository,
     InMemoryEventPublisher,
+    PublishFailed,
     RiskComplianceService,
+    is_uuid7,
+    uuid7,
 )
 from .runtime import health, profile
 
@@ -88,13 +90,13 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid4())
+    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid7())
     correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request_id
     return request_id, correlation_id
 
 
 def error_response(request: Request, status_code: int, code: str, message: str, details: dict[str, Any] | None = None) -> JSONResponse:
-    correlation_id = getattr(request.state, "correlation_id", request.headers.get(CORRELATION_ID_HEADER) or str(uuid4()))
+    correlation_id = getattr(request.state, "correlation_id", request.headers.get(CORRELATION_ID_HEADER) or str(uuid7()))
     return JSONResponse(
         status_code=status_code,
         content=ErrorBody(
@@ -198,8 +200,10 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
     ) -> JSONResponse | dict[str, Any]:
         if not idempotency_key:
             return error_response(request, 400, "VALIDATION_FAILED", "Idempotency-Key header is required")
+        if not is_uuid7(idempotency_key):
+            return error_response(request, 400, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7")
         try:
-            result, replayed = service.assess(
+            result, _ = service.assess(
                 subject_ref=payload.subjectRef,
                 scenario=payload.scenario,
                 context=payload.context,
@@ -208,7 +212,14 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
             )
         except IdempotencyKeyReusedError as exc:
             return error_response(request, 422, "IDEMPOTENCY_KEY_REUSED", str(exc))
-        del replayed
+        except PublishFailed:
+            return error_response(
+                request,
+                503,
+                "UNAVAILABLE",
+                "Risk assessment was saved but its result event could not be published; retry with the same Idempotency-Key to retrieve the saved result.",
+                {"deliverySemantics": "AT_LEAST_ONCE"},
+            )
         return JSONResponse(status_code=201, content=result.to_dict())
 
     @app.get("/api/v1/risk-assessments/{assessmentId}", response_model=None)

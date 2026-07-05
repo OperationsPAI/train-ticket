@@ -4,8 +4,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
+from secrets import randbits
+from time import time
 from typing import Any, Protocol, TypeAlias
-from uuid import uuid4
+from uuid import UUID
 
 from .domain import Decision, PolicyVersionRef, RiskAssessment, RiskLevel, assess_risk
 
@@ -41,22 +43,24 @@ class EventEnvelope:
     eventType: str
     occurredAt: str
     correlationId: str
-    causationId: str
+    causationId: str | None
     producer: str
     schemaVersion: int
     payload: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        envelope = {
             "eventId": self.eventId,
             "eventType": self.eventType,
             "occurredAt": self.occurredAt,
             "correlationId": self.correlationId,
-            "causationId": self.causationId,
             "producer": self.producer,
             "schemaVersion": self.schemaVersion,
             "payload": dict(self.payload),
         }
+        if self.causationId is not None:
+            envelope["causationId"] = self.causationId
+        return envelope
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> EventEnvelope:
@@ -65,7 +69,7 @@ class EventEnvelope:
             eventType=str(data["eventType"]),
             occurredAt=str(data["occurredAt"]),
             correlationId=str(data["correlationId"]),
-            causationId=str(data["causationId"]),
+            causationId=str(data["causationId"]) if "causationId" in data else None,
             producer=str(data["producer"]),
             schemaVersion=int(data["schemaVersion"]),
             payload=dict(data["payload"]),
@@ -245,7 +249,25 @@ class RiskComplianceService:
 
 
 def prefixed_id(prefix: str) -> str:
-    return f"{prefix}-{uuid4()}"
+    return f"{prefix}-{uuid7()}"
+
+
+def uuid7() -> UUID:
+    unix_ts_ms = int(time() * 1000) & ((1 << 48) - 1)
+    uuid_int = unix_ts_ms << 80
+    uuid_int |= 0x7 << 76
+    uuid_int |= randbits(12) << 64
+    uuid_int |= 0b10 << 62
+    uuid_int |= randbits(62)
+    return UUID(int=uuid_int)
+
+
+def is_uuid7(value: str) -> bool:
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed.version == 7
 
 
 def datetime_to_rfc3339(value: datetime) -> str:
@@ -303,7 +325,7 @@ def _evaluate(assessment: RiskAssessment) -> RiskAssessment:
 
 def _score(assessment: RiskAssessment) -> int:
     context = assessment.input_snapshot.input_data
-    explicit = context.get("riskScore") or context.get("score")
+    explicit = context["riskScore"] if "riskScore" in context else context.get("score")
     if isinstance(explicit, int) and 0 <= explicit <= 1000:
         return explicit
     digest = assessment.input_snapshot.digest
