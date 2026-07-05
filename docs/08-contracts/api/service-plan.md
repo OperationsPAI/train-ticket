@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Service Plan manages scheduled services (train runs), service segments (route
 sections), and the association between routes and services. It provides the
 master schedule data used by Trip Planning and Capacity.

@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Trip Planning searches for itineraries based on a traveler's intent. It
 returns candidate itineraries with non-authoritative price and availability
 hints. It does not lock inventory or create offers.

@@ -8,6 +8,9 @@ Payment manages payment intents, authorization, capture, and refunds. It is
 the authoritative source for all payment transactions. Payment events do not
 directly modify order or entitlement state.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for Money,
+timestamps, and cross-context IDs.
+
 ## Endpoints
 
 ### Create Payment Intent
@@ -22,8 +25,7 @@ directly modify order or entitlement state.
 |---|---|---|---|
 | `businessRef` | string | yes | Reference to the business object (order ID). |
 | `purpose` | string | yes | Payment purpose (e.g. `purchase`). |
-| `amount` | object | yes | Amount to collect (Money). |
-| `currency` | string | yes | ISO-4217 currency code. |
+| `amount` | object | yes | Amount to collect (Money — see shared-primitives.md). |
 | `payerRef` | string | yes | Payer identifier. |
 
 **Response (201):**
@@ -33,10 +35,32 @@ directly modify order or entitlement state.
 | `paymentIntentId` | string | Canonical payment intent ID (`pi-<uuid>`). |
 | `businessRef` | string | Business reference. |
 | `amount` | object | Amount (Money). |
-| `status` | enum | `CREATED`, `AUTHORIZED`, `CAPTURED`, `FAILED`, `REFUNDED` |
+| `status` | enum | `CREATED`, `AUTHORIZED`, `CAPTURED`, `FAILED`, `CANCELLED` |
 | `createdAt` | timestamp | Creation timestamp. |
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`
+
+### Cancel Payment Intent
+
+**POST** `/api/v1/payment-intents/{paymentIntentId}/cancel`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | string | yes | Reason for cancellation. |
+
+**Response (200):**
+
+| Field | Type | Description |
+|---|---|---|
+| `paymentIntentId` | string | Payment intent ID. |
+| `status` | enum | `CANCELLED` |
+| `cancelledAt` | timestamp | When cancellation was recorded. |
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`
 
 ### Capture Payment
 

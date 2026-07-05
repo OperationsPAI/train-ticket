@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Account manages user accounts, sessions, and account lifecycle (freeze,
 unfreeze, closure). It is the identity and authentication foundation.
 

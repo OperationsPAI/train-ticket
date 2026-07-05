@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Capacity & Availability manages inventory for scheduled services: availability
 snapshots, capacity holds, and capacity release. It is the authoritative
 source for seat/unit availability.
