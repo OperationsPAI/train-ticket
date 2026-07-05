@@ -249,8 +249,9 @@ class RiskComplianceService:
         context: Mapping[str, Any],
         idempotency_key: str,
         correlation_id: str,
+        request_hash: str | None = None,
     ) -> tuple[RiskAssessmentResult, bool]:
-        request_hash = _request_hash(subject_ref, scenario, context)
+        request_hash = request_hash or _request_hash(subject_ref, scenario, context)
         replay = self.repository.get_replay(idempotency_key, request_hash)
         if replay is not None:
             return RiskAssessmentResult(**replay.body), True

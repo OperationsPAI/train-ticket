@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from .ids import prefixed_uuid7, uuid7
 from .runtime import health, profile
 from .application import DomainEventService
-from .application.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore
+from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
 from .application.service import FarePricingService, InMemoryStore
 from .adapters.messaging.publisher import RedisEventPublisher
 from .ports.messaging import EventPublisher
@@ -155,7 +155,12 @@ def configure_fare_pricing_routes(
     app.state.fare_pricing_store = store
     app.state.domain_event_service = DomainEventService(publisher)
     app.state.event_publisher = publisher
-    app.state.idempotency_store = idempotency_store or BoundedInMemoryIdempotencyStore()
+    configure_idempotency_middleware(
+        app,
+        idempotency_store or BoundedInMemoryIdempotencyStore(),
+        require_key=True,
+        include_path_prefixes=("/api/v1/fare-quotes", "/api/v1/adjustment-quotes"),
+    )
     app.include_router(fare_pricing_router)
 
 

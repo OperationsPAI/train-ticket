@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, Header, Request
 
 from fare_pricing.application import DomainEventService
 from fare_pricing.ids import prefixed_uuid7
-from fare_pricing.application.idempotency import IdempotencyRecord, request_fingerprint
+from train_ticket_platform.idempotency import request_fingerprint, require_uuid7_idempotency_key
 from fare_pricing.application.service import (
     FarePricingService,
     QuoteNotFoundError,
@@ -91,23 +90,9 @@ def _domain_error(exc: Exception) -> ApiError:
 
 def require_uuid7(key: str | None) -> str:
     try:
-        parsed = uuid.UUID(key or "")
-        if parsed.version != 7:
-            raise ValueError
-    except (ValueError, AttributeError, TypeError):
-        raise ApiError("VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", 400)
-    return str(parsed)
-
-
-def _check_idempotency(request: Request, scope: str, key: str, body: dict[str, Any]) -> dict[str, Any] | None:
-    store = request.app.state.idempotency_store
-    fingerprint = request_fingerprint(body)
-    record = store.get(scope, key)
-    if record is None:
-        return None
-    if record.fingerprint != fingerprint:
-        raise ApiError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key reused with a different request body", 422)
-    return dict(record.response_body)
+        return require_uuid7_idempotency_key(key)
+    except ValueError as exc:
+        raise ApiError("VALIDATION_FAILED", str(exc), 400) from exc
 
 
 def _correlation_id(request: Request) -> str:
@@ -132,25 +117,14 @@ def _publish_event(request: Request, event_type: str, causation_id: str, payload
         raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
 
 
-def _store_idempotency(request: Request, scope: str, key: str, body: dict[str, Any], response: dict[str, Any]) -> None:
-    request.app.state.idempotency_store.put(
-        scope,
-        key,
-        IdempotencyRecord(request_fingerprint(body), 201, dict(response)),
-    )
-
-
 @router.post("/fare-quotes", status_code=201)
 def compute_fare_quote(
     request: Request,
     req: FareQuoteRequest,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    key = require_uuid7(idempotency_key)
+    require_uuid7(idempotency_key)
     body_dict = req.model_dump()
-    cached = _check_idempotency(request, "POST /api/v1/fare-quotes", key, body_dict)
-    if cached is not None:
-        return cached
 
     service: FarePricingService = request.app.state.fare_pricing_service
     rule_set_id = service.find_published_rule_set_id(req.channel)
@@ -173,7 +147,6 @@ def compute_fare_quote(
 
     resp = _fare_quote_to_response(quote)
     _publish_event(request, "FareQuoteComputed", causation_id, _fare_quote_event_payload(quote))
-    _store_idempotency(request, "POST /api/v1/fare-quotes", key, body_dict, resp)
     return resp
 
 
@@ -193,11 +166,8 @@ def compute_adjustment_quote(
     req: AdjustmentQuoteRequest,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    key = require_uuid7(idempotency_key)
+    require_uuid7(idempotency_key)
     body_dict = req.model_dump()
-    cached = _check_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict)
-    if cached is not None:
-        return cached
 
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
@@ -224,7 +194,6 @@ def compute_adjustment_quote(
 
     resp = _adjustment_quote_to_response(aq)
     _publish_event(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq, req))
-    _store_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict, resp)
     return resp
 
 

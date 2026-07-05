@@ -2,7 +2,7 @@
 
 from .events import EventEnvelope, envelope_factory, new_prefixed_uuid7, new_uuid7
 from .http import ApiError, canonical_error_body, error_response, register_exception_handlers
-from .idempotency import BoundedInMemoryIdempotencyStore, IdempotencyRecord, require_uuid7_idempotency_key
+from .idempotency import BoundedInMemoryIdempotencyStore, IdempotencyMiddleware, IdempotencyRecord, configure_idempotency_middleware, require_uuid7_idempotency_key
 from .messaging import (
     FatalHandlerError,
     HandlerResult,
@@ -25,6 +25,7 @@ __all__ = [
     "HandlerStatus",
     "InMemoryEventPublisher",
     "InMemoryEventSubscriber",
+    "IdempotencyMiddleware",
     "IdempotencyRecord",
     "PublishFailed",
     "RedisEventPublisher",
@@ -32,6 +33,7 @@ __all__ = [
     "SubscribeFailed",
     "TransientHandlerError",
     "canonical_error_body",
+    "configure_idempotency_middleware",
     "envelope_factory",
     "error_response",
     "new_prefixed_uuid7",

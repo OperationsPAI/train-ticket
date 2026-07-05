@@ -246,6 +246,11 @@ class RedisEventSubscriber(EventSubscriber):
             self._move_to_dlq(stream, envelope_json)
             self._xack(stream, group, msg_id_str)
             return
+        except Exception:
+            if self._delivery_count(stream, group, msg_id_str) >= MAX_DELIVERY_ATTEMPTS:
+                self._move_to_dlq(stream, envelope_json)
+                self._xack(stream, group, msg_id_str)
+            return
         if isinstance(result, HandlerResult):
             if result.status is HandlerStatus.TRANSIENT_ERROR:
                 return

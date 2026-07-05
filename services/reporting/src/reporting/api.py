@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
-from hashlib import sha256
 from typing import Any, Protocol
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
 from .domain import DashboardReadModel, MetricCategory, MetricDefinition, ReportingError
-from .ids import is_uuid7, uuid7
+from train_ticket_platform.idempotency import configure_idempotency_middleware
+
+from .ids import uuid7
 from .runtime import health, profile
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -36,42 +36,6 @@ class ApiError(Exception):
         self.code = code
         self.message = message
         self.details = dict(details or {})
-
-
-class IdempotencyStore:
-    def __init__(self) -> None:
-        self._entries: dict[str, tuple[str, int, dict[str, str], Any]] = {}
-
-    def lookup(self, key: str, fingerprint: str) -> tuple[int, dict[str, str], Any] | None:
-        entry = self._entries.get(key)
-        if entry is None:
-            return None
-        stored_fingerprint, status_code, headers, body = entry
-        if stored_fingerprint != fingerprint:
-            raise ApiError(422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key reused with a different request body")
-        return status_code, dict(headers), body
-
-    def store(self, key: str, fingerprint: str, status_code: int, headers: Mapping[str, str], body: Any) -> None:
-        self._entries[key] = (fingerprint, status_code, dict(headers), body)
-
-
-def _request_fingerprint(request: Request, body: bytes) -> str:
-    material = b"\n".join(
-        [
-            request.method.upper().encode("utf-8"),
-            str(request.url.path).encode("utf-8"),
-            str(request.url.query).encode("utf-8"),
-            body,
-        ]
-    )
-    return sha256(material).hexdigest()
-
-
-async def _response_body(response: Response) -> bytes:
-    body = b""
-    async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-        body += chunk
-    return body
 
 
 def _emit_trace(tracer: TraceHook | None, event: str, attributes: Mapping[str, object]) -> None:
@@ -234,50 +198,6 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
             _emit_trace(tracer, "http.request.complete", {**trace_attributes, "status_code": response.status_code})
             return response
 
-    @app.middleware("http")
-    async def idempotency_middleware(request: Request, call_next: Any):
-        if request.method.upper() != "POST":
-            return await call_next(request)
-        key = request.headers.get("Idempotency-Key")
-        if not key or not is_uuid7(key):
-            return JSONResponse(
-                status_code=400,
-                content=_error_body(request, "VALIDATION_FAILED", "Idempotency-Key header must be a UUID v7"),
-                headers=_ensure_request_context(request),
-            )
-        body = await request.body()
-        fingerprint = _request_fingerprint(request, body)
-        store: IdempotencyStore = request.app.state.idempotency_store
-        try:
-            replay = store.lookup(key, fingerprint)
-        except ApiError as exc:
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=_error_body(request, exc.code, exc.message, exc.details),
-                headers=_ensure_request_context(request),
-            )
-        if replay is not None:
-            status_code, headers, cached_body = replay
-            return JSONResponse(status_code=status_code, content=cached_body, headers={**headers, **_ensure_request_context(request)})
-        response = await call_next(request)
-        response_body = await _response_body(response)
-        try:
-            cached_body = json.loads(response_body.decode("utf-8")) if response_body else None
-        except json.JSONDecodeError:
-            cached_body = response_body.decode("utf-8")
-        headers = {
-            name: value
-            for name, value in response.headers.items()
-            if name.lower() in {"content-type"}
-        }
-        store.store(key, fingerprint, response.status_code, headers, cached_body)
-        return Response(
-            content=response_body,
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            media_type=response.media_type,
-            background=response.background,
-        )
 
     @app.get("/healthz")
     def healthz_endpoint() -> dict[str, str]:
@@ -408,7 +328,7 @@ def create_app(
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     configure_reporting_endpoints(app, app_service)
     app.state.reporting_service = app_service
-    app.state.idempotency_store = IdempotencyStore()
+    configure_idempotency_middleware(app, require_key=True, include_path_prefixes=("/api/v1/test-command",))
     return app
 
 
