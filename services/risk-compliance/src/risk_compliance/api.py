@@ -14,7 +14,6 @@ from .application import (
     AssessmentNotFoundError,
     IdempotencyKeyReusedError,
     InMemoryAssessmentRepository,
-    InMemoryEventPublisher,
     PublishFailed,
     RiskComplianceService,
     is_uuid7,
@@ -90,7 +89,7 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid7())
+    request_id = str(uuid7())
     supplied_correlation_id = request.headers.get(CORRELATION_ID_HEADER)
     correlation_id = supplied_correlation_id if supplied_correlation_id and is_uuid7(supplied_correlation_id) else str(uuid7())
     return request_id, correlation_id
