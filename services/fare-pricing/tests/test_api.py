@@ -122,9 +122,35 @@ class FarePricingApiTest(unittest.TestCase):
             json={"travelerRefs": [], "channel": "web", "segmentRefs": []},
             headers={"Idempotency-Key": str(uuid4())},
         )
-        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.status_code, 400)
         data = resp.json()
-        self.assertIsInstance(data, dict)
+        self.assertEqual(data["code"], "VALIDATION_FAILED")
+        self.assertIn("correlationId", data)
+
+
+    def test_fare_quote_requires_idempotency_key(self) -> None:
+        resp = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-123"],
+                "channel": "web",
+                "segmentRefs": ["seg-456"],
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["code"], "VALIDATION_FAILED")
+
+    def test_adjustment_quote_requires_idempotency_key(self) -> None:
+        resp = self.client.post(
+            "/api/v1/adjustment-quotes",
+            json={
+                "purpose": "REFUND",
+                "entitlementIds": ["ent-123"],
+                "journeyOrderId": "ord-456",
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["code"], "VALIDATION_FAILED")
 
     def test_fare_quote_no_rule_set(self) -> None:
         """Request with channel that has no published rule set returns error."""
@@ -317,7 +343,6 @@ class FarePricingMessagingTest(unittest.TestCase):
             event_type="FareRuleSetPublished",
             schema_version=1,
             producer="fare-pricing",
-            source_command_id="cmd-test-456",
             causation_id="cmd-test-789",
             correlation_id="corr-test-000",
             occurred_at=NOW,
@@ -350,7 +375,6 @@ class FarePricingMessagingTest(unittest.TestCase):
             event_type="FareRuleSetPublished",
             schema_version=1,
             producer="fare-pricing",
-            source_command_id="cmd-test-456",
             causation_id="cmd-test-789",
             correlation_id="corr-test-000",
             occurred_at=NOW,
@@ -361,12 +385,12 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(d["eventType"], "FareRuleSetPublished")
         self.assertEqual(d["producer"], "fare-pricing")
         self.assertEqual(d["schemaVersion"], 1)
-        self.assertEqual(d["sourceCommandId"], "cmd-test-456")
         self.assertEqual(d["causationId"], "cmd-test-789")
         self.assertEqual(d["correlationId"], "corr-test-000")
         self.assertIn("occurredAt", d)
         self.assertIn("payload", d)
         self.assertEqual(d["payload"]["ruleSetId"], "rs-main")
+        self.assertEqual(set(d.keys()), {"eventId", "eventType", "occurredAt", "correlationId", "causationId", "producer", "schemaVersion", "payload"})
 
     def test_publisher_roundtrip_json(self) -> None:
         """Envelope survives to_json_dict -> from_json_dict roundtrip."""
@@ -375,7 +399,6 @@ class FarePricingMessagingTest(unittest.TestCase):
             event_type="FareRuleSetPublished",
             schema_version=1,
             producer="fare-pricing",
-            source_command_id="cmd-test-456",
             causation_id="cmd-test-789",
             correlation_id="corr-test-000",
             occurred_at=NOW,
@@ -412,8 +435,8 @@ class FarePricingMessagingTest(unittest.TestCase):
         subscriber.deliver(envelope)
         subscriber.deliver(envelope)
 
-        # Handler receives both — dedup is handler's responsibility
-        self.assertEqual(len(processed), 2)
+        # Duplicate eventId is delivered only once.
+        self.assertEqual(len(processed), 1)
 
     def test_subscriber_consumer_group_configuration(self) -> None:
         """FakeEventSubscriber stores the group/consumer config."""
@@ -441,7 +464,6 @@ class FarePricingMessagingTest(unittest.TestCase):
             event_type="FareRuleSetPublished",
             schema_version=1,
             producer="fare-pricing",
-            source_command_id="cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555",
             causation_id="cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555",
             correlation_id="corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
             occurred_at=datetime(2026, 7, 3, 10, 30, 0, 0, tzinfo=UTC),
@@ -452,7 +474,6 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(d["eventType"], "FareRuleSetPublished")
         self.assertEqual(d["schemaVersion"], 1)
         self.assertEqual(d["producer"], "fare-pricing")
-        self.assertEqual(d["sourceCommandId"], "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555")
         self.assertEqual(d["causationId"], "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555")
         self.assertEqual(d["correlationId"], "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444")
         self.assertEqual(d["occurredAt"], "2026-07-03T10:30:00.000Z")
