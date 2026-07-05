@@ -17,6 +17,11 @@ import (
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 )
 
+const (
+	segmentBookingID1 = "sb-018f0000-0000-7000-8000-000000000101"
+	segmentBookingID2 = "sb-018f0000-0000-7000-8000-000000000102"
+)
+
 type fakePublisher struct{ envelopes []application.EventEnvelope }
 
 func (p *fakePublisher) Publish(_ context.Context, envelope application.EventEnvelope) error {
@@ -28,7 +33,7 @@ func TestRequestProviderReservationHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	publisher := &fakePublisher{}
 	router := RouterWithDependencies(application.NewInMemoryReservationService(publisher), application.NewIdempotencyStore())
-	body := `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`
+	body := reservationRequestBody(segmentBookingID1, "1A")
 
 	recorder := post(router, "/api/v1/internal/provider-reservations", body, testUUIDv7(1))
 
@@ -39,7 +44,7 @@ func TestRequestProviderReservationHappyPath(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.SegmentBookingID != "sb-123" || response.Status != application.ReservationConfirmed || response.ProviderReference == "" {
+	if response.SegmentBookingID != segmentBookingID1 || response.Status != application.ReservationConfirmed || response.ProviderReference == "" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 	if len(publisher.envelopes) != 1 {
@@ -52,9 +57,9 @@ func TestCancelProviderReservationHappyPath(t *testing.T) {
 	publisher := &fakePublisher{}
 	service := application.NewInMemoryReservationService(publisher)
 	router := RouterWithDependencies(service, application.NewIdempotencyStore())
-	_ = post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
+	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID1, "1A"), testUUIDv7(1))
 
-	recorder := post(router, "/api/v1/internal/provider-reservations/sb-123/cancel", ``, testUUIDv7(2))
+	recorder := post(router, "/api/v1/internal/provider-reservations/"+segmentBookingID1+"/cancel", ``, testUUIDv7(2))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -63,7 +68,7 @@ func TestCancelProviderReservationHappyPath(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.SegmentBookingID != "sb-123" || response.CancellationStatus != application.CancellationCancelled {
+	if response.SegmentBookingID != segmentBookingID1 || response.CancellationStatus != application.CancellationCancelled {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
@@ -90,7 +95,7 @@ func TestDomainRuleViolationSurfacesCanonicalBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
 
-	recorder := post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"bad provider","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
+	recorder := post(router, "/api/v1/internal/provider-reservations", reservationRequestBodyWithProvider(segmentBookingID1, "bad provider", "1A"), testUUIDv7(1))
 
 	if recorder.Code != 422 {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -104,10 +109,66 @@ func TestDomainRuleViolationSurfacesCanonicalBody(t *testing.T) {
 	}
 }
 
+func TestSegmentBookingIDValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed", body: reservationRequestBody("sb-123", "1A")},
+		{name: "uuid v4", body: reservationRequestBody("sb-"+uuid.New().String(), "1A")},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := post(router, "/api/v1/internal/provider-reservations", tc.body, testUUIDv7(20+i))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var body ErrorBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Code != "VALIDATION_FAILED" {
+				t.Fatalf("unexpected error body: %#v", body)
+			}
+		})
+	}
+}
+
+func TestCancelSegmentBookingIDValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
+
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{name: "malformed", id: "sb-123"},
+		{name: "uuid v4", id: "sb-" + uuid.New().String()},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := post(router, "/api/v1/internal/provider-reservations/"+tc.id+"/cancel", ``, testUUIDv7(30+i))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var body ErrorBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Code != "VALIDATION_FAILED" {
+				t.Fatalf("unexpected error body: %#v", body)
+			}
+		})
+	}
+}
+
 func TestIdempotencyKeyHeaderValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
-	body := `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`
+	body := reservationRequestBody(segmentBookingID1, "1A")
 
 	missing := post(router, "/api/v1/internal/provider-reservations", body, "")
 	if missing.Code != http.StatusBadRequest {
@@ -118,13 +179,18 @@ func TestIdempotencyKeyHeaderValidation(t *testing.T) {
 	if malformed.Code != http.StatusBadRequest {
 		t.Fatalf("malformed header status: %d body=%s", malformed.Code, malformed.Body.String())
 	}
+
+	version4 := post(router, "/api/v1/internal/provider-reservations", body, uuid.New().String())
+	if version4.Code != http.StatusBadRequest {
+		t.Fatalf("v4 header status: %d body=%s", version4.Code, version4.Body.String())
+	}
 }
 
 func TestIdempotencyKeyBodyFieldIsRejected(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
 
-	recorder := post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"},"idempotencyKey":"`+testUUIDv7(1)+`"}`, testUUIDv7(1))
+	recorder := post(router, "/api/v1/internal/provider-reservations", reservationRequestBodyWithIdempotencyKey(segmentBookingID1, testUUIDv7(1)), testUUIDv7(1))
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -134,7 +200,7 @@ func TestIdempotencyKeyBodyFieldIsRejected(t *testing.T) {
 func TestIdempotentReplayReturnsOriginalResult(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
-	body := `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`
+	body := reservationRequestBody(segmentBookingID1, "1A")
 
 	first := post(router, "/api/v1/internal/provider-reservations", body, testUUIDv7(1))
 	second := post(router, "/api/v1/internal/provider-reservations", body, testUUIDv7(1))
@@ -147,9 +213,9 @@ func TestIdempotentReplayReturnsOriginalResult(t *testing.T) {
 func TestIdempotencyKeyReuseWithDifferentBodyFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := RouterWithDependencies(application.NewInMemoryReservationService(&fakePublisher{}), application.NewIdempotencyStore())
-	_ = post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
+	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID1, "1A"), testUUIDv7(1))
 
-	recorder := post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-124","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
+	recorder := post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID2, "1A"), testUUIDv7(1))
 
 	if recorder.Code != 422 {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -160,11 +226,11 @@ func TestIdempotencyKeyReuseAcrossResolvedCancelPathsFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := application.NewInMemoryReservationService(&fakePublisher{})
 	router := RouterWithDependencies(service, application.NewIdempotencyStore())
-	_ = post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-123","providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"}}`, testUUIDv7(1))
-	_ = post(router, "/api/v1/internal/provider-reservations", `{"segmentBookingId":"sb-456","providerConfigRef":"cr-rail","reservationPayload":{"seat":"2A"}}`, testUUIDv7(2))
+	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID1, "1A"), testUUIDv7(1))
+	_ = post(router, "/api/v1/internal/provider-reservations", reservationRequestBody(segmentBookingID2, "2A"), testUUIDv7(2))
 
-	first := post(router, "/api/v1/internal/provider-reservations/sb-123/cancel", ``, testUUIDv7(3))
-	second := post(router, "/api/v1/internal/provider-reservations/sb-456/cancel", ``, testUUIDv7(3))
+	first := post(router, "/api/v1/internal/provider-reservations/"+segmentBookingID1+"/cancel", ``, testUUIDv7(3))
+	second := post(router, "/api/v1/internal/provider-reservations/"+segmentBookingID2+"/cancel", ``, testUUIDv7(3))
 
 	if first.Code != http.StatusOK {
 		t.Fatalf("first cancel status: %d body=%s", first.Code, first.Body.String())
@@ -185,7 +251,7 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 	publisher := &fakePublisher{}
 	service := application.NewInMemoryReservationService(publisher)
 	_, err := service.RequestReservation(context.Background(), application.RequestProviderReservationCommand{
-		SegmentBookingID: "sb-123", ProviderConfigRef: "cr-rail", ReservationPayload: map[string]any{"seat": "1A"}, CorrelationID: testUUIDv7(3), CausationID: "cmd-" + testUUIDv7(4), IdempotencyKey: testUUIDv7(5),
+		SegmentBookingID: segmentBookingID1, ProviderConfigRef: "cr-rail", ReservationPayload: map[string]any{"seat": "1A"}, CorrelationID: testUUIDv7(3), CausationID: "cmd-" + testUUIDv7(4), IdempotencyKey: testUUIDv7(5),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,9 +271,9 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 		t.Fatalf("bad payload JSON: %v", err)
 	}
 	wantPayload := map[string]any{
-		"segmentBookingId":   "sb-123",
-		"providerReference":  "prv-123",
-		"normalizedEvidence": "raw-123:prv-123",
+		"segmentBookingId":   segmentBookingID1,
+		"providerReference":  providerReferenceFor(segmentBookingID1),
+		"normalizedEvidence": normalizedEvidenceFor(segmentBookingID1),
 	}
 	if len(payload) != len(wantPayload) {
 		t.Fatalf("payload has non-contract fields: %#v", payload)
@@ -217,6 +283,26 @@ func TestPublisherWrapsCorrectEnvelope(t *testing.T) {
 			t.Fatalf("payload[%s]=%#v, want %#v (payload %#v)", field, payload[field], want, payload)
 		}
 	}
+}
+
+func reservationRequestBody(segmentBookingID, seat string) string {
+	return reservationRequestBodyWithProvider(segmentBookingID, "cr-rail", seat)
+}
+
+func reservationRequestBodyWithProvider(segmentBookingID, providerConfigRef, seat string) string {
+	return fmt.Sprintf(`{"segmentBookingId":%q,"providerConfigRef":%q,"reservationPayload":{"seat":%q}}`, segmentBookingID, providerConfigRef, seat)
+}
+
+func reservationRequestBodyWithIdempotencyKey(segmentBookingID, idempotencyKey string) string {
+	return fmt.Sprintf(`{"segmentBookingId":%q,"providerConfigRef":"cr-rail","reservationPayload":{"seat":"1A"},"idempotencyKey":%q}`, segmentBookingID, idempotencyKey)
+}
+
+func providerReferenceFor(segmentBookingID string) string {
+	return "prv-" + strings.TrimPrefix(segmentBookingID, "sb-")
+}
+
+func normalizedEvidenceFor(segmentBookingID string) string {
+	return "raw-" + strings.TrimPrefix(segmentBookingID, "sb-") + ":" + providerReferenceFor(segmentBookingID)
 }
 
 func testUUIDv7(n int) string {
@@ -244,7 +330,7 @@ func TestSubscriberDeduplicatesDuplicateEventID(t *testing.T) {
 		calls++
 		return nil
 	})
-	envelope := application.EventEnvelope{EventID: "evt-1", EventType: "SupplierUpdated", Producer: "supplier-catalog", SchemaVersion: 1}
+	envelope := application.EventEnvelope{EventID: "evt-" + testUUIDv7(6), EventType: "SupplierUpdated", Producer: "supplier-catalog", SchemaVersion: 1}
 	if err := handler(context.Background(), envelope); err != nil {
 		t.Fatal(err)
 	}
