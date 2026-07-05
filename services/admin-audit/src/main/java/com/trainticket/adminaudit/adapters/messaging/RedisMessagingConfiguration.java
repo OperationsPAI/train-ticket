@@ -1,6 +1,6 @@
 package com.trainticket.adminaudit.adapters.messaging;
 
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventSubscriber;
 import java.util.List;
 import java.util.UUID;
@@ -10,12 +10,12 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnBean(RedisEventSubscriber.class)
+@ConditionalOnBean(RedisStreamSubscriberAdapter.class)
 public class RedisMessagingConfiguration implements ApplicationRunner {
-    private final RedisEventSubscriber subscriber;
+    private final RedisStreamSubscriberAdapter subscriber;
     private final ConsumedEventLog consumedEventLog;
 
-    public RedisMessagingConfiguration(RedisEventSubscriber subscriber, ConsumedEventLog consumedEventLog) {
+    public RedisMessagingConfiguration(RedisStreamSubscriberAdapter subscriber, ConsumedEventLog consumedEventLog) {
         this.subscriber = subscriber;
         this.consumedEventLog = consumedEventLog;
     }

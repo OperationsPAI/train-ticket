@@ -2,7 +2,7 @@ package com.trainticket.financesettlement.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.financesettlement.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.application.EventSubscriber;
 import com.trainticket.financesettlement.application.FinanceSettlementEventHandler;
 import com.trainticket.financesettlement.application.HandlerResult;
@@ -35,7 +35,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 @ConditionalOnBean(StatefulRedisConnection.class)
-public class RedisEventSubscriber implements EventSubscriber, SmartLifecycle {
+public class RedisStreamSubscriberAdapter implements EventSubscriber, SmartLifecycle {
     private static final String ENVELOPE_FIELD = "envelope";
     private static final int MAX_DELIVERIES = 5;
     private static final long MAX_STREAM_LENGTH = 100_000L;
@@ -50,7 +50,7 @@ public class RedisEventSubscriber implements EventSubscriber, SmartLifecycle {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ExecutorService executor;
 
-    public RedisEventSubscriber(
+    public RedisStreamSubscriberAdapter(
         StatefulRedisConnection<String, String> connection,
         ObjectMapper objectMapper,
         RedisMessagingProperties properties,

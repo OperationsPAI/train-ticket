@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Instant;

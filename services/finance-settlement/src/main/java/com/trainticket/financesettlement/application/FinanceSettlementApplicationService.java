@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
 import com.trainticket.financesettlement.domain.ReconciliationCase;

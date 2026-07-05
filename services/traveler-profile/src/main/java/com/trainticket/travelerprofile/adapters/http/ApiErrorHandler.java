@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
-public class ApiExceptionHandler {
+public class ApiErrorHandler {
     @ExceptionHandler(ValidationException.class)
     ResponseEntity<ApiError> validation(ValidationException exception, HttpServletRequest request) {
         return error(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", exception.getMessage(), request, exception.details());

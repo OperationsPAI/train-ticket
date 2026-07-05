@@ -1,5 +1,6 @@
 package com.trainticket.payment.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.ChannelCallbackReceived;
 import com.trainticket.payment.domain.DuplicateChannelCallbackDetected;
 import com.trainticket.payment.domain.LatePaymentDetected;
@@ -22,7 +23,7 @@ public final class EventEnvelopeMapper {
     }
 
     public static EventEnvelope fromDomainEvent(PaymentEvent event) {
-        com.trainticket.payment.domain.EventEnvelope envelope = event.envelope();
+        com.trainticket.platformkit.messaging.EventEnvelope envelope = event.envelope();
         return new EventEnvelope(
             envelope.eventId(),
             envelope.eventType(),

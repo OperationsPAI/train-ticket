@@ -9,11 +9,11 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(name = "post-sales.messaging.redis.enabled", havingValue = "true")
 public class RedisSubscriptionLifecycle {
-    private final RedisEventSubscriber subscriber;
+    private final RedisStreamSubscriberAdapter subscriber;
     private final RedisMessagingProperties properties;
     private final PostSalesEventHandler handler;
 
-    public RedisSubscriptionLifecycle(RedisEventSubscriber subscriber, RedisMessagingProperties properties, PostSalesEventHandler handler) {
+    public RedisSubscriptionLifecycle(RedisStreamSubscriberAdapter subscriber, RedisMessagingProperties properties, PostSalesEventHandler handler) {
         this.subscriber = subscriber;
         this.properties = properties;
         this.handler = handler;

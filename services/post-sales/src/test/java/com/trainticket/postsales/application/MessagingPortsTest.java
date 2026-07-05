@@ -1,5 +1,6 @@
 package com.trainticket.postsales.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;

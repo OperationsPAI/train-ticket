@@ -1,5 +1,7 @@
 package com.trainticket.payment.application;
 
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -94,7 +96,7 @@ class PaymentMessagingApplicationTest {
     @Test
     void mapsRefundFailedPayloadToContractShape() {
         EventEnvelope envelope = EventEnvelopeMapper.fromDomainEvent(new com.trainticket.payment.domain.RefundFailed(
-            com.trainticket.payment.domain.EventEnvelope.create(
+            EnvelopeFactory.create(
                 "RefundFailed",
                 Instant.parse("2026-07-05T10:32:00Z"),
                 "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c111",

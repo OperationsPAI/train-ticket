@@ -17,11 +17,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @RestControllerAdvice
-public class ApiExceptionHandler {
+public class ApiErrorHandler {
 
     private final HttpServletRequest request;
 
-    public ApiExceptionHandler(HttpServletRequest request) {
+    public ApiErrorHandler(HttpServletRequest request) {
         this.request = request;
     }
 

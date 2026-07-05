@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,7 +37,7 @@ class MessagingTest {
         assertEquals("cmd-recognize", envelope.causationId());
         assertEquals(1, envelope.schemaVersion());
         assertEquals(8, EventEnvelope.class.getRecordComponents().length);
-        assertEquals(1000L, ((Map<?, ?>) envelope.payload().get("amount")).get("minorUnits"));
+        assertEquals(1000L, ((Map<?, ?>) ((Map<?, ?>) envelope.payload()).get("amount")).get("minorUnits"));
     }
 
     @Test
@@ -120,9 +121,9 @@ class MessagingTest {
         assertEquals(HandlerResult.SUCCESS, capturedResult);
         EventEnvelope published = publisher.published.getFirst();
         assertEquals("RevenueRecognized", published.eventType());
-        assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321", published.payload().get("orderId"));
-        assertEquals("pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789", published.payload().get("orderItemId"));
-        assertEquals(35000L, ((Map<?, ?>) published.payload().get("amount")).get("minorUnits"));
+        assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321", ((Map<?, ?>) published.payload()).get("orderId"));
+        assertEquals("pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789", ((Map<?, ?>) published.payload()).get("orderItemId"));
+        assertEquals(35000L, ((Map<?, ?>) ((Map<?, ?>) published.payload()).get("amount")).get("minorUnits"));
     }
 
     @Test

@@ -1,6 +1,6 @@
 package com.trainticket.bookingorchestration.adapters.messaging;
 
-import com.trainticket.bookingorchestration.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.bookingorchestration.application.EventPublisher;
 import java.util.ArrayList;
 import java.util.List;

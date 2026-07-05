@@ -1,5 +1,7 @@
 package com.trainticket.payment.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -51,7 +53,7 @@ public final class LatePaymentCase {
     ) {
         String id = UUID.randomUUID().toString();
         LatePaymentDetected event = new LatePaymentDetected(
-            EventEnvelope.create("LatePaymentDetected", detectedAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("LatePaymentDetected", detectedAt, causationId, correlationId, "payment"),
             id, paymentIntentId, capturedAmount, channel, channelTransactionId);
         return new LatePaymentCase(id, paymentIntentId, capturedAmount, channel, channelTransactionId, reason, detectedAt, event);
     }

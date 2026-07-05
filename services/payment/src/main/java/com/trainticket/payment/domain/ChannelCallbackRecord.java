@@ -1,5 +1,7 @@
 package com.trainticket.payment.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -55,11 +57,11 @@ public final class ChannelCallbackRecord {
             .findFirst()
             .map(first -> new ChannelCallbackRecord(id, channel, callbackId, payloadDigest, callbackType, receivedAt, CallbackProcessingStatus.DUPLICATE, first.callbackRecordId,
                 new DuplicateChannelCallbackDetected(
-                    EventEnvelope.create("DuplicateChannelCallbackDetected", receivedAt, sourceCommandId, correlationId, "payment"),
+                    EnvelopeFactory.create("DuplicateChannelCallbackDetected", receivedAt, sourceCommandId, correlationId, "payment"),
                     id, channel, callbackId, first.callbackRecordId)))
             .orElseGet(() -> new ChannelCallbackRecord(id, channel, callbackId, payloadDigest, callbackType, receivedAt, CallbackProcessingStatus.RECEIVED, null,
                 new ChannelCallbackReceived(
-                    EventEnvelope.create("ChannelCallbackReceived", receivedAt, sourceCommandId, correlationId, "payment"),
+                    EnvelopeFactory.create("ChannelCallbackReceived", receivedAt, sourceCommandId, correlationId, "payment"),
                     id, channel, callbackId, payloadDigest, CallbackProcessingStatus.RECEIVED)));
     }
 

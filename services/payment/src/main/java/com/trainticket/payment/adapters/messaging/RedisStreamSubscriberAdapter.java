@@ -2,7 +2,7 @@ package com.trainticket.payment.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.payment.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.application.EventSubscriber;
 import com.trainticket.payment.application.HandlerResult;
 import com.trainticket.payment.application.SubscribeFailedException;
@@ -13,7 +13,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
+public class RedisStreamSubscriberAdapter implements EventSubscriber, AutoCloseable {
     static final int MAX_DELIVERY_ATTEMPTS = 5;
 
     private final RedisStreamOperations streams;
@@ -21,7 +21,7 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean running = new AtomicBoolean();
 
-    RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper) {
+    RedisStreamSubscriberAdapter(RedisStreamOperations streams, ObjectMapper objectMapper) {
         this.streams = Objects.requireNonNull(streams, "streams are required");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
     }

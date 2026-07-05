@@ -19,15 +19,15 @@ public final class PrefixedIds {
     }
 
     public static boolean isEventId(String value) {
-        return hasValidUuidWithPrefix(value, "evt-");
+        return value != null && value.startsWith("evt-") && value.length() > 4;
     }
 
     public static boolean isCorrelationId(String value) {
-        return hasValidUuidWithPrefix(value, "corr-");
+        return value != null && value.startsWith("corr-") && value.length() > 5;
     }
 
     public static boolean isCausationId(String value) {
-        return hasValidUuidWithPrefix(value, "cmd-") || hasValidUuidWithPrefix(value, "evt-");
+        return value != null && (value.startsWith("cmd-") || value.startsWith("evt-")) && value.length() > 4;
     }
 
     public static void requireEventId(String value) {

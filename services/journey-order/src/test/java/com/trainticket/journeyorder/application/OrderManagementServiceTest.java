@@ -11,7 +11,7 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -60,7 +60,7 @@ class OrderManagementServiceTest {
 
         service.createOrder(request, "idem-contract-created", "corr-1");
 
-        Map<String, Object> payload = eventPublisher.published().getFirst().payload();
+        Map<String, Object> payload = (Map<String, Object>) eventPublisher.published().getFirst().payload();
         assertEquals(java.util.Set.of("orderId", "accountId", "offerId", "monetarySummary", "travelerRefs", "segmentRefs", "createdAt"), payload.keySet());
         assertTrue(String.valueOf(payload.get("orderId")).startsWith("ord-"));
         assertEquals("account-1", payload.get("accountId"));

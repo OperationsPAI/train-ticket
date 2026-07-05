@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
-public class ApiExceptionHandler {
+public class ApiErrorHandler {
     @ExceptionHandler({ValidationException.class, IllegalArgumentException.class, HttpMessageNotReadableException.class})
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     ApiError validation(Exception exception, HttpServletRequest request) {

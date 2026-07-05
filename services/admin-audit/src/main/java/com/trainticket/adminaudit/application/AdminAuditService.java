@@ -2,7 +2,7 @@ package com.trainticket.adminaudit.application;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.adminaudit.application.ports.AdminAuditRepository;
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventPublisher;
 import com.trainticket.adminaudit.domain.AdminAuditEvent;
 import com.trainticket.adminaudit.domain.AuditEntry;
@@ -182,7 +182,7 @@ public class AdminAuditService {
     }
 
     public static EventEnvelope toContractEnvelope(AdminAuditEvent event) {
-        com.trainticket.adminaudit.domain.EventEnvelope source = event.envelope();
+        com.trainticket.platformkit.messaging.EventEnvelope source = event.envelope();
         return new EventEnvelope(
             ensurePrefix(source.eventId(), "evt-"),
             source.eventType(),

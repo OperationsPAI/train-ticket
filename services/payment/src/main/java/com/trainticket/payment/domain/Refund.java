@@ -1,5 +1,7 @@
 package com.trainticket.payment.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,7 +53,7 @@ public final class Refund {
         }
         Refund refund = new Refund("rf-" + UUID.randomUUID(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
         refund.domainEvents.add(new RefundRequested(
-            EventEnvelope.create("RefundRequested", occurredAt, sourceCommandId, correlationId, "payment"),
+            EnvelopeFactory.create("RefundRequested", occurredAt, sourceCommandId, correlationId, "payment"),
             refund.refundId, refund.paymentIntentId, refund.amount, refund.sourceCaseRef, refund.reasonCode, refund.idempotencyKey
         ));
         return refund;
@@ -100,7 +102,7 @@ public final class Refund {
         capturedIntent.markRefunded(amount);
         this.status = RefundStatus.SETTLED;
         domainEvents.add(new RefundSettled(
-            EventEnvelope.create("RefundSettled", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("RefundSettled", occurredAt, causationId, correlationId, "payment"),
             refundId, paymentIntentId, amount, this.channelRefundTransactionId
         ));
     }
@@ -114,7 +116,7 @@ public final class Refund {
         }
         status = retryable ? RefundStatus.FAILED : RefundStatus.MANUAL_REVIEW_REQUIRED;
         domainEvents.add(new RefundFailed(
-            EventEnvelope.create("RefundFailed", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("RefundFailed", occurredAt, causationId, correlationId, "payment"),
             refundId, paymentIntentId, requireText(reasonCode, "reasonCode")
         ));
     }

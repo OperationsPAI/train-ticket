@@ -1,6 +1,6 @@
 package com.trainticket.financesettlement.adapters.messaging;
 
-import com.trainticket.financesettlement.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.application.EventPublisher;
 import java.util.ArrayList;
 import java.util.Collections;

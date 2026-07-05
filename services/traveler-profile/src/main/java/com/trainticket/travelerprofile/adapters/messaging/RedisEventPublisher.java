@@ -2,7 +2,7 @@ package com.trainticket.travelerprofile.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.travelerprofile.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.travelerprofile.application.EventPublisher;
 import com.trainticket.travelerprofile.application.PublishFailedException;
 import io.lettuce.core.RedisClient;

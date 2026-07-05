@@ -1,7 +1,7 @@
 package com.trainticket.travelerprofile.adapters.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.travelerprofile.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.travelerprofile.application.EventSubscriber;
 import com.trainticket.travelerprofile.application.SubscribeFailedException;
 import io.lettuce.core.Consumer;
@@ -26,19 +26,19 @@ import org.springframework.stereotype.Component;
 
 @Component
 @ConditionalOnProperty(name = "traveler-profile.redis.enabled", havingValue = "true", matchIfMissing = true)
-public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
+public class RedisStreamSubscriberAdapter implements EventSubscriber, AutoCloseable {
     private static final String FIELD_ENVELOPE = "envelope";
     private static final long MAX_STREAM_LENGTH = 100_000L;
     private static final int MAX_ATTEMPTS = 5;
 
     private final ObjectMapper objectMapper;
-    private final RedisEventSubscriberConnectionFactory connectionFactory;
+    private final RedisStreamSubscriberAdapterConnectionFactory connectionFactory;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final AtomicBoolean running = new AtomicBoolean(true);
 
-    public RedisEventSubscriber(ObjectMapper objectMapper, @Value("${REDIS_URL:${redis.url:redis://localhost:6379}}") String redisUrl) {
+    public RedisStreamSubscriberAdapter(ObjectMapper objectMapper, @Value("${REDIS_URL:${redis.url:redis://localhost:6379}}") String redisUrl) {
         this.objectMapper = objectMapper;
-        this.connectionFactory = new RedisEventSubscriberConnectionFactory(redisUrl);
+        this.connectionFactory = new RedisStreamSubscriberAdapterConnectionFactory(redisUrl);
     }
 
     @Override

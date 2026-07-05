@@ -5,7 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.trainticket.bookingorchestration.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.bookingorchestration.application.EventSubscriber;
 import com.trainticket.bookingorchestration.application.HandlerResult;
 import com.trainticket.bookingorchestration.application.SubscribeFailed;

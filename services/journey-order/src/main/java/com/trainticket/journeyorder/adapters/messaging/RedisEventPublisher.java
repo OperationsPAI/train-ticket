@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisFuture;
 import io.lettuce.core.XAddArgs;

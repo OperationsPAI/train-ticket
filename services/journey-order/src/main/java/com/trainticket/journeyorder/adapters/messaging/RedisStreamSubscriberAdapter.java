@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import io.lettuce.core.Consumer;
 import io.lettuce.core.Limit;
 import io.lettuce.core.Range;
@@ -38,9 +38,9 @@ import org.slf4j.LoggerFactory;
  * Redis Streams implementation of EventSubscriber.
  * Lives ONLY in the adapters/messaging module — no Redis types leak into domain code.
  */
-public class RedisEventSubscriber implements EventSubscriber {
+public class RedisStreamSubscriberAdapter implements EventSubscriber {
 
-    private static final Logger log = LoggerFactory.getLogger(RedisEventSubscriber.class);
+    private static final Logger log = LoggerFactory.getLogger(RedisStreamSubscriberAdapter.class);
     private static final long RECOVERY_INTERVAL_MS = 60_000;
     private static final long MAX_DELIVERY_ATTEMPTS = 5;
 
@@ -53,7 +53,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     private Thread pollThread;
     private Thread recoveryThread;
 
-    public RedisEventSubscriber(String redisUrl) {
+    public RedisStreamSubscriberAdapter(String redisUrl) {
         this.redisClient = RedisClient.create(redisUrl);
         this.connection = redisClient.connect();
         this.async = connection.async();
@@ -62,7 +62,7 @@ public class RedisEventSubscriber implements EventSubscriber {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
-    RedisEventSubscriber(RedisClient redisClient, StatefulRedisConnection<String, String> connection) {
+    RedisStreamSubscriberAdapter(RedisClient redisClient, StatefulRedisConnection<String, String> connection) {
         this.redisClient = redisClient;
         this.connection = connection;
         this.async = connection.async();
@@ -105,7 +105,7 @@ public class RedisEventSubscriber implements EventSubscriber {
             connection.close();
             redisClient.shutdown();
         } catch (Exception e) {
-            log.warn("Error shutting down RedisEventSubscriber", e);
+            log.warn("Error shutting down RedisStreamSubscriberAdapter", e);
         }
     }
 

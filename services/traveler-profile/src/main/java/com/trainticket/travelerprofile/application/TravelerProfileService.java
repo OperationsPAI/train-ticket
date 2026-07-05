@@ -1,5 +1,6 @@
 package com.trainticket.travelerprofile.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.trainticket.travelerprofile.domain.Document;

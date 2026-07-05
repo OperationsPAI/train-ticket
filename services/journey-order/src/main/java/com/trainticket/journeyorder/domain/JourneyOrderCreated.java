@@ -1,5 +1,6 @@
 package com.trainticket.journeyorder.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 public record JourneyOrderCreated(
     EventEnvelope envelope,
     String orderId,

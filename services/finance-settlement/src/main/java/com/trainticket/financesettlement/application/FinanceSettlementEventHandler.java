@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.domain.ConsumedEventLog;
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.Money;
@@ -54,7 +55,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
     private void dispatch(EventEnvelope envelope) {
         if ("PaymentIntentCreated".equals(envelope.eventType())) {
-            rememberPaymentIntentOrderReference(envelope.payload());
+            rememberPaymentIntentOrderReference((Map<String, Object>) envelope.payload());
             return;
         }
         if (service != null && "PaymentCaptured".equals(envelope.eventType())) {
@@ -67,7 +68,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private void recognizeCapturedPayment(EventEnvelope envelope) {
-        Map<String, Object> payload = envelope.payload();
+        Map<String, Object> payload = (Map<String, Object>) envelope.payload();
         String paymentIntentId = text(payload, "paymentIntentId");
         String orderReference = paymentIntentOrderReferences.findOrderReference(paymentIntentId)
             .orElseThrow(() -> new OutOfOrderEventException("PaymentCaptured received before PaymentIntentCreated"));

@@ -1,11 +1,11 @@
 package com.trainticket.payment.adapters.messaging;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.trainticket.payment.application.EventEnvelope;
 import com.trainticket.payment.application.HandlerResult;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -13,12 +13,12 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-class RedisEventSubscriberTest {
+class RedisStreamSubscriberAdapterTest {
     @Test
     void recoveredMessageUsesRealPelDeliveryCountBeforeDlq() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         FakeRedisStreamOperations streams = new FakeRedisStreamOperations(objectMapper.writeValueAsString(envelope()));
-        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper);
+        RedisStreamSubscriberAdapter subscriber = new RedisStreamSubscriberAdapter(streams, objectMapper);
 
         streams.deliveryCount = 4;
         subscriber.recoverOnce("events:booking-orchestration", "payment", "payment-test", ignored -> HandlerResult.TRANSIENT_FAILURE);
@@ -53,7 +53,7 @@ class RedisEventSubscriberTest {
             }
             """;
         FakeRedisStreamOperations streams = new FakeRedisStreamOperations(json);
-        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper);
+        RedisStreamSubscriberAdapter subscriber = new RedisStreamSubscriberAdapter(streams, objectMapper);
 
         subscriber.recoverOnce("events:booking-orchestration", "payment", "payment-test", envelope -> {
             assertNull(envelope.causationId());

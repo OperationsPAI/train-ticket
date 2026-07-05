@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.bookingorchestration.domain.BookingEvent;
 import com.trainticket.bookingorchestration.domain.BookingSaga;
 import com.trainticket.bookingorchestration.domain.BookingSagaStatus;

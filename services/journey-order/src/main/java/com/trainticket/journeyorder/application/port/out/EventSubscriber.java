@@ -1,6 +1,6 @@
 package com.trainticket.journeyorder.application.port.out;
 
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.List;
 import java.util.function.Function;
 

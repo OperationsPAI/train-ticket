@@ -11,7 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.travelerprofile.NoOpRuntimeTracer;
 import com.trainticket.travelerprofile.RequestContextFilter;
-import com.trainticket.travelerprofile.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.travelerprofile.application.EventPublisher;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,7 +36,7 @@ class TravelerControllerTest {
         );
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .addFilters(new RequestContextFilter(new NoOpRuntimeTracer()))
-            .setControllerAdvice(new ApiExceptionHandler())
+            .setControllerAdvice(new ApiErrorHandler())
             .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
             .build();
     }

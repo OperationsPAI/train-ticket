@@ -2,7 +2,7 @@ package com.trainticket.adminaudit.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventPublisher;
 import com.trainticket.adminaudit.application.ports.PublishFailedException;
 import io.lettuce.core.RedisClient;

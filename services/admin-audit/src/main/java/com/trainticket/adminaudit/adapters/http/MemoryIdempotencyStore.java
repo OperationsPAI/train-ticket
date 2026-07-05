@@ -6,7 +6,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.springframework.stereotype.Component;
 
 @Component
-public class InMemoryIdempotencyStore implements IdempotencyStore {
+public class MemoryIdempotencyStore implements IdempotencyStore {
     private final ConcurrentMap<String, StoredResponse> responses = new ConcurrentHashMap<>();
 
     @Override
