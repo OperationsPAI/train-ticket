@@ -37,6 +37,8 @@ class InMemoryStore:
     fare_rule_sets: dict[str, FareRuleSet] = field(default_factory=dict)
     fare_quotes: dict[str, FareQuote] = field(default_factory=dict)
     adjustment_quotes: dict[str, AdjustmentQuote] = field(default_factory=dict)
+    fare_quote_journey_order_links: dict[str, str] = field(default_factory=dict)
+    entitlement_quote_links: dict[str, str] = field(default_factory=dict)
 
     def get_rule_set(self, rule_set_id: str) -> FareRuleSet:
         if rule_set_id not in self.fare_rule_sets:
@@ -74,6 +76,8 @@ class FarePricingService:
         channel: str,
         rule_set_id: str,
         requested_currency: str,
+        journey_order_id: str | None = None,
+        entitlement_ids: list[str] | None = None,
         quoted_at: datetime | None = None,
         ttl: timedelta | None = None,
     ) -> FareQuote:
@@ -92,6 +96,8 @@ class FarePricingService:
             ttl=ttl,
         )
         self._store.save_quote(quote)
+        if journey_order_id:
+            self.link_fare_quote_to_journey_order(journey_order_id, quote.quote_id, entitlement_ids)
         return quote
 
     def compute_adjustment_quote(
@@ -144,12 +150,31 @@ class FarePricingService:
                 return rule_set_id
         return None
 
-    def find_fare_quote_id_for_journey_order(self, journey_order_id: str) -> str | None:
-        # Backward-compatible explicit linkage: callers pass the original fare
-        # quote id in the order-reference slot until journey-order owns a
-        # persistent order-to-quote projection. Never fall back to arbitrary
-        # stored quotes.
-        return journey_order_id if journey_order_id in self._store.fare_quotes else None
+    def link_fare_quote_to_journey_order(
+        self,
+        journey_order_id: str,
+        quote_id: str,
+        entitlement_ids: list[str] | None = None,
+    ) -> None:
+        if quote_id not in self._store.fare_quotes:
+            raise QuoteNotFoundError(f"Fare quote not found: {quote_id}")
+        self._store.fare_quote_journey_order_links[journey_order_id] = quote_id
+        for entitlement_id in entitlement_ids or []:
+            self._store.entitlement_quote_links[entitlement_id] = quote_id
+
+    def find_fare_quote_id_for_journey_order(
+        self,
+        journey_order_id: str,
+        entitlement_ids: list[str] | None = None,
+    ) -> str | None:
+        linked_quote_id = self._store.fare_quote_journey_order_links.get(journey_order_id)
+        if linked_quote_id is None:
+            return None
+        for entitlement_id in entitlement_ids or []:
+            entitlement_quote_id = self._store.entitlement_quote_links.get(entitlement_id)
+            if entitlement_quote_id is not None and entitlement_quote_id != linked_quote_id:
+                return None
+        return linked_quote_id
 
     def get_fare_quote(self, quote_id: str) -> FareQuote:
         return self._store.get_quote(quote_id)

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
+from ..ids import prefixed_uuid7
 from ..ports import EventEnvelope
 from ..ports.messaging import EventPublisher
 
@@ -25,7 +25,7 @@ class DomainEventService:
     ) -> None:
         recorded_at = occurred_at or datetime.now(UTC)
         envelope = EventEnvelope(
-            event_id=event_id or f"evt-{uuid4()}",
+            event_id=event_id or prefixed_uuid7("evt"),
             event_type=event_type,
             occurred_at=recorded_at,
             causation_id=causation_id,

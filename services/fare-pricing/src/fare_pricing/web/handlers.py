@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 import uuid
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, Header, Request
 
 from fare_pricing.application import DomainEventService
+from fare_pricing.ids import prefixed_uuid7
 from fare_pricing.application.idempotency import IdempotencyRecord, request_fingerprint
 from fare_pricing.application.service import (
     FarePricingService,
@@ -111,11 +111,11 @@ def _check_idempotency(request: Request, scope: str, key: str, body: dict[str, A
 
 
 def _correlation_id(request: Request) -> str:
-    return str(getattr(request.state, "correlation_id", "") or f"corr-{uuid4()}")
+    return str(getattr(request.state, "correlation_id", "") or prefixed_uuid7("corr"))
 
 
 def _command_id() -> str:
-    return f"cmd-{uuid4()}"
+    return prefixed_uuid7("cmd")
 
 
 def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any]) -> None:
@@ -160,7 +160,7 @@ def compute_fare_quote(
     causation_id = _command_id()
     try:
         quote = service.compute_fare_quote(
-            quote_id=f"fq-{uuid4()}",
+            quote_id=prefixed_uuid7("fq"),
             input_hash=request_fingerprint(body_dict),
             traveler_refs=req.travelerRefs,
             channel=req.channel,
@@ -200,10 +200,9 @@ def compute_adjustment_quote(
 
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
-    original_quote_ref = req.fareQuoteRef or req.journeyOrderId
-    original_quote_id = service.find_fare_quote_id_for_journey_order(original_quote_ref)
+    original_quote_id = service.find_fare_quote_id_for_journey_order(req.journeyOrderId, req.entitlementIds)
     if original_quote_id is None:
-        raise ApiError("NOT_FOUND", f"Original fare quote not found: {original_quote_ref}", 404)
+        raise ApiError("NOT_FOUND", f"Original fare quote not found for journey order: {req.journeyOrderId}", 404)
     original_quote = service.get_fare_quote(original_quote_id)
     rule_set_id = service.find_published_rule_set_id(original_quote.channel)
     if rule_set_id is None:
@@ -212,8 +211,8 @@ def compute_adjustment_quote(
     causation_id = _command_id()
     try:
         aq = service.compute_adjustment_quote(
-            assessment_id=f"fa-{uuid4()}",
-            adjustment_quote_id=f"aq-{uuid4()}",
+            assessment_id=prefixed_uuid7("fa"),
+            adjustment_quote_id=prefixed_uuid7("aq"),
             purpose=purpose,
             original_quote_id=original_quote_id,
             rule_set_id=rule_set_id,
@@ -277,6 +276,4 @@ def _adjustment_quote_event_payload(aq: AdjustmentQuote, request_body: Adjustmen
     if request_body is not None:
         payload["journeyOrderId"] = request_body.journeyOrderId
         payload["entitlementIds"] = list(request_body.entitlementIds)
-        if request_body.fareQuoteRef is not None:
-            payload["fareQuoteRef"] = request_body.fareQuoteRef
     return payload
