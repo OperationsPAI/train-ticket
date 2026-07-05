@@ -5,7 +5,6 @@ import io.lettuce.core.RedisClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -14,22 +13,20 @@ import org.springframework.context.annotation.Configuration;
  * never outside the adapters/messaging/ package.
  */
 @Configuration
-@ConditionalOnProperty("REDIS_URL")
 public class RedisMessagingConfig {
 
     private static final Logger log = LoggerFactory.getLogger(RedisMessagingConfig.class);
 
-    @Bean
-    public RedisClient redisClient(@Value("${REDIS_URL}") String redisUrl) {
-        log.info("Connecting to Redis at {}", redisUrl);
+    @Bean(destroyMethod = "shutdown")
+    public RedisClient redisClient(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
+        log.info("Connecting to Redis Streams event bus");
         return RedisClient.create(redisUrl);
     }
 
     @Bean(destroyMethod = "shutdown")
     public EventPublisher redisEventPublisher(RedisClient redisClient) {
         log.info("Using RedisStreamsEventPublisher");
-        RedisStreamsEventPublisher publisher = new RedisStreamsEventPublisher(redisClient);
-        return publisher;
+        return new RedisStreamsEventPublisher(redisClient);
     }
 
     @Bean(destroyMethod = "shutdown")

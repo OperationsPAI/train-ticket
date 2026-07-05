@@ -30,6 +30,8 @@ public class RequestContextFilter extends OncePerRequestFilter {
     ) throws ServletException, IOException {
         String requestId = headerOrGenerated(request, REQUEST_ID_HEADER);
         String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, requestId);
+        request.setAttribute(REQUEST_ID_HEADER, requestId);
+        request.setAttribute(CORRELATION_ID_HEADER, correlationId);
         RequestTraceContext context = new RequestTraceContext(
             requestId,
             correlationId,
