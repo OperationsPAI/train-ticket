@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .api import create_app
 from .domain import (
     AdjustmentQuote,
