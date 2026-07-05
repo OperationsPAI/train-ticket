@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from threading import Event, Thread
 from typing import Any
@@ -26,14 +27,15 @@ class RedisEventSubscriber(EventSubscriber):
     Only Redis types/imports live in this module (contract rule).
     """
 
-    def __init__(self, redis_url: str | None = None) -> None:
+    def __init__(self, redis_url: str | None = None, dedup_max_entries: int = 10000) -> None:
         import redis as _redis  # type: ignore[import-untyped]
 
         self._redis_url = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
         self._client: _redis.Redis | None = None  # type: ignore[name-defined]
         self._stop_event = Event()
         self._threads: list[Thread] = []
-        self._seen_event_ids: set[str] = set()
+        self._dedup_max_entries = dedup_max_entries
+        self._seen_event_ids: OrderedDict[str, None] = OrderedDict()
 
     def _get_client(self) -> Any:  # type: ignore[type-arg]
         import redis as _redis  # type: ignore[import-untyped]
@@ -115,6 +117,7 @@ class RedisEventSubscriber(EventSubscriber):
                             logger.warning("Failed to deserialize event from %s: %s", msg_id, exc)
                             # Move unparseable messages to DLQ
                             self._move_to_dlq(client, stream_key, msg_id, envelope_json)
+                            client.xack(stream_key, group, msg_id)
                             continue
 
                         try:
@@ -189,6 +192,9 @@ class RedisEventSubscriber(EventSubscriber):
                             handler(envelope)
                             self._mark_processed(envelope)
                             client.xack(stream_key, group, msg_id)
+                        except (json.JSONDecodeError, KeyError, ValueError):
+                            self._move_to_dlq(client, stream_key, msg_id, envelope_json)
+                            client.xack(stream_key, group, msg_id)
                         except TransientHandlerError:
                             pass
                         except FatalHandlerError:
@@ -200,10 +206,16 @@ class RedisEventSubscriber(EventSubscriber):
                     logger.error("Redis error in recovery loop: %s", exc)
 
     def _already_processed(self, envelope: EventEnvelope) -> bool:
-        return envelope.event_id in self._seen_event_ids
+        if envelope.event_id not in self._seen_event_ids:
+            return False
+        self._seen_event_ids.move_to_end(envelope.event_id)
+        return True
 
     def _mark_processed(self, envelope: EventEnvelope) -> None:
-        self._seen_event_ids.add(envelope.event_id)
+        self._seen_event_ids[envelope.event_id] = None
+        self._seen_event_ids.move_to_end(envelope.event_id)
+        while len(self._seen_event_ids) > self._dedup_max_entries:
+            self._seen_event_ids.popitem(last=False)
 
     def _get_delivery_count(
         self,
@@ -233,7 +245,7 @@ class RedisEventSubscriber(EventSubscriber):
         """Move a poison message to the dead-letter stream."""
         dlq_key = f"{stream_key}:dlq"
         try:
-            client.xadd(dlq_key, {"envelope": envelope_json, "original_stream": stream_key, "original_id": msg_id}, maxlen=100000, approximate=True)
+            client.xadd(dlq_key, {"envelope": envelope_json}, maxlen=100000, approximate=True)
         except Exception as exc:
             logger.error("Failed to move message %s to DLQ: %s", msg_id, exc)
 
