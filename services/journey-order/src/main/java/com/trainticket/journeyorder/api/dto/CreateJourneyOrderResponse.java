@@ -14,13 +14,4 @@ public record CreateJourneyOrderResponse(
     @JsonProperty("segmentRefs") List<String> segmentRefs,
     @JsonProperty("createdAt") Instant createdAt
 ) {
-    public record MonetarySummaryDto(
-        @JsonProperty("currency") String currency,
-        @JsonProperty("subtotal") long subtotal,
-        @JsonProperty("taxTotal") long taxTotal,
-        @JsonProperty("feeTotal") long feeTotal,
-        @JsonProperty("discountTotal") long discountTotal,
-        @JsonProperty("cancelledTotal") long cancelledTotal,
-        @JsonProperty("payableTotal") long payableTotal
-    ) {}
 }

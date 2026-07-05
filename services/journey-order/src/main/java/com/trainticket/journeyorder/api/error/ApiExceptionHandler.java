@@ -47,8 +47,8 @@ public class ApiExceptionHandler {
         return buildResponse(HttpStatus.UNPROCESSABLE_ENTITY, "DOMAIN_RULE_VIOLATION", ex.getMessage());
     }
 
-    @ExceptionHandler(IdempotencyKeyReusedException.class)
-    public ResponseEntity<ErrorBody> handleIdempotencyKeyReused(IdempotencyKeyReusedException ex) {
+    @ExceptionHandler({IdempotencyKeyReusedException.class, OrderManagementService.IdempotencyKeyReused.class})
+    public ResponseEntity<ErrorBody> handleIdempotencyKeyReused(RuntimeException ex) {
         return buildResponse(HttpStatus.UNPROCESSABLE_ENTITY, "IDEMPOTENCY_KEY_REUSED", ex.getMessage());
     }
 

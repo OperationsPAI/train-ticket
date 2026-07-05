@@ -79,12 +79,34 @@ class JourneyOrderControllerTest {
         CreateJourneyOrderResponse body2 = (CreateJourneyOrderResponse) response2.getBody();
         assertEquals(body1.orderId(), body2.orderId());
         assertEquals(body1.monetarySummary(), body2.monetarySummary());
+        assertEquals(10000L, body1.monetarySummary().subtotal().minorUnits());
+        assertEquals("CNY", body1.monetarySummary().subtotal().currency());
     }
 
     @Test
     void getOrderReturnsNotFound() {
         ResponseEntity<?> response = controller.getOrder("nonexistent");
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+    }
+
+    @Test
+    void createOrderRejectsReusedIdempotencyKeyForDifferentBody() {
+        var request = new CreateJourneyOrderRequest(
+            "account-1", "offer-1", 1,
+            List.of("tvl-1"), List.of("seg-1")
+        );
+        var differentRequest = new CreateJourneyOrderRequest(
+            "account-1", "offer-2", 1,
+            List.of("tvl-1"), List.of("seg-1")
+        );
+
+        controller.createOrder(request, "idem-reused");
+
+        var ex = org.junit.jupiter.api.Assertions.assertThrows(
+            OrderManagementService.IdempotencyKeyReused.class,
+            () -> controller.createOrder(differentRequest, "idem-reused")
+        );
+        assertTrue(ex.getMessage().contains("Idempotency-Key"));
     }
 
     @Test
@@ -128,6 +150,7 @@ class JourneyOrderControllerTest {
         );
         ResponseEntity<?> createResponse = controller.createOrder(createReq, "idem-cancel-1");
         CreateJourneyOrderResponse createBody = (CreateJourneyOrderResponse) createResponse.getBody();
+        eventPublisher.clear();
         String orderId = createBody.orderId();
 
         var cancelReq = new CancelJourneyOrderRequest("change of plans");
@@ -137,6 +160,7 @@ class JourneyOrderControllerTest {
         assertEquals(orderId, cancelBody.orderId());
         assertEquals("CANCELLED", cancelBody.status());
         assertNotNull(cancelBody.cancelledAt());
+        assertEquals(1, eventPublisher.published().size());
     }
 
     @Test
@@ -159,5 +183,7 @@ class JourneyOrderControllerTest {
         assertNotNull(envelope.occurredAt());
         assertNotNull(envelope.correlationId());
         assertNotNull(envelope.causationId());
+        assertTrue(envelope.payload().containsKey("orderId"));
+        assertTrue(envelope.payload().containsKey("monetarySummary"));
     }
 }

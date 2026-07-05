@@ -6,6 +6,8 @@ import com.trainticket.journeyorder.api.dto.CreateJourneyOrderRequest;
 import com.trainticket.journeyorder.api.dto.CreateJourneyOrderResponse;
 import com.trainticket.journeyorder.api.dto.GetJourneyOrderResponse;
 import com.trainticket.journeyorder.api.dto.ListJourneyOrdersResponse;
+import com.trainticket.journeyorder.api.dto.MonetarySummaryDto;
+import com.trainticket.journeyorder.api.dto.MoneyDto;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderService;
@@ -54,15 +56,7 @@ public class JourneyOrderController {
 
         CreateJourneyOrderResponse response = new CreateJourneyOrderResponse(
             result.orderId(), result.accountId(), result.offerId(),
-            new CreateJourneyOrderResponse.MonetarySummaryDto(
-                result.monetarySummary().currency(),
-                result.monetarySummary().subtotal(),
-                result.monetarySummary().taxTotal(),
-                result.monetarySummary().feeTotal(),
-                result.monetarySummary().discountTotal(),
-                result.monetarySummary().cancelledTotal(),
-                result.monetarySummary().payableTotal()
-            ),
+            toApiMonetarySummary(result.monetarySummary()),
             result.status(), result.travelerRefs(), result.segmentRefs(), result.createdAt()
         );
 
@@ -81,15 +75,7 @@ public class JourneyOrderController {
         JourneyOrderResult r = result.get();
         GetJourneyOrderResponse response = new GetJourneyOrderResponse(
             r.orderId(), r.accountId(), r.offerId(),
-            new CreateJourneyOrderResponse.MonetarySummaryDto(
-                r.monetarySummary().currency(),
-                r.monetarySummary().subtotal(),
-                r.monetarySummary().taxTotal(),
-                r.monetarySummary().feeTotal(),
-                r.monetarySummary().discountTotal(),
-                r.monetarySummary().cancelledTotal(),
-                r.monetarySummary().payableTotal()
-            ),
+            toApiMonetarySummary(r.monetarySummary()),
             r.status(), r.travelerRefs(), r.segmentRefs(), r.createdAt()
         );
         return ResponseEntity.ok(response);
@@ -106,15 +92,7 @@ public class JourneyOrderController {
         var items = list.items().stream()
             .map(r -> new CreateJourneyOrderResponse(
                 r.orderId(), r.accountId(), r.offerId(),
-                new CreateJourneyOrderResponse.MonetarySummaryDto(
-                    r.monetarySummary().currency(),
-                    r.monetarySummary().subtotal(),
-                    r.monetarySummary().taxTotal(),
-                    r.monetarySummary().feeTotal(),
-                    r.monetarySummary().discountTotal(),
-                    r.monetarySummary().cancelledTotal(),
-                    r.monetarySummary().payableTotal()
-                ),
+                toApiMonetarySummary(r.monetarySummary()),
                 r.status(), r.travelerRefs(), r.segmentRefs(), r.createdAt()
             ))
             .toList();
@@ -133,6 +111,19 @@ public class JourneyOrderController {
         CancelJourneyOrderResult result = orderService.cancelOrder(appRequest, idempotencyKey, correlationId);
 
         return ResponseEntity.ok(new CancelJourneyOrderResponse(result.orderId(), result.status(), result.cancelledAt()));
+    }
+
+    private static MonetarySummaryDto toApiMonetarySummary(JourneyOrderResult.MonetarySummaryDto summary) {
+        return new MonetarySummaryDto(
+            new MoneyDto(summary.currency(), summary.subtotal()),
+            new MoneyDto(summary.currency(), summary.taxTotal()),
+            new MoneyDto(summary.currency(), summary.feeTotal()),
+            new MoneyDto(summary.currency(), summary.discountTotal()),
+            new MoneyDto(summary.currency(), summary.cancelledTotal()),
+            new MoneyDto(summary.currency(), summary.payableTotal()),
+            new MoneyDto(summary.currency(), summary.payableTotal()),
+            summary.currency()
+        );
     }
 
     private String resolveCorrelationId() {
