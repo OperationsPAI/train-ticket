@@ -115,7 +115,7 @@ public final class Refund {
         status = retryable ? RefundStatus.FAILED : RefundStatus.MANUAL_REVIEW_REQUIRED;
         domainEvents.add(new RefundFailed(
             EventEnvelope.create("RefundFailed", occurredAt, causationId, correlationId, "payment"),
-            refundId, paymentIntentId, requireText(reasonCode, "reasonCode"), retryable
+            refundId, paymentIntentId, requireText(reasonCode, "reasonCode")
         ));
     }
 

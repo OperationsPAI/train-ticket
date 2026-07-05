@@ -91,6 +91,32 @@ class PaymentMessagingApplicationTest {
         assertEquals("RefundRequested", publisher.published().getLast().eventType());
     }
 
+    @Test
+    void mapsRefundFailedPayloadToContractShape() {
+        EventEnvelope envelope = EventEnvelopeMapper.fromDomainEvent(new com.trainticket.payment.domain.RefundFailed(
+            com.trainticket.payment.domain.EventEnvelope.create(
+                "RefundFailed",
+                Instant.parse("2026-07-05T10:32:00Z"),
+                "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+                "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+                "payment"
+            ),
+            "rf-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+            "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+            "ACCOUNT_CLOSED"
+        ));
+
+        assertEquals("RefundFailed", envelope.eventType());
+        assertEquals(
+            Map.of(
+                "refundId", "rf-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+                "reason", "ACCOUNT_CLOSED"
+            ),
+            envelope.payload()
+        );
+    }
+
     private static EventEnvelope segmentReservationRequested(String eventId, String idempotencyKey) {
         return new EventEnvelope(
             eventId,
