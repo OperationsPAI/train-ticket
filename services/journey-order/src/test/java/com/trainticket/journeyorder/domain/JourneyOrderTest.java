@@ -23,10 +23,13 @@ class JourneyOrderTest {
         assertEquals(1, order.travelers().size());
         assertEquals(1, order.segments().size());
         assertEquals(1, order.timeline().size());
-        JourneyOrderEvent event = assertInstanceOf(JourneyOrderCreated.class, order.domainEvents().getFirst());
+        JourneyOrderCreated event = assertInstanceOf(JourneyOrderCreated.class, order.domainEvents().getFirst());
         assertEquals("JourneyOrderCreated", event.envelope().eventType());
         assertEquals(1, event.envelope().schemaVersion());
         assertEquals(order.orderId(), event.orderId());
+        assertEquals(order.travelers(), event.travelerRefs());
+        assertEquals(List.of("segment-1"), event.segmentRefs());
+        assertEquals(NOW, event.createdAt());
     }
 
     @Test
@@ -77,7 +80,8 @@ class JourneyOrderTest {
         order.confirm("attempt-1", NOW.plusSeconds(5), "cmd-confirm", "entitlement-event-1", "corr-1");
 
         assertEquals(OrderLifecycleState.CONFIRMED, order.state());
-        assertInstanceOf(JourneyOrderConfirmed.class, order.domainEvents().getLast());
+        JourneyOrderConfirmed confirmed = assertInstanceOf(JourneyOrderConfirmed.class, order.domainEvents().getLast());
+        assertEquals(NOW.plusSeconds(5), confirmed.confirmedAt());
         assertEquals(List.of(
             "JourneyOrderCreated",
             "BookingCapacitySummaryAccepted",

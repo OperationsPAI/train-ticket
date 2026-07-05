@@ -4,5 +4,6 @@ public record JourneyOrderConfirmed(
     EventEnvelope envelope,
     String orderId,
     String accountId,
-    MonetarySummary monetarySummary
+    MonetarySummary monetarySummary,
+    java.time.Instant confirmedAt
 ) implements JourneyOrderEvent {}

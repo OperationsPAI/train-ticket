@@ -39,7 +39,7 @@ public record EventEnvelope(
         }
         Objects.requireNonNull(occurredAt, "occurredAt is required");
         correlationId = requireText(correlationId, "correlationId");
-        causationId = requireText(causationId, "causationId");
+        causationId = normalizeOptionalText(causationId, "causationId");
         producer = requireText(producer, "producer");
         payload = payload == null ? Map.of() : Map.copyOf(payload);
     }
@@ -80,6 +80,16 @@ public record EventEnvelope(
     private static String requireText(String value, String name) {
         if (Objects.requireNonNull(value, name + " is required").isBlank()) {
             throw new DomainRuleViolation(name + " must not be blank");
+        }
+        return value;
+    }
+
+    private static String normalizeOptionalText(String value, String name) {
+        if (value == null) {
+            return null;
+        }
+        if (value.isBlank()) {
+            throw new DomainRuleViolation(name + " must not be blank when present");
         }
         return value;
     }

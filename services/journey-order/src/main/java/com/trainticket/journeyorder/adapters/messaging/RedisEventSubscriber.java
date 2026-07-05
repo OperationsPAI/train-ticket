@@ -30,6 +30,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -195,7 +196,7 @@ public class RedisEventSubscriber implements EventSubscriber {
         String json = body != null ? body.get("envelope") : null;
 
         if (json == null) {
-            async.xack(stream, group, msgId);
+            ackMessage(stream, group, msgId);
             return;
         }
 
@@ -203,22 +204,22 @@ public class RedisEventSubscriber implements EventSubscriber {
             if (deliveryAttempts(stream, group, msgId) >= MAX_DELIVERY_ATTEMPTS) {
                 log.warn("Moving message {} from {} to DLQ after exhausted delivery attempts", msgId, stream);
                 publishToDlq(stream, json);
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
                 return;
             }
             EventEnvelope envelope = deserialize(json);
             if (dedupCache.contains(envelope.eventId())) {
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
                 return;
             }
 
             HandlerResult hr = handler.apply(envelope);
             if (hr instanceof EventSubscriber.Success) {
                 dedupCache.add(envelope.eventId());
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
             } else if (hr instanceof EventSubscriber.FatalError) {
                 publishToDlq(stream, json);
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
             }
         } catch (Exception e) {
             log.error("Error processing claimed message {}", msgId, e);
@@ -248,7 +249,7 @@ public class RedisEventSubscriber implements EventSubscriber {
 
         if (json == null || json.isBlank()) {
             log.warn("Message {} has no envelope field, acking", msgId);
-            async.xack(stream, group, msgId);
+            ackMessage(stream, group, msgId);
             return;
         }
 
@@ -256,18 +257,18 @@ public class RedisEventSubscriber implements EventSubscriber {
             EventEnvelope envelope = deserialize(json);
             if (dedupCache.contains(envelope.eventId())) {
                 log.debug("Dedup: skipping already-processed event {}", envelope.eventId());
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
                 return;
             }
 
             HandlerResult result = handler.apply(envelope);
             if (result instanceof EventSubscriber.Success) {
                 dedupCache.add(envelope.eventId());
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
             } else if (result instanceof EventSubscriber.FatalError fe) {
                 log.error("Fatal error processing event {}: {}", envelope.eventId(), fe.reason());
                 publishToDlq(stream, json);
-                async.xack(stream, group, msgId);
+                ackMessage(stream, group, msgId);
             }
         } catch (Exception e) {
             log.error("Error deserializing or processing message {}", msgId, e);
@@ -276,7 +277,24 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private void publishToDlq(String stream, String json) {
         XAddArgs args = new XAddArgs().maxlen(100_000).approximateTrimming();
-        async.xadd(stream + ":dlq", args, Map.of("envelope", json));
+        awaitWithRetry("publish message to DLQ " + stream + ":dlq", () -> async.xadd(stream + ":dlq", args, Map.of("envelope", json)));
+    }
+
+    private void ackMessage(String stream, String group, String msgId) {
+        awaitWithRetry("ack message " + msgId + " on " + stream, () -> async.xack(stream, group, msgId));
+    }
+
+    private <T> T awaitWithRetry(String action, Supplier<? extends java.util.concurrent.Future<T>> operation) {
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return operation.get().get(5, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                lastError = e;
+                log.error("Failed to {} (attempt {}/2)", action, attempt, e);
+            }
+        }
+        throw new RuntimeException("Failed to " + action, lastError);
     }
 
     private EventEnvelope deserialize(String json) {

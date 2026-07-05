@@ -80,7 +80,10 @@ public final class JourneyOrder {
             order.orderId,
             order.accountId,
             offerSnapshot.offerId(),
-            order.monetarySummary
+            order.monetarySummary,
+            order.travelers,
+            order.segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),
+            now
         ));
         return order;
     }
@@ -144,7 +147,7 @@ public final class JourneyOrder {
         recordTimeline("JourneyOrderConfirmed", occurredAt, "journey-order", "all confirmation conditions satisfied", Map.of("confirmationAttempt", confirmationAttempt));
         domainEvents.add(new JourneyOrderConfirmed(
             EventEnvelope.create("JourneyOrderConfirmed", occurredAt, causationId, correlationId, "journey-order"),
-            orderId, accountId, monetarySummary
+            orderId, accountId, monetarySummary, occurredAt
         ));
     }
 

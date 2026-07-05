@@ -11,6 +11,7 @@ import io.lettuce.core.RedisFuture;
 import io.lettuce.core.XAddArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -89,16 +90,17 @@ public class RedisEventPublisher implements EventPublisher {
 
     private String serialize(EventEnvelope envelope) {
         try {
-            Map<String, Object> map = Map.of(
-                "eventId", envelope.eventId(),
-                "eventType", envelope.eventType(),
-                "schemaVersion", envelope.schemaVersion(),
-                "producer", envelope.producer(),
-                "causationId", envelope.causationId(),
-                "correlationId", envelope.correlationId(),
-                "occurredAt", envelope.occurredAt().toString(),
-                "payload", envelope.payload()
-            );
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("eventId", envelope.eventId());
+            map.put("eventType", envelope.eventType());
+            map.put("schemaVersion", envelope.schemaVersion());
+            map.put("producer", envelope.producer());
+            if (envelope.causationId() != null) {
+                map.put("causationId", envelope.causationId());
+            }
+            map.put("correlationId", envelope.correlationId());
+            map.put("occurredAt", envelope.occurredAt().toString());
+            map.put("payload", envelope.payload());
             return objectMapper.writeValueAsString(map);
         } catch (JsonProcessingException e) {
             throw new RuntimeException("Failed to serialize EventEnvelope", e);
