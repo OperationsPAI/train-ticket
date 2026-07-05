@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+import uuid
 from typing import Any
 from uuid import uuid4
 
@@ -88,10 +89,14 @@ def _domain_error(exc: Exception) -> ApiError:
     return ApiError("DOMAIN_RULE_VIOLATION", str(exc), 422)
 
 
-def _require_idempotency_key(idempotency_key: str | None) -> str:
-    if not idempotency_key:
-        raise _validation_error("Idempotency-Key header is required")
-    return idempotency_key
+def require_uuid7(key: str | None) -> str:
+    try:
+        parsed = uuid.UUID(key or "")
+        if parsed.version != 7:
+            raise ValueError
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError("VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", 400)
+    return str(parsed)
 
 
 def _check_idempotency(request: Request, scope: str, key: str, body: dict[str, Any]) -> dict[str, Any] | None:
@@ -141,7 +146,7 @@ def compute_fare_quote(
     req: FareQuoteRequest,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    key = _require_idempotency_key(idempotency_key)
+    key = require_uuid7(idempotency_key)
     body_dict = req.model_dump()
     cached = _check_idempotency(request, "POST /api/v1/fare-quotes", key, body_dict)
     if cached is not None:
@@ -187,7 +192,7 @@ def compute_adjustment_quote(
     req: AdjustmentQuoteRequest,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    key = _require_idempotency_key(idempotency_key)
+    key = require_uuid7(idempotency_key)
     body_dict = req.model_dump()
     cached = _check_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict)
     if cached is not None:
