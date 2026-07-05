@@ -35,7 +35,6 @@ public class BookingOrchestrationService {
 
     private final Clock clock;
     private final EventPublisher eventPublisher;
-    private final IdempotencyStore idempotencyStore = new IdempotencyStore();
     private final ConcurrentHashMap<String, BookingSaga> sagas = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, SegmentBooking> segmentBookings = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> segmentBookingToSaga = new ConcurrentHashMap<>();
@@ -51,11 +50,6 @@ public class BookingOrchestrationService {
     }
 
     public StartSagaResult startSaga(StartSagaCommand command, String idempotencyKey, String correlationId) {
-        Object existing = idempotencyStore.get(idempotencyKey, command);
-        if (existing instanceof StartSagaResult result) {
-            return result;
-        }
-
         String sagaId = "saga-" + UUID.randomUUID();
         BookingSaga saga = startSagaAggregate(sagaId, command.journeyOrderId(), command.segmentRefs());
         sagas.put(sagaId, saga);
@@ -63,7 +57,6 @@ public class BookingOrchestrationService {
         publishEvents(saga.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         StartSagaResult result = new StartSagaResult(sagaId, command.journeyOrderId(), mapSagaStatus(saga.status()), clock.instant());
-        idempotencyStore.put(idempotencyKey, command, result);
         return result;
     }
 
@@ -78,11 +71,6 @@ public class BookingOrchestrationService {
             throw new NotFoundException("Booking saga not found: " + sagaId);
         }
 
-        Object existing = idempotencyStore.get(idempotencyKey, command);
-        if (existing instanceof RequestReservationResult result) {
-            return result;
-        }
-
         SegmentBooking booking = SegmentBooking.requestReservation(
             command.segmentBookingId(), saga.journeyOrderId(), command.segmentRef(), command.segmentRef(),
             command.travelerRef(), "purchase", clock);
@@ -92,7 +80,6 @@ public class BookingOrchestrationService {
         publishEvents(booking.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         RequestReservationResult result = new RequestReservationResult(command.segmentBookingId(), "REQUESTED");
-        idempotencyStore.put(idempotencyKey, command, result);
         return result;
     }
 
@@ -100,11 +87,6 @@ public class BookingOrchestrationService {
                                            String idempotencyKey, String correlationId) {
         if (!sagas.containsKey(sagaId)) {
             throw new NotFoundException("Booking saga not found: " + sagaId);
-        }
-
-        Object existing = idempotencyStore.get(idempotencyKey, command);
-        if (existing instanceof MarkTicketedResult result) {
-            return result;
         }
 
         SegmentBooking booking = segmentBookings.get(command.segmentBookingId());
@@ -119,7 +101,6 @@ public class BookingOrchestrationService {
         publishEvents(booking.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         MarkTicketedResult result = new MarkTicketedResult(command.segmentBookingId(), "TICKETED");
-        idempotencyStore.put(idempotencyKey, command, result);
         return result;
     }
 
@@ -632,39 +613,6 @@ public class BookingOrchestrationService {
     public record MarkTicketedResult(String segmentBookingId, String status) {}
     public record SagaDetail(String sagaId, String journeyOrderId, String status, String idempotencyKey,
                              List<Map<String, Object>> steps, String terminalReason) {}
-
-    static class IdempotencyStore {
-        private static final class Entry {
-            final Object requestBody;
-            final Object response;
-            Entry(Object requestBody, Object response) {
-                this.requestBody = requestBody;
-                this.response = response;
-            }
-        }
-        private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
-
-        void put(String key, Object requestBody, Object response) {
-            store.put(key, new Entry(requestBody, response));
-        }
-
-        Object get(String key, Object requestBody) {
-            Entry entry = store.get(key);
-            if (entry == null) {
-                return null;
-            }
-            if (!requestBody.equals(entry.requestBody)) {
-                throw new IdempotencyKeyReusedException();
-            }
-            return entry.response;
-        }
-    }
-
-    public static class IdempotencyKeyReusedException extends RuntimeException {
-        public IdempotencyKeyReusedException() {
-            super("Idempotency-Key was reused with a different request body");
-        }
-    }
 
     public static class NotFoundException extends RuntimeException {
         public NotFoundException(String message) { super(message); }

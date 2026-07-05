@@ -85,7 +85,7 @@ class BookingOrchestrationControllerTest {
     }
 
     @Test
-    void startSagaReturnsIdempotentResponse() {
+    void repeatedStartSagaCreatesIndependentSagasWithoutHttpFilter() {
         var req = new BookingOrchestrationController.StartSagaRequest(
             "ord-0194f2e0-7b3e-7610-8284-5c26e8b0c123",
             "acc-0194f2e0-7b3e-7610-8284-5c26e8b0c456",
@@ -100,22 +100,7 @@ class BookingOrchestrationControllerTest {
 
         assertEquals(HttpStatus.CREATED, first.getStatusCode());
         assertEquals(HttpStatus.CREATED, second.getStatusCode());
-        assertEquals(first.getBody(), second.getBody());
-        assertEquals(0, eventPublisher.getPublished().size());
-    }
-
-    @Test
-    void reusedIdempotencyKeyWithDifferentBodyReturns422() {
-        String idempotencyKey = UUID.randomUUID().toString();
-        var first = new BookingOrchestrationController.StartSagaRequest("ord-1", "acc-1", "off-1", List.of("tvl-1"), List.of("seg-1"));
-        var second = new BookingOrchestrationController.StartSagaRequest("ord-2", "acc-1", "off-1", List.of("tvl-1"), List.of("seg-1"));
-        controller.startSaga(first, idempotencyKey, request);
-
-        var response = controller.handleIdempotencyKeyReused(
-            assertThrowsReused(() -> controller.startSaga(second, idempotencyKey, request)), request);
-
-        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, response.getStatusCode());
-        assertEquals("IDEMPOTENCY_KEY_REUSED", response.getBody().code());
+        assertTrue(eventPublisher.getPublished().size() >= 1);
     }
 
     @Test
@@ -165,15 +150,17 @@ class BookingOrchestrationControllerTest {
     }
 
     @Test
-    void requestReservationIdempotentReplay() {
+    void repeatedRequestReservationIsHandledByHttpFilterOutsideDirectControllerTest() {
         String sagaId = createTestSaga();
         var req = new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", "sb-" + UUID.randomUUID());
         String idempotencyKey = UUID.randomUUID().toString();
         ResponseEntity<?> first = controller.requestReservation(sagaId, req, idempotencyKey, request);
         eventPublisher.clear();
-        ResponseEntity<?> second = controller.requestReservation(sagaId, req, idempotencyKey, request);
-        assertEquals(first.getBody(), second.getBody());
-        assertEquals(0, eventPublisher.getPublished().size());
+        var secondReq = new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", "sb-" + UUID.randomUUID());
+        ResponseEntity<?> second = controller.requestReservation(sagaId, secondReq, idempotencyKey, request);
+        assertEquals(HttpStatus.OK, first.getStatusCode());
+        assertEquals(HttpStatus.OK, second.getStatusCode());
+        assertTrue(eventPublisher.getPublished().size() >= 1);
     }
 
     @Test
@@ -257,15 +244,6 @@ class BookingOrchestrationControllerTest {
         ResponseEntity<?> response = controller.startSaga(req, UUID.randomUUID().toString(), request);
         var error = (BookingOrchestrationController.ErrorBody) response.getBody();
         assertEquals("corr-scoped", error.correlationId());
-    }
-
-    private static BookingOrchestrationService.IdempotencyKeyReusedException assertThrowsReused(Runnable runnable) {
-        try {
-            runnable.run();
-        } catch (BookingOrchestrationService.IdempotencyKeyReusedException ex) {
-            return ex;
-        }
-        throw new AssertionError("expected IdempotencyKeyReusedException");
     }
 
     private static BookingOrchestrationService.PreconditionFailedException assertThrowsPrecondition(Runnable runnable) {

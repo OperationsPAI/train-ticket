@@ -4,7 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.trainticket.journeyorder.adapters.InMemoryEventPublisher;
+import com.trainticket.platformkit.messaging.InMemoryEventBus;
+import com.trainticket.platformkit.messaging.InMemoryEventPublisher;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
@@ -15,6 +16,7 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -24,14 +26,20 @@ import org.junit.jupiter.api.Test;
 class OrderManagementServiceTest {
 
     private InMemoryEventPublisher eventPublisher;
+    private List<EventEnvelope> published;
     private OrderManagementService service;
     private static final Clock FIXED_CLOCK = Clock.fixed(
         Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC);
 
     @BeforeEach
     void setUp() {
-        eventPublisher = new InMemoryEventPublisher();
-        service = new OrderManagementService(eventPublisher, FIXED_CLOCK);
+        InMemoryEventBus eventBus = new InMemoryEventBus();
+        eventPublisher = new InMemoryEventPublisher(eventBus);
+        published = new ArrayList<>();
+        service = new OrderManagementService(envelope -> {
+            eventPublisher.publish(envelope);
+            published.add(envelope);
+        }, FIXED_CLOCK);
     }
 
     @Test
@@ -46,8 +54,8 @@ class OrderManagementServiceTest {
         assertEquals("CREATED", result.status());
         assertTrue(result.orderId() != null && result.orderId().startsWith("ord-"));
 
-        assertEquals(1, eventPublisher.published().size());
-        EventEnvelope envelope = eventPublisher.published().getFirst();
+        assertEquals(1, published().size());
+        EventEnvelope envelope = published().getFirst();
         assertEquals("JourneyOrderCreated", envelope.eventType());
         assertEquals("journey-order", envelope.producer());
     }
@@ -60,7 +68,7 @@ class OrderManagementServiceTest {
 
         service.createOrder(request, "idem-contract-created", "corr-1");
 
-        Map<String, Object> payload = (Map<String, Object>) eventPublisher.published().getFirst().payload();
+        Map<String, Object> payload = (Map<String, Object>) published().getFirst().payload();
         assertEquals(java.util.Set.of("orderId", "accountId", "offerId", "monetarySummary", "travelerRefs", "segmentRefs", "createdAt"), payload.keySet());
         assertTrue(String.valueOf(payload.get("orderId")).startsWith("ord-"));
         assertEquals("account-1", payload.get("accountId"));
@@ -87,7 +95,7 @@ class OrderManagementServiceTest {
         assertEquals(r1.monetarySummary(), r2.monetarySummary());
 
         // Only one event published (first call)
-        assertEquals(1, eventPublisher.published().size());
+        assertEquals(1, published().size());
     }
 
     @Test
@@ -161,4 +169,9 @@ class OrderManagementServiceTest {
     private static void assertNotNull(Object obj) {
         if (obj == null) throw new AssertionError("Expected non-null");
     }
+
+    private List<EventEnvelope> published() {
+        return List.copyOf(published);
+    }
+
 }
