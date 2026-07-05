@@ -14,6 +14,7 @@ pub struct WireEnvelope {
     pub event_type: String,
     pub schema_version: u32,
     pub producer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
     pub correlation_id: String,
     pub occurred_at: String, // RFC3339 UTC
@@ -40,7 +41,7 @@ pub trait EventPublisher: Send + Sync + 'static {
     /// Publish a domain event to the event bus.
     ///
     /// The implementation MUST determine the target stream from the `producer`
-    /// field of the envelope (stream = "events:<producer>").
+    /// field of the envelope.
     fn publish(&self, envelope: &WireEnvelope) -> Result<(), PublishFailed>;
 }
 

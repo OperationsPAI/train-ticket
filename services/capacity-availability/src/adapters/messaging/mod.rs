@@ -194,7 +194,7 @@ pub mod redis_publisher {
             let client = redis::Client::open(redis_url)
                 .map_err(|e| PublishFailed(format!("failed to create redis client: {}", e)))?;
             let conn = client
-                .get_tokio_connection_manager()
+                .get_connection_manager()
                 .await
                 .map_err(|e| PublishFailed(format!("failed to connect to redis: {}", e)))?;
             Ok(Self {
@@ -212,7 +212,7 @@ pub mod redis_publisher {
 
             tokio::runtime::Handle::current().block_on(async move {
                 let mut last_error = None;
-                for _ in 0..3 {
+                for attempt in 0..3 {
                     let mut conn = conn.lock().await;
                     let result: RedisResult<String> = redis::cmd("XADD")
                         .arg(&stream_key)
@@ -229,7 +229,10 @@ pub mod redis_publisher {
                         Err(err) => last_error = Some(err.to_string()),
                     }
                     drop(conn);
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    if attempt < 2 {
+                        let backoff_ms = 50u64 * (1u64 << attempt);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
                 }
                 Err(PublishFailed(format!(
                     "redis XADD failed after retries: {}",
@@ -247,7 +250,10 @@ pub mod redis_publisher {
 #[cfg(feature = "redis-impl")]
 pub mod redis_subscriber {
     use super::*;
-    use redis::{FromRedisValue, RedisResult, Value, streams::StreamReadReply};
+    use redis::{
+        RedisResult, Value,
+        streams::{StreamId, StreamKey, StreamReadReply},
+    };
     use std::sync::Arc;
     use tokio::sync::Mutex as TokioMutex;
 
@@ -257,6 +263,81 @@ pub mod redis_subscriber {
     const GROUP: &str = "capacity-availability";
     const SUBSCRIBED_STREAMS: [&str; 2] = ["events:booking-orchestration", "events:post-sales"];
     const DLQ_SUFFIX: &str = ":dlq";
+
+    #[derive(Debug, Clone)]
+    pub struct StreamAutoClaimReply {
+        pub next_cursor: String,
+        pub key: String,
+        pub ids: Vec<StreamId>,
+        pub deleted_ids: Vec<String>,
+    }
+
+    impl StreamAutoClaimReply {
+        pub fn into_stream_read_reply(self) -> StreamReadReply {
+            StreamReadReply {
+                keys: vec![StreamKey {
+                    key: self.key,
+                    ids: self.ids,
+                }],
+            }
+        }
+    }
+
+    pub fn parse_xautoclaim_reply(
+        stream: &str,
+        value: &Value,
+    ) -> Result<StreamAutoClaimReply, SubscribeFailed> {
+        let Value::Bulk(parts) = value else {
+            return Err(SubscribeFailed(
+                "XAUTOCLAIM parse failed: expected top-level bulk reply".into(),
+            ));
+        };
+        let [cursor_value, entries_value, deleted_value] = parts.as_slice() else {
+            return Err(SubscribeFailed(format!(
+                "XAUTOCLAIM parse failed: expected 3 reply elements, got {}",
+                parts.len()
+            )));
+        };
+
+        let next_cursor: String = redis::from_redis_value(cursor_value)
+            .map_err(|e| SubscribeFailed(format!("XAUTOCLAIM cursor parse failed: {}", e)))?;
+        let deleted_ids: Vec<String> = redis::from_redis_value(deleted_value)
+            .map_err(|e| SubscribeFailed(format!("XAUTOCLAIM deleted IDs parse failed: {}", e)))?;
+
+        let Value::Bulk(entries) = entries_value else {
+            return Err(SubscribeFailed(
+                "XAUTOCLAIM parse failed: expected entries bulk reply".into(),
+            ));
+        };
+        let mut ids = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Value::Bulk(entry_parts) = entry else {
+                return Err(SubscribeFailed(
+                    "XAUTOCLAIM parse failed: expected entry bulk reply".into(),
+                ));
+            };
+            let [id_value, fields_value] = entry_parts.as_slice() else {
+                return Err(SubscribeFailed(format!(
+                    "XAUTOCLAIM parse failed: expected 2 entry elements, got {}",
+                    entry_parts.len()
+                )));
+            };
+            let id: String = redis::from_redis_value(id_value)
+                .map_err(|e| SubscribeFailed(format!("XAUTOCLAIM entry ID parse failed: {}", e)))?;
+            let map: std::collections::HashMap<String, Value> =
+                redis::from_redis_value(fields_value).map_err(|e| {
+                    SubscribeFailed(format!("XAUTOCLAIM fields parse failed: {}", e))
+                })?;
+            ids.push(StreamId { id, map });
+        }
+
+        Ok(StreamAutoClaimReply {
+            next_cursor,
+            key: stream.to_string(),
+            ids,
+            deleted_ids,
+        })
+    }
 
     pub struct RedisEventSubscriber {
         connection: Arc<TokioMutex<redis::aio::ConnectionManager>>,
@@ -268,7 +349,7 @@ pub mod redis_subscriber {
             let client = redis::Client::open(redis_url)
                 .map_err(|e| SubscribeFailed(format!("failed to create redis client: {}", e)))?;
             let conn = client
-                .get_tokio_connection_manager()
+                .get_connection_manager()
                 .await
                 .map_err(|e| SubscribeFailed(format!("failed to connect to redis: {}", e)))?;
             Ok(Self {
@@ -400,8 +481,7 @@ pub mod redis_subscriber {
                         .await
                         .map_err(|e| SubscribeFailed(format!("XAUTOCLAIM failed: {}", e)))?
                 };
-                let reply = StreamReadReply::from_redis_value(&claimed)
-                    .map_err(|e| SubscribeFailed(format!("XAUTOCLAIM parse failed: {}", e)))?;
+                let reply = parse_xautoclaim_reply(stream, &claimed)?.into_stream_read_reply();
                 Self::dispatch_reply(connection.clone(), state.clone(), reply, group, handler)
                     .await?;
             }
