@@ -195,11 +195,10 @@ def compute_adjustment_quote(
 
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
-    original_quote_id = service.find_fare_quote_id_for_journey_order(req.journeyOrderId)
+    original_quote_ref = req.fareQuoteRef or req.journeyOrderId
+    original_quote_id = service.find_fare_quote_id_for_journey_order(original_quote_ref)
     if original_quote_id is None:
-        # The current domain model has no order aggregate; preserve the contract's
-        # not-found behavior through an application-service lookup boundary.
-        raise ApiError("NOT_FOUND", f"No original fare quote found for journeyOrderId: {req.journeyOrderId}", 404)
+        raise ApiError("NOT_FOUND", f"Original fare quote not found: {original_quote_ref}", 404)
     original_quote = service.get_fare_quote(original_quote_id)
     rule_set_id = service.find_published_rule_set_id(original_quote.channel)
     if rule_set_id is None:
@@ -219,7 +218,7 @@ def compute_adjustment_quote(
         raise _domain_error(exc) from exc
 
     resp = _adjustment_quote_to_response(aq)
-    _publish_event(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq))
+    _publish_event(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq, req))
     _store_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict, resp)
     return resp
 
@@ -265,5 +264,14 @@ def _fare_quote_event_payload(quote: FareQuote) -> dict[str, Any]:
     return payload
 
 
-def _adjustment_quote_event_payload(aq: AdjustmentQuote) -> dict[str, Any]:
-    return _adjustment_quote_to_response(aq)
+def _adjustment_quote_event_payload(aq: AdjustmentQuote, request_body: AdjustmentQuoteRequest | None = None) -> dict[str, Any]:
+    payload = _adjustment_quote_to_response(aq)
+    payload["originalQuoteId"] = aq.original_quote_id
+    if aq.target_quote_id is not None:
+        payload["targetQuoteId"] = aq.target_quote_id
+    if request_body is not None:
+        payload["journeyOrderId"] = request_body.journeyOrderId
+        payload["entitlementIds"] = list(request_body.entitlementIds)
+        if request_body.fareQuoteRef is not None:
+            payload["fareQuoteRef"] = request_body.fareQuoteRef
+    return payload

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from threading import Event, Thread
 from typing import Any
 
-from ...ports import EventEnvelope
+from ...ports import EventEnvelope, MalformedEnvelopeError
 from ...ports.messaging import (
     EventSubscriber,
     FatalHandlerError,
@@ -113,7 +113,7 @@ class RedisEventSubscriber(EventSubscriber):
                         try:
                             envelope_data = json.loads(envelope_json)
                             envelope = EventEnvelope.from_json_dict(envelope_data)
-                        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+                        except (json.JSONDecodeError, KeyError, MalformedEnvelopeError) as exc:
                             logger.warning("Failed to deserialize event from %s: %s", msg_id, exc)
                             # Move unparseable messages to DLQ
                             self._move_to_dlq(client, stream_key, msg_id, envelope_json)
@@ -192,7 +192,7 @@ class RedisEventSubscriber(EventSubscriber):
                             handler(envelope)
                             self._mark_processed(envelope)
                             client.xack(stream_key, group, msg_id)
-                        except (json.JSONDecodeError, KeyError, ValueError):
+                        except (json.JSONDecodeError, KeyError, MalformedEnvelopeError):
                             self._move_to_dlq(client, stream_key, msg_id, envelope_json)
                             client.xack(stream_key, group, msg_id)
                         except TransientHandlerError:
