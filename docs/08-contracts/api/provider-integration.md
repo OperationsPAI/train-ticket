@@ -27,7 +27,11 @@ timestamps, and Money.
 | `segmentBookingId` | string | yes | Platform segment booking ID (`sb-<uuid>`). |
 | `providerConfigRef` | string | yes | Provider configuration reference. |
 | `reservationPayload` | object | yes | Provider-specific reservation payload. |
-| `idempotencyKey` | string | yes | Idempotency key for safe retry. |
+
+> Idempotency uses the standard `Idempotency-Key` header per
+> README.md — it is NOT a request-body field. (The `idempotencyKey`
+> field in events/provider-integration.md applies only to bus-
+> delivered commands, which have no HTTP headers.)
 
 **Response (202):**
 
