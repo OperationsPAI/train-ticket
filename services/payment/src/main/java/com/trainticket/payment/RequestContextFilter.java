@@ -15,6 +15,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class RequestContextFilter extends OncePerRequestFilter {
     public static final String REQUEST_ID_HEADER = "X-Request-Id";
     public static final String CORRELATION_ID_HEADER = "X-Correlation-Id";
+    public static final String REQUEST_ID_ATTRIBUTE = RequestContextFilter.class.getName() + ".requestId";
+    public static final String CORRELATION_ID_ATTRIBUTE = RequestContextFilter.class.getName() + ".correlationId";
 
     private final RuntimeTracer tracer;
 
@@ -37,6 +39,8 @@ public class RequestContextFilter extends OncePerRequestFilter {
             request.getRequestURI()
         );
 
+        request.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
+        request.setAttribute(CORRELATION_ID_ATTRIBUTE, correlationId);
         response.setHeader(REQUEST_ID_HEADER, requestId);
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
         MDC.put("requestId", requestId);
