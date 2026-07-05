@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 )
@@ -40,17 +41,17 @@ func (h Handler) requestReservation(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	cmd.HeaderKey = strings.TrimSpace(ctx.GetHeader("Idempotency-Key"))
-	cmd.CorrelationID = goruntime.CorrelationID(ctx.Request.Context())
-	if cmd.IdempotencyKey == "" {
-		cmd.IdempotencyKey = cmd.HeaderKey
+	idempotencyKey, ok := h.requireIdempotencyKey(ctx)
+	if !ok {
+		return
 	}
+	cmd.CorrelationID = goruntime.CorrelationID(ctx.Request.Context())
 	requestHash, _ := application.HashJSON(struct {
 		Method string `json:"method"`
 		Path   string `json:"path"`
 		Body   string `json:"body"`
 	}{ctx.Request.Method, ctx.FullPath(), string(body)})
-	if h.replay(ctx, cmd.HeaderKey, requestHash) {
+	if h.replay(ctx, idempotencyKey, requestHash) {
 		return
 	}
 	result, err := h.service.RequestReservation(ctx.Request.Context(), cmd)
@@ -58,14 +59,16 @@ func (h Handler) requestReservation(ctx *gin.Context) {
 		h.writeError(ctx, err)
 		return
 	}
-	h.writeIdempotentJSON(ctx, cmd.HeaderKey, requestHash, stdhttp.StatusAccepted, result)
+	h.writeIdempotentJSON(ctx, idempotencyKey, requestHash, stdhttp.StatusAccepted, result)
 }
 
 func (h Handler) cancelReservation(ctx *gin.Context) {
-	key := strings.TrimSpace(ctx.GetHeader("Idempotency-Key"))
+	key, ok := h.requireIdempotencyKey(ctx)
+	if !ok {
+		return
+	}
 	cmd := application.CancelProviderReservationCommand{
 		SegmentBookingID: strings.TrimSpace(ctx.Param("segmentBookingId")),
-		IdempotencyKey:   key,
 		CorrelationID:    goruntime.CorrelationID(ctx.Request.Context()),
 	}
 	requestHash, _ := application.HashJSON(struct {
@@ -75,16 +78,26 @@ func (h Handler) cancelReservation(ctx *gin.Context) {
 	if h.replay(ctx, key, requestHash) {
 		return
 	}
-	if key == "" {
-		h.writeError(ctx, errors.Join(application.ErrValidation, errors.New("Idempotency-Key header is required")))
-		return
-	}
 	result, err := h.service.CancelReservation(ctx.Request.Context(), cmd)
 	if err != nil {
 		h.writeError(ctx, err)
 		return
 	}
 	h.writeIdempotentJSON(ctx, key, requestHash, stdhttp.StatusOK, result)
+}
+
+func (h Handler) requireIdempotencyKey(ctx *gin.Context) (string, bool) {
+	key := strings.TrimSpace(ctx.GetHeader("Idempotency-Key"))
+	if key == "" {
+		h.writeError(ctx, errors.Join(application.ErrValidation, errors.New("Idempotency-Key header is required")))
+		return "", false
+	}
+	parsed, err := uuid.Parse(key)
+	if err != nil || parsed.Version() != 7 {
+		h.writeError(ctx, errors.Join(application.ErrValidation, errors.New("Idempotency-Key header must be a UUID v7")))
+		return "", false
+	}
+	return parsed.String(), true
 }
 
 func bindJSON(ctx *gin.Context, target any) ([]byte, bool) {
