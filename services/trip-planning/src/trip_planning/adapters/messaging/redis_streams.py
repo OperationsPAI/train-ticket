@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -66,12 +67,7 @@ class RedisEventPublisher:
 
 
 class RedisEventSubscriber:
-    """Redis Streams EventSubscriber implementation.
-
-    Runs one bounded poll/recovery pass per subscribe call. Services can invoke
-    this repeatedly from their runtime loop; tests can exercise it without
-    background threads or a live Redis instance by passing a fake client.
-    """
+    """Redis Streams EventSubscriber implementation with a stoppable polling lifecycle."""
 
     def __init__(self, redis_client: Any | None = None, redis_url: str | None = None) -> None:
         if redis_client is not None:
@@ -81,6 +77,7 @@ class RedisEventSubscriber:
         else:
             raise SubscribeFailed("redis-py is not installed")
         self._dedup: set[str] = set()
+        self._stop_requested = threading.Event()
 
     def subscribe(
         self,
@@ -92,19 +89,38 @@ class RedisEventSubscriber:
         try:
             for stream in streams:
                 self._ensure_group(stream, group)
-            self._recover_pending(streams, group, consumer_name, handler)
-            results = self._redis.xreadgroup(
-                group,
-                consumer_name,
-                {stream: ">" for stream in streams},
-                count=POLL_COUNT,
-                block=POLL_BLOCK_MS,
-            )
-            self._process_results(results, group, handler)
         except Exception as exc:
-            if isinstance(exc, (TransientHandlerError, FatalHandlerError)):
-                raise
-            raise SubscribeFailed("subscriber could not poll Redis Streams") from exc
+            raise SubscribeFailed("subscriber could not start Redis Streams consumer group") from exc
+
+        next_recovery_at = 0.0
+        self._stop_requested.clear()
+        while not self._stop_requested.is_set():
+            try:
+                now = time.monotonic()
+                if now >= next_recovery_at:
+                    self._recover_pending(streams, group, consumer_name, handler)
+                    next_recovery_at = now + (CLAIM_MIN_IDLE_MS / 1000)
+
+                results = self._redis.xreadgroup(
+                    group,
+                    consumer_name,
+                    {stream: ">" for stream in streams},
+                    count=POLL_COUNT,
+                    block=POLL_BLOCK_MS,
+                )
+                self._process_results(results, group, handler)
+            except Exception as exc:
+                if self._stop_requested.is_set():
+                    break
+                if isinstance(exc, (TransientHandlerError, FatalHandlerError)):
+                    raise
+                raise SubscribeFailed("subscriber could not poll Redis Streams") from exc
+
+    def stop(self) -> None:
+        self._stop_requested.set()
+
+    def shutdown(self) -> None:
+        self.stop()
 
     def _ensure_group(self, stream: str, group: str) -> None:
         try:

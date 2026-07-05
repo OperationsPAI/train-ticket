@@ -1,5 +1,8 @@
+import json
+import threading
 import unittest
 from datetime import datetime, timezone
+from uuid import UUID
 from fastapi.testclient import TestClient
 
 from trip_planning import create_app, health, profile
@@ -12,6 +15,7 @@ from trip_planning.events import (
     build_itinerary_proposed_event,
 )
 from trip_planning.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
+from trip_planning.adapters.messaging.redis_streams import RedisEventSubscriber
 
 
 CAPTURED = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
@@ -47,8 +51,9 @@ class SkeletonTest(unittest.TestCase):
         response = client.get("/live")
         self.assertEqual(response.status_code, 200)
         request_id = response.headers["X-Request-Id"]
-        self.assertTrue(request_id)
-        self.assertEqual(response.headers["X-Correlation-Id"], request_id)
+        correlation_id = response.headers["X-Correlation-Id"]
+        self.assertEqual(UUID(request_id).version, 7)
+        self.assertEqual(UUID(correlation_id).version, 7)
 
     def test_observability_trace_hook_is_opt_in(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []
@@ -133,7 +138,6 @@ class ApiV1Test(unittest.TestCase):
 
     def test_api_v1_search_validation_failure(self) -> None:
         client = TestClient(create_app())
-        # Missing required fields
         response = client.post(
             "/api/v1/itineraries/search",
             json={"maxResults": 5},
@@ -155,7 +159,6 @@ class ApiV1Test(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         body = response.json()
-        # Check canonical error body shape
         self.assertIn("code", body)
         self.assertIn("message", body)
         self.assertIn("correlationId", body)
@@ -232,7 +235,6 @@ class IdempotencyTest(unittest.TestCase):
                 "channel": "web",
             },
         )
-        # Should not reject for missing idempotency key
         self.assertNotEqual(response.status_code, 422)
 
 
@@ -263,6 +265,11 @@ class EventEnvelopeTest(unittest.TestCase):
             payload={},
         )
         self.assertTrue(envelope.eventId.startswith("evt-"))
+
+    def test_generated_event_id_uses_uuid_v7_with_event_prefix(self) -> None:
+        envelope = build_itinerary_proposed_event("intent-v7", tuple(), tuple())
+        self.assertTrue(envelope.eventId.startswith("evt-"))
+        self.assertEqual(UUID(envelope.eventId.removeprefix("evt-")).version, 7)
 
     def test_envelope_json_serialization(self) -> None:
         envelope = EventEnvelope(
@@ -370,7 +377,7 @@ class EventSubscriberTest(unittest.TestCase):
             payload={},
         )
         subscriber.simulate_message(envelope)
-        subscriber.simulate_message(envelope)  # duplicate
+        subscriber.simulate_message(envelope)
 
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0].eventId, "evt-dedup-1")
@@ -423,7 +430,6 @@ class EventEnvelopeWireFormatTest(unittest.TestCase):
             payload={"intentRef": "intent-wire", "itineraries": []},
         )
         json_dict = envelope.to_json_dict()
-        # camelCase per contract
         self.assertIn("eventId", json_dict)
         self.assertIn("eventType", json_dict)
         self.assertIn("schemaVersion", json_dict)
@@ -442,6 +448,73 @@ class EventEnvelopeWireFormatTest(unittest.TestCase):
         )
         json_dict = envelope.to_json_dict()
         self.assertEqual(json_dict["occurredAt"], "2026-07-03T10:30:00.123Z")
+
+
+class RedisEventSubscriberLifecycleTest(unittest.TestCase):
+    def test_subscribe_polls_until_stopped_and_recovers_periodically(self) -> None:
+        envelope = EventEnvelope(eventId="evt-redis-1", eventType="TestEvent", payload={})
+        envelope_json = envelope.to_json_dict()
+
+        class RedisFake:
+            def __init__(self) -> None:
+                self.reads = 0
+                self.claims = 0
+                self.acks: list[tuple[str, str, str]] = []
+
+            def xgroup_create(self, stream: str, group: str, id: str = "$", mkstream: bool = True) -> None:
+                return None
+
+            def xautoclaim(self, *args: object, **kwargs: object) -> tuple[str, list[object]]:
+                self.claims += 1
+                return "0-0", []
+
+            def xreadgroup(self, group: str, consumer: str, streams: dict[str, str], count: int, block: int) -> list[object]:
+                self.reads += 1
+                if self.reads == 1:
+                    return [("events:place-network", [("1-0", {"envelope": json.dumps(envelope_json)})])]
+                subscriber.stop()
+                return []
+
+            def xpending_range(self, *args: object, **kwargs: object) -> list[object]:
+                return [{"times_delivered": 1}]
+
+            def xack(self, stream: str, group: str, msg_id: str) -> None:
+                self.acks.append((stream, group, msg_id))
+
+            def xadd(self, *args: object, **kwargs: object) -> None:
+                return None
+
+        redis_fake = RedisFake()
+        subscriber = RedisEventSubscriber(redis_client=redis_fake)
+        received: list[str] = []
+
+        subscriber.subscribe(["events:place-network"], "trip-planning", "trip-planning-test", lambda env: received.append(env.eventId))
+
+        self.assertEqual(received, ["evt-redis-1"])
+        self.assertGreaterEqual(redis_fake.reads, 2)
+        self.assertGreaterEqual(redis_fake.claims, 1)
+        self.assertEqual(redis_fake.acks, [("events:place-network", "trip-planning", "1-0")])
+
+    def test_subscribe_can_be_stopped_from_another_thread(self) -> None:
+        class RedisFake:
+            def xgroup_create(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def xautoclaim(self, *args: object, **kwargs: object) -> tuple[str, list[object]]:
+                return "0-0", []
+
+            def xreadgroup(self, *args: object, **kwargs: object) -> list[object]:
+                return []
+
+        subscriber = RedisEventSubscriber(redis_client=RedisFake())
+        thread = threading.Thread(
+            target=subscriber.subscribe,
+            args=(["events:place-network"], "trip-planning", "trip-planning-test", lambda env: None),
+        )
+        thread.start()
+        subscriber.stop()
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

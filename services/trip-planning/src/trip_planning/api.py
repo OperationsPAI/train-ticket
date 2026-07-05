@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import json
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any, Protocol
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from .application import search_itineraries, search_itineraries_from_payload
 from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIntent, TripPlanningValidationError
 from .application_ports import EventPublisher
-from .events import PublishFailed, build_itinerary_proposed_event
+from .events import PublishFailed, build_itinerary_proposed_event, new_uuid7
 from .runtime import health, profile
 
 REQUEST_ID_HEADER = "X-Request-Id"
@@ -65,8 +65,8 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid4())
-    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request_id
+    request_id = request.headers.get(REQUEST_ID_HEADER) or new_uuid7()
+    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or new_uuid7()
     return request_id, correlation_id
 
 
@@ -273,8 +273,8 @@ def _search_contract_response(payload: Mapping[str, object]) -> tuple[dict[str, 
     }, planning_snapshot_refs
 
 
-def _idempotency_fingerprint(payload: Mapping[str, object]) -> tuple[tuple[str, object], ...]:
-    return tuple(sorted(payload.items(), key=lambda item: item[0]))
+def _idempotency_fingerprint(payload: Mapping[str, object]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def create_app(
@@ -347,7 +347,7 @@ def create_app(
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-        correlation_id: str = getattr(request.state, "correlation_id", str(uuid4()))
+        correlation_id: str = getattr(request.state, "correlation_id", new_uuid7())
         code = "VALIDATION_FAILED"
         if exc.status_code == 404:
             code = "NOT_FOUND"
@@ -363,17 +363,17 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        correlation_id: str = getattr(request.state, "correlation_id", str(uuid4()))
+        correlation_id: str = getattr(request.state, "correlation_id", new_uuid7())
         return _canonical_error(400, "VALIDATION_FAILED", "Request validation failed", correlation_id, {"errors": exc.errors()})
 
     @app.exception_handler(TripPlanningValidationError)
     async def validation_exception_handler(request: Request, exc: TripPlanningValidationError) -> JSONResponse:
-        correlation_id: str = getattr(request.state, "correlation_id", str(uuid4()))
+        correlation_id: str = getattr(request.state, "correlation_id", new_uuid7())
         return _canonical_error(400, "VALIDATION_FAILED", str(exc), correlation_id)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        correlation_id: str = getattr(request.state, "correlation_id", str(uuid4()))
+        correlation_id: str = getattr(request.state, "correlation_id", new_uuid7())
         return _canonical_error(500, "UNAVAILABLE", "Internal server error", correlation_id)
 
     return app

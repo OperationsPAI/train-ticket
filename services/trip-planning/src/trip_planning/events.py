@@ -2,12 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import random
 from typing import Any, Mapping
-from uuid import uuid4
+from uuid import UUID
+
+
+def new_uuid7() -> str:
+    try:
+        from uuid6 import uuid7
+
+        return str(uuid7())
+    except ImportError:
+        unix_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        random_bits = random.getrandbits(74)
+        value = (unix_ms & ((1 << 48) - 1)) << 80
+        value |= 0x7 << 76
+        value |= ((random_bits >> 62) & 0xFFF) << 64
+        value |= 0b10 << 62
+        value |= random_bits & ((1 << 62) - 1)
+        return str(UUID(int=value))
 
 
 def _new_event_id() -> str:
-    return f"evt-{uuid4()}"
+    return f"evt-{new_uuid7()}"
 
 
 def _format_occurred_at(dt: datetime) -> str:
