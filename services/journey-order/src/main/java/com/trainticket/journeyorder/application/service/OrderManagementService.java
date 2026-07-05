@@ -10,6 +10,8 @@ import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
 import com.trainticket.journeyorder.domain.JourneyOrder;
 import com.trainticket.journeyorder.domain.JourneyOrderEvent;
 import com.trainticket.journeyorder.domain.Money;
@@ -392,15 +394,15 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private record IdempotencyEntry<T>(String requestFingerprint, T result) {}
 
-    public static final class IdempotencyKeyReused extends RuntimeException {
+    public static final class IdempotencyKeyReused extends ApiException {
         public IdempotencyKeyReused(String message) {
-            super(message);
+            super(ApiErrorCode.IDEMPOTENCY_KEY_REUSED, message);
         }
     }
 
-    public static final class NotFoundException extends RuntimeException {
+    public static final class NotFoundException extends ApiException {
         public NotFoundException(String message) {
-            super(message);
+            super(ApiErrorCode.NOT_FOUND, message);
         }
     }
 }
