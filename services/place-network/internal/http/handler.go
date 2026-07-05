@@ -1,16 +1,15 @@
 package http
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/trainticket/greenfield/platform/go-kit/httpkit"
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/place-network/internal/application"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
@@ -35,29 +34,22 @@ func (h *Handler) RegisterRoutes(router gin.IRouter) {
 	v1.GET("/transport-nodes/:nodeId", h.GetTransportNode)
 }
 
-type errorResponse struct {
-	Code          string         `json:"code"`
-	Message       string         `json:"message"`
-	CorrelationID string         `json:"correlationId"`
-	Details       map[string]any `json:"details"`
-}
+type errorResponse = httpkit.ErrorBody
 
 func writeError(ctx *gin.Context, status int, code, message string) {
-	ctx.JSON(status, errorResponse{Code: code, Message: message, CorrelationID: correlationID(ctx), Details: map[string]any{}})
+	httpkit.WriteError(ctx, status, code, message, nil)
 }
 
 func correlationID(ctx *gin.Context) string {
 	return goruntime.CorrelationID(ctx.Request.Context())
 }
 
-var uuidV7Pattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
-
 func idempotencyKey(ctx *gin.Context) string {
 	return strings.TrimSpace(ctx.GetHeader("Idempotency-Key"))
 }
 
 func validUUIDv7(value string) bool {
-	return uuidV7Pattern.MatchString(value)
+	return idempotency.ValidateKey(value)
 }
 
 type idempotencyOutcome struct {
@@ -104,8 +96,7 @@ func requestHash(body any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	return idempotency.BodyFingerprint(data), nil
 }
 
 func (h *Handler) CreatePlace(ctx *gin.Context) {
