@@ -6,16 +6,7 @@ import com.trainticket.payment.application.EventEnvelope;
 import com.trainticket.payment.application.EventSubscriber;
 import com.trainticket.payment.application.HandlerResult;
 import com.trainticket.payment.application.SubscribeFailedException;
-import io.lettuce.core.Consumer;
-import io.lettuce.core.RedisBusyException;
-import io.lettuce.core.StreamMessage;
-import io.lettuce.core.XAddArgs;
-import io.lettuce.core.XAutoClaimArgs;
-import io.lettuce.core.XReadArgs;
-import io.lettuce.core.api.StatefulRedisConnection;
-import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,46 +14,49 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
-    private static final int MAX_DELIVERY_ATTEMPTS = 5;
-    private final StatefulRedisConnection<String, String> connection;
+    static final int MAX_DELIVERY_ATTEMPTS = 5;
+
+    private final RedisStreamOperations streams;
     private final ObjectMapper objectMapper;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean running = new AtomicBoolean();
 
-    RedisEventSubscriber(StatefulRedisConnection<String, String> connection, ObjectMapper objectMapper) {
-        this.connection = Objects.requireNonNull(connection, "connection is required");
+    RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper) {
+        this.streams = Objects.requireNonNull(streams, "streams are required");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
     }
 
     @Override
-    public void subscribe(List<String> streams, String group, String consumerName, EventHandler handler) throws SubscribeFailedException {
-        Objects.requireNonNull(streams, "streams are required");
-        if (streams.isEmpty()) {
+    public void subscribe(List<String> streamNames, String group, String consumerName, EventHandler handler) throws SubscribeFailedException {
+        Objects.requireNonNull(streamNames, "streams are required");
+        Objects.requireNonNull(handler, "handler is required");
+        if (streamNames.isEmpty()) {
             throw new SubscribeFailedException("at least one stream is required", null);
         }
-        createGroups(streams, group);
+        createGroups(streamNames, group);
         running.set(true);
-        executor.submit(() -> poll(streams, group, consumerName, handler));
+        executor.submit(() -> poll(streamNames, group, consumerName, handler));
     }
 
-    private void createGroups(List<String> streams, String group) {
-        for (String stream : streams) {
+    void recoverOnce(String stream, String group, String consumerName, EventHandler handler) {
+        recover(stream, group, consumerName, handler);
+    }
+
+    private void createGroups(List<String> streamNames, String group) {
+        for (String stream : streamNames) {
             try {
-                connection.sync().xgroupCreate(XReadArgs.StreamOffset.from(stream, "$"), group, io.lettuce.core.XGroupCreateArgs.Builder.mkstream());
-            } catch (RedisBusyException ignored) {
-                // Existing group is safe on restart.
+                streams.createGroup(stream, group);
             } catch (RuntimeException exception) {
                 throw new SubscribeFailedException("consumer group could not be created", exception);
             }
         }
     }
 
-    private void poll(List<String> streams, String group, String consumerName, EventHandler handler) {
+    private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
         while (running.get()) {
-            for (String stream : streams) {
+            for (String stream : streamNames) {
                 recover(stream, group, consumerName, handler);
-                List<StreamMessage<String, String>> messages = connection.sync().xreadgroup(Consumer.from(group, consumerName), XReadArgs.Builder.block(Duration.ofSeconds(2)).count(10), XReadArgs.StreamOffset.lastConsumed(stream));
-                for (StreamMessage<String, String> message : messages) {
+                for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
                     handle(stream, group, message, handler, 1);
                 }
             }
@@ -70,26 +64,30 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
     }
 
     private void recover(String stream, String group, String consumerName, EventHandler handler) {
-        List<StreamMessage<String, String>> messages = connection.sync().xautoclaim(stream, XAutoClaimArgs.Builder.xautoclaim(Consumer.from(group, consumerName), Duration.ofSeconds(60), "0-0").count(100)).getMessages();
-        for (StreamMessage<String, String> message : messages) {
-            handle(stream, group, message, handler, MAX_DELIVERY_ATTEMPTS);
+        for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
+            handle(stream, group, message, handler, streams.deliveryCount(stream, group, message.id()));
         }
     }
 
-    private void handle(String stream, String group, StreamMessage<String, String> message, EventHandler handler, int deliveryAttempts) {
-        String json = message.getBody().get("envelope");
-        if (json == null || deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
-            moveToDlq(stream, json == null ? "{}" : json);
-            ack(stream, group, message.getId());
+    private void handle(String stream, String group, RedisStreamOperations.StreamEntry message, EventHandler handler, int deliveryAttempts) {
+        String json = message.envelopeJson();
+        if (json == null) {
+            streams.moveToDlq(stream, "{}");
+            streams.ack(stream, group, message.id());
+            return;
+        }
+        if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
+            streams.moveToDlq(stream, json);
+            streams.ack(stream, group, message.id());
             return;
         }
         EventEnvelope envelope = deserialize(json);
         HandlerResult result = handler.handle(envelope);
         if (result == HandlerResult.SUCCESS) {
-            ack(stream, group, message.getId());
+            streams.ack(stream, group, message.id());
         } else if (result == HandlerResult.FATAL_FAILURE) {
-            moveToDlq(stream, json);
-            ack(stream, group, message.getId());
+            streams.moveToDlq(stream, json);
+            streams.ack(stream, group, message.id());
         }
     }
 
@@ -99,14 +97,6 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
         } catch (JsonProcessingException exception) {
             throw new SubscribeFailedException("event envelope could not be deserialized", exception);
         }
-    }
-
-    private void ack(String stream, String group, String id) {
-        connection.sync().xack(stream, group, id);
-    }
-
-    private void moveToDlq(String stream, String json) {
-        connection.sync().xadd(RedisStreamNames.dlqFor(stream), XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("envelope", json));
     }
 
     @Override

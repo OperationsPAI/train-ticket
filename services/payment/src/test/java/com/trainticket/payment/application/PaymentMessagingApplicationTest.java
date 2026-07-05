@@ -32,13 +32,78 @@ class PaymentMessagingApplicationTest {
 
     @Test
     void subscriberDeduplicatesDuplicateEventIds() {
-        ConsumedEventDeduplicator deduplicator = new ConsumedEventDeduplicator();
-        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(deduplicator);
+        FakeEventPublisher publisher = new FakeEventPublisher();
+        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(
+            new ConsumedEventDeduplicator(),
+            new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher)
+        );
         FakeEventSubscriber subscriber = new FakeEventSubscriber();
         subscriber.subscribe(List.of("ignored"), "payment", "payment-test", handler);
-        EventEnvelope envelope = new EventEnvelope("evt-1", "PostSalesApproved", Instant.parse("2026-07-05T10:30:00Z"), "corr-1", "cause-1", "post-sales", 1, Map.of("x", "y"));
+        EventEnvelope envelope = segmentReservationRequested("evt-1", "idem-1");
 
         assertEquals(HandlerResult.SUCCESS, subscriber.emit(envelope));
         assertEquals(HandlerResult.SUCCESS, subscriber.emit(envelope));
+        assertEquals(2, publisher.published().size());
+    }
+
+    @Test
+    void segmentReservationRequestedCreatesAndAuthorizesPaymentIntent() {
+        FakeEventPublisher publisher = new FakeEventPublisher();
+        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(
+            new ConsumedEventDeduplicator(),
+            new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher)
+        );
+
+        assertEquals(HandlerResult.SUCCESS, handler.handle(segmentReservationRequested("evt-segment", "idem-segment")));
+
+        assertEquals("PaymentIntentCreated", publisher.published().get(0).eventType());
+        assertEquals("PaymentAuthorized", publisher.published().get(1).eventType());
+    }
+
+    @Test
+    void postSalesApprovedRequestsRefundThroughDomain() {
+        FakeEventPublisher publisher = new FakeEventPublisher();
+        PaymentCommandService commands = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
+        String paymentIntentId = commands.createIntent("ord-refund", "purchase", Money.fromMinorUnits(1000, "CNY"), "trav-1", "idem-create", "corr-create").paymentIntentId();
+        commands.captureIntent(paymentIntentId, "idem-capture", "corr-create");
+        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
+
+        EventEnvelope approved = new EventEnvelope(
+            "evt-refund",
+            "PostSalesApproved",
+            Instant.parse("2026-07-05T10:31:00Z"),
+            "corr-refund",
+            "evt-post-sales",
+            "post-sales",
+            1,
+            Map.of(
+                "caseId", "case-1",
+                "orderId", "ord-refund",
+                "approvedActions", Map.of("paymentIntentId", paymentIntentId, "refundAmount", Map.of("currency", "CNY", "minorUnits", 500L))
+            )
+        );
+
+        assertEquals(HandlerResult.SUCCESS, handler.handle(approved));
+        assertEquals("RefundRequested", publisher.published().getLast().eventType());
+    }
+
+    private static EventEnvelope segmentReservationRequested(String eventId, String idempotencyKey) {
+        return new EventEnvelope(
+            eventId,
+            "SegmentReservationRequested",
+            Instant.parse("2026-07-05T10:30:00Z"),
+            "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+            "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+            "booking-orchestration",
+            1,
+            Map.of(
+                "segmentBookingId", "sb-1",
+                "journeyOrderId", "ord-1",
+                "segmentRef", "seg-1",
+                "travelerRef", "trav-1",
+                "idempotencyKey", idempotencyKey,
+                "amount", Map.of("currency", "CNY", "minorUnits", 35000L)
+            )
+        );
     }
 }

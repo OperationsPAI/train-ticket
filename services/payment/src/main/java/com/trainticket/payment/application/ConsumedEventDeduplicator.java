@@ -8,6 +8,14 @@ import org.springframework.stereotype.Component;
 public class ConsumedEventDeduplicator {
     private final Set<String> processedEventIds = ConcurrentHashMap.newKeySet();
 
+    public boolean isProcessed(String eventId) {
+        return processedEventIds.contains(eventId);
+    }
+
+    public void recordProcessed(String eventId) {
+        processedEventIds.add(eventId);
+    }
+
     public boolean recordIfNew(String eventId) {
         return processedEventIds.add(eventId);
     }

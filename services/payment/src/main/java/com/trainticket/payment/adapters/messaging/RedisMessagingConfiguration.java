@@ -25,7 +25,12 @@ public class RedisMessagingConfiguration {
     }
 
     @Bean
-    RedisEventSubscriber redisEventSubscriber(StatefulRedisConnection<String, String> connection, ObjectMapper objectMapper) {
-        return new RedisEventSubscriber(connection, objectMapper);
+    RedisStreamOperations redisStreamOperations(StatefulRedisConnection<String, String> connection) {
+        return new LettuceRedisStreamOperations(connection);
+    }
+
+    @Bean
+    RedisEventSubscriber redisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper) {
+        return new RedisEventSubscriber(streams, objectMapper);
     }
 }
