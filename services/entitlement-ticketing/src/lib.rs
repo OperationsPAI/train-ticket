@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     Json, Router,
-    extract::{Extension, Path, Query, State, rejection::JsonRejection},
+    extract::{Extension, Path, RawQuery, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -1911,8 +1911,29 @@ fn idempotency_key(headers: &HeaderMap) -> Option<String> {
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| is_uuid_v7(value))
         .map(ToOwned::to_owned)
+}
+
+fn is_uuid_v7(value: &str) -> bool {
+    if value.len() != 36 {
+        return false;
+    }
+    for index in [8, 13, 18, 23] {
+        if value.as_bytes().get(index) != Some(&b'-') {
+            return false;
+        }
+    }
+    value
+        .chars()
+        .enumerate()
+        .filter(|(i, _)| ![8, 13, 18, 23].contains(i))
+        .all(|(_, c)| c.is_ascii_hexdigit())
+        && value.as_bytes()[14] == b'7'
+        && matches!(
+            value.as_bytes()[19],
+            b'8' | b'9' | b'a' | b'b' | b'A' | b'B'
+        )
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1935,6 +1956,18 @@ pub enum IssuePurposeDto {
     DisruptionReplacement,
 }
 
+impl From<IssuePurposeDto> for IssuePurpose {
+    fn from(value: IssuePurposeDto) -> Self {
+        match value {
+            IssuePurposeDto::Initial => Self::Initial,
+            IssuePurposeDto::Replacement => Self::Replacement,
+            IssuePurposeDto::ManualRecovery => Self::ManualRecovery,
+            IssuePurposeDto::ProviderRebuild => Self::ProviderRebuild,
+            IssuePurposeDto::DisruptionReplacement => Self::DisruptionReplacement,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VoidEntitlementRequest {
@@ -1953,11 +1986,32 @@ pub enum VoidReasonDto {
     ManualCorrection,
 }
 
+impl From<VoidReasonDto> for VoidReason {
+    fn from(value: VoidReasonDto) -> Self {
+        match value {
+            VoidReasonDto::Refund => Self::Refund,
+            VoidReasonDto::Change => Self::Change,
+            VoidReasonDto::Disruption => Self::Disruption,
+            VoidReasonDto::Risk => Self::Risk,
+            VoidReasonDto::ManualCorrection => Self::ManualCorrection,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum VoidPolicyDto {
     Normal,
     ExceptionalRule,
+}
+
+impl From<VoidPolicyDto> for VoidPolicy {
+    fn from(value: VoidPolicyDto) -> Self {
+        match value {
+            VoidPolicyDto::Normal => Self::Normal,
+            VoidPolicyDto::ExceptionalRule => Self::ExceptionalRule,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2034,6 +2088,39 @@ pub struct ListEntitlementsQuery {
     offset: Option<usize>,
 }
 
+fn parse_list_query(raw_query: Option<&str>) -> Result<ListEntitlementsQuery, String> {
+    let raw_query =
+        raw_query.ok_or_else(|| "journeyOrderId query parameter is required".to_string())?;
+    let mut journey_order_id = None;
+    let mut limit = None;
+    let mut offset = None;
+    for pair in raw_query.split('&').filter(|pair| !pair.is_empty()) {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match name {
+            "journeyOrderId" => journey_order_id = Some(value.to_string()),
+            "limit" => {
+                limit = Some(value.parse::<usize>().map_err(|_| {
+                    "limit query parameter must be a non-negative integer".to_string()
+                })?)
+            }
+            "offset" => {
+                offset = Some(value.parse::<usize>().map_err(|_| {
+                    "offset query parameter must be a non-negative integer".to_string()
+                })?)
+            }
+            _ => {}
+        }
+    }
+    let journey_order_id = journey_order_id
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| "journeyOrderId query parameter is required".to_string())?;
+    Ok(ListEntitlementsQuery {
+        journey_order_id,
+        limit,
+        offset,
+    })
+}
+
 async fn issue_entitlement<S>(
     State(state): State<ApiState<S>>,
     Extension(context): Extension<RequestContext>,
@@ -2045,7 +2132,10 @@ where
 {
     let correlation_id = context.correlation_id().to_string();
     let Some(key) = idempotency_key(&headers) else {
-        return validation_error(correlation_id, "Idempotency-Key header is required");
+        return validation_error(
+            correlation_id,
+            "Idempotency-Key header is required and must be UUID v7",
+        );
     };
     let Json(request) = match body {
         Ok(body) => body,
@@ -2073,7 +2163,10 @@ where
 {
     let correlation_id = context.correlation_id().to_string();
     let Some(key) = idempotency_key(&headers) else {
-        return validation_error(correlation_id, "Idempotency-Key header is required");
+        return validation_error(
+            correlation_id,
+            "Idempotency-Key header is required and must be UUID v7",
+        );
     };
     let Json(request) = match body {
         Ok(body) => body,
@@ -2107,12 +2200,16 @@ where
 async fn list_entitlements<S>(
     State(state): State<ApiState<S>>,
     Extension(context): Extension<RequestContext>,
-    Query(query): Query<ListEntitlementsQuery>,
+    RawQuery(raw_query): RawQuery,
 ) -> Response
 where
     S: EntitlementApi + 'static,
 {
     let correlation_id = context.correlation_id().to_string();
+    let query = match parse_list_query(raw_query.as_deref()) {
+        Ok(query) => query,
+        Err(message) => return validation_error(correlation_id, message),
+    };
     let limit = query.limit.unwrap_or(20).min(100);
     let offset = query.offset.unwrap_or(0);
     match state
@@ -2150,6 +2247,8 @@ impl InMemoryEntitlementService {
 #[derive(Debug, Default)]
 struct InMemoryState {
     entitlements: HashMap<String, EntitlementDetails>,
+    aggregates: HashMap<String, Entitlement>,
+    credential_registry: CredentialRegistry,
     idempotency: HashMap<String, IdempotentRecord>,
     sequence: u64,
 }
@@ -2221,6 +2320,46 @@ impl EntitlementApi for InMemoryEntitlementService {
                 issued_at,
                 voided_at: None,
             };
+            let (mut aggregate, _) = Entitlement::request(RequestEntitlement {
+                command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                    .map_err(ApiErrorKind::from)?,
+                entitlement_id: EntitlementId::new(entitlement_id.clone())
+                    .map_err(ApiErrorKind::from)?,
+                journey_order_ref: JourneyOrderRef::new(details.journey_order_id.clone())
+                    .map_err(ApiErrorKind::from)?,
+                segment_booking_ref: SegmentBookingRef::new(details.segment_booking_id.clone())
+                    .map_err(ApiErrorKind::from)?,
+                traveler_ref: TravelerRef::new(details.traveler_ref.clone())
+                    .map_err(ApiErrorKind::from)?,
+                segment_ref: SegmentRef::new(details.segment_ref.clone())
+                    .map_err(ApiErrorKind::from)?,
+                purpose: command.issue_purpose.clone().into(),
+                validity_window: ValidityWindow::new(
+                    UnixMillis::new(current_unix_millis()),
+                    UnixMillis::new(current_unix_millis().saturating_add(86_400_000)),
+                )
+                .map_err(ApiErrorKind::from)?,
+                audit: audit_builder(&correlation_id, "HTTP issue entitlement")
+                    .map_err(ApiErrorKind::from)?,
+            })
+            .map_err(ApiErrorKind::from)?;
+            aggregate
+                .issue(
+                    IssueEntitlement {
+                        command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                            .map_err(ApiErrorKind::from)?,
+                        idempotency_key: aggregate.idempotency_key().clone(),
+                        preconditions: default_preconditions().map_err(ApiErrorKind::from)?,
+                        credential_ref: credential_ref(&response.credential_no)
+                            .map_err(ApiErrorKind::from)?,
+                        refund_request_fact: None,
+                        audit: audit_builder(&correlation_id, "HTTP issue entitlement")
+                            .map_err(ApiErrorKind::from)?,
+                    },
+                    &mut state.credential_registry,
+                )
+                .map_err(ApiErrorKind::from)?;
+            state.aggregates.insert(entitlement_id.clone(), aggregate);
             state.entitlements.insert(entitlement_id, details);
             state.idempotency.insert(
                 key,
@@ -2280,18 +2419,42 @@ impl EntitlementApi for InMemoryEntitlementService {
                     "Idempotency-Key was reused for a different operation".to_string(),
                 ));
             }
-            let entitlement = state
+            let was_voided = state
                 .entitlements
-                .get_mut(&entitlement_id)
-                .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?;
-            if entitlement.status == EntitlementStatusDto::Voided {
+                .get(&entitlement_id)
+                .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?
+                .status
+                == EntitlementStatusDto::Voided;
+            let aggregate = state.aggregates.get_mut(&entitlement_id).ok_or_else(|| {
+                ApiErrorKind::NotFound("entitlement aggregate not found".to_string())
+            })?;
+            let events = aggregate
+                .void(VoidEntitlement {
+                    command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                        .map_err(ApiErrorKind::from)?,
+                    reason: command.reason.clone().into(),
+                    policy: command.policy.clone().into(),
+                    business_case_ref: BusinessCaseRef::new(
+                        command
+                            .business_case_ref
+                            .clone()
+                            .unwrap_or_else(|| format!("case-{}", uuid::Uuid::now_v7())),
+                    )
+                    .map_err(ApiErrorKind::from)?,
+                    audit: audit_builder(&correlation_id, "HTTP void entitlement")
+                        .map_err(ApiErrorKind::from)?,
+                })
+                .map_err(ApiErrorKind::from)?;
+            if events.is_empty() && was_voided {
                 return Err(ApiErrorKind::PreconditionFailed(
                     "entitlement is already voided".to_string(),
                 ));
             }
             let voided_at = current_rfc3339();
-            entitlement.status = EntitlementStatusDto::Voided;
-            entitlement.voided_at = Some(voided_at.clone());
+            if let Some(entitlement) = state.entitlements.get_mut(&entitlement_id) {
+                entitlement.status = EntitlementStatusDto::Voided;
+                entitlement.voided_at = Some(voided_at.clone());
+            }
             let response = VoidEntitlementResponse {
                 entitlement_id,
                 status: EntitlementStatusDto::Voided,
@@ -2367,6 +2530,69 @@ fn current_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+fn current_unix_millis() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+fn audit_builder(
+    correlation_id: &str,
+    reason: &'static str,
+) -> Result<AuditBuilder, EntitlementError> {
+    Ok(AuditBuilder::system(
+        reason,
+        UnixMillis::new(current_unix_millis()),
+        CorrelationId::new(correlation_id.to_string())?,
+    ))
+}
+
+fn default_preconditions() -> Result<IssuePreconditions, EntitlementError> {
+    let now = UnixMillis::new(current_unix_millis());
+    Ok(IssuePreconditions::accepted(
+        AcceptedFact::new(
+            BookingFactRef::new(format!("booking-fact-{}", uuid::Uuid::now_v7()))?,
+            BookingAcceptance::SegmentReservationConfirmed,
+            now,
+        ),
+        AcceptedFact::new(
+            CapacityFactRef::new(format!("capacity-fact-{}", uuid::Uuid::now_v7()))?,
+            CapacityAcceptance::CapacityCommitted,
+            now,
+        ),
+        AcceptedFact::new(
+            PaymentFactRef::new(format!("payment-fact-{}", uuid::Uuid::now_v7()))?,
+            PaymentAcceptance::PaymentCaptured,
+            now,
+        ),
+        AcceptedFact::new(
+            TravelerFactRef::new(format!("traveler-fact-{}", uuid::Uuid::now_v7()))?,
+            TravelerAcceptance::TravelerSnapshotAccepted,
+            now,
+        ),
+        AcceptedFact::new(
+            RiskFactRef::new(format!("risk-fact-{}", uuid::Uuid::now_v7()))?,
+            RiskAcceptance::Allowed,
+            now,
+        ),
+    ))
+}
+
+fn credential_ref(credential_no: &str) -> Result<CredentialRef, EntitlementError> {
+    CredentialRef::new(
+        CredentialId::new(format!("cred-{}", uuid::Uuid::now_v7()))?,
+        CredentialType::ETicket,
+        credential_no.to_string(),
+        None,
+        CredentialDisplayReference::new(
+            format!(
+                "****{}",
+                &credential_no[credential_no.len().saturating_sub(4)..]
+            ),
+            1,
+            Some("QR".to_string()),
+        )?,
+    )
+}
+
 async fn publish_api_event<T: Serialize>(
     publisher: &dyn application::EventPublisher,
     event_type: &str,
@@ -2385,4 +2611,81 @@ async fn publish_api_event<T: Serialize>(
         .publish(envelope)
         .await
         .map_err(|error| ApiErrorKind::Unavailable(error.to_string()))
+}
+
+impl From<EntitlementError> for ApiErrorKind {
+    fn from(error: EntitlementError) -> Self {
+        match error {
+            EntitlementError::BlankReference { .. }
+            | EntitlementError::InvalidValidityWindow
+            | EntitlementError::InvalidDisplayVersion
+            | EntitlementError::MissingAuditReason => Self::ValidationFailed(error.to_string()),
+            EntitlementError::DuplicateCredential { .. } => Self::Conflict(error.to_string()),
+            EntitlementError::NotIssued
+            | EntitlementError::NotSuspended
+            | EntitlementError::TerminalStatus(_)
+            | EntitlementError::VoidRequiresCompensation
+            | EntitlementError::ExceptionalVoidRuleRequired
+            | EntitlementError::AlreadyIssued
+            | EntitlementError::EntitlementFrozen
+            | EntitlementError::IssueFailureNotRetryable
+            | EntitlementError::DuplicateIssueAttempt
+            | EntitlementError::IdempotencyKeyMismatch => {
+                Self::DomainRuleViolation(error.to_string())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod api_domain_wiring_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn http_application_service_maps_domain_invariant_to_domain_rule_violation() {
+        let service = InMemoryEntitlementService::default();
+        let response = service
+            .issue(
+                IssueEntitlementRequest {
+                    segment_booking_id: "sb-domain-invariant".to_string(),
+                    journey_order_id: "ord-domain-invariant".to_string(),
+                    traveler_ref: "tvl-domain-invariant".to_string(),
+                    segment_ref: "seg-domain-invariant".to_string(),
+                    issue_purpose: IssuePurposeDto::Initial,
+                },
+                "018f2e07-b3e7-7100-8284-5c26e8b0d001".to_string(),
+                "corr-domain-invariant".to_string(),
+            )
+            .await
+            .unwrap();
+
+        {
+            let mut state = service.state.lock().expect("state lock poisoned");
+            let aggregate = state.aggregates.get_mut(&response.entitlement_id).unwrap();
+            aggregate
+                .accept_fulfillment_fact(AcceptFulfillmentFact {
+                    command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7())).unwrap(),
+                    fact: FulfillmentFact::BoardingVerified {
+                        fact_ref: FulfillmentFactRef::new("fulfillment-domain-invariant").unwrap(),
+                    },
+                    audit: audit_builder("corr-domain-invariant", "test boarding fact").unwrap(),
+                })
+                .unwrap();
+        }
+
+        let error = service
+            .void(
+                response.entitlement_id,
+                VoidEntitlementRequest {
+                    reason: VoidReasonDto::Refund,
+                    policy: VoidPolicyDto::Normal,
+                    business_case_ref: Some("case-domain-invariant".to_string()),
+                },
+                "018f2e07-b3e7-7100-8284-5c26e8b0d002".to_string(),
+                "corr-domain-invariant".to_string(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiErrorKind::DomainRuleViolation(_)));
+    }
 }
