@@ -46,6 +46,7 @@ func (h Handler) requestReservation(ctx *gin.Context) {
 		return
 	}
 	cmd.CorrelationID = goruntime.CorrelationID(ctx.Request.Context())
+	cmd.IdempotencyKey = idempotencyKey
 	requestHash, _ := application.HashJSON(struct {
 		Method string `json:"method"`
 		Path   string `json:"path"`
@@ -70,6 +71,7 @@ func (h Handler) cancelReservation(ctx *gin.Context) {
 	cmd := application.CancelProviderReservationCommand{
 		SegmentBookingID: strings.TrimSpace(ctx.Param("segmentBookingId")),
 		CorrelationID:    goruntime.CorrelationID(ctx.Request.Context()),
+		IdempotencyKey:   key,
 	}
 	requestHash, _ := application.HashJSON(struct {
 		Method string `json:"method"`
@@ -150,6 +152,8 @@ func (h Handler) writeError(ctx *gin.Context, err error) {
 		writeErrorBody(ctx, stdhttp.StatusNotFound, "NOT_FOUND", err.Error())
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		writeErrorBody(ctx, 422, "IDEMPOTENCY_KEY_REUSED", err.Error())
+	case errors.Is(err, application.ErrDomainRule):
+		writeErrorBody(ctx, 422, "DOMAIN_RULE_VIOLATION", err.Error())
 	default:
 		writeErrorBody(ctx, stdhttp.StatusServiceUnavailable, "UNAVAILABLE", "provider integration is unavailable")
 	}

@@ -50,7 +50,7 @@ func (p *RedisPublisher) Publish(ctx context.Context, envelope application.Event
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt*50) * time.Millisecond):
+			case <-time.After(time.Duration(50*(1<<(attempt-1))) * time.Millisecond):
 			}
 		}
 		_, err = p.client.XAdd(ctx, &redis.XAddArgs{
