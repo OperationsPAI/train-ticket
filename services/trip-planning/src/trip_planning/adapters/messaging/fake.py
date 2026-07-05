@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from trip_planning.events import EventEnvelope, EventPublisher, EventSubscriber
+from trip_planning.application_ports import EventPublisher, EventSubscriber
+from trip_planning.events import EventEnvelope
 
 
 class FakeEventPublisher(EventPublisher):
