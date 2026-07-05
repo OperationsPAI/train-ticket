@@ -200,7 +200,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     const body = validateClassify(request.body);
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.classifySupportCase(caseId, body, operatorRef(request)),
+      application.classifySupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
     );
   });
 
@@ -208,7 +208,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     const body = validateAssign(request.body);
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.assignSupportCase(caseId, body, operatorRef(request)),
+      application.assignSupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
     );
   });
 
@@ -216,7 +216,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     const body = validateEscalate(request.body);
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.escalateCase(caseId, body, operatorRef(request)),
+      application.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
     );
   });
 
@@ -224,7 +224,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     const body = validateResolve(request.body);
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.resolveCase(caseId, body, operatorRef(request)),
+      application.resolveCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
     );
   });
 
@@ -232,14 +232,16 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     const body = validateClose(request.body);
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
-      application.closeCase(caseId, body, operatorRef(request)),
+      application.closeCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()),
     );
   });
 
   app.post("/api/v1/support-cases/:caseId/reopen", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
     const body = validateReopen(request.body);
-    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () => application.reopenCase(caseId, body));
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body }, () =>
+      application.reopenCase(caseId, body, requestContext(request).correlationId, newCommandId()),
+    );
   });
 
   app.setNotFoundHandler((request, reply) => {
@@ -265,6 +267,10 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
       return;
     }
     if (isDomainError(error)) {
+      if (isPreconditionFailure(request, error.code)) {
+        sendError(reply, 412, "PRECONDITION_FAILED", error.message, context, { domainCode: error.code });
+        return;
+      }
       const status = error.code.startsWith("CASE_NOT_") || error.code.startsWith("CLOSURE_") ? 422 : 400;
       sendError(reply, status, status === 422 ? "DOMAIN_RULE_VIOLATION" : "VALIDATION_FAILED", error.message, context, { domainCode: error.code });
       return;
@@ -299,7 +305,16 @@ async function withIdempotency(
   if (!key) {
     throw new MissingIdempotencyKeyError();
   }
+  if (!isUuidV7(key)) {
+    throw new ValidationError("Idempotency-Key header must be a UUID v7", { header: "Idempotency-Key", format: "UUID_V7" });
+  }
   return idempotencyStore.execute(key, fingerprintSource, operation);
+}
+
+const uuidV7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuidV7(value: string): boolean {
+  return uuidV7Pattern.test(value);
 }
 
 class ValidationError extends Error {
@@ -492,6 +507,14 @@ function apiStatus(status: string): "OPENED" | "IN_PROGRESS" | "RESOLVED" | "CLO
   return "IN_PROGRESS";
 }
 
+function isPreconditionFailure(request: FastifyRequest, domainCode: string): boolean {
+  const path = request.url.split("?")[0] ?? request.url;
+  if (request.method !== "POST" || !/^\/api\/v1\/support-cases\/[^/]+\/(resolve|close)$/.test(path)) {
+    return false;
+  }
+  return domainCode === "CASE_NOT_RESOLVABLE" || domainCode === "CASE_NOT_CLOSABLE" || domainCode.startsWith("CLOSURE_");
+}
+
 function operatorRef(request: FastifyRequest): string {
   return headerValue(request.headers["x-operator-ref"]) ?? `op-${randomUUID()}`;
 }
@@ -517,14 +540,22 @@ function traceContext(request: AppRequest, context: RequestContext = requestCont
 }
 
 function requestContext(request: AppRequest): RequestContext {
+  const existing = requestContexts.get(request);
+  if (existing) {
+    return existing;
+  }
   const requestId = headerValue(request.headers["x-request-id"]) ?? request.id ?? randomUUID();
   const rawCorrelationId = headerValue(request.headers["x-correlation-id"]);
   const correlationId = rawCorrelationId ? canonicalCorrelationId(rawCorrelationId) : newCorrelationId();
-  return { requestId, correlationId };
+  const context = { requestId, correlationId };
+  requestContexts.set(request, context);
+  return context;
 }
 
 type AppRequest = FastifyRequest;
 type AppReply = FastifyReply;
+
+const requestContexts = new WeakMap<AppRequest, RequestContext>();
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   const candidate = Array.isArray(value) ? value[0] : value;

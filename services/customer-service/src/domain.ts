@@ -170,6 +170,8 @@ export type ClassifySupportCase = Readonly<{
   classification: CaseClassification;
   priority: CasePriority;
   classifiedBy: OperatorRef;
+  correlationId?: CorrelationId;
+  causationId?: CausationId;
   classifiedAt: Date;
 }>;
 
@@ -178,6 +180,8 @@ export type AssignSupportCase = Readonly<{
   ownerQueue: string;
   assignedTo?: OperatorRef;
   assignedBy: OperatorRef;
+  correlationId?: CorrelationId;
+  causationId?: CausationId;
   assignedAt: Date;
 }>;
 
@@ -222,6 +226,8 @@ export type EscalateCase = Readonly<{
   targetQueue: string;
   reason: string;
   escalatedBy: OperatorRef;
+  correlationId?: CorrelationId;
+  causationId?: CausationId;
   escalatedAt: Date;
 }>;
 
@@ -230,6 +236,8 @@ export type ResolveCase = Readonly<{
   summary: string;
   resolutionCode: string;
   resolvedBy: OperatorRef;
+  correlationId?: CorrelationId;
+  causationId?: CausationId;
   resolvedAt: Date;
 }>;
 
@@ -237,6 +245,8 @@ export type CloseCase = Readonly<{
   caseId: SupportCaseId;
   reason: CloseReason;
   closedBy: OperatorRef;
+  correlationId?: CorrelationId;
+  causationId?: CausationId;
   closedAt: Date;
 }>;
 
@@ -244,6 +254,8 @@ export type ReopenCase = Readonly<{
   caseId: SupportCaseId;
   reason: string;
   requesterRef: AccountRef;
+  correlationId?: CorrelationId;
+  causationId?: CausationId;
   reopenedAt: Date;
 }>;
 
@@ -573,8 +585,8 @@ export class SupportCase {
       eventType: "SupportCaseClassified",
       schemaVersion: 1,
       occurredAt: new Date(command.classifiedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
       producer: "customer-service",
       caseId: this.snapshot.caseId,
       classification: command.classification,
@@ -607,8 +619,8 @@ export class SupportCase {
       eventType: "SupportCaseAssigned",
       schemaVersion: 1,
       occurredAt: new Date(command.assignedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
       producer: "customer-service",
       caseId: this.snapshot.caseId,
       ownerQueue: command.ownerQueue,
@@ -648,8 +660,8 @@ export class SupportCase {
       eventType: "SupportCaseEscalated",
       schemaVersion: 1,
       occurredAt: new Date(command.escalatedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
       producer: "customer-service",
       caseId: this.snapshot.caseId,
       targetQueue: command.targetQueue,
@@ -681,6 +693,8 @@ export class SupportCase {
       status: "Resolved" as const,
       resolution,
       resolvedAt: new Date(command.resolvedAt),
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
     });
 
     const event: SupportCaseResolved = deepFreeze({
@@ -689,8 +703,8 @@ export class SupportCase {
       eventType: "SupportCaseResolved",
       schemaVersion: 1,
       occurredAt: new Date(command.resolvedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
       producer: "customer-service",
       caseId: this.snapshot.caseId,
       summary: command.summary,
@@ -730,6 +744,8 @@ export class SupportCase {
       closedAt: new Date(command.closedAt),
       closeReason: command.reason,
       closedBy: command.closedBy,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
     });
 
     const event: SupportCaseClosed = deepFreeze({
@@ -738,8 +754,8 @@ export class SupportCase {
       eventType: "SupportCaseClosed",
       schemaVersion: 1,
       occurredAt: new Date(command.closedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
       producer: "customer-service",
       caseId: this.snapshot.caseId,
       reason: command.reason,
@@ -764,6 +780,8 @@ export class SupportCase {
       closedAt: undefined,
       closeReason: undefined,
       closedBy: undefined,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
     });
 
     const event: SupportCaseReopened = deepFreeze({
@@ -772,8 +790,8 @@ export class SupportCase {
       eventType: "SupportCaseReopened",
       schemaVersion: 1,
       occurredAt: new Date(command.reopenedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
+      correlationId: command.correlationId ?? this.snapshot.correlationId,
+      causationId: command.causationId ?? this.snapshot.causationId,
       producer: "customer-service",
       caseId: this.snapshot.caseId,
       reason: command.reason,
