@@ -22,10 +22,35 @@ public class PaymentCommandService {
     private final EventPublisher eventPublisher;
     private final Map<String, PaymentIntent> intents = new ConcurrentHashMap<>();
     private final Map<String, Refund> refunds = new ConcurrentHashMap<>();
+    private final Map<String, ReservationPaymentRequest> reservationPaymentRequests = new ConcurrentHashMap<>();
 
     public PaymentCommandService(Clock clock, EventPublisher eventPublisher) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
+    }
+
+    public ReservationPaymentRequest recordReservationPaymentRequest(
+        String eventId,
+        String segmentBookingId,
+        String journeyOrderId,
+        String segmentRef,
+        String travelerRef,
+        String idempotencyKey,
+        String correlationId,
+        Instant requestedAt
+    ) {
+        ReservationPaymentRequest request = new ReservationPaymentRequest(
+            eventId,
+            segmentBookingId,
+            journeyOrderId,
+            segmentRef,
+            travelerRef,
+            idempotencyKey,
+            correlationId,
+            requestedAt
+        );
+        reservationPaymentRequests.putIfAbsent(request.segmentBookingId(), request);
+        return reservationPaymentRequests.get(request.segmentBookingId());
     }
 
     public PaymentIntent createIntent(String businessRef, String purpose, Money amount, String payerRef, String idempotencyKey, String correlationId) {
@@ -66,6 +91,14 @@ public class PaymentCommandService {
         refunds.put(refund.refundId(), refund);
         publish(refund.domainEvents());
         return refund;
+    }
+
+    public ReservationPaymentRequest getReservationPaymentRequest(String segmentBookingId) {
+        ReservationPaymentRequest request = reservationPaymentRequests.get(requireText(segmentBookingId, "segmentBookingId"));
+        if (request == null) {
+            throw new NotFoundException("reservation payment request not found");
+        }
+        return request;
     }
 
     public PaymentIntent getIntent(String paymentIntentId) {

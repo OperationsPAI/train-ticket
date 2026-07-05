@@ -1,6 +1,7 @@
 package com.trainticket.payment.adapters.messaging;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -31,6 +32,38 @@ class RedisEventSubscriberTest {
         assertEquals(List.of("1-0"), streams.ackedIds);
     }
 
+    @Test
+    void deserializesEnvelopeWithoutOptionalCausationId() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        String json = """
+            {
+              "eventId":"evt-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+              "eventType":"SegmentReservationRequested",
+              "occurredAt":"2026-07-05T10:30:00Z",
+              "correlationId":"corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+              "producer":"booking-orchestration",
+              "schemaVersion":1,
+              "payload":{
+                "segmentBookingId":"sb-1",
+                "journeyOrderId":"ord-1",
+                "segmentRef":"seg-1",
+                "travelerRef":"trav-1",
+                "idempotencyKey":"idem-1"
+              }
+            }
+            """;
+        FakeRedisStreamOperations streams = new FakeRedisStreamOperations(json);
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper);
+
+        subscriber.recoverOnce("events:booking-orchestration", "payment", "payment-test", envelope -> {
+            assertNull(envelope.causationId());
+            return HandlerResult.SUCCESS;
+        });
+
+        assertEquals(List.of("1-0"), streams.ackedIds);
+        assertEquals(0, streams.dlqEnvelopes.size());
+    }
+
     private static EventEnvelope envelope() {
         return new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
@@ -40,7 +73,7 @@ class RedisEventSubscriberTest {
             "evt-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
             "booking-orchestration",
             1,
-            Map.of("segmentBookingId", "sb-1", "journeyOrderId", "ord-1", "travelerRef", "trav-1", "idempotencyKey", "idem-1", "amount", Map.of("currency", "CNY", "minorUnits", 100L))
+            Map.of("segmentBookingId", "sb-1", "journeyOrderId", "ord-1", "segmentRef", "seg-1", "travelerRef", "trav-1", "idempotencyKey", "idem-1")
         );
     }
 

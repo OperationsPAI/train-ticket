@@ -1,8 +1,10 @@
 package com.trainticket.payment.application;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
 import java.util.Objects;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record EventEnvelope(
     String eventId,
     String eventType,
@@ -18,7 +20,9 @@ public record EventEnvelope(
         eventType = requireText(eventType, "eventType");
         Objects.requireNonNull(occurredAt, "occurredAt is required");
         correlationId = requireText(correlationId, "correlationId");
-        causationId = requireText(causationId, "causationId");
+        if (causationId != null && causationId.isBlank()) {
+            throw new IllegalArgumentException("causationId must not be blank when present");
+        }
         producer = requireText(producer, "producer");
         if (schemaVersion < 1) {
             throw new IllegalArgumentException("schemaVersion must be positive");
