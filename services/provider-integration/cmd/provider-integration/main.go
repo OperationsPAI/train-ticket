@@ -1,23 +1,53 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
+	"github.com/trainticket/greenfield/services/provider-integration/internal/adapters/messaging"
+	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
+	"github.com/trainticket/greenfield/services/provider-integration/internal/config"
 	apphttp "github.com/trainticket/greenfield/services/provider-integration/internal/http"
 )
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	cfg := config.FromEnv()
+	ctx := context.Background()
+	publisher, err := messaging.NewRedisPublisher(cfg.RedisURL)
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer publisher.Close()
+
+	subscriber, err := messaging.NewRedisSubscriber(cfg.RedisURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer subscriber.Close()
+	consumedEvents := application.NewInMemoryConsumedEventLog()
+	consumerName := "provider-integration-" + hostname()
+	if err := subscriber.Subscribe(ctx, nil, messaging.ProviderIntegrationGroup, consumerName, application.DeduplicatingHandler(consumedEvents, handleInboundEvent)); err != nil {
+		log.Fatal(err)
+	}
+
+	service := application.NewInMemoryReservationService(publisher)
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{
-		Address: ":" + port,
-		Handler: apphttp.Router(),
+		Address: ":" + cfg.HTTPPort,
+		Handler: apphttp.RouterWithDependencies(service, application.NewIdempotencyStore()),
 	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func handleInboundEvent(context.Context, application.EventEnvelope) error { return nil }
+
+func hostname() string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return "instance"
+	}
+	return name
 }
