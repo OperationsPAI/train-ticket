@@ -9,17 +9,9 @@ import {
   type PriceSnapshot,
   type QuoteOfferCommand,
   type RiskDisclosure,
-  type TravelerType,
 } from "../domain.js";
 import { type EventEnvelope, type EventPublisher } from "../ports/messaging.js";
-
-export type QuoteOfferRequest = Readonly<{
-  accountId: string;
-  channelId: string;
-  itineraryRef: string;
-  travelerRefs: readonly string[];
-  quoteRequestId?: string;
-}>;
+import { type QuoteOfferRequest } from "./upstream-state.js";
 
 export type ApiMoney = Readonly<{
   currency: string;
@@ -84,17 +76,17 @@ export class InMemoryOfferRepository implements OfferRepository {
   }
 }
 
-type QuoteCommandFactory = (request: QuoteOfferRequest) => QuoteOfferCommand;
+type QuoteCommandFactory = (request: QuoteOfferRequest) => QuoteOfferCommand | Promise<QuoteOfferCommand>;
 
 export class OfferApplicationService {
   constructor(
     private readonly repository: OfferRepository,
-    private readonly publisher?: EventPublisher,
-    private readonly quoteCommandFactory: QuoteCommandFactory = toQuoteOfferCommand,
+    private readonly publisher: EventPublisher | undefined,
+    private readonly quoteCommandFactory: QuoteCommandFactory,
   ) {}
 
   async quoteOffer(request: QuoteOfferRequest, correlationId: string): Promise<QuoteOfferResult> {
-    const quoted = Offer.quote(this.quoteCommandFactory(request));
+    const quoted = Offer.quote(await this.quoteCommandFactory(request));
     const snapshot = quoted.offer.toSnapshot();
     await this.repository.save(snapshot);
 
@@ -119,97 +111,6 @@ export function isDomainError(error: unknown): error is DomainError {
 
 export function moneyToApi(money: Money): ApiMoney {
   return { currency: money.currency, minorUnits: money.amountMinor };
-}
-
-function moneyFromApi(money: ApiMoney): Money {
-  return { currency: money.currency, amountMinor: money.minorUnits };
-}
-
-function toQuoteOfferCommand(request: QuoteOfferRequest): QuoteOfferCommand {
-  const quotedAt = new Date();
-  const expiresAt = new Date(quotedAt.getTime() + 10 * 60 * 1000);
-  const upstreamExpiresAt = new Date(quotedAt.getTime() + 15 * 60 * 1000);
-  const travelerSetHash = [...request.travelerRefs].sort().join(",");
-  const offerId = `off-${uuidV7()}`;
-  const currency = "CNY";
-  const itemAmount = 10000;
-  const total = moneyFromApi({ currency, minorUnits: itemAmount });
-  const fareQuoteRef = `fq-${uuidV7()}`;
-  const ruleSnapshotRef = `rule-${uuidV7()}`;
-  const priceSnapshotRef = `ps-${uuidV7()}`;
-  const availabilitySnapshotRef = `av-${uuidV7()}`;
-
-  const item: OfferItem = {
-    offerItemId: `ofi-${uuidV7()}`,
-    mode: "train",
-    segmentRef: `${request.itineraryRef}:segment:1`,
-    itemPrice: total,
-    availabilitySnapshot: {
-      snapshotId: availabilitySnapshotRef,
-      snapshotVersion: "capacity-v1",
-      sourceContext: "CapacityAvailability",
-      capturedAt: quotedAt,
-      expiresAt: upstreamExpiresAt,
-      sellable: true,
-      status: "AVAILABLE",
-      confidence: "confirmed-snapshot",
-    },
-    fareSnapshot: {
-      fareQuoteRef,
-      ruleSnapshotRef,
-      pricingVersion: "pricing-v1",
-      ruleVersion: "rule-v1",
-      sourceContext: "FarePricing",
-      capturedAt: quotedAt,
-      expiresAt: upstreamExpiresAt,
-    },
-  };
-
-  const priceSnapshot: PriceSnapshot = {
-    snapshotId: priceSnapshotRef,
-    fareQuoteRef,
-    capturedAt: quotedAt,
-    expiresAt: upstreamExpiresAt,
-    guaranteeLevel: "FixedUntilExpiry",
-    currency,
-    subtotal: total,
-    taxes: [],
-    fees: [],
-    discounts: [],
-    total,
-  };
-
-  return {
-    offerId,
-    quoteRequestId: request.quoteRequestId ?? `cmd-${uuidV7()}`,
-    accountId: request.accountId,
-    channelId: request.channelId,
-    quotedAt,
-    validityWindow: {
-      startsAt: quotedAt,
-      expiresAt,
-    },
-    itinerary: {
-      itineraryId: request.itineraryRef,
-      itineraryVersion: "v1",
-      sourceContext: "TripPlanning",
-      segmentRefs: [item.segmentRef ?? request.itineraryRef],
-    },
-    passengerMix: {
-      travelerSetHash,
-      travelers: request.travelerRefs.map((travelerId) => ({
-        travelerId,
-        travelerType: inferTravelerType(travelerId),
-      })),
-    },
-    items: [item],
-    priceSnapshot,
-    riskDisclosures: [],
-  };
-}
-
-function inferTravelerType(_travelerId: string): TravelerType {
-  return "ADULT";
 }
 
 function toQuoteResponse(
@@ -365,21 +266,4 @@ function priceGuaranteeToApi(level: PriceGuaranteeLevel): ApiPriceGuaranteeLevel
 
 function toUtcIso(value: Date): string {
   return value.toISOString();
-}
-
-function uuidV7(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  const timestamp = BigInt(Date.now());
-
-  bytes[0] = Number((timestamp >> 40n) & 0xffn);
-  bytes[1] = Number((timestamp >> 32n) & 0xffn);
-  bytes[2] = Number((timestamp >> 24n) & 0xffn);
-  bytes[3] = Number((timestamp >> 16n) & 0xffn);
-  bytes[4] = Number((timestamp >> 8n) & 0xffn);
-  bytes[5] = Number(timestamp & 0xffn);
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

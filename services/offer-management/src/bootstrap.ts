@@ -1,10 +1,14 @@
+import { createRedisMessagingAdapters } from "./adapters/messaging/redis.js";
+import { CONSUMER_GROUP, SUBSCRIBED_STREAMS, consumerName } from "./adapters/messaging/stream-config.js";
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
+import { createUpstreamEventHandler, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
 
 export type BootstrapOptions = Readonly<{
   host?: string;
   port?: number;
   instrumentation?: InstrumentationHooks;
   redisUrl?: string;
+  instanceId?: string;
 }>;
 
 export function runtimeHost(options: Pick<BootstrapOptions, "host"> = {}): string {
@@ -28,7 +32,29 @@ export function runtimeRedisUrl(options: Pick<BootstrapOptions, "redisUrl"> = {}
 }
 
 export async function bootstrap(options: BootstrapOptions = {}) {
-  const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv());
+  const messaging = await createRedisMessagingAdapters(runtimeRedisUrl(options));
+  const upstreamRepository = new InMemoryUpstreamStateRepository();
+  const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv(), {
+    publisher: messaging.publisher,
+    upstreamRepository,
+  });
+
+  const abortController = new AbortController();
+  const subscription = messaging.subscriber.subscribe(
+    SUBSCRIBED_STREAMS,
+    CONSUMER_GROUP,
+    consumerName(options.instanceId ?? process.env.HOSTNAME),
+    createUpstreamEventHandler(upstreamRepository),
+    abortController.signal,
+  );
+  subscription.catch((error: unknown) => app.log.error({ err: error }, "offer-management event subscriber stopped"));
+
+  app.addHook("onClose", async () => {
+    abortController.abort();
+    messaging.subscriber.stop();
+    await messaging.close();
+  });
+
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;
 }
