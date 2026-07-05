@@ -247,7 +247,7 @@ pub mod redis_publisher {
 #[cfg(feature = "redis-impl")]
 pub mod redis_subscriber {
     use super::*;
-    use redis::{streams::StreamReadReply, FromRedisValue, RedisResult, Value};
+    use redis::{FromRedisValue, RedisResult, Value, streams::StreamReadReply};
     use std::sync::Arc;
     use tokio::sync::Mutex as TokioMutex;
 
@@ -326,7 +326,10 @@ pub mod redis_subscriber {
                 )
                 .await
                 {
-                    eprintln!("capacity-availability subscriber XAUTOCLAIM recovery failed: {}", err.0);
+                    eprintln!(
+                        "capacity-availability subscriber XAUTOCLAIM recovery failed: {}",
+                        err.0
+                    );
                 }
 
                 let read_result = {
@@ -357,11 +360,17 @@ pub mod redis_subscriber {
                         )
                         .await
                         {
-                            eprintln!("capacity-availability subscriber dispatch failed: {}", err.0);
+                            eprintln!(
+                                "capacity-availability subscriber dispatch failed: {}",
+                                err.0
+                            );
                         }
                     }
                     Err(err) => {
-                        eprintln!("capacity-availability subscriber XREADGROUP failed: {}", err);
+                        eprintln!(
+                            "capacity-availability subscriber XREADGROUP failed: {}",
+                            err
+                        );
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
@@ -393,7 +402,8 @@ pub mod redis_subscriber {
                 };
                 let reply = StreamReadReply::from_redis_value(&claimed)
                     .map_err(|e| SubscribeFailed(format!("XAUTOCLAIM parse failed: {}", e)))?;
-                Self::dispatch_reply(connection.clone(), state.clone(), reply, group, handler).await?;
+                Self::dispatch_reply(connection.clone(), state.clone(), reply, group, handler)
+                    .await?;
             }
             Ok(())
         }
@@ -408,34 +418,82 @@ pub mod redis_subscriber {
             for stream_key in reply.keys {
                 for stream_id in stream_key.ids {
                     let Some(raw_envelope) = stream_id.map.get("envelope") else {
-                        Self::ack(connection.clone(), &stream_key.key, group, &stream_id.id).await?;
+                        Self::ack(connection.clone(), &stream_key.key, group, &stream_id.id)
+                            .await?;
                         continue;
                     };
                     let envelope_json: String = redis::from_redis_value(raw_envelope)
                         .map_err(|e| SubscribeFailed(format!("invalid envelope field: {}", e)))?;
                     let envelope: WireEnvelope = serde_json::from_str(&envelope_json)
                         .map_err(|e| SubscribeFailed(format!("invalid envelope JSON: {}", e)))?;
+                    let delivery_attempts = Self::delivery_attempts(
+                        connection.clone(),
+                        &stream_key.key,
+                        group,
+                        &stream_id.id,
+                    )
+                    .await?;
                     let received = ReceivedEvent {
                         entry_id: stream_id.id.clone(),
                         stream: stream_key.key.clone(),
                         envelope,
-                        delivery_attempts: 1,
+                        delivery_attempts,
                     };
                     match state.process_received(&received, handler) {
                         SubscriberAction::Ack => {
-                            Self::ack(connection.clone(), &received.stream, group, &received.entry_id)
-                                .await?;
+                            Self::ack(
+                                connection.clone(),
+                                &received.stream,
+                                group,
+                                &received.entry_id,
+                            )
+                            .await?;
                         }
                         SubscriberAction::LeavePending => {}
                         SubscriberAction::DeadLetterAndAck => {
-                            Self::dead_letter(connection.clone(), &received.stream, &envelope_json).await?;
-                            Self::ack(connection.clone(), &received.stream, group, &received.entry_id)
+                            Self::dead_letter(connection.clone(), &received.stream, &envelope_json)
                                 .await?;
+                            Self::ack(
+                                connection.clone(),
+                                &received.stream,
+                                group,
+                                &received.entry_id,
+                            )
+                            .await?;
                         }
                     }
                 }
             }
             Ok(())
+        }
+
+        async fn delivery_attempts(
+            connection: Arc<TokioMutex<redis::aio::ConnectionManager>>,
+            stream: &str,
+            group: &str,
+            entry_id: &str,
+        ) -> Result<u64, SubscribeFailed> {
+            let pending = {
+                let mut conn = connection.lock().await;
+                redis::cmd("XPENDING")
+                    .arg(stream)
+                    .arg(group)
+                    .arg(entry_id)
+                    .arg(entry_id)
+                    .arg(1)
+                    .query_async::<_, redis::streams::StreamPendingCountReply>(&mut *conn)
+                    .await
+                    .map_err(|e| {
+                        SubscribeFailed(format!("XPENDING delivery count failed: {}", e))
+                    })?
+            };
+
+            Ok(pending
+                .ids
+                .iter()
+                .find(|pending_id| pending_id.id == entry_id)
+                .map(|pending_id| pending_id.times_delivered as u64)
+                .unwrap_or(1))
         }
 
         async fn ack(

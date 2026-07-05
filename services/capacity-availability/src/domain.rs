@@ -46,21 +46,59 @@ impl std::fmt::Display for DomainError {
             DomainError::DuplicateCapacityUnit(u) => write!(f, "duplicate capacity unit: {}", u),
             DomainError::UnknownCapacityUnit(u) => write!(f, "unknown capacity unit: {}", u),
             DomainError::UnknownHold(id) => write!(f, "unknown hold: {}", id),
-            DomainError::IdempotencyConflict { idempotency_key, existing_hold_id } => {
-                write!(f, "idempotency conflict: key={} existing_hold={}", idempotency_key, existing_hold_id)
+            DomainError::IdempotencyConflict {
+                idempotency_key,
+                existing_hold_id,
+            } => {
+                write!(
+                    f,
+                    "idempotency conflict: key={} existing_hold={}",
+                    idempotency_key, existing_hold_id
+                )
             }
-            DomainError::HoldConflict { requested_hold_id, conflicting_hold_id, capacity_unit_ref, interval } => {
-                write!(f, "hold conflict: requested={} conflicts with {} on unit {} interval {:?}",
-                    requested_hold_id, conflicting_hold_id, capacity_unit_ref, interval)
+            DomainError::HoldConflict {
+                requested_hold_id,
+                conflicting_hold_id,
+                capacity_unit_ref,
+                interval,
+            } => {
+                write!(
+                    f,
+                    "hold conflict: requested={} conflicts with {} on unit {} interval {:?}",
+                    requested_hold_id, conflicting_hold_id, capacity_unit_ref, interval
+                )
             }
-            DomainError::InvalidHoldState { hold_id, state, command } => {
-                write!(f, "invalid hold state for {}: {:?} cannot {}", hold_id, state, command)
+            DomainError::InvalidHoldState {
+                hold_id,
+                state,
+                command,
+            } => {
+                write!(
+                    f,
+                    "invalid hold state for {}: {:?} cannot {}",
+                    hold_id, state, command
+                )
             }
-            DomainError::HoldExpiredBeforeRequest { requested_at, expires_at } => {
-                write!(f, "hold expired before request: requested_at={} expires_at={}", requested_at, expires_at)
+            DomainError::HoldExpiredBeforeRequest {
+                requested_at,
+                expires_at,
+            } => {
+                write!(
+                    f,
+                    "hold expired before request: requested_at={} expires_at={}",
+                    requested_at, expires_at
+                )
             }
-            DomainError::HoldNotExpired { hold_id, now, expires_at } => {
-                write!(f, "hold {} not expired: now={} expires_at={}", hold_id, now, expires_at)
+            DomainError::HoldNotExpired {
+                hold_id,
+                now,
+                expires_at,
+            } => {
+                write!(
+                    f,
+                    "hold {} not expired: now={} expires_at={}",
+                    hold_id, now, expires_at
+                )
             }
         }
     }
@@ -849,7 +887,6 @@ pub enum AvailabilityExplanation {
     NoUnitsAvailable,
 }
 
-
 // ---------------------------------------------------------------------------
 // Timestamp conversion helpers -- UnixMillis <-> RFC3339 UTC
 // ---------------------------------------------------------------------------
@@ -871,7 +908,9 @@ pub fn rfc3339_to_unix_millis(s: &str) -> Option<u64> {
     let s = s.strip_suffix('Z')?;
     let (date_part, time_part) = s.split_once('T')?;
     let parts: Vec<&str> = date_part.split('-').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let year: u64 = parts[0].parse().ok()?;
     let month: u64 = parts[1].parse().ok()?;
     let day: u64 = parts[2].parse().ok()?;
@@ -884,7 +923,9 @@ pub fn rfc3339_to_unix_millis(s: &str) -> Option<u64> {
     };
 
     let time_parts: Vec<&str> = hms.split(':').collect();
-    if time_parts.len() != 3 { return None; }
+    if time_parts.len() != 3 {
+        return None;
+    }
     let hour: u64 = time_parts[0].parse().ok()?;
     let min: u64 = time_parts[1].parse().ok()?;
     let sec: u64 = time_parts[2].parse().ok()?;
@@ -904,7 +945,9 @@ fn epoch_seconds_to_ymdhms(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
     let mut d = days as i64;
     loop {
         let days_in_year = if is_leap_year(y as u64) { 366 } else { 365 };
-        if d < days_in_year { break; }
+        if d < days_in_year {
+            break;
+        }
         d -= days_in_year;
         y += 1;
     }
@@ -913,7 +956,9 @@ fn epoch_seconds_to_ymdhms(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
     let mut mo = 1u32;
     for &md in MONTH_DAYS.iter() {
         let md_adj = if mo == 2 && leap { md + 1 } else { md };
-        if d < md_adj { break; }
+        if d < md_adj {
+            break;
+        }
         d -= md_adj;
         mo += 1;
     }
@@ -925,7 +970,9 @@ fn is_leap_year(y: u64) -> bool {
 }
 
 fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
-    if month < 1 || month > 12 || day < 1 || day > 31 { return None; }
+    if month < 1 || month > 12 || day < 1 || day > 31 {
+        return None;
+    }
     // Days from 1970-01-01 using a simple cumulative algorithm
     let mut y = 1970i64;
     let target_y = year as i64;
@@ -954,8 +1001,6 @@ fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
 
     Some(total_days as u64)
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -1113,14 +1158,16 @@ mod tests {
         pool.request_hold(request("hold-1", "01A", 1, 4, "idem-1", 10, 70), 10)
             .unwrap();
 
-        let snapshot = pool.availability_snapshot("avs-test-1", StationInterval::new(2, 3).unwrap(), 20, 30);
+        let snapshot =
+            pool.availability_snapshot("avs-test-1", StationInterval::new(2, 3).unwrap(), 20, 30);
         assert_eq!(snapshot.total_units, 2);
         assert_eq!(snapshot.available_count, 1);
         assert_eq!(snapshot.available_units, vec![unit("01B")]);
         assert_eq!(snapshot.status, AvailabilityStatus::Limited);
         assert_eq!(pool.holds.len(), 1, "snapshot must not create a hold");
 
-        let after_expiry = pool.availability_snapshot("avs-test-2", StationInterval::new(2, 3).unwrap(), 70, 80);
+        let after_expiry =
+            pool.availability_snapshot("avs-test-2", StationInterval::new(2, 3).unwrap(), 70, 80);
         assert_eq!(after_expiry.available_count, 2);
     }
 
@@ -1130,11 +1177,22 @@ mod tests {
         let ms: u64 = 1800000000000;
         let rfc = unix_millis_to_rfc3339(ms);
         assert!(rfc.ends_with('Z'), "RFC3339 should end with Z: {}", rfc);
-        assert!(rfc.contains("2027-01-") || rfc.contains("2026-"), "unexpected year in {}", rfc);
+        assert!(
+            rfc.contains("2027-01-") || rfc.contains("2026-"),
+            "unexpected year in {}",
+            rfc
+        );
 
         // Round-trip
         let parsed = rfc3339_to_unix_millis(&rfc);
-        assert_eq!(parsed, Some(ms), "round-trip failed: {} -> {} -> {:?}", ms, rfc, parsed);
+        assert_eq!(
+            parsed,
+            Some(ms),
+            "round-trip failed: {} -> {} -> {:?}",
+            ms,
+            rfc,
+            parsed
+        );
     }
 
     #[test]
@@ -1155,5 +1213,4 @@ mod tests {
         assert_eq!(rfc3339_to_unix_millis("not-a-date"), None);
         assert_eq!(rfc3339_to_unix_millis("2026-13-01T00:00:00Z"), None);
     }
-
 }

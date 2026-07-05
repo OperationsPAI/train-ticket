@@ -2,11 +2,13 @@
 // HTTP API layer per docs/08-contracts/api/capacity-availability.md
 // ---------------------------------------------------------------------------
 
-use crate::application::{AppError, AvailabilitySnapshotResponse, CapacityService, HoldCapacityRequest};
+use crate::application::{
+    AppError, AvailabilitySnapshotResponse, CapacityService, HoldCapacityRequest,
+};
 
 use axum::{
     Json, Router,
-    extract::{rejection::JsonRejection, Extension, Query},
+    extract::{Extension, Query, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -19,8 +21,14 @@ pub fn router(service: Arc<CapacityService>) -> Router {
     Router::new()
         .route("/api/v1/availability-snapshots", get(query_availability))
         .route("/api/v1/capacity-holds", post(hold_capacity))
-        .route("/api/v1/capacity-holds/{hold_id}/confirm", post(confirm_hold))
-        .route("/api/v1/capacity-holds/{hold_id}/release", post(release_hold))
+        .route(
+            "/api/v1/capacity-holds/{hold_id}/confirm",
+            post(confirm_hold),
+        )
+        .route(
+            "/api/v1/capacity-holds/{hold_id}/release",
+            post(release_hold),
+        )
         .route("/api/v1/capacity-holds/{hold_id}", get(get_hold))
         .layer(Extension(service))
 }
@@ -68,7 +76,8 @@ async fn query_availability(
     let correlation_id = get_correlation_id(&headers);
     let ss_ref = query.scheduled_service_ref.unwrap_or_default();
     let seg_ref = query.segment_ref.unwrap_or_default();
-    let result = service.query_availability(&ss_ref, &seg_ref)
+    let result = service
+        .query_availability(&ss_ref, &seg_ref)
         .map_err(|e| AppErrorResponse(e, correlation_id))?;
     Ok(Json(to_availability_json(result)))
 }
@@ -82,11 +91,15 @@ fn to_availability_json(r: AvailabilitySnapshotResponse) -> AvailabilitySnapshot
         captured_at: r.captured_at,
         valid_until: r.valid_until,
         sellable: r.sellable,
-        remaining_by_class: r.remaining_by_class.into_iter().map(|c| RemainingByClassJson {
-            class_ref: c.class_ref,
-            total: c.total,
-            available: c.available,
-        }).collect(),
+        remaining_by_class: r
+            .remaining_by_class
+            .into_iter()
+            .map(|c| RemainingByClassJson {
+                class_ref: c.class_ref,
+                total: c.total,
+                available: c.available,
+            })
+            .collect(),
         total_units: r.total_units,
         available_count: r.available_count,
         status: r.status,
@@ -138,7 +151,8 @@ async fn hold_capacity(
         segment_booking_id: body.segment_booking_id,
     };
 
-    let result = service.hold_capacity(req, &idempotency_key, &correlation_id)
+    let result = service
+        .hold_capacity(req, &idempotency_key, &correlation_id)
         .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
     Ok((
         StatusCode::CREATED,
@@ -169,7 +183,8 @@ async fn confirm_hold(
 ) -> Result<Json<ConfirmHoldResponseJson>, AppErrorResponse> {
     let correlation_id = get_correlation_id(&headers);
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
-    let result = service.confirm_hold(&hold_id, &idempotency_key, &correlation_id)
+    let result = service
+        .confirm_hold(&hold_id, &idempotency_key, &correlation_id)
         .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
     Ok(Json(ConfirmHoldResponseJson {
         hold_id: result.hold_id,
@@ -195,7 +210,8 @@ async fn release_hold(
 ) -> Result<Json<ReleaseHoldResponseJson>, AppErrorResponse> {
     let correlation_id = get_correlation_id(&headers);
     let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
-    let result = service.release_hold(&hold_id, &idempotency_key, &correlation_id)
+    let result = service
+        .release_hold(&hold_id, &idempotency_key, &correlation_id)
         .map_err(|e| AppErrorResponse(e, correlation_id.clone()))?;
     Ok(Json(ReleaseHoldResponseJson {
         hold_id: result.hold_id,
@@ -225,7 +241,8 @@ async fn get_hold(
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<GetHoldResponseJson>, AppErrorResponse> {
     let correlation_id = get_correlation_id(&headers);
-    let result = service.get_hold(&hold_id)
+    let result = service
+        .get_hold(&hold_id)
         .map_err(|e| AppErrorResponse(e, correlation_id))?;
     Ok(Json(GetHoldResponseJson {
         hold_id: result.hold_id,
@@ -246,7 +263,8 @@ pub struct AppErrorResponse(pub AppError, pub String); // (error, correlation_id
 
 impl IntoResponse for AppErrorResponse {
     fn into_response(self) -> axum::response::Response {
-        let status_code = StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status_code =
+            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let body = json!({
             "code": self.0.code(),
             "message": self.0.message(),
@@ -289,7 +307,10 @@ fn is_uuid_v7(s: &str) -> bool {
     true
 }
 
-fn get_idempotency_key(headers: &axum::http::HeaderMap, correlation_id: &str) -> Result<String, AppErrorResponse> {
+fn get_idempotency_key(
+    headers: &axum::http::HeaderMap,
+    correlation_id: &str,
+) -> Result<String, AppErrorResponse> {
     let key = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -297,7 +318,9 @@ fn get_idempotency_key(headers: &axum::http::HeaderMap, correlation_id: &str) ->
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             AppErrorResponse(
-                AppError::ValidationFailed("Idempotency-Key header is required on state-changing POST".into()),
+                AppError::ValidationFailed(
+                    "Idempotency-Key header is required on state-changing POST".into(),
+                ),
                 correlation_id.to_string(),
             )
         })?;
