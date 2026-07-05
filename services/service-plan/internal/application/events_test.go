@@ -104,7 +104,9 @@ func TestEnvelopeIDShapesAndCausationIndependentOfIdempotencyKey(t *testing.T) {
 	envelope := publisher.envelopes[0]
 	assertPrefixedUUID(t, envelope.EventID, "evt")
 	assertPrefixedUUID(t, envelope.CorrelationID, "corr")
-	assertPrefixedUUID(t, envelope.CausationID, "cmd")
+	if envelope.CausationID != "" {
+		assertPrefixedUUID(t, envelope.CausationID, "cmd")
+	}
 	if envelope.CausationID == "0194f2e0-7b3e-7610-0284-5c26e8b0c102" || envelope.CausationID == "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c102" {
 		t.Fatalf("causationId must not be derived from idempotency key")
 	}

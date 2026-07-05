@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
@@ -30,16 +30,7 @@ var (
 	ErrFatalHandler        = errors.New("fatal handler error")
 )
 
-type EventEnvelope struct {
-	EventID       string          `json:"eventId"`
-	EventType     string          `json:"eventType"`
-	OccurredAt    time.Time       `json:"occurredAt"`
-	CorrelationID string          `json:"correlationId"`
-	CausationID   string          `json:"causationId"`
-	Producer      string          `json:"producer"`
-	SchemaVersion int             `json:"schemaVersion"`
-	Payload       json.RawMessage `json:"payload"`
-}
+type EventEnvelope = kitmsg.EventEnvelope
 
 type EventPublisher interface {
 	Publish(ctx context.Context, envelope EventEnvelope) error
@@ -184,15 +175,15 @@ func (s *Service) GetFulfillmentRecord(ctx context.Context, id domain.Fulfillmen
 
 func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvelope) error {
 	if strings.TrimSpace(envelope.EventID) == "" {
-		return fmt.Errorf("%w: eventId is required", ErrFatalHandler)
+		return kitmsg.FatalHandlerError(fmt.Errorf("eventId is required"))
 	}
 	if envelope.EventType == "" || envelope.Producer == "" {
-		return fmt.Errorf("%w: invalid envelope", ErrFatalHandler)
+		return kitmsg.FatalHandlerError(fmt.Errorf("invalid envelope"))
 	}
 	if s.consumed != nil {
 		claimed, err := s.consumed.Claim(ctx, envelope.EventID)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrTransientHandler, err)
+			return kitmsg.TransientHandlerError(err)
 		}
 		if !claimed {
 			return nil
@@ -230,18 +221,11 @@ func (s *Service) WrapDomainEvent(event domain.DomainEvent, meta CommandMetadata
 	if err != nil {
 		return EventEnvelope{}, err
 	}
-	correlationID := ids.CanonicalCorrelationID(meta.CorrelationID)
-	causationID := ids.CanonicalCausationID(meta.CausationID)
-	return EventEnvelope{
-		EventID:       ids.NewEventID(),
-		EventType:     event.EventType(),
-		OccurredAt:    event.OccurredAt().UTC(),
-		CorrelationID: correlationID,
-		CausationID:   causationID,
-		Producer:      ProducerName,
-		SchemaVersion: SchemaVersion,
-		Payload:       payload,
-	}, nil
+	options := []kitmsg.EnvelopeOptions{{Now: event.OccurredAt().UTC()}}
+	if strings.TrimSpace(meta.CausationID) != "" {
+		options[0].CausationID = meta.CausationID
+	}
+	return kitmsg.NewEventEnvelope(event.EventType(), ProducerName, meta.CorrelationID, payload, options...)
 }
 
 func validateVerifyBoarding(cmd VerifyBoardingCommand) error {
@@ -349,32 +333,6 @@ func MarshalDomainEventPayload(event domain.DomainEvent) (json.RawMessage, error
 	}
 	bytes, err := json.Marshal(payload)
 	return bytes, err
-}
-
-func normalizePrefixed(value, prefix string, idGen IDGenerator) string {
-	value = strings.TrimSpace(value)
-	value = strings.TrimPrefix(value, prefix+"-")
-	if isUUIDLike(value) {
-		return prefix + "-" + value
-	}
-	return idGen(prefix)
-}
-
-func normalizeCausationID(value string, idGen IDGenerator) string {
-	value = strings.TrimSpace(value)
-	for _, prefix := range []string{"cmd", "evt"} {
-		unprefixed := strings.TrimPrefix(value, prefix+"-")
-		if isUUIDLike(unprefixed) {
-			return prefix + "-" + unprefixed
-		}
-	}
-	return idGen("cmd")
-}
-
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-func isUUIDLike(value string) bool {
-	return uuidPattern.MatchString(value)
 }
 
 func NewPrefixedID(prefix string) string { return ids.NewPrefixed(prefix) }

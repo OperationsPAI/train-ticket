@@ -33,6 +33,8 @@ type RedisEventBus struct {
 	cfg    RedisConfig
 	wg     sync.WaitGroup
 	dedup  *InMemoryDedupStore
+	mu     sync.Mutex
+	cancel []context.CancelFunc
 }
 
 func NewRedisClient(redisURL string) (*redis.Client, error) {
@@ -69,7 +71,22 @@ func NewRedisEventBusWithClient(client *redis.Client, cfg RedisConfig) *RedisEve
 	}
 	return &RedisEventBus{client: client, cfg: cfg, dedup: NewInMemoryDedupStore()}
 }
+
+func (b *RedisEventBus) Ping(ctx context.Context) error {
+	if b == nil || b.client == nil {
+		return fmt.Errorf("redis client is required")
+	}
+	return b.client.Ping(ctx).Err()
+}
+
 func (b *RedisEventBus) Close() error {
+	b.mu.Lock()
+	cancels := append([]context.CancelFunc(nil), b.cancel...)
+	b.cancel = nil
+	b.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 	b.wg.Wait()
 	if b.client != nil {
 		return b.client.Close()
@@ -128,8 +145,12 @@ func (b *RedisEventBus) Subscribe(ctx context.Context, sub Subscription, handler
 			return err
 		}
 	}
+	runCtx, cancel := context.WithCancel(ctx)
+	b.mu.Lock()
+	b.cancel = append(b.cancel, cancel)
+	b.mu.Unlock()
 	b.wg.Add(1)
-	go func() { defer b.wg.Done(); b.consumeLoop(ctx, streams, sub.Group, sub.ConsumerName, handler) }()
+	go func() { defer b.wg.Done(); b.consumeLoop(runCtx, streams, sub.Group, sub.ConsumerName, handler) }()
 	return nil
 }
 func (b *RedisEventBus) ensureGroup(ctx context.Context, stream, group string) error {
@@ -158,7 +179,10 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 		}
 		result, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: append(append([]string{}, streams...), ids...), Count: 10, Block: b.cfg.ReadBlock}).Result()
 		if err != nil {
-			if errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, redis.Nil) {
 				continue
 			}
 			continue
@@ -192,10 +216,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group string
 		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
 		return
 	}
-	if b.deliveryAttempts(ctx, stream, group, message.ID) >= MaxDeliveryAttempts {
-		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
-		return
-	}
+	attempts := b.deliveryAttempts(ctx, stream, group, message.ID)
 	var envelope EventEnvelope
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.Validate() != nil {
 		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
@@ -206,7 +227,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group string
 		return
 	}
 	if err := handler(ctx, envelope); err != nil {
-		if IsFatalHandlerError(err) {
+		if IsFatalHandlerError(err) || attempts >= MaxDeliveryAttempts {
 			b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
 		}
 		return

@@ -24,7 +24,10 @@ func (p *recordingPublisher) Publish(_ context.Context, envelope EventEnvelope) 
 }
 
 func TestWrapDomainEventProducesContractEnvelope(t *testing.T) {
-	envelope := WrapDomainEvent(domain.SupplierRegisteredEvent{SupplierID: "sup-1", LegalName: "Legal", BrandName: "Brand", Status: domain.SupplierStatusDraft}, "0194f2e0-7b3e-7610-0284-5c26e8b0c444", "0194f2e0-7b3e-7610-0284-5c26e8b0c555")
+	envelope, err := WrapDomainEvent(domain.SupplierRegisteredEvent{SupplierID: "sup-1", LegalName: "Legal", BrandName: "Brand", Status: domain.SupplierStatusDraft}, "0194f2e0-7b3e-7610-0284-5c26e8b0c444", "0194f2e0-7b3e-7610-0284-5c26e8b0c555")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.HasPrefix(envelope.EventID, "evt-") {
 		t.Fatalf("eventId missing prefix: %s", envelope.EventID)
 	}
@@ -37,8 +40,8 @@ func TestWrapDomainEventProducesContractEnvelope(t *testing.T) {
 	if envelope.CausationID != "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555" {
 		t.Fatalf("unexpected causationId: %s", envelope.CausationID)
 	}
-	if _, ok := envelope.Payload.(domain.SupplierRegisteredEvent); !ok {
-		t.Fatalf("unexpected payload type: %T", envelope.Payload)
+	if len(envelope.Payload) == 0 {
+		t.Fatalf("missing payload")
 	}
 }
 

@@ -9,161 +9,97 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"github.com/trainticket/greenfield/platform/go-kit/httpkit"
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 )
 
-type ErrorBody struct {
-	Code          string         `json:"code"`
-	Message       string         `json:"message"`
-	CorrelationID string         `json:"correlationId"`
-	Details       map[string]any `json:"details"`
-}
+type ErrorBody = httpkit.ErrorBody
 
 type Handler struct {
 	service     application.ProviderReservationService
-	idempotency *application.IdempotencyStore
+	idempotency idempotency.Store
 }
 
-func NewHandler(service application.ProviderReservationService, idempotency *application.IdempotencyStore) Handler {
-	return Handler{service: service, idempotency: idempotency}
+func NewHandler(service application.ProviderReservationService, store idempotency.Store) Handler {
+	return Handler{service: service, idempotency: store}
 }
 
 func (h Handler) Register(router gin.IRouter) {
-	router.POST("/api/v1/internal/provider-reservations", h.requestReservation)
-	router.POST("/api/v1/internal/provider-reservations/:segmentBookingId/cancel", h.cancelReservation)
+	idempotent := idempotency.Middleware(h.idempotency)
+	router.POST("/api/v1/internal/provider-reservations", idempotent, h.requestReservation)
+	router.POST("/api/v1/internal/provider-reservations/:segmentBookingId/cancel", idempotent, h.cancelReservation)
 }
 
 func (h Handler) requestReservation(ctx *gin.Context) {
 	var cmd application.RequestProviderReservationCommand
-	body, ok := bindJSON(ctx, &cmd)
-	if !ok {
+	if !bindJSON(ctx, &cmd) {
 		return
 	}
-	idempotencyKey, ok := h.requireIdempotencyKey(ctx)
-	if !ok {
-		return
-	}
+	metadata, _ := idempotency.FromContext(ctx)
 	cmd.CorrelationID = goruntime.CorrelationID(ctx.Request.Context())
-	cmd.IdempotencyKey = idempotencyKey
-	requestHash, _ := application.HashJSON(struct {
-		Method string `json:"method"`
-		Path   string `json:"path"`
-		Body   string `json:"body"`
-	}{ctx.Request.Method, ctx.Request.URL.Path, string(body)})
-	if h.replay(ctx, idempotencyKey, requestHash) {
-		return
-	}
+	cmd.IdempotencyKey = metadata.Key
 	result, err := h.service.RequestReservation(ctx.Request.Context(), cmd)
 	if err != nil {
 		h.writeError(ctx, err)
 		return
 	}
-	h.writeIdempotentJSON(ctx, idempotencyKey, requestHash, stdhttp.StatusAccepted, result)
+	h.writeCachedJSON(ctx, stdhttp.StatusAccepted, result)
 }
 
 func (h Handler) cancelReservation(ctx *gin.Context) {
-	key, ok := h.requireIdempotencyKey(ctx)
-	if !ok {
-		return
-	}
+	metadata, _ := idempotency.FromContext(ctx)
 	cmd := application.CancelProviderReservationCommand{
 		SegmentBookingID: strings.TrimSpace(ctx.Param("segmentBookingId")),
 		CorrelationID:    goruntime.CorrelationID(ctx.Request.Context()),
-		IdempotencyKey:   key,
-	}
-	requestHash, _ := application.HashJSON(struct {
-		Method string `json:"method"`
-		Path   string `json:"path"`
-	}{ctx.Request.Method, ctx.Request.URL.Path})
-	if h.replay(ctx, key, requestHash) {
-		return
+		IdempotencyKey:   metadata.Key,
 	}
 	result, err := h.service.CancelReservation(ctx.Request.Context(), cmd)
 	if err != nil {
 		h.writeError(ctx, err)
 		return
 	}
-	h.writeIdempotentJSON(ctx, key, requestHash, stdhttp.StatusOK, result)
+	h.writeCachedJSON(ctx, stdhttp.StatusOK, result)
 }
 
-func (h Handler) requireIdempotencyKey(ctx *gin.Context) (string, bool) {
-	key := strings.TrimSpace(ctx.GetHeader("Idempotency-Key"))
-	if key == "" {
-		h.writeError(ctx, errors.Join(application.ErrValidation, errors.New("Idempotency-Key header is required")))
-		return "", false
-	}
-	parsed, err := uuid.Parse(key)
-	if err != nil || parsed.Version() != 7 {
-		h.writeError(ctx, errors.Join(application.ErrValidation, errors.New("Idempotency-Key header must be a UUID v7")))
-		return "", false
-	}
-	return parsed.String(), true
-}
-
-func bindJSON(ctx *gin.Context, target any) ([]byte, bool) {
+func bindJSON(ctx *gin.Context, target any) bool {
 	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
-		writeErrorBody(ctx, stdhttp.StatusBadRequest, "VALIDATION_FAILED", "invalid request body")
-		return nil, false
+		httpkit.WriteValidation(ctx, "invalid request body")
+		return false
 	}
 	ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		writeErrorBody(ctx, stdhttp.StatusBadRequest, "VALIDATION_FAILED", "invalid JSON request body")
-		return nil, false
-	}
-	return body, true
-}
-
-func (h Handler) replay(ctx *gin.Context, key, hash string) bool {
-	if strings.TrimSpace(key) == "" {
+		httpkit.WriteValidation(ctx, "invalid JSON request body")
 		return false
 	}
-	status, body, ok, err := h.idempotency.Replay(key, hash)
-	if err != nil {
-		writeErrorBody(ctx, 422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body")
-		return true
-	}
-	if !ok {
-		return false
-	}
-	ctx.Data(status, "application/json", body)
 	return true
 }
 
-func (h Handler) writeIdempotentJSON(ctx *gin.Context, key, requestHash string, status int, body any) {
-	bytes, err := json.Marshal(body)
+func (h Handler) writeCachedJSON(ctx *gin.Context, status int, body any) {
+	metadata, _ := idempotency.FromContext(ctx)
+	bytes, err := idempotency.StoreJSON(h.idempotency, metadata.Key, metadata.Fingerprint, status, body)
 	if err != nil {
 		h.writeError(ctx, application.ErrUnavailable)
 		return
 	}
-	h.idempotency.Save(key, requestHash, status, bytes)
 	ctx.Data(status, "application/json", bytes)
 }
 
 func (h Handler) writeError(ctx *gin.Context, err error) {
 	switch {
 	case errors.Is(err, application.ErrValidation):
-		writeErrorBody(ctx, stdhttp.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		httpkit.WriteError(ctx, stdhttp.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
 	case errors.Is(err, application.ErrNotFound):
-		writeErrorBody(ctx, stdhttp.StatusNotFound, "NOT_FOUND", err.Error())
-	case errors.Is(err, application.ErrIdempotencyConflict):
-		writeErrorBody(ctx, 422, "IDEMPOTENCY_KEY_REUSED", err.Error())
+		httpkit.WriteError(ctx, stdhttp.StatusNotFound, httpkit.NotFound, err.Error(), nil)
+	case errors.Is(err, idempotency.ErrKeyReused):
+		httpkit.WriteIdempotencyReused(ctx)
 	case errors.Is(err, application.ErrDomainRule):
-		writeErrorBody(ctx, 422, "DOMAIN_RULE_VIOLATION", err.Error())
+		httpkit.WriteError(ctx, stdhttp.StatusUnprocessableEntity, httpkit.DomainRuleViolation, err.Error(), nil)
 	default:
-		writeErrorBody(ctx, stdhttp.StatusServiceUnavailable, "UNAVAILABLE", "provider integration is unavailable")
+		httpkit.WriteError(ctx, stdhttp.StatusServiceUnavailable, httpkit.Unavailable, "provider integration is unavailable", nil)
 	}
-}
-
-func writeErrorBody(ctx *gin.Context, status int, code, message string) {
-	ctx.JSON(status, ErrorBody{
-		Code:          code,
-		Message:       message,
-		CorrelationID: goruntime.CorrelationID(ctx.Request.Context()),
-		Details:       map[string]any{},
-	})
 }
