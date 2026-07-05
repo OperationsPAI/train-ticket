@@ -1,4 +1,4 @@
-from .api import create_app
+from .api import create_app, create_production_app
 from .domain import (
     ConsumedEventLog,
     ConsumedEventRecord,
@@ -51,6 +51,7 @@ __all__ = [
     'SERVICE_PROFILE',
     'ServiceProfile',
     'create_app',
+    'create_production_app',
     'define_metric',
     'health',
     'profile',
