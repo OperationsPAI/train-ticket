@@ -27,6 +27,26 @@ pub struct EventEnvelope {
 }
 
 impl EventEnvelope {
+    pub fn try_new(
+        event_type: impl Into<String>,
+        occurred_at: impl Into<String>,
+        correlation_id: impl Into<String>,
+        causation_id: Option<impl Into<String>>,
+        producer: impl Into<String>,
+        payload: Value,
+    ) -> Result<Self, EnvelopeIdError> {
+        Ok(Self {
+            event_id: event_id(),
+            event_type: event_type.into(),
+            schema_version: 1,
+            producer: producer.into(),
+            causation_id: validate_optional_causation_id(causation_id.map(Into::into))?,
+            correlation_id: canonical_correlation_id(correlation_id.into())?,
+            occurred_at: occurred_at.into(),
+            payload,
+        })
+    }
+
     pub fn new(
         event_type: impl Into<String>,
         occurred_at: impl Into<String>,
@@ -35,16 +55,32 @@ impl EventEnvelope {
         producer: impl Into<String>,
         payload: Value,
     ) -> Self {
-        Self {
-            event_id: event_id(),
-            event_type: event_type.into(),
-            schema_version: 1,
-            producer: producer.into(),
-            causation_id: causation_id.map(Into::into),
-            correlation_id: canonical_correlation_id(correlation_id.into()),
-            occurred_at: occurred_at.into(),
+        Self::try_new(
+            event_type,
+            occurred_at,
+            correlation_id,
+            causation_id,
+            producer,
             payload,
-        }
+        )
+        .expect("event envelope identifiers must be corr-/cmd-/evt-prefixed UUID v7 values")
+    }
+
+    pub fn try_canonical(
+        event_type: impl Into<String>,
+        correlation_id: impl Into<String>,
+        causation_id: Option<impl Into<String>>,
+        producer: impl Into<String>,
+        payload: Value,
+    ) -> Result<Self, EnvelopeIdError> {
+        Self::try_new(
+            event_type,
+            now_rfc3339_utc(),
+            correlation_id,
+            causation_id,
+            producer,
+            payload,
+        )
     }
 
     pub fn canonical(
@@ -54,14 +90,8 @@ impl EventEnvelope {
         producer: impl Into<String>,
         payload: Value,
     ) -> Self {
-        Self::new(
-            event_type,
-            now_rfc3339_utc(),
-            correlation_id,
-            causation_id,
-            producer,
-            payload,
-        )
+        Self::try_canonical(event_type, correlation_id, causation_id, producer, payload)
+            .expect("event envelope identifiers must be corr-/cmd-/evt-prefixed UUID v7 values")
     }
 
     pub fn with_occurred_at(mut self, occurred_at: impl Into<String>) -> Self {
@@ -82,12 +112,68 @@ pub fn command_id() -> String {
 pub fn correlation_id() -> String {
     format!("corr-{}", uuid_v7_string())
 }
-pub fn canonical_correlation_id(value: String) -> String {
-    if value.starts_with("corr-") {
-        value
-    } else {
-        format!("corr-{value}")
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopeIdError {
+    message: String,
+}
+
+impl EnvelopeIdError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
     }
+}
+
+impl fmt::Display for EnvelopeIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for EnvelopeIdError {}
+
+pub fn is_uuid_v7(value: &str) -> bool {
+    uuid::Uuid::parse_str(value)
+        .map(|uuid| uuid.get_version_num() == 7)
+        .unwrap_or(false)
+}
+
+pub fn validate_prefixed_uuid_v7(
+    value: &str,
+    prefixes: &[&str],
+) -> Result<String, EnvelopeIdError> {
+    for prefix in prefixes {
+        if let Some(uuid_part) = value.strip_prefix(prefix) {
+            if is_uuid_v7(uuid_part) {
+                return Ok(value.to_string());
+            }
+            return Err(EnvelopeIdError::new(format!(
+                "identifier with prefix {prefix} must contain a UUID v7"
+            )));
+        }
+    }
+    Err(EnvelopeIdError::new(format!(
+        "identifier must start with one of: {}",
+        prefixes.join(", ")
+    )))
+}
+
+pub fn canonical_correlation_id(value: String) -> Result<String, EnvelopeIdError> {
+    validate_prefixed_uuid_v7(&value, &["corr-"])
+}
+
+pub fn valid_or_generated_correlation_id(value: impl Into<String>) -> String {
+    canonical_correlation_id(value.into()).unwrap_or_else(|_| correlation_id())
+}
+
+pub fn validate_causation_id(value: String) -> Result<String, EnvelopeIdError> {
+    validate_prefixed_uuid_v7(&value, &["cmd-", "evt-"])
+}
+
+fn validate_optional_causation_id(
+    value: Option<String>,
+) -> Result<Option<String>, EnvelopeIdError> {
+    value.map(validate_causation_id).transpose()
 }
 pub fn now_rfc3339_utc() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -365,8 +451,9 @@ pub fn stream_for_producer(producer: &str) -> String {
 pub mod redis_runtime {
     use super::*;
     use redis::RedisResult;
+    use std::collections::VecDeque;
     use tokio::sync::mpsc;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{Duration, interval, sleep};
 
     #[derive(Clone)]
     pub struct RedisEventPublisher {
@@ -386,8 +473,9 @@ pub mod redis_runtime {
         }
         pub fn queued(self) -> QueuedRedisEventPublisher {
             let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(drain_loop(self.client, rx));
-            QueuedRedisEventPublisher { tx }
+            let pending = Arc::new(Mutex::new(VecDeque::new()));
+            tokio::spawn(drain_loop(self.client, rx, Arc::clone(&pending)));
+            QueuedRedisEventPublisher { tx, pending }
         }
     }
     #[async_trait]
@@ -400,6 +488,28 @@ pub mod redis_runtime {
     #[derive(Clone)]
     pub struct QueuedRedisEventPublisher {
         tx: mpsc::UnboundedSender<EventEnvelope>,
+        pending: Arc<Mutex<VecDeque<EventEnvelope>>>,
+    }
+    impl QueuedRedisEventPublisher {
+        pub fn pending(&self) -> Vec<EventEnvelope> {
+            self.pending
+                .lock()
+                .expect("redis pending queue lock poisoned")
+                .iter()
+                .cloned()
+                .collect()
+        }
+
+        pub fn pending_count(&self) -> usize {
+            self.pending
+                .lock()
+                .expect("redis pending queue lock poisoned")
+                .len()
+        }
+
+        pub fn health_pending(&self) -> serde_json::Value {
+            serde_json::json!({"pendingEvents": self.pending_count()})
+        }
     }
     impl EventPublisher for QueuedRedisEventPublisher {
         fn publish(&self, envelope: &EventEnvelope) -> Result<(), PublishFailed> {
@@ -408,10 +518,82 @@ pub mod redis_runtime {
                 .map_err(|error| PublishFailed(format!("redis publish queue unavailable: {error}")))
         }
     }
-    async fn drain_loop(client: redis::Client, mut rx: mpsc::UnboundedReceiver<EventEnvelope>) {
-        while let Some(envelope) = rx.recv().await {
-            if let Err(error) = publish_with_retry(&client, envelope).await {
-                eprintln!("redis publisher parked event after retries: {}", error.0);
+    async fn drain_loop(
+        client: redis::Client,
+        mut rx: mpsc::UnboundedReceiver<EventEnvelope>,
+        pending: Arc<Mutex<VecDeque<EventEnvelope>>>,
+    ) {
+        let mut retry_tick = interval(Duration::from_secs(1));
+        let mut receiver_open = true;
+        loop {
+            tokio::select! {
+                maybe_envelope = rx.recv(), if receiver_open => {
+                    match maybe_envelope {
+                        Some(envelope) => park_envelope(&pending, envelope),
+                        None => receiver_open = false,
+                    }
+                }
+                _ = retry_tick.tick() => {}
+            }
+
+            if let Err(error) = try_drain_pending(&client, &pending).await {
+                log::error!("redis publisher parked event after retries: {}", error.0);
+            }
+
+            if !receiver_open && pending_count(&pending) == 0 {
+                break;
+            }
+        }
+    }
+
+    fn park_envelope(pending: &Arc<Mutex<VecDeque<EventEnvelope>>>, envelope: EventEnvelope) {
+        pending
+            .lock()
+            .expect("redis pending queue lock poisoned")
+            .push_back(envelope);
+    }
+
+    fn pending_count(pending: &Arc<Mutex<VecDeque<EventEnvelope>>>) -> usize {
+        pending
+            .lock()
+            .expect("redis pending queue lock poisoned")
+            .len()
+    }
+
+    async fn try_drain_pending(
+        client: &redis::Client,
+        pending: &Arc<Mutex<VecDeque<EventEnvelope>>>,
+    ) -> Result<(), PublishFailed> {
+        try_drain_pending_with(pending, |envelope| publish_with_retry(client, envelope)).await
+    }
+
+    async fn try_drain_pending_with<F, Fut>(
+        pending: &Arc<Mutex<VecDeque<EventEnvelope>>>,
+        mut publish: F,
+    ) -> Result<(), PublishFailed>
+    where
+        F: FnMut(EventEnvelope) -> Fut,
+        Fut: Future<Output = Result<(), PublishFailed>>,
+    {
+        loop {
+            let Some(envelope) = pending
+                .lock()
+                .expect("redis pending queue lock poisoned")
+                .front()
+                .cloned()
+            else {
+                return Ok(());
+            };
+
+            if let Err(error) = publish(envelope.clone()).await {
+                return Err(error);
+            }
+
+            let mut guard = pending.lock().expect("redis pending queue lock poisoned");
+            if guard.front().map(|front| front.event_id.as_str())
+                == Some(envelope.event_id.as_str())
+            {
+                guard.pop_front();
             }
         }
     }
@@ -779,6 +961,45 @@ pub mod redis_runtime {
             ])]);
             assert_eq!(parse_xpending_delivery_count(value), Some(5));
         }
+
+        #[tokio::test]
+        async fn queued_publisher_parks_failed_events_and_drains_after_recovery() {
+            let pending = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+            let envelope = EventEnvelope::canonical(
+                "TestEvent",
+                correlation_id(),
+                Some(command_id()),
+                "rust-kit-test",
+                serde_json::json!({"ok": true}),
+            );
+            park_envelope(&pending, envelope.clone());
+            assert_eq!(pending_count(&pending), 1);
+
+            let first_attempt = try_drain_pending_with(&pending, |_| async {
+                Err(PublishFailed("redis unavailable".into()))
+            })
+            .await;
+            assert!(first_attempt.is_err());
+            assert_eq!(pending_count(&pending), 1);
+
+            let delivered = Arc::new(Mutex::new(Vec::new()));
+            let delivered_for_publish = Arc::clone(&delivered);
+            try_drain_pending_with(&pending, move |event| {
+                let delivered = Arc::clone(&delivered_for_publish);
+                async move {
+                    delivered
+                        .lock()
+                        .expect("delivered lock poisoned")
+                        .push(event);
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(pending_count(&pending), 0);
+            assert_eq!(delivered.lock().expect("delivered lock poisoned").len(), 1);
+        }
     }
 }
 
@@ -789,7 +1010,7 @@ mod tests {
     fn envelope_has_canonical_contract_fields() {
         let envelope = EventEnvelope::canonical(
             "EntitlementIssued",
-            "0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+            correlation_id(),
             Some(command_id()),
             "entitlement-ticketing",
             serde_json::json!({"a":1}),
@@ -800,6 +1021,40 @@ mod tests {
         assert!(envelope.event_id.starts_with("evt-"));
         assert!(envelope.correlation_id.starts_with("corr-"));
         assert!(envelope.occurred_at.ends_with('Z'));
+    }
+
+    #[test]
+    fn envelope_rejects_invalid_correlation_and_causation_ids() {
+        assert!(
+            EventEnvelope::try_canonical(
+                "Test",
+                "corr-not-a-uuid-v7",
+                Some(command_id()),
+                "test",
+                serde_json::json!({}),
+            )
+            .is_err()
+        );
+        assert!(
+            EventEnvelope::try_canonical(
+                "Test",
+                correlation_id(),
+                Some("cmd-not-a-uuid-v7"),
+                "test",
+                serde_json::json!({}),
+            )
+            .is_err()
+        );
+        assert!(
+            EventEnvelope::try_canonical(
+                "Test",
+                correlation_id(),
+                None::<String>,
+                "test",
+                serde_json::json!({}),
+            )
+            .is_ok()
+        );
     }
     #[test]
     fn dedup_records_event_id_only_after_success() {

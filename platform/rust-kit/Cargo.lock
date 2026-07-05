@@ -744,6 +744,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "log",
  "redis",
  "serde",
  "serde_json",
