@@ -11,7 +11,7 @@ import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-@Component
+@Component("postSalesRequestContextFilter")
 public class RequestContextFilter extends OncePerRequestFilter {
     public static final String REQUEST_ID_HEADER = "X-Request-Id";
     public static final String CORRELATION_ID_HEADER = "X-Correlation-Id";
@@ -36,6 +36,8 @@ public class RequestContextFilter extends OncePerRequestFilter {
             request.getMethod(),
             request.getRequestURI()
         );
+        request.setAttribute("requestId", requestId);
+        request.setAttribute("correlationId", correlationId);
 
         response.setHeader(REQUEST_ID_HEADER, requestId);
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
