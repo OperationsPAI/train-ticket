@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Offer Management creates priced offers that combine an itinerary, price
 snapshot, availability snapshot, and rule snapshot into a time-limited
 commercial offer. Offers do not lock inventory.

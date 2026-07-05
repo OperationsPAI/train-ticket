@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Finance & Settlement handles revenue recognition, reconciliation cases, and
 settlement views. It consumes upstream events and produces financial records.
 All commands are **bus-only** — there are no external HTTP endpoints for

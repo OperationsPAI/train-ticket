@@ -8,6 +8,9 @@ Risk & Compliance performs risk assessments for orders, payments, post-sales
 requests, and account actions. It also issues challenges when additional
 verification is needed.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 ## Endpoints
 
 ### Assess Risk
@@ -51,7 +54,16 @@ verification is needed.
 
 ## Bus-only commands
 
-- `IssueChallenge` (internal: triggered by `CHALLENGE` decision)
+The following commands are consumed from the event bus only and have no HTTP
+endpoint:
+
+| Command | Trigger | Description |
+|---|---|---|
+| `IssueChallenge` | Risk system (internal) | Issue a challenge when the risk decision is `CHALLENGE`. |
+| `ResolveChallenge` | Customer / Operator | Resolve a challenge with outcome (PASSED/FAILED). |
+| `BlockSubject` | Risk system (internal) | Block a subject (order, payment, account) from proceeding. |
+| `AllowSubject` | Risk system (internal) | Allow a previously blocked subject to proceed. |
+| `RecordEvidence` | Risk system (internal) | Record risk evidence for audit trail. |
 
 ## Open Issues
 

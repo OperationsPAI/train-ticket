@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Traveler Profile manages traveler identities, travel documents, contact
 information, and eligibility determinations (student, senior, military
 discounts).

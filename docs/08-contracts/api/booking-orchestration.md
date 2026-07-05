@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Booking Orchestration manages the booking saga for a journey order. It
 coordinates segment reservations, capacity holds, payment, and ticketing
 steps. Endpoints in this section are **internal** — they are called by other

@@ -9,6 +9,9 @@ translates internal commands to provider-specific protocols, handles
 idempotency, and normalizes responses. Endpoints in this section are
 **internal** — called by Booking Orchestration, not end-user clients.
 
+
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
 ## Internal Endpoints
 
 ### Request Provider Reservation

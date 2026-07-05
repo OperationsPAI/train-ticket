@@ -7,6 +7,9 @@ Last updated: 2026-07-05
 Admin & Audit provides operator management, manual action requests/approvals,
 and audit trail queries. These endpoints are for internal operations use.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 ## Endpoints
 
 ### Register Operator
@@ -100,6 +103,17 @@ and audit trail queries. These endpoints are for internal operations use.
 **Response (200):** Operator details.
 
 **Error codes:** `NOT_FOUND`
+
+## Bus-only commands
+
+The following commands are consumed from the event bus only and have no HTTP
+endpoint:
+
+| Command | Trigger | Description |
+|---|---|---|
+| `RejectManualAction` | Admin UI | Reject a manual action with reason. |
+| `ExecuteManualAction` | Admin & Audit (internal) | Execute an approved manual action against the target domain. |
+| `RecordAuditEntry` | Any bounded context | Record an audit entry for a business action. |
 
 ## Open Issues
 

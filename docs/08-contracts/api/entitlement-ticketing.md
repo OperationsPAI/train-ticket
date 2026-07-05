@@ -7,6 +7,9 @@ Last updated: 2026-07-05
 Entitlement & Ticketing manages ticket/credential issuance, voiding, and
 status queries. It is the authoritative source for ticket credentials.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 ## Endpoints
 
 ### Issue Entitlement
@@ -78,6 +81,17 @@ status queries. It is the authoritative source for ticket credentials.
 **Query parameters:** `journeyOrderId` (required), `limit`, `offset`
 
 **Response (200):** Paginated response.
+
+## Bus-only commands
+
+The following commands are consumed from the event bus only and have no HTTP
+endpoint:
+
+| Command | Trigger | Description |
+|---|---|---|
+| `SuspendEntitlement` | risk-compliance, post-sales, disruption-recovery | Suspend an entitlement due to risk, dispute, or provider conflict. |
+| `ResumeEntitlement` | risk-compliance, post-sales, customer-service | Resume a suspended entitlement. |
+| `BindProviderCredential` | provider-integration | Bind a provider-issued credential to an entitlement. |
 
 ## Open Issues
 

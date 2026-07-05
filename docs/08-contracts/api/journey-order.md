@@ -4,6 +4,9 @@ Last updated: 2026-07-05
 
 ## Overview
 
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
+timestamps, and Money.
+
 Journey Order is the commercial order aggregate. It manages order creation,
 state transitions (pending payment, confirmed, adjusted), and order queries.
 It references but does not own payments, capacity, or entitlements.

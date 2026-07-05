@@ -8,6 +8,9 @@ Fare & Pricing computes fare quotes, price breakdowns, and adjustment quotes
 (refund/change fees). It is the authoritative source for all monetary
 calculations.
 
+Field shapes reference docs/08-contracts/shared-primitives.md for Money,
+timestamps, and cross-context IDs.
+
 ## Endpoints
 
 ### Compute Fare Quote
@@ -22,7 +25,6 @@ calculations.
 |---|---|---|---|
 | `travelerRefs` | string[] | yes | Traveler references (`tvl-<uuid>`). |
 | `channel` | string | yes | Sales channel. |
-| `currency` | string | yes | ISO-4217 currency code. |
 | `segmentRefs` | string[] | yes | Service segment references. |
 | `fareRuleRefs` | string[] | no | Specific fare rules to apply. |
 
