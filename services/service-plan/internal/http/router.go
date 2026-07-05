@@ -90,7 +90,7 @@ func (h Handler) createScheduledService(ctx *gin.Context) {
 		Status:            request.Status,
 		IdempotencyKey:    ctx.GetHeader("Idempotency-Key"),
 		CorrelationID:     correlationID(ctx),
-		CausationID:       ctx.GetHeader("Idempotency-Key"),
+		CausationID:       ctx.GetHeader("X-Causation-Id"),
 		RequestHash:       hashBody(body),
 	})
 	if replay != nil {
@@ -145,7 +145,7 @@ func (h Handler) createServiceSegment(ctx *gin.Context) {
 		ArrivalTime:         request.ArrivalTime,
 		IdempotencyKey:      ctx.GetHeader("Idempotency-Key"),
 		CorrelationID:       correlationID(ctx),
-		CausationID:         ctx.GetHeader("Idempotency-Key"),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
 		RequestHash:         hashBody(body),
 	})
 	if replay != nil {
@@ -182,6 +182,8 @@ func writeMappedError(ctx *gin.Context, err error) {
 		writeError(ctx, http.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, application.ErrIdempotencyKeyReused):
 		writeError(ctx, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body")
+	case errors.Is(err, application.ErrDomainRule):
+		writeError(ctx, http.StatusUnprocessableEntity, "DOMAIN_RULE_VIOLATION", err.Error())
 	case errors.Is(err, application.ErrPublish):
 		writeError(ctx, http.StatusServiceUnavailable, "UNAVAILABLE", "Service is temporarily unavailable")
 	default:
