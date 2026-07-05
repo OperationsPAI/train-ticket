@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, Request
 
+from fare_pricing.application.idempotency import IdempotencyRecord, request_fingerprint
+from fare_pricing.application.service import (
+    FarePricingService,
+    QuoteNotFoundError,
+    RuleSetNotFoundError,
+)
 from fare_pricing.domain import (
     AdjustmentQuote,
     AssessmentPurpose,
@@ -16,38 +22,22 @@ from fare_pricing.domain import (
     PriceComponent,
     PricingError,
     QuoteStatus,
-    RuleSetStatus,
     RuleSnapshot,
 )
-from fare_pricing.application.service import (
-    FarePricingService,
-    QuoteNotFoundError,
-    AdjustmentQuoteNotFoundError,
-    RuleSetNotFoundError,
-)
 
-from .schemas import (
-    AdjustmentQuoteRequest,
-    FareQuoteRequest,
-)
+from .errors import ApiError
+from .schemas import AdjustmentQuoteRequest, FareQuoteRequest
 
 router = APIRouter(prefix="/api/v1", tags=["fare-pricing"])
 
 
 def _money_to_schema(m: Money) -> dict[str, Any]:
-    """Convert domain Money to {currency, minorUnits}."""
     minor_units = int(m.amount * Decimal("100"))
-    return {
-        "currency": m.currency,
-        "minorUnits": minor_units,
-    }
+    return {"currency": m.currency, "minorUnits": minor_units}
 
 
 def _explanation_to_schema(explanation: Any) -> dict[str, Any]:
-    return {
-        "code": explanation.code,
-        "parameters": dict(explanation.as_mapping()),
-    }
+    return {"code": explanation.code, "parameters": dict(explanation.as_mapping())}
 
 
 def _component_to_schema(c: PriceComponent) -> dict[str, Any]:
@@ -86,43 +76,37 @@ def _timestamp_str(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
-def _make_error(code: str, message: str, correlation_id: str, status_code: int = 400) -> HTTPException:
-    return HTTPException(
-        status_code=status_code,
-        detail={
-            "code": code,
-            "message": message,
-            "correlationId": correlation_id,
-            "details": {},
-        },
-    )
+def _validation_error(message: str) -> ApiError:
+    return ApiError("VALIDATION_FAILED", message, 400)
 
 
-# --- Idempotency store ---
+def _domain_error(exc: Exception) -> ApiError:
+    return ApiError("DOMAIN_RULE_VIOLATION", str(exc), 422)
 
-_idempotency_store: dict[str, dict[str, Any]] = {}
+
+def _require_idempotency_key(idempotency_key: str | None) -> str:
+    if not idempotency_key:
+        raise _validation_error("Idempotency-Key header is required")
+    return idempotency_key
 
 
-def _check_idempotency(key: str | None, request_body: dict[str, Any], correlation_id: str) -> dict[str, Any] | None:
-    """If idempotency key is provided, check for replay."""
-    if key is None:
+def _check_idempotency(request: Request, scope: str, key: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    store = request.app.state.idempotency_store
+    fingerprint = request_fingerprint(body)
+    record = store.get(scope, key)
+    if record is None:
         return None
-    if key in _idempotency_store:
-        existing = _idempotency_store[key]
-        if existing.get("body") != request_body:
-            raise _make_error(
-                "IDEMPOTENCY_KEY_REUSED",
-                "Idempotency-Key reused with a different request body",
-                correlation_id,
-                422,
-            )
-        return existing.get("response")
-    return None
+    if record.fingerprint != fingerprint:
+        raise ApiError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key reused with a different request body", 422)
+    return dict(record.response_body)
 
 
-def _store_idempotency(key: str | None, body: dict[str, Any], response: dict[str, Any]) -> None:
-    if key is not None:
-        _idempotency_store[key] = {"body": body, "response": response}
+def _store_idempotency(request: Request, scope: str, key: str, body: dict[str, Any], response: dict[str, Any]) -> None:
+    request.app.state.idempotency_store.put(
+        scope,
+        key,
+        IdempotencyRecord(request_fingerprint(body), 201, dict(response)),
+    )
 
 
 @router.post("/fare-quotes", status_code=201)
@@ -130,54 +114,42 @@ def compute_fare_quote(
     request: Request,
     req: FareQuoteRequest,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-    x_correlation_id: str | None = Header(None, alias="X-Correlation-Id"),
 ) -> dict[str, Any]:
-    correlation_id = x_correlation_id or str(uuid4())
+    key = _require_idempotency_key(idempotency_key)
     body_dict = req.model_dump()
-
-    # Idempotency check
-    cached = _check_idempotency(idempotency_key, body_dict, correlation_id)
+    cached = _check_idempotency(request, "POST /api/v1/fare-quotes", key, body_dict)
     if cached is not None:
         return cached
 
     service: FarePricingService = request.app.state.fare_pricing_service
-
-    rule_set_id = _find_rule_set_id(service, req.channel)
+    rule_set_id = service.find_published_rule_set_id(req.channel)
     if rule_set_id is None:
-        raise _make_error("VALIDATION_FAILED", "No applicable fare rule set found", correlation_id, 400)
-
-    quote_id = f"fq-{uuid4()}"
-    input_hash = str(uuid4())
+        raise _validation_error("No applicable fare rule set found")
 
     try:
         quote = service.compute_fare_quote(
-            quote_id=quote_id,
-            input_hash=input_hash,
+            quote_id=f"fq-{uuid4()}",
+            input_hash=request_fingerprint(body_dict),
             traveler_refs=req.travelerRefs,
             channel=req.channel,
             rule_set_id=rule_set_id,
             requested_currency="CNY",
         )
-    except (PricingError, RuleSetNotFoundError) as e:
-        raise _make_error("DOMAIN_RULE_VIOLATION", str(e), correlation_id, 422)
+    except (PricingError, RuleSetNotFoundError) as exc:
+        raise _domain_error(exc) from exc
 
     resp = _fare_quote_to_response(quote)
-    _store_idempotency(idempotency_key, body_dict, resp)
+    _store_idempotency(request, "POST /api/v1/fare-quotes", key, body_dict, resp)
     return resp
 
 
 @router.get("/fare-quotes/{quote_id}")
-def get_fare_quote(
-    request: Request,
-    quote_id: str,
-    x_correlation_id: str | None = Header(None, alias="X-Correlation-Id"),
-) -> dict[str, Any]:
-    correlation_id = x_correlation_id or str(uuid4())
+def get_fare_quote(request: Request, quote_id: str) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
     try:
         quote = service.get_fare_quote(quote_id)
-    except QuoteNotFoundError:
-        raise _make_error("NOT_FOUND", f"Fare quote not found: {quote_id}", correlation_id, 404)
+    except QuoteNotFoundError as exc:
+        raise ApiError("NOT_FOUND", f"Fare quote not found: {quote_id}", 404) from exc
     return _fare_quote_to_response(quote)
 
 
@@ -186,52 +158,40 @@ def compute_adjustment_quote(
     request: Request,
     req: AdjustmentQuoteRequest,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-    x_correlation_id: str | None = Header(None, alias="X-Correlation-Id"),
 ) -> dict[str, Any]:
-    correlation_id = x_correlation_id or str(uuid4())
+    key = _require_idempotency_key(idempotency_key)
     body_dict = req.model_dump()
-
-    cached = _check_idempotency(idempotency_key, body_dict, correlation_id)
+    cached = _check_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict)
     if cached is not None:
         return cached
 
     service: FarePricingService = request.app.state.fare_pricing_service
-
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
-
-    rule_set_id = _find_rule_set_id(service, "web")
+    original_quote_id = service.find_fare_quote_id_for_journey_order(req.journeyOrderId)
+    if original_quote_id is None:
+        # The current domain model has no order aggregate; preserve the contract's
+        # not-found behavior through an application-service lookup boundary.
+        raise ApiError("NOT_FOUND", f"No original fare quote found for journeyOrderId: {req.journeyOrderId}", 404)
+    original_quote = service.get_fare_quote(original_quote_id)
+    rule_set_id = service.find_published_rule_set_id(original_quote.channel)
     if rule_set_id is None:
-        raise _make_error("VALIDATION_FAILED", "No applicable fare rule set found", correlation_id, 400)
-
-    if not service._store.fare_quotes:
-        raise _make_error("NOT_FOUND", "No original fare quote found for adjustment", correlation_id, 404)
-
-    original_quote_id = list(service._store.fare_quotes.keys())[0]
-    assessment_id = f"fa-{uuid4()}"
-    adjustment_quote_id = f"aq-{uuid4()}"
+        raise _validation_error("No applicable fare rule set found")
 
     try:
         aq = service.compute_adjustment_quote(
-            assessment_id=assessment_id,
-            adjustment_quote_id=adjustment_quote_id,
+            assessment_id=f"fa-{uuid4()}",
+            adjustment_quote_id=f"aq-{uuid4()}",
             purpose=purpose,
             original_quote_id=original_quote_id,
             rule_set_id=rule_set_id,
+            target_quote_id=original_quote_id if purpose == AssessmentPurpose.CHANGE else None,
         )
-    except (PricingError, QuoteNotFoundError, RuleSetNotFoundError) as e:
-        raise _make_error("DOMAIN_RULE_VIOLATION", str(e), correlation_id, 422)
+    except (PricingError, QuoteNotFoundError, RuleSetNotFoundError) as exc:
+        raise _domain_error(exc) from exc
 
     resp = _adjustment_quote_to_response(aq)
-    _store_idempotency(idempotency_key, body_dict, resp)
+    _store_idempotency(request, "POST /api/v1/adjustment-quotes", key, body_dict, resp)
     return resp
-
-
-def _find_rule_set_id(service: FarePricingService, channel: str) -> str | None:
-    """Find the first published rule set for the given channel."""
-    for rs_id, rs in service._store.fare_rule_sets.items():
-        if rs.status == RuleSetStatus.PUBLISHED and rs.channel == channel:
-            return rs_id
-    return None
 
 
 def _fare_quote_to_response(quote: FareQuote) -> dict[str, Any]:
@@ -252,12 +212,15 @@ def _fare_quote_to_response(quote: FareQuote) -> dict[str, Any]:
 
 
 def _adjustment_quote_to_response(aq: AdjustmentQuote) -> dict[str, Any]:
-    return {
+    status = "FAILED" if aq.status == QuoteStatus.FAILED else "QUOTED"
+    resp = {
         "adjustmentQuoteId": aq.adjustment_quote_id,
         "purpose": aq.purpose.value.upper(),
-        "status": aq.status.value.upper(),
+        "status": status,
         "refundableAmount": _money_to_schema(aq.refundable_amount),
         "amountDue": _money_to_schema(aq.amount_due),
         "validUntil": _timestamp_str(aq.valid_until),
-        "failedReason": aq.failed_reason,
     }
+    if aq.failed_reason is not None:
+        resp["failedReason"] = aq.failed_reason
+    return resp

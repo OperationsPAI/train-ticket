@@ -8,11 +8,14 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 
 from .runtime import health, profile
+from .application.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore
 from .application.service import FarePricingService, InMemoryStore
+from .web.errors import register_exception_handlers
 from .web.handlers import router as fare_pricing_router
 
 REQUEST_ID_HEADER = "X-Request-ID"
-CORRELATION_ID_HEADER = "X-Correlation-ID"
+CORRELATION_ID_HEADER = "X-Correlation-Id"
+LEGACY_CORRELATION_ID_HEADER = "X-Correlation-ID"
 TraceHook = Callable[[str, Mapping[str, object]], None]
 
 
@@ -64,7 +67,7 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
     request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid4())
-    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request_id
+    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request.headers.get(LEGACY_CORRELATION_ID_HEADER) or request_id
     return request_id, correlation_id
 
 
@@ -99,6 +102,7 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
                 raise
             response.headers[REQUEST_ID_HEADER] = request_id
             response.headers[CORRELATION_ID_HEADER] = correlation_id
+            response.headers[LEGACY_CORRELATION_ID_HEADER] = correlation_id
             _set_span_attribute(span, "http.response.status_code", response.status_code)
             _set_span_attribute(span, "http.status_code", response.status_code)
             _emit_trace(
@@ -133,13 +137,18 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"service": profile(), "observability": {"tracing": "opt-in", "default": "noop"}}
 
 
-def configure_fare_pricing_routes(app: FastAPI, store: InMemoryStore | None = None) -> None:
+def configure_fare_pricing_routes(
+    app: FastAPI,
+    store: InMemoryStore | None = None,
+    idempotency_store: IdempotencyStore | None = None,
+) -> None:
     """Register the fare-pricing business API routes and application service."""
     if store is None:
         store = InMemoryStore()
     service = FarePricingService(store)
     app.state.fare_pricing_service = service
     app.state.fare_pricing_store = store
+    app.state.idempotency_store = idempotency_store or BoundedInMemoryIdempotencyStore()
     app.include_router(fare_pricing_router)
 
 
@@ -147,8 +156,10 @@ def create_app(
     tracer: TraceHook | None = None,
     otel_tracer: RuntimeTracer | None = None,
     store: InMemoryStore | None = None,
+    idempotency_store: IdempotencyStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title='Fare & Pricing', version="0.1.0")
+    register_exception_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
-    configure_fare_pricing_routes(app, store)
+    configure_fare_pricing_routes(app, store, idempotency_store)
     return app
