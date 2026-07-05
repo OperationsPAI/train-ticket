@@ -8,10 +8,11 @@
     "test": "rm -rf test-output && tsc --noEmit false --outDir test-output && node --test test-output/**/*.test.js"
   },
   "dependencies": {
-    "fastify": "5.9.0"
+    "fastify": "5.9.0",
+    "ioredis": "^5.11.1"
   },
   "devDependencies": {
-    "@types/node": "26.0.1",
+    "@types/node": "^26.0.1",
     "typescript": "6.0.3"
   }
 }

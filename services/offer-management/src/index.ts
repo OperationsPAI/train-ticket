@@ -3,7 +3,9 @@ export {
   health,
   metadata,
   opentelemetryInstrumentationFromEnv,
-  type ErrorEnvelope,
+  resetIdempotencyStore,
+  resetOfferStore,
+  type ErrorBody,
   type HealthStatus,
   type InstrumentationHooks,
   type ProbeStatus,
@@ -36,3 +38,20 @@ export {
   type ValidityWindow,
 } from "./domain.js";
 export { serviceProfile, type ServiceProfile } from "./profile.js";
+
+// Messaging ports
+export {
+  PublishFailed,
+  SubscribeFailed,
+  type EventEnvelope,
+  type EventHandler,
+  type EventPublisher,
+  type EventSubscriber,
+  type HandlerResult,
+} from "./ports/messaging.js";
+
+// Adapters (in-memory fakes for testing)
+export {
+  InMemoryEventPublisher,
+  InMemoryEventSubscriber,
+} from "./adapters/messaging/in-memory.js";
