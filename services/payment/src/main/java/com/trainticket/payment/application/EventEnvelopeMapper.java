@@ -86,8 +86,7 @@ public final class EventEnvelopeMapper {
             case RefundFailed failed -> {
                 payload.put("refundId", failed.refundId());
                 payload.put("paymentIntentId", failed.paymentIntentId());
-                payload.put("reasonCode", failed.reasonCode());
-                payload.put("retryable", failed.retryable());
+                payload.put("reason", failed.reason());
             }
             case ChannelCallbackReceived received -> {
                 payload.put("callbackRecordId", received.callbackRecordId());

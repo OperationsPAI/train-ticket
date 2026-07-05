@@ -4,6 +4,5 @@ public record RefundFailed(
     EventEnvelope envelope,
     String refundId,
     String paymentIntentId,
-    String reasonCode,
-    boolean retryable
+    String reason
 ) implements PaymentEvent {}

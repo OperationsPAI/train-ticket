@@ -53,7 +53,7 @@ class RefundDomainTest {
         refund.fail("ACCOUNT_CLOSED", false, NOW.plusSeconds(45), "FailRefund", "channel-refund-callback", "corr-refund");
         assertEquals(RefundStatus.MANUAL_REVIEW_REQUIRED, refund.status());
         RefundFailed finalFailure = assertInstanceOf(RefundFailed.class, refund.domainEvents().get(2));
-        assertEquals("ACCOUNT_CLOSED", finalFailure.reasonCode());
+        assertEquals("ACCOUNT_CLOSED", finalFailure.reason());
     }
 
     private static PaymentIntent capturedIntent() {
