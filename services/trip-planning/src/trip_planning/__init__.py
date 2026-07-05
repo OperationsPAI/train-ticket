@@ -9,16 +9,36 @@ from .domain import (
     TripIntent,
     TripPlanningValidationError,
 )
+from .events import (
+    EventEnvelope,
+    EventPublisher,
+    EventSubscriber,
+    PublishFailed,
+    SubscribeFailed,
+    HandlerError,
+    TransientHandlerError,
+    FatalHandlerError,
+    build_itinerary_proposed_event,
+)
 from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
 
 __all__ = [
     'AvailabilityHint',
+    'EventEnvelope',
+    'EventPublisher',
+    'EventSubscriber',
+    'FatalHandlerError',
+    'HandlerError',
     'Itinerary',
     'LegCandidate',
     'PreferenceConstraints',
     'PriceHint',
+    'PublishFailed',
+    'SubscribeFailed',
+    'TransientHandlerError',
     'TripIntent',
     'TripPlanningValidationError',
+    'build_itinerary_proposed_event',
     'create_app',
     'health',
     'profile',
