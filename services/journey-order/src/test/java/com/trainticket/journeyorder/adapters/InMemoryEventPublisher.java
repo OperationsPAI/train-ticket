@@ -1,7 +1,7 @@
 package com.trainticket.journeyorder.adapters;
 
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.ArrayList;
 import java.util.List;
 

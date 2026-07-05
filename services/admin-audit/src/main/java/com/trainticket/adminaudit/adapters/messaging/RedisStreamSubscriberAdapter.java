@@ -2,7 +2,7 @@ package com.trainticket.adminaudit.adapters.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.adminaudit.application.ports.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.adminaudit.application.ports.EventSubscriber;
 import com.trainticket.adminaudit.application.ports.SubscribeFailedException;
 import io.lettuce.core.Consumer;
@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 @ConditionalOnProperty(name = "ADMIN_AUDIT_REDIS_ENABLED", havingValue = "true", matchIfMissing = true)
-public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
+public class RedisStreamSubscriberAdapter implements EventSubscriber, AutoCloseable {
     private static final String FIELD = "envelope";
     private static final long MAX_LEN = 100_000L;
     private static final long BLOCK_MILLIS = 2_000L;
@@ -42,7 +42,7 @@ public class RedisEventSubscriber implements EventSubscriber, AutoCloseable {
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    public RedisEventSubscriber(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
+    public RedisStreamSubscriberAdapter(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.client = RedisClient.create(RedisURI.create(redisUrl));
         this.connection = client.connect();

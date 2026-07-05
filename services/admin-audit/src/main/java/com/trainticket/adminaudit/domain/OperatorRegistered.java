@@ -1,5 +1,6 @@
 package com.trainticket.adminaudit.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 /**
  * Event emitted when a new operator is registered.
  */

@@ -30,7 +30,7 @@ public class RedisMessagingConfiguration {
     }
 
     @Bean
-    RedisEventSubscriber redisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper) {
-        return new RedisEventSubscriber(streams, objectMapper);
+    RedisStreamSubscriberAdapter redisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper) {
+        return new RedisStreamSubscriberAdapter(streams, objectMapper);
     }
 }

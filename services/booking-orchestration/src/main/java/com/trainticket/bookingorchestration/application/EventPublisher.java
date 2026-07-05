@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 /**
  * Port: EventPublisher — broker-independent interface for publishing domain events.
  */

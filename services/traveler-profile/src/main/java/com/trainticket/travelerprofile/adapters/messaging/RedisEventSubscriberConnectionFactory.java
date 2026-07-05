@@ -3,10 +3,10 @@ package com.trainticket.travelerprofile.adapters.messaging;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
 
-final class RedisEventSubscriberConnectionFactory implements AutoCloseable {
+final class RedisStreamSubscriberAdapterConnectionFactory implements AutoCloseable {
     private final RedisClient client;
 
-    RedisEventSubscriberConnectionFactory(String redisUrl) {
+    RedisStreamSubscriberAdapterConnectionFactory(String redisUrl) {
         this.client = RedisClient.create(redisUrl);
     }
 

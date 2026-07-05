@@ -9,7 +9,7 @@ import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
-import com.trainticket.journeyorder.domain.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.journeyorder.domain.JourneyOrder;
 import com.trainticket.journeyorder.domain.JourneyOrderEvent;
 import com.trainticket.journeyorder.domain.Money;
@@ -381,7 +381,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private static String textPayload(EventEnvelope envelope, String field, String fallback) {
-        Object value = envelope.payload().get(field);
+        if (!(envelope.payload() instanceof Map<?, ?> payload)) {
+            return fallback;
+        }
+        Object value = payload.get(field);
         return value == null ? fallback : String.valueOf(value);
     }
 

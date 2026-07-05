@@ -53,7 +53,7 @@ class BookingOrchestrationControllerTest {
         controller.requestReservation(sagaId,
             new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", segmentBookingId),
             UUID.randomUUID().toString(), request);
-        bookingService.handleUpstreamEvent(new com.trainticket.bookingorchestration.application.EventEnvelope(
+        bookingService.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
             "evt-" + UUID.randomUUID(), "ProviderReservationConfirmed", 1, "provider-integration",
             "evt-" + UUID.randomUUID(), (String) request.getAttribute(RequestContextFilter.CORRELATION_ID_HEADER),
             Instant.parse("2026-07-05T10:00:01Z"),

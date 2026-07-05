@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @RestControllerAdvice
-public class ApiExceptionHandler {
+public class ApiErrorHandler {
     @ExceptionHandler(ResourceNotFoundException.class)
     ResponseEntity<ApiError> notFound(ResourceNotFoundException ex, HttpServletRequest request) {
         return error(HttpStatus.NOT_FOUND, "NOT_FOUND", ex.getMessage(), request, Map.of());

@@ -2,7 +2,7 @@ package com.trainticket.bookingorchestration.adapters.messaging;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.trainticket.bookingorchestration.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.bookingorchestration.application.HandlerResult;
 import com.trainticket.bookingorchestration.application.SubscriberConfig;
 import java.time.Instant;

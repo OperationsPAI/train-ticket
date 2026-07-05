@@ -1,5 +1,6 @@
 package com.trainticket.travelerprofile.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.List;
 
 public interface EventSubscriber {

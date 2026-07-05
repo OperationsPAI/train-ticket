@@ -1,5 +1,7 @@
 package com.trainticket.payment.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.EnvelopeFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -66,7 +68,7 @@ public final class PaymentIntent {
         }
         PaymentIntent intent = new PaymentIntent("pi-" + UUID.randomUUID(), businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey);
         intent.domainEvents.add(new PaymentIntentCreated(
-            EventEnvelope.create("PaymentIntentCreated", occurredAt, sourceCommandId, correlationId, "payment"),
+            EnvelopeFactory.create("PaymentIntentCreated", occurredAt, sourceCommandId, correlationId, "payment"),
             intent.paymentIntentId, intent.businessRef, intent.purpose, intent.amount, intent.payerRef, intent.idempotencyKey
         ));
         return intent;
@@ -103,7 +105,7 @@ public final class PaymentIntent {
         this.status = PaymentIntentStatus.AUTHORIZED;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
         domainEvents.add(new PaymentAuthorized(
-            EventEnvelope.create("PaymentAuthorized", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("PaymentAuthorized", occurredAt, causationId, correlationId, "payment"),
             paymentIntentId, authorizedAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
         ));
     }
@@ -131,7 +133,7 @@ public final class PaymentIntent {
         }
         status = PaymentIntentStatus.FAILED;
         domainEvents.add(new PaymentFailed(
-            EventEnvelope.create("PaymentFailed", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("PaymentFailed", occurredAt, causationId, correlationId, "payment"),
             paymentIntentId, requireText(reasonCode, "reasonCode"), retryable
         ));
     }
@@ -145,7 +147,7 @@ public final class PaymentIntent {
         }
         status = PaymentIntentStatus.CANCELLED;
         domainEvents.add(new PaymentIntentCancelled(
-            EventEnvelope.create("PaymentIntentCancelled", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("PaymentIntentCancelled", occurredAt, causationId, correlationId, "payment"),
             paymentIntentId, requireText(reason, "reason")
         ));
     }
@@ -162,7 +164,7 @@ public final class PaymentIntent {
         }
         status = PaymentIntentStatus.EXPIRED;
         domainEvents.add(new PaymentIntentExpired(
-            EventEnvelope.create("PaymentIntentExpired", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("PaymentIntentExpired", occurredAt, causationId, correlationId, "payment"),
             paymentIntentId
         ));
     }
@@ -190,7 +192,7 @@ public final class PaymentIntent {
         this.status = capturedAmount.equals(amount) ? PaymentIntentStatus.CAPTURED : status;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
         domainEvents.add(new PaymentCaptured(
-            EventEnvelope.create("PaymentCaptured", occurredAt, causationId, correlationId, "payment"),
+            EnvelopeFactory.create("PaymentCaptured", occurredAt, causationId, correlationId, "payment"),
             paymentIntentId, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
         ));
     }

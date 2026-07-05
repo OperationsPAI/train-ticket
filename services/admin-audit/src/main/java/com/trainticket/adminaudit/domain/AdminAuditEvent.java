@@ -1,5 +1,6 @@
 package com.trainticket.adminaudit.domain;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 /**
  * Sealed interface for all Admin & Audit domain events.
  */

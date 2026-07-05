@@ -1,6 +1,6 @@
 package com.trainticket.postsales.adapters.messaging;
 
-import com.trainticket.postsales.application.EventEnvelope;
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.postsales.application.EventPublisher;
 import org.springframework.stereotype.Component;
 

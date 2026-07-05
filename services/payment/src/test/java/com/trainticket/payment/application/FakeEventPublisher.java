@@ -1,5 +1,6 @@
 package com.trainticket.payment.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.ArrayList;
 import java.util.List;
 

@@ -1,5 +1,6 @@
 package com.trainticket.postsales.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.postsales.domain.AmountDecisionSnapshot;
 import com.trainticket.postsales.domain.DecisionKind;
 import com.trainticket.postsales.domain.EventMetadata;

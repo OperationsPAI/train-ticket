@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.application;
 
+import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.List;
 import java.util.function.Function;
 
