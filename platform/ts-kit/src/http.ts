@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { isUuidV7, newCorrelationId } from "./ids.js";
+import { isUuidV7, newCorrelationId, canonicalCorrelationId } from "./ids.js";
 
 export type ErrorEnvelope = Readonly<{
   code: string;
@@ -66,7 +66,11 @@ export function canonicalHttpCorrelationId(value: string | undefined): string {
   if (!value) {
     return newCorrelationId();
   }
-  return value.startsWith("corr-") ? value : `corr-${value}`;
+  try {
+    return canonicalCorrelationId(value);
+  } catch {
+    return newCorrelationId();
+  }
 }
 
 export function errorBody(code: string, message: string, context: RequestContext, details: Readonly<Record<string, unknown>> = {}): ErrorEnvelope {

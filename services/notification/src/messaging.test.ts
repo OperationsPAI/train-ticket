@@ -11,13 +11,14 @@ import {
   toEventEnvelope,
   type EventEnvelope,
 } from "./index.js";
+import { isPrefixedUuidV7 } from "@trainticket/ts-kit";
 
 const domainEvent = NotificationTask.schedule({
   notificationTaskId: "nt-test-001",
-  triggerEventId: "evt-trigger-001",
+  triggerEventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
   triggerEventType: "JourneyOrderConfirmed",
-  correlationId: "corr-test-001",
-  causationId: "cmd-test-001",
+  correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+  causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
   recipientRef: "tvl-test-001",
   templateCode: "order_confirmed",
   channel: "EMAIL",
@@ -32,11 +33,14 @@ describe("notification messaging integration surface", () => {
     const envelope = toEventEnvelope(domainEvent);
 
     assert.equal(envelope.eventId, domainEvent.eventId);
+    assert.equal(isPrefixedUuidV7(envelope.eventId, ["evt"]), true);
+    assert.equal(isPrefixedUuidV7(envelope.correlationId, ["corr"]), true);
+    assert.equal(isPrefixedUuidV7(envelope.causationId ?? "", ["cmd", "evt"]), true);
     assert.equal(envelope.eventType, "NotificationScheduled");
     assert.equal(envelope.schemaVersion, 1);
     assert.equal(envelope.producer, "notification");
-    assert.equal(envelope.correlationId, "corr-test-001");
-    assert.equal(envelope.causationId, "cmd-test-001");
+    assert.equal(envelope.correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    assert.equal(envelope.causationId, "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.equal(envelope.occurredAt, "2026-07-05T10:30:00.000Z");
     assert.deepEqual(envelope.payload, {
       notificationTaskId: "nt-test-001",
@@ -55,6 +59,7 @@ describe("notification messaging integration surface", () => {
 
     assert.equal(publisher.envelopes.length, 1);
     assert.equal(publisher.envelopes[0].eventType, "NotificationScheduled");
+    assert.equal(isPrefixedUuidV7(publisher.envelopes[0].eventId, ["evt"]), true);
     assert.equal(publisher.envelopes[0].producer, "notification");
   });
 
@@ -77,12 +82,12 @@ describe("notification messaging integration surface", () => {
     const publisher = new InMemoryEventPublisher();
     const service = new NotificationApplicationService(publisher);
     const upstream: EventEnvelope = {
-      eventId: "evt-upstream-001",
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       eventType: "PaymentCaptured",
       schemaVersion: 1,
       producer: "payment",
-      correlationId: "corr-upstream-001",
-      causationId: "cmd-upstream-001",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
       payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001" },
     };
@@ -91,9 +96,10 @@ describe("notification messaging integration surface", () => {
 
     assert.equal(publisher.envelopes.length, 1);
     assert.equal(publisher.envelopes[0].eventType, "NotificationScheduled");
+    assert.equal(isPrefixedUuidV7(publisher.envelopes[0].eventId, ["evt"]), true);
     assert.equal(publisher.envelopes[0].producer, "notification");
-    assert.equal(publisher.envelopes[0].correlationId, "corr-upstream-001");
-    assert.equal(publisher.envelopes[0].causationId, "evt-upstream-001");
+    assert.equal(publisher.envelopes[0].correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    assert.equal(publisher.envelopes[0].causationId, "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.equal(publisher.envelopes[0].payload.recipientRef, "usr-test-001");
     assert.equal(publisher.envelopes[0].payload.templateCode, "payment_captured");
   });
@@ -102,12 +108,12 @@ describe("notification messaging integration surface", () => {
     const publisher = new InMemoryEventPublisher();
     const service = new NotificationApplicationService(publisher);
     const upstream: EventEnvelope = {
-      eventId: "evt-upstream-missing-recipient",
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       eventType: "PaymentCaptured",
       schemaVersion: 1,
       producer: "payment",
-      correlationId: "corr-upstream-missing-recipient",
-      causationId: "cmd-upstream-missing-recipient",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
       payload: { paymentIntentId: "pi-test-001" },
     };
@@ -123,12 +129,12 @@ describe("notification messaging integration surface", () => {
     const publisher = new InMemoryEventPublisher();
     const service = new NotificationApplicationService(publisher);
     const upstream: EventEnvelope = {
-      eventId: "evt-upstream-ignored",
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       eventType: "CapacityReleased",
       schemaVersion: 1,
       producer: "capacity-availability",
-      correlationId: "corr-upstream-ignored",
-      causationId: "cmd-upstream-ignored",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
       payload: { recipientRef: "usr-test-001" },
     };

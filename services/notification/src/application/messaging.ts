@@ -4,6 +4,7 @@ import {
   InMemoryEventPublisher,
   PublishFailed,
   SubscribeFailed,
+  createEventEnvelope,
   fatalHandling,
   successfulHandling,
   transientHandling,
@@ -19,6 +20,7 @@ export {
   InMemoryEventPublisher,
   PublishFailed,
   SubscribeFailed,
+  createEventEnvelope,
   fatalHandling,
   successfulHandling,
   transientHandling,
@@ -30,16 +32,16 @@ export {
 };
 
 export function toEventEnvelope(event: NotificationDomainEvent): EventEnvelope {
-  return {
+  return createEventEnvelope({
     eventId: event.eventId,
     eventType: event.eventType,
     schemaVersion: event.schemaVersion,
     producer: event.producer,
     causationId: event.causationId,
     correlationId: event.correlationId,
-    occurredAt: event.occurredAt.toISOString(),
+    occurredAt: event.occurredAt,
     payload: domainEventPayload(event),
-  };
+  });
 }
 
 function domainEventPayload(event: NotificationDomainEvent): Record<string, unknown> {

@@ -16,6 +16,8 @@
 
 import crypto from "node:crypto";
 
+import { newEventId } from "@trainticket/ts-kit";
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class DomainError extends Error {
@@ -268,7 +270,7 @@ export class NotificationTask {
 
     const event: NotificationScheduled = deepFreeze({
       type: "NotificationScheduled" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "NotificationScheduled",
       schemaVersion: 1,
       occurredAt: new Date(command.scheduledAt),
@@ -305,7 +307,7 @@ export class NotificationTask {
 
     const event: NotificationDispatched = deepFreeze({
       type: "NotificationDispatched" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "NotificationDispatched",
       schemaVersion: 1,
       occurredAt: new Date(command.dispatchedAt),
@@ -346,7 +348,7 @@ export class NotificationTask {
     if (isDelivered) {
       const event: NotificationDelivered = deepFreeze({
         type: "NotificationDelivered" as const,
-        eventId: `evt-${crypto.randomUUID()}`,
+        eventId: newEventId(),
         eventType: "NotificationDelivered",
         schemaVersion: 1,
         occurredAt: new Date(command.recordedAt),
@@ -364,7 +366,7 @@ export class NotificationTask {
 
     const event: NotificationFailed = deepFreeze({
       type: "NotificationFailed" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "NotificationFailed",
       schemaVersion: 1,
       occurredAt: new Date(command.recordedAt),
@@ -401,7 +403,7 @@ export class NotificationTask {
 
     const event: NotificationCancelled = deepFreeze({
       type: "NotificationCancelled" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "NotificationCancelled",
       schemaVersion: 1,
       occurredAt: new Date(command.cancelledAt),

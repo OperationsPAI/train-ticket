@@ -18,6 +18,8 @@
 
 import crypto from "node:crypto";
 
+import { newCorrelationId, newEventId } from "@trainticket/ts-kit";
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class DomainError extends Error {
@@ -544,7 +546,7 @@ export class SupportCase {
 
     const event: SupportCaseOpened = deepFreeze({
       type: "SupportCaseOpened" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseOpened",
       schemaVersion: 1,
       occurredAt: new Date(command.openedAt),
@@ -581,7 +583,7 @@ export class SupportCase {
 
     const event: SupportCaseClassified = deepFreeze({
       type: "SupportCaseClassified" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseClassified",
       schemaVersion: 1,
       occurredAt: new Date(command.classifiedAt),
@@ -615,7 +617,7 @@ export class SupportCase {
 
     const event: SupportCaseAssigned = deepFreeze({
       type: "SupportCaseAssigned" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseAssigned",
       schemaVersion: 1,
       occurredAt: new Date(command.assignedAt),
@@ -656,7 +658,7 @@ export class SupportCase {
 
     const event: SupportCaseEscalated = deepFreeze({
       type: "SupportCaseEscalated" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseEscalated",
       schemaVersion: 1,
       occurredAt: new Date(command.escalatedAt),
@@ -699,7 +701,7 @@ export class SupportCase {
 
     const event: SupportCaseResolved = deepFreeze({
       type: "SupportCaseResolved" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseResolved",
       schemaVersion: 1,
       occurredAt: new Date(command.resolvedAt),
@@ -750,7 +752,7 @@ export class SupportCase {
 
     const event: SupportCaseClosed = deepFreeze({
       type: "SupportCaseClosed" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseClosed",
       schemaVersion: 1,
       occurredAt: new Date(command.closedAt),
@@ -786,7 +788,7 @@ export class SupportCase {
 
     const event: SupportCaseReopened = deepFreeze({
       type: "SupportCaseReopened" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "SupportCaseReopened",
       schemaVersion: 1,
       occurredAt: new Date(command.reopenedAt),
@@ -902,7 +904,7 @@ export class EvidenceRef {
 
     const event: EvidenceAttached = deepFreeze({
       type: "EvidenceAttached" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "EvidenceAttached",
       schemaVersion: 1,
       occurredAt: new Date(command.attachedAt),
@@ -981,7 +983,7 @@ export class ManualActionRequest {
 
     const event: ManualActionRequested = deepFreeze({
       type: "ManualActionRequested" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "ManualActionRequested",
       schemaVersion: 1,
       occurredAt: new Date(command.requestedAt),
@@ -1021,7 +1023,7 @@ export class ManualActionRequest {
 
     const event: ManualActionResultRecorded = deepFreeze({
       type: "ManualActionResultRecorded" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "ManualActionResultRecorded",
       schemaVersion: 1,
       occurredAt: new Date(command.recordedAt),
@@ -1120,11 +1122,11 @@ export class CaseTimeline {
 
     const event: CaseTimelineEntryAppended = deepFreeze({
       type: "CaseTimelineEntryAppended" as const,
-      eventId: `evt-${crypto.randomUUID()}`,
+      eventId: newEventId(),
       eventType: "CaseTimelineEntryAppended",
       schemaVersion: 1,
       occurredAt: new Date(command.occurredAt),
-      correlationId: `corr-${crypto.randomUUID()}`,
+      correlationId: newCorrelationId(),
       producer: "customer-service",
       entryId: command.entryId,
       caseId: command.caseId,

@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 
 export type IdPrefix = "evt" | "cmd" | "corr";
 
+const PREFIXED_UUID_V7 = /^(?<prefix>evt|cmd|corr)-(?<uuid>[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/iu;
+
 export function uuidV7(now: Date = new Date()): string {
   const bytes = randomBytes(16);
   const timestamp = BigInt(now.getTime());
@@ -32,7 +34,7 @@ export function isUuidV7(value: string): boolean {
 }
 
 export function prefixedId(prefix: IdPrefix, id: string = uuidV7()): string {
-  return id.startsWith(`${prefix}-`) ? id : `${prefix}-${id}`;
+  return `${prefix}-${validatedUuidV7(id, prefix)}`;
 }
 
 export function newEventId(): string {
@@ -48,20 +50,46 @@ export function newCorrelationId(): string {
 }
 
 export function canonicalEventId(value: string): string {
-  return prefixedId("evt", stripKnownPrefix(value));
+  return prefixedId("evt", value);
 }
 
 export function canonicalCorrelationId(value: string): string {
-  return prefixedId("corr", stripKnownPrefix(value));
+  return prefixedId("corr", value);
 }
 
 export function canonicalCausationId(value: string): string {
-  if (value.startsWith("cmd-") || value.startsWith("evt-")) {
-    return value;
+  const prefix = prefixOf(value);
+  if (prefix !== undefined && prefix !== "cmd" && prefix !== "evt") {
+    throw new Error("Causation ID must use cmd- or evt- prefix");
   }
-  return `cmd-${value}`;
+  return `${prefix ?? "cmd"}-${validatedUuidV7(value, prefix ?? "cmd")}`;
 }
 
-function stripKnownPrefix(value: string): string {
-  return /^(evt|cmd|corr)-/.test(value) ? value.slice(value.indexOf("-") + 1) : value;
+export function isPrefixedUuidV7(value: string, allowedPrefixes: readonly IdPrefix[] = ["evt", "cmd", "corr"]): boolean {
+  const match = PREFIXED_UUID_V7.exec(value);
+  return match?.groups !== undefined && allowedPrefixes.includes(match.groups.prefix as IdPrefix);
+}
+
+function validatedUuidV7(value: string, expectedPrefix: IdPrefix): string {
+  const uuid = stripExpectedPrefix(value, expectedPrefix);
+  if (!isUuidV7(uuid)) {
+    throw new Error(`${expectedPrefix}- ID must contain a UUID v7`);
+  }
+  return uuid.toLowerCase();
+}
+
+function stripExpectedPrefix(value: string, expectedPrefix: IdPrefix): string {
+  const prefix = prefixOf(value);
+  if (prefix === undefined) {
+    return value;
+  }
+  if (prefix !== expectedPrefix) {
+    throw new Error(`ID must use ${expectedPrefix}- prefix`);
+  }
+  return value.slice(value.indexOf("-") + 1);
+}
+
+function prefixOf(value: string): IdPrefix | undefined {
+  const match = /^(evt|cmd|corr)-/u.exec(value);
+  return match?.[1] as IdPrefix | undefined;
 }

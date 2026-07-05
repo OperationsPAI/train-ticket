@@ -12,7 +12,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "rm -rf test-output && tsc -p tsconfig.test.json && node --test test-output/**/*.test.js"
   },
   "dependencies": {
     "ioredis": "^5.11.1",

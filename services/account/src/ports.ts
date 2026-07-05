@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
-
 import type { AccountDomainEvent } from "./domain.js";
-import { createEventEnvelope, type EventEnvelope, type EventPublisher, type EventSubscriber, type HandlerResult } from "@trainticket/ts-kit";
+import { createEventEnvelope, newCommandId, type EventEnvelope, type EventPublisher, type EventSubscriber, type HandlerResult } from "@trainticket/ts-kit";
 
 export type { EventEnvelope, EventPublisher, EventSubscriber, HandlerResult };
 
-export function toEventEnvelope(event: AccountDomainEvent, correlationId: string, causationId = `cmd-${randomUUID()}`): EventEnvelope {
+export function toEventEnvelope(event: AccountDomainEvent, correlationId: string, causationId = newCommandId()): EventEnvelope {
   return createEventEnvelope({
     eventType: event.type,
     schemaVersion: 1,

@@ -12,13 +12,13 @@ describe("account service operational foundation", () => {
       url: "/readyz",
       headers: {
         "x-request-id": "req-account-1",
-        "x-correlation-id": "corr-account-1",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.headers["x-request-id"], "req-account-1");
-    assert.equal(response.headers["x-correlation-id"], "corr-account-1");
+    assert.equal(response.headers["x-correlation-id"], "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.deepEqual(response.json(), { status: "ok", probe: "ready" });
 
     const health = await app.inject("/health");
@@ -87,19 +87,19 @@ describe("account service operational foundation", () => {
       url: "/health",
       headers: {
         "x-request-id": "req-account-trace",
-        "x-correlation-id": "corr-account-trace",
+        "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     });
 
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(seenRequests, [{ requestId: "req-account-trace", correlationId: "corr-account-trace" }]);
+    assert.deepEqual(seenRequests, [{ requestId: "req-account-trace", correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" }]);
     assert.deepEqual(endedSpans, [
       {
         method: "GET",
         url: "/health",
         statusCode: 200,
         requestId: "req-account-trace",
-        correlationId: "corr-account-trace",
+        correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       },
     ]);
 
@@ -115,7 +115,7 @@ describe("account HTTP API", () => {
     const create = await app.inject({
       method: "POST",
       url: "/api/v1/accounts",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c001", "x-correlation-id": "corr-http-create" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c001", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: { accountId: "acct_http_001" },
     });
 
@@ -216,7 +216,7 @@ describe("account HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/accounts/acct_missing/freeze",
-      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c008", "x-correlation-id": "corr-validation" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c008", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222" },
       payload: { reason: "risk" },
     });
 
@@ -224,7 +224,7 @@ describe("account HTTP API", () => {
     assert.deepEqual(response.json(), {
       code: "VALIDATION_FAILED",
       message: "operator is required",
-      correlationId: "corr-validation",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       details: { field: "operator" },
     });
   });
