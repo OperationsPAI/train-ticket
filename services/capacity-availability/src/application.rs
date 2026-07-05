@@ -4,6 +4,8 @@
 
 use crate::domain::*;
 use crate::ports::{EventPublisher, PublishFailed, WireEnvelope};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,8 +15,8 @@ pub struct CapacityService {
     pools: Mutex<HashMap<String, InventoryPool>>,
     publisher: Arc<dyn EventPublisher>,
     producer: String,
-    /// Idempotency cache: idempotency_key -> cached JSON response for replay
-    idempotency_cache: Mutex<HashMap<String, serde_json::Value>>,
+    /// Idempotency cache: idempotency_key -> request fingerprint and cached JSON response for replay.
+    idempotency_cache: Mutex<HashMap<String, IdempotencyRecord>>,
 }
 
 impl CapacityService {
@@ -39,9 +41,10 @@ impl CapacityService {
             ));
         }
 
-        let pools = self.pools.lock().map_err(|e| {
-            AppError::Internal(format!("lock error: {}", e))
-        })?;
+        let pools = self
+            .pools
+            .lock()
+            .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
 
         // Find matching pools by segment reference patterns
         let mut total_remaining = 0usize;
@@ -118,9 +121,10 @@ impl CapacityService {
         if req.segment_ref.trim().is_empty()
             || req.traveler_ref.trim().is_empty()
             || req.class_ref.trim().is_empty()
+            || req.segment_booking_id.trim().is_empty()
         {
             return Err(AppError::ValidationFailed(
-                "segmentRef, travelerRef, and classRef are required".into(),
+                "segmentRef, travelerRef, classRef, and segmentBookingId are required".into(),
             ));
         }
         if req.quantity == 0 {
@@ -129,12 +133,20 @@ impl CapacityService {
             ));
         }
 
+        let fingerprint = req.fingerprint();
+        if let Some(resp) =
+            self.idempotency_replay::<HoldCapacityResponse>(idempotency_key, &fingerprint)?
+        {
+            return Ok(resp);
+        }
+
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
 
-        let mut pools = self.pools.lock().map_err(|e| {
-            AppError::Internal(format!("lock error: {}", e))
-        })?;
+        let mut pools = self
+            .pools
+            .lock()
+            .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
 
         // Find or create a pool for this segment/class
         let pool_key = format!("{}:{}", req.segment_ref, req.class_ref);
@@ -161,18 +173,11 @@ impl CapacityService {
             InventoryPool::new(identity, units).unwrap()
         });
 
-        // Check idempotency cache first
-        {
-            let cache = self.idempotency_cache.lock().map_err(|e| AppError::Internal(e.to_string()))?;
-            if let Some(cached) = cache.get(idempotency_key) {
-                let resp: HoldCapacityResponse = serde_json::from_value(cached.clone())
-                    .map_err(|_| AppError::Internal("Failed to deserialize cached response".into()))?;
-                return Ok(resp);
-            }
-        }
-
         // Find an available capacity unit from the pool
-        let unit_ref = pool.capacity_units.iter().next()
+        let unit_ref = pool
+            .capacity_units
+            .iter()
+            .next()
             .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?
             .clone();
 
@@ -200,31 +205,23 @@ impl CapacityService {
 
         match pool.request_hold(hold, now) {
             Ok(event) => {
-                // Publish the event
-                let _ = self.publish_domain_event(&event, correlation_id);
+                self.publish_domain_event(&event, correlation_id)
+                    .map_err(AppError::from_publish_failed)?;
                 let resp = HoldCapacityResponse {
                     hold_id,
                     segment_ref: req.segment_ref.clone(),
                     status: "HELD".to_string(),
                     held_until: unix_millis_to_rfc3339(now + 300000),
                 };
-                // Cache for idempotent replay
-                {
-                    let mut cache = self.idempotency_cache.lock().map_err(|e| AppError::Internal(e.to_string()))?;
-                    if let Ok(cached) = serde_json::to_value(&resp) {
-                        cache.insert(idempotency_key.to_string(), cached);
-                    }
-                }
+                self.store_idempotency_response(idempotency_key, fingerprint, &resp)?;
                 Ok(resp)
             }
-            Err(DomainError::IdempotencyConflict { .. }) => {
-                Err(AppError::IdempotencyKeyReused(
-                    "Idempotency-Key was reused with a different request body".into(),
-                ))
-            }
-            Err(DomainError::UnknownCapacityUnit(_)) => {
-                Err(AppError::DomainRuleViolation("Unknown capacity unit".into()))
-            }
+            Err(DomainError::IdempotencyConflict { .. }) => Err(AppError::IdempotencyKeyReused(
+                "Idempotency-Key was reused with a different request body".into(),
+            )),
+            Err(DomainError::UnknownCapacityUnit(_)) => Err(AppError::DomainRuleViolation(
+                "Unknown capacity unit".into(),
+            )),
             Err(e) => Err(AppError::DomainRuleViolation(e.to_string())),
         }
     }
@@ -233,26 +230,44 @@ impl CapacityService {
     pub fn confirm_hold(
         &self,
         hold_id: &str,
-        _idempotency_key: &str,
+        idempotency_key: &str,
         correlation_id: &str,
     ) -> Result<ConfirmHoldResponse, AppError> {
+        let fingerprint = format!("confirm:{}", hold_id);
+        if let Some(resp) =
+            self.idempotency_replay::<ConfirmHoldResponse>(idempotency_key, &fingerprint)?
+        {
+            return Ok(resp);
+        }
+
         let now = now_millis();
-        let mut pools = self.pools.lock().map_err(|e| {
-            AppError::Internal(format!("lock error: {}", e))
-        })?;
+        let mut pools = self
+            .pools
+            .lock()
+            .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
 
         for pool in pools.values_mut() {
-            if pool.hold(&HoldId::new(hold_id).map_err(|_| AppError::NotFound("hold not found".into()))?).is_some() {
+            if pool
+                .hold(
+                    &HoldId::new(hold_id)
+                        .map_err(|_| AppError::NotFound("hold not found".into()))?,
+                )
+                .is_some()
+            {
                 match pool.confirm_hold(
-                    &HoldId::new(hold_id).map_err(|_| AppError::NotFound("hold not found".into()))?,
+                    &HoldId::new(hold_id)
+                        .map_err(|_| AppError::NotFound("hold not found".into()))?,
                     now,
                 ) {
                     Ok(event) => {
-                        let _ = self.publish_domain_event(&event, correlation_id);
-                        return Ok(ConfirmHoldResponse {
+                        self.publish_domain_event(&event, correlation_id)
+                            .map_err(AppError::from_publish_failed)?;
+                        let resp = ConfirmHoldResponse {
                             hold_id: hold_id.to_string(),
                             status: "CONFIRMED".to_string(),
-                        });
+                        };
+                        self.store_idempotency_response(idempotency_key, fingerprint, &resp)?;
+                        return Ok(resp);
                     }
                     Err(DomainError::InvalidHoldState { .. }) => {
                         return Err(AppError::PreconditionFailed(
@@ -270,27 +285,45 @@ impl CapacityService {
     pub fn release_hold(
         &self,
         hold_id: &str,
-        _idempotency_key: &str,
+        idempotency_key: &str,
         correlation_id: &str,
     ) -> Result<ReleaseHoldResponse, AppError> {
+        let fingerprint = format!("release:{}", hold_id);
+        if let Some(resp) =
+            self.idempotency_replay::<ReleaseHoldResponse>(idempotency_key, &fingerprint)?
+        {
+            return Ok(resp);
+        }
+
         let now = now_millis();
-        let mut pools = self.pools.lock().map_err(|e| {
-            AppError::Internal(format!("lock error: {}", e))
-        })?;
+        let mut pools = self
+            .pools
+            .lock()
+            .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
 
         for pool in pools.values_mut() {
-            if pool.hold(&HoldId::new(hold_id).map_err(|_| AppError::NotFound("hold not found".into()))?).is_some() {
+            if pool
+                .hold(
+                    &HoldId::new(hold_id)
+                        .map_err(|_| AppError::NotFound("hold not found".into()))?,
+                )
+                .is_some()
+            {
                 match pool.release_hold(
-                    &HoldId::new(hold_id).map_err(|_| AppError::NotFound("hold not found".into()))?,
+                    &HoldId::new(hold_id)
+                        .map_err(|_| AppError::NotFound("hold not found".into()))?,
                     now,
                     "client-requested-release",
                 ) {
                     Ok(event) => {
-                        let _ = self.publish_domain_event(&event, correlation_id);
-                        return Ok(ReleaseHoldResponse {
+                        self.publish_domain_event(&event, correlation_id)
+                            .map_err(AppError::from_publish_failed)?;
+                        let resp = ReleaseHoldResponse {
                             hold_id: hold_id.to_string(),
                             status: "RELEASED".to_string(),
-                        });
+                        };
+                        self.store_idempotency_response(idempotency_key, fingerprint, &resp)?;
+                        return Ok(resp);
                     }
                     Err(e) => return Err(AppError::DomainRuleViolation(e.to_string())),
                 }
@@ -299,14 +332,58 @@ impl CapacityService {
         Err(AppError::NotFound("hold not found".into()))
     }
 
+    fn idempotency_replay<T: DeserializeOwned>(
+        &self,
+        idempotency_key: &str,
+        fingerprint: &str,
+    ) -> Result<Option<T>, AppError> {
+        let cache = self
+            .idempotency_cache
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let Some(record) = cache.get(idempotency_key) else {
+            return Ok(None);
+        };
+        if record.fingerprint != fingerprint {
+            return Err(AppError::IdempotencyKeyReused(
+                "Idempotency-Key was reused with a different request body".into(),
+            ));
+        }
+        serde_json::from_value(record.response.clone())
+            .map(Some)
+            .map_err(|_| AppError::Internal("Failed to deserialize cached response".into()))
+    }
+
+    fn store_idempotency_response<T: Serialize>(
+        &self,
+        idempotency_key: &str,
+        fingerprint: String,
+        response: &T,
+    ) -> Result<(), AppError> {
+        let record = IdempotencyRecord {
+            fingerprint,
+            response: serde_json::to_value(response).map_err(|e| {
+                AppError::Internal(format!("Failed to serialize cached response: {}", e))
+            })?,
+        };
+        self.idempotency_cache
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .insert(idempotency_key.to_string(), record);
+        Ok(())
+    }
+
     /// Get a hold by ID.
     pub fn get_hold(&self, hold_id: &str) -> Result<GetHoldResponse, AppError> {
-        let pools = self.pools.lock().map_err(|e| {
-            AppError::Internal(format!("lock error: {}", e))
-        })?;
+        let pools = self
+            .pools
+            .lock()
+            .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
 
         for pool in pools.values() {
-            if let Some(hold) = pool.hold(&HoldId::new(hold_id).map_err(|_| AppError::NotFound("hold not found".into()))?) {
+            if let Some(hold) = pool.hold(
+                &HoldId::new(hold_id).map_err(|_| AppError::NotFound("hold not found".into()))?,
+            ) {
                 let status = match hold.state {
                     CapacityHoldState::Requested => "REQUESTED",
                     CapacityHoldState::Held => "HELD",
@@ -317,7 +394,12 @@ impl CapacityService {
                 };
                 return Ok(GetHoldResponse {
                     hold_id: hold.hold_id.to_string(),
-                    segment_ref: hold.scope.references.segment_booking_ref.clone().unwrap_or_default(),
+                    segment_ref: hold
+                        .scope
+                        .references
+                        .segment_booking_ref
+                        .clone()
+                        .unwrap_or_default(),
                     status: status.to_string(),
                     held_until: unix_millis_to_rfc3339(hold.expires_at),
                     requested_at: unix_millis_to_rfc3339(hold.requested_at),
@@ -329,10 +411,15 @@ impl CapacityService {
         Err(AppError::NotFound("hold not found".into()))
     }
 
-    fn publish_domain_event(&self, event: &DomainEvent, correlation_id: &str) -> Result<(), PublishFailed> {
+    fn publish_domain_event(
+        &self,
+        event: &DomainEvent,
+        correlation_id: &str,
+    ) -> Result<(), PublishFailed> {
         let (event_type, payload) = match event {
-            DomainEvent::CapacityHeld(e) => {
-                ("CapacityHeld", json!({
+            DomainEvent::CapacityHeld(e) => (
+                "CapacityHeld",
+                json!({
                     "holdId": e.hold_id.to_string(),
                     "inventoryPoolId": e.inventory_pool_id.to_string(),
                     "capacityUnitRef": e.capacity_unit_ref.to_string(),
@@ -340,45 +427,49 @@ impl CapacityService {
                     "idempotencyKey": e.idempotency_key.to_string(),
                     "expiresAt": unix_millis_to_rfc3339(e.expires_at),
                     "idempotentReplay": e.idempotent_replay,
-                }))
-            }
-            DomainEvent::CapacityHoldConfirmed(e) => {
-                ("CapacityHoldConfirmed", json!({
+                }),
+            ),
+            DomainEvent::CapacityHoldConfirmed(e) => (
+                "CapacityHoldConfirmed",
+                json!({
                     "holdId": e.hold_id.to_string(),
                     "inventoryPoolId": e.inventory_pool_id.to_string(),
                     "capacityUnitRef": e.capacity_unit_ref.to_string(),
                     "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                     "confirmedAt": unix_millis_to_rfc3339(e.confirmed_at),
-                }))
-            }
-            DomainEvent::CapacityReleased(e) => {
-                ("CapacityReleased", json!({
+                }),
+            ),
+            DomainEvent::CapacityReleased(e) => (
+                "CapacityReleased",
+                json!({
                     "holdId": e.hold_id.to_string(),
                     "inventoryPoolId": e.inventory_pool_id.to_string(),
                     "capacityUnitRef": e.capacity_unit_ref.to_string(),
                     "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                     "releasedAt": unix_millis_to_rfc3339(e.released_at),
                     "releaseReason": e.release_reason,
-                }))
-            }
-            DomainEvent::CapacityHoldExpired(e) => {
-                ("CapacityHoldExpired", json!({
+                }),
+            ),
+            DomainEvent::CapacityHoldExpired(e) => (
+                "CapacityHoldExpired",
+                json!({
                     "holdId": e.hold_id.to_string(),
                     "inventoryPoolId": e.inventory_pool_id.to_string(),
                     "capacityUnitRef": e.capacity_unit_ref.to_string(),
                     "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                     "expiredAt": unix_millis_to_rfc3339(e.expired_at),
-                }))
-            }
-            DomainEvent::CapacityHoldFailed(e) => {
-                ("CapacityHoldFailed", json!({
+                }),
+            ),
+            DomainEvent::CapacityHoldFailed(e) => (
+                "CapacityHoldFailed",
+                json!({
                     "requestedHoldId": e.requested_hold_id.to_string(),
                     "inventoryPoolId": e.inventory_pool_id.to_string(),
                     "capacityUnitRef": e.capacity_unit_ref.to_string(),
                     "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                     "reason": format!("{:?}", e.reason),
-                }))
-            }
+                }),
+            ),
         };
 
         let envelope = WireEnvelope {
@@ -431,6 +522,19 @@ pub struct HoldCapacityRequest {
     pub segment_booking_id: String,
 }
 
+impl HoldCapacityRequest {
+    fn fingerprint(&self) -> String {
+        format!(
+            "hold:{}:{}:{}:{}:{}",
+            self.segment_ref,
+            self.traveler_ref,
+            self.class_ref,
+            self.quantity,
+            self.segment_booking_id
+        )
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HoldCapacityResponse {
     pub hold_id: String,
@@ -439,13 +543,13 @@ pub struct HoldCapacityResponse {
     pub held_until: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConfirmHoldResponse {
     pub hold_id: String,
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseHoldResponse {
     pub hold_id: String,
     pub status: String,
@@ -467,6 +571,12 @@ pub struct GetHoldResponse {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+struct IdempotencyRecord {
+    fingerprint: String,
+    response: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
 pub enum AppError {
     ValidationFailed(String),
     NotFound(String),
@@ -479,6 +589,10 @@ pub enum AppError {
 }
 
 impl AppError {
+    fn from_publish_failed(error: PublishFailed) -> Self {
+        AppError::Unavailable(error.to_string())
+    }
+
     pub fn status_code(&self) -> u16 {
         match self {
             AppError::ValidationFailed(_) => 400,
