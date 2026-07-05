@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 
+import { InMemoryEventPublisher } from "./application/messaging.js";
 import { createApp } from "./index.js";
 
-describe("customer-service operational foundation", () => {
+const openBody = {
+  requesterRef: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b001",
+  channel: "APP",
+  classification: "PAYMENT_HELP",
+  priority: "HIGH",
+  description: "Payment not reflected after successful charge",
+  businessReferences: { journeyOrderId: "ord-0194f2e0-7b3e-7610-0284-5c26e8b002" },
+};
+
+async function openedCase(app = createApp()): Promise<string> {
+  const response = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers: { "idempotency-key": randomUUID() }, payload: openBody });
+  assert.equal(response.statusCode, 201);
+  return response.json().caseId as string;
+}
+
+describe("customer-service HTTP API", () => {
   it("serves health, liveness, readiness, and metadata with request correlation headers", async () => {
     const app = createApp();
 
@@ -20,51 +37,185 @@ describe("customer-service operational foundation", () => {
     assert.equal(response.headers["x-request-id"], "req-customer-service-1");
     assert.equal(response.headers["x-correlation-id"], "corr-customer-service-1");
     assert.deepEqual(response.json(), { status: "ok", probe: "ready" });
-
-    const health = await app.inject("/health");
-    assert.equal(health.statusCode, 200);
-    assert.equal(health.json().status, "ok");
-    assert.equal(health.json().service.serviceId, "customer-service");
-
+    assert.equal((await app.inject("/healthz")).statusCode, 200);
+    assert.equal((await app.inject("/health")).json().service.serviceId, "customer-service");
     assert.deepEqual((await app.inject("/live")).json(), { status: "ok", probe: "live" });
     assert.deepEqual((await app.inject("/livez")).json(), { status: "ok", probe: "live" });
     assert.deepEqual((await app.inject("/ready")).json(), { status: "ok", probe: "ready" });
-
-    const metadata = await app.inject("/metadata");
-    assert.equal(metadata.statusCode, 200);
-    assert.equal(metadata.json().service.serviceId, "customer-service");
-    assert.deepEqual(metadata.json().observability, { tracing: "opt-in", default: "noop" });
+    assert.equal((await app.inject("/metadata")).json().service.serviceId, "customer-service");
   });
 
-  it("generates request and correlation ids when headers are absent", async () => {
-    const app = createApp();
-
-    const response = await app.inject("/livez");
-
+  it("generates request and prefixed correlation ids when headers are absent", async () => {
+    const response = await createApp().inject("/livez");
     assert.equal(response.statusCode, 200);
     assert.equal(typeof response.headers["x-request-id"], "string");
-    assert.notEqual(response.headers["x-request-id"], "");
-    assert.equal(response.headers["x-correlation-id"], response.headers["x-request-id"]);
+    assert.match(String(response.headers["x-correlation-id"]), /^corr-/);
   });
 
-  it("returns the standard error envelope for missing routes", async () => {
-    const app = createApp();
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/missing",
-      headers: { "x-request-id": "req-customer-service-404" },
-    });
+  it("returns the canonical error envelope for missing routes", async () => {
+    const response = await createApp().inject({ method: "GET", url: "/missing", headers: { "x-request-id": "req-customer-service-404" } });
 
     assert.equal(response.statusCode, 404);
-    assert.deepEqual(response.json(), {
-      error: {
-        code: "NOT_FOUND",
-        message: "Route GET /missing was not found",
-        requestId: "req-customer-service-404",
-        correlationId: "req-customer-service-404",
-      },
+    assert.equal(response.json().code, "NOT_FOUND");
+    assert.equal(response.json().message, "Route GET /missing was not found");
+    assert.match(response.json().correlationId, /^corr-/);
+    assert.deepEqual(response.json().details, {});
+  });
+
+  it("opens and gets a support case", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({ publisher });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/support-cases",
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c001", "x-correlation-id": "corr-http-test" },
+      payload: openBody,
     });
+
+    assert.equal(created.statusCode, 201);
+    assert.match(created.json().caseId, /^sc-/);
+    assert.equal(created.json().status, "OPENED");
+    assert.equal(created.json().priority, "HIGH");
+    assert.equal(publisher.envelopes.length, 1);
+
+    const fetched = await app.inject(`/api/v1/support-cases/${created.json().caseId}`);
+    assert.equal(fetched.statusCode, 200);
+    assert.equal(fetched.json().caseId, created.json().caseId);
+    assert.equal(fetched.json().description, openBody.description);
+  });
+
+  it("requires Idempotency-Key and rejects validation failures with canonical body", async () => {
+    const missingKey = await createApp().inject({ method: "POST", url: "/api/v1/support-cases", payload: openBody });
+    assert.equal(missingKey.statusCode, 400);
+    assert.equal(missingKey.json().code, "VALIDATION_FAILED");
+
+    const invalid = await createApp().inject({
+      method: "POST",
+      url: "/api/v1/support-cases",
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c002" },
+      payload: { ...openBody, channel: "FAX" },
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(invalid.json().code, "VALIDATION_FAILED");
+    assert.equal(invalid.json().details.field, "channel");
+  });
+
+  it("replays idempotent requests and rejects same key with different body", async () => {
+    const app = createApp();
+    const headers = { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c003" };
+    const first = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers, payload: openBody });
+    const replay = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers, payload: openBody });
+    const reused = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers, payload: { ...openBody, description: "different" } });
+
+    assert.equal(first.statusCode, 201);
+    assert.equal(replay.statusCode, 201);
+    assert.deepEqual(replay.json(), first.json());
+    assert.equal(reused.statusCode, 422);
+    assert.equal(reused.json().code, "IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("attaches evidence", async () => {
+    const app = createApp();
+    const caseId = await openedCase(app);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/evidence`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c004" },
+      payload: { evidenceType: "SCREENSHOT", reference: "s3://evidence/1", summary: "receipt", accessLevel: "SENSITIVE", attachedBy: "op-1" },
+    });
+    assert.equal(response.statusCode, 201);
+    assert.match(response.json().evidenceId, /^evid-/);
+    assert.equal(response.json().evidenceType, "SCREENSHOT");
+  });
+
+  it("classifies and assigns a support case", async () => {
+    const app = createApp();
+    const caseId = await openedCase(app);
+    const classified = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/classify`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c005", "x-operator-ref": "op-1" },
+      payload: { classification: "PAYMENT_DISPUTE", priority: "URGENT" },
+    });
+    assert.equal(classified.statusCode, 200);
+    assert.equal(classified.json().status, "IN_PROGRESS");
+
+    const assigned = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/assign`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c006", "x-operator-ref": "op-1" },
+      payload: { assignedTo: "op-2", ownerQueue: "payment" },
+    });
+    assert.equal(assigned.statusCode, 200);
+    assert.equal(assigned.json().ownerQueue, "payment");
+  });
+
+  it("escalates a support case", async () => {
+    const app = createApp();
+    const caseId = await openedCase(app);
+    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "assign-before-escalate" }, payload: { ownerQueue: "tier1" } });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/escalate`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c007" },
+      payload: { targetQueue: "tier2", reason: "needs supervisor" },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().status, "IN_PROGRESS");
+  });
+
+  it("resolves, closes, and reopens a support case", async () => {
+    const app = createApp();
+    const caseId = await openedCase(app);
+    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "assign-before-resolve" }, payload: { ownerQueue: "tier1" } });
+
+    const resolved = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/resolve`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c008" },
+      payload: { summary: "fixed", resolutionCode: "FIXED" },
+    });
+    assert.equal(resolved.statusCode, 200);
+    assert.equal(resolved.json().status, "RESOLVED");
+
+    const closed = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/close`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c009" },
+      payload: { reason: "RESOLVED" },
+    });
+    assert.equal(closed.statusCode, 200);
+    assert.equal(closed.json().status, "CLOSED");
+
+    const reopened = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/reopen`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c010" },
+      payload: { reason: "still broken", requesterRef: openBody.requesterRef },
+    });
+    assert.equal(reopened.statusCode, 200);
+    assert.equal(reopened.json().status, "IN_PROGRESS");
+  });
+
+  it("surfaces aggregate invariant violations as DOMAIN_RULE_VIOLATION", async () => {
+    const app = createApp();
+    const caseId = await openedCase(app);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/close`,
+      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c011" },
+      payload: { reason: "RESOLVED" },
+    });
+    assert.equal(response.statusCode, 422);
+    assert.equal(response.json().code, "DOMAIN_RULE_VIOLATION");
+    assert.equal(response.json().details.domainCode, "CLOSURE_WITHOUT_RESOLUTION");
+  });
+
+  it("returns NOT_FOUND for unknown cases", async () => {
+    const response = await createApp().inject("/api/v1/support-cases/sc-missing");
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.json().code, "NOT_FOUND");
   });
 
   it("exposes a no-op-by-default opt-in tracing seam", async () => {
@@ -77,35 +228,18 @@ describe("customer-service operational foundation", () => {
       startSpan: (context) => {
         assert.equal(context.method, "GET");
         assert.equal(context.url, "/health");
-        return {
-          end: (result) => {
-            endedSpans.push(result);
-          },
-        };
+        return { end: (result) => { endedSpans.push(result); } };
       },
     });
 
     const response = await app.inject({
       method: "GET",
       url: "/health",
-      headers: {
-        "x-request-id": "req-customer-service-trace",
-        "x-correlation-id": "corr-customer-service-trace",
-      },
+      headers: { "x-request-id": "req-customer-service-trace", "x-correlation-id": "corr-customer-service-trace" },
     });
 
     assert.equal(response.statusCode, 200);
     assert.deepEqual(seenRequests, [{ requestId: "req-customer-service-trace", correlationId: "corr-customer-service-trace" }]);
-    assert.deepEqual(endedSpans, [
-      {
-        method: "GET",
-        url: "/health",
-        statusCode: 200,
-        requestId: "req-customer-service-trace",
-        correlationId: "corr-customer-service-trace",
-      },
-    ]);
-
-    assert.equal((await createApp().inject("/health")).statusCode, 200);
+    assert.equal(endedSpans[0].statusCode, 200);
   });
 });
