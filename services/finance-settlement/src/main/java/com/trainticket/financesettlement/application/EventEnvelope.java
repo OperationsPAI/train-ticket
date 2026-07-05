@@ -1,10 +1,12 @@
 package com.trainticket.financesettlement.application;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({"eventId", "eventType", "occurredAt", "correlationId", "causationId", "producer", "schemaVersion", "payload"})
 public record EventEnvelope(
     String eventId,
@@ -21,14 +23,19 @@ public record EventEnvelope(
         eventType = requireText(eventType, "eventType");
         Objects.requireNonNull(occurredAt, "occurredAt is required");
         correlationId = requirePrefixed(correlationId, "corr-", "correlationId");
-        causationId = causationId == null ? null : requireCausationId(causationId);
+        causationId = validateOptionalCausationId(causationId);
         producer = requireText(producer, "producer");
         if (schemaVersion < 1) throw new IllegalArgumentException("schemaVersion must be positive");
         payload = Map.copyOf(Objects.requireNonNull(payload, "payload is required"));
     }
 
-    private static String requireCausationId(String value) {
-        value = requireText(value, "causationId");
+    private static String validateOptionalCausationId(String value) {
+        if (value == null) {
+            return null;
+        }
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("causationId must not be blank");
+        }
         if (!value.startsWith("cmd-") && !value.startsWith("evt-")) {
             throw new IllegalArgumentException("causationId must start with cmd- or evt-");
         }

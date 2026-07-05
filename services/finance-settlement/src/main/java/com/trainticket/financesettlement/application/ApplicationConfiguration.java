@@ -37,9 +37,10 @@ public class ApplicationConfiguration {
     @Bean
     FinanceSettlementEventHandler financeSettlementEventHandler(
         ConsumedEventLogRepository consumedEvents,
+        PaymentIntentOrderReferenceRepository paymentIntentOrderReferences,
         Clock clock,
         FinanceSettlementApplicationService service
     ) {
-        return new FinanceSettlementEventHandler(consumedEvents, clock, service);
+        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, clock, service);
     }
 }
