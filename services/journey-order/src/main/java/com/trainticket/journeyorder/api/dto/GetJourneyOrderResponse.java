@@ -8,7 +8,7 @@ public record GetJourneyOrderResponse(
     @JsonProperty("orderId") String orderId,
     @JsonProperty("accountId") String accountId,
     @JsonProperty("offerId") String offerId,
-    @JsonProperty("monetarySummary") CreateJourneyOrderResponse.MonetarySummaryDto monetarySummary,
+    @JsonProperty("monetarySummary") MonetarySummaryDto monetarySummary,
     @JsonProperty("status") String status,
     @JsonProperty("travelerRefs") List<String> travelerRefs,
     @JsonProperty("segmentRefs") List<String> segmentRefs,

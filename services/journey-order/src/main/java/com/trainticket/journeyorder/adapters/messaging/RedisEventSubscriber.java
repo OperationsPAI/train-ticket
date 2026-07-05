@@ -9,7 +9,9 @@ import com.trainticket.journeyorder.domain.EventEnvelope;
 import io.lettuce.core.Consumer;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.StreamMessage;
+import io.lettuce.core.XAddArgs;
 import io.lettuce.core.XAutoClaimArgs;
+import io.lettuce.core.XGroupCreateArgs;
 import io.lettuce.core.XReadArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
@@ -72,7 +74,8 @@ public class RedisEventSubscriber implements EventSubscriber {
 
         for (String stream : streams) {
             try {
-                async.xgroupCreate(XReadArgs.StreamOffset.last(stream), group).get(5, TimeUnit.SECONDS);
+                XGroupCreateArgs args = new XGroupCreateArgs().mkstream(true);
+                async.xgroupCreate(XReadArgs.StreamOffset.last(stream), group, args).get(5, TimeUnit.SECONDS);
             } catch (Exception e) {
                 log.debug("Consumer group may already exist for {}: {}", stream, e.getMessage());
             }
@@ -171,7 +174,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                     if (claimed == null || claimed.isEmpty()) continue;
 
                     for (StreamMessage<String, String> msg : claimed) {
-                        handleClaimedMessage(stream, msg, handler);
+                        handleClaimedMessage(stream, group, msg, handler);
                     }
                 } catch (Exception e) {
                     log.error("Error in recovery loop for stream {}", stream, e);
@@ -180,31 +183,31 @@ public class RedisEventSubscriber implements EventSubscriber {
         }
     }
 
-    private void handleClaimedMessage(String stream, StreamMessage<String, String> msg,
+    private void handleClaimedMessage(String stream, String group, StreamMessage<String, String> msg,
                                       Function<EventEnvelope, HandlerResult> handler) {
         String msgId = msg.getId();
         Map<String, String> body = msg.getBody();
         String json = body != null ? body.get("envelope") : null;
 
         if (json == null) {
-            async.xack(stream, groupForStream(stream), msgId);
+            async.xack(stream, group, msgId);
             return;
         }
 
         try {
             EventEnvelope envelope = deserialize(json);
             if (dedupCache.contains(envelope.eventId())) {
-                async.xack(stream, groupForStream(stream), msgId);
+                async.xack(stream, group, msgId);
                 return;
             }
 
             HandlerResult hr = handler.apply(envelope);
             if (hr instanceof EventSubscriber.Success) {
                 dedupCache.add(envelope.eventId());
-                async.xack(stream, groupForStream(stream), msgId);
+                async.xack(stream, group, msgId);
             } else if (hr instanceof EventSubscriber.FatalError) {
-                async.xadd(stream + ":dlq", Map.of("envelope", json));
-                async.xack(stream, groupForStream(stream), msgId);
+                publishToDlq(stream, json);
+                async.xack(stream, group, msgId);
             }
         } catch (Exception e) {
             log.error("Error processing claimed message {}", msgId, e);
@@ -238,7 +241,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                 async.xack(stream, group, msgId);
             } else if (result instanceof EventSubscriber.FatalError fe) {
                 log.error("Fatal error processing event {}: {}", envelope.eventId(), fe.reason());
-                async.xadd(stream + ":dlq", Map.of("envelope", json));
+                publishToDlq(stream, json);
                 async.xack(stream, group, msgId);
             }
         } catch (Exception e) {
@@ -246,8 +249,9 @@ public class RedisEventSubscriber implements EventSubscriber {
         }
     }
 
-    private String groupForStream(String stream) {
-        return stream.replace("events:", "");
+    private void publishToDlq(String stream, String json) {
+        XAddArgs args = new XAddArgs().maxlen(100_000).approximateTrimming();
+        async.xadd(stream + ":dlq", args, Map.of("envelope", json));
     }
 
     private EventEnvelope deserialize(String json) {
@@ -261,8 +265,14 @@ public class RedisEventSubscriber implements EventSubscriber {
             String correlationId = (String) map.get("correlationId");
             String occurredAtStr = (String) map.get("occurredAt");
             Instant occurredAt = occurredAtStr != null ? Instant.parse(occurredAtStr) : Instant.now();
+            Map<String, Object> payload = map.get("payload") instanceof Map<?, ?> payloadMap
+                ? payloadMap.entrySet().stream().collect(java.util.stream.Collectors.toMap(
+                    entry -> String.valueOf(entry.getKey()),
+                    Map.Entry::getValue
+                ))
+                : Map.of();
 
-            return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, correlationId, causationId, producer);
+            return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, correlationId, causationId, producer, payload);
         } catch (Exception e) {
             throw new RuntimeException("Failed to deserialize EventEnvelope", e);
         }
