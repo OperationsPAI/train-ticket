@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+from fare_pricing.ids import prefixed_uuid7
 
 
 class ApiError(Exception):
@@ -18,7 +19,7 @@ class ApiError(Exception):
 
 
 def correlation_id_for(request: Request) -> str:
-    return getattr(request.state, "correlation_id", None) or request.headers.get("X-Correlation-Id") or f"corr-{uuid4()}"
+    return getattr(request.state, "correlation_id", None) or request.headers.get("X-Correlation-Id") or prefixed_uuid7("corr")
 
 
 def error_body(code: str, message: str, correlation_id: str, details: dict[str, Any] | None = None) -> dict[str, Any]:

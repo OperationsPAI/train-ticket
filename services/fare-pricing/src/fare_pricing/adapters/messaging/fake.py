@@ -86,3 +86,6 @@ class FakeEventSubscriber(EventSubscriber):
         data = json.loads(envelope_json)
         envelope = EventEnvelope.from_json_dict(data)
         self.deliver(envelope)
+
+    def stop(self) -> None:
+        self._started = False

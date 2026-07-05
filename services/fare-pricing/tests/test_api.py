@@ -4,6 +4,7 @@ import json
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import uuid
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -23,9 +24,12 @@ from fare_pricing import (
     calculate_fare_quote,
 )
 from fare_pricing.api import create_app
+from fare_pricing.ids import uuid7
 from fare_pricing.application.service import InMemoryStore
+from fare_pricing.adapters.messaging.config import FARE_PRICING_SUBSCRIPTION_STREAMS
 from fare_pricing.ports import EventEnvelope
 from fare_pricing.ports.messaging import FatalHandlerError, PublishFailed
+from fare_pricing.runtime_messaging import configure_event_subscriber
 from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
 from fare_pricing.adapters.messaging.subscriber import RedisEventSubscriber
 
@@ -201,7 +205,6 @@ class FarePricingApiTest(unittest.TestCase):
                     "purpose": "REFUND",
                     "entitlementIds": ["ent-123"],
                     "journeyOrderId": "ord-456",
-                    "fareQuoteRef": "fq-missing",
                 },
                 headers={"Idempotency-Key": bad_key},
             )
@@ -223,6 +226,8 @@ class FarePricingApiTest(unittest.TestCase):
         self.store.fare_rule_sets[self.rs.rule_set_id] = published_rule_set(
             rule("refund", RuleKind.REFUND_FEE, "20.00"),
         )
+        self.store.fare_quote_journey_order_links["ord-456"] = quote_id
+        self.store.entitlement_quote_links["ent-123"] = quote_id
 
         resp = self.client.post(
             "/api/v1/adjustment-quotes",
@@ -230,7 +235,6 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-123"],
                 "journeyOrderId": "ord-456",
-                "fareQuoteRef": quote_id,
             },
             headers={"Idempotency-Key": uuid7_key(998)},
         )
@@ -294,10 +298,12 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(create_resp.status_code, 201)
         quote_id = create_resp.json()["quoteId"]
 
-        # Add refund fee rule
+        # Add refund fee rule and explicit order-to-quote projection linkage
         self.store.fare_rule_sets[self.rs.rule_set_id] = published_rule_set(
             rule("refund", RuleKind.REFUND_FEE, "20.00"),
         )
+        self.store.fare_quote_journey_order_links["ord-456"] = quote_id
+        self.store.entitlement_quote_links["ent-123"] = quote_id
 
         resp = self.client.post(
             "/api/v1/adjustment-quotes",
@@ -305,7 +311,6 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-123"],
                 "journeyOrderId": "ord-456",
-                "fareQuoteRef": quote_id,
             },
             headers={"Idempotency-Key": uuid7_key()},
         )
@@ -319,7 +324,7 @@ class FarePricingApiTest(unittest.TestCase):
         adjustment_events = [e for e in self.publisher.published_events if e.event_type == "AdjustmentQuoteComputed"]
         self.assertEqual(len(adjustment_events), 1)
         self.assertEqual(adjustment_events[0].payload["adjustmentQuoteId"], data["adjustmentQuoteId"])
-        self.assertEqual(adjustment_events[0].payload["fareQuoteRef"], quote_id)
+        self.assertEqual(adjustment_events[0].payload["originalQuoteId"], quote_id)
         self.assertEqual(adjustment_events[0].payload["entitlementIds"], ["ent-123"])
 
     def test_adjustment_quote_not_found(self) -> None:
@@ -391,7 +396,7 @@ class FarePricingApiTest(unittest.TestCase):
 
     def test_correlation_id_propagation(self) -> None:
         """X-Correlation-Id is propagated in response."""
-        corr_id = str(uuid4())
+        corr_id = f"corr-{uuid7()}"
         resp = self.client.post(
             "/api/v1/fare-quotes",
             json={
@@ -406,6 +411,26 @@ class FarePricingApiTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.headers.get("X-Correlation-Id"), corr_id)
+
+    def test_generated_http_and_event_ids_are_uuid7(self) -> None:
+        resp = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-123"],
+                "channel": "web",
+                "segmentRefs": ["seg-456"],
+            },
+            headers={"Idempotency-Key": uuid7_key(996)},
+        )
+        self.assertEqual(resp.status_code, 201)
+        request_id = resp.headers["X-Request-ID"]
+        correlation_id = resp.headers["X-Correlation-Id"]
+        event = self.publisher.last_event()
+        assert event is not None
+        self.assertEqual(uuid.UUID(request_id).version, 7)
+        self.assertEqual(uuid.UUID(correlation_id.removeprefix("corr-")).version, 7)
+        self.assertEqual(uuid.UUID(event.event_id.removeprefix("evt-")).version, 7)
+        self.assertEqual(uuid.UUID(event.causation_id.removeprefix("cmd-")).version, 7)
 
     def test_money_format_minor_units(self) -> None:
         """Money amounts use minorUnits integer, not float."""
@@ -426,6 +451,13 @@ class FarePricingApiTest(unittest.TestCase):
 
 class FarePricingMessagingTest(unittest.TestCase):
     """Messaging port tests — no live Redis required (in-memory fake)."""
+
+    def test_runtime_messaging_starts_fare_pricing_subscription(self) -> None:
+        subscriber = FakeEventSubscriber()
+        configure_event_subscriber(make_app().app, subscriber)
+        self.assertEqual(subscriber.streams, FARE_PRICING_SUBSCRIPTION_STREAMS)
+        self.assertEqual(subscriber.group, "fare-pricing")
+        self.assertTrue(subscriber.consumer_name.startswith("fare-pricing-"))
 
     def test_event_publisher_wraps_in_envelope(self) -> None:
         """FakeEventPublisher stores events with correct envelope fields."""

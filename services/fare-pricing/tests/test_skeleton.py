@@ -1,4 +1,5 @@
 import unittest
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -36,7 +37,10 @@ class SkeletonTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         request_id = response.headers["X-Request-ID"]
         self.assertTrue(request_id)
-        self.assertEqual(response.headers["X-Correlation-ID"], request_id)
+        correlation_id = response.headers["X-Correlation-ID"]
+        self.assertTrue(correlation_id.startswith("corr-"))
+        self.assertEqual(uuid.UUID(request_id).version, 7)
+        self.assertEqual(uuid.UUID(correlation_id.removeprefix("corr-")).version, 7)
 
     def test_observability_trace_hook_is_opt_in(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []
