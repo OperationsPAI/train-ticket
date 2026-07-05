@@ -35,6 +35,8 @@ public class BookingOrchestrationService {
     private final ConcurrentHashMap<String, SegmentBooking> segmentBookings = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> segmentBookingToSaga = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> segmentIdempotencyToBookingId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> holdIdToSegmentBookingId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> paymentIntentIdToSaga = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> consumedEventIds = new ConcurrentHashMap<>();
 
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher) {
@@ -139,11 +141,13 @@ public class BookingOrchestrationService {
             case "JourneyOrderCreated" -> handleJourneyOrderCreated(payload, envelope.correlationId());
             case "CapacityHeld", "CapacityHoldConfirmed" -> handleCapacityHeld(payload, envelope.correlationId(), envelope.eventId());
             case "CapacityReleased", "CapacityHoldExpired" -> handleCapacityReleased(payload, envelope.correlationId(), envelope.eventId());
+            case "PaymentIntentCreated" -> handlePaymentIntentCreated(payload);
             case "PaymentCaptured" -> handlePaymentCaptured(payload, envelope.correlationId(), envelope.eventId());
+            case "PaymentIntentFailed", "PaymentFailed", "PaymentExpired", "PaymentIntentExpired" -> handlePaymentFailure(payload, envelope.correlationId(), envelope.eventId());
             case "ProviderReservationConfirmed" -> handleProviderReservationConfirmed(payload, envelope.correlationId(), envelope.eventId());
-            case "ProviderReservationFailed", "ProviderReservationTimedOut" -> handleProviderReservationFailed(payload, envelope.eventId());
+            case "ProviderReservationFailed", "ProviderReservationTimedOut" -> handleProviderReservationFailed(payload, envelope.correlationId(), envelope.eventId());
             case "EntitlementIssued" -> handleEntitlementIssued(payload, envelope.correlationId(), envelope.eventId());
-            case "EntitlementIssueFailed", "EntitlementVoided" -> handleEntitlementFailure(payload, envelope.eventId());
+            case "EntitlementIssueFailed", "EntitlementVoided" -> handleEntitlementFailure(payload, envelope.correlationId(), envelope.eventId());
             default -> {
                 // Streams contain event types that do not affect this saga.
             }
@@ -187,6 +191,9 @@ public class BookingOrchestrationService {
                 .map(segmentBookings::get)
                 .orElse(null);
         }
+        if (booking == null && holdId != null) {
+            booking = byHoldId(holdId);
+        }
         if (booking == null) {
             booking = bySegmentBookingId(payload);
         }
@@ -194,31 +201,61 @@ public class BookingOrchestrationService {
             throw new IllegalArgumentException("CapacityHeld/CapacityHoldConfirmed payload requires holdId and a known segment booking reference");
         }
         booking.markCapacityHolding(holdId);
+        holdIdToSegmentBookingId.putIfAbsent(holdId, booking.segmentBookingId());
         publishEvents(booking.pullEvents(), correlationId, causationId);
         markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
     }
 
     private void handleCapacityReleased(Map<String, Object> payload, String correlationId, String causationId) {
-        SegmentBooking booking = bySegmentBookingId(payload);
+        String holdId = firstText(payload, "holdId", "capacityHoldId");
+        SegmentBooking booking = holdId == null ? null : byHoldId(holdId);
+        if (booking == null) {
+            booking = bySegmentBookingId(payload);
+        }
         if (booking != null) {
             String reason = firstText(payload, "releaseReason", "reason");
-            booking.requestCancellation(reason == null ? "capacity released" : reason);
+            booking.markCancelled(reason == null ? "capacity hold released" : reason);
+            if (holdId != null) {
+                holdIdToSegmentBookingId.remove(holdId);
+            }
             publishEvents(booking.pullEvents(), correlationId, causationId);
         }
     }
 
-    private void handlePaymentCaptured(Map<String, Object> payload, String correlationId, String causationId) {
-        String journeyOrderId = firstText(payload, "journeyOrderId", "orderId", "businessRef");
-        if (journeyOrderId == null) {
-            throw new IllegalArgumentException("PaymentCaptured payload requires journeyOrderId, orderId or businessRef");
+    private void handlePaymentIntentCreated(Map<String, Object> payload) {
+        String paymentIntentId = text(payload.get("paymentIntentId"));
+        String businessRef = text(payload.get("businessRef"));
+        if (paymentIntentId == null || businessRef == null) {
+            throw new IllegalArgumentException("PaymentIntentCreated payload requires paymentIntentId and businessRef");
         }
-        sagas.values().stream()
-            .filter(saga -> saga.journeyOrderId().equals(journeyOrderId))
-            .findFirst()
-            .ifPresent(saga -> {
-                safeAdvance(saga, BookingSagaStatus.TICKETING);
-                publishEvents(saga.pullEvents(), correlationId, causationId);
-            });
+        mapPaymentIntent(paymentIntentId, businessRef);
+    }
+
+    private void handlePaymentCaptured(Map<String, Object> payload, String correlationId, String causationId) {
+        String paymentIntentId = text(payload.get("paymentIntentId"));
+        if (paymentIntentId == null) {
+            throw new IllegalArgumentException("PaymentCaptured payload requires paymentIntentId");
+        }
+        String sagaId = sagaIdForPaymentIntent(paymentIntentId, payload);
+        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        if (saga != null) {
+            safeAdvance(saga, BookingSagaStatus.TICKETING);
+            publishEvents(saga.pullEvents(), correlationId, causationId);
+        }
+    }
+
+    private void handlePaymentFailure(Map<String, Object> payload, String correlationId, String causationId) {
+        String paymentIntentId = text(payload.get("paymentIntentId"));
+        if (paymentIntentId == null) {
+            throw new IllegalArgumentException("payment failure payload requires paymentIntentId");
+        }
+        String sagaId = sagaIdForPaymentIntent(paymentIntentId, payload);
+        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        if (saga != null && saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
+            String reason = firstText(payload, "reason", "reasonCode");
+            saga.fail(reason == null ? "payment failed" : reason);
+            publishEvents(saga.pullEvents(), correlationId, causationId);
+        }
     }
 
     private void handleProviderReservationConfirmed(Map<String, Object> payload, String correlationId, String causationId) {
@@ -234,14 +271,14 @@ public class BookingOrchestrationService {
         markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
     }
 
-    private void handleProviderReservationFailed(Map<String, Object> payload, String causationId) {
+    private void handleProviderReservationFailed(Map<String, Object> payload, String correlationId, String causationId) {
         SegmentBooking booking = bySegmentBookingId(payload);
         if (booking == null) {
             throw new IllegalArgumentException("provider failure payload references an unknown segment booking");
         }
         String reason = firstText(payload, "errorMessage", "reason", "errorType");
         booking.failReservation(reason == null ? "provider reservation failed" : reason);
-        publishEvents(booking.pullEvents(), null, causationId);
+        publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
     private void handleEntitlementIssued(Map<String, Object> payload, String correlationId, String causationId) {
@@ -263,12 +300,12 @@ public class BookingOrchestrationService {
         }
     }
 
-    private void handleEntitlementFailure(Map<String, Object> payload, String causationId) {
+    private void handleEntitlementFailure(Map<String, Object> payload, String correlationId, String causationId) {
         SegmentBooking booking = bySegmentBookingId(payload);
         if (booking != null) {
             String reason = firstText(payload, "failureMessage", "failureCode", "reason");
             booking.failReservation(reason == null ? "entitlement processing failed" : reason);
-            publishEvents(booking.pullEvents(), null, causationId);
+            publishEvents(booking.pullEvents(), correlationId, causationId);
         }
     }
 
@@ -376,6 +413,41 @@ public class BookingOrchestrationService {
     private SegmentBooking bySegmentBookingId(Map<String, Object> payload) {
         String segmentBookingId = text(payload.get("segmentBookingId"));
         return segmentBookingId == null ? null : segmentBookings.get(segmentBookingId);
+    }
+
+    private SegmentBooking byHoldId(String holdId) {
+        return Optional.ofNullable(holdIdToSegmentBookingId.get(holdId))
+            .map(segmentBookings::get)
+            .orElse(null);
+    }
+
+    private String sagaIdForPaymentIntent(String paymentIntentId, Map<String, Object> payload) {
+        String sagaId = paymentIntentIdToSaga.get(paymentIntentId);
+        if (sagaId != null) {
+            return sagaId;
+        }
+        String businessRef = firstText(payload, "businessRef", "journeyOrderId", "orderId");
+        return businessRef == null ? null : mapPaymentIntent(paymentIntentId, businessRef).orElse(null);
+    }
+
+    private Optional<String> mapPaymentIntent(String paymentIntentId, String businessRef) {
+        BookingSaga saga = sagaByBusinessRef(businessRef);
+        if (saga != null) {
+            paymentIntentIdToSaga.putIfAbsent(paymentIntentId, saga.sagaId());
+            return Optional.of(saga.sagaId());
+        }
+        return Optional.empty();
+    }
+
+    private BookingSaga sagaByBusinessRef(String businessRef) {
+        BookingSaga bySagaId = sagas.get(businessRef);
+        if (bySagaId != null) {
+            return bySagaId;
+        }
+        return sagas.values().stream()
+            .filter(saga -> saga.journeyOrderId().equals(businessRef))
+            .findFirst()
+            .orElse(null);
     }
 
     private ProviderReference providerReference(Object raw) {
