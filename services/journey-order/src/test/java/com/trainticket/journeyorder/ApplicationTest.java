@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import jakarta.servlet.ServletException;
 import java.io.IOException;
@@ -72,7 +73,7 @@ class ApplicationTest {
         String requestId = response.getHeader(RequestContextFilter.REQUEST_ID_HEADER);
         assertNotNull(requestId);
         assertFalse(requestId.isBlank());
-        assertEquals(requestId, response.getHeader(RequestContextFilter.CORRELATION_ID_HEADER));
+        assertTrue(response.getHeader(RequestContextFilter.CORRELATION_ID_HEADER).startsWith("corr-"));
     }
 
     private static final class RecordingTracer implements RuntimeTracer {

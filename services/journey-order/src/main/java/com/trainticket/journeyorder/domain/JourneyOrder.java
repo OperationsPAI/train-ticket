@@ -65,7 +65,7 @@ public final class JourneyOrder {
     ) {
         Objects.requireNonNull(offerSnapshot, "offerSnapshot is required").requireValidAt(now);
         JourneyOrder order = new JourneyOrder(
-            UUID.randomUUID().toString(),
+            "ord-" + UUID.randomUUID(),
             accountId,
             channelRef,
             accountId + ":" + offerSnapshot.offerId() + ":" + requireText(clientRequestId, "clientRequestId"),

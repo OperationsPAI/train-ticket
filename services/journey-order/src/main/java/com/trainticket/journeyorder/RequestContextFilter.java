@@ -29,7 +29,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
         FilterChain filterChain
     ) throws ServletException, IOException {
         String requestId = headerOrGenerated(request, REQUEST_ID_HEADER);
-        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, requestId);
+        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, "corr-" + UUID.randomUUID());
         RequestTraceContext context = new RequestTraceContext(
             requestId,
             correlationId,

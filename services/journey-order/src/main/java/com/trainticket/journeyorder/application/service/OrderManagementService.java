@@ -7,6 +7,8 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderService;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
+import com.trainticket.journeyorder.application.port.out.EventSubscriber;
+import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
 import com.trainticket.journeyorder.domain.EventEnvelope;
 import com.trainticket.journeyorder.domain.JourneyOrder;
 import com.trainticket.journeyorder.domain.JourneyOrderEvent;
@@ -19,21 +21,24 @@ import com.trainticket.journeyorder.domain.TravelerRef;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 
 @Service
-public class OrderManagementService implements JourneyOrderService {
+public class OrderManagementService implements JourneyOrderService, JourneyOrderEventHandler {
 
     private final Map<String, StoredOrder> orderStore = new LinkedHashMap<>();
     private final Map<String, IdempotencyEntry<JourneyOrderResult>> createIdempotencyStore = new LinkedHashMap<>();
     private final Map<String, IdempotencyEntry<CancelJourneyOrderResult>> cancelIdempotencyStore = new LinkedHashMap<>();
     private final EventPublisher eventPublisher;
+    private final Set<String> consumedEventIds = new HashSet<>();
     private final Clock clock;
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock) {
@@ -93,14 +98,11 @@ public class OrderManagementService implements JourneyOrderService {
             sourceCommandId, correlationId
         );
 
-        for (JourneyOrderEvent event : order.domainEvents()) {
-            eventPublisher.publish(envelopeWithPayload(event));
-        }
-
         StoredOrder stored = new StoredOrder(order, idempotencyKey);
         orderStore.put(order.orderId(), stored);
         JourneyOrderResult result = toResult(order);
         createIdempotencyStore.put(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+        publishEvents(order.domainEvents());
 
         return result;
     }
@@ -150,17 +152,20 @@ public class OrderManagementService implements JourneyOrderService {
 
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
+        int eventCount = order.domainEvents().size();
         order.cancel(request.reason(), now, sourceCommandId, sourceCommandId, correlationId);
 
-        for (JourneyOrderEvent event : order.domainEvents()) {
-            if (event instanceof com.trainticket.journeyorder.domain.JourneyOrderCancelled) {
-                eventPublisher.publish(envelopeWithPayload(event));
-            }
-        }
-
+        List<JourneyOrderEvent> newEvents = order.domainEvents().subList(eventCount, order.domainEvents().size());
         CancelJourneyOrderResult result = new CancelJourneyOrderResult(order.orderId(), "CANCELLED", now);
         cancelIdempotencyStore.put(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+        publishEvents(newEvents);
         return result;
+    }
+
+    private void publishEvents(List<JourneyOrderEvent> events) {
+        for (JourneyOrderEvent event : events) {
+            eventPublisher.publish(envelopeWithPayload(event));
+        }
     }
 
     private static EventEnvelope envelopeWithPayload(JourneyOrderEvent event) {
@@ -235,6 +240,17 @@ public class OrderManagementService implements JourneyOrderService {
         return Objects.requireNonNull(request.orderId()) + "|" + Objects.requireNonNull(request.reason());
     }
 
+    private static String toApiStatus(JourneyOrder order) {
+        return switch (order.state()) {
+            case PENDING_CONFIRMATION -> "CREATED";
+            case PENDING_PAYMENT -> "PENDING_PAYMENT";
+            case CONFIRMED -> "CONFIRMED";
+            case CANCELLED -> "CANCELLED";
+            case POST_SALES_ADJUSTED -> "ADJUSTED";
+            default -> order.state().name();
+        };
+    }
+
     private static JourneyOrderResult toResult(JourneyOrder order) {
         MonetarySummary ms = order.monetarySummary();
         return new JourneyOrderResult(
@@ -250,11 +266,96 @@ public class OrderManagementService implements JourneyOrderService {
                 ms.cancelledTotal().toMinorUnits(),
                 ms.payableTotal().toMinorUnits()
             ),
-            order.state().name(),
+            toApiStatus(order),
             order.travelers().stream().map(TravelerRef::travelerId).toList(),
             order.segments().stream().map(SegmentOrderSnapshot::segmentRef).toList(),
             order.timeline().isEmpty() ? null : order.timeline().getFirst().occurredAt()
         );
+    }
+
+    @Override
+    public synchronized EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
+        if (!consumedEventIds.add(envelope.eventId())) {
+            return new EventSubscriber.Success();
+        }
+        try {
+            return switch (envelope.eventType()) {
+                case "PaymentCaptured" -> handlePaymentCaptured(envelope);
+                case "PaymentExpired" -> handlePaymentExpired(envelope);
+                case "PostSalesApplied" -> handlePostSalesApplied(envelope);
+                case "RiskBlockApplied" -> handleRiskBlockApplied(envelope);
+                case "OfferExpired", "OfferQuoted", "TravelerProfileUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged", "RiskAssessmentResult", "RiskBlockLifted" -> new EventSubscriber.Success();
+                default -> new EventSubscriber.FatalError("unsupported event type for journey-order: " + envelope.eventType());
+            };
+        } catch (RuntimeException ex) {
+            consumedEventIds.remove(envelope.eventId());
+            return new EventSubscriber.TransientError(ex.getMessage());
+        }
+    }
+
+    private EventSubscriber.HandlerResult handlePaymentCaptured(EventEnvelope envelope) {
+        JourneyOrder order = orderFromPayload(envelope);
+        int eventCount = order.domainEvents().size();
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_CONFIRMATION) {
+            order.markBookingAndCapacityAccepted(envelope.occurredAt(), "cmd-consume-payment", envelope.correlationId());
+            order.markPendingPayment("initial-ticket-purchase", envelope.occurredAt(), "cmd-consume-payment", envelope.correlationId());
+        }
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
+            order.recordPaymentCaptured(textPayload(envelope, "paymentIntentId", "payment-intent-unknown"), envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+        }
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handlePaymentExpired(EventEnvelope envelope) {
+        JourneyOrder order = orderFromPayload(envelope);
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
+            int eventCount = order.domainEvents().size();
+            order.expirePayment(textPayload(envelope, "paymentIntentId", "payment-intent-unknown"), envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+            publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        }
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handlePostSalesApplied(EventEnvelope envelope) {
+        JourneyOrder order = orderFromPayload(envelope);
+        int eventCount = order.domainEvents().size();
+        order.applyPostSalesItemCancellation(
+            textPayload(envelope, "orderItemId", order.orderItems().getFirst().orderItemId()),
+            textPayload(envelope, "postSalesCaseId", "post-sales-unknown"),
+            textPayload(envelope, "reason", "post-sales applied"),
+            envelope.occurredAt(),
+            "cmd-consume-post-sales",
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleRiskBlockApplied(EventEnvelope envelope) {
+        JourneyOrder order = orderFromPayload(envelope);
+        int eventCount = order.domainEvents().size();
+        order.cancel(textPayload(envelope, "reason", "risk block applied"), envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    private JourneyOrder orderFromPayload(EventEnvelope envelope) {
+        String orderId = textPayload(envelope, "orderId", null);
+        if (orderId == null) {
+            throw new IllegalArgumentException("event payload missing orderId");
+        }
+        StoredOrder stored = orderStore.get(orderId);
+        if (stored == null) {
+            throw new NotFoundException("Order not found for consumed event: " + orderId);
+        }
+        return stored.order();
+    }
+
+    private static String textPayload(EventEnvelope envelope, String field, String fallback) {
+        Object value = envelope.payload().get(field);
+        return value == null ? fallback : String.valueOf(value);
     }
 
     private record StoredOrder(JourneyOrder order, String idempotencyKey) {}

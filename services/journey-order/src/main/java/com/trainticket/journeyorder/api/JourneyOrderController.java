@@ -12,10 +12,9 @@ import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult
 import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderService;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
+import com.trainticket.journeyorder.application.service.OrderManagementService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
@@ -65,14 +64,8 @@ public class JourneyOrderController {
 
     @GetMapping("/{orderId}")
     public ResponseEntity<?> getOrder(@PathVariable String orderId) {
-        Optional<JourneyOrderResult> result = orderService.getOrder(orderId);
-        if (result.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(Map.of("code", "NOT_FOUND", "message", "Order not found: " + orderId,
-                    "correlationId", resolveCorrelationId(), "details", Map.of()));
-        }
-
-        JourneyOrderResult r = result.get();
+        JourneyOrderResult r = orderService.getOrder(orderId)
+            .orElseThrow(() -> new OrderManagementService.NotFoundException("Order not found: " + orderId));
         GetJourneyOrderResponse response = new GetJourneyOrderResponse(
             r.orderId(), r.accountId(), r.offerId(),
             toApiMonetarySummary(r.monetarySummary()),
@@ -133,6 +126,6 @@ public class JourneyOrderController {
             String fromHeader = request.getHeader("X-Correlation-Id");
             if (fromHeader != null && !fromHeader.isBlank()) return fromHeader;
         }
-        return UUID.randomUUID().toString();
+        return "corr-" + UUID.randomUUID();
     }
 }
