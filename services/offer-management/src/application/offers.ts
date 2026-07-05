@@ -185,7 +185,6 @@ function eventPayloadToApi(event: OfferDomainEvent): Record<string, unknown> {
       expiresAt: toUtcIso(event.expiresAt),
       priceGuaranteeLevel: priceGuaranteeToApi(event.priceGuaranteeLevel),
       downstreamReference: event.downstreamReference,
-      boundaryProof: event.boundaryProof,
     };
   }
 
@@ -193,9 +192,8 @@ function eventPayloadToApi(event: OfferDomainEvent): Record<string, unknown> {
     offerId: event.offerId,
     offerVersion: event.offerVersion,
     expiredAt: toUtcIso(event.expiredAt),
-    previousStatus: event.previousStatus,
+    previousStatus: offerStatusToApi(event.previousStatus),
     reason: event.reason,
-    boundaryProof: event.boundaryProof,
   };
 }
 
@@ -261,6 +259,17 @@ function priceGuaranteeToApi(level: PriceGuaranteeLevel): ApiPriceGuaranteeLevel
       return "ESTIMATED_ONLY";
     case "ProviderFinalConfirmRequired":
       return "PROVIDER_FINAL_CONFIRM_REQUIRED";
+  }
+}
+
+function offerStatusToApi(status: string): "QUOTED" | "ACCEPTED" {
+  switch (status) {
+    case "Quoted":
+      return "QUOTED";
+    case "Accepted":
+      return "ACCEPTED";
+    default:
+      throw new DomainError("INVALID_EXPIRABLE_STATUS", `OfferExpired previousStatus ${status} is not publishable`);
   }
 }
 

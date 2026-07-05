@@ -47,7 +47,21 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     createUpstreamEventHandler(upstreamRepository),
     abortController.signal,
   );
-  subscription.catch((error: unknown) => app.log.error({ err: error }, "offer-management event subscriber stopped"));
+  const subscriptionFailed = new Promise<never>((_, reject) => {
+    subscription.catch((error: unknown) => {
+      app.log.error({ err: error }, "offer-management event subscriber stopped");
+      abortController.abort();
+      reject(error);
+      setImmediate(() => {
+        throw error;
+      });
+    });
+  });
+
+  await Promise.race([
+    messaging.subscriber.started(),
+    subscriptionFailed,
+  ]);
 
   app.addHook("onClose", async () => {
     abortController.abort();
