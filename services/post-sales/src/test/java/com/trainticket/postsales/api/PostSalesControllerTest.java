@@ -33,7 +33,15 @@ class PostSalesControllerTest {
 
     @Autowired
     void setApplicationContext(WebApplicationContext context) {
-        this.mockMvc = MockMvcBuilders.webAppContextSetup(context).addFilters(context.getBean(com.trainticket.postsales.RequestContextFilter.class)).build();
+        this.mockMvc = MockMvcBuilders.webAppContextSetup(context)
+            .addFilters(
+                context.getBean(com.trainticket.postsales.RequestContextFilter.class),
+                new com.trainticket.platformkit.idempotency.IdempotencyFilter(
+                    context.getBean(com.trainticket.platformkit.idempotency.IdempotencyStore.class),
+                    context.getBean(com.trainticket.platformkit.http.CanonicalErrorWriter.class)
+                )
+            )
+            .build();
     }
 
     @Test
@@ -145,7 +153,7 @@ class PostSalesControllerTest {
         openCase("not-a-uuid")
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", equalTo("VALIDATION_FAILED")))
-            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key must be a UUID v7")));
+            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key header must be a UUID v7")));
     }
 
     @Test
@@ -153,7 +161,7 @@ class PostSalesControllerTest {
         openCase(UUID4_KEY)
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", equalTo("VALIDATION_FAILED")))
-            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key must be a UUID v7")));
+            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key header must be a UUID v7")));
     }
 
     @Test
@@ -163,7 +171,7 @@ class PostSalesControllerTest {
                 .header("X-Correlation-Id", "corr-test-1"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", equalTo("VALIDATION_FAILED")))
-            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key must be a UUID v7")));
+            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key header must be a UUID v7")));
     }
 
     @Test
@@ -173,7 +181,7 @@ class PostSalesControllerTest {
                 .header("X-Correlation-Id", "corr-test-1"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", equalTo("VALIDATION_FAILED")))
-            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key must be a UUID v7")));
+            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key header must be a UUID v7")));
     }
 
     @Test
@@ -183,7 +191,7 @@ class PostSalesControllerTest {
                 .header("X-Correlation-Id", "corr-test-1"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", equalTo("VALIDATION_FAILED")))
-            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key must be a UUID v7")));
+            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key header must be a UUID v7")));
     }
 
     @Test
@@ -193,7 +201,7 @@ class PostSalesControllerTest {
                 .header("X-Correlation-Id", "corr-test-1"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", equalTo("VALIDATION_FAILED")))
-            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key must be a UUID v7")));
+            .andExpect(jsonPath("$.message", equalTo("Idempotency-Key header must be a UUID v7")));
     }
 
     private org.springframework.test.web.servlet.ResultActions openCase(String idempotencyKey) throws Exception {

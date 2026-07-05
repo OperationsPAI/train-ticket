@@ -12,7 +12,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.trainticket.journeyorder.RequestContextFilter;
 import com.trainticket.journeyorder.RuntimeTracer;
+import com.trainticket.platformkit.PlatformKitConfiguration;
 import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
+import com.trainticket.platformkit.idempotency.UuidV7;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
@@ -35,7 +37,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(controllers = JourneyOrderController.class)
 @AutoConfigureMockMvc
-@Import({PlatformKitExceptionHandler.class, RequestContextFilter.class})
+@Import({PlatformKitConfiguration.class, PlatformKitExceptionHandler.class, RequestContextFilter.class})
 class JourneyOrderControllerTest {
 
     private static final Instant CREATED_AT = Instant.parse("2026-07-05T10:00:00Z");
@@ -54,12 +56,12 @@ class JourneyOrderControllerTest {
     void createOrderHappyPath() throws Exception {
         when(orderService.createOrder(
             eq(new JourneyOrderRequest("account-1", "offer-1", 1, List.of("tvl-1"), List.of("seg-1"))),
-            eq("idem-1"),
+            eq("0194f2e0-7b3e-7001-8284-5c26e8b0a001"),
             eq("corr-test")
         )).thenReturn(orderResult("ord-123", "account-1", "offer-1", "CREATED"));
 
         mockMvc.perform(post("/api/v1/journey-orders")
-                .header("Idempotency-Key", "idem-1")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7001-8284-5c26e8b0a001")
                 .header("X-Correlation-Id", "corr-test")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
@@ -87,7 +89,7 @@ class JourneyOrderControllerTest {
     @Test
     void createOrderIdempotentReplayReturnsOriginal() throws Exception {
         var replayed = orderResult("ord-replay", "account-1", "offer-1", "CREATED");
-        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("idem-replay"), eq("corr-test")))
+        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("0194f2e0-7b3e-7002-8284-5c26e8b0a002"), eq("corr-test")))
             .thenReturn(replayed)
             .thenReturn(replayed);
 
@@ -102,7 +104,7 @@ class JourneyOrderControllerTest {
             """;
 
         mockMvc.perform(post("/api/v1/journey-orders")
-                .header("Idempotency-Key", "idem-replay")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7002-8284-5c26e8b0a002")
                 .header("X-Correlation-Id", "corr-test")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
@@ -110,7 +112,7 @@ class JourneyOrderControllerTest {
             .andExpect(jsonPath("$.orderId").value("ord-replay"));
 
         mockMvc.perform(post("/api/v1/journey-orders")
-                .header("Idempotency-Key", "idem-replay")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7002-8284-5c26e8b0a002")
                 .header("X-Correlation-Id", "corr-test")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
@@ -121,7 +123,7 @@ class JourneyOrderControllerTest {
     @Test
     void createOrderValidationFailureUsesCanonicalBody() throws Exception {
         mockMvc.perform(post("/api/v1/journey-orders")
-                .header("Idempotency-Key", "idem-invalid")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7003-8284-5c26e8b0a003")
                 .header("X-Correlation-Id", "corr-validation")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
@@ -143,7 +145,7 @@ class JourneyOrderControllerTest {
     @Test
     void malformedBodyUsesCanonicalValidationBody() throws Exception {
         mockMvc.perform(post("/api/v1/journey-orders")
-                .header("Idempotency-Key", "idem-malformed")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7004-8284-5c26e8b0a004")
                 .header("X-Correlation-Id", "corr-malformed")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{not-json"))
@@ -175,16 +177,19 @@ class JourneyOrderControllerTest {
                       "segmentRefs": ["seg-1"]
                     }
                     """))
-            .andExpect(status().isBadRequest());
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.message").value("Idempotency-Key header must be a UUID v7"))
+            .andExpect(jsonPath("$.correlationId").exists());
     }
 
     @Test
     void reusedIdempotencyKeyUsesCanonical422Body() throws Exception {
-        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("idem-reused"), eq("corr-reused")))
+        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("0194f2e0-7b3e-7005-8284-5c26e8b0a005"), eq("corr-reused")))
             .thenThrow(new OrderManagementService.IdempotencyKeyReused("Idempotency-Key was reused with a different create order request"));
 
         mockMvc.perform(post("/api/v1/journey-orders")
-                .header("Idempotency-Key", "idem-reused")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7005-8284-5c26e8b0a005")
                 .header("X-Correlation-Id", "corr-reused")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
@@ -250,12 +255,12 @@ class JourneyOrderControllerTest {
     void cancelOrderReturnsCancelledStatus() throws Exception {
         when(orderService.cancelOrder(
             eq(new CancelJourneyOrderRequest("ord-123", "change of plans")),
-            eq("idem-cancel"),
+            eq("0194f2e0-7b3e-7006-8284-5c26e8b0a006"),
             eq("corr-cancel")
         )).thenReturn(new CancelJourneyOrderResult("ord-123", "CANCELLED", CANCELLED_AT));
 
         mockMvc.perform(post("/api/v1/journey-orders/{orderId}/cancel", "ord-123")
-                .header("Idempotency-Key", "idem-cancel")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7006-8284-5c26e8b0a006")
                 .header("X-Correlation-Id", "corr-cancel")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"reason\":\"change of plans\"}"))
@@ -267,11 +272,11 @@ class JourneyOrderControllerTest {
 
     @Test
     void domainInvariantViolationSurfacesAsDomainRuleViolation() throws Exception {
-        when(orderService.cancelOrder(any(CancelJourneyOrderRequest.class), eq("idem-domain"), eq("corr-domain")))
+        when(orderService.cancelOrder(any(CancelJourneyOrderRequest.class), eq("0194f2e0-7b3e-7007-8284-5c26e8b0a007"), eq("corr-domain")))
             .thenThrow(new DomainRuleViolation("completed JourneyOrder cannot be cancelled"));
 
         mockMvc.perform(post("/api/v1/journey-orders/{orderId}/cancel", "ord-123")
-                .header("Idempotency-Key", "idem-domain")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7007-8284-5c26e8b0a007")
                 .header("X-Correlation-Id", "corr-domain")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"reason\":\"change of plans\"}"))
@@ -288,6 +293,10 @@ class JourneyOrderControllerTest {
         mockMvc.perform(get("/api/v1/journey-orders/{orderId}", "ord-123"))
             .andExpect(status().isOk())
             .andExpect(header().string("X-Correlation-Id", startsWith("corr-")));
+
+        String generated = mockMvc.perform(get("/api/v1/journey-orders/{orderId}", "ord-123"))
+            .andReturn().getResponse().getHeader("X-Correlation-Id");
+        org.junit.jupiter.api.Assertions.assertTrue(UuidV7.isValid(generated.substring("corr-".length())));
     }
 
     private static JourneyOrderResult orderResult(String orderId, String accountId, String offerId, String status) {
