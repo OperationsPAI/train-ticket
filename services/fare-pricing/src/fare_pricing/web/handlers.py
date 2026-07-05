@@ -4,11 +4,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Request
 
 from fare_pricing.application import DomainEventService
 from fare_pricing.ids import prefixed_uuid7
-from train_ticket_platform.idempotency import request_fingerprint, require_uuid7_idempotency_key
 from fare_pricing.application.service import (
     FarePricingService,
     QuoteNotFoundError,
@@ -88,19 +87,19 @@ def _domain_error(exc: Exception) -> ApiError:
     return ApiError("DOMAIN_RULE_VIOLATION", str(exc), 422)
 
 
-def require_uuid7(key: str | None) -> str:
-    try:
-        return require_uuid7_idempotency_key(key)
-    except ValueError as exc:
-        raise ApiError("VALIDATION_FAILED", str(exc), 400) from exc
-
-
 def _correlation_id(request: Request) -> str:
     return str(getattr(request.state, "correlation_id", "") or prefixed_uuid7("corr"))
 
 
 def _command_id() -> str:
     return prefixed_uuid7("cmd")
+
+
+def _idempotency_fingerprint(request: Request) -> str:
+    decision = getattr(request.state, "idempotency_decision", None)
+    if decision is None:
+        raise ApiError("VALIDATION_FAILED", "Idempotency-Key header is required", 400)
+    return str(decision.fingerprint)
 
 
 def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any]) -> None:
@@ -121,11 +120,7 @@ def _publish_event(request: Request, event_type: str, causation_id: str, payload
 def compute_fare_quote(
     request: Request,
     req: FareQuoteRequest,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    require_uuid7(idempotency_key)
-    body_dict = req.model_dump()
-
     service: FarePricingService = request.app.state.fare_pricing_service
     rule_set_id = service.find_published_rule_set_id(req.channel)
     if rule_set_id is None:
@@ -135,7 +130,7 @@ def compute_fare_quote(
     try:
         quote = service.compute_fare_quote(
             quote_id=prefixed_uuid7("fq"),
-            input_hash=request_fingerprint(body_dict),
+            input_hash=_idempotency_fingerprint(request),
             traveler_refs=req.travelerRefs,
             channel=req.channel,
             rule_set_id=rule_set_id,
@@ -164,11 +159,7 @@ def get_fare_quote(request: Request, quote_id: str) -> dict[str, Any]:
 def compute_adjustment_quote(
     request: Request,
     req: AdjustmentQuoteRequest,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    require_uuid7(idempotency_key)
-    body_dict = req.model_dump()
-
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
     original_quote_id = service.find_fare_quote_id_for_segments(req.segmentRefs)

@@ -1,6 +1,6 @@
 [project]
 name = "train-ticket-platform"
-version = "0.1.0"
+version = "0.1.1"
 description = "Shared Python HTTP and messaging infrastructure for Train Ticket services"
 requires-python = ">=3.11"
 dependencies = [

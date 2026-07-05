@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from hashlib import sha256
 from secrets import randbits
 from time import time
 from typing import Any, Protocol, TypeAlias
@@ -136,23 +135,6 @@ class RiskAssessmentResult:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class IdempotencyRecord:
-    request_hash: str
-    body: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class PendingPublication:
-    request_hash: str
-    body: dict[str, Any]
-    envelope: EventEnvelope
-
-
-class IdempotencyKeyReusedError(ValueError):
-    pass
-
-
 class AssessmentNotFoundError(KeyError):
     pass
 
@@ -160,8 +142,6 @@ class AssessmentNotFoundError(KeyError):
 class InMemoryAssessmentRepository:
     def __init__(self) -> None:
         self._assessments: dict[str, RiskAssessmentResult] = {}
-        self._idempotency: dict[str, IdempotencyRecord] = {}
-        self._pending_publications: dict[str, PendingPublication] = {}
 
     def get(self, assessment_id: str) -> RiskAssessmentResult:
         try:
@@ -172,28 +152,6 @@ class InMemoryAssessmentRepository:
     def save(self, assessment: RiskAssessmentResult) -> None:
         self._assessments[assessment.assessmentId] = assessment
 
-    def get_replay(self, idempotency_key: str, request_hash: str) -> IdempotencyRecord | None:
-        record = self._idempotency.get(idempotency_key)
-        if record is None:
-            return None
-        if record.request_hash != request_hash:
-            raise IdempotencyKeyReusedError("Idempotency-Key was reused with a different request body")
-        return record
-
-    def get_pending_publication(self, idempotency_key: str, request_hash: str) -> PendingPublication | None:
-        pending = self._pending_publications.get(idempotency_key)
-        if pending is None:
-            return None
-        if pending.request_hash != request_hash:
-            raise IdempotencyKeyReusedError("Idempotency-Key was reused with a different request body")
-        return pending
-
-    def save_pending_publication(self, idempotency_key: str, pending: PendingPublication) -> None:
-        self._pending_publications[idempotency_key] = pending
-
-    def save_replay(self, idempotency_key: str, record: IdempotencyRecord) -> None:
-        self._pending_publications.pop(idempotency_key, None)
-        self._idempotency[idempotency_key] = record
 
 
 class InMemoryEventPublisher:
@@ -249,22 +207,7 @@ class RiskComplianceService:
         context: Mapping[str, Any],
         idempotency_key: str,
         correlation_id: str,
-        request_hash: str | None = None,
     ) -> tuple[RiskAssessmentResult, bool]:
-        request_hash = request_hash or _request_hash(subject_ref, scenario, context)
-        replay = self.repository.get_replay(idempotency_key, request_hash)
-        if replay is not None:
-            return RiskAssessmentResult(**replay.body), True
-
-        pending = self.repository.get_pending_publication(idempotency_key, request_hash)
-        if pending is not None:
-            self.publisher.publish(pending.envelope)
-            self.repository.save_replay(
-                idempotency_key,
-                IdempotencyRecord(request_hash=request_hash, body=pending.body),
-            )
-            return RiskAssessmentResult(**pending.body), False
-
         assessment_id = prefixed_id("asmt")
         requested = assess_risk(
             assessment_id=assessment_id,
@@ -276,17 +219,8 @@ class RiskComplianceService:
         completed = _evaluate(requested)
         result = _to_result(completed)
         envelope = _assessment_envelope(result, correlation_id, prefixed_id("cmd"))
-        replay_body = result.to_event_payload()
         self.repository.save(result)
-        self.repository.save_pending_publication(
-            idempotency_key,
-            PendingPublication(request_hash=request_hash, body=replay_body, envelope=envelope),
-        )
         self.publisher.publish(envelope)
-        self.repository.save_replay(
-            idempotency_key,
-            IdempotencyRecord(request_hash=request_hash, body=replay_body),
-        )
         return result, False
 
     def get_assessment(self, assessment_id: str) -> RiskAssessmentResult:
@@ -332,12 +266,6 @@ def datetime_to_rfc3339(value: datetime) -> str:
 def canonical_correlation_id(correlation_id: str) -> str:
     return correlation_id if correlation_id.startswith("corr-") else f"corr-{correlation_id}"
 
-
-def _request_hash(subject_ref: str, scenario: str, context: Mapping[str, Any]) -> str:
-    import json
-
-    payload = {"subjectRef": subject_ref, "scenario": scenario, "context": context}
-    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
 
 
 def _evaluate(assessment: RiskAssessment) -> RiskAssessment:

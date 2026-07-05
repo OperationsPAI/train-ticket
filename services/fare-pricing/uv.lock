@@ -75,7 +75,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.138.1" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "redis", specifier = ">=5.0.0" },
-    { name = "train-ticket-platform", directory = "/workspace/tasks/REQ-057-python-platform-kit---extract-shared-HTTP/messaging-infrastructure/platform/python-kit" },
+    { name = "train-ticket-platform", directory = "../../platform/python-kit" },
     { name = "uuid6", specifier = ">=2024.7.10" },
 ]
 
@@ -358,8 +358,8 @@ wheels = [
 
 [[package]]
 name = "train-ticket-platform"
-version = "0.1.0"
-source = { directory = "/workspace/tasks/REQ-057-python-platform-kit---extract-shared-HTTP/messaging-infrastructure/platform/python-kit" }
+version = "0.1.1"
+source = { directory = "../../platform/python-kit" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx2" },

@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,7 +19,7 @@ from .application import (
     uuid7,
 )
 from train_ticket_platform.http import canonical_error_body
-from train_ticket_platform.idempotency import configure_idempotency_middleware, request_fingerprint
+from train_ticket_platform.idempotency import configure_idempotency_middleware
 
 from .runtime import health, profile
 
@@ -206,18 +206,14 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
     def assess_risk_endpoint(
         request: Request,
         payload: AssessRiskRequest,
-        idempotency_key: str | None = Header(default=None, alias=IDEMPOTENCY_KEY_HEADER),
     ) -> JSONResponse | dict[str, Any]:
-        if idempotency_key is None:
-            return error_response(request, 400, "VALIDATION_FAILED", "Idempotency-Key header is required")
         try:
             result, _ = service.assess(
                 subject_ref=payload.subjectRef,
                 scenario=payload.scenario,
                 context=payload.context,
-                idempotency_key=idempotency_key,
+                idempotency_key=request.headers[IDEMPOTENCY_KEY_HEADER],
                 correlation_id=request.state.correlation_id,
-                request_hash=request_fingerprint(payload.model_dump()),
             )
         except PublishFailed:
             return error_response(
