@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 )
 
 const ProducerName = "provider-integration"
@@ -73,48 +73,21 @@ func NewEventEnvelope(eventType, correlationID, causationID string, payload any)
 	}
 	now := time.Now().UTC()
 	return EventEnvelope{
-		EventID:       newPrefixedID("evt"),
+		EventID:       ids.NewEventID(),
 		EventType:     strings.TrimSpace(eventType),
 		OccurredAt:    now.Format(time.RFC3339Nano),
-		CorrelationID: canonicalCorrelationID(correlationID),
-		CausationID:   canonicalCausationID(causationID),
+		CorrelationID: ids.CanonicalCorrelationID(correlationID),
+		CausationID:   ids.CanonicalCausationID(causationID),
 		Producer:      ProducerName,
 		SchemaVersion: 1,
 		Payload:       payloadBytes,
 	}, nil
 }
 
-func canonicalCorrelationID(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if hasPrefixedUUID(trimmed, "corr") {
-		return trimmed
-	}
-	if id, err := uuid.Parse(trimmed); err == nil {
-		return "corr-" + id.String()
-	}
-	return newPrefixedID("corr")
-}
-
-func canonicalCausationID(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if hasPrefixedUUID(trimmed, "cmd") || hasPrefixedUUID(trimmed, "evt") {
-		return trimmed
-	}
-	return newPrefixedID("cmd")
-}
-
-func hasPrefixedUUID(value, prefix string) bool {
-	id, err := uuid.Parse(strings.TrimPrefix(value, prefix+"-"))
-	return err == nil && strings.HasPrefix(value, prefix+"-") && id != uuid.Nil
-}
-
-func newPrefixedID(prefix string) string {
-	id, err := uuid.NewV7()
-	if err != nil {
-		id = uuid.New()
-	}
-	return fmt.Sprintf("%s-%s", prefix, id.String())
-}
+func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
+func canonicalCausationID(value string) string   { return ids.CanonicalCausationID(value) }
+func hasPrefixedUUID(value, prefix string) bool  { return ids.ValidPrefixedUUIDv7(value, prefix) }
+func newPrefixedID(prefix string) string         { return ids.NewPrefixed(prefix) }
 
 type ConsumedEventLog interface {
 	AlreadyProcessed(eventID string) bool

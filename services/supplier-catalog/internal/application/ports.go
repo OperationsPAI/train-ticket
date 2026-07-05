@@ -1,6 +1,11 @@
 package application
 
-import "context"
+import (
+	"context"
+	"time"
+
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
+)
 
 // EventEnvelope is the broker-neutral wire envelope required by the shared
 // messaging contract. It intentionally contains exactly the eight contract
@@ -8,7 +13,7 @@ import "context"
 type EventEnvelope struct {
 	EventID       string      `json:"eventId"`
 	EventType     string      `json:"eventType"`
-	OccurredAt    string      `json:"occurredAt"`
+	OccurredAt    time.Time   `json:"occurredAt"`
 	CorrelationID string      `json:"correlationId"`
 	CausationID   string      `json:"causationId"`
 	Producer      string      `json:"producer"`
@@ -21,27 +26,14 @@ type EventPublisher interface {
 	Publish(ctx context.Context, envelope EventEnvelope) error
 }
 
-// HandlerErrorKind describes whether a subscriber handler failure should be
-// retried or moved to the dead-letter stream.
-type HandlerErrorKind int
+type HandlerErrorKind = kitmsg.HandlerErrorKind
 
 const (
-	HandlerErrorTransient HandlerErrorKind = iota
-	HandlerErrorFatal
+	HandlerErrorTransient = kitmsg.HandlerErrorTransient
+	HandlerErrorFatal     = kitmsg.HandlerErrorFatal
 )
 
-// HandlerError is returned by event handlers to guide subscriber ack/DLQ behavior.
-type HandlerError struct {
-	Kind HandlerErrorKind
-	Err  error
-}
-
-func (e HandlerError) Error() string {
-	if e.Err == nil {
-		return "event handler failed"
-	}
-	return e.Err.Error()
-}
+type HandlerError = kitmsg.HandlerError
 
 // EventHandler handles a deserialized EventEnvelope.
 type EventHandler func(context.Context, EventEnvelope) error

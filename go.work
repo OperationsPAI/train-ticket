@@ -1,6 +1,7 @@
 go 1.26
 
 use (
+	./platform/go-kit
 	./platform/go-runtime
 	./services/dispatch
 	./services/fulfillment
