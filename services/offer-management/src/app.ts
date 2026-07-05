@@ -191,6 +191,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
 
   // Health / metadata
   app.get("/health", async () => healthBody());
+  app.get("/healthz", async () => healthBody());
   app.get("/metadata", async () => metadata());
   app.get("/live", async () => probeBody("live"));
   app.get("/livez", async () => probeBody("live"));
