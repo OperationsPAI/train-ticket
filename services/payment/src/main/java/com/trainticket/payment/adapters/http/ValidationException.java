@@ -1,7 +1,10 @@
 package com.trainticket.payment.adapters.http;
 
-class ValidationException extends RuntimeException {
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
+
+class ValidationException extends ApiException {
     ValidationException(String message) {
-        super(message);
+        super(ApiErrorCode.VALIDATION_FAILED, message);
     }
 }

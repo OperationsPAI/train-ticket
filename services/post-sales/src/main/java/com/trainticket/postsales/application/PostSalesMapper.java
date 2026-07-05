@@ -1,6 +1,7 @@
 package com.trainticket.postsales.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.postsales.domain.AmountDecisionSnapshot;
 import com.trainticket.postsales.domain.DecisionKind;
 import com.trainticket.postsales.domain.EventMetadata;
@@ -28,10 +29,10 @@ public final class PostSalesMapper {
     public static EventEnvelope toEnvelope(PostSalesEvent event) {
         EventMetadata metadata = event.metadata();
         return new EventEnvelope(
-            prefixed(metadata.eventId(), "evt-"),
+            PrefixedIds.isEventId(prefixed(metadata.eventId(), "evt-")) ? prefixed(metadata.eventId(), "evt-") : PrefixedIds.newEventId(),
             event.getClass().getSimpleName(),
             metadata.occurredAt(),
-            prefixed(metadata.correlationId(), "corr-"),
+            PrefixedIds.isCorrelationId(prefixed(metadata.correlationId(), "corr-")) ? prefixed(metadata.correlationId(), "corr-") : PrefixedIds.newCorrelationId(),
             prefixedCausation(metadata.causationId()),
             PRODUCER,
             metadata.schemaVersion(),
@@ -178,9 +179,7 @@ public final class PostSalesMapper {
     }
 
     private static String prefixedCausation(String value) {
-        if (value != null && (value.startsWith("cmd-") || value.startsWith("evt-"))) {
-            return value;
-        }
-        return prefixed(value, "cmd-");
+        String prefixed = value != null && (value.startsWith("cmd-") || value.startsWith("evt-")) ? value : prefixed(value, "cmd-");
+        return PrefixedIds.isCausationId(prefixed) ? prefixed : PrefixedIds.newCommandId();
     }
 }

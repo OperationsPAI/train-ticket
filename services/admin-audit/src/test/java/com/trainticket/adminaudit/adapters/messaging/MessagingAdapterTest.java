@@ -15,13 +15,14 @@ class MessagingAdapterTest {
     @Test
     void wrapsDomainEventInCanonicalEnvelope() {
         com.trainticket.platformkit.messaging.EventEnvelope domainEnvelope = new com.trainticket.platformkit.messaging.EventEnvelope(
-            "evt-11111111-1111-4111-8111-111111111111",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a111",
             "ManualActionRequested",
-            1,
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-22222222-2222-4222-8222-222222222222",
-            "cmd-33333333-3333-4333-8333-333333333333",
-            "admin-audit"
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a222",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0a333",
+            "admin-audit",
+            1,
+            java.util.Map.of()
         );
         ManualActionRequested event = new ManualActionRequested(
             domainEnvelope,
@@ -56,11 +57,11 @@ class MessagingAdapterTest {
             return EventSubscriber.HandlerResult.SUCCESS;
         });
         EventEnvelope envelope = new EventEnvelope(
-            "evt-duplicate",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a444",
             "AnythingHappened",
             Instant.parse("2026-07-05T10:30:00Z"),
-            "corr-1",
-            "evt-1",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a555",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a666",
             "payment",
             1,
             java.util.Map.of()
@@ -69,6 +70,6 @@ class MessagingAdapterTest {
         assertThat(handler.handle(envelope)).isEqualTo(EventSubscriber.HandlerResult.SUCCESS);
         assertThat(handler.handle(envelope)).isEqualTo(EventSubscriber.HandlerResult.SUCCESS);
 
-        assertThat(handled).containsExactly("evt-duplicate");
+        assertThat(handled).containsExactly("evt-0194f2e0-7b3e-7610-8284-5c26e8b0a444");
     }
 }

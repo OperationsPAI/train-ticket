@@ -8,11 +8,13 @@ import com.trainticket.financesettlement.application.PublishFailedException;
 import com.trainticket.financesettlement.application.SubscribeFailedException;
 import com.trainticket.platformkit.messaging.RedisEventPublisher;
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
+@ConditionalOnProperty(name = "finance.messaging.redis.enabled", havingValue = "true", matchIfMissing = true)
 public class RedisMessagingConfiguration {
     @Bean(destroyMethod = "close") RedisEventPublisher platformRedisEventPublisher(ObjectMapper objectMapper, RedisMessagingProperties properties) { return RedisEventPublisher.fromUrl(properties.url(), objectMapper); }
     @Bean EventPublisher redisEventPublisher(RedisEventPublisher publisher) { return envelope -> { try { publisher.publish(envelope); } catch (com.trainticket.platformkit.messaging.PublishFailedException e) { throw new PublishFailedException(e.getMessage(), e); } }; }

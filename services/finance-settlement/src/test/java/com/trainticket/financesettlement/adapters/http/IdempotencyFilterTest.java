@@ -3,6 +3,9 @@ package com.trainticket.financesettlement.adapters.http;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.trainticket.platformkit.http.CanonicalErrorWriter;
+import com.trainticket.platformkit.idempotency.IdempotencyFilter;
+import com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore;
 import jakarta.servlet.ServletException;
 import java.io.IOException;
 import org.junit.jupiter.api.Test;
@@ -13,7 +16,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 class IdempotencyFilterTest {
     @Test
     void replayReturnsOriginalResult() throws ServletException, IOException {
-        IdempotencyFilter filter = new IdempotencyFilter(new ObjectMapper());
+        IdempotencyFilter filter = new IdempotencyFilter(new InMemoryIdempotencyStore(), new CanonicalErrorWriter(new ObjectMapper()));
         MockHttpServletRequest first = request("/api/v1/example");
         MockHttpServletResponse firstResponse = new MockHttpServletResponse();
         filter.doFilter(first, firstResponse, new RespondingChain(201, "{\"id\":\"first\"}"));
@@ -28,7 +31,7 @@ class IdempotencyFilterTest {
 
     @Test
     void missingKeyReturnsValidationError() throws ServletException, IOException {
-        IdempotencyFilter filter = new IdempotencyFilter(new ObjectMapper());
+        IdempotencyFilter filter = new IdempotencyFilter(new InMemoryIdempotencyStore(), new CanonicalErrorWriter(new ObjectMapper()));
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/example");
         request.addHeader("X-Correlation-Id", "corr-idempotency");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -41,7 +44,7 @@ class IdempotencyFilterTest {
 
     private static MockHttpServletRequest request(String path) {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
-        request.addHeader(IdempotencyFilter.IDEMPOTENCY_KEY_HEADER, "0194f2e0-7b3e-7610-0284-5c26e8b0c111");
+        request.addHeader(IdempotencyFilter.IDEMPOTENCY_KEY_HEADER, "0194f2e0-7b3e-7610-8284-5c26e8b0c111");
         return request;
     }
 
