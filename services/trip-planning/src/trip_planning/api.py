@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-import json
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -16,11 +15,12 @@ from .application import search_itineraries, search_itineraries_from_payload
 from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIntent, TripPlanningValidationError
 from .application_ports import EventPublisher, EventSubscriber
 from .events import PublishFailed, build_itinerary_proposed_event, new_uuid7
+from train_ticket_platform.idempotency import configure_idempotency_middleware
+
 from .runtime import health, profile
 
 REQUEST_ID_HEADER = "X-Request-Id"
 CORRELATION_ID_HEADER = "X-Correlation-Id"
-IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 TraceHook = Callable[[str, Mapping[str, object]], None]
 
 
@@ -274,14 +274,6 @@ def _search_contract_response(payload: Mapping[str, object]) -> tuple[dict[str, 
     }, planning_snapshot_refs
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _idempotency_fingerprint(payload: Mapping[str, object]) -> str:
-    return _canonical_json(dict(payload))
-
-
 def _default_publisher() -> EventPublisher:
     from .adapters.messaging.redis_streams import RedisEventPublisher
 
@@ -346,7 +338,7 @@ def create_app(
     app = FastAPI(title="Trip Planning", version="0.1.0", lifespan=lifespan)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     app.state.itineraries = {}
-    app.state.idempotency_cache = {}
+    configure_idempotency_middleware(app, require_key=False, include_path_prefixes=("/api/v1/itineraries/search",))
     app.state.consumed_events = {}
     app.state.upstream_event_payloads = {}
 
@@ -361,21 +353,6 @@ def create_app(
     def search_itineraries_v1(payload: dict[str, object], request: Request) -> Any:
         """Search Itineraries — query endpoint; idempotency key is optional and replay-safe."""
         correlation_id: str = request.state.correlation_id
-        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
-        fingerprint = _idempotency_fingerprint(payload)
-        if idempotency_key:
-            cached = app.state.idempotency_cache.get(idempotency_key)
-            if cached is not None:
-                cached_fingerprint, cached_response = cached
-                if cached_fingerprint != fingerprint:
-                    return _canonical_error(
-                        422,
-                        "IDEMPOTENCY_KEY_REUSED",
-                        "Idempotency-Key was reused with a different request body",
-                        correlation_id,
-                    )
-                return cached_response
-
         try:
             response, planning_snapshot_refs = _search_contract_response(payload)
         except TripPlanningValidationError as exc:
@@ -395,8 +372,6 @@ def create_app(
             )
         except PublishFailed:
             return _canonical_error(503, "UNAVAILABLE", "Event bus is unavailable", correlation_id)
-        if idempotency_key:
-            app.state.idempotency_cache[idempotency_key] = (fingerprint, response)
         return response
 
     @app.get("/api/v1/itineraries/{itineraryRef}")
