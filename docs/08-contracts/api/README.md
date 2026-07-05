@@ -75,11 +75,19 @@ Every error response returns the following JSON body:
 All cross-context value objects **MUST** reference
 `docs/08-contracts/shared-primitives.md` for their shapes. Do not redefine:
 
-- **Money**: `{ "currency": "CNY", "amount": "100.00" }` (ISO 4217 currency, decimal string)
-- **Timestamps**: ISO-8601 instant format (e.g. `"2026-07-05T10:30:00Z"`)
-- **IDs**: UUID v7 strings with optional prefix (e.g. `"ord-<uuid>"`, `"off-<uuid>"`)
-- **TravelerRef**: `"tvl-<uuid>"`
-- **Event envelope fields**: `eventId`, `occurredAt`, `sourceCommandId`, `causationId`, `correlationId`, `schemaVersion`, `attributes`
+- **Money**: `{ "currency": "CNY", "minorUnits": 12345 }` — ISO-4217 uppercase
+  code + integer minor units. Never floats, never decimal strings
+  (shared-primitives.md §3).
+- **Timestamps**: RFC3339 UTC (e.g. `"2026-07-05T10:30:00Z"`).
+- **IDs**: prefixed strings per the shared-primitives.md §2 prefix table.
+  The prefix is part of the canonical identity and is REQUIRED, not
+  optional (e.g. `"ord-<uuid>"`, `"pi-<uuid>"`).
+- **TravelerRef**: string ID `"tvl-<uuid>"`, or the structured form
+  `{travelerId, travelerType, maskedDocumentRef?, eligibilityRef?}` where a
+  rich reference is needed (shared-primitives.md).
+- **Event envelope fields**: `eventId`, `eventType`, `occurredAt`,
+  `correlationId`, `causationId`, `producer`, `schemaVersion`, `payload`
+  (shared-primitives.md §1).
 
 ### Pagination Convention
 
