@@ -44,8 +44,8 @@ class OrderManagementServiceTest {
 
         assertEquals("account-1", result.accountId());
         assertEquals("offer-1", result.offerId());
-        assertEquals("PENDING_CONFIRMATION", result.status());
-        assertTrue(result.orderId() != null && !result.orderId().isBlank());
+        assertEquals("CREATED", result.status());
+        assertTrue(result.orderId() != null && result.orderId().startsWith("ord-"));
 
         assertEquals(1, eventPublisher.published().size());
         EventEnvelope envelope = eventPublisher.published().getFirst();

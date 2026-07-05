@@ -3,7 +3,11 @@ package com.trainticket.journeyorder.adapters;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.domain.EventEnvelope;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -14,11 +18,16 @@ import java.util.function.Function;
  */
 public class InMemoryEventSubscriber implements EventSubscriber {
 
+    private static final int MAX_DELIVERY_ATTEMPTS = 5;
+
     private final List<EventEnvelope> received = new ArrayList<>();
     private final List<String> subscribedStreams = new ArrayList<>();
     private String group;
     private String consumerName;
     private Function<EventEnvelope, HandlerResult> handler;
+    private final Set<String> processedEventIds = new HashSet<>();
+    private final Map<String, Integer> deliveryCounts = new HashMap<>();
+    private final List<EventEnvelope> dlq = new ArrayList<>();
     private volatile boolean running = false;
     private final CompletableFuture<Void> started = new CompletableFuture<>();
 
@@ -43,14 +52,31 @@ public class InMemoryEventSubscriber implements EventSubscriber {
      */
     public HandlerResult simulateReceive(EventEnvelope envelope) {
         received.add(envelope);
-        if (handler != null) {
-            return handler.apply(envelope);
+        int deliveries = deliveryCounts.merge(envelope.eventId(), 1, Integer::sum);
+        if (processedEventIds.contains(envelope.eventId())) {
+            return new EventSubscriber.Success();
         }
-        return new EventSubscriber.Success();
+        if (deliveries >= MAX_DELIVERY_ATTEMPTS) {
+            dlq.add(envelope);
+            processedEventIds.add(envelope.eventId());
+            return new EventSubscriber.FatalError("delivery attempts exhausted");
+        }
+        HandlerResult result = handler != null ? handler.apply(envelope) : new EventSubscriber.Success();
+        if (result instanceof EventSubscriber.Success) {
+            processedEventIds.add(envelope.eventId());
+        } else if (result instanceof EventSubscriber.FatalError) {
+            dlq.add(envelope);
+            processedEventIds.add(envelope.eventId());
+        }
+        return result;
     }
 
     public List<EventEnvelope> received() {
         return List.copyOf(received);
+    }
+
+    public List<EventEnvelope> dlq() {
+        return List.copyOf(dlq);
     }
 
     public List<String> subscribedStreams() {

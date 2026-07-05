@@ -7,15 +7,19 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.domain.EventEnvelope;
 import io.lettuce.core.Consumer;
+import io.lettuce.core.Limit;
+import io.lettuce.core.Range;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.StreamMessage;
 import io.lettuce.core.XAddArgs;
 import io.lettuce.core.XAutoClaimArgs;
 import io.lettuce.core.XGroupCreateArgs;
+import io.lettuce.core.XPendingArgs;
 import io.lettuce.core.XReadArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
 import io.lettuce.core.models.stream.ClaimedMessages;
+import io.lettuce.core.models.stream.PendingMessage;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,6 +41,7 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private static final Logger log = LoggerFactory.getLogger(RedisEventSubscriber.class);
     private static final long RECOVERY_INTERVAL_MS = 60_000;
+    private static final long MAX_DELIVERY_ATTEMPTS = 5;
 
     private final RedisClient redisClient;
     private final StatefulRedisConnection<String, String> connection;
@@ -195,6 +200,12 @@ public class RedisEventSubscriber implements EventSubscriber {
         }
 
         try {
+            if (deliveryAttempts(stream, group, msgId) >= MAX_DELIVERY_ATTEMPTS) {
+                log.warn("Moving message {} from {} to DLQ after exhausted delivery attempts", msgId, stream);
+                publishToDlq(stream, json);
+                async.xack(stream, group, msgId);
+                return;
+            }
             EventEnvelope envelope = deserialize(json);
             if (dedupCache.contains(envelope.eventId())) {
                 async.xack(stream, group, msgId);
@@ -211,6 +222,20 @@ public class RedisEventSubscriber implements EventSubscriber {
             }
         } catch (Exception e) {
             log.error("Error processing claimed message {}", msgId, e);
+        }
+    }
+
+
+    private long deliveryAttempts(String stream, String group, String msgId) {
+        try {
+            XPendingArgs<String> args = XPendingArgs.Builder.xpending(group, Range.create(msgId, msgId), Limit.create(0, 1));
+            List<PendingMessage> pending = async.xpending(stream, args).get(5, TimeUnit.SECONDS);
+            if (pending == null || pending.isEmpty()) {
+                return 1;
+            }
+            return pending.getFirst().getRedeliveryCount() + 1;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to read pending delivery count for message " + msgId, e);
         }
     }
 
