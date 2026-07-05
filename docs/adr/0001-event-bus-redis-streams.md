@@ -45,7 +45,7 @@ guarantee business process completion.
 
 | Alternative | Rejection Reason |
 |---|---|
-| **NATS JetStream** | Excellent at-least-once and exactly-once guarantees, but adds another infrastructure dependency (separate cluster) beyond the already-required Redis for caching/sessions. For phase-1 联调, keeping the bus on Redis reduces operational surface. |
+| **NATS JetStream** | Excellent at-least-once and exactly-once guarantees, but adds another infrastructure dependency (NATS cluster) beyond the already-required Redis for caching/sessions. For phase-1 联调, keeping the bus on Redis reduces operational surface. |
 | **Kafka / Redpanda** | Industry standard for event streaming, but requires a dedicated cluster, topic management tooling, and higher memory footprint. The phase-1 deployment targets local K8s (minikube or single-node); Redis Streams runs inside the same Redis used for other concerns, minimising infrastructure. |
 | **RabbitMQ (streams plugin)** | RabbitMQ classic queues lack the consumer-group semantics needed for competing-consumer event distribution. The streams plugin is relatively new and less battle-tested in polyglot microservice environments. |
 
