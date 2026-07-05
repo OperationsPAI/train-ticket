@@ -9,7 +9,7 @@ use crate::application::{
 use axum::{
     Json, Router,
     extract::{Extension, Query, rejection::JsonRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,7 @@ pub struct HoldCapacityResponseJson {
 async fn hold_capacity(
     Extension(service): Extension<Arc<CapacityService>>,
     Extension(context): Extension<RequestContext>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     body: Result<Json<HoldCapacityJson>, JsonRejection>,
 ) -> Result<(StatusCode, Json<HoldCapacityResponseJson>), AppErrorResponse> {
     let correlation_id = context.correlation_id().to_string();
@@ -179,7 +179,7 @@ pub struct ConfirmHoldResponseJson {
 async fn confirm_hold(
     Extension(service): Extension<Arc<CapacityService>>,
     Extension(context): Extension<RequestContext>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<ConfirmHoldResponseJson>, AppErrorResponse> {
     let correlation_id = context.correlation_id().to_string();
@@ -207,7 +207,7 @@ pub struct ReleaseHoldResponseJson {
 async fn release_hold(
     Extension(service): Extension<Arc<CapacityService>>,
     Extension(context): Extension<RequestContext>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     axum::extract::Path(hold_id): axum::extract::Path<String>,
 ) -> Result<Json<ReleaseHoldResponseJson>, AppErrorResponse> {
     let correlation_id = context.correlation_id().to_string();
@@ -281,32 +281,25 @@ impl rust_kit::http::ContractErrorStatus for AppError {
 // Header helpers
 // ---------------------------------------------------------------------------
 
-const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 fn get_idempotency_key(
-    headers: &axum::http::HeaderMap,
+    headers: &HeaderMap,
     correlation_id: &str,
 ) -> Result<String, AppErrorResponse> {
-    let key = headers
-        .get(IDEMPOTENCY_KEY_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            AppErrorResponse::new(
-                AppError::ValidationFailed(
-                    "Idempotency-Key header is required on state-changing POST".into(),
-                ),
-                correlation_id.to_string(),
-            )
-        })?;
-
-    // Validate UUID v7 format per api/README.md
-    if !rust_kit::idempotency::validate_uuid_v7(&key) {
-        return Err(AppErrorResponse::new(
-            AppError::ValidationFailed("Idempotency-Key must be a valid UUID v7".into()),
+    rust_kit::idempotency::require_idempotency_key(headers).map_err(|error| {
+        let message = match error {
+            rust_kit::idempotency::IdempotencyError::Missing => {
+                "Idempotency-Key header is required on state-changing POST"
+            }
+            rust_kit::idempotency::IdempotencyError::InvalidUuidV7 => {
+                "Idempotency-Key must be a valid UUID v7"
+            }
+            rust_kit::idempotency::IdempotencyError::Reused => {
+                "Idempotency-Key was reused with a different request body"
+            }
+        };
+        AppErrorResponse::new(
+            AppError::ValidationFailed(message.to_string()),
             correlation_id.to_string(),
-        ));
-    }
-
-    Ok(key)
+        )
+    })
 }

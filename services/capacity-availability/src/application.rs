@@ -548,16 +548,15 @@ impl CapacityService {
             ),
         };
 
-        let envelope = WireEnvelope {
-            event_id: format!("evt-{}", uuid::Uuid::now_v7()),
-            event_type: event_type.to_string(),
-            schema_version: 1,
-            producer: self.producer.clone(),
-            causation_id: None,
-            correlation_id: correlation_id.to_string(),
-            occurred_at: unix_millis_to_rfc3339(now_millis()),
+        let envelope = WireEnvelope::try_new(
+            event_type,
+            unix_millis_to_rfc3339(now_millis()),
+            rust_kit::messaging::valid_or_generated_correlation_id(correlation_id),
+            None::<String>,
+            self.producer.clone(),
             payload,
-        };
+        )
+        .map_err(|error| PublishFailed(error.to_string()))?;
 
         self.publisher.publish(&envelope)
     }

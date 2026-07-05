@@ -10,6 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use rust_kit::{http as kit_http, idempotency as kit_idempotency};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shared_kernel::{
@@ -1783,61 +1784,28 @@ impl ApiErrorKind {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorBody {
-    code: &'static str,
-    message: String,
-    correlation_id: String,
-    details: Value,
-}
-
 fn api_error_response(error: ApiErrorKind, correlation_id: String) -> Response {
-    let status = error.status();
-    let body = ErrorBody {
-        code: error.code(),
-        message: error.message().to_string(),
+    kit_http::error_response(
+        error.status(),
+        error.code(),
+        error.message().to_string(),
         correlation_id,
-        details: json!({}),
-    };
-    (status, Json(body)).into_response()
-}
-
-fn validation_error(correlation_id: String, message: impl Into<String>) -> Response {
-    api_error_response(
-        ApiErrorKind::ValidationFailed(message.into()),
-        correlation_id,
+        Some(json!({})),
     )
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| is_uuid_v7(value))
-        .map(ToOwned::to_owned)
+fn validation_error(correlation_id: String, message: impl Into<String>) -> Response {
+    kit_http::error_response(
+        StatusCode::BAD_REQUEST,
+        "VALIDATION_FAILED",
+        message.into(),
+        correlation_id,
+        Some(json!({})),
+    )
 }
 
-fn is_uuid_v7(value: &str) -> bool {
-    if value.len() != 36 {
-        return false;
-    }
-    for index in [8, 13, 18, 23] {
-        if value.as_bytes().get(index) != Some(&b'-') {
-            return false;
-        }
-    }
-    value
-        .chars()
-        .enumerate()
-        .filter(|(i, _)| ![8, 13, 18, 23].contains(i))
-        .all(|(_, c)| c.is_ascii_hexdigit())
-        && value.as_bytes()[14] == b'7'
-        && matches!(
-            value.as_bytes()[19],
-            b'8' | b'9' | b'a' | b'b' | b'A' | b'B'
-        )
+fn idempotency_key(headers: &HeaderMap) -> Result<String, kit_idempotency::IdempotencyError> {
+    kit_idempotency::require_idempotency_key(headers)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -2108,11 +2076,14 @@ where
     S: EntitlementApi + 'static,
 {
     let correlation_id = context.correlation_id().to_string();
-    let Some(key) = idempotency_key(&headers) else {
-        return validation_error(
-            correlation_id,
-            "Idempotency-Key header is required and must be UUID v7",
-        );
+    let key = match idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(_) => {
+            return validation_error(
+                correlation_id,
+                "Idempotency-Key header is required and must be UUID v7",
+            );
+        }
     };
     let Json(request) = match body {
         Ok(body) => body,
@@ -2139,11 +2110,14 @@ where
     S: EntitlementApi + 'static,
 {
     let correlation_id = context.correlation_id().to_string();
-    let Some(key) = idempotency_key(&headers) else {
-        return validation_error(
-            correlation_id,
-            "Idempotency-Key header is required and must be UUID v7",
-        );
+    let key = match idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(_) => {
+            return validation_error(
+                correlation_id,
+                "Idempotency-Key header is required and must be UUID v7",
+            );
+        }
     };
     let Json(request) = match body {
         Ok(body) => body,
@@ -3086,7 +3060,7 @@ async fn publish_api_event_value(
     let envelope = application::EventEnvelope::new(
         event_type,
         current_rfc3339(),
-        correlation_id,
+        rust_kit::messaging::valid_or_generated_correlation_id(correlation_id),
         None::<String>,
         profile().service_id,
         payload,
