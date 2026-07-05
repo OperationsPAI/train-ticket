@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.UUID;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -56,7 +57,7 @@ public class PostSalesController {
                     request.reasonCode(),
                     request.actorRef(),
                     idempotencyKey,
-                    idempotencyKey,
+                    commandId(),
                     requestCorrelationId(httpRequest)
                 ));
                 return PostSalesMapper.openResponse(postSalesCase);
@@ -74,7 +75,7 @@ public class PostSalesController {
         return idempotencyStore.execute(
             "POST /api/v1/post-sales-cases/" + caseId + "/evaluate " + idempotencyKey,
             fingerprint(caseId),
-            () -> PostSalesMapper.evaluateResponse(service.evaluate(caseId, idempotencyKey, requestCorrelationId(httpRequest)))
+            () -> PostSalesMapper.evaluateResponse(service.evaluate(caseId, commandId(), requestCorrelationId(httpRequest)))
         ).value();
     }
 
@@ -87,7 +88,7 @@ public class PostSalesController {
         return idempotencyStore.execute(
             "POST /api/v1/post-sales-cases/" + caseId + "/approve " + idempotencyKey,
             fingerprint(caseId),
-            () -> PostSalesMapper.approveResponse(service.approve(caseId, idempotencyKey, requestCorrelationId(httpRequest)))
+            () -> PostSalesMapper.approveResponse(service.approve(caseId, commandId(), requestCorrelationId(httpRequest)))
         ).value();
     }
 
@@ -103,6 +104,10 @@ public class PostSalesController {
         }
         String header = request.getHeader("X-Correlation-Id");
         return header == null || header.isBlank() ? null : header;
+    }
+
+    private static String commandId() {
+        return "cmd-" + UUID.randomUUID();
     }
 
     private static String fingerprint(Object request) {

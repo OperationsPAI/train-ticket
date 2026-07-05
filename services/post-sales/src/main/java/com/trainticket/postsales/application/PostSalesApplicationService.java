@@ -42,9 +42,9 @@ public class PostSalesApplicationService {
                     command.scope(),
                     command.reasonCode(),
                     command.actorRef(),
-                    command.idempotencyKey(),
+                    command.commandId(),
                     now,
-                    command.sourceCommandId(),
+                    command.commandId(),
                     command.correlationId()
                 );
                 repository.save(postSalesCase);
@@ -137,7 +137,7 @@ public class PostSalesApplicationService {
         String reasonCode,
         String actorRef,
         String idempotencyKey,
-        String sourceCommandId,
+        String commandId,
         String correlationId
     ) { }
 }

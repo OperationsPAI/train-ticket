@@ -151,7 +151,7 @@ public final class PostSalesCase {
             throw new DomainRuleViolation("post-sales decision quote has expired");
         }
         status = PostSalesCaseStatus.APPROVED;
-        domainEvents.add(new PostSalesApproved(caseId, decision.kind(), PostSalesScope.requireText(approvalRef, "approvalRef"),
+        domainEvents.add(new PostSalesApproved(caseId, journeyOrderId, decision.kind(), PostSalesScope.requireText(approvalRef, "approvalRef"),
             metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
     }
 
