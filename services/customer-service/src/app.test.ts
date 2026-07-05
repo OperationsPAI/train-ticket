@@ -1,21 +1,27 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { InMemoryEventPublisher } from "./application/messaging.js";
 import { createApp } from "./index.js";
 
 const openBody = {
-  requesterRef: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b001",
+  requesterRef: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b001",
   channel: "APP",
   classification: "PAYMENT_HELP",
   priority: "HIGH",
   description: "Payment not reflected after successful charge",
-  businessReferences: { journeyOrderId: "ord-0194f2e0-7b3e-7610-0284-5c26e8b002" },
+  businessReferences: { journeyOrderId: "ord-0194f2e0-7b3e-7610-8284-5c26e8b002" },
 };
 
+let idempotencySequence = 0;
+
+function idempotencyKey(): string {
+  idempotencySequence += 1;
+  return `018f2e00-7b3e-7610-8284-${idempotencySequence.toString(16).padStart(12, "0")}`;
+}
+
 async function openedCase(app = createApp()): Promise<string> {
-  const response = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers: { "idempotency-key": randomUUID() }, payload: openBody });
+  const response = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers: { "idempotency-key": idempotencyKey() }, payload: openBody });
   assert.equal(response.statusCode, 201);
   return response.json().caseId as string;
 }
@@ -69,7 +75,7 @@ describe("customer-service HTTP API", () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/v1/support-cases",
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c001", "x-correlation-id": "corr-http-test" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c001", "x-correlation-id": "corr-http-test" },
       payload: openBody,
     });
 
@@ -90,10 +96,20 @@ describe("customer-service HTTP API", () => {
     assert.equal(missingKey.statusCode, 400);
     assert.equal(missingKey.json().code, "VALIDATION_FAILED");
 
+    const malformedKey = await createApp().inject({
+      method: "POST",
+      url: "/api/v1/support-cases",
+      headers: { "idempotency-key": "not-a-uuid-v7" },
+      payload: openBody,
+    });
+    assert.equal(malformedKey.statusCode, 400);
+    assert.equal(malformedKey.json().code, "VALIDATION_FAILED");
+    assert.equal(malformedKey.json().details.header, "Idempotency-Key");
+
     const invalid = await createApp().inject({
       method: "POST",
       url: "/api/v1/support-cases",
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c002" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c002" },
       payload: { ...openBody, channel: "FAX" },
     });
     assert.equal(invalid.statusCode, 400);
@@ -103,7 +119,7 @@ describe("customer-service HTTP API", () => {
 
   it("replays idempotent requests and rejects same key with different body", async () => {
     const app = createApp();
-    const headers = { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c003" };
+    const headers = { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c003" };
     const first = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers, payload: openBody });
     const replay = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers, payload: openBody });
     const reused = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers, payload: { ...openBody, description: "different" } });
@@ -121,7 +137,7 @@ describe("customer-service HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/evidence`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c004" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c004" },
       payload: { evidenceType: "SCREENSHOT", reference: "s3://evidence/1", summary: "receipt", accessLevel: "SENSITIVE", attachedBy: "op-1" },
     });
     assert.equal(response.statusCode, 201);
@@ -135,7 +151,7 @@ describe("customer-service HTTP API", () => {
     const classified = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/classify`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c005", "x-operator-ref": "op-1" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c005", "x-operator-ref": "op-1" },
       payload: { classification: "PAYMENT_DISPUTE", priority: "URGENT" },
     });
     assert.equal(classified.statusCode, 200);
@@ -144,7 +160,7 @@ describe("customer-service HTTP API", () => {
     const assigned = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/assign`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c006", "x-operator-ref": "op-1" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c006", "x-operator-ref": "op-1" },
       payload: { assignedTo: "op-2", ownerQueue: "payment" },
     });
     assert.equal(assigned.statusCode, 200);
@@ -154,11 +170,11 @@ describe("customer-service HTTP API", () => {
   it("escalates a support case", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
-    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "assign-before-escalate" }, payload: { ownerQueue: "tier1" } });
+    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d001" }, payload: { ownerQueue: "tier1" } });
     const response = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/escalate`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c007" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c007" },
       payload: { targetQueue: "tier2", reason: "needs supervisor" },
     });
     assert.equal(response.statusCode, 200);
@@ -168,12 +184,12 @@ describe("customer-service HTTP API", () => {
   it("resolves, closes, and reopens a support case", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
-    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "assign-before-resolve" }, payload: { ownerQueue: "tier1" } });
+    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d002" }, payload: { ownerQueue: "tier1" } });
 
     const resolved = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/resolve`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c008" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c008" },
       payload: { summary: "fixed", resolutionCode: "FIXED" },
     });
     assert.equal(resolved.statusCode, 200);
@@ -182,7 +198,7 @@ describe("customer-service HTTP API", () => {
     const closed = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/close`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c009" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c009" },
       payload: { reason: "RESOLVED" },
     });
     assert.equal(closed.statusCode, 200);
@@ -191,25 +207,84 @@ describe("customer-service HTTP API", () => {
     const reopened = await app.inject({
       method: "POST",
       url: `/api/v1/support-cases/${caseId}/reopen`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c010" },
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c010" },
       payload: { reason: "still broken", requesterRef: openBody.requesterRef },
     });
     assert.equal(reopened.statusCode, 200);
     assert.equal(reopened.json().status, "IN_PROGRESS");
   });
 
-  it("surfaces aggregate invariant violations as DOMAIN_RULE_VIOLATION", async () => {
+  it("surfaces non-precondition aggregate invariant violations as DOMAIN_RULE_VIOLATION", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/classify`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c014" },
+      payload: { classification: "PAYMENT_DISPUTE", priority: "URGENT" },
+    });
+
     const response = await app.inject({
       method: "POST",
-      url: `/api/v1/support-cases/${caseId}/close`,
-      headers: { "idempotency-key": "018f2e0-7b3e-7610-0284-5c26e8b0c011" },
-      payload: { reason: "RESOLVED" },
+      url: `/api/v1/support-cases/${caseId}/classify`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c015" },
+      payload: { classification: "PAYMENT_DISPUTE", priority: "URGENT" },
     });
+
     assert.equal(response.statusCode, 422);
     assert.equal(response.json().code, "DOMAIN_RULE_VIOLATION");
-    assert.equal(response.json().details.domainCode, "CLOSURE_WITHOUT_RESOLUTION");
+    assert.equal(response.json().details.domainCode, "CASE_NOT_CLASSIFIABLE");
+  });
+
+  it("maps resolve and close precondition failures to PRECONDITION_FAILED", async () => {
+    const app = createApp();
+    const caseId = await openedCase(app);
+    const unresolved = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/resolve`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c011" },
+      payload: { summary: "fixed", resolutionCode: "FIXED" },
+    });
+    assert.equal(unresolved.statusCode, 412);
+    assert.equal(unresolved.json().code, "PRECONDITION_FAILED");
+    assert.equal(unresolved.json().details.domainCode, "CASE_NOT_RESOLVABLE");
+
+    const unclosed = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/close`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c016" },
+      payload: { reason: "RESOLVED" },
+    });
+    assert.equal(unclosed.statusCode, 412);
+    assert.equal(unclosed.json().code, "PRECONDITION_FAILED");
+    assert.equal(unclosed.json().details.domainCode, "CLOSURE_WITHOUT_RESOLUTION");
+  });
+
+  it("uses one generated correlation id for response headers, error bodies, and events", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({ publisher });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/support-cases",
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c012" },
+      payload: openBody,
+    });
+
+    assert.equal(created.statusCode, 201);
+    const responseCorrelationId = String(created.headers["x-correlation-id"]);
+    assert.match(responseCorrelationId, /^corr-/);
+    assert.equal(publisher.envelopes[0].correlationId, responseCorrelationId);
+
+    const invalidOnCreatedCase = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${created.json().caseId}/close`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c013" },
+      payload: { reason: "RESOLVED" },
+    });
+
+    assert.equal(invalidOnCreatedCase.statusCode, 412);
+    assert.equal(invalidOnCreatedCase.json().correlationId, invalidOnCreatedCase.headers["x-correlation-id"]);
   });
 
   it("returns NOT_FOUND for unknown cases", async () => {

@@ -134,13 +134,15 @@ export class CustomerServiceApplication {
     return evidence.toSnapshot();
   }
 
-  async classifySupportCase(caseId: string, request: ClassifySupportCaseRequest, operatorRef: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
+  async classifySupportCase(caseId: string, request: ClassifySupportCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const current = this.requireCase(caseId);
     const { case: updated, event } = current.classify({
       caseId,
       classification: request.classification,
       priority: request.priority,
       classifiedBy: operatorRef,
+      correlationId,
+      causationId,
       classifiedAt: new Date(),
     });
     this.cases.set(caseId, updated);
@@ -148,13 +150,15 @@ export class CustomerServiceApplication {
     return updated.toSnapshot();
   }
 
-  async assignSupportCase(caseId: string, request: AssignSupportCaseRequest, operatorRef: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
+  async assignSupportCase(caseId: string, request: AssignSupportCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const current = this.requireCase(caseId);
     const { case: updated, event } = current.assign({
       caseId,
       ownerQueue: request.ownerQueue,
       assignedTo: request.assignedTo,
       assignedBy: operatorRef,
+      correlationId,
+      causationId,
       assignedAt: new Date(),
     });
     this.cases.set(caseId, updated);
@@ -162,13 +166,15 @@ export class CustomerServiceApplication {
     return updated.toSnapshot();
   }
 
-  async escalateCase(caseId: string, request: EscalateCaseRequest, operatorRef: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
+  async escalateCase(caseId: string, request: EscalateCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const current = this.requireCase(caseId);
     const { case: updated, event } = current.escalate({
       caseId,
       targetQueue: request.targetQueue,
       reason: request.reason,
       escalatedBy: operatorRef,
+      correlationId,
+      causationId,
       escalatedAt: new Date(),
     });
     this.cases.set(caseId, updated);
@@ -176,13 +182,15 @@ export class CustomerServiceApplication {
     return updated.toSnapshot();
   }
 
-  async resolveCase(caseId: string, request: ResolveCaseRequest, operatorRef: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
+  async resolveCase(caseId: string, request: ResolveCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const current = this.requireCase(caseId);
     const { case: updated, event } = current.resolve({
       caseId,
       summary: request.summary,
       resolutionCode: request.resolutionCode,
       resolvedBy: operatorRef,
+      correlationId,
+      causationId,
       resolvedAt: new Date(),
     });
     this.cases.set(caseId, updated);
@@ -190,12 +198,14 @@ export class CustomerServiceApplication {
     return updated.toSnapshot();
   }
 
-  async closeCase(caseId: string, request: CloseCaseRequest, operatorRef: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
+  async closeCase(caseId: string, request: CloseCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const current = this.requireCase(caseId);
     const { case: updated, event } = current.close({
       caseId,
       reason: request.reason,
       closedBy: operatorRef,
+      correlationId,
+      causationId,
       closedAt: new Date(),
     });
     this.cases.set(caseId, updated);
@@ -203,12 +213,14 @@ export class CustomerServiceApplication {
     return updated.toSnapshot();
   }
 
-  async reopenCase(caseId: string, request: ReopenCaseRequest, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
+  async reopenCase(caseId: string, request: ReopenCaseRequest, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const current = this.requireCase(caseId);
     const { case: updated, event } = current.reopen({
       caseId,
       reason: request.reason,
       requesterRef: request.requesterRef,
+      correlationId,
+      causationId,
       reopenedAt: new Date(),
     });
     this.cases.set(caseId, updated);
