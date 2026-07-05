@@ -3,6 +3,8 @@ export {
   health,
   metadata,
   opentelemetryInstrumentationFromEnv,
+  InMemoryIdempotencyStore,
+  handleIdempotentPost,
   type ErrorEnvelope,
   type HealthStatus,
   type InstrumentationHooks,
@@ -57,3 +59,29 @@ export {
   type DeliveryReceiptSnapshot,
   type NotificationBoundaryProof,
 } from "./domain.js";
+export {
+  DeduplicatingEventHandler,
+  InMemoryEventPublisher,
+  PublishFailed,
+  SubscribeFailed,
+  fatalHandling,
+  successfulHandling,
+  toEventEnvelope,
+  transientHandling,
+  type EventEnvelope,
+  type EventHandler,
+  type EventHandlerResult,
+  type EventPublisher,
+  type EventSubscriber,
+} from "./application/messaging.js";
+export { NotificationApplicationService } from "./application/notification-service.js";
+export {
+  NOTIFICATION_CONSUMER_GROUP,
+  NOTIFICATION_PRODUCER,
+  NOTIFICATION_SUBSCRIBED_STREAMS,
+  notificationConsumerName,
+  redisUrl,
+} from "./adapters/messaging/stream-config.js";
+export { RedisStreamEventPublisher } from "./adapters/messaging/publisher.js";
+export { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
+export { startNotificationMessaging, type NotificationMessagingRuntime } from "./adapters/messaging/runtime.js";
