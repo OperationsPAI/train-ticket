@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
@@ -23,12 +23,10 @@ export type ServiceMetadata = Readonly<{
 }>;
 
 export type ErrorEnvelope = Readonly<{
-  error: Readonly<{
-    code: string;
-    message: string;
-    requestId: string;
-    correlationId: string;
-  }>;
+  code: string;
+  message: string;
+  correlationId: string;
+  details: Record<string, unknown>;
 }>;
 
 export type RequestContext = Readonly<{
@@ -65,6 +63,24 @@ type OTelSpan = Readonly<{
 type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
+
+type IdempotencyRecord = Readonly<{
+  bodyHash: string;
+  statusCode: number;
+  payload: unknown;
+}>;
+
+export class InMemoryIdempotencyStore {
+  private readonly records = new Map<string, IdempotencyRecord>();
+
+  get(key: string): IdempotencyRecord | undefined {
+    return this.records.get(key);
+  }
+
+  save(key: string, record: IdempotencyRecord): void {
+    this.records.set(key, record);
+  }
+}
 
 export function opentelemetryInstrumentationFromEnv(tracer?: OTelTracer): InstrumentationHooks {
   const exporter = process.env.OTEL_TRACES_EXPORTER?.trim().toLowerCase();
@@ -133,6 +149,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
   });
 
   app.get("/health", async () => healthBody());
+  app.get("/healthz", async () => probeBody("live"));
   app.get("/metadata", async () => metadata());
 
   app.get("/live", async () => probeBody("live"));
@@ -145,14 +162,54 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (isValidationError(error)) {
+      sendError(reply, 400, "VALIDATION_FAILED", errorMessage(error), requestContext(request));
+      return;
+    }
     sendError(reply, 500, "INTERNAL_ERROR", errorMessage(error), requestContext(request));
   });
 
   return app;
 }
 
+export async function handleIdempotentPost<T>(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  store: InMemoryIdempotencyStore,
+  handler: () => Promise<Readonly<{ statusCode: number; payload: T }>>,
+): Promise<T | ErrorEnvelope> {
+  const context = requestContext(request);
+  const key = headerValue(request.headers["idempotency-key"]);
+  if (key === undefined) {
+    reply.status(400);
+    return errorBody("VALIDATION_FAILED", "Idempotency-Key header is required", context);
+  }
+
+  const bodyHash = hashBody(request.body);
+  const existing = store.get(key);
+  if (existing !== undefined) {
+    if (existing.bodyHash !== bodyHash) {
+      reply.status(422);
+      return errorBody("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body", context);
+    }
+    reply.status(existing.statusCode);
+    return existing.payload as T;
+  }
+
+  const result = await handler();
+  store.save(key, { bodyHash, statusCode: result.statusCode, payload: result.payload });
+  reply.status(result.statusCode);
+  return result.payload;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
+}
+
+function isValidationError(error: unknown): error is Error & { statusCode?: number; validation?: unknown } {
+  return typeof error === "object" && error !== null && (
+    ("statusCode" in error && error.statusCode === 400) || "validation" in error
+  );
 }
 
 function healthBody(): HealthStatus {
@@ -186,13 +243,18 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 
 function sendError(reply: AppReply, statusCode: number, code: string, message: string, context: RequestContext): void {
-  const envelope: ErrorEnvelope = {
-    error: {
-      code,
-      message,
-      requestId: context.requestId,
-      correlationId: context.correlationId,
-    },
+  reply.status(statusCode).send(errorBody(code, message, context));
+}
+
+function errorBody(code: string, message: string, context: RequestContext): ErrorEnvelope {
+  return {
+    code,
+    message,
+    correlationId: context.correlationId,
+    details: {},
   };
-  reply.status(statusCode).send(envelope);
+}
+
+function hashBody(body: unknown): string {
+  return createHash("sha256").update(JSON.stringify(body ?? null)).digest("hex");
 }
