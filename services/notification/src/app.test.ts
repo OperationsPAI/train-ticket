@@ -99,7 +99,7 @@ describe("notification service HTTP contract", () => {
     const invalid = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "018f-test-key", "x-correlation-id": "corr-validation" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-validation" },
       payload: {},
     });
     assert.equal(invalid.statusCode, 400);
@@ -110,19 +110,19 @@ describe("notification service HTTP contract", () => {
     const first = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "018f-test-key", "x-correlation-id": "corr-idem" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-idem" },
       payload: { name: "Alice" },
     });
     const replay = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "018f-test-key", "x-correlation-id": "corr-idem" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-idem" },
       payload: { name: "Alice" },
     });
     const reused = await app.inject({
       method: "POST",
       url: "/_test/state-change",
-      headers: { "idempotency-key": "018f-test-key", "x-correlation-id": "corr-idem" },
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c222", "x-correlation-id": "corr-idem" },
       payload: { name: "Bob" },
     });
 

@@ -32,7 +32,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     CUSTOMER_SERVICE_SUBSCRIPTIONS,
     CUSTOMER_SERVICE_CONSUMER_GROUP,
     `${CUSTOMER_SERVICE_CONSUMER_GROUP}-${process.env.HOSTNAME ?? randomUUID()}`,
-    (envelope) => application.handleIntegrationEvent(envelope),
+    (envelope) => application.handleIntegrationEvent(envelope as never),
   );
 
   const app = createApp({

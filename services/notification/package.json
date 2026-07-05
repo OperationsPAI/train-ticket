@@ -8,6 +8,7 @@
     "test": "rm -rf test-output && tsc --noEmit false --outDir test-output && node --test test-output/**/*.test.js"
   },
   "dependencies": {
+    "@trainticket/ts-kit": "file:../../platform/ts-kit",
     "fastify": "5.9.0",
     "ioredis": "^5.4.1"
   },
