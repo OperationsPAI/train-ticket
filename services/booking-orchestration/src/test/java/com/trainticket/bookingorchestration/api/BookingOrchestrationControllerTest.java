@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.bookingorchestration.RequestContextFilter;
-import com.trainticket.bookingorchestration.adapters.messaging.InMemoryEventPublisher;
 import com.trainticket.bookingorchestration.application.BookingOrchestrationService;
 import java.time.Clock;
 import java.time.Instant;
@@ -21,7 +20,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class BookingOrchestrationControllerTest {
 
-    private InMemoryEventPublisher eventPublisher;
+    private TestEventPublisher eventPublisher;
     private BookingOrchestrationService bookingService;
     private BookingOrchestrationController controller;
     private MockHttpServletRequest request;
@@ -29,7 +28,7 @@ class BookingOrchestrationControllerTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC);
-        eventPublisher = new InMemoryEventPublisher();
+        eventPublisher = new TestEventPublisher();
         bookingService = new BookingOrchestrationService(clock, eventPublisher);
         controller = new BookingOrchestrationController(bookingService);
         request = new MockHttpServletRequest();
@@ -285,4 +284,22 @@ class BookingOrchestrationControllerTest {
         }
         throw new AssertionError("expected NotFoundException");
     }
+
+    private static final class TestEventPublisher implements com.trainticket.bookingorchestration.application.EventPublisher {
+        private final java.util.List<com.trainticket.platformkit.messaging.EventEnvelope> published = new java.util.ArrayList<>();
+
+        @Override
+        public void publish(com.trainticket.platformkit.messaging.EventEnvelope envelope) {
+            published.add(envelope);
+        }
+
+        java.util.List<com.trainticket.platformkit.messaging.EventEnvelope> getPublished() {
+            return java.util.List.copyOf(published);
+        }
+
+        void clear() {
+            published.clear();
+        }
+    }
+
 }
