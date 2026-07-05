@@ -34,24 +34,22 @@ import org.slf4j.LoggerFactory;
 public class RedisStreamsEventSubscriber implements EventSubscriber {
 
     private static final Logger log = LoggerFactory.getLogger(RedisStreamsEventSubscriber.class);
-    private static final int POLL_COUNT = 10;
     private static final int BLOCK_MS = 2000;
     private static final Duration RECOVERY_INTERVAL = Duration.ofSeconds(60);
     private static final int MAX_DELIVERY_ATTEMPTS = 5;
     private static final long MIN_IDLE_MS = 60_000L;
     private static final long MAXLEN = 100_000L;
 
-    private final RedisClient redisClient;
     private final StatefulRedisConnection<String, String> connection;
     private final RedisCommands<String, String> commands;
     private final ObjectMapper objectMapper;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Set<String> consumedEventIds = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, Integer> deliveryCounts = new ConcurrentHashMap<>();
     private ExecutorService executor;
     private volatile SubscriberConfig currentConfig;
 
     public RedisStreamsEventSubscriber(RedisClient redisClient) {
-        this.redisClient = redisClient;
         this.connection = redisClient.connect();
         this.commands = connection.sync();
         this.objectMapper = new ObjectMapper()
@@ -189,11 +187,12 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
             return;
         }
 
-        long deliveryCount = getDeliveryCount(stream, group, messageId);
+        int deliveryCount = deliveryCounts.merge(messageId, 1, Integer::sum);
         if (deliveryCount >= MAX_DELIVERY_ATTEMPTS) {
             log.warn("Message {} on {} exceeded max delivery, moving to DLQ", messageId, stream);
             moveToDlq(stream, envelopeJson);
             commands.xack(stream, group, messageId);
+            deliveryCounts.remove(messageId);
             return;
         }
 
@@ -203,15 +202,18 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
         } catch (JsonProcessingException e) {
             moveToDlq(stream, envelopeJson);
             commands.xack(stream, group, messageId);
+            deliveryCounts.remove(messageId);
             return;
         }
 
         if (consumedEventIds.contains(envelope.eventId())) {
             commands.xack(stream, group, messageId);
+            deliveryCounts.remove(messageId);
             return;
         }
 
         processAndAck(stream, group, messageId, envelope, envelopeJson);
+        deliveryCounts.remove(messageId);
     }
 
     private void processAndAck(String stream, String group, String messageId,
@@ -245,21 +247,6 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
         }
     }
 
-    private long getDeliveryCount(String stream, String group, String messageId) {
-        try {
-            var range = io.lettuce.core.Range.create("-", "+");
-            var limit = io.lettuce.core.Limit.create(1, 1);
-            var pending = commands.xpending(stream, Consumer.from(group, messageId), range, limit);
-            if (pending != null && !pending.isEmpty()) {
-                var entry = pending.get(0);
-                if (entry != null) return entry.getRedeliveryCount();
-            }
-        } catch (Exception e) {
-            log.debug("Failed to get delivery count: {}", e.getMessage());
-        }
-        return 0;
-    }
-
     public void shutdown() {
         running.set(false);
         if (executor != null) {
@@ -267,7 +254,6 @@ public class RedisStreamsEventSubscriber implements EventSubscriber {
             try { executor.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
         if (connection != null) connection.close();
-        if (redisClient != null) redisClient.shutdown();
     }
 
     private static void sleepSilently(Duration duration) {

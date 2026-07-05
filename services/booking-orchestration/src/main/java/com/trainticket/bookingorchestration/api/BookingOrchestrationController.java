@@ -98,9 +98,9 @@ public class BookingOrchestrationController {
             return validationError(errors, httpRequest);
         }
 
-        Optional<Object> existing = idempotencyStore.get(idempotencyKey);
-        if (existing.isPresent()) {
-            return ResponseEntity.status(HttpStatus.CREATED).body(existing.get());
+        var existing = idempotencyStore.get(idempotencyKey, request);
+        if (existing != null) {
+            return ResponseEntity.status(HttpStatus.CREATED).body(existing);
         }
 
         String sagaId = "saga-" + UUID.randomUUID();
@@ -121,7 +121,7 @@ public class BookingOrchestrationController {
         sagaStore.put(sagaId, saga);
         var response = new StartSagaResponse(sagaId, request.journeyOrderId(),
             mapSagaStatus(saga.status()), clock.instant());
-        idempotencyStore.put(idempotencyKey, response);
+        idempotencyStore.put(idempotencyKey, request, response);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -156,9 +156,9 @@ public class BookingOrchestrationController {
             return validationError(errors, httpRequest);
         }
 
-        Optional<Object> existing = idempotencyStore.get(idempotencyKey);
-        if (existing.isPresent()) {
-            return ResponseEntity.ok(existing.get());
+        var existing = idempotencyStore.get(idempotencyKey, request);
+        if (existing != null) {
+            return ResponseEntity.ok(existing);
         }
 
         SegmentBooking segmentBooking = SegmentBooking.requestReservation(
@@ -171,7 +171,7 @@ public class BookingOrchestrationController {
         }
 
         var response = new RequestReservationResponse(request.segmentBookingId(), "REQUESTED");
-        idempotencyStore.put(idempotencyKey, response);
+        idempotencyStore.put(idempotencyKey, request, response);
         return ResponseEntity.ok(response);
     }
 
@@ -195,13 +195,13 @@ public class BookingOrchestrationController {
             return validationError(errors, httpRequest);
         }
 
-        Optional<Object> existing = idempotencyStore.get(idempotencyKey);
-        if (existing.isPresent()) {
-            return ResponseEntity.ok(existing.get());
+        var existing = idempotencyStore.get(idempotencyKey, request);
+        if (existing != null) {
+            return ResponseEntity.ok(existing);
         }
 
         var response = new MarkTicketedResponse(request.segmentBookingId(), "TICKETED");
-        idempotencyStore.put(idempotencyKey, response);
+        idempotencyStore.put(idempotencyKey, request, response);
         return ResponseEntity.ok(response);
     }
 
@@ -213,6 +213,12 @@ public class BookingOrchestrationController {
         String correlationId = getCorrelationId(httpRequest);
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
             .body(new ErrorBody("DOMAIN_RULE_VIOLATION", ex.getMessage(), correlationId, Map.of()));
+    }
+
+    @ExceptionHandler(IdempotencyKeyReusedException.class)
+    public ResponseEntity<ErrorBody> handleIdempotencyKeyReused(IdempotencyKeyReusedException ex,
+                                                                    HttpServletRequest httpRequest) {
+        return idempotencyKeyReused(httpRequest);
     }
 
     @ExceptionHandler(IllegalStateException.class)
@@ -235,6 +241,14 @@ public class BookingOrchestrationController {
         String correlationId = getCorrelationId(request);
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
             .body(new ErrorBody("NOT_FOUND", message, correlationId, Map.of()));
+    }
+
+    private ResponseEntity<ErrorBody> idempotencyKeyReused(HttpServletRequest request) {
+        String correlationId = getCorrelationId(request);
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+            .body(new ErrorBody("IDEMPOTENCY_KEY_REUSED",
+                "Idempotency-Key was reused with a different request body",
+                correlationId, Map.of()));
     }
 
     private String getCorrelationId(HttpServletRequest request) {
@@ -332,14 +346,41 @@ public class BookingOrchestrationController {
     }
 
     static class IdempotencyStore {
-        private final ConcurrentHashMap<String, Object> store = new ConcurrentHashMap<>();
-        void put(String key, Object value) { store.put(key, value); }
-        Optional<Object> get(String key) { return Optional.ofNullable(store.get(key)); }
+        private static final class Entry {
+            final Object requestBody;
+            final Object response;
+            Entry(Object requestBody, Object response) {
+                this.requestBody = requestBody;
+                this.response = response;
+            }
+        }
+        private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
+
+        void put(String key, Object requestBody, Object response) {
+            store.put(key, new Entry(requestBody, response));
+        }
+
+        Object get(String key, Object requestBody) {
+            Entry entry = store.get(key);
+            if (entry == null) {
+                return null;
+            }
+            if (!requestBody.equals(entry.requestBody)) {
+                throw new IdempotencyKeyReusedException();
+            }
+            return entry.response;
+        }
     }
 
     static class SagaStore {
         private final ConcurrentHashMap<String, BookingSaga> store = new ConcurrentHashMap<>();
         void put(String key, BookingSaga saga) { store.put(key, saga); }
         Optional<BookingSaga> get(String key) { return Optional.ofNullable(store.get(key)); }
+    }
+
+    static class IdempotencyKeyReusedException extends RuntimeException {
+        IdempotencyKeyReusedException() {
+            super("Idempotency-Key was reused with a different request body");
+        }
     }
 }
