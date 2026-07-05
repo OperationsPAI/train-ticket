@@ -50,6 +50,24 @@ def test_assess_risk_happy_path_and_get() -> None:
     assert fetched.json() == body
 
 
+def test_default_app_assess_risk_smoke_uses_platform_fake_publisher() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-default", "scenario": "order_risk", "context": {"riskScore": 10}},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["subjectRef"] == "ord-default"
+    [envelope] = app.state.publisher.envelopes
+    assert envelope.to_json_dict()["eventType"] == "RiskAssessed"
+    assert envelope.payload["assessmentId"] == body["assessmentId"]
+
+
 def test_get_unknown_assessment_returns_not_found_error_body() -> None:
     response = TestClient(fake_app()).get("/api/v1/risk-assessments/asmt-missing", headers={"X-Correlation-Id": str(uuid7())})
 

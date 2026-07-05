@@ -241,9 +241,9 @@ def create_app(
     app = FastAPI(title="Risk & Compliance", version="0.1.0")
     app.state.assessment_repository = InMemoryAssessmentRepository()
     if service is None:
-        from .adapters.messaging import RedisEventPublisher
+        from train_ticket_platform.messaging import InMemoryEventPublisher
 
-        app.state.publisher = RedisEventPublisher()
+        app.state.publisher = InMemoryEventPublisher()
         app.state.risk_service = RiskComplianceService(
             publisher=app.state.publisher,
             repository=app.state.assessment_repository,
