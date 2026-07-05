@@ -1,4 +1,9 @@
-use entitlement_ticketing::{health, profile, router};
+use entitlement_ticketing::{InMemoryEntitlementService, health, profile, router_with_state};
+use std::sync::Arc;
+
+fn test_router() -> axum::Router {
+    router_with_state(Arc::new(InMemoryEntitlementService::default()))
+}
 
 #[test]
 fn profile_exports_req_013_contract_metadata() {
@@ -14,7 +19,7 @@ fn profile_exports_req_013_contract_metadata() {
             .any(|entry| entry.contains("issuance preconditions"))
     );
     assert_eq!(health(), "ok");
-    let _router = router();
+    let _router = test_router();
 }
 
 #[tokio::test]
@@ -24,7 +29,7 @@ async fn http_entitlement_endpoints_happy_path_and_idempotency() {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    let app = router();
+    let app = test_router();
     let issue_body = json!({
         "segmentBookingId": "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
         "journeyOrderId": "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
@@ -128,7 +133,7 @@ async fn validation_failure_uses_canonical_error_shape() {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    let response = router()
+    let response = test_router()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -137,10 +142,10 @@ async fn validation_failure_uses_canonical_error_shape() {
                 .header("x-correlation-id", "corrvalidation")
                 .body(Body::from(
                     json!({
-                        "segmentBookingId":"sb-1",
-                        "journeyOrderId":"ord-1",
-                        "travelerRef":"tvl-1",
-                        "segmentRef":"seg-1",
+                        "segmentBookingId":"sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+                        "journeyOrderId":"ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+                        "travelerRef":"tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                        "segmentRef":"seg-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
                         "issuePurpose":"INITIAL"
                     })
                     .to_string(),
@@ -275,7 +280,7 @@ async fn invalid_list_query_uses_canonical_error_shape() {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    let response = router()
+    let response = test_router()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/entitlements?limit=not-a-number")
@@ -299,7 +304,7 @@ async fn invalid_idempotency_key_is_rejected() {
     use serde_json::json;
     use tower::ServiceExt;
 
-    let response = router()
+    let response = test_router()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -308,10 +313,10 @@ async fn invalid_idempotency_key_is_rejected() {
                 .header("idempotency-key", "not-a-uuid-v7")
                 .body(Body::from(
                     json!({
-                        "segmentBookingId":"sb-1",
-                        "journeyOrderId":"ord-1",
-                        "travelerRef":"tvl-1",
-                        "segmentRef":"seg-1",
+                        "segmentBookingId":"sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+                        "journeyOrderId":"ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+                        "travelerRef":"tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                        "segmentRef":"seg-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
                         "issuePurpose":"INITIAL"
                     })
                     .to_string(),
@@ -330,7 +335,7 @@ async fn domain_invariant_violation_surfaces_as_domain_rule_violation() {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    let app = router();
+    let app = test_router();
     let issue_response = app
         .clone()
         .oneshot(
@@ -341,10 +346,10 @@ async fn domain_invariant_violation_surfaces_as_domain_rule_violation() {
                 .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0c101")
                 .body(Body::from(
                     json!({
-                        "segmentBookingId":"sb-domain-1",
-                        "journeyOrderId":"ord-domain-1",
-                        "travelerRef":"tvl-domain-1",
-                        "segmentRef":"seg-domain-1",
+                        "segmentBookingId":"sb-0194f2e0-7b3e-7610-0284-5c26e8b0c511",
+                        "journeyOrderId":"ord-0194f2e0-7b3e-7610-0284-5c26e8b0c522",
+                        "travelerRef":"tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c533",
+                        "segmentRef":"seg-0194f2e0-7b3e-7610-0284-5c26e8b0c544",
                         "issuePurpose":"INITIAL"
                     })
                     .to_string(),
@@ -395,4 +400,86 @@ async fn domain_invariant_violation_surfaces_as_domain_rule_violation() {
         .await
         .unwrap();
     assert_eq!(second_void.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn non_contract_id_shape_is_rejected() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request, StatusCode};
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/entitlements")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "018f2e07-b3e7-7100-8284-5c26e8b0c201")
+                .body(Body::from(
+                    json!({
+                        "segmentBookingId":"not-a-segment-booking-id",
+                        "journeyOrderId":"ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+                        "travelerRef":"tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                        "segmentRef":"seg-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+                        "issuePurpose":"INITIAL"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["code"], "VALIDATION_FAILED");
+}
+
+#[tokio::test]
+async fn publish_failure_is_not_cached_and_retry_republishes() {
+    use entitlement_ticketing::adapters::messaging::InMemoryEventPublisher;
+    use entitlement_ticketing::{
+        EntitlementApi, InMemoryEntitlementService, IssueEntitlementRequest, IssuePurposeDto,
+    };
+    use std::sync::Arc;
+
+    let publisher = Arc::new(InMemoryEventPublisher::default());
+    let service = InMemoryEntitlementService::new(publisher.clone());
+    let request = IssueEntitlementRequest {
+        segment_booking_id: "sb-0194f2e0-7b3e-7610-0284-5c26e8b0d111".to_string(),
+        journey_order_id: "ord-0194f2e0-7b3e-7610-0284-5c26e8b0d222".to_string(),
+        traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0d333".to_string(),
+        segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0d444".to_string(),
+        issue_purpose: IssuePurposeDto::Initial,
+    };
+
+    publisher.fail_next("redis unavailable");
+    let first = service
+        .issue(
+            request.clone(),
+            "018f2e07-b3e7-7100-8284-5c26e8b0d201".to_string(),
+            "corr-publish-retry".to_string(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        first,
+        entitlement_ticketing::ApiErrorKind::Unavailable(_)
+    ));
+    assert!(publisher.published().is_empty());
+
+    let response = service
+        .issue(
+            request,
+            "018f2e07-b3e7-7100-8284-5c26e8b0d201".to_string(),
+            "corr-publish-retry".to_string(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status,
+        entitlement_ticketing::EntitlementStatusDto::Issued
+    );
+    assert_eq!(publisher.published().len(), 1);
 }

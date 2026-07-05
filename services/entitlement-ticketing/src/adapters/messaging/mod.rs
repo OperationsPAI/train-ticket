@@ -404,6 +404,7 @@ fn redis_value_to_string(value: &redis::Value) -> Option<String> {
 #[derive(Default)]
 pub struct InMemoryEventPublisher {
     envelopes: Mutex<Vec<EventEnvelope>>,
+    fail_next: Mutex<Option<String>>,
 }
 
 impl InMemoryEventPublisher {
@@ -413,11 +414,23 @@ impl InMemoryEventPublisher {
             .expect("publisher lock poisoned")
             .clone()
     }
+
+    pub fn fail_next(&self, message: impl Into<String>) {
+        *self.fail_next.lock().expect("publisher lock poisoned") = Some(message.into());
+    }
 }
 
 #[async_trait]
 impl EventPublisher for InMemoryEventPublisher {
     async fn publish(&self, envelope: EventEnvelope) -> Result<(), PublishFailed> {
+        if let Some(message) = self
+            .fail_next
+            .lock()
+            .expect("publisher lock poisoned")
+            .take()
+        {
+            return Err(PublishFailed(message));
+        }
         self.envelopes
             .lock()
             .expect("publisher lock poisoned")
