@@ -84,7 +84,7 @@ func TestFulfillmentHTTPVerifyBoardingHappyPathAndGet(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", "018fd-idem-boarding")
+	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c001")
 	request.Header.Set(goruntime.CorrelationIDHeader, "0194f2e0-7b3e-7610-0284-5c26e8b0c444")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
@@ -116,7 +116,7 @@ func TestFulfillmentHTTPNoShowHappyPath(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/no-show", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", "018fd-idem-noshow")
+	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c002")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -134,11 +134,31 @@ func TestFulfillmentHTTPNoShowHappyPath(t *testing.T) {
 	}
 }
 
+func TestFulfillmentHTTPRejectsMalformedIdempotencyKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(`{}`))
+	request.Header.Set("Idempotency-Key", "not-a-uuid-v7")
+	Router().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "VALIDATION_FAILED" {
+		t.Fatalf("unexpected error body: %#v", body)
+	}
+}
+
 func TestFulfillmentHTTPValidationFailureBodyShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(`{"entitlementId":"bad"}`))
-	request.Header.Set("Idempotency-Key", "018fd-idem-invalid")
+	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c003")
 	Router().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -164,7 +184,7 @@ func TestFulfillmentHTTPIdempotentReplayAndReuse(t *testing.T) {
 	makeReq := func(payload string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(payload))
-		request.Header.Set("Idempotency-Key", "018fd-replay")
+		request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c004")
 		router.ServeHTTP(recorder, request)
 		return recorder
 	}
@@ -184,12 +204,12 @@ func TestFulfillmentHTTPDomainRuleViolationSurfaces(t *testing.T) {
 	router := Router()
 	noShow := `{"entitlementId":"ent-domain1","segmentBookingId":"sb-domain1","journeyOrderId":"ord-domain1","travelerId":"tvl-domain1","segmentRef":"seg-domain1","reason":"MANUAL_RECORD"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/no-show", strings.NewReader(noShow))
-	req.Header.Set("Idempotency-Key", "domain-no-show")
+	req.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c005")
 	router.ServeHTTP(httptest.NewRecorder(), req)
 	boarding := `{"entitlementId":"ent-domain1","segmentBookingId":"sb-domain1","journeyOrderId":"ord-domain1","travelerId":"tvl-domain1","segmentRef":"seg-domain1","source":"GATE","sourceEventId":"scan-after-noshow","occurredAt":"2026-07-05T10:00:00Z"}`
 	recorder := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(boarding))
-	req2.Header.Set("Idempotency-Key", "domain-boarding")
+	req2.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c006")
 	router.ServeHTTP(recorder, req2)
 	if recorder.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected domain violation, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -214,7 +234,7 @@ func TestFulfillmentHTTPCausationDoesNotReuseIdempotencyKey(t *testing.T) {
 	body := `{"entitlementId":"ent-cause1","segmentBookingId":"sb-cause1","journeyOrderId":"ord-cause1","travelerId":"tvl-cause1","segmentRef":"seg-cause1","source":"GATE","sourceEventId":"scan-cause","occurredAt":"2026-07-05T10:00:00Z"}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
-	request.Header.Set("Idempotency-Key", "idem-should-not-be-causation")
+	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c007")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -222,7 +242,7 @@ func TestFulfillmentHTTPCausationDoesNotReuseIdempotencyKey(t *testing.T) {
 	if len(publisher.envelopes) != 1 {
 		t.Fatalf("expected published envelope")
 	}
-	if publisher.envelopes[0].CausationID == "idem-should-not-be-causation" || !strings.HasPrefix(publisher.envelopes[0].CausationID, "cmd-") {
+	if publisher.envelopes[0].CausationID == "0194f2e0-7b3e-7610-8284-5c26e8b0c007" || !strings.HasPrefix(publisher.envelopes[0].CausationID, "cmd-") {
 		t.Fatalf("bad causation id: %s", publisher.envelopes[0].CausationID)
 	}
 }
