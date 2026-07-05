@@ -1,4 +1,10 @@
+import { randomUUID } from "node:crypto";
+
+import { CustomerServiceApplication } from "./application/customer-service.js";
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
+import { RedisEventPublisher } from "./adapters/messaging/publisher.js";
+import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { CUSTOMER_SERVICE_CONSUMER_GROUP, CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
 
 export type BootstrapOptions = Readonly<{
   host?: string;
@@ -19,7 +25,25 @@ export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): numbe
 }
 
 export async function bootstrap(options: BootstrapOptions = {}) {
-  const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv());
+  const publisher = new RedisEventPublisher();
+  const application = new CustomerServiceApplication(publisher);
+  const subscriber = new RedisEventSubscriber();
+  await subscriber.subscribe(
+    CUSTOMER_SERVICE_SUBSCRIPTIONS,
+    CUSTOMER_SERVICE_CONSUMER_GROUP,
+    `${CUSTOMER_SERVICE_CONSUMER_GROUP}-${process.env.HOSTNAME ?? randomUUID()}`,
+    (envelope) => application.handleIntegrationEvent(envelope),
+  );
+
+  const app = createApp({
+    instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
+    publisher,
+    application,
+  });
+  app.addHook("onClose", async () => {
+    await subscriber.stop();
+    await publisher.close();
+  });
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;
 }
