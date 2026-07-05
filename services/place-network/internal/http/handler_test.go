@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/place-network/internal/application"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
@@ -178,7 +179,7 @@ func TestPublisherWrapsEventsInEnvelope(t *testing.T) {
 	router := setupTestRouter(publisher)
 	createPlace(t, router, "Shanghai", "CITY", "0194f2e0-7b3e-700c-8284-5c26e8b0000c")
 	envelope := publisher.last()
-	if !validPrefixedUUIDv7(envelope.EventID, "evt-") || envelope.EventType != "PlaceUpdated" || envelope.SchemaVersion != 1 || envelope.Producer != "place-network" || envelope.CorrelationID != "corr-test" || envelope.OccurredAt != "2026-07-05T10:30:00Z" {
+	if !ids.ValidPrefixedUUIDv7(envelope.EventID, "evt") || envelope.EventType != "PlaceUpdated" || envelope.SchemaVersion != 1 || envelope.Producer != "place-network" || envelope.CorrelationID != "corr-test" || envelope.OccurredAt != "2026-07-05T10:30:00Z" {
 		t.Fatalf("unexpected envelope: %#v", envelope)
 	}
 	payload, ok := envelope.Payload.(domain.PlaceUpdatedEvent)
@@ -258,10 +259,6 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode failed: %v; body=%s", err, rec.Body.String())
 	}
-}
-
-func validPrefixedUUIDv7(value, prefix string) bool {
-	return strings.HasPrefix(value, prefix) && idempotency.ValidateKey(strings.TrimPrefix(value, prefix))
 }
 
 func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
