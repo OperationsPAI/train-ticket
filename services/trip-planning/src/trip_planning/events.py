@@ -7,19 +7,19 @@ from uuid import uuid4
 
 
 def _new_event_id() -> str:
-    return f"evt-{uuid4().hex}"
+    return f"evt-{uuid4()}"
 
 
 def _format_occurred_at(dt: datetime) -> str:
-    """Format a datetime as RFC3339 UTC string with milliseconds."""
+    """Format a datetime as an RFC3339 UTC timestamp with milliseconds."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 @dataclass(frozen=True)
 class EventEnvelope:
-    """Wire format for every domain event per shared-primitives.md §1."""
+    """Event bus wire envelope from shared-primitives.md §1."""
 
     eventId: str
     eventType: str
@@ -43,23 +43,20 @@ class EventEnvelope:
         }
 
     @classmethod
-    def from_json_dict(cls, data: Mapping[str, Any]) -> EventEnvelope:
+    def from_json_dict(cls, data: Mapping[str, Any]) -> "EventEnvelope":
         occurred_at = data.get("occurredAt", "")
         if isinstance(occurred_at, str):
             occurred_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
         return cls(
-            eventId=data["eventId"],
-            eventType=data["eventType"],
+            eventId=str(data["eventId"]),
+            eventType=str(data["eventType"]),
             schemaVersion=int(data.get("schemaVersion", 1)),
-            producer=data.get("producer", "trip-planning"),
-            causationId=data.get("causationId", ""),
-            correlationId=data.get("correlationId", ""),
+            producer=str(data.get("producer", "trip-planning")),
+            causationId=str(data.get("causationId", "")),
+            correlationId=str(data.get("correlationId", "")),
             occurredAt=occurred_at,
             payload=data.get("payload", {}),
         )
-
-
-# --- Abstract Ports (messaging.md Abstract Ports section) ---
 
 
 class PublishFailed(Exception):
@@ -75,52 +72,11 @@ class HandlerError(Exception):
 
 
 class TransientHandlerError(HandlerError):
-    """Transient error: message should be retried (not XACK'd)."""
+    """Transient error: message should be retried without XACK."""
 
 
 class FatalHandlerError(HandlerError):
     """Fatal error: message should be moved to DLQ."""
-
-
-class EventPublisher:
-    """Abstract port for publishing domain events.
-
-    Domain/application layers depend only on this port.
-    """
-
-    def publish(self, envelope: EventEnvelope) -> None:
-        """Publish a domain event.
-
-        Raises PublishFailed if the event could not be published.
-        """
-        raise NotImplementedError
-
-
-class EventSubscriber:
-    """Abstract port for subscribing to event streams.
-
-    Domain/application layers depend only on this port.
-    """
-
-    def subscribe(
-        self,
-        streams: list[str],
-        group: str,
-        consumer_name: str,
-        handler: callable,
-    ) -> None:
-        """Subscribe to event streams as a consumer group member.
-
-        Args:
-            streams: List of stream keys to subscribe to.
-            group: Consumer group name.
-            consumer_name: Unique consumer instance identifier.
-            handler: Callback receiving (EventEnvelope) -> None.
-                      May raise TransientHandlerError or FatalHandlerError.
-
-        Raises SubscribeFailed if the subscriber could not start.
-        """
-        raise NotImplementedError
 
 
 def build_itinerary_proposed_event(
@@ -136,12 +92,12 @@ def build_itinerary_proposed_event(
         "intentRef": intent_ref,
         "itineraries": [
             {
-                "itineraryRef": itin.get("itineraryRef"),
-                "legs": itin.get("legs", []),
-                "priceHint": itin.get("priceHint"),
-                "availabilityHint": itin.get("availabilityHint"),
+                "itineraryRef": itinerary.get("itineraryRef"),
+                "legs": itinerary.get("legs", []),
+                "priceHint": itinerary.get("priceHint"),
+                "availabilityHint": itinerary.get("availabilityHint"),
             }
-            for itin in itineraries
+            for itinerary in itineraries
         ],
         "planningSnapshotRefs": list(planning_snapshot_refs),
     }

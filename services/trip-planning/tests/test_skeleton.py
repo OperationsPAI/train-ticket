@@ -1,14 +1,11 @@
 import unittest
 from datetime import datetime, timezone
-from uuid import uuid4
-
 from fastapi.testclient import TestClient
 
 from trip_planning import create_app, health, profile
 from trip_planning.api import configure_runtime_endpoints
 from trip_planning.events import (
     EventEnvelope,
-    EventPublisher,
     FatalHandlerError,
     PublishFailed,
     TransientHandlerError,
@@ -39,19 +36,19 @@ class SkeletonTest(unittest.TestCase):
         client = TestClient(create_app())
         response = client.get(
             "/health",
-            headers={"X-Request-ID": "req-123", "X-Correlation-ID": "corr-456"},
+            headers={"X-Request-Id": "req-123", "X-Correlation-Id": "corr-456"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["X-Request-ID"], "req-123")
-        self.assertEqual(response.headers["X-Correlation-ID"], "corr-456")
+        self.assertEqual(response.headers["X-Request-Id"], "req-123")
+        self.assertEqual(response.headers["X-Correlation-Id"], "corr-456")
 
     def test_request_and_correlation_ids_are_generated(self) -> None:
         client = TestClient(create_app())
         response = client.get("/live")
         self.assertEqual(response.status_code, 200)
-        request_id = response.headers["X-Request-ID"]
+        request_id = response.headers["X-Request-Id"]
         self.assertTrue(request_id)
-        self.assertEqual(response.headers["X-Correlation-ID"], request_id)
+        self.assertEqual(response.headers["X-Correlation-Id"], request_id)
 
     def test_observability_trace_hook_is_opt_in(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []
@@ -60,7 +57,7 @@ class SkeletonTest(unittest.TestCase):
             events.append((event, attributes))
 
         client = TestClient(create_app(tracer=tracer))
-        response = client.get("/metadata", headers={"X-Request-ID": "req-trace"})
+        response = client.get("/metadata", headers={"X-Request-Id": "req-trace"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual([event for event, _ in events], ["http.request.start", "http.request.complete"])
         self.assertEqual(events[0][1]["request_id"], "req-trace")
@@ -92,7 +89,47 @@ class ApiV1Test(unittest.TestCase):
     def test_api_v1_get_itinerary_route_registered(self) -> None:
         app = create_app()
         routes = {route.path for route in app.routes}
-        self.assertIn("/api/v1/itineraries/{itinerary_ref}", routes)
+        self.assertIn("/api/v1/itineraries/{itineraryRef}", routes)
+
+
+    def test_api_v1_search_happy_path_contract_shape(self) -> None:
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/v1/itineraries/search",
+            json={
+                "originRef": "station:A",
+                "destinationRef": "station:B",
+                "departureDate": "2026-08-01",
+                "travelerRefs": ["tvl-1"],
+                "channel": "WEB",
+                "maxResults": 5,
+            },
+            headers={"X-Correlation-Id": "corr-happy"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("intentRef", body)
+        self.assertIn("itineraries", body)
+        self.assertIn("planningSnapshotRefs", body)
+        self.assertEqual(body["itineraries"][0]["priceHint"], {"currency": "CNY", "minorUnits": 0})
+        self.assertIn("X-Correlation-Id", response.headers)
+
+    def test_api_v1_get_itinerary_happy_path_after_search(self) -> None:
+        client = TestClient(create_app())
+        search = client.post(
+            "/api/v1/itineraries/search",
+            json={
+                "originRef": "station:A",
+                "destinationRef": "station:B",
+                "departureDate": "2026-08-01",
+                "travelerRefs": ["tvl-1"],
+                "channel": "WEB",
+            },
+        )
+        itinerary_ref = search.json()["itineraries"][0]["itineraryRef"]
+        response = client.get(f"/api/v1/itineraries/{itinerary_ref}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["itineraryRef"], itinerary_ref)
 
     def test_api_v1_search_validation_failure(self) -> None:
         client = TestClient(create_app())
@@ -100,7 +137,7 @@ class ApiV1Test(unittest.TestCase):
         response = client.post(
             "/api/v1/itineraries/search",
             json={"maxResults": 5},
-            headers={"X-Correlation-ID": "corr-test-1"},
+            headers={"X-Correlation-Id": "corr-test-1"},
         )
         self.assertEqual(response.status_code, 400)
         body = response.json()
@@ -114,7 +151,7 @@ class ApiV1Test(unittest.TestCase):
         response = client.post(
             "/api/v1/itineraries/search",
             json={"invalid": True},
-            headers={"X-Correlation-ID": "corr-test-2"},
+            headers={"X-Correlation-Id": "corr-test-2"},
         )
         self.assertEqual(response.status_code, 400)
         body = response.json()
@@ -129,7 +166,7 @@ class ApiV1Test(unittest.TestCase):
         client = TestClient(create_app())
         response = client.get(
             "/api/v1/itineraries/itin_nonexistent",
-            headers={"X-Correlation-ID": "corr-test-3"},
+            headers={"X-Correlation-Id": "corr-test-3"},
         )
         self.assertEqual(response.status_code, 404)
         body = response.json()
@@ -149,6 +186,39 @@ class ApiV1Test(unittest.TestCase):
 
 
 class IdempotencyTest(unittest.TestCase):
+
+    def test_idempotent_replay_returns_original_result(self) -> None:
+        client = TestClient(create_app())
+        payload = {
+            "originRef": "station:A",
+            "destinationRef": "station:B",
+            "departureDate": "2026-08-01",
+            "travelerRefs": ["tvl-1"],
+            "channel": "WEB",
+        }
+        headers = {"Idempotency-Key": "018f0000-0000-7000-8000-000000000001"}
+        first = client.post("/api/v1/itineraries/search", json=payload, headers=headers)
+        replay = client.post("/api/v1/itineraries/search", json=payload, headers=headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json(), first.json())
+
+    def test_idempotency_key_reused_with_different_body_is_rejected(self) -> None:
+        client = TestClient(create_app())
+        payload = {
+            "originRef": "station:A",
+            "destinationRef": "station:B",
+            "departureDate": "2026-08-01",
+            "travelerRefs": ["tvl-1"],
+            "channel": "WEB",
+        }
+        headers = {"Idempotency-Key": "018f0000-0000-7000-8000-000000000002"}
+        self.assertEqual(client.post("/api/v1/itineraries/search", json=payload, headers=headers).status_code, 200)
+        changed = dict(payload, destinationRef="station:C")
+        response = client.post("/api/v1/itineraries/search", json=changed, headers=headers)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["code"], "IDEMPOTENCY_KEY_REUSED")
+
     def test_search_is_query_no_idempotency_required(self) -> None:
         """Search is a query endpoint; idempotency key is not required per contract."""
         client = TestClient(create_app())
@@ -209,6 +279,29 @@ class EventEnvelopeTest(unittest.TestCase):
 
 
 class EventPublisherTest(unittest.TestCase):
+
+    def test_search_publishes_itinerary_proposed_event(self) -> None:
+        publisher = FakeEventPublisher()
+        client = TestClient(create_app(event_publisher=publisher))
+        response = client.post(
+            "/api/v1/itineraries/search",
+            json={
+                "originRef": "station:A",
+                "destinationRef": "station:B",
+                "departureDate": "2026-08-01",
+                "travelerRefs": ["tvl-1"],
+                "channel": "WEB",
+            },
+            headers={"X-Correlation-Id": "corr-published"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(publisher.published), 1)
+        envelope = publisher.published[0]
+        self.assertEqual(envelope.eventType, "ItineraryProposed")
+        self.assertEqual(envelope.producer, "trip-planning")
+        self.assertEqual(envelope.correlationId, "corr-published")
+        self.assertEqual(envelope.payload["intentRef"], response.json()["intentRef"])
+
     def test_fake_publisher_records_events(self) -> None:
         publisher = FakeEventPublisher()
         envelope = EventEnvelope(
