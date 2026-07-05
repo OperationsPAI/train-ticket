@@ -37,8 +37,7 @@ class InMemoryStore:
     fare_rule_sets: dict[str, FareRuleSet] = field(default_factory=dict)
     fare_quotes: dict[str, FareQuote] = field(default_factory=dict)
     adjustment_quotes: dict[str, AdjustmentQuote] = field(default_factory=dict)
-    fare_quote_journey_order_links: dict[str, str] = field(default_factory=dict)
-    entitlement_quote_links: dict[str, str] = field(default_factory=dict)
+    fare_quote_segment_links: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def get_rule_set(self, rule_set_id: str) -> FareRuleSet:
         if rule_set_id not in self.fare_rule_sets:
@@ -76,8 +75,7 @@ class FarePricingService:
         channel: str,
         rule_set_id: str,
         requested_currency: str,
-        journey_order_id: str | None = None,
-        entitlement_ids: list[str] | None = None,
+        segment_refs: list[str] | None = None,
         quoted_at: datetime | None = None,
         ttl: timedelta | None = None,
     ) -> FareQuote:
@@ -96,8 +94,7 @@ class FarePricingService:
             ttl=ttl,
         )
         self._store.save_quote(quote)
-        if journey_order_id:
-            self.link_fare_quote_to_journey_order(journey_order_id, quote.quote_id, entitlement_ids)
+        self.link_fare_quote_to_segments(quote.quote_id, segment_refs or [])
         return quote
 
     def compute_adjustment_quote(
@@ -150,31 +147,37 @@ class FarePricingService:
                 return rule_set_id
         return None
 
-    def link_fare_quote_to_journey_order(
-        self,
-        journey_order_id: str,
-        quote_id: str,
-        entitlement_ids: list[str] | None = None,
-    ) -> None:
+    def link_fare_quote_to_segments(self, quote_id: str, segment_refs: list[str]) -> None:
         if quote_id not in self._store.fare_quotes:
             raise QuoteNotFoundError(f"Fare quote not found: {quote_id}")
-        self._store.fare_quote_journey_order_links[journey_order_id] = quote_id
-        for entitlement_id in entitlement_ids or []:
-            self._store.entitlement_quote_links[entitlement_id] = quote_id
+        normalized_refs = tuple(sorted(ref for ref in segment_refs if ref.strip()))
+        if normalized_refs:
+            self._store.fare_quote_segment_links[quote_id] = normalized_refs
 
-    def find_fare_quote_id_for_journey_order(
-        self,
-        journey_order_id: str,
-        entitlement_ids: list[str] | None = None,
-    ) -> str | None:
-        linked_quote_id = self._store.fare_quote_journey_order_links.get(journey_order_id)
-        if linked_quote_id is None:
+    def find_fare_quote_id_for_entitlements(self, entitlement_ids: list[str]) -> str | None:
+        requested_segments = self._segment_refs_from_entitlements(entitlement_ids)
+        if not requested_segments:
             return None
-        for entitlement_id in entitlement_ids or []:
-            entitlement_quote_id = self._store.entitlement_quote_links.get(entitlement_id)
-            if entitlement_quote_id is not None and entitlement_quote_id != linked_quote_id:
-                return None
-        return linked_quote_id
+        requested_set = set(requested_segments)
+        for quote_id, segment_refs in self._store.fare_quote_segment_links.items():
+            if requested_set.issubset(set(segment_refs)):
+                return quote_id
+        return None
+
+    @staticmethod
+    def _segment_refs_from_entitlements(entitlement_ids: list[str]) -> tuple[str, ...]:
+        segment_refs: list[str] = []
+        for entitlement_id in entitlement_ids:
+            if not entitlement_id.strip():
+                continue
+            if entitlement_id.startswith("seg-"):
+                segment_refs.append(entitlement_id)
+                continue
+            if entitlement_id.startswith("ent-"):
+                segment_refs.append("seg-" + entitlement_id.removeprefix("ent-"))
+                continue
+            segment_refs.append(entitlement_id)
+        return tuple(sorted(segment_refs))
 
     def get_fare_quote(self, quote_id: str) -> FareQuote:
         return self._store.get_quote(quote_id)

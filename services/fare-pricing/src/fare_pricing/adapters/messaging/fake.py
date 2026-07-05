@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Callable
 from typing import Any
 
 from ...ports import EventEnvelope
 from ...ports.messaging import (
     EventPublisher,
-    EventSubscriber,
     PublishFailed,
 )
 
@@ -47,45 +44,3 @@ class FakeEventPublisher(EventPublisher):
     def clear(self) -> None:
         self.events.clear()
         self._fail_on_publish = False
-
-
-class FakeEventSubscriber(EventSubscriber):
-    """In-memory fake implementation of EventSubscriber for tests."""
-
-    def __init__(self) -> None:
-        self.handlers: list[Callable[[EventEnvelope], None]] = []
-        self.streams: list[str] = []
-        self.group: str = ""
-        self.consumer_name: str = ""
-        self._started = False
-        self._seen_event_ids: set[str] = set()
-
-    def subscribe(
-        self,
-        streams: list[str],
-        group: str,
-        consumer_name: str,
-        handler: Callable[[EventEnvelope], None],
-    ) -> None:
-        self.streams = list(streams)
-        self.group = group
-        self.consumer_name = consumer_name
-        self.handlers.append(handler)
-        self._started = True
-
-    def deliver(self, envelope: EventEnvelope) -> None:
-        """Simulate delivering an event with consumer-side eventId deduplication."""
-        if envelope.event_id in self._seen_event_ids:
-            return
-        for handler in self.handlers:
-            handler(envelope)
-        self._seen_event_ids.add(envelope.event_id)
-
-    def deliver_raw(self, envelope_json: str) -> None:
-        """Simulate delivering a raw JSON event to all registered handlers."""
-        data = json.loads(envelope_json)
-        envelope = EventEnvelope.from_json_dict(data)
-        self.deliver(envelope)
-
-    def stop(self) -> None:
-        self._started = False

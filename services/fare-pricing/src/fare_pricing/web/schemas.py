@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --- Error Response ---
@@ -52,6 +52,8 @@ class RuleSnapshotSchema(BaseModel):
 
 
 class FareQuoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     travelerRefs: list[str] = Field(..., min_length=1)
     channel: str = Field(..., min_length=1)
     segmentRefs: list[str] = Field(..., min_length=1)
@@ -71,6 +73,8 @@ class FareQuoteResponse(BaseModel):
 # --- Adjustment Quote ---
 
 class AdjustmentQuoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     purpose: Literal["REFUND", "CHANGE"]
     entitlementIds: list[str] = Field(..., min_length=1)
     journeyOrderId: str = Field(..., min_length=1)

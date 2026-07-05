@@ -166,6 +166,7 @@ def compute_fare_quote(
             channel=req.channel,
             rule_set_id=rule_set_id,
             requested_currency="CNY",
+            segment_refs=req.segmentRefs,
         )
     except (PricingError, RuleSetNotFoundError) as exc:
         raise _domain_error(exc) from exc
@@ -200,9 +201,9 @@ def compute_adjustment_quote(
 
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
-    original_quote_id = service.find_fare_quote_id_for_journey_order(req.journeyOrderId, req.entitlementIds)
+    original_quote_id = service.find_fare_quote_id_for_entitlements(req.entitlementIds)
     if original_quote_id is None:
-        raise ApiError("NOT_FOUND", f"Original fare quote not found for journey order: {req.journeyOrderId}", 404)
+        raise ApiError("PRECONDITION_FAILED", "Original fare quote not found for requested entitlements", 412)
     original_quote = service.get_fare_quote(original_quote_id)
     rule_set_id = service.find_published_rule_set_id(original_quote.channel)
     if rule_set_id is None:
