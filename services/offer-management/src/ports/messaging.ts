@@ -30,7 +30,7 @@ export interface EventPublisher {
    * Publish a domain event to the event bus.
    *
    * - The implementation MUST determine the target stream from the `producer`
-   *   field of the envelope (stream = "events:<producer>").
+   *   field of the envelope.
    * - The implementation MUST serialize the entire envelope as a single JSON
    *   value in the "envelope" field of the Redis Stream entry.
    * - The implementation MUST apply the retention policy (MAXLEN ~ 100000).

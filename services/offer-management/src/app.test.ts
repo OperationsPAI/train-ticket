@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import { beforeEach, describe, it } from "node:test";
 
 import { createApp, resetIdempotencyStore, resetOfferStore } from "./app.js";
+import { InMemoryEventPublisher } from "./adapters/messaging/in-memory.js";
+import { type QuoteOfferCommand } from "./domain.js";
 
 describe("offer-management service operational foundation", () => {
   beforeEach(() => {
@@ -156,6 +158,37 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.ok(response.headers["x-request-id"]);
   });
 
+  it("publishes the quoted domain event envelope through the configured port", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({}, { publisher });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: {
+        "idempotency-key": crypto.randomUUID(),
+        "x-correlation-id": "corr-published-quote",
+      },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+
+    assert.equal(response.statusCode, 201);
+    assert.equal(publisher.published.length, 1);
+    const [envelope] = publisher.published;
+    assert.equal(envelope.producer, "offer-management");
+    assert.equal(envelope.eventType, "OfferQuoted");
+    assert.equal(envelope.schemaVersion, 1);
+    assert.equal(envelope.correlationId, "corr-published-quote");
+    assert.ok(envelope.eventId.startsWith("evt-"));
+    assert.equal((envelope.payload as { offerId: string }).offerId, response.json().offerId);
+    assert.deepEqual((envelope.payload as { total: unknown }).total, response.json().total);
+  });
+
   it("rejects request without Idempotency-Key with 400 VALIDATION_FAILED", async () => {
     const app = createApp();
 
@@ -206,6 +239,28 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
 
     assert.equal(response.statusCode, 400);
     assert.equal(response.json().code, "VALIDATION_FAILED");
+  });
+
+  it("surfaces domain invariant violations as 422 DOMAIN_RULE_VIOLATION", async () => {
+    const app = createApp({}, {
+      quoteCommandFactory: (request) => makeInvalidQuoteCommand(request),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": crypto.randomUUID() },
+      body: {
+        accountId: "acc-123",
+        channelId: "web",
+        itineraryRef: "itin-456",
+        travelerRefs: ["tvl-001"],
+      },
+    });
+
+    assert.equal(response.statusCode, 422);
+    assert.equal(response.json().code, "DOMAIN_RULE_VIOLATION");
+    assert.equal(response.json().details.domainCode, "STALE_VALIDITY_WINDOW");
   });
 
   it("idempotent replay returns the original 201 response", async () => {
@@ -264,6 +319,67 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.equal(response.json().code, "IDEMPOTENCY_KEY_REUSED");
   });
 });
+
+function makeInvalidQuoteCommand(request: { accountId: string; channelId: string; itineraryRef: string; travelerRefs: readonly string[] }): QuoteOfferCommand {
+  const quotedAt = new Date("2026-07-05T10:00:00.000Z");
+  const staleExpiry = new Date("2026-07-05T09:59:00.000Z");
+  return {
+    offerId: `off-${crypto.randomUUID()}`,
+    quoteRequestId: "quote-request-invalid",
+    accountId: request.accountId,
+    channelId: request.channelId,
+    quotedAt,
+    validityWindow: { startsAt: quotedAt, expiresAt: staleExpiry },
+    itinerary: {
+      itineraryId: request.itineraryRef,
+      itineraryVersion: "v1",
+      sourceContext: "TripPlanning",
+      segmentRefs: ["seg-1"],
+    },
+    passengerMix: {
+      travelerSetHash: request.travelerRefs.join(","),
+      travelers: request.travelerRefs.map((travelerId) => ({ travelerId, travelerType: "ADULT" as const })),
+    },
+    items: [{
+      offerItemId: "item-1",
+      mode: "train",
+      segmentRef: "seg-1",
+      itemPrice: { currency: "CNY", amountMinor: 100 },
+      availabilitySnapshot: {
+        snapshotId: "availability-1",
+        snapshotVersion: "v1",
+        sourceContext: "CapacityAvailability",
+        capturedAt: quotedAt,
+        expiresAt: new Date("2026-07-05T10:15:00.000Z"),
+        sellable: true,
+        status: "AVAILABLE",
+        confidence: "confirmed-snapshot",
+      },
+      fareSnapshot: {
+        fareQuoteRef: "fare-1",
+        ruleSnapshotRef: "rule-1",
+        pricingVersion: "pricing-v1",
+        ruleVersion: "rule-v1",
+        sourceContext: "FarePricing",
+        capturedAt: quotedAt,
+        expiresAt: new Date("2026-07-05T10:15:00.000Z"),
+      },
+    }],
+    priceSnapshot: {
+      snapshotId: "price-1",
+      fareQuoteRef: "fare-1",
+      capturedAt: quotedAt,
+      expiresAt: new Date("2026-07-05T10:15:00.000Z"),
+      guaranteeLevel: "FixedUntilExpiry",
+      currency: "CNY",
+      subtotal: { currency: "CNY", amountMinor: 100 },
+      taxes: [],
+      fees: [],
+      discounts: [],
+      total: { currency: "CNY", amountMinor: 100 },
+    },
+  };
+}
 
 describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
   beforeEach(() => {

@@ -45,6 +45,7 @@ export class InMemoryEventPublisher implements EventPublisher {
 export class InMemoryEventSubscriber implements EventSubscriber {
   public readonly received: EventEnvelope[] = [];
   private handler: EventHandler | null = null;
+  private readonly processedEventIds = new Set<string>();
 
   async subscribe(
     _streams: readonly string[],
@@ -59,15 +60,24 @@ export class InMemoryEventSubscriber implements EventSubscriber {
   /** Simulate receiving an event. Returns the handler result. */
   async simulateEvent(envelope: EventEnvelope): Promise<"ack" | "retry" | "dlq"> {
     this.received.push(envelope);
-    if (this.handler) {
-      return await this.handler(envelope);
+    if (this.processedEventIds.has(envelope.eventId)) {
+      return "ack";
     }
-    return "ack";
+    if (!this.handler) {
+      this.processedEventIds.add(envelope.eventId);
+      return "ack";
+    }
+    const result = await this.handler(envelope);
+    if (result === "ack") {
+      this.processedEventIds.add(envelope.eventId);
+    }
+    return result;
   }
 
   /** Reset state. */
   reset(): void {
     this.received.length = 0;
     this.handler = null;
+    this.processedEventIds.clear();
   }
 }

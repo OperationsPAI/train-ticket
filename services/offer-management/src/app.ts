@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
+import {
+  InMemoryOfferRepository,
+  OfferApplicationService,
+  isDomainError,
+  type OfferRepository,
+  type QuoteOfferRequest,
+} from "./application/offers.js";
+import { type QuoteOfferCommand } from "./domain.js";
+import { type EventPublisher } from "./ports/messaging.js";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -124,51 +133,30 @@ export function resetIdempotencyStore(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Offer store (in-memory for now, replace with real repository later)
+// Offer application service dependencies
 // ---------------------------------------------------------------------------
-interface OfferRecord {
-  offerId: string;
-  offerVersion: number;
-  total: { currency: string; minorUnits: number };
-  expiresAt: string;
-  priceGuaranteeLevel: string;
-  downstreamReference: { offerId: string; offerVersion: number; priceSnapshotRef: string; ruleSnapshotRef: string };
-  itineraryRef: string;
-  travelerSetHash: string;
-  status: string;
-  accountId: string;
-  channelId: string;
-  quoteRequestId: string;
-  createdAt: string;
-  items: ReadonlyArray<Record<string, unknown>>;
-  priceSnapshot: Record<string, unknown>;
-  passengerMix: Record<string, unknown>;
-  validityWindow: Record<string, unknown>;
-  riskDisclosures: ReadonlyArray<Record<string, unknown>>;
-}
+type AppDependencies = Readonly<{
+  repository?: OfferRepository;
+  publisher?: EventPublisher;
+  quoteCommandFactory?: (request: QuoteOfferRequest) => QuoteOfferCommand;
+}>;
 
-const offerStore = new Map<string, OfferRecord>();
+const defaultOfferRepository = new InMemoryOfferRepository();
 
 export function resetOfferStore(): void {
-  offerStore.clear();
-}
-
-// ---------------------------------------------------------------------------
-// Money conversion helpers
-// ---------------------------------------------------------------------------
-function moneyToApi(money: { amountMinor: number; currency: string }): { currency: string; minorUnits: number } {
-  return { currency: money.currency, minorUnits: money.amountMinor };
-}
-
-function moneyFromApi(money: { currency: string; minorUnits: number }): { amountMinor: number; currency: string } {
-  return { amountMinor: money.minorUnits, currency: money.currency };
+  defaultOfferRepository.clear();
 }
 
 // ---------------------------------------------------------------------------
 // App factory
 // ---------------------------------------------------------------------------
-export function createApp(instrumentation: InstrumentationHooks = {}): FastifyInstance {
+export function createApp(instrumentation: InstrumentationHooks = {}, dependencies: AppDependencies = {}): FastifyInstance {
   const app: FastifyInstance = Fastify({ logger: false });
+  const offerService = new OfferApplicationService(
+    dependencies.repository ?? defaultOfferRepository,
+    dependencies.publisher,
+    dependencies.quoteCommandFactory,
+  );
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
   app.addHook("onRequest", async (request, reply) => {
@@ -214,7 +202,8 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
     const idempotencyKey = request.headers["idempotency-key"] as string | undefined;
 
     if (!idempotencyKey) {
-      return sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key header is required on state-changing POST", ctx);
+      sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key header is required on state-changing POST", ctx);
+      return reply;
     }
 
     // Idempotency replay check
@@ -222,7 +211,8 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
     if (existing) {
       // Validate request body matches (IDEMPOTENCY_KEY_REUSED if different)
       if (JSON.stringify(existing.requestBody) !== JSON.stringify(request.body)) {
-        return sendError(reply, 422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body", ctx);
+        sendError(reply, 422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body", ctx);
+        return reply;
       }
       return reply.status(existing.statusCode).send(existing.responseBody);
     }
@@ -230,63 +220,35 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
     // Validate request body
     const validationError = validateQuoteOfferRequest(request.body);
     if (validationError) {
-      return sendError(reply, 400, "VALIDATION_FAILED", validationError, ctx);
+      sendError(reply, 400, "VALIDATION_FAILED", validationError, ctx);
+      return reply;
     }
 
     const { accountId, channelId, itineraryRef, travelerRefs, quoteRequestId } = request.body;
 
-    // Create the offer (domain logic)
-    const offerId = `off-${randomUUID()}`;
-    const offerVersion = 1;
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 min validity
+    try {
+      const { response: responseBody } = await offerService.quoteOffer({
+        accountId: accountId!,
+        channelId: channelId!,
+        itineraryRef: itineraryRef!,
+        travelerRefs: travelerRefs!,
+        quoteRequestId,
+      }, ctx.correlationId);
 
-    const offerRecord: OfferRecord = {
-      offerId,
-      offerVersion,
-      total: { currency: "CNY", minorUnits: 0 },
-      expiresAt: expiresAt.toISOString(),
-      priceGuaranteeLevel: "FIXED_UNTIL_EXPIRY",
-      downstreamReference: {
-        offerId,
-        offerVersion,
-        priceSnapshotRef: "",
-        ruleSnapshotRef: "",
-      },
-      itineraryRef: itineraryRef ?? "",
-      travelerSetHash: travelerRefs ? travelerRefs.sort().join(",") : "",
-      status: "Quoted",
-      accountId: accountId ?? "",
-      channelId: channelId ?? "",
-      quoteRequestId: quoteRequestId ?? "",
-      createdAt: now.toISOString(),
-      items: [],
-      priceSnapshot: {},
-      passengerMix: {},
-      validityWindow: {},
-      riskDisclosures: [],
-    };
-    offerStore.set(offerId, offerRecord);
+      idempotencyStore.set(idempotencyKey, {
+        requestBody: request.body,
+        responseBody,
+        statusCode: 201,
+      });
 
-    const responseBody = {
-      offerId: offerRecord.offerId,
-      offerVersion: offerRecord.offerVersion,
-      total: offerRecord.total,
-      expiresAt: offerRecord.expiresAt,
-      priceGuaranteeLevel: offerRecord.priceGuaranteeLevel,
-      downstreamReference: offerRecord.downstreamReference,
-      itineraryRef: offerRecord.itineraryRef,
-      travelerSetHash: offerRecord.travelerSetHash,
-    };
-
-    // Store idempotency record
-    idempotencyStore.set(idempotencyKey, {
-      requestBody: request.body,
-      responseBody,
-      statusCode: 201,
-    });
-
-    return reply.status(201).send(responseBody);
+      return reply.status(201).send(responseBody);
+    } catch (error) {
+      if (isDomainError(error)) {
+        sendError(reply, 422, "DOMAIN_RULE_VIOLATION", error.message, ctx, { domainCode: error.code });
+        return reply;
+      }
+      throw error;
+    }
   });
 
   // -----------------------------------------------------------------------
@@ -298,31 +260,13 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
     const ctx = requestContext(request);
     const { offerId } = request.params;
 
-    const offer = offerStore.get(offerId);
+    const offer = await offerService.getOffer(offerId);
     if (!offer) {
-      return sendError(reply, 404, "NOT_FOUND", `Offer ${offerId} not found`, ctx);
+      sendError(reply, 404, "NOT_FOUND", `Offer ${offerId} not found`, ctx);
+      return reply;
     }
 
-    return reply.status(200).send({
-      offerId: offer.offerId,
-      offerVersion: offer.offerVersion,
-      status: offer.status,
-      accountId: offer.accountId,
-      channelId: offer.channelId,
-      quoteRequestId: offer.quoteRequestId,
-      itineraryRef: offer.itineraryRef,
-      travelerSetHash: offer.travelerSetHash,
-      total: offer.total,
-      expiresAt: offer.expiresAt,
-      priceGuaranteeLevel: offer.priceGuaranteeLevel,
-      downstreamReference: offer.downstreamReference,
-      items: offer.items,
-      priceSnapshot: offer.priceSnapshot,
-      passengerMix: offer.passengerMix,
-      validityWindow: offer.validityWindow,
-      riskDisclosures: offer.riskDisclosures,
-      createdAt: offer.createdAt,
-    });
+    return reply.status(200).send(offer);
   });
 
   // 404 handler
@@ -396,12 +340,19 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return candidate && candidate.trim().length > 0 ? candidate : undefined;
 }
 
-function sendError(reply: AppReply, statusCode: number, code: string, message: string, context: RequestContext): void {
+function sendError(
+  reply: AppReply,
+  statusCode: number,
+  code: string,
+  message: string,
+  context: RequestContext,
+  details: Readonly<Record<string, unknown>> = {},
+): void {
   const body: ErrorBody = {
     code,
     message,
     correlationId: context.correlationId,
-    details: {},
+    details,
   };
   reply.status(statusCode).send(body);
 }
