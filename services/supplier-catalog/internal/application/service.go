@@ -24,14 +24,14 @@ var (
 )
 
 type Service struct {
-	mu                  sync.RWMutex
-	publishMu           sync.Mutex
-	suppliers           map[domain.SupplierID]domain.Supplier
-	carriers            map[domain.CarrierID]domain.Carrier
-	contracts           map[domain.ContractID]domain.Contract
-	pendingEvents       []EventEnvelope
-	hasPendingPublishes bool
-	publisher           EventPublisher
+	mu             sync.RWMutex
+	publishMu      sync.Mutex
+	suppliers      map[domain.SupplierID]domain.Supplier
+	carriers       map[domain.CarrierID]domain.Carrier
+	contracts      map[domain.ContractID]domain.Contract
+	pendingEvents  []EventEnvelope
+	publishPending bool
+	publisher      EventPublisher
 }
 
 func NewService(publisher EventPublisher) *Service {
@@ -113,7 +113,7 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.mu.Lock()
 	for _, existing := range s.suppliers {
 		if strings.EqualFold(existing.Profile, supplier.Profile) {
-			if s.hasPendingPublishes && existing.LegalName == supplier.LegalName && existing.BrandName == supplier.BrandName {
+			if s.publishPending && existing.LegalName == supplier.LegalName && existing.BrandName == supplier.BrandName {
 				s.mu.Unlock()
 				if err := s.flushPendingEvents(ctx); err != nil {
 					return SupplierView{}, err
@@ -127,7 +127,7 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	envelopes := wrapDomainEvents(events, cmd.CorrelationID, cmd.CausationID)
 	s.suppliers[supplier.SupplierID] = supplier
 	s.pendingEvents = append(s.pendingEvents, envelopes...)
-	s.hasPendingPublishes = true
+	s.publishPending = true
 	s.mu.Unlock()
 
 	if err := s.flushPendingEvents(ctx); err != nil {
@@ -197,7 +197,7 @@ func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierComman
 	}
 	for _, existing := range s.carriers {
 		if strings.EqualFold(existing.Code, carrier.Code) {
-			if s.hasPendingPublishes && existing.SupplierID == carrier.SupplierID && existing.Name == carrier.Name && existing.TransportMode == carrier.TransportMode {
+			if s.publishPending && existing.SupplierID == carrier.SupplierID && existing.Name == carrier.Name && existing.TransportMode == carrier.TransportMode {
 				s.mu.Unlock()
 				if err := s.flushPendingEvents(ctx); err != nil {
 					return CarrierView{}, err
@@ -211,7 +211,7 @@ func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierComman
 	envelopes := wrapDomainEvents(events, cmd.CorrelationID, cmd.CausationID)
 	s.carriers[carrier.CarrierID] = carrier
 	s.pendingEvents = append(s.pendingEvents, envelopes...)
-	s.hasPendingPublishes = true
+	s.publishPending = true
 	s.mu.Unlock()
 
 	if err := s.flushPendingEvents(ctx); err != nil {
@@ -250,7 +250,7 @@ func (s *Service) ActivateContract(ctx context.Context, cmd ActivateContractComm
 	}
 	for _, existing := range s.contracts {
 		if strings.EqualFold(existing.ContractNo, contract.ContractNo) {
-			if s.hasPendingPublishes && existing.SupplierID == contract.SupplierID && existing.Status == contract.Status {
+			if s.publishPending && existing.SupplierID == contract.SupplierID && existing.Status == contract.Status {
 				s.mu.Unlock()
 				if err := s.flushPendingEvents(ctx); err != nil {
 					return ContractView{}, err
@@ -264,7 +264,7 @@ func (s *Service) ActivateContract(ctx context.Context, cmd ActivateContractComm
 	envelopes := wrapDomainEvents(events, cmd.CorrelationID, cmd.CausationID)
 	s.contracts[contract.ContractID] = contract
 	s.pendingEvents = append(s.pendingEvents, envelopes...)
-	s.hasPendingPublishes = true
+	s.publishPending = true
 	s.mu.Unlock()
 
 	if err := s.flushPendingEvents(ctx); err != nil {
@@ -277,7 +277,7 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 	if s.publisher == nil {
 		s.mu.Lock()
 		s.pendingEvents = nil
-		s.hasPendingPublishes = false
+		s.publishPending = false
 		s.mu.Unlock()
 		return nil
 	}
@@ -285,7 +285,7 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 	defer s.publishMu.Unlock()
 	for {
 		s.mu.RLock()
-		if !s.hasPendingPublishes {
+		if !s.publishPending {
 			s.mu.RUnlock()
 			return nil
 		}
@@ -307,7 +307,7 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 				}
 			}
 		}
-		s.hasPendingPublishes = len(s.pendingEvents) > 0
+		s.publishPending = len(s.pendingEvents) > 0
 		s.mu.Unlock()
 	}
 }
