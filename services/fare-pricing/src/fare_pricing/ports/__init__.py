@@ -19,10 +19,9 @@ class MalformedEnvelopeError(ValueError):
 class EventEnvelope:
     """Contract EventEnvelope wire shape.
 
-    Required JSON fields follow docs/08-contracts/messaging.md and
-    shared-primitives.md: eventId, eventType, occurredAt, correlationId,
-    producer, schemaVersion, payload. causationId is included only when an
-    immediate cause is available. Unknown fields are rejected on ingress.
+    JSON fields follow docs/08-contracts/messaging.md: eventId, eventType,
+    occurredAt, correlationId, causationId, producer, schemaVersion, payload.
+    Unknown fields are rejected on ingress.
     """
 
     event_id: str
@@ -35,7 +34,7 @@ class EventEnvelope:
     payload: Mapping[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
+        data = {
             "eventId": self.event_id,
             "eventType": self.event_type,
             "occurredAt": _format_rfc3339_utc(self.occurred_at),

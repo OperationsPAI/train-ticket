@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol
-from uuid import uuid4
 
 from fastapi import FastAPI, Request
 
+from .ids import prefixed_uuid7, uuid7
 from .runtime import health, profile
 from .application import DomainEventService
 from .application.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore
@@ -69,8 +69,8 @@ def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> No
 
 
 def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid4())
-    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request.headers.get(LEGACY_CORRELATION_ID_HEADER) or request_id
+    request_id = request.headers.get(REQUEST_ID_HEADER) or uuid7()
+    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request.headers.get(LEGACY_CORRELATION_ID_HEADER) or prefixed_uuid7("corr")
     return request_id, correlation_id
 
 
