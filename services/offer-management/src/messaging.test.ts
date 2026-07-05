@@ -7,6 +7,7 @@ import {
   InMemoryEventSubscriber,
 } from "./adapters/messaging/in-memory.js";
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { dlqStreamKey, streamKey } from "./adapters/messaging/stream-config.js";
 import {
   PublishFailed,
   type EventEnvelope,
@@ -15,15 +16,32 @@ import {
 
 function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
   return {
-    eventId: `evt-${crypto.randomUUID()}`,
+    eventId: `evt-${uuidV7()}`,
     eventType: "OfferQuoted",
     schemaVersion: 1,
     producer: "offer-management",
-    correlationId: `corr-${crypto.randomUUID()}`,
+    correlationId: `corr-${uuidV7()}`,
     occurredAt: new Date().toISOString(),
     payload: {},
     ...overrides,
   };
+}
+
+function uuidV7(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const timestamp = BigInt(Date.now());
+
+  bytes[0] = Number((timestamp >> 40n) & 0xffn);
+  bytes[1] = Number((timestamp >> 32n) & 0xffn);
+  bytes[2] = Number((timestamp >> 24n) & 0xffn);
+  bytes[3] = Number((timestamp >> 16n) & 0xffn);
+  bytes[4] = Number((timestamp >> 8n) & 0xffn);
+  bytes[5] = Number(timestamp & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 describe("EventPublisher port — InMemoryEventPublisher", () => {
@@ -49,8 +67,8 @@ describe("EventPublisher port — InMemoryEventPublisher", () => {
 
   it("wraps events in a correct envelope with all required fields", async () => {
     const publisher = new InMemoryEventPublisher();
-    const eventId = `evt-${crypto.randomUUID()}`;
-    const correlationId = `corr-${crypto.randomUUID()}`;
+    const eventId = `evt-${uuidV7()}`;
+    const correlationId = `corr-${uuidV7()}`;
     const envelope = makeEnvelope({
       eventId,
       eventType: "OfferQuoted",
@@ -82,6 +100,55 @@ describe("EventPublisher port — InMemoryEventPublisher", () => {
       offerVersion: 1,
       total: { currency: "CNY", minorUnits: 10400 },
     });
+  });
+
+  it("serializes OfferQuoted payload using exactly the contract fields", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const payload = {
+      offerId: `off-${uuidV7()}`,
+      offerVersion: 1,
+      quoteRequestId: "quote-1",
+      accountId: "account-1",
+      channelId: "web",
+      itineraryId: "itin-456",
+      itineraryVersion: "itinerary-v1",
+      travelerSetHash: "tvl-001,tvl-002",
+      availabilitySnapshotRefs: ["availability-1"],
+      priceSnapshotRef: "price-1",
+      fareQuoteRefs: ["fq-1"],
+      ruleSnapshotRefs: ["rule-1"],
+      total: { currency: "CNY", minorUnits: 20000 },
+      expiresAt: "2026-07-05T10:30:00.000Z",
+      priceGuaranteeLevel: "FIXED_UNTIL_EXPIRY",
+      downstreamReference: {
+        offerId: `off-${uuidV7()}`,
+        offerVersion: 1,
+        priceSnapshotRef: "price-1",
+        ruleSnapshotRef: "rule-1",
+      },
+    };
+
+    await publisher.publish(makeEnvelope({ eventType: "OfferQuoted", payload }));
+
+    assert.deepEqual(Object.keys(publisher.published[0].payload).sort(), [
+      "accountId",
+      "availabilitySnapshotRefs",
+      "channelId",
+      "downstreamReference",
+      "expiresAt",
+      "fareQuoteRefs",
+      "itineraryId",
+      "itineraryVersion",
+      "offerId",
+      "offerVersion",
+      "priceGuaranteeLevel",
+      "priceSnapshotRef",
+      "quoteRequestId",
+      "ruleSnapshotRefs",
+      "total",
+      "travelerSetHash",
+    ].sort());
+    assert.equal(Object.hasOwn(publisher.published[0].payload, "boundaryProof"), false);
   });
 
   it("supports findByProducer and findByEventType convenience methods", async () => {
@@ -176,15 +243,18 @@ describe("RedisEventSubscriber recovery", () => {
     const redis = new FakeRedisForRecovery("5-0", JSON.stringify(envelope), 5);
     const subscriber = new RedisEventSubscriber(redis as never);
 
+    const sourceStream = streamKey("fare-pricing");
+    const group = "offer-management";
+
     await (subscriber as unknown as { claimAndProcess: (stream: string, group: string, consumer: string, handler: EventHandler) => Promise<void> })
-      .claimAndProcess("events:fare-pricing", "offer-management", "offer-management-test", async () => {
+      .claimAndProcess(sourceStream, group, "offer-management-test", async () => {
         throw new Error("handler should not run for poison message");
       });
 
-    assert.deepEqual(redis.xpendingCalls, [["events:fare-pricing", "offer-management", "5-0", "5-0", 1]]);
+    assert.deepEqual(redis.xpendingCalls, [[sourceStream, group, "5-0", "5-0", 1]]);
     assert.equal(redis.xaddCalls.length, 1);
-    assert.equal(redis.xaddCalls[0][0], "events:fare-pricing:dlq");
-    assert.deepEqual(redis.xackCalls, [["events:fare-pricing", "offer-management", "5-0"]]);
+    assert.equal(redis.xaddCalls[0][0], dlqStreamKey("fare-pricing"));
+    assert.deepEqual(redis.xackCalls, [[sourceStream, group, "5-0"]]);
   });
 });
 

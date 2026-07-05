@@ -8,6 +8,7 @@ import {
   isDomainError,
   type OfferRepository,
 } from "./application/offers.js";
+import { PublishFailed } from "./ports/messaging.js";
 import {
   InMemoryUpstreamStateRepository,
   buildQuoteOfferCommand,
@@ -214,6 +215,10 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
       sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key header is required on state-changing POST", ctx);
       return reply;
     }
+    if (!isUuidV7(idempotencyKey)) {
+      sendError(reply, 400, "VALIDATION_FAILED", "Idempotency-Key must be a UUID v7", ctx);
+      return reply;
+    }
 
     // Idempotency replay check
     const existing = idempotencyStore.get(idempotencyKey);
@@ -254,6 +259,10 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
     } catch (error) {
       if (isDomainError(error)) {
         sendError(reply, 422, "DOMAIN_RULE_VIOLATION", error.message, ctx, { domainCode: error.code });
+        return reply;
+      }
+      if (error instanceof PublishFailed) {
+        sendError(reply, 503, "UNAVAILABLE", "Offer event could not be published", ctx);
         return reply;
       }
       throw error;
@@ -317,6 +326,10 @@ function validateQuoteOfferRequest(body: Record<string, unknown>): string | null
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : "Internal server error";
+}
+
+function isUuidV7(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function healthBody(): HealthStatus {
