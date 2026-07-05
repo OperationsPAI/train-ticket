@@ -2014,6 +2014,32 @@ impl From<VoidPolicyDto> for VoidPolicy {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct EntitlementIssuedPayload {
+    entitlement_id: String,
+    segment_booking_id: String,
+    journey_order_id: String,
+    traveler_ref: String,
+    segment_ref: String,
+    issue_purpose: &'static str,
+    credential_no: String,
+    credential_type: &'static str,
+    issued_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct EntitlementVoidedPayload {
+    entitlement_id: String,
+    segment_booking_id: String,
+    voided_at: String,
+    reason: &'static str,
+    policy: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    business_case_ref: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueEntitlementResponse {
@@ -2078,6 +2104,53 @@ pub enum EntitlementStatusDto {
     Boarded,
     NoShow,
     Suspended,
+}
+
+impl IssuePurposeDto {
+    fn to_contract(&self) -> &'static str {
+        match self {
+            Self::Initial => "INITIAL",
+            Self::Replacement => "REPLACEMENT",
+            Self::ManualRecovery => "MANUAL_RECOVERY",
+            Self::ProviderRebuild => "PROVIDER_REBUILD",
+            Self::DisruptionReplacement => "DISRUPTION_REPLACEMENT",
+        }
+    }
+}
+
+impl VoidReasonDto {
+    fn to_contract(&self) -> &'static str {
+        match self {
+            Self::Refund => "REFUND",
+            Self::Change => "CHANGE",
+            Self::Disruption => "DISRUPTION",
+            Self::Risk => "RISK",
+            Self::ManualCorrection => "MANUAL_CORRECTION",
+        }
+    }
+}
+
+impl VoidPolicyDto {
+    fn to_contract(&self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::ExceptionalRule => "EXCEPTIONAL_RULE",
+        }
+    }
+}
+
+impl CredentialTypeDto {
+    fn to_contract(&self) -> &'static str {
+        match self {
+            Self::ETicket => "E_TICKET",
+            Self::PaperTicket => "PAPER_TICKET",
+            Self::PickupCode => "PICKUP_CODE",
+            Self::BoardingPass => "BOARDING_PASS",
+            Self::FerryTicket => "FERRY_TICKET",
+            Self::CoachETicket => "COACH_E_TICKET",
+            Self::RideCode => "RIDE_CODE",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2278,7 +2351,7 @@ impl EntitlementApi for InMemoryEntitlementService {
         validate_non_empty(&command.traveler_ref, "travelerRef")?;
         validate_non_empty(&command.segment_ref, "segmentRef")?;
         let fingerprint = serde_json::to_string(&command).unwrap_or_default();
-        let response = {
+        let (response, event_payload) = {
             let mut state = self
                 .state
                 .lock()
@@ -2306,6 +2379,17 @@ impl EntitlementApi for InMemoryEntitlementService {
                 credential_no: format!("ETK-{:012}", state.sequence),
                 credential_type: CredentialTypeDto::ETicket,
                 status: EntitlementStatusDto::Issued,
+                issued_at: issued_at.clone(),
+            };
+            let event_payload = EntitlementIssuedPayload {
+                entitlement_id: entitlement_id.clone(),
+                segment_booking_id: command.segment_booking_id.clone(),
+                journey_order_id: command.journey_order_id.clone(),
+                traveler_ref: command.traveler_ref.clone(),
+                segment_ref: command.segment_ref.clone(),
+                issue_purpose: command.issue_purpose.to_contract(),
+                credential_no: response.credential_no.clone(),
+                credential_type: response.credential_type.to_contract(),
                 issued_at: issued_at.clone(),
             };
             let details = EntitlementDetails {
@@ -2368,12 +2452,12 @@ impl EntitlementApi for InMemoryEntitlementService {
                     response: IdempotentResponse::Issue(response.clone()),
                 },
             );
-            response
+            (response, event_payload)
         };
         publish_api_event(
             self.publisher.as_ref(),
             "EntitlementIssued",
-            &response,
+            &event_payload,
             correlation_id,
         )
         .await?;
@@ -2401,7 +2485,7 @@ impl EntitlementApi for InMemoryEntitlementService {
             entitlement_id,
             serde_json::to_string(&command).unwrap_or_default()
         );
-        let response = {
+        let (response, event_payload) = {
             let mut state = self
                 .state
                 .lock()
@@ -2419,12 +2503,12 @@ impl EntitlementApi for InMemoryEntitlementService {
                     "Idempotency-Key was reused for a different operation".to_string(),
                 ));
             }
-            let was_voided = state
+            let segment_booking_id = state
                 .entitlements
                 .get(&entitlement_id)
                 .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?
-                .status
-                == EntitlementStatusDto::Voided;
+                .segment_booking_id
+                .clone();
             let aggregate = state.aggregates.get_mut(&entitlement_id).ok_or_else(|| {
                 ApiErrorKind::NotFound("entitlement aggregate not found".to_string())
             })?;
@@ -2445,7 +2529,7 @@ impl EntitlementApi for InMemoryEntitlementService {
                         .map_err(ApiErrorKind::from)?,
                 })
                 .map_err(ApiErrorKind::from)?;
-            if events.is_empty() && was_voided {
+            if events.is_empty() {
                 return Err(ApiErrorKind::PreconditionFailed(
                     "entitlement is already voided".to_string(),
                 ));
@@ -2455,6 +2539,14 @@ impl EntitlementApi for InMemoryEntitlementService {
                 entitlement.status = EntitlementStatusDto::Voided;
                 entitlement.voided_at = Some(voided_at.clone());
             }
+            let event_payload = EntitlementVoidedPayload {
+                entitlement_id: entitlement_id.clone(),
+                segment_booking_id,
+                voided_at: voided_at.clone(),
+                reason: command.reason.to_contract(),
+                policy: command.policy.to_contract(),
+                business_case_ref: command.business_case_ref.clone(),
+            };
             let response = VoidEntitlementResponse {
                 entitlement_id,
                 status: EntitlementStatusDto::Voided,
@@ -2467,12 +2559,12 @@ impl EntitlementApi for InMemoryEntitlementService {
                     response: IdempotentResponse::Void(response.clone()),
                 },
             );
-            response
+            (response, event_payload)
         };
         publish_api_event(
             self.publisher.as_ref(),
             "EntitlementVoided",
-            &response,
+            &event_payload,
             correlation_id,
         )
         .await?;
