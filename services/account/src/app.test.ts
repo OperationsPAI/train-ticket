@@ -44,7 +44,8 @@ describe("account service operational foundation", () => {
     assert.equal(response.statusCode, 200);
     assert.equal(typeof response.headers["x-request-id"], "string");
     assert.notEqual(response.headers["x-request-id"], "");
-    assert.equal(response.headers["x-correlation-id"], response.headers["x-request-id"]);
+    assert.equal(typeof response.headers["x-correlation-id"], "string");
+    assert.match(String(response.headers["x-correlation-id"]), /^corr-/);
   });
 
   it("returns the standard error envelope for missing routes", async () => {
@@ -57,14 +58,10 @@ describe("account service operational foundation", () => {
     });
 
     assert.equal(response.statusCode, 404);
-    assert.deepEqual(response.json(), {
-      error: {
-        code: "NOT_FOUND",
-        message: "Route GET /missing was not found",
-        requestId: "req-account-404",
-        correlationId: "req-account-404",
-      },
-    });
+    assert.equal(response.json().code, "NOT_FOUND");
+    assert.equal(response.json().message, "Route GET /missing was not found");
+    assert.match(response.json().correlationId, /^corr-/);
+    assert.deepEqual(response.json().details, {});
   });
 
   it("exposes a no-op-by-default opt-in tracing seam", async () => {
@@ -107,5 +104,128 @@ describe("account service operational foundation", () => {
     ]);
 
     assert.equal((await createApp().inject("/health")).statusCode, 200);
+  });
+});
+
+
+describe("account HTTP API", () => {
+  it("creates and fetches an account", async () => {
+    const app = createApp();
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts",
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-0284-5c26e8b0c001", "x-correlation-id": "corr-http-create" },
+      payload: { accountId: "acct_http_001" },
+    });
+
+    assert.equal(create.statusCode, 201);
+    assert.equal(create.json().accountId, "acct_http_001");
+    assert.equal(create.json().status, "ACTIVE");
+    assert.equal(typeof create.json().createdAt, "string");
+
+    const get = await app.inject("/api/v1/accounts/acct_http_001");
+    assert.equal(get.statusCode, 200);
+    assert.equal(get.json().accountId, "acct_http_001");
+  });
+
+  it("freezes and unfreezes an account through the domain aggregate", async () => {
+    const app = createApp();
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "create-freeze" }, payload: { accountId: "acct_freeze" } });
+
+    const freeze = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_freeze/freeze",
+      headers: { "idempotency-key": "freeze-1" },
+      payload: { reason: "risk", operator: "ops", caseRef: "case-1" },
+    });
+    assert.equal(freeze.statusCode, 200);
+    assert.equal(freeze.json().status, "FROZEN");
+
+    const unfreeze = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_freeze/unfreeze",
+      headers: { "idempotency-key": "unfreeze-1" },
+      payload: { reason: "resolved" },
+    });
+    assert.equal(unfreeze.statusCode, 200);
+    assert.equal(unfreeze.json().status, "ACTIVE");
+  });
+
+  it("updates preferences and starts account closure", async () => {
+    const app = createApp();
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "create-pref" }, payload: { accountId: "acct_pref" } });
+
+    const pref = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/accounts/acct_pref/preferences",
+      headers: { "idempotency-key": "pref-1" },
+      payload: { preferenceKey: "language", value: "zh-CN" },
+    });
+    assert.equal(pref.statusCode, 200);
+    assert.deepEqual(pref.json().preferences, { language: "zh-CN" });
+
+    const closure = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_pref/start-closure",
+      headers: { "idempotency-key": "closure-1" },
+      payload: {},
+    });
+    assert.equal(closure.statusCode, 200);
+    assert.equal(closure.json().status, "CLOSURE_INITIATED");
+    assert.ok(closure.json().closureRequestId.startsWith("clr_"));
+  });
+
+  it("returns validation failure body shape for invalid requests", async () => {
+    const app = createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_missing/freeze",
+      headers: { "idempotency-key": "freeze-invalid", "x-correlation-id": "corr-validation" },
+      payload: { reason: "risk" },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), {
+      code: "VALIDATION_FAILED",
+      message: "operator is required",
+      correlationId: "corr-validation",
+      details: { field: "operator" },
+    });
+  });
+
+  it("requires idempotency keys, replays original result, and rejects key reuse with a different body", async () => {
+    const app = createApp();
+
+    const missing = await app.inject({ method: "POST", url: "/api/v1/accounts", payload: { accountId: "acct_no_key" } });
+    assert.equal(missing.statusCode, 400);
+    assert.equal(missing.json().code, "VALIDATION_FAILED");
+
+    const first = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "idem-create" }, payload: { accountId: "acct_idem" } });
+    const replay = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "idem-create" }, payload: { accountId: "acct_idem" } });
+    assert.equal(replay.statusCode, 201);
+    assert.deepEqual(replay.json(), first.json());
+
+    const reused = await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "idem-create" }, payload: { accountId: "acct_other" } });
+    assert.equal(reused.statusCode, 422);
+    assert.equal(reused.json().code, "IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("surfaces domain invariant violations as DOMAIN_RULE_VIOLATION", async () => {
+    const app = createApp();
+    await app.inject({ method: "POST", url: "/api/v1/accounts", headers: { "idempotency-key": "create-domain" }, payload: { accountId: "acct_domain" } });
+    await app.inject({ method: "POST", url: "/api/v1/accounts/acct_domain/freeze", headers: { "idempotency-key": "freeze-domain-1" }, payload: { reason: "risk", operator: "ops" } });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_domain/freeze",
+      headers: { "idempotency-key": "freeze-domain-2" },
+      payload: { reason: "risk again", operator: "ops" },
+    });
+
+    assert.equal(response.statusCode, 422);
+    assert.equal(response.json().code, "DOMAIN_RULE_VIOLATION");
+    assert.equal(response.json().details.domainCode, "ACCOUNT_NOT_ACTIVE");
   });
 });
