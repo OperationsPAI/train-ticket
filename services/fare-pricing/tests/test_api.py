@@ -27,6 +27,7 @@ from fare_pricing.application.service import InMemoryStore
 from fare_pricing.ports import EventEnvelope
 from fare_pricing.ports.messaging import PublishFailed
 from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
+from fare_pricing.adapters.messaging.subscriber import RedisEventSubscriber
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
 
@@ -61,10 +62,10 @@ def published_rule_set(*extra_rules: FareRule) -> FareRuleSet:
     return rs.publish(NOW)
 
 
-def make_app(store: InMemoryStore | None = None) -> TestClient:
+def make_app(store: InMemoryStore | None = None, publisher: FakeEventPublisher | None = None) -> TestClient:
     if store is None:
         store = InMemoryStore()
-    app = create_app(store=store)
+    app = create_app(store=store, event_publisher=publisher or FakeEventPublisher())
     return TestClient(app)
 
 
@@ -76,7 +77,8 @@ class FarePricingApiTest(unittest.TestCase):
         # Seed a published rule set
         self.rs = published_rule_set()
         self.store.fare_rule_sets[self.rs.rule_set_id] = self.rs
-        self.client = make_app(self.store)
+        self.publisher = FakeEventPublisher()
+        self.client = make_app(self.store, self.publisher)
 
     def test_health_endpoints(self) -> None:
         """Health endpoints work as before."""
@@ -114,6 +116,13 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(bd["baseFare"]["minorUnits"], 10000)
         # total = 100 + 7.50 + 5.00 - 12.50 = 100.00
         self.assertEqual(bd["total"]["minorUnits"], 10000)
+        self.assertEqual(self.publisher.published_event_count, 1)
+        event = self.publisher.last_event()
+        assert event is not None
+        self.assertEqual(event.event_type, "FareQuoteComputed")
+        self.assertTrue(event.event_id.startswith("evt-"))
+        self.assertTrue(event.causation_id.startswith("cmd-"))
+        self.assertEqual(event.payload["quoteId"], data["quoteId"])
 
     def test_fare_quote_validation_failure(self) -> None:
         """Invalid requests produce 400 with canonical error body."""
@@ -230,6 +239,9 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertIn("status", data)
         self.assertIn("refundableAmount", data)
         self.assertIn("amountDue", data)
+        adjustment_events = [e for e in self.publisher.published_events if e.event_type == "AdjustmentQuoteComputed"]
+        self.assertEqual(len(adjustment_events), 1)
+        self.assertEqual(adjustment_events[0].payload["adjustmentQuoteId"], data["adjustmentQuoteId"])
 
     def test_adjustment_quote_not_found(self) -> None:
         """No original quote leads to 404."""
@@ -271,6 +283,7 @@ class FarePricingApiTest(unittest.TestCase):
         data2 = resp2.json()
 
         self.assertEqual(data1, data2)
+        self.assertEqual(self.publisher.published_event_count, 1)
 
     def test_idempotency_key_reused_with_different_body(self) -> None:
         """Different body with same Idempotency-Key returns 422."""
@@ -477,6 +490,41 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(d["causationId"], "cmd-0194f2e0-7b3e-7610-0284-5c26e8b0c555")
         self.assertEqual(d["correlationId"], "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444")
         self.assertEqual(d["occurredAt"], "2026-07-03T10:30:00.000Z")
+
+    def test_redis_subscriber_dlq_uses_single_envelope_field_and_acks(self) -> None:
+        subscriber = RedisEventSubscriber(dedup_max_entries=2)
+
+        class Client:
+            def __init__(self) -> None:
+                self.xadd_calls: list[tuple[str, dict[str, str]]] = []
+                self.xack_calls: list[tuple[str, str, str]] = []
+
+            def xreadgroup(self, *args: object, **kwargs: object) -> list[tuple[str, list[tuple[str, dict[str, str]]]]]:
+                return [("events:fare-pricing", [("1-0", {"envelope": "{bad-json"})])]
+
+            def xadd(self, stream: str, fields: dict[str, str], **kwargs: object) -> None:
+                self.xadd_calls.append((stream, fields))
+
+            def xack(self, stream: str, group: str, msg_id: str) -> None:
+                self.xack_calls.append((stream, group, msg_id))
+                subscriber.stop()
+
+        client = Client()
+        subscriber._get_client = lambda: client  # type: ignore[method-assign]
+
+        subscriber._poll_stream("events:fare-pricing", "fare-pricing", "fare-pricing-test", lambda envelope: None)
+
+        self.assertEqual(client.xadd_calls, [("events:fare-pricing:dlq", {"envelope": "{bad-json"})])
+        self.assertEqual(client.xack_calls, [("events:fare-pricing", "fare-pricing", "1-0")])
+
+    def test_redis_subscriber_dedup_log_is_bounded(self) -> None:
+        subscriber = RedisEventSubscriber(dedup_max_entries=2)
+        for idx in range(3):
+            subscriber._mark_processed(EventEnvelope(event_id=f"evt-{idx}", event_type="FareRuleSetPublished"))
+
+        self.assertFalse(subscriber._already_processed(EventEnvelope(event_id="evt-0", event_type="FareRuleSetPublished")))
+        self.assertTrue(subscriber._already_processed(EventEnvelope(event_id="evt-1", event_type="FareRuleSetPublished")))
+        self.assertTrue(subscriber._already_processed(EventEnvelope(event_id="evt-2", event_type="FareRuleSetPublished")))
 
     def test_publisher_derives_stream_from_producer(self) -> None:
         """FakeEventPublisher records events; stream derivation is in Redis adapter."""

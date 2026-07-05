@@ -8,8 +8,11 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 
 from .runtime import health, profile
+from .application import DomainEventService
 from .application.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore
 from .application.service import FarePricingService, InMemoryStore
+from .adapters.messaging.publisher import RedisEventPublisher
+from .ports.messaging import EventPublisher
 from .web.errors import register_exception_handlers
 from .web.handlers import router as fare_pricing_router
 
@@ -141,13 +144,17 @@ def configure_fare_pricing_routes(
     app: FastAPI,
     store: InMemoryStore | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    event_publisher: EventPublisher | None = None,
 ) -> None:
     """Register the fare-pricing business API routes and application service."""
     if store is None:
         store = InMemoryStore()
     service = FarePricingService(store)
+    publisher = event_publisher or RedisEventPublisher()
     app.state.fare_pricing_service = service
     app.state.fare_pricing_store = store
+    app.state.domain_event_service = DomainEventService(publisher)
+    app.state.event_publisher = publisher
     app.state.idempotency_store = idempotency_store or BoundedInMemoryIdempotencyStore()
     app.include_router(fare_pricing_router)
 
@@ -157,9 +164,10 @@ def create_app(
     otel_tracer: RuntimeTracer | None = None,
     store: InMemoryStore | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    event_publisher: EventPublisher | None = None,
 ) -> FastAPI:
     app = FastAPI(title='Fare & Pricing', version="0.1.0")
     register_exception_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
-    configure_fare_pricing_routes(app, store, idempotency_store)
+    configure_fare_pricing_routes(app, store, idempotency_store, event_publisher)
     return app

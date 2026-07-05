@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from ..ports import EventEnvelope
 from ..ports.messaging import EventPublisher
@@ -15,17 +16,18 @@ class DomainEventService:
 
     def publish_event(
         self,
-        event_id: str,
         event_type: str,
-        occurred_at: datetime,
         causation_id: str,
         correlation_id: str,
         payload: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+        event_id: str | None = None,
     ) -> None:
+        recorded_at = occurred_at or datetime.now(UTC)
         envelope = EventEnvelope(
-            event_id=event_id,
+            event_id=event_id or f"evt-{uuid4()}",
             event_type=event_type,
-            occurred_at=occurred_at,
+            occurred_at=recorded_at,
             causation_id=causation_id,
             correlation_id=correlation_id,
             schema_version=1,
