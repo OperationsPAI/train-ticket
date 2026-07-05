@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.application;
 
+import com.trainticket.bookingorchestration.domain.BookingEvent;
 import com.trainticket.bookingorchestration.domain.BookingSaga;
 import com.trainticket.bookingorchestration.domain.BookingSagaStatus;
 import com.trainticket.bookingorchestration.domain.BookingSagaStep;
@@ -7,6 +8,7 @@ import com.trainticket.bookingorchestration.domain.DomainEvent;
 import com.trainticket.bookingorchestration.domain.ProviderReference;
 import com.trainticket.bookingorchestration.domain.ProviderReservationConfirmed;
 import com.trainticket.bookingorchestration.domain.SegmentBooking;
+import com.trainticket.bookingorchestration.domain.SegmentBookingEvent;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -307,12 +309,68 @@ public class BookingOrchestrationService {
 
     private void publishEvents(List<DomainEvent> events, String correlationId, String causationId) {
         for (DomainEvent event : events) {
+            Optional<ContractEvent> contractEvent = toContractEvent(event);
+            if (contractEvent.isEmpty()) {
+                continue;
+            }
             eventPublisher.publish(new EventEnvelope(
-                "evt-" + UUID.randomUUID(), event.getClass().getSimpleName(), 1, PRODUCER,
+                "evt-" + UUID.randomUUID(), contractEvent.get().eventType(), 1, PRODUCER,
                 causationId == null || causationId.isBlank() ? "cmd-" + UUID.randomUUID() : causationId,
                 correlationId == null || correlationId.isBlank() ? "corr-" + UUID.randomUUID() : correlationId,
-                clock.instant(), event));
+                clock.instant(), contractEvent.get().payload()));
         }
+    }
+
+    Optional<ContractEvent> toContractEvent(DomainEvent event) {
+        return switch (event) {
+            case BookingEvent.BookingSagaStarted started -> Optional.of(new ContractEvent(
+                "BookingSagaStarted",
+                new BookingSagaStartedPayload(started.aggregateId(), started.journeyOrderId(), started.occurredAt())));
+            case SegmentBookingEvent.SegmentReservationRequested requested -> Optional.of(new ContractEvent(
+                "SegmentReservationRequested",
+                new SegmentReservationRequestedPayload(requested.aggregateId(), requested.journeyOrderId(),
+                    requested.segmentRef(), requested.travelerRef(), requested.idempotencyKey())));
+            case SegmentBookingEvent.SegmentCapacityHolding holding -> Optional.of(new ContractEvent(
+                "SegmentCapacityHolding",
+                new SegmentCapacityHoldingPayload(holding.aggregateId(), holding.capacityHoldId())));
+            case SegmentBookingEvent.SegmentReservationConfirmed confirmed -> Optional.of(new ContractEvent(
+                "SegmentReservationConfirmed",
+                new SegmentReservationConfirmedPayload(confirmed.aggregateId(),
+                    confirmed.providerReference().orElse(null), confirmed.evidence())));
+            case SegmentBookingEvent.SegmentReservationFailed failed -> Optional.of(new ContractEvent(
+                "SegmentReservationFailed",
+                new SegmentReservationFailedPayload(failed.aggregateId(), failed.reason())));
+            case SegmentBookingEvent.SegmentBookingCancelled cancelled -> Optional.of(new ContractEvent(
+                "SegmentBookingCancelled",
+                new SegmentBookingCancelledPayload(cancelled.aggregateId(), cancelled.reason())));
+            case SegmentBookingEvent.SegmentTicketed ticketed -> Optional.of(new ContractEvent(
+                "SegmentTicketed",
+                new SegmentTicketedPayload(ticketed.aggregateId(), ticketed.entitlementId())));
+            case BookingEvent.BookingSagaCompleted completed -> Optional.of(new ContractEvent(
+                "BookingSagaCompleted",
+                new BookingSagaCompletedPayload(completed.aggregateId(), journeyOrderIdForSaga(completed.aggregateId()))));
+            case BookingEvent.BookingSagaFailed failed -> Optional.of(new ContractEvent(
+                "BookingSagaFailed",
+                new BookingSagaFailedPayload(failed.aggregateId(), journeyOrderIdForSaga(failed.aggregateId()), failed.reason())));
+            case BookingEvent.BookingSagaAdvanced ignored -> Optional.empty();
+            case BookingEvent.BookingSagaStepSucceeded ignored -> Optional.empty();
+            case BookingEvent.BookingSagaStepFailed ignored -> Optional.empty();
+            case BookingEvent.BookingSagaRetryScheduled ignored -> Optional.empty();
+            case BookingEvent.BookingSagaManualReviewRequired ignored -> Optional.empty();
+            case SegmentBookingEvent.ProviderReferenceAttached ignored -> Optional.empty();
+            case SegmentBookingEvent.ProviderReservationTimedOut ignored -> Optional.empty();
+            case SegmentBookingEvent.SegmentBookingCancelRequested ignored -> Optional.empty();
+            case SegmentBookingEvent.ProviderConfirmationReceivedAfterCancellation ignored -> Optional.empty();
+            case SegmentBookingEvent.ProviderCancellationRequired ignored -> Optional.empty();
+        };
+    }
+
+    private String journeyOrderIdForSaga(String sagaId) {
+        BookingSaga saga = sagas.get(sagaId);
+        if (saga == null) {
+            throw new IllegalStateException("cannot publish saga event for unknown saga: " + sagaId);
+        }
+        return saga.journeyOrderId();
     }
 
     private SegmentBooking bySegmentBookingId(Map<String, Object> payload) {
@@ -407,6 +465,19 @@ public class BookingOrchestrationService {
             case COMPENSATING, MANUAL_REVIEW, FAILED -> "FAILED";
         };
     }
+
+    record ContractEvent(String eventType, Object payload) {}
+    public record BookingSagaStartedPayload(String sagaId, String journeyOrderId, Instant startedAt) {}
+    public record SegmentReservationRequestedPayload(String segmentBookingId, String journeyOrderId, String segmentRef,
+                                                     String travelerRef, String idempotencyKey) {}
+    public record SegmentCapacityHoldingPayload(String segmentBookingId, String capacityHoldId) {}
+    public record SegmentReservationConfirmedPayload(String segmentBookingId, ProviderReference providerReference,
+                                                     String evidence) {}
+    public record SegmentReservationFailedPayload(String segmentBookingId, String reason) {}
+    public record SegmentBookingCancelledPayload(String segmentBookingId, String reason) {}
+    public record SegmentTicketedPayload(String segmentBookingId, String entitlementId) {}
+    public record BookingSagaCompletedPayload(String sagaId, String journeyOrderId) {}
+    public record BookingSagaFailedPayload(String sagaId, String journeyOrderId, String reason) {}
 
     public record StartSagaCommand(String journeyOrderId, String accountId, String offerId,
                                    List<String> travelerRefs, List<String> segmentRefs) {}
