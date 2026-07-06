@@ -196,6 +196,43 @@ class MessagingTest {
     }
 
     @Test
+    void postSalesAppliedWithApprovedRefundButNoRecognizedRevenueOpensCaseAndConsumesEvent() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e111", "PostSalesApproved", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "post-sales", 1, Map.of(
+                "caseId", "psc-lag",
+                "orderId", "ord-refund-lag",
+                "approvedActions", Map.of(
+                    "decisionKind", "REFUND",
+                    "approvalRef", "approval-lag",
+                    "refund", Map.of("orderId", "ord-refund-lag", "amount", Map.of("currency", "CNY", "minorUnits", 8750)),
+                    "steps", List.of()))));
+
+        HandlerResult applied = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e112", "PostSalesApplied", Instant.parse("2026-07-03T10:32:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "post-sales", 1, Map.of(
+                "caseId", "psc-lag",
+                "orderId", "ord-refund-lag",
+                "resultSummary", Map.of("description", "applied"))));
+
+        assertEquals(HandlerResult.SUCCESS, applied);
+        assertEquals(2, consumedEvents.saveCount);
+        EventEnvelope opened = publisher.published.stream().filter(e -> "ReconciliationCaseOpened".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals("refund-lag", ((Map<?, ?>) opened.payload()).get("differenceType"));
+        assertEquals("ord-refund-lag", ((Map<?, ?>) opened.payload()).get("orderId"));
+        assertEquals(-8750L, ((Map<?, ?>) ((Map<?, ?>) opened.payload()).get("expectedAmount")).get("minorUnits"));
+        assertFalse(publisher.published.stream().anyMatch(e -> "RevenueRecognitionReversed".equals(e.eventType())));
+    }
+
+    @Test
     void operationalFactUsesSegmentReservationRequestedIndexForOrderReference() {
         InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
         RecordingPublisher publisher = new RecordingPublisher();

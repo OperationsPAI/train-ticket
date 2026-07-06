@@ -204,11 +204,26 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Money refund = Optional.ofNullable(approvedRefundsByCaseId.get(caseId))
             .or(() -> Optional.ofNullable(approvedRefundsByCaseId.get(orderId)))
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
-        RevenueRecognition originalRecognition = serviceRevenue(orderId).stream()
+        Optional<RevenueRecognition> matchingRecognition = serviceRevenue(orderId).stream()
             .filter(recognition -> !recognition.reversed())
             .filter(recognition -> sameMoney(recognition.amount(), refund) || recognition.amount().compareTo(refund) >= 0)
-            .findFirst()
-            .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before matching recognized revenue"));
+            .findFirst();
+        if (matchingRecognition.isEmpty()) {
+            ReconciliationCase open = ReconciliationCase.open(
+                orderId,
+                "",
+                "refund-lag",
+                refund.negate(),
+                Money.zero(refund.currency()),
+                "PostSalesApplied refund could not be matched to recognized revenue",
+                clock.instant(),
+                causationIdOrEventId(envelope),
+                envelope.correlationId()
+            );
+            service.saveAndPublish(open);
+            return;
+        }
+        RevenueRecognition originalRecognition = matchingRecognition.get();
         int firstUnpublishedEventIndex = originalRecognition.domainEvents().size();
         originalRecognition.reverse(
             "post-sales refund applied",
