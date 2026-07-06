@@ -1,5 +1,7 @@
 package com.trainticket.bookingorchestration;
 
+import com.trainticket.platformkit.messaging.PrefixedIds;
+
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -29,7 +31,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
         FilterChain filterChain
     ) throws ServletException, IOException {
         String requestId = headerOrGenerated(request, REQUEST_ID_HEADER);
-        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, requestId);
+        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, PrefixedIds.newCorrelationId());
         request.setAttribute(REQUEST_ID_HEADER, requestId);
         request.setAttribute(CORRELATION_ID_HEADER, correlationId);
         RequestTraceContext context = new RequestTraceContext(

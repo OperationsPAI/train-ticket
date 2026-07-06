@@ -47,7 +47,7 @@ context.
 
 | # | Producing Context | Stream Key | Produced Event Types (Phase 1) |
 |---|---|---|---|
-| 1 | `place-network` | `events:place-network` | PlaceUpdated, TransportNodeUpdated |
+| 1 | `place-network` | `events:place-network` | PlaceRegistered, TransportNodeRegistered |
 | 2 | `service-plan` | `events:service-plan` | ServicePlanPublished, ServicePlanChanged |
 | 3 | `capacity-availability` | `events:capacity-availability` | CapacityHeld, CapacityHoldConfirmed, CapacityHoldExpired, CapacityReleased, AvailabilityChanged |
 | 4 | `fare-pricing` | `events:fare-pricing` | FareRuleSetPublished, FareRuleSetSuperseded |
@@ -59,7 +59,7 @@ context.
 | 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementSuspended, EntitlementReinstated |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, SegmentArrived, SegmentDelayed, NoShowRecorded, SegmentCompleted |
-| 13 | `post-sales` | `events:post-sales` | PostSalesRequested, PostSalesEvaluated, PostSalesApproved, PostSalesRejected, PostSalesApplied |
+| 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied |
 | 14 | `notification` | `events:notification` | NotificationScheduled, NotificationSent, NotificationFailed, NotificationSuppressed |
 | 15 | `traveler-profile` | `events:traveler-profile` | TravelerProfileUpdated, TravelerDocumentVerified, TravelerEligibilityChanged |
 | 16 | `risk-compliance` | `events:risk-compliance` | RiskAssessmentResult, RiskBlockApplied, RiskBlockLifted |
@@ -67,7 +67,7 @@ context.
 | 18 | `admin-audit` | `events:admin-audit` | ManualActionCompleted, ApprovalGranted, ApprovalDenied |
 | 19 | `customer-service` | `events:customer-service` | SupportCaseOpened, SupportCaseResolved |
 | 20 | `finance-settlement` | `events:finance-settlement` | RevenueRecognized, ReconciliationCompleted, InvoiceGenerated |
-| 21 | `reporting` | `events:reporting` | ReportGenerated, DashboardRefreshed |
+| 21 | `reporting` | `events:reporting` | MetricDefined, MetricVersionPublished, ReadModelRebuilt |
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierUpdated, ContractAmended, ProductCapabilityChanged |
 
 ### Dead-Letter Streams

@@ -206,6 +206,18 @@ def _install_default_rule_sets(store: "InMemoryStore") -> None:
                     amount=Money(Decimal("7.50"), "CNY"),
                     explanation=PriceExplanation("fare.tax", {"rule": "tax"}),
                 ),
+                FareRule(
+                    rule_id="refund-fee",
+                    kind=RuleKind.REFUND_FEE,
+                    amount=Money(Decimal("20.00"), "CNY"),
+                    explanation=PriceExplanation("fare.refund_fee", {"rule": "refund-fee"}),
+                ),
+                FareRule(
+                    rule_id="change-fee",
+                    kind=RuleKind.CHANGE_FEE,
+                    amount=Money(Decimal("15.00"), "CNY"),
+                    explanation=PriceExplanation("fare.change_fee", {"rule": "change-fee"}),
+                ),
             ),
         ).publish(now)
         store.fare_rule_sets[rule_set.rule_set_id] = rule_set
