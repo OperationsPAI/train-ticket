@@ -9,8 +9,40 @@ timestamps, and Money.
 
 Finance & Settlement handles revenue recognition, reconciliation cases, and
 settlement views. It consumes upstream events and produces financial records.
-All commands are **bus-only** — there are no external HTTP endpoints for
-financial operations. Query endpoints are provided for reporting and audit.
+Commands are event-backed. `GenerateInvoice` is exposed as an HTTP command for
+idempotent invoice generation; other financial operations remain bus-only. Query
+endpoints are provided for reporting and audit.
+
+## Commands
+
+### Generate Invoice
+
+**POST** `/api/v1/invoices`
+
+Requires `Idempotency-Key` header (UUID v7). Replays with the same key and body
+return the original response; reusing a key with a different body returns
+`IDEMPOTENCY_KEY_REUSED`.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `orderId` | string | yes | Order whose recognized revenue should be invoiced. |
+
+**Response (201):**
+
+| Field | Type | Description |
+|---|---|---|
+| `invoiceId` | string | Unique invoice ID. |
+| `orderId` | string | Invoiced order. |
+| `invoiceNumber` | string | Invoice number. |
+| `totalAmount` | object | Total amount (Money). |
+| `revenueRecognitionIds` | string[] | Included revenue recognitions. |
+| `generatedAt` | timestamp | Generation timestamp. |
+
+**Emits:** `InvoiceGenerated`
+
+**Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
 
 ## Query Endpoints
 
@@ -46,11 +78,19 @@ financial operations. Query endpoints are provided for reporting and audit.
 
 **Response (200):** Paginated response.
 
+### Get Invoice
+
+**GET** `/api/v1/invoices/{invoiceId}`
+
+**Response (200):** Invoice details using the same shape as `GenerateInvoice`.
+
+**Error codes:** `NOT_FOUND`
+
 ## Bus-only commands
 
 | Command | Trigger | Description |
 |---|---|---|
-| `RecognizeRevenue` | `EntitlementIssued`, `BoardingVerified` | Recognize revenue from fulfillment events. |
+| `RecognizeRevenue` | `PaymentCaptured`, post-sales refund facts | Recognize revenue or refund reductions from event facts. |
 | `OpenReconciliationCase` | Mismatch detection | Open a reconciliation case. |
 | `ResolveReconciliationCase` | Manual or auto | Resolve a reconciliation case. |
 | `RebuildSettlementView` | Manual or scheduled | Rebuild a settlement view from event log. |

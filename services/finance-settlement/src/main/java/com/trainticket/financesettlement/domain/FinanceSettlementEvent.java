@@ -7,6 +7,8 @@ public sealed interface FinanceSettlementEvent permits
     RevenueRecognized,
     ReconciliationCaseOpened,
     ReconciliationCaseResolved,
+    ReconciliationCompleted,
+    InvoiceGenerated,
     SettlementViewRebuilt {
     String eventId();
     Instant occurredAt();

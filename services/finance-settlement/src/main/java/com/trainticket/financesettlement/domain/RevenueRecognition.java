@@ -44,7 +44,7 @@ public final class RevenueRecognition {
         String sourceEventId, Instant recognizedAt,
         Instant now, String sourceCommandId, String correlationId
     ) {
-        if (amount.isNegative() && !"discount".equals(componentCode))
+        if (amount.isNegative() && !("discount".equals(componentCode) || "refund".equals(componentCode)))
             throw new DomainRuleViolation("revenue recognition amount must not be negative for component: " + componentCode);
         if (amount.isZero())
             throw new DomainRuleViolation("revenue recognition amount must not be zero");

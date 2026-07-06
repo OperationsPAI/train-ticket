@@ -4,8 +4,10 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
 import com.trainticket.financesettlement.domain.Money;
+import com.trainticket.financesettlement.domain.InvoiceGenerated;
 import com.trainticket.financesettlement.domain.ReconciliationCaseOpened;
 import com.trainticket.financesettlement.domain.ReconciliationCaseResolved;
+import com.trainticket.financesettlement.domain.ReconciliationCompleted;
 import com.trainticket.financesettlement.domain.RevenueRecognized;
 import com.trainticket.financesettlement.domain.SettlementViewRebuilt;
 import java.util.LinkedHashMap;
@@ -32,6 +34,8 @@ public final class DomainEventEnvelopeMapper {
             case RevenueRecognized recognized -> revenueRecognizedPayload(recognized);
             case ReconciliationCaseOpened opened -> reconciliationCaseOpenedPayload(opened);
             case ReconciliationCaseResolved resolved -> reconciliationCaseResolvedPayload(resolved);
+            case ReconciliationCompleted completed -> reconciliationCompletedPayload(completed);
+            case InvoiceGenerated generated -> invoiceGeneratedPayload(generated);
             case SettlementViewRebuilt rebuilt -> settlementViewRebuiltPayload(rebuilt);
         };
     }
@@ -68,6 +72,30 @@ public final class DomainEventEnvelopeMapper {
         return payload;
     }
 
+    private static Map<String, Object> reconciliationCompletedPayload(ReconciliationCompleted event) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reconciliationId", event.reconciliationId());
+        payload.put("orderId", event.orderId());
+        payload.put("paymentIntentId", event.paymentIntentId());
+        payload.put("reconciliationStatus", event.reconciliationStatus());
+        payload.put("expectedAmount", moneyPayload(event.expectedAmount()));
+        payload.put("actualAmount", moneyPayload(event.actualAmount()));
+        payload.put("matchedRevenueRecognitionIds", event.matchedRevenueRecognitionIds());
+        payload.put("sourceEventIds", event.sourceEventIds());
+        return payload;
+    }
+
+    private static Map<String, Object> invoiceGeneratedPayload(InvoiceGenerated event) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("invoiceId", event.invoiceId());
+        payload.put("orderId", event.orderId());
+        payload.put("invoiceNumber", event.invoiceNumber());
+        payload.put("totalAmount", moneyPayload(event.totalAmount()));
+        payload.put("revenueRecognitionIds", event.revenueRecognitionIds());
+        payload.put("generatedAt", event.generatedAt().toString());
+        return payload;
+    }
+
     private static Map<String, Object> settlementViewRebuiltPayload(SettlementViewRebuilt event) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("settlementViewId", event.settlementViewId());
@@ -94,6 +122,9 @@ public final class DomainEventEnvelopeMapper {
     }
 
     private static String canonicalCausationId(String causationId) {
+        if (causationId == null || causationId.isBlank()) {
+            return PrefixedIds.newCommandId();
+        }
         String prefixed = (causationId.startsWith("cmd-") || causationId.startsWith("evt-")) ? causationId : "cmd-" + causationId;
         return PrefixedIds.isCausationId(prefixed) ? prefixed : PrefixedIds.newCommandId();
     }

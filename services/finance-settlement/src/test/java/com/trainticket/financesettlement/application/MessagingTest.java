@@ -122,7 +122,7 @@ class MessagingTest {
         EventEnvelope published = publisher.published.getFirst();
         assertEquals("RevenueRecognized", published.eventType());
         assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321", ((Map<?, ?>) published.payload()).get("orderId"));
-        assertEquals("pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789", ((Map<?, ?>) published.payload()).get("orderItemId"));
+        assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321", ((Map<?, ?>) published.payload()).get("orderItemId"));
         assertEquals(35000L, ((Map<?, ?>) ((Map<?, ?>) published.payload()).get("amount")).get("minorUnits"));
     }
 
@@ -149,6 +149,47 @@ class MessagingTest {
 
         assertEquals(HandlerResult.TRANSIENT_FAILURE, handler.handle(captured));
         assertEquals(0, consumedEvents.saveCount);
+    }
+
+    @Test
+    void postSalesAppliedUsesApprovedRefundAmountForRevenueReductionAndReconciliation() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e107", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "payment", 1, Map.of(
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
+                "businessRef", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 35000),
+                "channel", "wechat_pay",
+                "channelTransactionId", "wx_txn_20260703_a1b2c3")));
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e108", "PostSalesApproved", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "post-sales", 1, Map.of(
+                "caseId", "psc-1",
+                "orderId", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321",
+                "approvedActions", Map.of(
+                    "decisionKind", "REFUND",
+                    "approvalRef", "approval-1",
+                    "refund", Map.of("orderId", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321", "amount", Map.of("currency", "CNY", "minorUnits", 8750)),
+                    "steps", List.of()))));
+        HandlerResult applied = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e109", "PostSalesApplied", Instant.parse("2026-07-03T10:32:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "post-sales", 1, Map.of(
+                "caseId", "psc-1",
+                "orderId", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321",
+                "resultSummary", Map.of("description", "applied"))));
+
+        assertEquals(HandlerResult.SUCCESS, applied);
+        EventEnvelope reduction = publisher.published.stream().filter(e -> "RevenueRecognized".equals(e.eventType()) && "refund".equals(((Map<?, ?>) e.payload()).get("componentCode"))).findFirst().orElseThrow();
+        assertEquals(-8750L, ((Map<?, ?>) ((Map<?, ?>) reduction.payload()).get("amount")).get("minorUnits"));
+        assertTrue(publisher.published.stream().anyMatch(e -> "ReconciliationCompleted".equals(e.eventType())));
     }
 
     private static final class RecordingPublisher implements EventPublisher {

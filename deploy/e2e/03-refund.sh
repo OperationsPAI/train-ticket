@@ -74,6 +74,17 @@ NOTIF_OK=$(stream_mentions events:notification NotificationScheduled "$TVL")
 [ "$NOTIF_OK" = "yes" ] && ok "notification scheduled for our traveler" || bad "no NotificationScheduled for traveler"
 FIN_OK=$(stream_mentions events:finance-settlement RevenueRecognized "$ORDER")
 [ "$FIN_OK" = "yes" ] && ok "RevenueRecognized for our order" || bad "no RevenueRecognized mentioning order"
+RECON_OK=$(stream_mentions events:finance-settlement ReconciliationCompleted "$ORDER")
+[ "$RECON_OK" = "yes" ] && ok "ReconciliationCompleted for our order" || bad "no ReconciliationCompleted mentioning order"
+REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognized '"minorUnits": -8750')
+[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reduction published" || bad "no -87.50 revenue reduction"
+req POST finance-settlement /api/v1/invoices "{\"orderId\":\"$ORDER\"}"
+INV_CODE_1=$LAST_CODE; INV_ID=$(jget "['invoiceId']")
+req POST finance-settlement /api/v1/invoices "{\"orderId\":\"$ORDER\"}"
+INV_ID_REPLAY=$(jget "['invoiceId']")
+[ "$INV_CODE_1" = "201" ] && [ "$LAST_CODE" = "201" ] && [ -n "$INV_ID" ] && [ "$INV_ID" = "$INV_ID_REPLAY" ] && ok "GenerateInvoice repeat returns invoice" || bad "GenerateInvoice repeat failed ($INV_CODE_1/$LAST_CODE $INV_ID/$INV_ID_REPLAY)"
+INV_EVT_OK=$(stream_mentions events:finance-settlement InvoiceGenerated "$ORDER")
+[ "$INV_EVT_OK" = "yes" ] && ok "InvoiceGenerated for our order" || bad "no InvoiceGenerated mentioning order"
 RPT_LEN=$(xlen events:reporting)
 [ "${RPT_LEN:-0}" -gt 0 ] 2>/dev/null && ok "reporting published ReadModelRebuilt facts (XLEN=$RPT_LEN)" || bad "reporting stream empty"
 req GET reporting /api/v1/dashboards/dash-revenue
