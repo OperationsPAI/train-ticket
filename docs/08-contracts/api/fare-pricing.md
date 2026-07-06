@@ -1,6 +1,6 @@
 # Fare & Pricing — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 ## Overview
 
@@ -12,6 +12,51 @@ Field shapes reference docs/08-contracts/shared-primitives.md for Money,
 timestamps, and cross-context IDs.
 
 ## Endpoints
+
+### Create Fare Rule Set
+
+**POST** `/api/v1/fare-rule-sets`
+
+**Idempotency:** REQUIRED. Reusing an idempotency key with the same body returns
+the original `DRAFT` response; reusing it with a different body is rejected.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `supplierId` | string | yes | Supplier identifier. |
+| `contractId` | string | yes | Supplier contract identifier. |
+| `productCode` | string | yes | Product/scope code. |
+| `mode` | string | yes | Transport mode. |
+| `channel` | string | yes | Sales channel. |
+| `version` | string | yes | Supplier rule version. |
+| `effectiveWindow` | object | yes | `{startsAt, endsAt}` RFC3339 timestamps. |
+| `rules` | object[] | yes | Rule objects: `ruleId`, `kind`, `amount`, `explanation`, `refundable`. |
+
+`kind` MUST be one of the domain `RuleKind` values: `base_fare`, `tax`, `fee`,
+`discount`, `refund_fee`, `change_fee`. `amount` uses shared `Money` shape with
+integer `minorUnits`. `explanation` is `{code, parameters}`.
+
+**Response (201):** Full fare rule set with `ruleSetId`, `status=DRAFT`, and the
+submitted fields.
+
+**Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
+
+### Publish Fare Rule Set
+
+**POST** `/api/v1/fare-rule-sets/{ruleSetId}/publish`
+
+**Idempotency:** REQUIRED.
+
+Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
+`channel` + `productCode` is marked `SUPERSEDED`. The service publishes
+`FareRuleSetPublished` and, when applicable, `FareRuleSetSuperseded` events per
+`docs/08-contracts/events/fare-pricing.md`.
+
+**Response (200):** Full fare rule set with `status=PUBLISHED` and
+`publishedAt`.
+
+**Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
 
 ### Compute Fare Quote
 

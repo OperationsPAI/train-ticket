@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -18,27 +17,31 @@ from fare_pricing.domain import (
     AssessmentPurpose,
     FareBreakdown,
     FareQuote,
+    FareRule,
+    FareRuleSet,
     Money,
     PriceComponent,
+    PriceExplanation,
     PricingError,
     QuoteStatus,
+    RuleKind,
     RuleSnapshot,
+    ValidityWindow,
 )
 
 from train_ticket_platform.messaging import PublishFailed
 
 from .errors import ApiError
-from .schemas import AdjustmentQuoteRequest, FareQuoteRequest
+from .schemas import AdjustmentQuoteRequest, CreateFareRuleSetRequest, FareQuoteRequest
 
 router = APIRouter(prefix="/api/v1", tags=["fare-pricing"])
 
 
 def _money_to_schema(m: Money) -> dict[str, Any]:
-    minor_units = int(m.amount * Decimal("100"))
-    return {"currency": m.currency, "minorUnits": minor_units}
+    return {"currency": m.currency, "minorUnits": m.amount_minor}
 
 
-def _explanation_to_schema(explanation: Any) -> dict[str, Any]:
+def _explanation_to_schema(explanation: PriceExplanation) -> dict[str, Any]:
     return {"code": explanation.code, "parameters": dict(explanation.as_mapping())}
 
 
@@ -58,6 +61,35 @@ def _breakdown_to_schema(bd: FareBreakdown) -> dict[str, Any]:
         "fees": [_component_to_schema(f) for f in bd.fees],
         "discounts": [_component_to_schema(d) for d in bd.discounts],
         "total": _money_to_schema(bd.total),
+    }
+
+
+def _rule_to_schema(rule: FareRule) -> dict[str, Any]:
+    return {
+        "ruleId": rule.rule_id,
+        "kind": rule.kind.value,
+        "amount": _money_to_schema(rule.amount),
+        "explanation": _explanation_to_schema(rule.explanation),
+        "refundable": rule.refundable,
+    }
+
+
+def _rule_set_to_response(rule_set: FareRuleSet) -> dict[str, Any]:
+    return {
+        "ruleSetId": rule_set.rule_set_id,
+        "supplierId": rule_set.supplier_id,
+        "contractId": rule_set.contract_id,
+        "productCode": rule_set.product_code,
+        "mode": rule_set.mode,
+        "channel": rule_set.channel,
+        "version": rule_set.version,
+        "status": rule_set.status.value.upper(),
+        "effectiveWindow": {
+            "startsAt": _timestamp_str(rule_set.effective_window.starts_at),
+            "endsAt": _timestamp_str(rule_set.effective_window.ends_at),
+        },
+        "publishedAt": _timestamp_str(rule_set.published_at) if rule_set.published_at is not None else None,
+        "rules": [_rule_to_schema(rule) for rule in rule_set.rules],
     }
 
 
@@ -95,6 +127,7 @@ def _contract_input_hash(segment_refs: list[str], channel: str, traveler_refs: l
     """Normative inputHash per events/fare-pricing.md: sha256 of
     sorted(segmentRefs)|channel|sorted(travelerRefs)."""
     import hashlib
+
     material = ",".join(sorted(segment_refs)) + "|" + channel + "|" + ",".join(sorted(traveler_refs))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -115,6 +148,65 @@ def _publish_event(request: Request, event_type: str, causation_id: str, payload
         )
     except PublishFailed as exc:
         raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
+
+
+def _effective_datetime(value: datetime) -> datetime:
+    return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _rule_set_from_request(rule_set_id: str, req: CreateFareRuleSetRequest) -> FareRuleSet:
+    rules = tuple(
+        FareRule(
+            rule_id=rule.ruleId,
+            kind=RuleKind(rule.kind),
+            amount=Money.from_minor(rule.amount.minorUnits, rule.amount.currency),
+            explanation=PriceExplanation(rule.explanation.code, rule.explanation.parameters),
+            refundable=rule.refundable,
+        )
+        for rule in req.rules
+    )
+    return FareRuleSet(
+        rule_set_id=rule_set_id,
+        supplier_id=req.supplierId,
+        product_code=req.productCode,
+        mode=req.mode,
+        channel=req.channel,
+        version=req.version,
+        effective_window=ValidityWindow(
+            _effective_datetime(req.effectiveWindow.startsAt),
+            _effective_datetime(req.effectiveWindow.endsAt),
+        ),
+        rules=rules,
+        contract_id=req.contractId,
+    )
+
+
+@router.post("/fare-rule-sets", status_code=201)
+def create_fare_rule_set(request: Request, req: CreateFareRuleSetRequest) -> dict[str, Any]:
+    service: FarePricingService = request.app.state.fare_pricing_service
+    try:
+        rule_set = service.create_rule_set(_rule_set_from_request(prefixed_uuid7("frs"), req))
+    except PricingError as exc:
+        raise _domain_error(exc) from exc
+    return _rule_set_to_response(rule_set)
+
+
+@router.post("/fare-rule-sets/{rule_set_id}/publish", status_code=200)
+def publish_fare_rule_set(request: Request, rule_set_id: str) -> dict[str, Any]:
+    service: FarePricingService = request.app.state.fare_pricing_service
+    causation_id = _command_id()
+    try:
+        published, superseded, newly_published = service.publish_rule_set(rule_set_id)
+    except RuleSetNotFoundError as exc:
+        raise ApiError("NOT_FOUND", f"Fare rule set not found: {rule_set_id}", 404) from exc
+    except PricingError as exc:
+        raise _domain_error(exc) from exc
+
+    if newly_published:
+        _publish_event(request, "FareRuleSetPublished", causation_id, _fare_rule_set_published_payload(published))
+        for old_rule_set in superseded:
+            _publish_event(request, "FareRuleSetSuperseded", causation_id, _fare_rule_set_superseded_payload(old_rule_set, published))
+    return _rule_set_to_response(published)
 
 
 @router.post("/fare-quotes", status_code=201)
@@ -219,6 +311,40 @@ def _adjustment_quote_to_response(aq: AdjustmentQuote) -> dict[str, Any]:
     if aq.failed_reason is not None:
         resp["failedReason"] = aq.failed_reason
     return resp
+
+
+def _fare_rule_set_published_payload(rule_set: FareRuleSet) -> dict[str, Any]:
+    return {
+        "ruleSetId": rule_set.rule_set_id,
+        "supplierId": rule_set.supplier_id,
+        "contractId": rule_set.contract_id,
+        "productCode": rule_set.product_code,
+        "mode": rule_set.mode,
+        "channel": rule_set.channel,
+        "version": rule_set.version,
+        "status": rule_set.status.value.upper(),
+        "effectiveWindow": {
+            "startsAt": _timestamp_str(rule_set.effective_window.starts_at),
+            "endsAt": _timestamp_str(rule_set.effective_window.ends_at),
+        },
+        "publishedAt": _timestamp_str(rule_set.published_at or datetime.now(UTC)),
+        "rules": [_rule_to_schema(rule) for rule in rule_set.rules],
+    }
+
+
+def _fare_rule_set_superseded_payload(old_rule_set: FareRuleSet, new_rule_set: FareRuleSet) -> dict[str, Any]:
+    return {
+        "ruleSetId": old_rule_set.rule_set_id,
+        "supersededByRuleSetId": new_rule_set.rule_set_id,
+        "supplierId": old_rule_set.supplier_id,
+        "contractId": old_rule_set.contract_id,
+        "productCode": old_rule_set.product_code,
+        "mode": old_rule_set.mode,
+        "channel": old_rule_set.channel,
+        "version": old_rule_set.version,
+        "status": old_rule_set.status.value.upper(),
+        "supersededAt": _timestamp_str(new_rule_set.published_at or datetime.now(UTC)),
+    }
 
 
 def _fare_quote_event_payload(quote: FareQuote) -> dict[str, Any]:
