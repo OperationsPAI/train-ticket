@@ -7,24 +7,14 @@ import com.trainticket.adminaudit.application.ports.PublishFailedException;
 import com.trainticket.adminaudit.application.ports.SubscribeFailedException;
 import com.trainticket.platformkit.messaging.RedisEventPublisher;
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
-import java.util.List;
-import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
 @ConditionalOnProperty(name = "ADMIN_AUDIT_REDIS_ENABLED", havingValue = "true", matchIfMissing = true)
-public class RedisMessagingConfiguration implements ApplicationRunner {
-    private final EventSubscriber subscriber;
-
-    public RedisMessagingConfiguration(EventSubscriber subscriber) {
-        this.subscriber = subscriber;
-    }
+public class RedisMessagingConfiguration {
 
     @Bean(destroyMethod = "close")
     RedisEventPublisher platformRedisEventPublisher(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
@@ -60,13 +50,5 @@ public class RedisMessagingConfiguration implements ApplicationRunner {
                 throw new SubscribeFailedException(exception.getMessage(), exception);
             }
         };
-    }
-
-    @Override
-    public void run(ApplicationArguments args) {
-        List<String> streams = List.of();
-        if (!streams.isEmpty()) {
-            subscriber.subscribe(streams, "admin-audit", "admin-audit-" + UUID.randomUUID(), envelope -> EventSubscriber.HandlerResult.SUCCESS);
-        }
     }
 }

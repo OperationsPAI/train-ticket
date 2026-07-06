@@ -5,6 +5,7 @@ ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 COPY platform/python-kit ./platform/python-kit
 COPY services/reporting/pyproject.toml services/reporting/uv.lock ./services/reporting/
 COPY services/reporting/src ./services/reporting/src
+RUN sed -i 's/editable = true/editable = false/' services/reporting/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv uv venv /opt/venv &&     uv pip install --python /opt/venv/bin/python ./platform/python-kit ./services/reporting "uvicorn[standard]"
 
 FROM python:3.12-slim

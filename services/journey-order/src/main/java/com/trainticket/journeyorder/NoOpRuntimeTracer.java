@@ -1,10 +1,8 @@
 package com.trainticket.journeyorder;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnMissingBean(RuntimeTracer.class)
 public class NoOpRuntimeTracer implements RuntimeTracer {
     @Override
     public void requestStarted(RequestTraceContext context) {
