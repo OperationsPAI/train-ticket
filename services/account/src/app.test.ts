@@ -177,6 +177,58 @@ describe("account HTTP API", () => {
   });
 
 
+
+  it("publishes account lifecycle event payloads with contract fields", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({ publisher });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts",
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c021", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321" },
+      payload: { accountId: "acct_contract" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_contract/freeze",
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c022", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321" },
+      payload: { reason: "risk", operator: "ops", caseRef: "case-1" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_contract/unfreeze",
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c023", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321" },
+      payload: { reason: "resolved" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/accounts/acct_contract/start-closure",
+      headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c024", "x-correlation-id": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321" },
+      payload: {},
+    });
+
+    const created = publisher.findByEventType("AccountCreated")[0];
+    assert.deepEqual(Object.keys(created.payload).sort(), ["accountId", "correlationId", "occurredAt"]);
+    assert.equal(created.payload.accountId, "acct_contract");
+    assert.equal(created.payload.correlationId, created.correlationId);
+    assert.equal(created.payload.occurredAt, created.occurredAt);
+
+    const frozen = publisher.findByEventType("AccountFrozen")[0];
+    assert.deepEqual(Object.keys(frozen.payload).sort(), ["accountId", "caseRef", "correlationId", "occurredAt", "operator", "reason"]);
+    assert.equal(frozen.payload.reason, "risk");
+    assert.equal(frozen.payload.operator, "ops");
+    assert.equal(frozen.payload.caseRef, "case-1");
+    assert.equal(frozen.payload.occurredAt, frozen.occurredAt);
+
+    const unfrozen = publisher.findByEventType("AccountUnfrozen")[0];
+    assert.deepEqual(Object.keys(unfrozen.payload).sort(), ["accountId", "correlationId", "occurredAt", "reason"]);
+    assert.equal(unfrozen.payload.reason, "resolved");
+
+    const closureStarted = publisher.findByEventType("AccountClosureStarted")[0];
+    assert.deepEqual(Object.keys(closureStarted.payload).sort(), ["accountId", "closureRequestId", "correlationId", "occurredAt"]);
+    assert.match(String(closureStarted.payload.closureRequestId), /^clr_/);
+  });
+
   it("uses one resolved correlation id for response headers, errors, and published events", async () => {
     const publisher = new InMemoryEventPublisher();
     const app = createApp({ publisher });
