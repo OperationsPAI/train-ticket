@@ -50,8 +50,10 @@ public final class ReconciliationCase {
     ) {
         Objects.requireNonNull(expectedAmount);
         Objects.requireNonNull(actualAmount);
-        if (expectedAmount.currency().equals(actualAmount.currency()) && expectedAmount.compareTo(actualAmount) == 0)
+        if (expectedAmount.currency().equals(actualAmount.currency()) && expectedAmount.compareTo(actualAmount) == 0
+            && !("missing-in-platform".equals(differenceType) || "missing-in-channel".equals(differenceType) || "refund-lag".equals(differenceType))) {
             throw new DomainRuleViolation("cannot open reconciliation case with matching amounts");
+        }
 
         ReconciliationCase rc = new ReconciliationCase(
             UUID.randomUUID().toString(), orderId, paymentIntentId,

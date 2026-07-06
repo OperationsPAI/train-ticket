@@ -5,8 +5,11 @@ import java.util.Map;
 
 public sealed interface FinanceSettlementEvent permits
     RevenueRecognized,
+    RevenueRecognitionReversed,
     ReconciliationCaseOpened,
     ReconciliationCaseResolved,
+    ReconciliationCompleted,
+    InvoiceGenerated,
     SettlementViewRebuilt {
     String eventId();
     Instant occurredAt();

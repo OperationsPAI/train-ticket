@@ -55,9 +55,10 @@ class RevenueRecognitionTest {
         assertTrue(recognition.reversed());
         assertEquals("order cancelled", recognition.reversalReason());
         assertEquals(2, recognition.domainEvents().size());
-        RevenueRecognized reversalEvent = (RevenueRecognized) recognition.domainEvents().get(1);
-        assertTrue(reversalEvent.amount().isNegative());
-        assertEquals("policy-v1-reversed", reversalEvent.recognitionPolicyVersion());
+        RevenueRecognitionReversed reversalEvent = (RevenueRecognitionReversed) recognition.domainEvents().get(1);
+        assertEquals(amount, reversalEvent.amount());
+        assertEquals("fare", reversalEvent.componentCode());
+        assertEquals("order cancelled", reversalEvent.reversalReason());
     }
 
     @Test

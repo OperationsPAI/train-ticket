@@ -3,7 +3,7 @@ package com.trainticket.financesettlement.domain;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 
 public record EventMetadata(
     String eventId,
@@ -25,7 +25,7 @@ public record EventMetadata(
     }
 
     public static EventMetadata create(Instant occurredAt, String sourceCommandId, String causationId, String correlationId, Map<String, String> attributes) {
-        return new EventMetadata(UUID.randomUUID().toString(), occurredAt, sourceCommandId, causationId, correlationId, 1, attributes);
+        return new EventMetadata(PrefixedIds.newEventId(), occurredAt, sourceCommandId, causationId, correlationId, 1, attributes);
     }
 
     private static String requireText(String value, String name) {

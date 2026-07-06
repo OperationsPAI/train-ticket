@@ -1,6 +1,8 @@
 package com.trainticket.financesettlement.application;
 
 import com.trainticket.financesettlement.domain.RevenueRecognition;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -13,6 +15,14 @@ public class InMemoryRevenueRecognitionRepository implements RevenueRecognitionR
     @Override
     public Optional<RevenueRecognition> findById(String revenueRecognitionId) {
         return Optional.ofNullable(revenueRecognitions.get(revenueRecognitionId));
+    }
+
+    @Override
+    public List<RevenueRecognition> findByOrderId(String orderId) {
+        return revenueRecognitions.values().stream()
+            .filter(recognition -> recognition.orderId().equals(orderId))
+            .sorted(Comparator.comparing(RevenueRecognition::recognizedAt).thenComparing(RevenueRecognition::revenueRecognitionId))
+            .toList();
     }
 
     @Override
