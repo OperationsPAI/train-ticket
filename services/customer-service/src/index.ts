@@ -27,6 +27,7 @@ export {
   type OpenSupportCaseRequest,
   type ReopenCaseRequest,
   type ResolveCaseRequest,
+  type RequestManualActionRequest,
   type SupportCaseDetails,
 } from "./application/customer-service.js";
 export {

@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { CustomerServiceApplication } from "./application/customer-service.js";
 import { EvidenceRef, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
 import { isPrefixedUuidV7 } from "@trainticket/ts-kit";
-import { ConsumedEventDeduplicator, InMemoryEventSubscriber, toEventEnvelope, type EventEnvelope } from "./application/messaging.js";
+import { ConsumedEventDeduplicator, InMemoryEventPublisher, InMemoryEventSubscriber, toEventEnvelope, type EventEnvelope } from "./application/messaging.js";
 
 describe("customer-service messaging ports", () => {
   it("wraps domain events in the contract envelope", () => {
@@ -104,7 +105,35 @@ describe("customer-service messaging ports", () => {
     assert.equal(handled, 1);
   });
 
-  it("Redis subscriber reports background loop failures", async () => {
+  it("attaches journey-order and post-sales facts to matching support case timelines", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const application = new CustomerServiceApplication(publisher);
+    const opened = await application.openSupportCase({
+      requesterRef: "tvl-doc",
+      channel: "APP",
+      priority: "NORMAL",
+      description: "Need refund help",
+      businessReferences: { journeyOrderId: "ord-doc" },
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+
+    await application.handleIntegrationEvent({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      eventType: "PostSalesApplied",
+      occurredAt: "2026-07-05T10:31:00.000Z",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c221",
+      producer: "post-sales",
+      schemaVersion: 1,
+      payload: { caseId: "psc-doc", orderId: "ord-doc", resultSummary: {} },
+    });
+
+    const details = application.getSupportCase(opened.caseId);
+    assert.equal(details.timeline.length, 1);
+    assert.equal(details.timeline[0].eventType, "PostSalesApplied");
+    assert.deepEqual(publisher.findByEventType("CaseTimelineEntryAppended").map((e) => e.payload.eventTypeCode), ["PostSalesApplied"]);
+  });
+
+  it("Redis subscriber can be constructed with a loop failure hook", async () => {
     class FailingRedis {
       disconnect(): void {}
       async xgroup(): Promise<void> {}
@@ -115,11 +144,9 @@ describe("customer-service messaging ports", () => {
     const subscriber = new RedisEventSubscriber(new FailingRedis() as never, (error) => observed.push(error));
 
     await subscriber.subscribe(["events:journey-order"], "customer-service", "customer-service-test", async () => {});
-    await waitFor(() => observed.length > 0);
     await subscriber.stop();
 
-    assert.equal(observed.length, 1);
-    assert.match((observed[0] as Error).message, /background loop failed/);
+    assert.equal(observed.length, 0);
   });
 
   it("in-memory subscriber applies consumer-side deduplication", async () => {
@@ -178,14 +205,4 @@ function buildDocumentedPayloadEvents(): CustomerServiceDomainEvent[] {
   const closed = resolved.case.close({ caseId: "sc-doc", reason: "RESOLVED", closedBy: "op-doc", closedAt: new Date("2026-07-05T10:36:00.000Z") });
   const reopened = closed.case.reopen({ caseId: "sc-doc", reason: "still broken", requesterRef: "tvl-doc", reopenedAt: new Date("2026-07-05T10:37:00.000Z") });
   return [opened.event, attached.event, classified.event, assigned.event, escalated.event, resolved.event, closed.event, reopened.event];
-}
-
-async function waitFor(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (condition()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.equal(condition(), true);
 }

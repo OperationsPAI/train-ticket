@@ -50,13 +50,17 @@ export {
   type NotificationScheduled,
   type NotificationDispatched,
   type NotificationDelivered,
+  type NotificationSent,
   type NotificationFailed,
+  type NotificationSuppressed,
   type NotificationCancelled,
   type NotificationDomainEvent,
   type NotificationTaskSnapshot,
   type TemplateSnapshot,
   type RecipientPolicySnapshot,
   type DeliveryReceiptSnapshot,
+  newNotificationTaskId,
+  newReceiptId,
   type NotificationBoundaryProof,
 } from "./domain.js";
 export {
@@ -74,7 +78,7 @@ export {
   type EventPublisher,
   type EventSubscriber,
 } from "./application/messaging.js";
-export { NonConformantNotificationTrigger, NotificationApplicationService, type ExternalTriggerResult } from "./application/notification-service.js";
+export { NonConformantNotificationTrigger, NotificationApplicationService, type DeliveryResult, type ExternalTriggerResult, type NotificationChannelGateway, type UserPreference, type UserPreferenceRepository } from "./application/notification-service.js";
 export {
   NOTIFICATION_CONSUMER_GROUP,
   NOTIFICATION_PRODUCER,

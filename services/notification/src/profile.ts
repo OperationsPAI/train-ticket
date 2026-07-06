@@ -25,7 +25,9 @@ export const serviceProfile: ServiceProfile = {
     "NotificationScheduled",
     "NotificationDispatched",
     "NotificationDelivered",
+    "NotificationSent",
     "NotificationFailed",
+    "NotificationSuppressed",
     "NotificationCancelled",
   ],
   doesNotOwn: [
@@ -39,7 +41,9 @@ export const serviceProfile: ServiceProfile = {
     "NotificationScheduled",
     "NotificationDispatched",
     "NotificationDelivered",
+    "NotificationSent",
     "NotificationFailed",
+    "NotificationSuppressed",
     "NotificationCancelled",
   ],
 };

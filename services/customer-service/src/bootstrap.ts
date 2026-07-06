@@ -1,8 +1,7 @@
-import { randomUUID } from "node:crypto";
-
 import { CustomerServiceApplication } from "./application/customer-service.js";
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 import { RedisEventPublisher } from "./adapters/messaging/publisher.js";
+import { uuidV7 } from "@trainticket/ts-kit";
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { CUSTOMER_SERVICE_CONSUMER_GROUP, CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
 
@@ -31,7 +30,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   await subscriber.subscribe(
     CUSTOMER_SERVICE_SUBSCRIPTIONS,
     CUSTOMER_SERVICE_CONSUMER_GROUP,
-    `${CUSTOMER_SERVICE_CONSUMER_GROUP}-${process.env.HOSTNAME ?? randomUUID()}`,
+    `${CUSTOMER_SERVICE_CONSUMER_GROUP}-${process.env.HOSTNAME ?? uuidV7()}`,
     (envelope) => application.handleIntegrationEvent(envelope as never),
   );
 

@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import {
@@ -24,6 +22,7 @@ import {
   requestFingerprint,
   requestContext as kitRequestContext,
   sendError,
+  uuidV7,
   type ErrorEnvelope,
   type IdempotencyStore,
   type RequestContext,
@@ -464,6 +463,7 @@ function supportCaseResponse(snapshot: {
   closedAt?: Date;
   closeReason?: string;
   evidence?: readonly unknown[];
+  timeline?: readonly unknown[];
 }) {
   return {
     caseId: snapshot.caseId,
@@ -483,6 +483,7 @@ function supportCaseResponse(snapshot: {
     closedAt: snapshot.closedAt?.toISOString(),
     closeReason: snapshot.closeReason,
     evidence: snapshot.evidence,
+    timeline: snapshot.timeline,
   };
 }
 
@@ -508,7 +509,7 @@ function isPreconditionFailure(request: FastifyRequest, domainCode: string): boo
 }
 
 function operatorRef(request: FastifyRequest): string {
-  return headerValue(request.headers["x-operator-ref"]) ?? `op-${randomUUID()}`;
+  return headerValue(request.headers["x-operator-ref"]) ?? `op-${uuidV7()}`;
 }
 
 function healthBody(): HealthStatus {
