@@ -73,6 +73,8 @@ class ApplicationTest {
         String requestId = response.getHeader(RequestContextFilter.REQUEST_ID_HEADER);
         assertNotNull(requestId);
         assertFalse(requestId.isBlank());
+        // A missing correlation header mints a canonical corr-<uuid7> id
+        // instead of reusing the request id (shared-primitives ruling).
         String correlationId = response.getHeader(RequestContextFilter.CORRELATION_ID_HEADER);
         assertNotNull(correlationId);
         assertTrue(correlationId.startsWith("corr-"));

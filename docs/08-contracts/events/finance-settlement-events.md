@@ -16,6 +16,24 @@ event.
 | `sourceEventId` | string | The upstream event that triggered recognition. |
 | `metadata` | EventMetadata | Standard event envelope. |
 
+## RevenueRecognitionReversed
+
+Produced when previously recognized revenue is reversed (e.g. an approved
+refund). RULING (2026-07-06): reversals are a dedicated event — `componentCode`
+keeps its original enum (fare, tax, fee, ancillary, discount) and always names
+the component being reversed; there is no `refund` component.
+
+| Field | Type | Description |
+|---|---|---|
+| `revenueRecognitionId` | string | ID of the original recognition being reversed. |
+| `orderItemId` | string | The order item whose revenue is reversed. |
+| `orderId` | string | The parent order. |
+| `componentCode` | string | Original financial component (fare, tax, fee, ancillary, discount). |
+| `amount` | Money | Positive amount being reversed. |
+| `reversalReason` | string | Why the revenue was reversed (e.g. post-sales refund applied). |
+| `sourceEventId` | string | The upstream event that triggered the reversal. |
+| `metadata` | EventMetadata | Standard event envelope. |
+
 ## ReconciliationCaseOpened
 
 Produced when a reconciliation mismatch is detected.
