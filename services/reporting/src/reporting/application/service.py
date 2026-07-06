@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -16,11 +17,16 @@ from reporting.domain import (
     MetricRef,
     MetricStatus,
     ReadModelSnapshot,
+    ReadModelStatus,
 )
 
 from .ports import EventEnvelope, EventPublisher, HandlerResult
 
 PRODUCER = "reporting"
+
+# Minimum seconds between rebuilds of the same dashboard (inline scheduler
+# for the bus-only RebuildReadModel command, api/reporting.md).
+REBUILD_DEBOUNCE_SECONDS = 10.0
 
 
 def utc_now() -> datetime:
@@ -166,10 +172,45 @@ class ReportingApplicationService:
 
     def handle_event(self, envelope: EventEnvelope) -> HandlerResult:
         try:
-            self.repository.record_consumed_event(envelope)
+            if self.repository.record_consumed_event(envelope):
+                self._rebuild_stale_dashboards(envelope)
         except Exception as exc:  # pragma: no cover - defensive boundary for broker callback
             return HandlerResult.fatal_error(str(exc))
         return HandlerResult.success()
+
+    def _rebuild_stale_dashboards(self, envelope: EventEnvelope) -> None:
+        """RebuildReadModel is a bus-only command with a 'manual or scheduled'
+        trigger (api/reporting.md); phase 1 schedules it inline — a stale
+        dashboard is rebuilt once the debounce window since its last build
+        has elapsed, and each rebuild publishes the ReadModelRebuilt fact."""
+        now = utc_now()
+        for dashboard_id, dashboard in list(self.repository.dashboards.items()):
+            if dashboard.status is not ReadModelStatus.STALE:
+                continue
+            last_built = dashboard.last_built_at
+            if last_built is not None and (now - last_built).total_seconds() < REBUILD_DEBOUNCE_SECONDS:
+                continue
+            event_count = len(self.repository.consumed_events.records)
+            digest = "sha256-" + hashlib.sha256(
+                f"{dashboard_id}:{event_count}:{rfc3339_utc(now)}".encode()
+            ).hexdigest()[:16]
+            rebuild_id = prefixed_uuid7("rebuild")
+            self.repository.dashboards[dashboard_id] = dashboard.rebuild(rebuild_id, now, event_count, digest)
+            self.repository.rebuild_runs.setdefault(dashboard_id, []).append(
+                RebuildRun(rebuild_id, dashboard_id, now, "COMPLETED", event_count, digest)
+            )
+            self.publish_domain_event(
+                event_type="ReadModelRebuilt",
+                payload={
+                    "dashboardId": dashboard_id,
+                    "rebuildId": rebuild_id,
+                    "rebuiltAt": rfc3339_utc(now),
+                    "eventCount": event_count,
+                    "digest": digest,
+                },
+                correlation_id=envelope.correlationId,
+                causation_id=envelope.eventId,
+            )
 
     def publish_domain_event(
         self,

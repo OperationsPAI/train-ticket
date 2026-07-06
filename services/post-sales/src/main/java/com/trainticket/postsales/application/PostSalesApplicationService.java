@@ -23,12 +23,15 @@ import org.springframework.stereotype.Service;
 public class PostSalesApplicationService {
     private final PostSalesRepository repository;
     private final EventPublisher eventPublisher;
+    private final AdjustmentQuotePort adjustmentQuotePort;
     private final Clock clock;
     private final ConcurrentMap<String, Integer> publishedEventCounts = new ConcurrentHashMap<>();
 
-    public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher, Clock clock) {
+    public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
+            AdjustmentQuotePort adjustmentQuotePort, Clock clock) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
+        this.adjustmentQuotePort = adjustmentQuotePort;
         this.clock = clock;
     }
 
@@ -63,7 +66,12 @@ public class PostSalesApplicationService {
             postSalesCase.beginEvaluation(now, sourceCommandId, sourceCommandId, correlationId);
         }
         PostSalesDecision decision = decisionFor(postSalesCase, now);
-        postSalesCase.recordDecision(decision, false, false, now, sourceCommandId, sourceCommandId, correlationId);
+        postSalesCase.evaluateEligibility(decision.eligible(), decision.reasonCode(),
+            decision.ruleSnapshot().farePricingEvaluationRef(), decision.ruleSnapshot().fareRuleVersion(),
+            now, sourceCommandId, sourceCommandId, correlationId);
+        if (decision.eligible()) {
+            postSalesCase.recordDecision(decision, false, false, now, sourceCommandId, sourceCommandId, correlationId);
+        }
         repository.save(postSalesCase);
         publishNewEvents(postSalesCase);
         return postSalesCase;
@@ -90,23 +98,44 @@ public class PostSalesApplicationService {
     }
 
     private PostSalesDecision decisionFor(PostSalesCase postSalesCase, Instant now) {
+        DecisionKind kind = switch (postSalesCase.caseType()) {
+            case REFUND, CANCELLATION, REBOOK -> DecisionKind.REFUND;
+            case CHANGE -> DecisionKind.CHANGE;
+            case COMPENSATION -> DecisionKind.COMPENSATION;
+        };
+        String purpose = kind == DecisionKind.CHANGE ? "CHANGE" : "REFUND";
+        // Idempotency-Key must be a bare UUID v7 (fare-pricing contract); the
+        // case ID is one, and reusing it keys the quote to this case.
+        var quote = adjustmentQuotePort.compute(new AdjustmentQuotePort.AdjustmentQuoteRequest(
+            purpose,
+            postSalesCase.scope().entitlementRefs(),
+            postSalesCase.journeyOrderId(),
+            postSalesCase.scope().segmentRefs(),
+            PostSalesMapper.stripCasePrefix(postSalesCase.caseId())
+        ));
         RuleEvaluationSnapshot ruleSnapshot = new RuleEvaluationSnapshot(
-            "adjq-" + postSalesCase.caseId(),
+            quote.map(AdjustmentQuotePort.AdjustmentQuoteResult::adjustmentQuoteId)
+                .orElse("adjq-" + postSalesCase.caseId()),
             "offer-rule-snapshot-" + postSalesCase.caseId(),
             "rule-v1",
             now,
             Map.of("journeyOrderId", postSalesCase.journeyOrderId(), "postSalesCaseId", postSalesCase.caseId())
         );
         Money zero = Money.zero("CNY");
-        AmountDecisionSnapshot amount = switch (postSalesCase.caseType()) {
-            case REFUND, CANCELLATION, REBOOK -> AmountDecisionSnapshot.refund(zero, Money.fromMinorUnits(0, "CNY"), "HTTP eligibility evaluation");
-            case CHANGE -> AmountDecisionSnapshot.extraCharge(zero, Money.fromMinorUnits(0, "CNY"), "HTTP eligibility evaluation");
-            case COMPENSATION -> AmountDecisionSnapshot.refund(zero, Money.fromMinorUnits(0, "CNY"), "HTTP eligibility evaluation");
-        };
-        DecisionKind kind = switch (postSalesCase.caseType()) {
-            case REFUND, CANCELLATION, REBOOK -> DecisionKind.REFUND;
-            case CHANGE -> DecisionKind.CHANGE;
-            case COMPENSATION -> DecisionKind.COMPENSATION;
+        Money refundable = quote
+            .map(q -> Money.fromMinorUnits(q.refundableMinorUnits(), q.refundableCurrency()))
+            .orElse(zero);
+        Money amountDue = quote
+            .map(q -> Money.fromMinorUnits(q.amountDueMinorUnits(), q.amountDueCurrency()))
+            .orElse(zero);
+        String explanation = quote
+            .map(q -> "fare-pricing adjustment quote " + q.adjustmentQuoteId())
+            .orElse("fare-pricing unavailable; zero-amount fallback");
+        AmountDecisionSnapshot amount = switch (kind) {
+            case REFUND, CANCELLATION, COMPENSATION -> AmountDecisionSnapshot.refund(zero, refundable, explanation);
+            case CHANGE -> amountDue.isZero() && !refundable.isZero()
+                ? AmountDecisionSnapshot.refund(zero, refundable, explanation)
+                : AmountDecisionSnapshot.extraCharge(zero, amountDue, explanation);
         };
         ChangeFlowSnapshot changeFlowSnapshot = kind == DecisionKind.CHANGE
             ? new ChangeFlowSnapshot(

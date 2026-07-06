@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class RedisEventSubscriber implements EventSubscriber {
     public static final int MAX_DELIVERY_ATTEMPTS = 5;
+    private static final long POLL_FAILURE_BACKOFF_MILLIS = 1_000;
 
     private final RedisStreamOperations streams;
     private final ObjectMapper objectMapper;
@@ -82,6 +83,17 @@ public class RedisEventSubscriber implements EventSubscriber {
                     }
                 } catch (RuntimeException exception) {
                     // Keep the subscriber alive; messages read but not acked remain in the Redis PEL for recovery/DLQ policy.
+                    // A non-persistent Redis loses consumer groups on restart: NOGROUP
+                    // means "recreate the group and carry on". Anything else backs off
+                    // so a dead connection never turns this loop into a hot spin.
+                    if (isNoGroup(exception)) {
+                        try {
+                            streams.createGroup(stream, group);
+                        } catch (RuntimeException ignored) {
+                            // Redis still down; the backoff below paces the retry.
+                        }
+                    }
+                    sleepQuietly(POLL_FAILURE_BACKOFF_MILLIS);
                 }
             }
         }
@@ -129,6 +141,24 @@ public class RedisEventSubscriber implements EventSubscriber {
         } else if (result == HandlerResult.FATAL_FAILURE) {
             streams.moveToDlq(stream, json);
             streams.ack(stream, group, message.id());
+        }
+    }
+
+    private static boolean isNoGroup(RuntimeException exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (message != null && message.contains("NOGROUP")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
         }
     }
 

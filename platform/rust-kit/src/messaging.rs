@@ -682,6 +682,20 @@ pub mod redis_runtime {
             }
             Ok(())
         }
+        // A non-persistent Redis loses consumer groups on restart: a NOGROUP
+        // error means recreate the groups and carry on. Every consume error
+        // backs off so a dead connection never hot-spins the subscribe loop.
+        async fn handle_consume_error(
+            connection: &mut redis::aio::MultiplexedConnection,
+            streams: &[String],
+            group: &str,
+            error: &str,
+        ) {
+            if error.to_uppercase().contains("NOGROUP") {
+                let _ = Self::create_groups(connection, streams, group).await;
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
         async fn recover_pending(
             &self,
             connection: &mut redis::aio::MultiplexedConnection,
@@ -772,15 +786,20 @@ pub mod redis_runtime {
                 .map_err(|error| SubscribeFailed(error.to_string()))?;
             Self::create_groups(&mut connection, &streams, &group).await?;
             while !self.stop.load(std::sync::atomic::Ordering::SeqCst) {
-                self.recover_pending(
-                    &mut connection,
-                    &streams,
-                    &group,
-                    &consumer_name,
-                    handler.as_ref(),
-                )
-                .await?;
-                let response: redis::Value = redis::cmd("XREADGROUP")
+                if let Err(error) = self
+                    .recover_pending(
+                        &mut connection,
+                        &streams,
+                        &group,
+                        &consumer_name,
+                        handler.as_ref(),
+                    )
+                    .await
+                {
+                    Self::handle_consume_error(&mut connection, &streams, &group, &error.0).await;
+                    continue;
+                }
+                let response: RedisResult<redis::Value> = redis::cmd("XREADGROUP")
                     .arg("GROUP")
                     .arg(&group)
                     .arg(&consumer_name)
@@ -792,8 +811,20 @@ pub mod redis_runtime {
                     .arg(&streams)
                     .arg(vec![">"; streams.len()])
                     .query_async(&mut connection)
-                    .await
-                    .map_err(|error| SubscribeFailed(error.to_string()))?;
+                    .await;
+                let response = match response {
+                    Ok(value) => value,
+                    Err(error) => {
+                        Self::handle_consume_error(
+                            &mut connection,
+                            &streams,
+                            &group,
+                            &error.to_string(),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
                 for message in parse_stream_messages(response) {
                     self.process_message(&mut connection, &group, message, handler.as_ref())
                         .await?;

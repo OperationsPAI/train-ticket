@@ -245,8 +245,17 @@ export class RedisEventSubscriber {
             if (!read) {
                 throw new TypeError("Redis client does not support XREADGROUP");
             }
-            const messages = await read("XREADGROUP", "GROUP", group, consumerName, "BLOCK", READ_BLOCK_MS, "COUNT", READ_COUNT, "STREAMS", ...streams, ...streams.map(() => ">"));
-            await this.processMessages(messages, group, handler);
+            try {
+                const messages = await read("XREADGROUP", "GROUP", group, consumerName, "BLOCK", READ_BLOCK_MS, "COUNT", READ_COUNT, "STREAMS", ...streams, ...streams.map(() => ">"));
+                await this.processMessages(messages, group, handler);
+            }
+            catch (error) {
+                // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
+                if (String(error).includes("NOGROUP")) {
+                    await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+                }
+                await sleep(1_000);
+            }
         }
     }
     async recover(streams, group, consumerName, handler, signal) {

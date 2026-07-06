@@ -13,7 +13,8 @@ import com.trainticket.postsales.domain.PostSalesCaseOpened;
 import com.trainticket.postsales.domain.PostSalesCaseStatus;
 import com.trainticket.postsales.domain.PostSalesCaseType;
 import com.trainticket.postsales.domain.PostSalesDecision;
-import com.trainticket.postsales.domain.PostSalesEvaluated;
+import com.trainticket.postsales.domain.PostSalesDecisionQuoted;
+import com.trainticket.postsales.domain.PostSalesEligibilityEvaluated;
 import com.trainticket.postsales.domain.PostSalesEvent;
 import com.trainticket.postsales.domain.PostSalesRejected;
 import com.trainticket.postsales.domain.PostSalesRequested;
@@ -130,10 +131,19 @@ public final class PostSalesMapper {
             payload.put("orderId", requested.journeyOrderId());
             payload.put("requestType", requestType(requested.caseType()));
             payload.put("requestedAt", requested.metadata().occurredAt().toString());
-        } else if (event instanceof PostSalesEvaluated evaluated) {
-            payload.put("decisionKind", evaluated.decisionKind().name());
-            payload.put("eligible", evaluated.eligible());
-            payload.put("adjustmentQuoteId", evaluated.farePricingEvaluationRef());
+        } else if (event instanceof PostSalesEligibilityEvaluated eligibility) {
+            payload.put("eligible", eligibility.eligible());
+            payload.put("reasonCode", eligibility.reasonCode());
+            if (eligibility.ruleSnapshotRef() != null) {
+                payload.put("ruleSnapshotRef", eligibility.ruleSnapshotRef());
+            }
+            if (eligibility.ruleVersion() != null) {
+                payload.put("ruleVersion", eligibility.ruleVersion());
+            }
+        } else if (event instanceof PostSalesDecisionQuoted quoted) {
+            payload.put("decisionKind", quoted.decisionKind().name());
+            payload.put("eligible", quoted.eligible());
+            payload.put("ruleSnapshotRef", quoted.ruleSnapshotRef());
         } else if (event instanceof PostSalesApproved approved) {
             payload.put("orderId", approved.journeyOrderId());
             payload.put("approvedActions", approvedActions(approved, sourceCase));

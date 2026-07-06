@@ -167,7 +167,13 @@ class RedisEventSubscriber(EventSubscriber):
                     break
                 if isinstance(exc, (TransientHandlerError, FatalHandlerError)):
                     raise
-                raise SubscribeFailed("subscriber could not poll Redis Streams") from exc
+                # Redis is non-persistent here: a restart drops consumer groups,
+                # so recreate them on NOGROUP instead of spinning on the error.
+                if "NOGROUP" in str(exc):
+                    for stream in streams_tuple:
+                        self._ensure_group(stream, group)
+                # Back off so a dead connection never hot-spins.
+                time.sleep(1)
 
     def start_in_background(
         self,
