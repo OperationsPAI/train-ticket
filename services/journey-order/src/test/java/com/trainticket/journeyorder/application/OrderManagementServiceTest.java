@@ -12,6 +12,7 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
+import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.time.Clock;
 import java.time.Instant;
@@ -226,8 +227,89 @@ class OrderManagementServiceTest {
         assertEquals(1, published.stream().filter(event -> event.eventType().equals("JourneyOrderCancelled")).count());
     }
 
+
+    @Test
+    void unknownAccountProjectionAllowsOrderCreation() {
+        JourneyOrderResult result = service.createOrder(
+            new JourneyOrderRequest("acct-unknown", "offer-unknown", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-account-unknown", "corr-1");
+
+        assertEquals("acct-unknown", result.accountId());
+        assertEquals("CREATED", result.status());
+    }
+
+    @Test
+    void frozenAndClosedAccountProjectionRejectsNewOrderCreationAndUnfreezeRestoresIt() {
+        service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca01", "AccountCreated", "acct-gated"));
+        service.createOrder(
+            new JourneyOrderRequest("acct-gated", "offer-before-freeze", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-account-before-freeze", "corr-1");
+
+        service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca02", "AccountFrozen", "acct-gated"));
+        var frozen = assertThrows(com.trainticket.journeyorder.domain.DomainRuleViolation.class, () ->
+            service.createOrder(
+                new JourneyOrderRequest("acct-gated", "offer-frozen", 1, List.of("tvl-1"), List.of("seg-1")),
+                "idem-account-frozen", "corr-1"));
+        assertEquals(com.trainticket.platformkit.http.ApiErrorCode.DOMAIN_RULE_VIOLATION, frozen.code());
+
+        service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca03", "AccountUnfrozen", "acct-gated"));
+        JourneyOrderResult afterUnfreeze = service.createOrder(
+            new JourneyOrderRequest("acct-gated", "offer-after-unfreeze", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-account-after-unfreeze", "corr-1");
+        assertEquals("CREATED", afterUnfreeze.status());
+
+        service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca04", "AccountClosed", "acct-gated"));
+        assertThrows(com.trainticket.journeyorder.domain.DomainRuleViolation.class, () ->
+            service.createOrder(
+                new JourneyOrderRequest("acct-gated", "offer-closed", 1, List.of("tvl-1"), List.of("seg-1")),
+                "idem-account-closed", "corr-1"));
+    }
+
+    @Test
+    void nonGatingAccountEventsAreIgnoredSuccessfully() {
+        List<String> eventIds = List.of(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca11",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca12",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca13"
+        );
+        List<String> eventTypes = List.of("SessionOpened", "SessionRevoked", "PreferenceUpdated");
+
+        for (int i = 0; i < eventTypes.size(); i++) {
+            EventSubscriber.HandlerResult result = service.handle(accountEvent(
+                eventIds.get(i),
+                eventTypes.get(i),
+                "acct-gated"));
+
+            assertEquals(new EventSubscriber.Success(), result);
+        }
+    }
+
+    @Test
+    void unknownEventTypeRemainsFatal() {
+        EventSubscriber.HandlerResult result = service.handle(accountEvent(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cb01",
+            "UnknownAccountEvent",
+            "acct-gated"));
+
+        assertTrue(result instanceof EventSubscriber.FatalError);
+    }
+
     private static void assertNotNull(Object obj) {
         if (obj == null) throw new AssertionError("Expected non-null");
+    }
+
+
+    private static EventEnvelope accountEvent(String eventId, String eventType, String accountId) {
+        return new EventEnvelope(
+            eventId,
+            eventType,
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0ca99",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0ca98",
+            "account",
+            1,
+            Map.of("accountId", accountId, "occurredAt", "2026-07-05T10:01:00Z")
+        );
     }
 
     private List<EventEnvelope> published() {

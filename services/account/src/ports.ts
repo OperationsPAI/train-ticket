@@ -18,15 +18,24 @@ export function toEventEnvelope(event: AccountDomainEvent, correlationId: string
 function eventPayload(event: AccountDomainEvent): Record<string, unknown> {
   switch (event.type) {
     case "AccountCreated":
-      return { accountId: event.accountId };
+      return withEventMetadata(event, { accountId: event.accountId });
     case "AccountFrozen":
-      return { accountId: event.accountId, reason: event.reason, operator: event.operator, caseRef: event.caseRef };
+      return withEventMetadata(event, {
+        accountId: event.accountId,
+        reason: event.reason,
+        operator: event.operator,
+        caseRef: event.caseRef,
+      });
     case "AccountUnfrozen":
-      return { accountId: event.accountId, reason: event.reason };
+      return withEventMetadata(event, { accountId: event.accountId, reason: event.reason });
     case "AccountClosureStarted":
-      return { accountId: event.accountId, closureRequestId: event.closureRequestId };
+      return withEventMetadata(event, { accountId: event.accountId, closureRequestId: event.closureRequestId });
     case "AccountClosed":
-      return { accountId: event.accountId, closureRequestId: event.closureRequestId, final: event.final };
+      return withEventMetadata(event, {
+        accountId: event.accountId,
+        closureRequestId: event.closureRequestId,
+        final: event.final,
+      });
     case "SessionOpened":
       return { sessionId: event.sessionId, accountId: event.accountId };
     case "SessionRevoked":
@@ -34,4 +43,15 @@ function eventPayload(event: AccountDomainEvent): Record<string, unknown> {
     case "PreferenceUpdated":
       return { accountId: event.accountId, preferenceKey: event.preferenceKey, oldValue: event.oldValue, newValue: event.newValue };
   }
+}
+
+function withEventMetadata(
+  event: Extract<AccountDomainEvent, { accountId: string }>,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...payload,
+    occurredAt: event.occurredAt.toISOString(),
+    correlationId: event.correlationId,
+  };
 }
