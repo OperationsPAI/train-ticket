@@ -51,9 +51,13 @@ echo "  second=$SECOND_ORDER"
 BLOCKED_ORDER=$(create_order "create high-frequency order")
 echo "  blockedCandidate=$BLOCKED_ORDER"
 if wait_event RiskBlockApplied "$BLOCKED_ORDER"; then ok "RiskBlockApplied for high-frequency order"; else bad "missing RiskBlockApplied for high-frequency order"; fi
-sleep 5
-req GET journey-order "/api/v1/journey-orders/$BLOCKED_ORDER"
-BLOCKED_STATUS=$(jget "['status']")
+BLOCKED_STATUS=""
+for attempt in 1 2 3 4; do
+  sleep 5
+  req GET journey-order "/api/v1/journey-orders/$BLOCKED_ORDER"
+  BLOCKED_STATUS=$(jget "['status']")
+  [ "$BLOCKED_STATUS" = "CANCELLED" ] && break
+done
 echo "  blocked order status=$BLOCKED_STATUS [$LAST_CODE]"
 [ "$BLOCKED_STATUS" = "CANCELLED" ] && ok "RiskBlockApplied cancelled order" || bad "blocked order not CANCELLED ($BLOCKED_STATUS)"
 
