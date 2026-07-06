@@ -188,8 +188,10 @@ class MessagingTest {
                 "resultSummary", Map.of("description", "applied"))));
 
         assertEquals(HandlerResult.SUCCESS, applied);
-        EventEnvelope reduction = publisher.published.stream().filter(e -> "RevenueRecognized".equals(e.eventType()) && "refund".equals(((Map<?, ?>) e.payload()).get("componentCode"))).findFirst().orElseThrow();
-        assertEquals(-8750L, ((Map<?, ?>) ((Map<?, ?>) reduction.payload()).get("amount")).get("minorUnits"));
+        EventEnvelope reduction = publisher.published.stream().filter(e -> "RevenueRecognitionReversed".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals("fare", ((Map<?, ?>) reduction.payload()).get("componentCode"));
+        assertEquals(8750L, ((Map<?, ?>) ((Map<?, ?>) reduction.payload()).get("amount")).get("minorUnits"));
+        assertEquals("post-sales refund applied", ((Map<?, ?>) reduction.payload()).get("reversalReason"));
         assertTrue(publisher.published.stream().anyMatch(e -> "ReconciliationCompleted".equals(e.eventType())));
     }
 

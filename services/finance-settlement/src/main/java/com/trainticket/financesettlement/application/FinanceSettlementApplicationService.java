@@ -85,7 +85,7 @@ public class FinanceSettlementApplicationService {
                 throw new DomainRuleViolation("invoice requires recognized revenue for order");
             }
             Money total = recognitions.stream()
-                .map(RevenueRecognition::amount)
+                .map(RevenueRecognition::netAmount)
                 .reduce(Money::plus)
                 .orElseThrow();
             Invoice invoice = Invoice.generate(
@@ -103,8 +103,12 @@ public class FinanceSettlementApplicationService {
     }
 
     public void saveAndPublish(RevenueRecognition recognition) {
+        saveAndPublish(recognition, 0);
+    }
+
+    public void saveAndPublish(RevenueRecognition recognition, int firstUnpublishedEventIndex) {
         revenueRecognitions.save(recognition);
-        publish(recognition.domainEvents());
+        publish(recognition.domainEvents().subList(firstUnpublishedEventIndex, recognition.domainEvents().size()));
     }
 
     public void saveAndPublish(ReconciliationCase reconciliationCase) {

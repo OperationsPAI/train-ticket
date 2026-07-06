@@ -90,7 +90,7 @@ return the original response; reusing a key with a different body returns
 
 | Command | Trigger | Description |
 |---|---|---|
-| `RecognizeRevenue` | `PaymentCaptured`, post-sales refund facts | Recognize revenue or refund reductions from event facts. |
+| `RecognizeRevenue` | `PaymentCaptured`, post-sales refund facts | Recognize revenue from capture facts and reverse previously recognized revenue from post-sales refund facts. |
 | `OpenReconciliationCase` | Mismatch detection | Open a reconciliation case. |
 | `ResolveReconciliationCase` | Manual or auto | Resolve a reconciliation case. |
 | `RebuildSettlementView` | Manual or scheduled | Rebuild a settlement view from event log. |

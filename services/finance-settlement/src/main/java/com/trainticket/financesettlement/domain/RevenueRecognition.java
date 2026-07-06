@@ -18,6 +18,7 @@ public final class RevenueRecognition {
     private final Instant recognizedAt;
     private final List<FinanceSettlementEvent> domainEvents;
     private boolean reversed;
+    private Money reversedAmount;
     private String reversalReason;
 
     private RevenueRecognition(
@@ -35,6 +36,7 @@ public final class RevenueRecognition {
         this.recognizedAt = Objects.requireNonNull(recognizedAt, "recognizedAt is required");
         this.domainEvents = new ArrayList<>();
         this.reversed = false;
+        this.reversedAmount = Money.zero(amount.currency());
         this.reversalReason = null;
     }
 
@@ -44,7 +46,7 @@ public final class RevenueRecognition {
         String sourceEventId, Instant recognizedAt,
         Instant now, String sourceCommandId, String correlationId
     ) {
-        if (amount.isNegative() && !("discount".equals(componentCode) || "refund".equals(componentCode)))
+        if (amount.isNegative() && !("discount".equals(componentCode)))
             throw new DomainRuleViolation("revenue recognition amount must not be negative for component: " + componentCode);
         if (amount.isZero())
             throw new DomainRuleViolation("revenue recognition amount must not be zero");
@@ -63,17 +65,28 @@ public final class RevenueRecognition {
         return recognition;
     }
 
-    public void reverse(String reason, Instant now, String sourceCommandId, String causationId, String correlationId) {
+    public void reverse(String reason, String sourceEventId, Money reversalAmount, Instant now, String sourceCommandId, String causationId, String correlationId) {
         if (reversed) return;
+        if (reversalAmount.isZero() || reversalAmount.isNegative()) {
+            throw new DomainRuleViolation("reversal amount must be positive");
+        }
+        if (reversedAmount.plus(reversalAmount).compareTo(amount) > 0) {
+            throw new DomainRuleViolation("reversal amount must not exceed recognized amount");
+        }
         this.reversed = true;
+        this.reversedAmount = reversedAmount.plus(reversalAmount);
         this.reversalReason = requireText(reason, "reason");
-        domainEvents.add(new RevenueRecognized(
+        domainEvents.add(new RevenueRecognitionReversed(
             revenueRecognitionId, orderItemId, orderId, componentCode,
-            amount.negate(), recognitionPolicyVersion + "-reversed", sourceEventId,
+            reversalAmount, reason, requireText(sourceEventId, "sourceEventId"),
             EventMetadata.create(now, sourceCommandId, causationId, correlationId,
                 Map.of("revenueRecognitionId", revenueRecognitionId, "reversalReason", reason,
-                       "originalSourceEventId", sourceEventId))
+                       "originalSourceEventId", this.sourceEventId))
         ));
+    }
+
+    public void reverse(String reason, Instant now, String sourceCommandId, String causationId, String correlationId) {
+        reverse(reason, sourceEventId, amount, now, sourceCommandId, causationId, correlationId);
     }
 
     public String revenueRecognitionId() { return revenueRecognitionId; }
@@ -85,6 +98,8 @@ public final class RevenueRecognition {
     public String sourceEventId() { return sourceEventId; }
     public Instant recognizedAt() { return recognizedAt; }
     public boolean reversed() { return reversed; }
+    public Money reversedAmount() { return reversedAmount; }
+    public Money netAmount() { return amount.minus(reversedAmount); }
     public String reversalReason() { return reversalReason; }
     public List<FinanceSettlementEvent> domainEvents() { return Collections.unmodifiableList(domainEvents); }
 

@@ -204,19 +204,22 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Money refund = Optional.ofNullable(approvedRefundsByCaseId.get(caseId))
             .or(() -> Optional.ofNullable(approvedRefundsByCaseId.get(orderId)))
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
-        RevenueRecognition reduction = RevenueRecognition.recognize(
-            orderId,
-            optionalText(payload, "orderItemId").orElse(orderId),
-            "refund",
-            refund.negate(),
-            "post-sales-refund-v1",
+        RevenueRecognition originalRecognition = serviceRevenue(orderId).stream()
+            .filter(recognition -> !recognition.reversed())
+            .filter(recognition -> sameMoney(recognition.amount(), refund) || recognition.amount().compareTo(refund) >= 0)
+            .findFirst()
+            .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before matching recognized revenue"));
+        int firstUnpublishedEventIndex = originalRecognition.domainEvents().size();
+        originalRecognition.reverse(
+            "post-sales refund applied",
             envelope.eventId(),
-            envelope.occurredAt(),
+            refund,
             clock.instant(),
+            causationIdOrEventId(envelope),
             causationIdOrEventId(envelope),
             envelope.correlationId()
         );
-        service.saveAndPublish(reduction);
+        service.saveAndPublish(originalRecognition, firstUnpublishedEventIndex);
         PaymentCaptureFact capture = capturesByOrderId.get(orderId);
         Money expected = capture == null ? refund.negate() : capture.amount().minus(refund);
         service.publishReconciliationCompleted(
@@ -238,7 +241,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private static Money sumOrZero(List<RevenueRecognition> recognitions, Currency currency) {
-        return recognitions.stream().map(RevenueRecognition::amount).reduce(Money.zero(currency), Money::plus);
+        return recognitions.stream().map(RevenueRecognition::netAmount).reduce(Money.zero(currency), Money::plus);
     }
 
     private static boolean sameMoney(Money left, Money right) {

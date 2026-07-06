@@ -76,8 +76,8 @@ FIN_OK=$(stream_mentions events:finance-settlement RevenueRecognized "$ORDER")
 [ "$FIN_OK" = "yes" ] && ok "RevenueRecognized for our order" || bad "no RevenueRecognized mentioning order"
 RECON_OK=$(stream_mentions events:finance-settlement ReconciliationCompleted "$ORDER")
 [ "$RECON_OK" = "yes" ] && ok "ReconciliationCompleted for our order" || bad "no ReconciliationCompleted mentioning order"
-REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognized '"minorUnits": -8750')
-[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reduction published" || bad "no -87.50 revenue reduction"
+REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognitionReversed '"minorUnits": 8750')
+[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reversal published" || bad "no 87.50 revenue reversal"
 req POST finance-settlement /api/v1/invoices "{\"orderId\":\"$ORDER\"}"
 INV_CODE_1=$LAST_CODE; INV_ID=$(jget "['invoiceId']")
 req POST finance-settlement /api/v1/invoices "{\"orderId\":\"$ORDER\"}"
