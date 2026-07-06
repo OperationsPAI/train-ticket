@@ -63,12 +63,12 @@ context.
 | 14 | `notification` | `events:notification` | NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled |
 | 15 | `traveler-profile` | `events:traveler-profile` | TravelerSnapshotUpdated, TravelerDocumentVerified, TravelerEligibilityChanged |
 | 16 | `risk-compliance` | `events:risk-compliance` | RiskAssessmentResult, RiskBlockApplied, RiskBlockLifted |
-| 17 | `account` | `events:account` | AccountCreated, AccountSuspended, AccountClosed |
-| 18 | `admin-audit` | `events:admin-audit` | ManualActionCompleted, ApprovalGranted, ApprovalDenied |
+| 17 | `account` | `events:account` | AccountCreated, AccountFrozen, AccountUnfrozen, AccountClosureStarted, AccountClosed, SessionOpened, SessionRevoked, PreferenceUpdated |
+| 18 | `admin-audit` | `events:admin-audit` | OperatorRegistered, ManualActionRequested, ManualActionApproved, ManualActionRejected, ManualActionExecuted, AuditEntryRecorded |
 | 19 | `customer-service` | `events:customer-service` | SupportCaseOpened, SupportCaseResolved |
 | 20 | `finance-settlement` | `events:finance-settlement` | RevenueRecognized, RevenueRecognitionReversed, ReconciliationCompleted, InvoiceGenerated |
 | 21 | `reporting` | `events:reporting` | MetricDefined, MetricVersionPublished, ReadModelRebuilt |
-| 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierUpdated, ContractAmended, ProductCapabilityChanged |
+| 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped |
 
 ### Dead-Letter Streams
 
@@ -237,6 +237,9 @@ plus notification/finance/reporting fan-in.
 | 42 | `events:customer-service` | `reporting` | Support case metrics for reporting |
 | 43 | `events:reporting` | *(none — reporting events are internal)* | Internal refresh triggers |
 | 44 | `events:supplier-catalog` | `provider-integration` | Supplier changes for provider adapter configuration |
+| 45 | `events:customer-service` | `admin-audit` | RULING (2026-07-06): ManualActionRequested intake — support-side requests open pending manual actions in Admin & Audit |
+| 46 | `events:admin-audit` | `customer-service` | RULING (2026-07-06): ManualActionExecuted/ManualActionRejected outcomes recorded on the support case timeline (ManualActionResultRecorded) |
+| 47 | `events:account` | `journey-order` | RULING (2026-07-06): AccountFrozen/AccountUnfrozen/AccountClosed gate order creation — frozen or closed accounts cannot place orders |
 
 ### Cross-Cutting Consumers
 
