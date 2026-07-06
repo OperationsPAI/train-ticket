@@ -67,9 +67,13 @@ legacy_step() {
   local op=$1 path=$2 body=$3 key
   key=$(uuid7)
   legacy_req "$path" "$body" "$key"
+  # wait_* below overwrite $RESP with admin-audit queries; stash the
+  # legacy response so callers can extract data.* from it afterwards.
+  LEGACY_RESP="$RESP"
   assert_legacy_response 1 "$op"
   wait_legacy_event "$op" "$key"
   wait_audit "$key"
+  RESP="$LEGACY_RESP"
   LEGACY_KEY="$key"
 }
 
