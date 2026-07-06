@@ -83,6 +83,7 @@ class FareQuoteRequest(BaseModel):
     travelerRefs: list[str] = Field(..., min_length=1)
     channel: str = Field(..., min_length=1)
     segmentRefs: list[str] = Field(..., min_length=1)
+    productCode: str = Field(default="rail-standard", min_length=1)
     fareRuleRefs: list[str] | None = None
 
 

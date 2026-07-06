@@ -31,10 +31,37 @@ retry_event() {
   [ "$ok_seen" = "yes" ] && ok "$event_type published" || bad "$event_type not observed for $rule_set_id"
 }
 
+quote_total_with_retry() {
+  local product_code=$1 traveler_ref=$2 segment_ref=$3 total_var=$4 rule_set_var=$5
+  local body total rule_set
+  if [ -n "$product_code" ]; then
+    body="{\"travelerRefs\":[\"$traveler_ref\"],\"channel\":\"WEB\",\"segmentRefs\":[\"$segment_ref\"],\"productCode\":\"$product_code\"}"
+  else
+    body="{\"travelerRefs\":[\"$traveler_ref\"],\"channel\":\"WEB\",\"segmentRefs\":[\"$segment_ref\"]}"
+  fi
+  total=""; rule_set=""
+  for attempt in 1 2 3 4 5 6; do
+    req POST fare-pricing /api/v1/fare-quotes "$body"
+    if [ "$LAST_CODE" = "201" ]; then
+      total=$(jget "['breakdown']['total']['minorUnits']")
+      rule_set=$(jget "['ruleSnapshot']['ruleSetId']")
+      [ -n "$total" ] && break
+    fi
+    sleep 2
+  done
+  eval "$total_var=\$total"
+  eval "$rule_set_var=\$rule_set"
+}
+
 ACCT_RULE="acc-$(uuid7)"
 RULE_VERSION="e2e-$(date -u +%Y%m%d%H%M%S)"
 RULE_BODY=$(cat <<JSON
 {"supplierId":"supplier-e2e","contractId":"contract-e2e","productCode":"rail-standard","mode":"rail","channel":"WEB","version":"$RULE_VERSION","effectiveWindow":{"startsAt":"2026-07-01T00:00:00Z","endsAt":"2026-12-31T00:00:00Z"},"rules":[{"ruleId":"base-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":12000},"explanation":{"code":"fare.base.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"refund-e2e","kind":"refund_fee","amount":{"currency":"CNY","minorUnits":3000},"explanation":{"code":"fare.refund.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"change-e2e","kind":"change_fee","amount":{"currency":"CNY","minorUnits":1500},"explanation":{"code":"fare.change.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true}]}
+JSON
+)
+BUSINESS_VERSION="$RULE_VERSION-business"
+BUSINESS_BODY=$(cat <<JSON
+{"supplierId":"supplier-e2e","contractId":"contract-e2e-business","productCode":"rail-business","mode":"rail","channel":"WEB","version":"$BUSINESS_VERSION","effectiveWindow":{"startsAt":"2026-07-01T00:00:00Z","endsAt":"2026-12-31T00:00:00Z"},"rules":[{"ruleId":"base-business-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":18000},"explanation":{"code":"fare.base.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"refund-business-e2e","kind":"refund_fee","amount":{"currency":"CNY","minorUnits":4000},"explanation":{"code":"fare.refund.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"change-business-e2e","kind":"change_fee","amount":{"currency":"CNY","minorUnits":2000},"explanation":{"code":"fare.change.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true}]}
 JSON
 )
 
@@ -46,6 +73,13 @@ echo "  RULE_SET=$RULE_SET"
 req POST fare-pricing "/api/v1/fare-rule-sets/$RULE_SET/publish" '{}'
 check_code 200 "publish fare rule set"
 retry_event FareRuleSetPublished "$RULE_SET"
+req POST fare-pricing /api/v1/fare-rule-sets "$BUSINESS_BODY"
+check_code 201 "create business fare rule set"
+BUSINESS_RULE_SET=$(jget "['ruleSetId']")
+echo "  BUSINESS_RULE_SET=$BUSINESS_RULE_SET"
+req POST fare-pricing "/api/v1/fare-rule-sets/$BUSINESS_RULE_SET/publish" '{}'
+check_code 200 "publish business fare rule set"
+retry_event FareRuleSetPublished "$BUSINESS_RULE_SET"
 
 echo "== 2. register traveler and quote new fare"
 req POST traveler-profile /api/v1/travelers "{\"accountId\":\"$ACCT_RULE\",\"travelerType\":\"ADULT\",\"givenName\":\"Rule\",\"familyName\":\"Tester\"}"
@@ -56,12 +90,15 @@ req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"de
 check_code 200 "search itineraries"
 ITIN_RULE=$(jget "['itineraries'][0]['itineraryRef']")
 SEG_RULE=$(jget "['itineraries'][0]['legs'][0]['serviceSegmentRef']")
-req POST fare-pricing /api/v1/fare-quotes "{\"travelerRefs\":[\"$TVL_RULE\"],\"channel\":\"WEB\",\"segmentRefs\":[\"$SEG_RULE\"]}"
-check_code 201 "create fare quote with managed rules"
-QUOTE_TOTAL=$(jget "['breakdown']['total']['minorUnits']")
-QUOTE_RULE_SET=$(jget "['ruleSnapshot']['ruleSetId']")
+quote_total_with_retry "" "$TVL_RULE" "$SEG_RULE" QUOTE_TOTAL QUOTE_RULE_SET
 [ "$QUOTE_TOTAL" = "12000" ] && ok "fare quote total = 120.00 CNY" || bad "fare quote total wrong ($QUOTE_TOTAL)"
 [ "$QUOTE_RULE_SET" = "$RULE_SET" ] && ok "fare quote uses managed rule set" || bad "fare quote used $QUOTE_RULE_SET"
+quote_total_with_retry "rail-business" "$TVL_RULE" "$SEG_RULE" BUSINESS_QUOTE_TOTAL BUSINESS_QUOTE_RULE_SET
+[ "$BUSINESS_QUOTE_TOTAL" = "18000" ] && ok "business fare quote total = 180.00 CNY" || bad "business fare quote total wrong ($BUSINESS_QUOTE_TOTAL)"
+[ "$BUSINESS_QUOTE_RULE_SET" = "$BUSINESS_RULE_SET" ] && ok "business fare quote uses business rule set" || bad "business fare quote used $BUSINESS_QUOTE_RULE_SET"
+quote_total_with_retry "" "$TVL_RULE" "$SEG_RULE" STANDARD_RECHECK_TOTAL STANDARD_RECHECK_RULE_SET
+[ "$STANDARD_RECHECK_TOTAL" = "12000" ] && ok "standard fare unaffected by business publish" || bad "standard fare changed ($STANDARD_RECHECK_TOTAL)"
+[ "$STANDARD_RECHECK_RULE_SET" = "$RULE_SET" ] && ok "standard fare still uses standard rule set" || bad "standard fare used $STANDARD_RECHECK_RULE_SET"
 sleep 3
 
 echo "== 3. offer/order/payment use new fare amount"
