@@ -33,7 +33,7 @@ func (s *RedisSubscriber) Subscribe(streams []string, group string, consumerName
 	ctx := context.Background()
 	for _, stream := range streams {
 		err := s.client.XGroupCreateMkStream(ctx, stream, group, "$").Err()
-		if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+		if err != nil && !strings.Contains(strings.ToUpper(err.Error()), "BUSYGROUP") {
 			return fmt.Errorf("subscribe failed: %w", err)
 		}
 	}
@@ -67,14 +67,30 @@ func (s *RedisSubscriber) pollLoop(streams []string, group, consumerName string,
 			if errors.Is(err, redis.Nil) {
 				continue
 			}
+			// A non-persistent Redis loses consumer groups on restart:
+			// NOGROUP means recreate the groups and carry on. Every error
+			// backs off so a dead connection never hot-spins this loop.
+			if strings.Contains(strings.ToUpper(err.Error()), "NOGROUP") {
+				s.ensureGroups(streams, group)
+			}
 			log.Printf("place-network subscriber read error: %v", err)
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(time.Second)
 			continue
 		}
 		for _, stream := range results {
 			for _, msg := range stream.Messages {
 				s.processMessage(stream.Stream, group, msg, handler)
 			}
+		}
+	}
+}
+
+func (s *RedisSubscriber) ensureGroups(streams []string, group string) {
+	ctx := context.Background()
+	for _, stream := range streams {
+		err := s.client.XGroupCreateMkStream(ctx, stream, group, "$").Err()
+		if err != nil && !strings.Contains(strings.ToUpper(err.Error()), "BUSYGROUP") {
+			log.Printf("place-network subscriber recreate group error: %v", err)
 		}
 	}
 }

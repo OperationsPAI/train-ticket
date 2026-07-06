@@ -13,7 +13,7 @@ Status: REQ-014 domain foundation
 - PostSalesCase lifecycle for cancellation, refund, change, rebook, and compensation case intake
 - Immutable PostSalesDecision snapshots referencing Fare & Pricing evaluation and rule snapshots
 - PostSalesExecutionPlan step ordering for entitlement, booking/segment, capacity, payment, and result-application requests
-- PostSales domain events: PostSalesRequested, PostSalesEvaluated, PostSalesApproved, PostSalesApplied
+- PostSales domain events: PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesApplied
 
 ## Boundary
 

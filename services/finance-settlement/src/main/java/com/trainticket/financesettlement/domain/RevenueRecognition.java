@@ -6,7 +6,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 
 public final class RevenueRecognition {
     private final String revenueRecognitionId;
@@ -51,7 +50,7 @@ public final class RevenueRecognition {
             throw new DomainRuleViolation("revenue recognition amount must not be zero");
 
         RevenueRecognition recognition = new RevenueRecognition(
-            UUID.randomUUID().toString(), orderId, orderItemId, componentCode,
+            com.trainticket.platformkit.idempotency.UuidV7.generate(), orderId, orderItemId, componentCode,
             amount, recognitionPolicyVersion, sourceEventId, recognizedAt
         );
 

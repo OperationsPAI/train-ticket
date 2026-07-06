@@ -48,7 +48,7 @@ class PostSalesCaseDomainTest {
         assertEquals(PostSalesCaseStatus.APPLIED, postSalesCase.status());
         assertInstanceOf(PostSalesCaseOpened.class, postSalesCase.domainEvents().get(0));
         assertInstanceOf(PostSalesRequested.class, postSalesCase.domainEvents().get(1));
-        assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesEvaluated.class::isInstance));
+        assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesDecisionQuoted.class::isInstance));
         assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesApproved.class::isInstance));
         assertTrue(postSalesCase.domainEvents().stream().anyMatch(PostSalesApplied.class::isInstance));
     }

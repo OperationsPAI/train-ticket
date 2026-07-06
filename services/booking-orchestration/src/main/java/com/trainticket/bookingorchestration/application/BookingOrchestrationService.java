@@ -50,7 +50,7 @@ public class BookingOrchestrationService {
     }
 
     public StartSagaResult startSaga(StartSagaCommand command, String idempotencyKey, String correlationId) {
-        String sagaId = "saga-" + UUID.randomUUID();
+        String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, command.journeyOrderId(), command.segmentRefs());
         sagas.put(sagaId, saga);
         indexSagaCorrelation(correlationId, sagaId);
@@ -166,7 +166,7 @@ public class BookingOrchestrationService {
         if (segmentRefs.isEmpty()) {
             throw new IllegalArgumentException("JourneyOrderCreated payload requires segmentRefs or segments");
         }
-        String sagaId = "saga-" + UUID.randomUUID();
+        String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, journeyOrderId, segmentRefs);
         sagas.put(sagaId, saga);
         indexSagaCorrelation(correlationId, sagaId);

@@ -103,10 +103,26 @@ sleep 6
 echo "== 8. saga completion + final states"
 echo "  entitlement stream:"; last_events events:entitlement-ticketing 2
 echo "  booking stream:"; last_events events:booking-orchestration 3
-req GET booking-orchestration "/api/v1/internal/booking-sagas/$SAGA"
+SAGA_STATUS=""
+for attempt in 1 2 3; do
+  req GET booking-orchestration "/api/v1/internal/booking-sagas/$SAGA"
+  SAGA_STATUS=$(jget "['status']")
+  [ "$SAGA_STATUS" = "COMPLETED" ] && break
+  sleep 4
+done
 echo "  saga: $(echo $RESP | head -c 220) [$LAST_CODE]"
-req GET journey-order "/api/v1/journey-orders/$ORDER"
-echo "  order status: $(jget "['status']") [$LAST_CODE]"
+[ "$SAGA_STATUS" = "COMPLETED" ] && ok "saga COMPLETED" || bad "saga not completed ($SAGA_STATUS)"
+STEP_STATES=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(sorted(set(s['status'] for s in d.get('steps',[]))) or ['NONE']))" 2>/dev/null)
+[ "$STEP_STATES" = "SUCCEEDED" ] && ok "all saga steps SUCCEEDED" || bad "saga steps not all SUCCEEDED ($STEP_STATES)"
+ORDER_STATUS=""
+for attempt in 1 2 3; do
+  req GET journey-order "/api/v1/journey-orders/$ORDER"
+  ORDER_STATUS=$(jget "['status']")
+  [ "$ORDER_STATUS" = "CONFIRMED" ] && break
+  sleep 4
+done
+echo "  order status: $ORDER_STATUS [$LAST_CODE]"
+[ "$ORDER_STATUS" = "CONFIRMED" ] && ok "order CONFIRMED" || bad "order not confirmed ($ORDER_STATUS)"
 
 cat >> ./.refs.env << EOF
 ACCT=$ACCT

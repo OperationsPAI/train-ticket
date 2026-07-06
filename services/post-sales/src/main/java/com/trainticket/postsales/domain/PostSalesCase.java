@@ -125,8 +125,6 @@ public final class PostSalesCase {
         this.decision = decision;
         domainEvents.add(new PostSalesDecisionQuoted(caseId, decision.kind(), decision.eligible(), decision.ruleSnapshot().farePricingEvaluationRef(),
             metadata(occurredAt, sourceCommandId, causationId, correlationId, PostSalesCaseStatus.ELIGIBILITY_CHECKING)));
-        domainEvents.add(new PostSalesEvaluated(caseId, decision.kind(), decision.eligible(), decision.ruleSnapshot().farePricingEvaluationRef(),
-            metadata(occurredAt, sourceCommandId, causationId, correlationId, PostSalesCaseStatus.ELIGIBILITY_CHECKING)));
         if (!decision.eligible()) {
             reject(decision.reasonCode(), occurredAt, sourceCommandId, causationId, correlationId);
             return;

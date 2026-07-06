@@ -19,7 +19,10 @@ echo "  CASE=$CASE"
 echo "== 2. evaluate (fare adjustment quote path)"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
 check_code 200 "evaluate CHANGE"
+AMOUNT_DUE=$(jget "['amountDue']['minorUnits']")
 echo "  eligible=$(jget "['eligible']") amountDue=$(jget "['amountDue']")"
+# same-fare change: fare diff 0 + change fee 15.00 CNY (default rule set)
+[ "$AMOUNT_DUE" = "1500" ] && ok "amountDue = 15.00 CNY change fee (real adjustment quote)" || bad "amountDue wrong ($AMOUNT_DUE, expected 1500)"
 
 echo "== 3. approve → old ticket teardown"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
