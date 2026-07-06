@@ -147,6 +147,87 @@ describe("customer-service messaging ports", () => {
     assert.equal(timelineEvents[0].causationId, "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c221");
   });
 
+  it("records admin-audit manual action outcomes once and preserves event lineage", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const application = new CustomerServiceApplication(publisher);
+    const opened = await application.openSupportCase({
+      requesterRef: "tvl-doc",
+      channel: "APP",
+      priority: "NORMAL",
+      description: "Need manual help",
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    const action = await application.requestManualAction(opened.caseId, {
+      targetDomain: "post-sales",
+      commandType: "ManualRefundReviewRequested",
+      operatorRef: "op-doc",
+      reason: "needs manual review",
+      description: "Review refund",
+      requiresApproval: true,
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c333",
+      eventType: "ManualActionExecuted",
+      occurredAt: "2026-07-05T10:35:00.000Z",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c333",
+      producer: "admin-audit",
+      schemaVersion: 1,
+      payload: { manualActionId: action.manualActionId, targetDomain: "post-sales", targetCommand: "ManualRefundReviewRequested", businessRef: opened.caseId, resultSummary: "Manual action execution recorded" },
+    };
+
+    await application.handleIntegrationEvent(upstream);
+    await application.handleIntegrationEvent(upstream);
+
+    const resultEvents = publisher.findByEventType("ManualActionResultRecorded");
+    assert.equal(resultEvents.length, 1);
+    assert.equal(resultEvents[0].correlationId, upstream.correlationId);
+    assert.equal(resultEvents[0].causationId, upstream.eventId);
+    assert.deepEqual(resultEvents[0].payload, {
+      manualActionId: action.manualActionId,
+      caseId: opened.caseId,
+      outcome: "Succeeded",
+      resultSummary: "Manual action execution recorded",
+    });
+    const details = application.getSupportCase(opened.caseId);
+    assert.equal(details.timeline.at(-1)?.eventType, "ManualActionResultRecorded");
+    assert.equal(application.consumedIntegrationEventCount(), 1);
+  });
+
+  it("records failed admin-audit execution summaries as failed outcomes", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const application = new CustomerServiceApplication(publisher);
+    const opened = await application.openSupportCase({
+      requesterRef: "tvl-doc",
+      channel: "APP",
+      priority: "NORMAL",
+      description: "Need manual help",
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c224");
+    const action = await application.requestManualAction(opened.caseId, {
+      targetDomain: "post-sales",
+      commandType: "ManualRefundReviewRequested",
+      operatorRef: "op-doc",
+      reason: "needs manual review",
+      description: "Review refund",
+      requiresApproval: true,
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c224");
+
+    await application.handleIntegrationEvent({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c334",
+      eventType: "ManualActionExecuted",
+      occurredAt: "2026-07-05T10:35:00.000Z",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c224",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c334",
+      producer: "admin-audit",
+      schemaVersion: 1,
+      payload: { manualActionId: action.manualActionId, targetDomain: "post-sales", targetCommand: "ManualRefundReviewRequested", businessRef: opened.caseId, resultSummary: "FAILED: target domain rejected command" },
+    });
+
+    const resultEvents = publisher.findByEventType("ManualActionResultRecorded");
+    assert.equal(resultEvents.at(-1)?.payload.outcome, "Failed");
+    assert.equal(resultEvents.at(-1)?.payload.resultSummary, "FAILED: target domain rejected command");
+  });
+
   it("Redis subscriber reports background loop failures", async () => {
     class FailingRedis {
       disconnect(): void {}

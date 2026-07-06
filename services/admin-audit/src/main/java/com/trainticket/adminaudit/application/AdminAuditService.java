@@ -3,6 +3,7 @@ package com.trainticket.adminaudit.application;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.adminaudit.application.ports.AdminAuditRepository;
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.adminaudit.application.ports.EventPublisher;
 import com.trainticket.adminaudit.domain.AdminAuditEvent;
 import com.trainticket.adminaudit.domain.AuditEntry;
@@ -133,6 +134,100 @@ public class AdminAuditService {
             normalizeCorrelationId(correlationId),
             "Manual action approved: " + action.manualActionId()
         );
+
+        int afterApprovalPublished = action.domainEvents().size();
+        try {
+            action.execute(
+                "Manual action execution recorded",
+                Instant.now(clock),
+                newCommandId(),
+                normalizeCorrelationId(correlationId)
+            );
+        } catch (DomainRuleViolation violation) {
+            throw new PreconditionFailedException(violation.getMessage(), violation);
+        }
+        repository.saveManualAction(action);
+        publish(action.domainEvents().subList(afterApprovalPublished, action.domainEvents().size()));
+        recordAudit(
+            approver.operatorId(),
+            approver.email(),
+            "MANUAL_ACTION_EXECUTED",
+            action.businessRef(),
+            action.targetDomain(),
+            action.reasonCode(),
+            normalizeCorrelationId(correlationId),
+            action.resultSummary()
+        );
+        return action;
+    }
+
+    public ManualAction recordCustomerManualActionRequest(
+        String sourceEventId,
+        String manualActionId,
+        String caseId,
+        String targetDomain,
+        String commandType,
+        String operatorRef,
+        String reason,
+        String description,
+        boolean requiresApproval,
+        Instant requestedAt,
+        String correlationId
+    ) {
+        if (repository.findManualAction(manualActionId).isPresent()) {
+            return repository.findManualAction(manualActionId).orElseThrow();
+        }
+        ManualAction action = ManualAction.requestWithId(
+            manualActionId,
+            targetDomain,
+            commandType,
+            caseId,
+            reason,
+            description,
+            new OperatorRef(operatorRef, operatorRef),
+            requiresApproval,
+            requestedAt,
+            sourceEventId,
+            normalizeCorrelationId(correlationId)
+        );
+        repository.saveManualAction(action);
+        recordAudit(
+            operatorRef,
+            operatorRef,
+            "MANUAL_ACTION_REQUEST_INTAKEN",
+            caseId,
+            targetDomain,
+            reason,
+            normalizeCorrelationId(correlationId),
+            "Manual action intake recorded: " + manualActionId
+        );
+        return action;
+    }
+
+    public ManualAction rejectManualAction(String manualActionId, String rejectedByOperatorId, String reason, String correlationId) {
+        ManualAction action = repository.findManualAction(manualActionId)
+            .orElseThrow(() -> new NotFoundException("manual action not found"));
+        OperatorRef rejectedBy = repository.findOperator(rejectedByOperatorId)
+            .map(operator -> new OperatorRef(operator.operatorId(), operator.email()))
+            .orElseGet(() -> new OperatorRef(rejectedByOperatorId, rejectedByOperatorId));
+        int alreadyPublished = action.domainEvents().size();
+        try {
+            action.reject(rejectedBy, reason, Instant.now(clock), newCommandId(), normalizeCorrelationId(correlationId));
+        } catch (DomainRuleViolation violation) {
+            throw new PreconditionFailedException(violation.getMessage(), violation);
+        }
+        repository.saveManualAction(action);
+        publish(action.domainEvents().subList(alreadyPublished, action.domainEvents().size()));
+        recordAudit(
+            rejectedBy.operatorId(),
+            rejectedBy.displayName(),
+            "MANUAL_ACTION_REJECTED",
+            action.businessRef(),
+            action.targetDomain(),
+            action.reasonCode(),
+            normalizeCorrelationId(correlationId),
+            "Manual action rejected: " + action.manualActionId()
+        );
         return action;
     }
 
@@ -158,6 +253,7 @@ public class AdminAuditService {
         String correlationId,
         String resultSummary
     ) {
+        String sourceCommandId = newCommandId();
         AuditTrail trail = new AuditTrail();
         AuditEntry entry = trail.recordEntry(
             actorId,
@@ -173,6 +269,40 @@ public class AdminAuditService {
             newCommandId()
         );
         repository.saveAuditEntry(entry);
+        eventPublisher.publish(toContractEnvelope(new com.trainticket.adminaudit.domain.AuditEntryRecorded(
+            createAuditEnvelope(correlationId, sourceCommandId),
+            entry.entryId(),
+            entry.actorId(),
+            entry.actorDisplayName(),
+            entry.actionType(),
+            entry.resourceRef(),
+            entry.resourceDomain(),
+            entry.reasonCode(),
+            entry.correlationId(),
+            entry.resultSummary(),
+            entry.correctedEntryId()
+        )));
+    }
+
+    private EventEnvelope createAuditEnvelope(String correlationId, String causationId) {
+        return new EventEnvelope(
+            PrefixedIds.newEventId(),
+            "AuditEntryRecorded",
+            Instant.now(clock),
+            normalizeCorrelationId(correlationId),
+            ensureCausationPrefix(causationId),
+            PRODUCER,
+            1,
+            Map.of()
+        );
+    }
+
+    private static String actorId(ManualAction action) {
+        return action.approvedBy() != null ? action.approvedBy().operatorId() : action.requestedBy().operatorId();
+    }
+
+    private static String actorDisplayName(ManualAction action) {
+        return action.approvedBy() != null ? action.approvedBy().displayName() : action.requestedBy().displayName();
     }
 
     private void publish(List<AdminAuditEvent> events) {
@@ -202,7 +332,10 @@ public class AdminAuditService {
                 continue;
             }
             try {
-                payload.put(component.getName(), component.getAccessor().invoke(event));
+                Object value = component.getAccessor().invoke(event);
+                if (value != null) {
+                    payload.put(component.getName(), value);
+                }
             } catch (ReflectiveOperationException exception) {
                 throw new IllegalStateException("could not read event payload", exception);
             }
@@ -211,10 +344,10 @@ public class AdminAuditService {
     }
 
     private static String normalizeCorrelationId(String correlationId) {
-        if (correlationId == null || correlationId.isBlank()) {
-            return "corr-" + UUID.randomUUID();
+        if (PrefixedIds.isCorrelationId(correlationId)) {
+            return correlationId;
         }
-        return correlationId.startsWith("corr-") ? correlationId : "corr-" + correlationId;
+        return PrefixedIds.newCorrelationId();
     }
 
     private static String ensurePrefix(String value, String prefix) {
@@ -222,14 +355,14 @@ public class AdminAuditService {
     }
 
     private static String ensureCausationPrefix(String value) {
-        if (value.startsWith("cmd-") || value.startsWith("evt-")) {
+        if (PrefixedIds.isCausationId(value)) {
             return value;
         }
-        return "cmd-" + value;
+        return PrefixedIds.newCommandId();
     }
 
     private static String newCommandId() {
-        return "cmd-" + UUID.randomUUID();
+        return PrefixedIds.newCommandId();
     }
 
     public record Page<T>(List<T> items, int total, int limit, int offset) {}
