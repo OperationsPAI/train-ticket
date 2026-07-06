@@ -59,7 +59,7 @@ class TravelerControllerTest {
             .andExpect(jsonPath("$.snapshotVersion").value("sv-1"))
             .andExpect(jsonPath("$.travelerType").value("ADULT"))
             .andReturn();
-        org.junit.jupiter.api.Assertions.assertEquals("TravelerProfileUpdated", publisher.envelopes.getFirst().eventType());
+        org.junit.jupiter.api.Assertions.assertEquals("TravelerSnapshotUpdated", publisher.envelopes.getFirst().eventType());
         org.junit.jupiter.api.Assertions.assertEquals("traveler-profile", publisher.envelopes.getFirst().producer());
         org.junit.jupiter.api.Assertions.assertTrue(publisher.envelopes.stream().allMatch(envelope -> envelope.eventId().startsWith("evt-")));
         org.junit.jupiter.api.Assertions.assertTrue(publisher.envelopes.stream().allMatch(envelope -> envelope.causationId().startsWith("cmd-") || envelope.causationId().startsWith("evt-")));

@@ -4,7 +4,7 @@ import { beforeEach, describe, it } from "node:test";
 
 import { createApp, resetIdempotencyStore, resetOfferStore } from "./app.js";
 import { InMemoryEventPublisher } from "./adapters/messaging/in-memory.js";
-import { applyUpstreamEvent, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
+import { applyUpstreamEvent, contractInputHash, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
 import { type EventEnvelope } from "./ports/messaging.js";
 import { type QuoteOfferCommand } from "./domain.js";
 
@@ -453,6 +453,8 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
   const occurredAt = now.toISOString();
+  const multiTravelerInputHash = contractInputHash(["seg-1"], "web", ["tvl-001", "tvl-002"]);
+  const singleTravelerInputHash = contractInputHash(["seg-1"], "web", ["tvl-001"]);
 
   await applyUpstreamEvent(repository, makeEnvelope("ItineraryProposed", "trip-planning", {
     intentRef: "intent-1",
@@ -466,7 +468,7 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   }));
   await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
     quoteId: "fq-1",
-    inputHash: "intent-1",
+    inputHash: multiTravelerInputHash,
     travelerRefs: ["tvl-001", "tvl-002"],
     channel: "web",
     currency: "CNY",
@@ -478,7 +480,7 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   }));
   await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
     quoteId: "fq-2",
-    inputHash: "intent-1",
+    inputHash: singleTravelerInputHash,
     travelerRefs: ["tvl-001"],
     channel: "web",
     currency: "CNY",
