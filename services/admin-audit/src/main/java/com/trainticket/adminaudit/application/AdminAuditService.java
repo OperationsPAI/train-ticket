@@ -204,6 +204,28 @@ public class AdminAuditService {
         return action;
     }
 
+    public void recordLegacyCommandMapped(
+        String sourceEventId,
+        String legacyOperation,
+        String outcome,
+        String operatorRef,
+        String reason,
+        String sourceRef,
+        String correlationId
+    ) {
+        String resourceRef = sourceRef == null || sourceRef.isBlank() ? sourceEventId : sourceRef;
+        recordAudit(
+            operatorRef,
+            operatorRef,
+            "LEGACY_COMMAND_MAPPED",
+            resourceRef,
+            "legacy-acl",
+            reason == null || reason.isBlank() ? legacyOperation : reason,
+            normalizeCorrelationId(correlationId),
+            "Legacy command mapped: " + legacyOperation + " " + outcome
+        );
+    }
+
     public ManualAction rejectManualAction(String manualActionId, String rejectedByOperatorId, String reason, String correlationId) {
         ManualAction action = repository.findManualAction(manualActionId)
             .orElseThrow(() -> new NotFoundException("manual action not found"));

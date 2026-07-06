@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from json import JSONDecodeError
+import os
+from typing import Any, Mapping
+from urllib import parse, request, error
+
+
+class DownstreamError(RuntimeError):
+    pass
+
+
+def _env_name(service: str) -> str:
+    return service.upper().replace("-", "_") + "_URL"
+
+
+@dataclass(frozen=True)
+class ServiceUrls:
+    trip_planning: str
+    fare_pricing: str
+    offer_management: str
+    journey_order: str
+    booking_orchestration: str
+    payment: str
+    entitlement_ticketing: str
+    fulfillment: str
+    post_sales: str
+    traveler_profile: str
+
+    @classmethod
+    def from_env(cls) -> "ServiceUrls":
+        def base(service: str) -> str:
+            return os.getenv(_env_name(service), f"http://{service}:8080").rstrip("/")
+
+        return cls(
+            trip_planning=base("trip-planning"),
+            fare_pricing=base("fare-pricing"),
+            offer_management=base("offer-management"),
+            journey_order=base("journey-order"),
+            booking_orchestration=base("booking-orchestration"),
+            payment=base("payment"),
+            entitlement_ticketing=base("entitlement-ticketing"),
+            fulfillment=base("fulfillment"),
+            post_sales=base("post-sales"),
+            traveler_profile=base("traveler-profile"),
+        )
+
+
+class DownstreamClient:
+    def __init__(self, urls: ServiceUrls | None = None, timeout: float | None = None) -> None:
+        self.urls = urls or ServiceUrls.from_env()
+        self.timeout = timeout or float(os.getenv("DOWNSTREAM_TIMEOUT_SECONDS", "10"))
+
+    def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        return self._request(service, "GET", path, None, headers)
+
+    def post(self, service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        return self._request(service, "POST", path, body, headers)
+
+    def _request(
+        self,
+        service: str,
+        method: str,
+        path: str,
+        body: Mapping[str, Any] | None,
+        headers: Mapping[str, str] | None,
+    ) -> dict[str, Any]:
+        import json
+
+        base = getattr(self.urls, service.replace("-", "_"))
+        data = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
+        req = request.Request(
+            base + path,
+            data=data,
+            method=method,
+            headers={"Accept": "application/json", "Content-Type": "application/json", **dict(headers or {})},
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout) as response:  # noqa: S310 - URLs are configured service bases
+                raw = response.read().decode("utf-8")
+                if not raw:
+                    return {}
+                parsed_body = json.loads(raw)
+                if not isinstance(parsed_body, dict):
+                    raise DownstreamError(f"{service} returned a non-object response")
+                return parsed_body
+        except error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise DownstreamError(_downstream_message(service, raw, exc.reason)) from exc
+        except error.URLError as exc:
+            raise DownstreamError(f"{service} unavailable: {exc.reason}") from exc
+        except JSONDecodeError as exc:
+            raise DownstreamError(f"{service} returned invalid JSON") from exc
+
+
+def _downstream_message(service: str, raw: str, fallback: str) -> str:
+    import json
+
+    try:
+        parsed = json.loads(raw)
+    except JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        message = parsed.get("message") or parsed.get("msg") or parsed.get("error")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return f"{service} request failed: {fallback}"
+
+
+def quote(value: str) -> str:
+    return parse.quote(value, safe="")

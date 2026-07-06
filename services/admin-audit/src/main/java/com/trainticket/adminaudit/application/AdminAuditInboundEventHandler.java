@@ -16,24 +16,37 @@ public class AdminAuditInboundEventHandler implements EventSubscriber.EventHandl
 
     @Override
     public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
-        if (!"customer-service".equals(envelope.producer()) || !"ManualActionRequested".equals(envelope.eventType())) {
-            return EventSubscriber.HandlerResult.SUCCESS;
-        }
         try {
-            InboundEventPayload payload = InboundEventPayload.from(envelope);
-            service.recordCustomerManualActionRequest(
-                envelope.eventId(),
-                payload.requiredText("manualActionId"),
-                payload.requiredText("caseId"),
-                payload.requiredText("targetDomain"),
-                payload.requiredText("commandType"),
-                payload.requiredText("operatorRef"),
-                payload.requiredText("reason"),
-                payload.requiredText("description"),
-                payload.requiredBoolean("requiresApproval"),
-                envelope.occurredAt(),
-                envelope.correlationId()
-            );
+            if ("customer-service".equals(envelope.producer()) && "ManualActionRequested".equals(envelope.eventType())) {
+                InboundEventPayload payload = InboundEventPayload.from(envelope);
+                service.recordCustomerManualActionRequest(
+                    envelope.eventId(),
+                    payload.requiredText("manualActionId"),
+                    payload.requiredText("caseId"),
+                    payload.requiredText("targetDomain"),
+                    payload.requiredText("commandType"),
+                    payload.requiredText("operatorRef"),
+                    payload.requiredText("reason"),
+                    payload.requiredText("description"),
+                    payload.requiredBoolean("requiresApproval"),
+                    envelope.occurredAt(),
+                    envelope.correlationId()
+                );
+                return EventSubscriber.HandlerResult.SUCCESS;
+            }
+            if ("legacy-acl".equals(envelope.producer()) && "LegacyCommandMapped".equals(envelope.eventType())) {
+                InboundEventPayload payload = InboundEventPayload.from(envelope);
+                service.recordLegacyCommandMapped(
+                    envelope.eventId(),
+                    payload.requiredText("legacyOperation"),
+                    payload.requiredText("outcome"),
+                    payload.requiredText("operatorRef"),
+                    payload.optionalText("reason"),
+                    payload.requiredText("sourceRef"),
+                    envelope.correlationId()
+                );
+                return EventSubscriber.HandlerResult.SUCCESS;
+            }
             return EventSubscriber.HandlerResult.SUCCESS;
         } catch (ValidationException | DomainRuleViolation | IllegalArgumentException exception) {
             return EventSubscriber.HandlerResult.FATAL_FAILURE;

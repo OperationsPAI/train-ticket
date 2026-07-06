@@ -29,6 +29,7 @@ services=(
   finance-settlement
   reporting
   supplier-catalog
+  legacy-acl
 )
 
 for service in "${services[@]}"; do
