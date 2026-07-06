@@ -50,8 +50,8 @@ def test_assess_risk_happy_path_and_get() -> None:
     assert fetched.json() == body
 
 
-def test_default_app_assess_risk_smoke_uses_platform_fake_publisher() -> None:
-    app = create_app()
+def test_injected_app_assess_risk_smoke_uses_platform_fake_publisher() -> None:
+    app = fake_app()
     client = TestClient(app)
 
     response = client.post(
@@ -64,8 +64,15 @@ def test_default_app_assess_risk_smoke_uses_platform_fake_publisher() -> None:
     body = response.json()
     assert body["subjectRef"] == "ord-default"
     [envelope] = app.state.publisher.envelopes
-    assert envelope.to_json_dict()["eventType"] == "RiskAssessed"
+    assert envelope.to_json_dict()["eventType"] == "RiskAssessmentResult"
     assert envelope.payload["assessmentId"] == body["assessmentId"]
+
+
+def test_default_app_wires_redis_publisher_and_journey_order_subscriber() -> None:
+    app = create_app()
+
+    assert app.state.publisher.__class__.__name__ == "RedisEventPublisher"
+    assert app.state.subscriber.__class__.__name__ == "RedisEventSubscriber"
 
 
 def test_get_unknown_assessment_returns_not_found_error_body() -> None:
@@ -216,7 +223,7 @@ def test_publisher_wraps_domain_event_in_contract_envelope() -> None:
     assert envelope.eventId.startswith("evt-")
     assert envelope.eventId.split("-", 1)[1][14] == "7"
     assert response.json()["assessmentId"].split("-", 1)[1][14] == "7"
-    assert envelope.eventType == "RiskAssessed"
+    assert envelope.eventType == "RiskAssessmentResult"
     assert envelope.producer == "risk-compliance"
     assert envelope.schemaVersion == 1
     assert envelope.correlationId == f"corr-{valid_correlation_id}"
@@ -236,7 +243,7 @@ def test_publisher_wraps_domain_event_in_contract_envelope() -> None:
         "assessmentSnapshotHash",
     }
     assert envelope.causationId is not None and is_prefixed_uuid7(envelope.causationId, "cmd")
-    assert envelope.occurredAt == response.json()["assessedAt"]
+    assert envelope.to_json_dict()["occurredAt"] == response.json()["assessedAt"]
     assert envelope.payload == {
         **response.json(),
         "evidenceRef": f"evid-{response.json()['assessmentId']}",
@@ -248,7 +255,7 @@ def test_publisher_wraps_domain_event_in_contract_envelope() -> None:
 def test_subscriber_deduplicates_duplicate_event_id() -> None:
     envelope = EventEnvelope(
         eventId="evt-duplicate",
-        eventType="RiskAssessed",
+        eventType="RiskAssessmentResult",
         occurredAt="2026-07-05T10:30:00.000Z",
         correlationId=str(uuid7()),
         causationId=f"cmd-{uuid7()}",
@@ -336,3 +343,72 @@ def test_request_id_is_server_assigned_and_caller_value_is_not_echoed() -> None:
     assert response.status_code == 201
     assert response.headers["X-Request-Id"] != caller_request_id
     assert is_uuid7(response.headers["X-Request-Id"])
+
+
+def test_journey_order_created_is_assessed_and_blocked_idempotently() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = EventEnvelope(
+        eventId=f"evt-{uuid7()}",
+        eventType="JourneyOrderCreated",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="journey-order",
+        schemaVersion=1,
+        payload={
+            "orderId": "ord-risky",
+            "accountId": "acct-risky",
+            "offerId": "offer-1",
+            "travelerRefs": [{"travelerId": "tvl-1", "maskedDocumentRef": "11***9999", "travelerType": "ADULT"}],
+            "segmentRefs": ["seg-1"],
+            "createdAt": "2026-07-05T10:30:00.000Z",
+        },
+    )
+
+    service.handle_event(envelope)
+    service.handle_event(envelope)
+
+    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult", "RiskBlockApplied"]
+    block = publisher.envelopes[1]
+    assert block.payload == {
+        "blockId": block.payload["blockId"],
+        "subjectRef": "ord-risky",
+        "scope": "ORDER",
+        "reasonCode": "HIGH_RISK_SIGNAL",
+        "policyVersion": "1.0.0",
+        "evidenceRef": publisher.envelopes[0].payload["evidenceRef"],
+        "blockedAt": block.payload["blockedAt"],
+    }
+    assert block.payload["blockId"].startswith("blk-")
+    assert block.causationId == publisher.envelopes[0].eventId
+
+
+def test_lift_block_endpoint_publishes_lift_event() -> None:
+    app = fake_app()
+    service = app.state.risk_service
+    risky = EventEnvelope(
+        eventId=f"evt-{uuid7()}",
+        eventType="JourneyOrderCreated",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="journey-order",
+        schemaVersion=1,
+        payload={"orderId": "ord-lift", "accountId": "acct-lift", "travelerRefs": [{"maskedDocumentRef": "11***9999"}]},
+    )
+    service.handle_event(risky)
+
+    response = TestClient(app).post(
+        "/api/v1/risk-blocks/lift",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-lift", "scope": "ORDER", "reasonCode": "MANUAL_REVIEW_CLEARED"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["allowId"].startswith("alw-")
+    assert body["subjectRef"] == "ord-lift"
+    assert body["scope"] == "ORDER"
+    assert app.state.publisher.envelopes[-1].eventType == "RiskBlockLifted"
+    assert app.state.publisher.envelopes[-1].payload == body

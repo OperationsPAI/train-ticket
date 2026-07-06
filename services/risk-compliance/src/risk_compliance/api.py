@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .application import (
     AssessmentNotFoundError,
+    BlockNotFoundError,
     InMemoryAssessmentRepository,
     PublishFailed,
     RiskComplianceService,
@@ -45,6 +46,14 @@ class AssessRiskRequest(BaseModel):
     subjectRef: str = Field(min_length=1)
     scenario: str = Field(pattern="^(order_risk|payment_risk|post_sales_risk|account_risk)$")
     context: dict[str, Any]
+
+
+class LiftRiskBlockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subjectRef: str = Field(min_length=1)
+    scope: str = Field(pattern="^(ORDER|PAYMENT|ACCOUNT)$")
+    reasonCode: str = Field(min_length=1)
 
 
 class ErrorBody(BaseModel):
@@ -234,6 +243,21 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
         except AssessmentNotFoundError:
             return error_response(request, 404, "NOT_FOUND", "Risk assessment was not found")
 
+    @app.post("/api/v1/risk-blocks/lift", status_code=201, response_model=None)
+    def lift_risk_block(request: Request, payload: LiftRiskBlockRequest) -> JSONResponse:
+        try:
+            lifted = service.lift_block(
+                subject_ref=payload.subjectRef,
+                scope=payload.scope,
+                reason_code=payload.reasonCode,
+                correlation_id=request.state.correlation_id,
+            )
+        except BlockNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Active risk block was not found")
+        except PublishFailed:
+            return error_response(request, 503, "UNAVAILABLE", "Risk block lift event could not be published")
+        return JSONResponse(status_code=201, content=lifted.to_dict())
+
 
 def create_app(
     tracer: TraceHook | None = None,
@@ -245,9 +269,9 @@ def create_app(
     app.state.assessment_repository = InMemoryAssessmentRepository()
     store = idempotency_store or BoundedInMemoryIdempotencyStore()
     if service is None:
-        from train_ticket_platform.messaging import InMemoryEventPublisher
+        from .adapters.messaging.redis_streams import RedisEventPublisher
 
-        app.state.publisher = InMemoryEventPublisher()
+        app.state.publisher = RedisEventPublisher()
         app.state.risk_service = RiskComplianceService(
             publisher=app.state.publisher,
             repository=app.state.assessment_repository,
@@ -263,8 +287,30 @@ def create_app(
         app,
         store,
         require_key=True,
-        include_path_prefixes=("/api/v1/risk-assessments",),
+        include_path_prefixes=("/api/v1/risk-assessments", "/api/v1/risk-blocks"),
         error_body_factory=_risk_error_body,
     )
     configure_risk_endpoints(app, app.state.risk_service)
+    if service is None:
+        from .adapters.messaging.redis_streams import (
+            RISK_COMPLIANCE_CONSUMER_GROUP,
+            RISK_COMPLIANCE_SUBSCRIPTIONS,
+            RedisEventSubscriber,
+            risk_compliance_consumer_name,
+        )
+
+        app.state.subscriber = RedisEventSubscriber()
+
+        @app.on_event("startup")
+        def start_risk_subscriber() -> None:
+            app.state.subscriber.start_in_background(
+                RISK_COMPLIANCE_SUBSCRIPTIONS,
+                RISK_COMPLIANCE_CONSUMER_GROUP,
+                app.state.risk_service.handle_event,
+                consumer_name=risk_compliance_consumer_name(),
+            )
+
+        @app.on_event("shutdown")
+        def stop_risk_subscriber() -> None:
+            app.state.subscriber.stop()
     return app

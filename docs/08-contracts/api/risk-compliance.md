@@ -52,6 +52,36 @@ timestamps, and Money.
 
 **Error codes:** `NOT_FOUND`
 
+### Lift Risk Block
+
+**POST** `/api/v1/risk-blocks/lift`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `subjectRef` | string | yes | Blocked subject reference (order ID, payment ID, account ID). |
+| `scope` | enum | yes | `ORDER`, `PAYMENT`, `ACCOUNT`. |
+| `reasonCode` | string | yes | Machine-readable lift reason. |
+
+**Response (201):**
+
+| Field | Type | Description |
+|---|---|---|
+| `allowId` | string | Canonical allow ID (`alw-<uuid>`). |
+| `subjectRef` | string | Subject reference. |
+| `scope` | enum | `ORDER`, `PAYMENT`, `ACCOUNT`. |
+| `reasonCode` | string | Machine-readable lift reason. |
+| `policyVersion` | string | Policy version used. |
+| `evidenceRef` | string | Reference to the evidence bundle. |
+| `allowedAt` | timestamp | When the block was lifted. |
+
+**Published event:** `RiskBlockLifted` with the same payload shape as `SubjectAllowed`.
+
+**Error codes:** `VALIDATION_FAILED`, `IDEMPOTENCY_KEY_REUSED`, `NOT_FOUND`, `UNAVAILABLE`
+
 ## Bus-only commands
 
 The following commands are consumed from the event bus only and have no HTTP
@@ -62,7 +92,7 @@ endpoint:
 | `IssueChallenge` | Risk system (internal) | Issue a challenge when the risk decision is `CHALLENGE`. |
 | `ResolveChallenge` | Customer / Operator | Resolve a challenge with outcome (PASSED/FAILED). |
 | `BlockSubject` | Risk system (internal) | Block a subject (order, payment, account) from proceeding. |
-| `AllowSubject` | Risk system (internal) | Allow a previously blocked subject to proceed. |
+| `AllowSubject` | Risk system (internal) | Allow a previously blocked subject to proceed. HTTP lift is available for operator-driven ORDER blocks. |
 | `RecordEvidence` | Risk system (internal) | Record risk evidence for audit trail. |
 
 ## Open Issues
