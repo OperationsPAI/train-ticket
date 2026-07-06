@@ -1,6 +1,13 @@
 import { DomainError, mapStatusToConfidence, type AvailabilityConfidence, type OfferItem, type PassengerMix, type PriceGuaranteeLevel, type PriceSnapshot, type QuoteOfferCommand, type TravelerRef, type TravelerType } from "../domain.js";
 import { type EventEnvelope, type EventHandler } from "../ports/messaging.js";
 
+import { createHash } from "node:crypto";
+
+/** Normative inputHash per events/fare-pricing.md. */
+export function contractInputHash(segmentRefs: readonly string[], channel: string, travelerRefs: readonly string[]): string {
+  const material = `${[...segmentRefs].sort().join(",")}|${channel}|${[...travelerRefs].sort().join(",")}`;
+  return createHash("sha256").update(material, "utf8").digest("hex");
+}
 export type QuoteOfferRequest = Readonly<{
   accountId: string;
   channelId: string;
@@ -143,7 +150,7 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
     throw new DomainError("MISSING_ITINERARY_SNAPSHOT", `No consumed Trip Planning itinerary found for ${request.itineraryRef}`);
   }
 
-  const fareQuoteLookupKey = itinerary.inputHash ?? request.itineraryRef;
+  const fareQuoteLookupKey = contractInputHash(itinerary.segmentRefs, request.channelId, request.travelerRefs);
   const fareQuote = await repository.findFareQuote(fareQuoteLookupKey, request.channelId, request.travelerRefs);
   if (!fareQuote) {
     throw new DomainError("MISSING_FARE_QUOTE", "No consumed Fare Pricing quote matches itinerary/fare input, channelId, and travelerRefs");
@@ -169,10 +176,18 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
 
   const itemPrice = { currency: fareQuote.currency, amountMinor: fareQuote.total.minorUnits };
   const items: OfferItem[] = itinerary.segmentRefs.map((segmentRef, index) => {
-    const availability = itinerary.availabilityBySegment.get(segmentRef);
-    if (!availability) {
-      throw new DomainError("MISSING_AVAILABILITY_SNAPSHOT", `No availability snapshot was consumed for segment ${segmentRef}`);
-    }
+    // Availability hints are contractually optional and non-authoritative
+    // (events/trip-planning.md); the booking saga performs the real capacity
+    // hold. Missing hints degrade to UNKNOWN instead of rejecting the offer.
+    const availability = itinerary.availabilityBySegment.get(segmentRef) ?? {
+      snapshotId: `avs-unknown:${segmentRef}`,
+      snapshotVersion: "0",
+      capturedAt: quotedAt,
+      expiresAt: offerExpiresAt,
+      sellable: true,
+      status: "UNKNOWN",
+      confidence: "UNKNOWN" as AvailabilityConfidence,
+    };
     return {
       offerItemId: `ofi-${uuidV7()}`,
       mode: itinerary.modeBySegment.get(segmentRef) ?? "train",
@@ -271,11 +286,15 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
   if (!quoteId || !inputHash || !channelId || travelerRefs.length === 0 || !currency || !validFrom || !validUntil || !breakdown || !ruleSnapshot) return;
 
   const total = moneyField(breakdown, "total") ?? moneyField(payload, "total");
-  const ruleSnapshotRef = stringField(ruleSnapshot, "ruleSnapshotRef") ?? stringField(ruleSnapshot, "ruleSnapshotId") ?? stringField(ruleSnapshot, "snapshotId");
-  const pricingVersion = stringField(ruleSnapshot, "pricingVersion") ?? stringField(payload, "pricingVersion");
-  const ruleVersion = stringField(ruleSnapshot, "ruleVersion") ?? stringField(payload, "ruleVersion");
-  const priceSnapshotRef = stringField(breakdown, "priceSnapshotRef") ?? stringField(payload, "priceSnapshotRef");
-  if (!total || !ruleSnapshotRef || !pricingVersion || !ruleVersion || !priceSnapshotRef) return;
+  // Contract RuleSnapshot (events/fare-pricing.md) carries ruleSetId/ruleSetVersion/digest;
+  // internal references derive from those instead of requiring bespoke fields.
+  const ruleSetId = stringField(ruleSnapshot, "ruleSetId") ?? stringField(ruleSnapshot, "ruleSnapshotRef");
+  const ruleSetVersion = stringField(ruleSnapshot, "ruleSetVersion") ?? stringField(ruleSnapshot, "ruleVersion");
+  const ruleSnapshotRef = ruleSetId && ruleSetVersion ? `${ruleSetId}@${ruleSetVersion}` : stringField(ruleSnapshot, "digest");
+  const pricingVersion = ruleSetVersion ?? stringField(payload, "pricingVersion");
+  const ruleVersion = ruleSetVersion ?? stringField(payload, "ruleVersion");
+  const priceSnapshotRef = stringField(breakdown, "priceSnapshotRef") ?? stringField(payload, "priceSnapshotRef") ?? `price-snapshot:${quoteId}`;
+  if (!total || !ruleSnapshotRef || !pricingVersion || !ruleVersion) return;
 
   await repository.saveFareQuote({
     quoteId,

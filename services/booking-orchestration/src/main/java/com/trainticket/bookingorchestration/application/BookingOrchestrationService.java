@@ -129,6 +129,7 @@ public class BookingOrchestrationService {
             case "JourneyOrderCreated" -> handleJourneyOrderCreated(payload, envelope.correlationId(), envelope.eventId());
             case "CapacityHeld", "CapacityHoldConfirmed" -> handleCapacityHeld(payload, envelope.correlationId(), envelope.eventId());
             case "CapacityReleased", "CapacityHoldExpired" -> handleCapacityReleased(payload, envelope.correlationId(), envelope.eventId());
+            case "CapacityHoldFailed" -> handleCapacityHoldFailed(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentCreated" -> handlePaymentIntentCreated(payload);
             case "PaymentCaptured" -> handlePaymentCaptured(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentFailed", "PaymentFailed", "PaymentExpired", "PaymentIntentExpired" -> handlePaymentFailure(payload, envelope.correlationId(), envelope.eventId());
@@ -194,6 +195,32 @@ public class BookingOrchestrationService {
         holdIdToSegmentBookingId.putIfAbsent(holdId, booking.segmentBookingId());
         publishEvents(booking.pullEvents(), correlationId, causationId);
         markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
+    }
+
+    private void handleCapacityHoldFailed(Map<String, Object> payload, String correlationId, String causationId) {
+        String idempotencyKey = text(payload.get("idempotencyKey"));
+        SegmentBooking booking = null;
+        if (idempotencyKey != null) {
+            booking = Optional.ofNullable(segmentIdempotencyToBookingId.get(idempotencyKey))
+                .map(segmentBookings::get)
+                .orElse(null);
+        }
+        if (booking == null) {
+            booking = bySegmentBookingId(payload);
+        }
+        if (booking == null) {
+            // Hold failures for other requesters are not this saga's concern.
+            return;
+        }
+        String reason = firstText(payload, "reason", "failureMessage", "failureCode");
+        booking.failReservation(reason == null ? "capacity hold failed" : reason);
+        publishEvents(booking.pullEvents(), correlationId, causationId);
+        String sagaId = segmentBookingToSaga.get(booking.segmentBookingId());
+        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        if (saga != null && saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
+            saga.fail(reason == null ? "capacity hold failed" : reason);
+            publishEvents(saga.pullEvents(), correlationId, causationId);
+        }
     }
 
     private void handleCapacityReleased(Map<String, Object> payload, String correlationId, String causationId) {

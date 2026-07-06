@@ -335,7 +335,7 @@ public class TravelerProfileService {
         if (event instanceof DocumentVerified) {
             return "TravelerDocumentVerified";
         }
-        return "TravelerProfileUpdated";
+        return "TravelerSnapshotUpdated";
     }
 
     private Instant now() {
@@ -391,7 +391,7 @@ public class TravelerProfileService {
         };
     }
 
-    public static String fingerprint(String method, String path, com.fasterxml.jackson.databind.JsonNode body) {
+    public static String fingerprint(String method, String path, Object body) {
         String input = method + " " + path + " " + (body == null ? "" : body.toString());
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

@@ -67,7 +67,7 @@ public final class JourneyOrder {
     ) {
         Objects.requireNonNull(offerSnapshot, "offerSnapshot is required").requireValidAt(now);
         JourneyOrder order = new JourneyOrder(
-            "ord-" + UUID.randomUUID(),
+            "ord-" + com.trainticket.platformkit.idempotency.UuidV7.generate(),
             accountId,
             channelRef,
             accountId + ":" + offerSnapshot.offerId() + ":" + requireText(clientRequestId, "clientRequestId"),
@@ -135,7 +135,9 @@ public final class JourneyOrder {
     }
 
     public void recordEntitlementSummaryAccepted(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
-        requireState(OrderLifecycleState.CONFIRMING);
+        // Streams are only ordered per-producer; the entitlement fact may
+        // arrive before the payment fact, so accept it in any pre-confirmed state.
+        requireState(OrderLifecycleState.PENDING_CONFIRMATION, OrderLifecycleState.PENDING_PAYMENT, OrderLifecycleState.CONFIRMING);
         confirmationConditions = confirmationConditions.withEntitlementSummaryAccepted();
         recordTimeline("EntitlementSummaryAccepted", occurredAt, "entitlement-ticketing", "required entitlement summary accepted", Map.of());
     }
@@ -227,10 +229,13 @@ public final class JourneyOrder {
         }
     }
 
-    private void requireState(OrderLifecycleState expected) {
-        if (state != expected) {
-            throw new DomainRuleViolation("expected order state " + expected + " but was " + state);
+    private void requireState(OrderLifecycleState... expected) {
+        for (OrderLifecycleState candidate : expected) {
+            if (state == candidate) {
+                return;
+            }
         }
+        throw new DomainRuleViolation("expected order state " + java.util.Arrays.toString(expected) + " but was " + state);
     }
 
     private void recordTimeline(String type, Instant occurredAt, String actor, String reason, Map<String, String> attributes) {

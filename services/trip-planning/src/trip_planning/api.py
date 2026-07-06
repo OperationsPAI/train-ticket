@@ -190,6 +190,95 @@ def _validate_contract_search_payload(payload: Mapping[str, object]) -> tuple[st
     return origin_ref, destination_ref, departure_date, traveler_refs, channel, max_results_value
 
 
+class PlanStore:
+    """Leg-candidate source built from consumed service-plan and
+    place-network events. Thread-safe; written by the subscriber thread,
+    read by search requests."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.services: dict[str, dict[str, object]] = {}
+        self.segments: dict[str, dict[str, object]] = {}
+        self.node_place: dict[str, str] = {}
+
+    def apply(self, event_type: str, payload: Mapping[str, object]) -> None:
+        with self._lock:
+            if event_type in ("ServicePlanPublished", "ScheduledServiceCreated"):
+                ref = str(payload.get("scheduledServiceRef", ""))
+                if ref:
+                    self.services[ref] = dict(payload)
+            elif event_type in ("ServicePlanChanged", "ServiceSegmentCreated"):
+                seg = str(payload.get("segmentRef", ""))
+                if seg and payload.get("originStopRef"):
+                    self.segments[seg] = dict(payload)
+            elif event_type in ("TransportNodeRegistered", "TransportNodeAdded", "TransportNodeUpdated"):
+                node = str(payload.get("nodeId", ""))
+                place = str(payload.get("placeId", ""))
+                if node and place:
+                    self.node_place[node] = place
+
+    def _matches(self, stop_ref: str, requested: str) -> bool:
+        return stop_ref == requested or self.node_place.get(stop_ref) == requested
+
+    def resolve_stop_ref(self, requested: str) -> str:
+        """Map a place ref to one of its transport nodes (phase 1: first
+        registered node wins). Node refs and unknown refs pass through."""
+        with self._lock:
+            for node, place in self.node_place.items():
+                if place == requested:
+                    return node
+        return requested
+
+    def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[Itinerary]:
+        found: list[Itinerary] = []
+        with self._lock:
+            for seg_ref, seg in self.segments.items():
+                origin_stop = str(seg.get("originStopRef", ""))
+                destination_stop = str(seg.get("destinationStopRef", ""))
+                departure_raw = str(seg.get("departureTime", ""))
+                if not departure_raw.startswith(departure_date):
+                    continue
+                if not (self._matches(origin_stop, origin_ref) and self._matches(destination_stop, destination_ref)):
+                    continue
+                departure_time = datetime.fromisoformat(departure_raw.replace("Z", "+00:00"))
+                arrival_raw = str(seg.get("arrivalTime", departure_raw))
+                arrival_time = datetime.fromisoformat(arrival_raw.replace("Z", "+00:00"))
+                service_ref = str(seg.get("scheduledServiceRef", ""))
+                found.append(Itinerary(
+                    legs=(
+                        LegCandidate(
+                            service_plan_ref=service_ref,
+                            service_segment_ref=seg_ref,
+                            origin_stop_ref=origin_stop,
+                            destination_stop_ref=destination_stop,
+                            departure_time=departure_time,
+                            arrival_time=arrival_time,
+                            mode="train",
+                            stop_refs=(origin_stop, destination_stop),
+                            segment_refs=(seg_ref,),
+                        ),
+                    ),
+                    price_hint=PriceHint(
+                        amount_minor=0,
+                        currency="CNY",
+                        snapshot_ref=f"fare-snapshot:{seg_ref}",
+                        captured_at=departure_time,
+                        confidence=50,
+                    ),
+                    availability_hint=AvailabilityHint(
+                        status="UNKNOWN",
+                        snapshot_ref=f"availability-snapshot:{seg_ref}",
+                        captured_at=departure_time,
+                        confidence=50,
+                    ),
+                    planning_snapshot_refs=(f"planning-snapshot:{seg_ref}",),
+                ))
+        return found
+
+
+_plan_store = PlanStore()
+
+
 def _contract_candidate(origin_ref: str, destination_ref: str, departure_date: str, channel: str) -> Itinerary:
     departure_time = datetime.fromisoformat(f"{departure_date}T09:00:00+00:00")
     arrival_time = departure_time + timedelta(hours=1)
@@ -256,14 +345,18 @@ def _itinerary_to_contract(itinerary: Itinerary) -> dict[str, object]:
 
 def _search_contract_response(payload: Mapping[str, object]) -> tuple[dict[str, object], tuple[str, ...]]:
     origin_ref, destination_ref, departure_date, traveler_refs, channel, max_results = _validate_contract_search_payload(payload)
+    resolved_origin = _plan_store.resolve_stop_ref(origin_ref)
+    resolved_destination = _plan_store.resolve_stop_ref(destination_ref)
     intent = TripIntent(
-        origin_ref=origin_ref,
-        destination_ref=destination_ref,
+        origin_ref=resolved_origin,
+        destination_ref=resolved_destination,
         departure_window_start=f"{departure_date}T00:00:00Z",
         departure_window_end=f"{departure_date}T23:59:59Z",
         passenger_count=len(traveler_refs),
     )
-    result = search_itineraries(intent, (_contract_candidate(origin_ref, destination_ref, departure_date, channel),))
+    real_candidates = _plan_store.candidates(resolved_origin, resolved_destination, departure_date)
+    candidate_pool = tuple(real_candidates) if real_candidates else (_contract_candidate(resolved_origin, resolved_destination, departure_date, channel),)
+    result = search_itineraries(intent, candidate_pool)
     selected = result.candidates[:max_results]
     itineraries = [_itinerary_to_contract(itinerary) for itinerary, _score in selected]
     planning_snapshot_refs = tuple(ref for itinerary, _score in selected for ref in itinerary.planning_snapshot_refs)
@@ -287,6 +380,7 @@ def _default_subscriber() -> EventSubscriber:
 
 
 def _handle_upstream_event(app: FastAPI, envelope: Any) -> None:
+    _plan_store.apply(envelope.eventType, envelope.payload)
     app.state.consumed_events[envelope.eventId] = {
         "eventType": envelope.eventType,
         "producer": envelope.producer,

@@ -83,7 +83,7 @@ func (s *Service) CreatePlace(req CreatePlaceRequest) (*CreatePlaceResponse, err
 		Status:        place.Status,
 		UpdatedAt:     domain.FormatTimestamp(now),
 	}
-	if err := s.publisher.Publish(domain.NewEventEnvelope("PlaceUpdated", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
+	if err := s.publisher.Publish(domain.NewEventEnvelope("PlaceRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 		return nil, NewDomainError("UNAVAILABLE", "event publisher unavailable")
 	}
 	return response, nil
@@ -221,7 +221,7 @@ func (s *Service) CreateTransportNode(req CreateTransportNodeRequest) (*CreateTr
 	servingModes := stringModes(node.ServingModes)
 	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, CreatedAt: domain.FormatTimestamp(now)}
 	event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, UpdatedAt: domain.FormatTimestamp(now)}
-	if err := s.publisher.Publish(domain.NewEventEnvelope("TransportNodeUpdated", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
+	if err := s.publisher.Publish(domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 		return nil, NewDomainError("UNAVAILABLE", "event publisher unavailable")
 	}
 	return response, nil

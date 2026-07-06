@@ -26,6 +26,22 @@ Last updated: 2026-06-28
 | `validUntil` | RFC3339 UTC | yes | Quote validity end. |
 | `breakdown` | `FareBreakdown` | no | Price breakdown (present if status is `QUOTED`). |
 | `ruleSnapshot` | `RuleSnapshot` | no | Snapshot of rules used. |
+
+**`inputHash` definition (normative):** lowercase hex SHA-256 of the UTF-8
+string `sorted(segmentRefs).join(",") + "|" + channel + "|" +
+sorted(travelerRefs).join(",")`. Both producer and consumers MUST compute it
+with this exact formula so quotes can be correlated without a shared store.
+
+**`RuleSnapshot` shape (normative):**
+
+| Field | Type | Description |
+|---|---|---|
+| `ruleSetId` | string | Rule set identifier. |
+| `ruleSetVersion` | string | Rule set version. |
+| `ruleIds` | string[] | Applied rule ids. |
+| `digest` | string | Digest of the applied rule set. |
+| `capturedAt` | RFC3339 UTC | Snapshot capture time. |
+| `explanationCodes` | string[] | Price explanation codes. |
 | `failedReason` | string | no | Failure reason (present if `FAILED`). |
 
 ### AdjustmentQuoteComputed

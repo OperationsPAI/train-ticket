@@ -9,7 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "payment.messaging.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "payment.messaging.enabled", havingValue = "true", matchIfMissing = true)
 public class PaymentSubscriptionRunner implements CommandLineRunner {
     private final EventSubscriber subscriber;
     private final PaymentInboundEventHandler handler;

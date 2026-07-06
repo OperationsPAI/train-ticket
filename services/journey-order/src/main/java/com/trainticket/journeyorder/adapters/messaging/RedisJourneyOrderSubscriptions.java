@@ -8,7 +8,8 @@ public final class RedisJourneyOrderSubscriptions {
         "events:payment",
         "events:post-sales",
         "events:traveler-profile",
-        "events:risk-compliance"
+        "events:risk-compliance",
+        "events:entitlement-ticketing"
     );
     private static final String GROUP = "journey-order";
 

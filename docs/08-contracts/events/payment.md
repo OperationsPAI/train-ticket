@@ -54,6 +54,7 @@ Last updated: 2026-06-28
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `paymentIntentId` | `PaymentIntentId` | yes | Payment intent ID. |
+| `businessRef` | string | yes | Business reference (order ID) from the payment intent; consumers correlate the payment to the order with this field. |
 | `capturedAmount` | `Money` | yes | Amount captured. |
 | `channel` | string | yes | Payment channel. |
 | `channelTransactionId` | string | yes | Channel transaction reference. |

@@ -56,6 +56,7 @@ public final class EventEnvelopeMapper {
             }
             case PaymentCaptured captured -> {
                 payload.put("paymentIntentId", captured.paymentIntentId());
+                payload.put("businessRef", captured.businessRef());
                 payload.put("capturedAmount", money(captured.capturedAmount()));
                 payload.put("channel", captured.channel());
                 payload.put("channelTransactionId", captured.channelTransactionId());
