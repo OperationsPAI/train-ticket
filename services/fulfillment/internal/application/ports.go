@@ -62,6 +62,17 @@ type Service struct {
 	consumed ConsumedEventLog
 	idGen    IDGenerator
 	clock    Clock
+	mu       sync.Mutex
+	tickets  map[string]TicketProjection
+}
+
+type TicketProjection struct {
+	EntitlementID    domain.EntitlementRef
+	SegmentBookingID domain.SegmentBookingRef
+	JourneyOrderID   domain.OrderRef
+	TravelerID       domain.TravelerRef
+	SegmentRef       domain.SegmentRef
+	Voided           bool
 }
 
 func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed ConsumedEventLog, idGen IDGenerator, clock Clock) *Service {
@@ -71,7 +82,7 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{repo: repo, pub: publisher, consumed: consumed, idGen: idGen, clock: clock}
+	return &Service{repo: repo, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}}
 }
 
 type CommandMetadata struct {
@@ -112,6 +123,22 @@ type NoShowResult struct {
 	AssessedAt          time.Time                  `json:"assessedAt"`
 }
 
+type FulfillmentCompletedCommand struct {
+	EntitlementID    domain.EntitlementRef
+	SegmentBookingID domain.SegmentBookingRef
+	JourneyOrderID   domain.OrderRef
+	TravelerID       domain.TravelerRef
+	SegmentRef       domain.SegmentRef
+	CompletionSource domain.CompletionSource
+	CompletedAt      time.Time
+}
+
+type FulfillmentCompletedResult struct {
+	FulfillmentRecordID domain.FulfillmentRecordID `json:"fulfillmentRecordId"`
+	Status              domain.FulfillmentStatus   `json:"status"`
+	CompletedAt         time.Time                  `json:"completedAt"`
+}
+
 func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand, meta CommandMetadata) (BoardingResult, error) {
 	if s == nil || s.repo == nil || s.pub == nil {
 		return BoardingResult{}, errors.New("fulfillment service is not configured")
@@ -119,15 +146,9 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 	if err := validateVerifyBoarding(cmd); err != nil {
 		return BoardingResult{}, err
 	}
-	record, err := s.repo.FindByEntitlementSegment(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	record, err := s.readyRecordForCommand(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
+	if err != nil {
 		return BoardingResult{}, err
-	}
-	if errors.Is(err, ErrNotFound) {
-		record, err = domain.NewFulfillmentRecord(domain.FulfillmentRecordID(s.idGen("fr")), cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
-		if err != nil {
-			return BoardingResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
-		}
 	}
 	receivedAt := s.clock().UTC()
 	if err := record.VerifyBoarding(cmd.EntitlementID, cmd.Source, cmd.SourceEventID, cmd.OccurredAt.UTC(), receivedAt, nil); err != nil {
@@ -146,15 +167,9 @@ func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, met
 	if err := validateNoShow(cmd); err != nil {
 		return NoShowResult{}, err
 	}
-	record, err := s.repo.FindByEntitlementSegment(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	record, err := s.readyRecordForCommand(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
+	if err != nil {
 		return NoShowResult{}, err
-	}
-	if errors.Is(err, ErrNotFound) {
-		record, err = domain.NewFulfillmentRecord(domain.FulfillmentRecordID(s.idGen("fr")), cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
-		if err != nil {
-			return NoShowResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
-		}
 	}
 	assessedAt := s.clock().UTC()
 	if err := record.RecordNoShow(cmd.Reason, assessedAt); err != nil {
@@ -164,6 +179,26 @@ func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, met
 		return NoShowResult{}, err
 	}
 	return NoShowResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, AssessedAt: assessedAt}, nil
+}
+
+func (s *Service) RecordFulfillmentCompleted(ctx context.Context, cmd FulfillmentCompletedCommand, meta CommandMetadata) (FulfillmentCompletedResult, error) {
+	if s == nil || s.repo == nil || s.pub == nil {
+		return FulfillmentCompletedResult{}, errors.New("fulfillment service is not configured")
+	}
+	if err := validateSegmentProgress(cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, domain.FulfillmentSource(cmd.CompletionSource), cmd.CompletedAt, "completedAt"); err != nil {
+		return FulfillmentCompletedResult{}, err
+	}
+	record, err := s.readyRecordForCommand(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
+	if err != nil {
+		return FulfillmentCompletedResult{}, err
+	}
+	if err := record.CompleteFulfillment(cmd.CompletionSource, cmd.CompletedAt.UTC()); err != nil {
+		return FulfillmentCompletedResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	if err := s.saveAndPublishPending(ctx, record, meta); err != nil {
+		return FulfillmentCompletedResult{}, err
+	}
+	return FulfillmentCompletedResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, CompletedAt: cmd.CompletedAt.UTC()}, nil
 }
 
 func (s *Service) GetFulfillmentRecord(ctx context.Context, id domain.FulfillmentRecordID) (*domain.FulfillmentRecord, error) {
@@ -189,7 +224,189 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvel
 			return nil
 		}
 	}
+	if err := s.applySubscribedEvent(ctx, envelope); err != nil {
+		if errors.Is(err, ErrDomainRuleViolation) || errors.Is(err, ErrNotFound) {
+			return kitmsg.FatalHandlerError(err)
+		}
+		return kitmsg.TransientHandlerError(err)
+	}
 	return nil
+}
+
+func (s *Service) applySubscribedEvent(ctx context.Context, envelope EventEnvelope) error {
+	if len(envelope.Payload) == 0 {
+		return nil
+	}
+	switch envelope.EventType {
+	case "EntitlementIssued":
+		return s.applyEntitlementIssued(ctx, envelope.Payload)
+	case "EntitlementVoided":
+		return s.applyEntitlementVoided(envelope.Payload)
+	case "SegmentTicketed":
+		return s.applySegmentTicketed(ctx, envelope.Payload)
+	default:
+		return nil
+	}
+}
+
+func (s *Service) applyEntitlementIssued(ctx context.Context, payload json.RawMessage) error {
+	var event struct {
+		EntitlementID    string `json:"entitlementId"`
+		SegmentBookingID string `json:"segmentBookingId"`
+		JourneyOrderID   string `json:"journeyOrderId"`
+		TravelerRef      string `json:"travelerRef"`
+		SegmentRef       string `json:"segmentRef"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid EntitlementIssued payload: %v", ErrDomainRuleViolation, err)
+	}
+	projection := TicketProjection{EntitlementID: domain.EntitlementRef(event.EntitlementID), SegmentBookingID: domain.SegmentBookingRef(event.SegmentBookingID), JourneyOrderID: domain.OrderRef(event.JourneyOrderID), TravelerID: domain.TravelerRef(event.TravelerRef), SegmentRef: domain.SegmentRef(event.SegmentRef)}
+	if err := projection.validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	return s.upsertTicketAndRecord(ctx, projection)
+}
+
+func (s *Service) applySegmentTicketed(ctx context.Context, payload json.RawMessage) error {
+	var event struct {
+		EntitlementID    string `json:"entitlementId"`
+		SegmentBookingID string `json:"segmentBookingId"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid SegmentTicketed payload: %v", ErrDomainRuleViolation, err)
+	}
+	entitlementID := domain.EntitlementRef(event.EntitlementID)
+	segmentBookingID := domain.SegmentBookingRef(event.SegmentBookingID)
+	if err := entitlementID.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	if err := segmentBookingID.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	s.mu.Lock()
+	projection, exists := s.tickets[ticketKey(entitlementID, segmentBookingID)]
+	if exists {
+		projection.SegmentBookingID = segmentBookingID
+		s.tickets[ticketKey(entitlementID, segmentBookingID)] = projection
+	}
+	s.mu.Unlock()
+	if !exists {
+		return nil
+	}
+	_, err := s.ensureRecordFromProjection(ctx, projection)
+	return err
+}
+
+func (s *Service) applyEntitlementVoided(payload json.RawMessage) error {
+	var event struct {
+		EntitlementID    string `json:"entitlementId"`
+		SegmentBookingID string `json:"segmentBookingId"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid EntitlementVoided payload: %v", ErrDomainRuleViolation, err)
+	}
+	entitlementID := domain.EntitlementRef(event.EntitlementID)
+	if err := entitlementID.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(event.SegmentBookingID) != "" {
+		segmentBookingID := domain.SegmentBookingRef(event.SegmentBookingID)
+		if err := segmentBookingID.Validate(); err != nil {
+			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+		}
+		key := ticketKey(entitlementID, segmentBookingID)
+		projection, ok := s.tickets[key]
+		if !ok {
+			return nil
+		}
+		projection.Voided = true
+		s.tickets[key] = projection
+		return nil
+	}
+	for key, projection := range s.tickets {
+		if projection.EntitlementID == entitlementID {
+			projection.Voided = true
+			s.tickets[key] = projection
+		}
+	}
+	return nil
+}
+
+func (s *Service) readyRecordForCommand(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
+	s.mu.Lock()
+	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
+	s.mu.Unlock()
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if projection.JourneyOrderID != journeyOrderID || projection.TravelerID != travelerID {
+		return nil, fmt.Errorf("%w: command references do not match ticket read model", ErrDomainRuleViolation)
+	}
+	return s.readyRecord(ctx, entitlementID, segmentBookingID, segmentRef)
+}
+
+func (s *Service) readyRecord(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
+	s.mu.Lock()
+	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
+	s.mu.Unlock()
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if projection.Voided {
+		return nil, fmt.Errorf("%w: entitlement is VOIDED", ErrDomainRuleViolation)
+	}
+	if projection.SegmentRef != segmentRef {
+		return nil, fmt.Errorf("%w: segmentRef does not match ticket read model", ErrDomainRuleViolation)
+	}
+	return s.ensureRecordFromProjection(ctx, projection)
+}
+
+func (s *Service) upsertTicketAndRecord(ctx context.Context, projection TicketProjection) error {
+	s.mu.Lock()
+	s.tickets[ticketKey(projection.EntitlementID, projection.SegmentBookingID)] = projection
+	s.mu.Unlock()
+	_, err := s.ensureRecordFromProjection(ctx, projection)
+	return err
+}
+
+func (s *Service) ensureRecordFromProjection(ctx context.Context, projection TicketProjection) (*domain.FulfillmentRecord, error) {
+	record, err := s.repo.FindByEntitlementSegment(ctx, projection.EntitlementID, projection.SegmentBookingID, projection.SegmentRef)
+	if err == nil {
+		return record, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	record, err = domain.NewFulfillmentRecord(domain.FulfillmentRecordID(s.idGen("fr")), projection.EntitlementID, projection.SegmentBookingID, projection.JourneyOrderID, projection.TravelerID, projection.SegmentRef)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	if err := s.repo.Save(ctx, record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+func (p TicketProjection) validate() error {
+	if err := p.EntitlementID.Validate(); err != nil {
+		return err
+	}
+	if err := p.SegmentBookingID.Validate(); err != nil {
+		return err
+	}
+	if err := p.JourneyOrderID.Validate(); err != nil {
+		return err
+	}
+	if err := p.TravelerID.Validate(); err != nil {
+		return err
+	}
+	return p.SegmentRef.Validate()
+}
+
+func ticketKey(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef) string {
+	return string(entitlementID) + "|" + string(segmentBookingID)
 }
 
 func (s *Service) saveAndPublishPending(ctx context.Context, record *domain.FulfillmentRecord, meta CommandMetadata) error {
@@ -257,25 +474,42 @@ func validateVerifyBoarding(cmd VerifyBoardingCommand) error {
 }
 
 func validateNoShow(cmd RecordNoShowCommand) error {
-	if err := cmd.EntitlementID.Validate(); err != nil {
-		return err
-	}
-	if err := cmd.SegmentBookingID.Validate(); err != nil {
-		return err
-	}
-	if err := cmd.JourneyOrderID.Validate(); err != nil {
-		return err
-	}
-	if err := cmd.TravelerID.Validate(); err != nil {
-		return err
-	}
-	if err := cmd.SegmentRef.Validate(); err != nil {
+	if err := validateReferences(cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef); err != nil {
 		return err
 	}
 	if !validNoShowReason(cmd.Reason) {
 		return fmt.Errorf("invalid reason: %s", cmd.Reason)
 	}
 	return nil
+}
+
+func validateSegmentProgress(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef, source domain.FulfillmentSource, occurredAt time.Time, field string) error {
+	if err := validateReferences(entitlementID, segmentBookingID, journeyOrderID, travelerID, segmentRef); err != nil {
+		return err
+	}
+	if !validCompletionSource(domain.CompletionSource(source)) {
+		return fmt.Errorf("invalid source: %s", source)
+	}
+	if occurredAt.IsZero() {
+		return errors.New(field + " is required")
+	}
+	return nil
+}
+
+func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef) error {
+	if err := entitlementID.Validate(); err != nil {
+		return err
+	}
+	if err := segmentBookingID.Validate(); err != nil {
+		return err
+	}
+	if err := journeyOrderID.Validate(); err != nil {
+		return err
+	}
+	if err := travelerID.Validate(); err != nil {
+		return err
+	}
+	return segmentRef.Validate()
 }
 
 func validSource(source domain.FulfillmentSource) bool {
@@ -290,6 +524,15 @@ func validSource(source domain.FulfillmentSource) bool {
 func validNoShowReason(reason domain.NoShowReason) bool {
 	switch reason {
 	case domain.NoShowReasonWindowExpired, domain.NoShowReasonVerificationFailed, domain.NoShowReasonManualRecord:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCompletionSource(source domain.CompletionSource) bool {
+	switch source {
+	case domain.CompletionSourceArrival, domain.CompletionSourceProvider, domain.CompletionSourceAdmin, domain.CompletionSourceSystem:
 		return true
 	default:
 		return false
@@ -321,6 +564,16 @@ type noShowPayload struct {
 	AssessedAt          time.Time                  `json:"assessedAt"`
 }
 
+type segmentCompletedPayload struct {
+	FulfillmentRecordID domain.FulfillmentRecordID `json:"fulfillmentRecordId"`
+	EntitlementID       domain.EntitlementRef      `json:"entitlementId"`
+	SegmentBookingID    domain.SegmentBookingRef   `json:"segmentBookingId"`
+	JourneyOrderID      domain.OrderRef            `json:"journeyOrderId"`
+	TravelerID          domain.TravelerRef         `json:"travelerId"`
+	CompletedAt         time.Time                  `json:"completedAt"`
+	CompletionSource    domain.CompletionSource    `json:"completionSource"`
+}
+
 func MarshalDomainEventPayload(event domain.DomainEvent) (json.RawMessage, error) {
 	var payload any
 	switch e := event.(type) {
@@ -328,6 +581,8 @@ func MarshalDomainEventPayload(event domain.DomainEvent) (json.RawMessage, error
 		payload = boardingPayload{e.FulfillmentRecordID, e.EntitlementID, e.SegmentBookingID, e.JourneyOrderID, e.TravelerID, e.SegmentRef, e.Source, e.SourceEventID, e.OccurredAt().UTC(), e.ReceivedAt.UTC(), e.LocationSnapshot}
 	case domain.NoShowRecordedEvent:
 		payload = noShowPayload{e.FulfillmentRecordID, e.EntitlementID, e.SegmentBookingID, e.JourneyOrderID, e.TravelerID, e.SegmentRef, e.Reason, e.OccurredAt().UTC()}
+	case domain.FulfillmentCompletedEvent:
+		payload = segmentCompletedPayload{e.FulfillmentRecordID, e.EntitlementID, e.SegmentBookingID, e.JourneyOrderID, e.TravelerID, e.OccurredAt().UTC(), e.CompletionSource}
 	default:
 		payload = event
 	}

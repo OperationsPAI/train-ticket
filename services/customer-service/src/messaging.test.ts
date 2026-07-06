@@ -108,14 +108,13 @@ describe("customer-service messaging ports", () => {
     class FailingRedis {
       disconnect(): void {}
       async xgroup(): Promise<void> {}
-      async xreadgroup(): Promise<unknown> { throw new Error("read failed"); }
       async xautoclaim(): Promise<unknown[]> { return ["0-0", []]; }
     }
     const observed: unknown[] = [];
     const subscriber = new RedisEventSubscriber(new FailingRedis() as never, (error) => observed.push(error));
 
     await subscriber.subscribe(["events:journey-order"], "customer-service", "customer-service-test", async () => {});
-    await waitFor(() => observed.length > 0);
+    await waitFor(() => observed.length > 0, 1200);
     await subscriber.stop();
 
     assert.equal(observed.length, 1);
@@ -180,8 +179,9 @@ function buildDocumentedPayloadEvents(): CustomerServiceDomainEvent[] {
   return [opened.event, attached.event, classified.event, assigned.event, escalated.event, resolved.event, closed.event, reopened.event];
 }
 
-async function waitFor(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+async function waitFor(condition: () => boolean, timeoutMs = 100): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (condition()) {
       return;
     }

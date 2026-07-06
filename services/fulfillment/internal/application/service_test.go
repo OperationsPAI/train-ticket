@@ -33,12 +33,21 @@ func (p *failingOncePublisher) Publish(_ context.Context, envelope EventEnvelope
 	return nil
 }
 
+func seedTicket(t *testing.T, service *Service, entitlementID, segmentBookingID, journeyOrderID, travelerID, segmentRef string) {
+	t.Helper()
+	envelope := EventEnvelope{EventID: "evt-seed-" + entitlementID, EventType: "EntitlementIssued", Producer: "entitlement-ticketing", SchemaVersion: 1, Payload: json.RawMessage(`{"entitlementId":"` + entitlementID + `","segmentBookingId":"` + segmentBookingID + `","journeyOrderId":"` + journeyOrderID + `","travelerRef":"` + travelerID + `","segmentRef":"` + segmentRef + `"}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), envelope); err != nil {
+		t.Fatalf("seed ticket: %v", err)
+	}
+}
+
 func TestPublisherWrapsDomainEventInCanonicalEnvelope(t *testing.T) {
 	publisher := &recordingPublisher{}
 	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), func(prefix string) string {
 		return prefix + "-00000000-0000-4000-8000-000000000001"
 	}, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
 
+	seedTicket(t, service, "ent-abc123", "sb-def456", "ord-ghi789", "tvl-jkl012", "seg-mno345")
 	occurredAt := time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)
 	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
 		EntitlementID:    "ent-abc123",
@@ -104,6 +113,7 @@ func TestPublishFailureRetainsPendingEventsForRetry(t *testing.T) {
 	service := NewService(repo, publisher, NewInMemoryConsumedEventLog(), func(prefix string) string {
 		return prefix + "-00000000-0000-7000-8000-000000000001"
 	}, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
+	seedTicket(t, service, "ent-retry1", "sb-retry1", "ord-retry1", "tvl-retry1", "seg-retry1")
 	cmd := VerifyBoardingCommand{
 		EntitlementID:    "ent-retry1",
 		SegmentBookingID: "sb-retry1",
@@ -142,5 +152,53 @@ func TestPublishFailureRetainsPendingEventsForRetry(t *testing.T) {
 	}
 	if got := len(record.PendingEvents()); got != 0 {
 		t.Fatalf("expected pending events cleared after successful retry, got %d", got)
+	}
+}
+
+func TestVerifyBoardingRequiresPreparedTicketAndRejectsVoided(t *testing.T) {
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, nil)
+	cmd := VerifyBoardingCommand{EntitlementID: "ent-missing1", SegmentBookingID: "sb-missing1", JourneyOrderID: "ord-missing1", TravelerID: "tvl-missing1", SegmentRef: "seg-missing1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-missing", OccurredAt: time.Now().UTC()}
+	if _, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found for unprepared ticket, got %v", err)
+	}
+	seedTicket(t, service, "ent-void1", "sb-void1", "ord-void1", "tvl-void1", "seg-void1")
+	voided := EventEnvelope{EventID: "evt-void", EventType: "EntitlementVoided", Producer: "entitlement-ticketing", SchemaVersion: 1, Payload: json.RawMessage(`{"entitlementId":"ent-void1","segmentBookingId":"sb-void1"}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), voided); err != nil {
+		t.Fatal(err)
+	}
+	cmd = VerifyBoardingCommand{EntitlementID: "ent-void1", SegmentBookingID: "sb-void1", JourneyOrderID: "ord-void1", TravelerID: "tvl-void1", SegmentRef: "seg-void1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-void", OccurredAt: time.Now().UTC()}
+	if _, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{}); !errors.Is(err, ErrDomainRuleViolation) {
+		t.Fatalf("expected domain violation for voided ticket, got %v", err)
+	}
+}
+
+func TestFulfillmentCompletedPublishesContractEvent(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
+	seedTicket(t, service, "ent-complete1", "sb-complete1", "ord-complete1", "tvl-complete1", "seg-complete1")
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-complete1", SegmentBookingID: "sb-complete1", JourneyOrderID: "ord-complete1", TravelerID: "tvl-complete1", SegmentRef: "seg-complete1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-complete", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
+	if err != nil {
+		t.Fatalf("boarding: %v", err)
+	}
+	publisher.envelopes = nil
+	completedAt := time.Date(2026, 7, 5, 11, 0, 0, 0, time.UTC)
+	_, err = service.RecordFulfillmentCompleted(context.Background(), FulfillmentCompletedCommand{EntitlementID: "ent-complete1", SegmentBookingID: "sb-complete1", JourneyOrderID: "ord-complete1", TravelerID: "tvl-complete1", SegmentRef: "seg-complete1", CompletionSource: domain.CompletionSourceArrival, CompletedAt: completedAt}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if len(publisher.envelopes) != 1 || publisher.envelopes[0].EventType != "FulfillmentCompleted" {
+		t.Fatalf("unexpected envelopes: %#v", publisher.envelopes)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(publisher.envelopes[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"fulfillmentRecordId", "entitlementId", "segmentBookingId", "journeyOrderId", "travelerId", "completedAt", "completionSource"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("missing %s in %#v", key, payload)
+		}
+	}
+	if _, ok := payload["segmentRef"]; ok {
+		t.Fatalf("FulfillmentCompleted payload must match contract exactly, got segmentRef")
 	}
 }

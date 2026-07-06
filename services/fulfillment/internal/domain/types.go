@@ -89,13 +89,13 @@ func (r SegmentRef) Validate() error {
 type FulfillmentStatus string
 
 const (
-	FulfillmentStatusNotOpened  FulfillmentStatus = "NOT_OPENED"
-	FulfillmentStatusReady      FulfillmentStatus = "READY"
-	FulfillmentStatusCheckedIn  FulfillmentStatus = "CHECKED_IN"
-	FulfillmentStatusBoarded    FulfillmentStatus = "BOARDED"
-	FulfillmentStatusCompleted  FulfillmentStatus = "COMPLETED"
-	FulfillmentStatusNoShow     FulfillmentStatus = "NO_SHOW"
-	FulfillmentStatusCancelled  FulfillmentStatus = "CANCELLED"
+	FulfillmentStatusNotOpened FulfillmentStatus = "NOT_OPENED"
+	FulfillmentStatusReady     FulfillmentStatus = "READY"
+	FulfillmentStatusCheckedIn FulfillmentStatus = "CHECKED_IN"
+	FulfillmentStatusBoarded   FulfillmentStatus = "BOARDED"
+	FulfillmentStatusCompleted FulfillmentStatus = "COMPLETED"
+	FulfillmentStatusNoShow    FulfillmentStatus = "NO_SHOW"
+	FulfillmentStatusCancelled FulfillmentStatus = "CANCELLED"
 )
 
 // FulfillmentSource represents the source of a fulfillment fact.
@@ -191,7 +191,7 @@ type BoardingVerifiedEvent struct {
 	LocationSnapshot    *LocationSnapshot
 }
 
-func (e BoardingVerifiedEvent) EventType() string   { return "BoardingVerified" }
+func (e BoardingVerifiedEvent) EventType() string     { return "BoardingVerified" }
 func (e BoardingVerifiedEvent) OccurredAt() time.Time { return e.eventTime }
 
 // NoShowRecordedEvent is emitted when a no-show is recorded.
@@ -206,7 +206,7 @@ type NoShowRecordedEvent struct {
 	assessedAt          time.Time
 }
 
-func (e NoShowRecordedEvent) EventType() string   { return "NoShowRecorded" }
+func (e NoShowRecordedEvent) EventType() string     { return "NoShowRecorded" }
 func (e NoShowRecordedEvent) OccurredAt() time.Time { return e.assessedAt }
 
 // FulfillmentCompletedEvent is emitted when fulfillment is completed.
@@ -220,7 +220,7 @@ type FulfillmentCompletedEvent struct {
 	CompletionSource    CompletionSource
 }
 
-func (e FulfillmentCompletedEvent) EventType() string   { return "FulfillmentCompleted" }
+func (e FulfillmentCompletedEvent) EventType() string     { return "FulfillmentCompleted" }
 func (e FulfillmentCompletedEvent) OccurredAt() time.Time { return e.completedAt }
 
 // EvidenceDisputeOpenedEvent is emitted when a dispute is opened.
@@ -234,7 +234,7 @@ type EvidenceDisputeOpenedEvent struct {
 	OpenedBy            string
 }
 
-func (e EvidenceDisputeOpenedEvent) EventType() string   { return "EvidenceDisputeOpened" }
+func (e EvidenceDisputeOpenedEvent) EventType() string     { return "EvidenceDisputeOpened" }
 func (e EvidenceDisputeOpenedEvent) OccurredAt() time.Time { return e.openedAt }
 
 // EvidenceDisputeResolvedEvent is emitted when a dispute is resolved.
@@ -247,7 +247,7 @@ type EvidenceDisputeResolvedEvent struct {
 	ResolvedBy          string
 }
 
-func (e EvidenceDisputeResolvedEvent) EventType() string   { return "EvidenceDisputeResolved" }
+func (e EvidenceDisputeResolvedEvent) EventType() string     { return "EvidenceDisputeResolved" }
 func (e EvidenceDisputeResolvedEvent) OccurredAt() time.Time { return e.resolvedAt }
 
 // ============================================================

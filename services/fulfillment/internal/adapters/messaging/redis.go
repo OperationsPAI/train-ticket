@@ -39,8 +39,10 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, streams []string, group
 	return s.bus.Subscribe(ctx, kitmsg.Subscription{Streams: streams, Group: group, ConsumerName: consumerName}, kitmsg.Handler(handler))
 }
 
-func FulfillmentSubscriptions() []string { return []string{streamPrefix + "entitlement-ticketing"} }
-func FulfillmentGroup() string           { return consumerGroup }
+func FulfillmentSubscriptions() []string {
+	return []string{streamPrefix + "entitlement-ticketing", streamPrefix + "booking-orchestration"}
+}
+func FulfillmentGroup() string { return consumerGroup }
 
 func SubscribeFulfillment(ctx context.Context, subscriber application.EventSubscriber, consumerName string, handler application.EventHandler) error {
 	return subscriber.Subscribe(ctx, FulfillmentSubscriptions(), FulfillmentGroup(), consumerName, handler)

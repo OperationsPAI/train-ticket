@@ -223,8 +223,8 @@ func (r *FulfillmentRecord) CompleteFulfillment(source CompletionSource, complet
 	if r.Status == FulfillmentStatusCompleted {
 		return nil // idempotent
 	}
-	if r.Status != FulfillmentStatusBoarded && r.Status != FulfillmentStatusCheckedIn && r.Status != FulfillmentStatusReady {
-		return fmt.Errorf("cannot complete fulfillment in status %s (must be boarded, checked-in, or ready)", r.Status)
+	if r.Status != FulfillmentStatusBoarded {
+		return fmt.Errorf("cannot complete fulfillment in status %s (must be boarded)", r.Status)
 	}
 
 	prev := r.Status
