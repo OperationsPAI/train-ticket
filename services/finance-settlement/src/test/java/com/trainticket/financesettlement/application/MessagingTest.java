@@ -4,6 +4,7 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -190,6 +191,68 @@ class MessagingTest {
         EventEnvelope reduction = publisher.published.stream().filter(e -> "RevenueRecognized".equals(e.eventType()) && "refund".equals(((Map<?, ?>) e.payload()).get("componentCode"))).findFirst().orElseThrow();
         assertEquals(-8750L, ((Map<?, ?>) ((Map<?, ?>) reduction.payload()).get("amount")).get("minorUnits"));
         assertTrue(publisher.published.stream().anyMatch(e -> "ReconciliationCompleted".equals(e.eventType())));
+    }
+
+    @Test
+    void operationalFactUsesSegmentReservationRequestedIndexForOrderReference() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e207", "SegmentReservationRequested", Instant.parse("2026-07-03T10:28:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "booking-orchestration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+                "journeyOrderId", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321",
+                "segmentRef", "seg-1",
+                "travelerRef", "trav-1",
+                "idempotencyKey", "idem-1")));
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e208", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "payment", 1, Map.of(
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789",
+                "businessRef", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 35000),
+                "channel", "wechat_pay",
+                "channelTransactionId", "wx_txn_20260703_a1b2c3")));
+        HandlerResult confirmed = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e209", "ProviderReservationConfirmed", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111",
+                "providerReference", "pr-1",
+                "normalizedEvidence", "confirmed")));
+
+        assertEquals(HandlerResult.SUCCESS, confirmed);
+        EventEnvelope completed = publisher.published.stream().filter(e -> "ReconciliationCompleted".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals("ord-0194f2e0-7b3e-7610-0284-5c26e8b0c321", ((Map<?, ?>) completed.payload()).get("orderId"));
+        assertFalse(((String) ((Map<?, ?>) completed.payload()).get("orderId")).startsWith("order-unknown-for-"));
+    }
+
+    @Test
+    void operationalFactWithoutSegmentIndexOpensUnassignedCaseWithoutSyntheticOrderKey() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        HandlerResult result = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e210", "SegmentBookingCancelled", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "booking-orchestration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+                "reason", "refund")));
+
+        assertEquals(HandlerResult.SUCCESS, result);
+        EventEnvelope opened = publisher.published.stream().filter(e -> "ReconciliationCaseOpened".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals("", ((Map<?, ?>) opened.payload()).get("orderId"));
+        assertTrue(((String) ((Map<?, ?>) opened.payload()).get("description")).contains("missing SegmentReservationRequested index"));
+        assertFalse(((String) ((Map<?, ?>) opened.payload()).get("description")).contains("order-unknown-for-"));
     }
 
     private static final class RecordingPublisher implements EventPublisher {

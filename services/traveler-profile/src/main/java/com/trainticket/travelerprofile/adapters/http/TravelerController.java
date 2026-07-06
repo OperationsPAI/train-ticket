@@ -1,6 +1,6 @@
 package com.trainticket.travelerprofile.adapters.http;
 
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.trainticket.travelerprofile.application.ApiDocumentType;
 import com.trainticket.travelerprofile.application.CreateTravelerCommand;
 import com.trainticket.travelerprofile.application.EligibilityResult;

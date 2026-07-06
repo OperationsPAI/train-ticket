@@ -1,7 +1,5 @@
 package com.trainticket.walletpromotion;
 
-import com.trainticket.platformkit.messaging.PrefixedIds;
-
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,7 +29,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
         FilterChain filterChain
     ) throws ServletException, IOException {
         String requestId = headerOrGenerated(request, REQUEST_ID_HEADER);
-        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, PrefixedIds.newCorrelationId());
+        String correlationId = headerOrDefault(request, CORRELATION_ID_HEADER, requestId);
         RequestTraceContext context = new RequestTraceContext(
             requestId,
             correlationId,

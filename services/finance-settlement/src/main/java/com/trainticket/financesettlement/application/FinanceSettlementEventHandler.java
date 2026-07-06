@@ -18,13 +18,14 @@ import java.util.concurrent.ConcurrentMap;
 public class FinanceSettlementEventHandler implements EventSubscriber.EventHandler {
     private final ConsumedEventLogRepository consumedEvents;
     private final PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
+    private final SegmentBookingOrderReferenceRepository segmentBookingOrderReferences;
     private final ConcurrentMap<String, PaymentCaptureFact> capturesByOrderId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Money> approvedRefundsByCaseId = new ConcurrentHashMap<>();
     private final Clock clock;
     private final FinanceSettlementApplicationService service;
 
     public FinanceSettlementEventHandler(ConsumedEventLogRepository consumedEvents, Clock clock) {
-        this(consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), clock, null);
+        this(consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(), clock, null);
     }
 
     public FinanceSettlementEventHandler(
@@ -33,8 +34,19 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Clock clock,
         FinanceSettlementApplicationService service
     ) {
+        this(consumedEvents, paymentIntentOrderReferences, new InMemorySegmentBookingOrderReferenceRepository(), clock, service);
+    }
+
+    public FinanceSettlementEventHandler(
+        ConsumedEventLogRepository consumedEvents,
+        PaymentIntentOrderReferenceRepository paymentIntentOrderReferences,
+        SegmentBookingOrderReferenceRepository segmentBookingOrderReferences,
+        Clock clock,
+        FinanceSettlementApplicationService service
+    ) {
         this.consumedEvents = consumedEvents;
         this.paymentIntentOrderReferences = paymentIntentOrderReferences;
+        this.segmentBookingOrderReferences = segmentBookingOrderReferences;
         this.clock = clock;
         this.service = service;
     }
@@ -65,6 +77,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Map<String, Object> payload = (Map<String, Object>) envelope.payload();
         switch (envelope.eventType()) {
             case "PaymentIntentCreated" -> rememberPaymentIntentOrderReference(payload);
+            case "SegmentReservationRequested" -> rememberSegmentBookingOrderReference(payload);
             case "PaymentCaptured" -> {
                 if (service != null) recognizeCapturedPayment(envelope, payload);
             }
@@ -81,6 +94,10 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
     private void rememberPaymentIntentOrderReference(Map<String, Object> payload) {
         paymentIntentOrderReferences.save(text(payload, "paymentIntentId"), text(payload, "businessRef"));
+    }
+
+    private void rememberSegmentBookingOrderReference(Map<String, Object> payload) {
+        segmentBookingOrderReferences.save(text(payload, "segmentBookingId"), text(payload, "journeyOrderId"));
     }
 
     private void recognizeCapturedPayment(EventEnvelope envelope, Map<String, Object> payload) {
@@ -107,9 +124,25 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private void reconcileOperationalFact(EventEnvelope envelope, Map<String, Object> payload) {
-        String orderId = optionalText(payload, "journeyOrderId")
-            .or(() -> optionalText(payload, "orderId"))
-            .orElse(optionalText(payload, "businessRef").orElse("order-unknown-for-" + text(payload, "segmentBookingId")));
+        String segmentBookingId = optionalText(payload, "segmentBookingId").orElse("");
+        Optional<String> orderReference = orderReferenceForOperationalFact(payload, segmentBookingId);
+        if (orderReference.isEmpty()) {
+            ReconciliationCase open = ReconciliationCase.open(
+                "",
+                "",
+                "missing-in-platform",
+                Money.zero(Currency.getInstance("CNY")),
+                Money.zero(Currency.getInstance("CNY")),
+                envelope.eventType() + " could not be assigned to an order; missing SegmentReservationRequested index for segmentBookingId " + segmentBookingId,
+                clock.instant(),
+                causationIdOrEventId(envelope),
+                envelope.correlationId()
+            );
+            service.saveAndPublish(open);
+            return;
+        }
+
+        String orderId = orderReference.get();
         PaymentCaptureFact capture = capturesByOrderId.get(orderId);
         Money actual = capture == null ? Money.zero(Currency.getInstance("CNY")) : capture.amount();
         List<RevenueRecognition> recognitions = serviceRevenue(orderId);
@@ -141,6 +174,19 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             causationIdOrEventId(envelope),
             envelope.correlationId()
         );
+    }
+
+    private Optional<String> orderReferenceForOperationalFact(Map<String, Object> payload, String segmentBookingId) {
+        Optional<String> explicitOrderReference = optionalText(payload, "journeyOrderId")
+            .or(() -> optionalText(payload, "orderId"))
+            .or(() -> optionalText(payload, "businessRef"));
+        if (explicitOrderReference.isPresent()) {
+            return explicitOrderReference;
+        }
+        if (segmentBookingId.isBlank()) {
+            return Optional.empty();
+        }
+        return segmentBookingOrderReferences.findOrderReference(segmentBookingId);
     }
 
     private void rememberApprovedRefund(Map<String, Object> payload) {
