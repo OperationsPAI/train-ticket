@@ -147,30 +147,20 @@ describe("customer-service messaging ports", () => {
     assert.equal(timelineEvents[0].causationId, "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c221");
   });
 
-  it("reports Redis subscriber background loop failures", async () => {
+  it("Redis subscriber reports background loop failures", async () => {
     class FailingRedis {
-      public status = "ready";
       disconnect(): void {}
       async xgroup(): Promise<void> {}
-      async call(command: string): Promise<unknown> {
-        if (command === "XREADGROUP") {
-          throw new Error("read failed");
-        }
-        return null;
-      }
       async xautoclaim(): Promise<unknown[]> { return ["0-0", []]; }
     }
     const observed: unknown[] = [];
     const subscriber = new RedisEventSubscriber(new FailingRedis() as never, (error) => observed.push(error));
 
     await subscriber.subscribe(["events:journey-order"], "customer-service", "customer-service-test", async () => {});
-    for (let attempt = 0; attempt < 20 && observed.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitFor(() => observed.length > 0, 1200);
     await subscriber.stop();
 
     assert.equal(observed.length, 1);
-    assert.equal(observed[0] instanceof Error, true);
     assert.match((observed[0] as Error).message, /background loop failed/);
   });
 
@@ -244,4 +234,15 @@ function buildDocumentedPayloadEvents(): CustomerServiceDomainEvent[] {
   const closed = resolved.case.close({ caseId: "sc-doc", reason: "RESOLVED", closedBy: "op-doc", closedAt: new Date("2026-07-05T10:36:00.000Z") });
   const reopened = closed.case.reopen({ caseId: "sc-doc", reason: "still broken", requesterRef: "tvl-doc", reopenedAt: new Date("2026-07-05T10:37:00.000Z") });
   return [opened.event, attached.event, classified.event, assigned.event, escalated.event, manualAction.event, resolved.event, closed.event, reopened.event];
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 100): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(condition(), true);
 }

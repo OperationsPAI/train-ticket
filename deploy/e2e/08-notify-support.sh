@@ -29,17 +29,21 @@ notification_delivered_for_recipient() { # RECIPIENT_REF -> yes/empty
 import re, os, json
 raw = open("/tmp/notify-support-notification.txt").read()
 recipient = os.environ["RECIPIENT"]
-scheduled = set()
+events = []
 for m in re.finditer(r'\{.*\}', raw):
     try:
-        e = json.loads(m.group(0).encode().decode('unicode_escape'))
+        events.append(json.loads(m.group(0).encode().decode('unicode_escape')))
     except Exception:
-        continue
+        pass
+scheduled = set()
+for e in events:
     payload = e.get("payload", {})
     task_id = payload.get("notificationTaskId")
     if e.get("eventType") == "NotificationScheduled" and payload.get("recipientRef") == recipient and isinstance(task_id, str):
         scheduled.add(task_id)
-    elif e.get("eventType") == "NotificationDelivered" and task_id in scheduled:
+for e in events:
+    payload = e.get("payload", {})
+    if e.get("eventType") == "NotificationDelivered" and payload.get("notificationTaskId") in scheduled:
         print("yes")
         break
 PYEX

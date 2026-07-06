@@ -371,7 +371,7 @@ func TestCompleteFulfillment(t *testing.T) {
 	}
 }
 
-func TestCompleteFulfillmentFromCheckedIn(t *testing.T) {
+func TestCompleteFulfillmentRejectsWithoutBoarding(t *testing.T) {
 	rec, _ := NewFulfillmentRecord(
 		"fr-abc123", "ent-def456", "sb-ghi789", "ord-jkl012", "tvl-mno345", "seg-pqr678",
 	)
@@ -382,11 +382,8 @@ func TestCompleteFulfillmentFromCheckedIn(t *testing.T) {
 	rec.Events()
 
 	err := rec.CompleteFulfillment(CompletionSourceProvider, now.Add(3*time.Hour))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rec.Status != FulfillmentStatusCompleted {
-		t.Fatalf("expected COMPLETED, got %s", rec.Status)
+	if err == nil || !strings.Contains(err.Error(), "must be boarded") {
+		t.Fatalf("expected boarding precondition error, got %v", err)
 	}
 }
 

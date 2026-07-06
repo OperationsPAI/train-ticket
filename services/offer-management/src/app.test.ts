@@ -453,11 +453,11 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
   const occurredAt = now.toISOString();
-  const inputHash = contractInputHash(["seg-1"], "web", ["tvl-001", "tvl-002"]);
+  const multiTravelerInputHash = contractInputHash(["seg-1"], "web", ["tvl-001", "tvl-002"]);
   const singleTravelerInputHash = contractInputHash(["seg-1"], "web", ["tvl-001"]);
 
   await applyUpstreamEvent(repository, makeEnvelope("ItineraryProposed", "trip-planning", {
-    intentRef: inputHash,
+    intentRef: "intent-1",
     planningSnapshotRefs: ["plan-1"],
     itineraries: [{
       itineraryRef: "itin-456",
@@ -468,7 +468,7 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   }));
   await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
     quoteId: "fq-1",
-    inputHash,
+    inputHash: multiTravelerInputHash,
     travelerRefs: ["tvl-001", "tvl-002"],
     channel: "web",
     currency: "CNY",

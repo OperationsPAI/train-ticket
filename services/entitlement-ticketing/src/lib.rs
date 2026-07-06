@@ -565,12 +565,12 @@ pub enum EntitlementStatus {
     Suspended { previous: Box<EntitlementStatus> },
     Voided,
     Expired,
-    Used,
+    NoShow,
 }
 
 impl EntitlementStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Voided | Self::Expired | Self::Used)
+        matches!(self, Self::Voided | Self::Expired | Self::NoShow)
     }
 
     pub fn is_frozen(&self) -> bool {
@@ -584,6 +584,7 @@ pub enum FulfillmentUseState {
     CheckInAccepted { fact_ref: FulfillmentFactRef },
     BoardingVerified { fact_ref: FulfillmentFactRef },
     BoardingComplete { fact_ref: FulfillmentFactRef },
+    NoShowRecorded { fact_ref: FulfillmentFactRef },
 }
 
 impl FulfillmentUseState {
@@ -696,7 +697,7 @@ impl Entitlement {
                 return Err(EntitlementError::IssueFailureNotRetryable);
             }
             EntitlementStatus::Suspended { .. } => return Err(EntitlementError::EntitlementFrozen),
-            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::Used => {
+            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::NoShow => {
                 return Err(EntitlementError::TerminalStatus(self.status.clone()));
             }
         }
@@ -742,7 +743,7 @@ impl Entitlement {
                 return Err(EntitlementError::IssueFailureNotRetryable);
             }
             EntitlementStatus::Suspended { .. } => return Err(EntitlementError::EntitlementFrozen),
-            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::Used => {
+            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::NoShow => {
                 return Err(EntitlementError::TerminalStatus(self.status.clone()));
             }
         }
@@ -770,7 +771,7 @@ impl Entitlement {
         }
         if matches!(
             self.status,
-            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::Used
+            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::NoShow
         ) {
             return Err(EntitlementError::TerminalStatus(self.status.clone()));
         }
@@ -828,7 +829,7 @@ impl Entitlement {
         }
         if matches!(
             self.status,
-            EntitlementStatus::Expired | EntitlementStatus::Used
+            EntitlementStatus::Expired | EntitlementStatus::NoShow
         ) || self.fulfillment_use_state.blocks_normal_void()
         {
             return Err(EntitlementError::VoidRequiresCompensation);
@@ -872,7 +873,7 @@ impl Entitlement {
         }
         if matches!(
             self.status,
-            EntitlementStatus::Voided | EntitlementStatus::Used
+            EntitlementStatus::Voided | EntitlementStatus::NoShow
         ) {
             return Err(EntitlementError::TerminalStatus(self.status.clone()));
         }
@@ -901,7 +902,7 @@ impl Entitlement {
         match self.status {
             EntitlementStatus::Issued => {}
             EntitlementStatus::Suspended { .. } => return Err(EntitlementError::EntitlementFrozen),
-            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::Used => {
+            EntitlementStatus::Voided | EntitlementStatus::Expired | EntitlementStatus::NoShow => {
                 return Err(EntitlementError::TerminalStatus(self.status.clone()));
             }
             EntitlementStatus::Requested | EntitlementStatus::IssueFailed { .. } => {
@@ -935,13 +936,37 @@ impl Entitlement {
                 }])
             }
             FulfillmentFact::BoardingComplete { fact_ref } => {
+                if !matches!(
+                    self.fulfillment_use_state,
+                    FulfillmentUseState::BoardingVerified { .. }
+                ) {
+                    return Err(EntitlementError::BoardingRequiredForCompletion);
+                }
                 self.fulfillment_use_state = FulfillmentUseState::BoardingComplete {
                     fact_ref: fact_ref.clone(),
                 };
-                self.status = EntitlementStatus::Used;
-                Ok(vec![DomainEvent::EntitlementUsed {
+                Ok(vec![DomainEvent::FulfillmentUseFactAccepted {
                     entitlement_id: self.id.clone(),
-                    fulfillment_fact_ref: fact_ref,
+                    fact_ref,
+                    use_state: self.fulfillment_use_state.clone(),
+                    audit,
+                }])
+            }
+            FulfillmentFact::NoShowRecorded { fact_ref } => {
+                if !matches!(
+                    self.fulfillment_use_state,
+                    FulfillmentUseState::NotUsed | FulfillmentUseState::CheckInAccepted { .. }
+                ) {
+                    return Err(EntitlementError::NoShowAfterBoarding);
+                }
+                self.fulfillment_use_state = FulfillmentUseState::NoShowRecorded {
+                    fact_ref: fact_ref.clone(),
+                };
+                self.status = EntitlementStatus::NoShow;
+                Ok(vec![DomainEvent::FulfillmentUseFactAccepted {
+                    entitlement_id: self.id.clone(),
+                    fact_ref,
+                    use_state: self.fulfillment_use_state.clone(),
                     audit,
                 }])
             }
@@ -1121,6 +1146,7 @@ pub enum FulfillmentFact {
     CheckInSucceeded { fact_ref: FulfillmentFactRef },
     BoardingVerified { fact_ref: FulfillmentFactRef },
     BoardingComplete { fact_ref: FulfillmentFactRef },
+    NoShowRecorded { fact_ref: FulfillmentFactRef },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1185,11 +1211,6 @@ pub enum DomainEvent {
         use_state: FulfillmentUseState,
         audit: EntitlementLifecycleAudit,
     },
-    EntitlementUsed {
-        entitlement_id: EntitlementId,
-        fulfillment_fact_ref: FulfillmentFactRef,
-        audit: EntitlementLifecycleAudit,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1214,6 +1235,8 @@ pub enum EntitlementError {
     TerminalStatus(EntitlementStatus),
     ExceptionalVoidRuleRequired,
     VoidRequiresCompensation,
+    BoardingRequiredForCompletion,
+    NoShowAfterBoarding,
 }
 
 impl fmt::Display for EntitlementError {
@@ -1253,6 +1276,10 @@ impl fmt::Display for EntitlementError {
                 f,
                 "used or boarding-complete entitlements require compensation instead of normal void"
             ),
+            Self::BoardingRequiredForCompletion => {
+                write!(f, "segment completion requires prior boarding verification")
+            }
+            Self::NoShowAfterBoarding => write!(f, "no-show cannot be recorded after boarding"),
         }
     }
 }
@@ -1563,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_void_is_rejected_after_boarding_or_used_facts() {
+    fn normal_void_is_rejected_after_boarding_facts() {
         let mut entitlement = requested("ent-6", "traveler-1", "booking-1");
         let mut registry = CredentialRegistry::new();
         entitlement
@@ -2295,7 +2322,15 @@ impl InMemoryEntitlementService {
 
     async fn apply_subscribed_event(&self, envelope: application::EventEnvelope) -> ApiResult<()> {
         match envelope.event_type.as_str() {
-            "BoardingVerified" => self.apply_boarding_verified(envelope.payload),
+            "BoardingVerified" => {
+                self.apply_boarding_verified(envelope.payload, envelope.correlation_id)
+            }
+            "FulfillmentCompleted" => {
+                self.apply_segment_completed(envelope.payload, envelope.correlation_id)
+            }
+            "NoShowRecorded" => {
+                self.apply_no_show_recorded(envelope.payload, envelope.correlation_id)
+            }
             "PostSalesApproved" => {
                 self.apply_post_sales_approved(envelope.payload, envelope.correlation_id)
                     .await
@@ -2305,7 +2340,7 @@ impl InMemoryEntitlementService {
         }
     }
 
-    fn apply_boarding_verified(&self, payload: Value) -> ApiResult<()> {
+    fn apply_boarding_verified(&self, payload: Value, correlation_id: String) -> ApiResult<()> {
         let entitlement_id = payload
             .get("entitlementId")
             .and_then(Value::as_str)
@@ -2333,10 +2368,96 @@ impl InMemoryEntitlementService {
                     fact_ref: FulfillmentFactRef::new(fact_ref.to_string())
                         .map_err(ApiErrorKind::from)?,
                 },
-                audit: audit_builder("corr-subscriber", "event bus boarding verified")
+                audit: audit_builder(&correlation_id, "event bus boarding verified")
                     .map_err(ApiErrorKind::from)?,
             })
             .map_err(ApiErrorKind::from)?;
+        if let Some(details) = state.entitlements.get_mut(&entitlement_id) {
+            details.status = EntitlementStatusDto::Boarded;
+        }
+        Ok(())
+    }
+
+    fn apply_segment_completed(&self, payload: Value, correlation_id: String) -> ApiResult<()> {
+        let entitlement_id = payload
+            .get("entitlementId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiErrorKind::ValidationFailed("entitlementId is required".to_string()))?
+            .to_string();
+        validate_prefixed_uuid(&entitlement_id, "entitlementId", "ent-")?;
+        let fact_ref = payload
+            .get("fulfillmentRecordId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ApiErrorKind::ValidationFailed("fulfillmentRecordId is required".to_string())
+            })?
+            .to_string();
+        let mut state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        let aggregate = state
+            .aggregates
+            .get_mut(&entitlement_id)
+            .ok_or_else(|| ApiErrorKind::NotFound("entitlement aggregate not found".to_string()))?;
+        let accepted = aggregate.accept_fulfillment_fact(AcceptFulfillmentFact {
+            command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                .map_err(ApiErrorKind::from)?,
+            fact: FulfillmentFact::BoardingComplete {
+                fact_ref: FulfillmentFactRef::new(fact_ref).map_err(ApiErrorKind::from)?,
+            },
+            audit: audit_builder(&correlation_id, "event bus fulfillment completed")
+                .map_err(ApiErrorKind::from)?,
+        });
+        if matches!(
+            accepted,
+            Err(EntitlementError::BoardingRequiredForCompletion)
+        ) {
+            return Ok(());
+        }
+        accepted.map_err(ApiErrorKind::from)?;
+        if let Some(details) = state.entitlements.get_mut(&entitlement_id) {
+            details.status = EntitlementStatusDto::Boarded;
+        }
+        Ok(())
+    }
+
+    fn apply_no_show_recorded(&self, payload: Value, correlation_id: String) -> ApiResult<()> {
+        let entitlement_id = payload
+            .get("entitlementId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiErrorKind::ValidationFailed("entitlementId is required".to_string()))?
+            .to_string();
+        validate_prefixed_uuid(&entitlement_id, "entitlementId", "ent-")?;
+        let fact_ref = payload
+            .get("fulfillmentRecordId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ApiErrorKind::ValidationFailed("fulfillmentRecordId is required".to_string())
+            })?
+            .to_string();
+        let mut state = self
+            .state
+            .lock()
+            .expect("entitlement service lock poisoned");
+        let aggregate = state
+            .aggregates
+            .get_mut(&entitlement_id)
+            .ok_or_else(|| ApiErrorKind::NotFound("entitlement aggregate not found".to_string()))?;
+        aggregate
+            .accept_fulfillment_fact(AcceptFulfillmentFact {
+                command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
+                    .map_err(ApiErrorKind::from)?,
+                fact: FulfillmentFact::NoShowRecorded {
+                    fact_ref: FulfillmentFactRef::new(fact_ref).map_err(ApiErrorKind::from)?,
+                },
+                audit: audit_builder(&correlation_id, "event bus no-show recorded")
+                    .map_err(ApiErrorKind::from)?,
+            })
+            .map_err(ApiErrorKind::from)?;
+        if let Some(details) = state.entitlements.get_mut(&entitlement_id) {
+            details.status = EntitlementStatusDto::NoShow;
+        }
         Ok(())
     }
 
@@ -3083,6 +3204,8 @@ impl From<EntitlementError> for ApiErrorKind {
             | EntitlementError::NotSuspended
             | EntitlementError::TerminalStatus(_)
             | EntitlementError::VoidRequiresCompensation
+            | EntitlementError::BoardingRequiredForCompletion
+            | EntitlementError::NoShowAfterBoarding
             | EntitlementError::ExceptionalVoidRuleRequired
             | EntitlementError::AlreadyIssued
             | EntitlementError::EntitlementFrozen
@@ -3098,6 +3221,123 @@ impl From<EntitlementError> for ApiErrorKind {
 #[cfg(test)]
 mod api_domain_wiring_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fulfillment_events_drive_boarded_completion_and_noshow_statuses() {
+        let service = InMemoryEntitlementService::default();
+        let boarded = service
+            .issue(
+                IssueEntitlementRequest {
+                    segment_booking_id: "sb-0194f2e0-7b3e-7610-8284-5c26e8b0aa11".to_string(),
+                    journey_order_id: "ord-0194f2e0-7b3e-7610-8284-5c26e8b0aa12".to_string(),
+                    traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0aa13".to_string(),
+                    segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0aa14".to_string(),
+                    issue_purpose: IssuePurposeDto::Initial,
+                },
+                "0194f2e0-7b3e-7610-8284-5c26e8b0aa01".to_string(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0aa02".to_string(),
+            )
+            .await
+            .unwrap();
+        service
+            .apply_subscribed_event(application::EventEnvelope::new(
+                "BoardingVerified",
+                current_rfc3339(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0aa03",
+                Some("evt-0194f2e0-7b3e-7610-8284-5c26e8b0aa04"),
+                "fulfillment",
+                json!({"fulfillmentRecordId":"fr-0194f2e0-7b3e-7610-8284-5c26e8b0aa05","entitlementId": boarded.entitlement_id,"segmentBookingId":"sb-0194f2e0-7b3e-7610-8284-5c26e8b0aa11","sourceEventId":"scan-aa"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .get(boarded.entitlement_id.clone())
+                .await
+                .unwrap()
+                .status,
+            EntitlementStatusDto::Boarded
+        );
+        service
+            .apply_subscribed_event(application::EventEnvelope::new(
+                "FulfillmentCompleted",
+                current_rfc3339(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0aa06",
+                Some("evt-0194f2e0-7b3e-7610-8284-5c26e8b0aa07"),
+                "fulfillment",
+                json!({"fulfillmentRecordId":"fr-0194f2e0-7b3e-7610-8284-5c26e8b0aa05","entitlementId": boarded.entitlement_id,"segmentBookingId":"sb-0194f2e0-7b3e-7610-8284-5c26e8b0aa11"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            service.get(boarded.entitlement_id).await.unwrap().status,
+            EntitlementStatusDto::Boarded
+        );
+
+        let no_show = service
+            .issue(
+                IssueEntitlementRequest {
+                    segment_booking_id: "sb-0194f2e0-7b3e-7610-8284-5c26e8b0bb11".to_string(),
+                    journey_order_id: "ord-0194f2e0-7b3e-7610-8284-5c26e8b0bb12".to_string(),
+                    traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0bb13".to_string(),
+                    segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0bb14".to_string(),
+                    issue_purpose: IssuePurposeDto::Initial,
+                },
+                "0194f2e0-7b3e-7610-8284-5c26e8b0bb01".to_string(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0bb02".to_string(),
+            )
+            .await
+            .unwrap();
+        service
+            .apply_subscribed_event(application::EventEnvelope::new(
+                "NoShowRecorded",
+                current_rfc3339(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0bb03",
+                Some("evt-0194f2e0-7b3e-7610-8284-5c26e8b0bb04"),
+                "fulfillment",
+                json!({"fulfillmentRecordId":"fr-0194f2e0-7b3e-7610-8284-5c26e8b0bb05","entitlementId": no_show.entitlement_id,"segmentBookingId":"sb-0194f2e0-7b3e-7610-8284-5c26e8b0bb11"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            service.get(no_show.entitlement_id).await.unwrap().status,
+            EntitlementStatusDto::NoShow
+        );
+    }
+
+    #[tokio::test]
+    async fn fulfillment_completed_without_boarding_is_idempotent_noop() {
+        let service = InMemoryEntitlementService::default();
+        let issued = service
+            .issue(
+                IssueEntitlementRequest {
+                    segment_booking_id: "sb-0194f2e0-7b3e-7610-8284-5c26e8b0cc11".to_string(),
+                    journey_order_id: "ord-0194f2e0-7b3e-7610-8284-5c26e8b0cc12".to_string(),
+                    traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0cc13".to_string(),
+                    segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0cc14".to_string(),
+                    issue_purpose: IssuePurposeDto::Initial,
+                },
+                "0194f2e0-7b3e-7610-8284-5c26e8b0cc01".to_string(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cc02".to_string(),
+            )
+            .await
+            .unwrap();
+        service
+            .handle_subscribed_event(application::EventEnvelope::new(
+                "FulfillmentCompleted",
+                current_rfc3339(),
+                "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cc03",
+                Some("evt-0194f2e0-7b3e-7610-8284-5c26e8b0cc04"),
+                "fulfillment",
+                json!({"fulfillmentRecordId":"fr-0194f2e0-7b3e-7610-8284-5c26e8b0cc05","entitlementId": issued.entitlement_id}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            service.get(issued.entitlement_id).await.unwrap().status,
+            EntitlementStatusDto::Issued
+        );
+    }
 
     #[tokio::test]
     async fn http_application_service_maps_domain_invariant_to_domain_rule_violation() {
