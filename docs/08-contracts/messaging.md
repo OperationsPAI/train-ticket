@@ -204,6 +204,7 @@ plus notification/finance/reporting fan-in.
 | 10 | `events:journey-order` | `post-sales` | JourneyOrderCancelled for post-sales initiation |
 | 11 | `events:journey-order` | `notification` | Order lifecycle events for user notifications |
 | 12 | `events:journey-order` | `customer-service` | Order events for support case context |
+| 12a | `events:journey-order` | `risk-compliance` | JourneyOrderCreated triggers order risk assessment and blocking decisions |
 | 13 | `events:booking-orchestration` | `payment` | SegmentReservationRequested to trigger payment intent creation |
 | 14 | `events:booking-orchestration` | `capacity-availability` | SegmentReservationConfirmed to confirm hold |
 | 15 | `events:booking-orchestration` | `entitlement-ticketing` | SegmentTicketed for entitlement readiness |

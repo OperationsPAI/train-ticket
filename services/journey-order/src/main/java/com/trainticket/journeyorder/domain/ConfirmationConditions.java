@@ -8,7 +8,7 @@ public record ConfirmationConditions(
     boolean riskClear
 ) {
     public static ConfirmationConditions none() {
-        return new ConfirmationConditions(false, false, false, false, true);
+        return new ConfirmationConditions(false, false, false, false, false);
     }
 
     public ConfirmationConditions withBookingSummaryAccepted() {
@@ -25,6 +25,10 @@ public record ConfirmationConditions(
 
     public ConfirmationConditions withEntitlementSummaryAccepted() {
         return new ConfirmationConditions(bookingSummaryAccepted, capacitySummaryAccepted, paymentConditionSatisfied, true, riskClear);
+    }
+
+    public ConfirmationConditions withRiskCleared() {
+        return new ConfirmationConditions(bookingSummaryAccepted, capacitySummaryAccepted, paymentConditionSatisfied, entitlementSummaryAccepted, true);
     }
 
     public ConfirmationConditions withRiskBlocked() {

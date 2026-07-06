@@ -166,6 +166,66 @@ class OrderManagementServiceTest {
                 "idem-nonexist", "corr-1"));
     }
 
+    @Test
+    void riskAssessmentAllowRecordsExplicitConfirmationCondition() {
+        JourneyOrderResult created = service.createOrder(
+            new JourneyOrderRequest("account-risk", "offer-risk", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-risk-allow", "corr-1");
+        published.clear();
+
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c501",
+            "RiskAssessmentResult",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c502",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c503",
+            "risk-compliance",
+            1,
+            Map.of("subjectRef", created.orderId(), "decision", "ALLOW")
+        );
+
+        service.handle(envelope);
+
+        var order = service.getOrder(created.orderId());
+        assertTrue(order.isPresent());
+        assertEquals("CREATED", order.get().status());
+    }
+
+    @Test
+    void riskBlockAppliedCancelsOrderAndLiftedDoesNotReviveCancelledOrder() {
+        JourneyOrderResult created = service.createOrder(
+            new JourneyOrderRequest("account-risk", "offer-block", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-risk-block", "corr-1");
+        published.clear();
+
+        EventEnvelope block = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c601",
+            "RiskBlockApplied",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c602",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c603",
+            "risk-compliance",
+            1,
+            Map.of("subjectRef", created.orderId(), "reasonCode", "HIGH_RISK_SIGNAL")
+        );
+        EventEnvelope lifted = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c604",
+            "RiskBlockLifted",
+            Instant.parse("2026-07-05T10:02:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c602",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c601",
+            "risk-compliance",
+            1,
+            Map.of("subjectRef", created.orderId(), "reasonCode", "MANUAL_REVIEW_CLEARED")
+        );
+
+        service.handle(block);
+        service.handle(lifted);
+
+        assertEquals("CANCELLED", service.getOrder(created.orderId()).get().status());
+        assertEquals(1, published.stream().filter(event -> event.eventType().equals("JourneyOrderCancelled")).count());
+    }
+
     private static void assertNotNull(Object obj) {
         if (obj == null) throw new AssertionError("Expected non-null");
     }

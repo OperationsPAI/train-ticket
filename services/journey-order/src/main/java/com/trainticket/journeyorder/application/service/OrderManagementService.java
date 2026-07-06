@@ -324,9 +324,11 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 case "PaymentCaptured" -> handlePaymentCaptured(envelope);
                 case "PaymentExpired" -> handlePaymentExpired(envelope);
                 case "PostSalesApplied" -> handlePostSalesApplied(envelope);
+                case "RiskAssessmentResult" -> handleRiskAssessmentResult(envelope);
                 case "RiskBlockApplied" -> handleRiskBlockApplied(envelope);
+                case "RiskBlockLifted" -> handleRiskBlockLifted(envelope);
                 case "EntitlementIssued" -> handleEntitlementIssued(envelope);
-                case "OfferExpired", "OfferQuoted", "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged", "RiskAssessmentResult", "RiskBlockLifted" -> new EventSubscriber.Success();
+                case "OfferExpired", "OfferQuoted", "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.FatalError("unsupported event type for journey-order: " + envelope.eventType());
             };
         } catch (RuntimeException ex) {
@@ -391,16 +393,50 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return new EventSubscriber.Success();
     }
 
+    private EventSubscriber.HandlerResult handleRiskAssessmentResult(EventEnvelope envelope) {
+        if (!"ALLOW".equals(textPayload(envelope, "decision", ""))) {
+            return new EventSubscriber.Success();
+        }
+        JourneyOrder order = orderFromPayload(envelope);
+        int eventCount = order.domainEvents().size();
+        order.recordRiskAssessmentAllowed(envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
+            && order.confirmationConditions().canConfirm()) {
+            order.confirm("risk-assessment-allowed", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        }
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
     private EventSubscriber.HandlerResult handleRiskBlockApplied(EventEnvelope envelope) {
         JourneyOrder order = orderFromPayload(envelope);
         int eventCount = order.domainEvents().size();
-        order.cancel(textPayload(envelope, "reason", "risk block applied"), envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        String reason = textPayload(envelope, "reasonCode", textPayload(envelope, "reason", "risk block applied"));
+        order.cancel(reason, envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleRiskBlockLifted(EventEnvelope envelope) {
+        JourneyOrder order = orderFromPayload(envelope);
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CANCELLED) {
+            return new EventSubscriber.Success();
+        }
+        int eventCount = order.domainEvents().size();
+        order.recordRiskBlockLifted(envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
+            && order.confirmationConditions().canConfirm()) {
+            order.confirm("risk-block-lifted", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        }
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private JourneyOrder orderFromPayload(EventEnvelope envelope) {
         String orderId = textPayload(envelope, "orderId", null);
+        if (orderId == null) {
+            orderId = textPayload(envelope, "subjectRef", null);
+        }
         if (orderId == null) {
             orderId = textPayload(envelope, "businessRef", null);
         }

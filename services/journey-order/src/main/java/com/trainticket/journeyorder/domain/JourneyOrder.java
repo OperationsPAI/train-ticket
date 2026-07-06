@@ -134,6 +134,18 @@ public final class JourneyOrder {
         ));
     }
 
+    public void recordRiskAssessmentAllowed(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        requireState(OrderLifecycleState.PENDING_CONFIRMATION, OrderLifecycleState.PENDING_PAYMENT, OrderLifecycleState.CONFIRMING);
+        confirmationConditions = confirmationConditions.withRiskCleared();
+        recordTimeline("RiskAssessmentAllowed", occurredAt, "risk-compliance", "required risk assessment allowed order continuation", Map.of());
+    }
+
+    public void recordRiskBlockLifted(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        requireState(OrderLifecycleState.PENDING_CONFIRMATION, OrderLifecycleState.PENDING_PAYMENT, OrderLifecycleState.CONFIRMING);
+        confirmationConditions = confirmationConditions.withRiskCleared();
+        recordTimeline("RiskBlockLifted", occurredAt, "risk-compliance", "risk block lifted for order", Map.of());
+    }
+
     public void recordEntitlementSummaryAccepted(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
         // Streams are only ordered per-producer; the entitlement fact may
         // arrive before the payment fact, so accept it in any pre-confirmed state.

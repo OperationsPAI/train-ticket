@@ -71,23 +71,26 @@ class JourneyOrderTest {
     }
 
     @Test
-    void confirmsOnlyAfterBookingCapacityPaymentAndEntitlementSummariesAccepted() {
+    void confirmsOnlyAfterBookingCapacityPaymentEntitlementAndRiskFactsAccepted() {
         JourneyOrder order = sampleOrder();
         order.markBookingAndCapacityAccepted(NOW.plusSeconds(1), "cmd-booking", "corr-1");
         order.markPendingPayment("initial-ticket-purchase", NOW.plusSeconds(2), "cmd-pay-request", "corr-1");
         order.recordPaymentCaptured("payment-intent-1", NOW.plusSeconds(3), "cmd-payment", "payment-event-1", "corr-1");
         order.recordEntitlementSummaryAccepted(NOW.plusSeconds(4), "cmd-entitlement", "entitlement-event-1", "corr-1");
-        order.confirm("attempt-1", NOW.plusSeconds(5), "cmd-confirm", "entitlement-event-1", "corr-1");
+        assertThrows(DomainRuleViolation.class, () -> order.confirm("attempt-before-risk", NOW.plusSeconds(5), "cmd-confirm", "entitlement-event-1", "corr-1"));
+        order.recordRiskAssessmentAllowed(NOW.plusSeconds(5), "cmd-risk", "risk-event-1", "corr-1");
+        order.confirm("attempt-1", NOW.plusSeconds(6), "cmd-confirm", "risk-event-1", "corr-1");
 
         assertEquals(OrderLifecycleState.CONFIRMED, order.state());
         JourneyOrderConfirmed confirmed = assertInstanceOf(JourneyOrderConfirmed.class, order.domainEvents().getLast());
-        assertEquals(NOW.plusSeconds(5), confirmed.confirmedAt());
+        assertEquals(NOW.plusSeconds(6), confirmed.confirmedAt());
         assertEquals(List.of(
             "JourneyOrderCreated",
             "BookingCapacitySummaryAccepted",
             "JourneyOrderPendingPayment",
             "PaymentCaptured",
             "EntitlementSummaryAccepted",
+            "RiskAssessmentAllowed",
             "JourneyOrderConfirmed"
         ), order.timeline().stream().map(TimelineFact::factType).toList());
     }
@@ -124,7 +127,8 @@ class JourneyOrderTest {
         order.markPendingPayment("initial-ticket-purchase", NOW.plusSeconds(2), "cmd-pay-request", "corr-1");
         order.recordPaymentCaptured("payment-intent-1", NOW.plusSeconds(3), "cmd-payment", "payment-event-1", "corr-1");
         order.recordEntitlementSummaryAccepted(NOW.plusSeconds(4), "cmd-entitlement", "entitlement-event-1", "corr-1");
-        order.confirm("attempt-1", NOW.plusSeconds(5), "cmd-confirm", "entitlement-event-1", "corr-1");
+        order.recordRiskAssessmentAllowed(NOW.plusSeconds(5), "cmd-risk", "risk-event-1", "corr-1");
+        order.confirm("attempt-1", NOW.plusSeconds(6), "cmd-confirm", "risk-event-1", "corr-1");
         return order;
     }
 
