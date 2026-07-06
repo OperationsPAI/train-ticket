@@ -104,15 +104,28 @@ timestamps, and Money.
 
 **Error codes:** `NOT_FOUND`
 
-## Bus-only commands
+### Reject Manual Action
 
-The following commands are consumed from the event bus only and have no HTTP
-endpoint:
+**POST** `/api/v1/admin/manual-actions/{manualActionId}/reject`
+
+**Idempotency:** REQUIRED
+
+**Request:** `{ "operatorRef": "op-<uuid>", "reason": "<text>" }`
+
+**Response (200):** `{ "manualActionId": "...", "status": "REJECTED" }` —
+publishes `ManualActionRejected`.
+
+RULING (2026-07-06): promoted from bus-only — the sender is the Admin UI and
+phase 1 has no command bus (same precedent as customer-service
+RequestManualAction, PR #116).
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`
+
+## Bus-only / internal commands
 
 | Command | Trigger | Description |
 |---|---|---|
-| `RejectManualAction` | Admin UI | Reject a manual action with reason. |
-| `ExecuteManualAction` | Admin & Audit (internal) | Execute an approved manual action against the target domain. |
+| `ExecuteManualAction` | Admin & Audit (internal) | RULING (2026-07-06): stays internal — execution is triggered automatically by approval (no HTTP endpoint); phase-1 execution records the audit fact and publishes `ManualActionExecuted` without mutating the target domain directly. |
 | `RecordAuditEntry` | Any bounded context | Record an audit entry for a business action. |
 
 ## Open Issues
