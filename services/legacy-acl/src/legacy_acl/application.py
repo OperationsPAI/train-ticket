@@ -10,7 +10,7 @@ from train_ticket_platform.events import EventEnvelope, rfc3339_utc
 from train_ticket_platform.messaging import EventPublisher, RedisEventPublisher
 
 from .downstream import DownstreamClient, DownstreamError, quote
-from .ids import deterministic_event_id, deterministic_prefixed_uuid, prefixed_uuid7
+from .ids import deterministic_event_id, deterministic_prefixed_uuid, deterministic_uuid7
 
 
 class LegacyOperation(StrEnum):
@@ -235,10 +235,10 @@ class LegacyAclService:
             return self._failure(LegacyOperation.EXECUTE, ctx, commands, exc)
 
     def cancel(self, payload: Mapping[str, Any], ctx: LegacyContext) -> LegacyResult:
-        return self._post_sales(payload, ctx, LegacyOperation.CANCEL, "REFUND", "CUSTOMER_REQUEST", "refundAmount")
+        return self._post_sales(payload, ctx, LegacyOperation.CANCEL, "REFUND", "CUSTOMER_REQUEST", "refundableAmount", "refundAmount")
 
     def rebook(self, payload: Mapping[str, Any], ctx: LegacyContext) -> LegacyResult:
-        return self._post_sales(payload, ctx, LegacyOperation.REBOOK, "CHANGE", "CUSTOMER_CHANGE", "amountDue")
+        return self._post_sales(payload, ctx, LegacyOperation.REBOOK, "CHANGE", "CUSTOMER_CHANGE", "amountDue", "amountDue")
 
     def _post_sales(
         self,
@@ -247,7 +247,8 @@ class LegacyAclService:
         operation: LegacyOperation,
         case_type: str,
         reason_code: str,
-        result_amount_field: str,
+        evaluation_amount_field: str,
+        legacy_amount_field: str,
     ) -> LegacyResult:
         commands: list[str] = []
         try:
@@ -270,20 +271,20 @@ class LegacyAclService:
                     "reasonCode": reason_code,
                     "actorRef": _required_text(order, "accountId"),
                 },
-                _headers(ctx, "case"),
+                _headers(ctx, f"{operation.value.lower()}-case"),
             )
             commands.append("OpenPostSalesCase")
             case_id = _required_text(opened, "caseId")
-            evaluated = self.client.post("post-sales", f"/api/v1/post-sales-cases/{quote(case_id)}/evaluate", {}, _headers(ctx, "evaluate"))
+            evaluated = self.client.post("post-sales", f"/api/v1/post-sales-cases/{quote(case_id)}/evaluate", {}, _headers(ctx, f"{operation.value.lower()}-evaluate"))
             commands.append("EvaluatePostSalesEligibility")
-            self.client.post("post-sales", f"/api/v1/post-sales-cases/{quote(case_id)}/approve", {}, _headers(ctx, "approve"))
+            self.client.post("post-sales", f"/api/v1/post-sales-cases/{quote(case_id)}/approve", {}, _headers(ctx, f"{operation.value.lower()}-approve"))
             commands.append("ApprovePostSalesCase")
             return self._finish(
                 operation,
                 Outcome.SUCCEEDED,
                 ctx,
                 commands,
-                {"caseId": case_id, result_amount_field: evaluated.get(result_amount_field) or {"currency": "CNY", "minorUnits": 0}},
+                {"caseId": case_id, legacy_amount_field: _required_mapping(evaluated, evaluation_amount_field)},
                 None,
             )
         except Exception as exc:
@@ -434,7 +435,8 @@ class LegacyAclService:
 
 
 def _headers(ctx: LegacyContext, suffix: str) -> dict[str, str]:
-    return {"Idempotency-Key": ctx.source_ref, "X-Correlation-Id": ctx.correlation_id, "X-Request-Id": f"{ctx.source_ref}-{suffix}"}
+    downstream_key = deterministic_uuid7(ctx.source_ref, suffix)
+    return {"Idempotency-Key": downstream_key, "X-Correlation-Id": ctx.correlation_id, "X-Request-Id": f"{ctx.source_ref}-{suffix}"}
 
 
 def _required_text(payload: Mapping[str, Any], field: str) -> str:

@@ -8,6 +8,7 @@ from train_ticket_platform.messaging import InMemoryEventPublisher
 from legacy_acl.api import create_app
 from legacy_acl.downstream import DownstreamError
 from legacy_acl.ids import deterministic_event_id
+from train_ticket_platform.ids import is_uuid7
 
 
 KEY = "0194f2e0-7b3e-7610-8000-000000000111"
@@ -16,11 +17,11 @@ HEADERS = {"Idempotency-Key": KEY, "X-Legacy-Operator": "op-1", "X-Correlation-I
 
 class FakeDownstream:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str, Mapping[str, Any]]] = []
+        self.calls: list[tuple[str, str, str, Mapping[str, Any], Mapping[str, str]]] = []
         self.fail_on: tuple[str, str] | None = None
 
     def post(self, service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
-        self.calls.append(("POST", service, path, dict(body)))
+        self.calls.append(("POST", service, path, dict(body), dict(headers or {})))
         if self.fail_on == (service, path):
             raise DownstreamError("downstream rejected")
         if service == "trip-planning":
@@ -52,7 +53,7 @@ class FakeDownstream:
         raise AssertionError((service, path, body))
 
     def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
-        self.calls.append(("GET", service, path, {}))
+        self.calls.append(("GET", service, path, {}, dict(headers or {})))
         if service == "journey-order":
             return {"orderId": "ord-1", "accountId": "acc-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"]}
         if service == "entitlement-ticketing":
@@ -127,8 +128,29 @@ def test_inside_payment_ticket_issue_execute_cancel_and_rebook_mapping() -> None
         body = response.json()
         assert body["status"] == 1
         assert result_field in body["data"]
+        if operation == "CANCEL":
+            assert body["data"]["refundAmount"] == {"currency": "CNY", "minorUnits": 8750}
         assert publisher.envelopes[-1].payload["legacyOperation"] == operation
         assert publisher.envelopes[-1].payload["outcome"] == "SUCCEEDED"
+
+
+def test_downstream_post_idempotency_keys_are_distinct_uuid7_and_stable_on_replay() -> None:
+    payload = {"accountId": "acc-1", "contactsId": "tvl-1", "tripId": "G1", "seatType": "SECOND", "date": "2026-08-01", "from": "p-bj", "to": "p-sh"}
+
+    fake_first = FakeDownstream()
+    first_response = client(fake_first, InMemoryEventPublisher()).post("/api/v1/legacy/preserve", headers=HEADERS, json=payload)
+    assert first_response.status_code == 200
+    first_post_keys = [call[4]["Idempotency-Key"] for call in fake_first.calls if call[0] == "POST"]
+
+    fake_replay = FakeDownstream()
+    replay_response = client(fake_replay, InMemoryEventPublisher()).post("/api/v1/legacy/preserve", headers=HEADERS, json=payload)
+    assert replay_response.status_code == 200
+    replay_post_keys = [call[4]["Idempotency-Key"] for call in fake_replay.calls if call[0] == "POST"]
+
+    assert first_post_keys == replay_post_keys
+    assert len(first_post_keys) == len(set(first_post_keys))
+    assert all(is_uuid7(key) for key in first_post_keys)
+    assert HEADERS["Idempotency-Key"] not in first_post_keys
 
 
 def test_operator_header_is_required() -> None:

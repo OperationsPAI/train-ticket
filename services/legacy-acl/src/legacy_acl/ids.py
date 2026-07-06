@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from train_ticket_platform.ids import new_uuid7
 
@@ -22,3 +22,11 @@ def deterministic_prefixed_uuid(prefix: str, material: str) -> str:
     digest[6] = (digest[6] & 0x0F) | 0x70
     digest[8] = (digest[8] & 0x3F) | 0x80
     return f"{prefix}-{UUID(bytes=bytes(digest))}"
+
+
+def deterministic_uuid7(source_ref: str, suffix: str) -> str:
+    seeded = uuid5(NAMESPACE_URL, f"train-ticket:legacy-acl:idempotency:{source_ref}:{suffix}")
+    digest = bytearray(seeded.bytes)
+    digest[6] = (digest[6] & 0x0F) | 0x70
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return str(UUID(bytes=bytes(digest)))
