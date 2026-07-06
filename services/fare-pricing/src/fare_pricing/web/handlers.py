@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from fare_pricing.application import DomainEventService
+from fare_pricing.application import DomainEventService, deterministic_rule_set_event_id
 from fare_pricing.ids import prefixed_uuid7
 from fare_pricing.application.service import (
     FarePricingService,
@@ -136,7 +136,7 @@ def _command_id() -> str:
     return prefixed_uuid7("cmd")
 
 
-def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any]) -> None:
+def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any], event_id: str | None = None) -> None:
     event_service: DomainEventService = request.app.state.domain_event_service
     try:
         event_service.publish_event(
@@ -145,6 +145,7 @@ def _publish_event(request: Request, event_type: str, causation_id: str, payload
             correlation_id=_correlation_id(request),
             payload=payload,
             occurred_at=datetime.now(UTC),
+            event_id=event_id,
         )
     except PublishFailed as exc:
         raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
@@ -196,16 +197,32 @@ def publish_fare_rule_set(request: Request, rule_set_id: str) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
     causation_id = _command_id()
     try:
-        published, superseded, newly_published = service.publish_rule_set(rule_set_id)
+        published, superseded, newly_published, originals = service.publish_rule_set(rule_set_id)
     except RuleSetNotFoundError as exc:
         raise ApiError("NOT_FOUND", f"Fare rule set not found: {rule_set_id}", 404) from exc
     except PricingError as exc:
         raise _domain_error(exc) from exc
 
     if newly_published:
-        _publish_event(request, "FareRuleSetPublished", causation_id, _fare_rule_set_published_payload(published))
-        for old_rule_set in superseded:
-            _publish_event(request, "FareRuleSetSuperseded", causation_id, _fare_rule_set_superseded_payload(old_rule_set, published))
+        try:
+            _publish_event(
+                request,
+                "FareRuleSetPublished",
+                causation_id,
+                _fare_rule_set_published_payload(published),
+                deterministic_rule_set_event_id(published.rule_set_id, published.version, "published"),
+            )
+            for old_rule_set in superseded:
+                _publish_event(
+                    request,
+                    "FareRuleSetSuperseded",
+                    causation_id,
+                    _fare_rule_set_superseded_payload(old_rule_set, published),
+                    deterministic_rule_set_event_id(old_rule_set.rule_set_id, old_rule_set.version, "superseded"),
+                )
+        except ApiError:
+            service.restore_rule_sets(originals)
+            raise
     return _rule_set_to_response(published)
 
 
@@ -215,7 +232,7 @@ def compute_fare_quote(
     req: FareQuoteRequest,
 ) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
-    rule_set_id = service.find_published_rule_set_id(req.channel)
+    rule_set_id = service.find_published_rule_set_id(req.channel, req.productCode)
     if rule_set_id is None:
         raise _validation_error("No applicable fare rule set found")
 
@@ -259,7 +276,7 @@ def compute_adjustment_quote(
     if original_quote_id is None:
         raise ApiError("PRECONDITION_FAILED", "Original fare quote not found for requested segments", 412)
     original_quote = service.get_fare_quote(original_quote_id)
-    rule_set_id = service.find_published_rule_set_id(original_quote.channel)
+    rule_set_id = service.find_published_rule_set_id(original_quote.channel, original_quote.product_code)
     if rule_set_id is None:
         raise _validation_error("No applicable fare rule set found")
 

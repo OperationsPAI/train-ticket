@@ -23,6 +23,7 @@ from fare_pricing import (
     calculate_fare_quote,
 )
 from fare_pricing.api import create_app
+from fare_pricing.application import deterministic_rule_set_event_id
 from fare_pricing.ids import uuid7
 from fare_pricing.application.service import InMemoryStore
 from fare_pricing.ports import EventEnvelope
@@ -46,11 +47,11 @@ def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True) 
     )
 
 
-def published_rule_set(*extra_rules: FareRule) -> FareRuleSet:
+def published_rule_set(*extra_rules: FareRule, product_code: str = "rail-standard", rule_set_id: str = "ruleset-main") -> FareRuleSet:
     rs = FareRuleSet(
-        rule_set_id="ruleset-main",
+        rule_set_id=rule_set_id,
         supplier_id="supplier-a",
-        product_code="rail-flex",
+        product_code=product_code,
         mode="rail",
         channel="web",
         version="2026.07.03",
@@ -91,13 +92,21 @@ class FarePricingApiTest(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
 
 
-    def create_rule_set(self, *, base_minor: int = 12000, refund_minor: int = 3000, channel: str = "web", version: str = "2026.07.04") -> dict[str, object]:
+    def create_rule_set(
+        self,
+        *,
+        base_minor: int = 12000,
+        refund_minor: int = 3000,
+        channel: str = "web",
+        version: str = "2026.07.04",
+        product_code: str = "rail-standard",
+    ) -> dict[str, object]:
         resp = self.client.post(
             "/api/v1/fare-rule-sets",
             json={
                 "supplierId": "supplier-managed",
                 "contractId": "contract-managed",
-                "productCode": "rail-flex",
+                "productCode": product_code,
                 "mode": "rail",
                 "channel": channel,
                 "version": version,
@@ -180,6 +189,57 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(refund_resp.status_code, 201, refund_resp.text)
         self.assertEqual(refund_resp.json()["refundableAmount"], {"currency": "CNY", "minorUnits": 9000})
 
+    def test_product_code_disambiguates_quotes_and_publish_supersede_scope(self) -> None:
+        business = self.create_rule_set(
+            base_minor=18000,
+            refund_minor=4000,
+            version="2026.07.business",
+            product_code="rail-business",
+        )
+        publish_resp = self.client.post(
+            f"/api/v1/fare-rule-sets/{business['ruleSetId']}/publish",
+            json={},
+            headers={"Idempotency-Key": uuid7_key(910)},
+        )
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.text)
+        self.assertEqual(self.store.fare_rule_sets[self.rs.rule_set_id].status, RuleSetStatus.PUBLISHED)
+
+        standard_quote = self.client.post(
+            "/api/v1/fare-quotes",
+            json={"travelerRefs": ["tvl-standard"], "channel": "web", "segmentRefs": ["seg-standard"]},
+            headers={"Idempotency-Key": uuid7_key(911)},
+        )
+        self.assertEqual(standard_quote.status_code, 201, standard_quote.text)
+        self.assertEqual(standard_quote.json()["breakdown"]["total"], {"currency": "CNY", "minorUnits": 10000})
+        self.assertEqual(standard_quote.json()["ruleSnapshot"]["ruleSetId"], self.rs.rule_set_id)
+
+        business_quote = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-business"],
+                "channel": "web",
+                "segmentRefs": ["seg-business"],
+                "productCode": "rail-business",
+            },
+            headers={"Idempotency-Key": uuid7_key(912)},
+        )
+        self.assertEqual(business_quote.status_code, 201, business_quote.text)
+        self.assertEqual(business_quote.json()["breakdown"]["total"], {"currency": "CNY", "minorUnits": 18000})
+        self.assertEqual(business_quote.json()["ruleSnapshot"]["ruleSetId"], business["ruleSetId"])
+
+        refund_resp = self.client.post(
+            "/api/v1/adjustment-quotes",
+            json={
+                "purpose": "REFUND",
+                "entitlementIds": ["ent-business"],
+                "journeyOrderId": "ord-business",
+                "segmentRefs": ["seg-business"],
+            },
+            headers={"Idempotency-Key": uuid7_key(913)},
+        )
+        self.assertEqual(refund_resp.status_code, 201, refund_resp.text)
+        self.assertEqual(refund_resp.json()["refundableAmount"], {"currency": "CNY", "minorUnits": 14000})
+
     def test_publish_rule_set_is_idempotent(self) -> None:
         created = self.create_rule_set(version="2026.07.05")
         key = uuid7_key(904)
@@ -189,6 +249,89 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(second.status_code, 200, second.text)
         self.assertEqual(first.json(), second.json())
         self.assertEqual([event.event_type for event in self.publisher.published_events], ["FareRuleSetPublished", "FareRuleSetSuperseded"])
+        self.assertEqual(
+            self.publisher.published_events[0].event_id,
+            deterministic_rule_set_event_id(created["ruleSetId"], "2026.07.05", "published"),
+        )
+        self.assertEqual(
+            self.publisher.published_events[1].event_id,
+            deterministic_rule_set_event_id(self.rs.rule_set_id, self.rs.version, "superseded"),
+        )
+
+    def test_publish_event_failure_rolls_back_state_and_retry_uses_same_event_id(self) -> None:
+        created = self.create_rule_set(version="2026.07.rollback")
+        original = self.store.fare_rule_sets[self.rs.rule_set_id]
+        self.publisher.fail_next_publish()
+
+        failed = self.client.post(
+            f"/api/v1/fare-rule-sets/{created['ruleSetId']}/publish",
+            json={},
+            headers={"Idempotency-Key": uuid7_key(914)},
+        )
+
+        self.assertEqual(failed.status_code, 503, failed.text)
+        self.assertEqual(failed.json()["code"], "UNAVAILABLE")
+        self.assertEqual(self.store.fare_rule_sets[created["ruleSetId"]].status, RuleSetStatus.DRAFT)
+        self.assertEqual(self.store.fare_rule_sets[self.rs.rule_set_id], original)
+        self.assertEqual(self.publisher.published_event_count, 0)
+
+        retry = self.client.post(
+            f"/api/v1/fare-rule-sets/{created['ruleSetId']}/publish",
+            json={},
+            headers={"Idempotency-Key": uuid7_key(914)},
+        )
+        self.assertEqual(retry.status_code, 200, retry.text)
+        first_event_ids = [event.event_id for event in self.publisher.published_events]
+        self.assertEqual(len(first_event_ids), 2)
+        self.assertTrue(all(event_id.startswith("evt-") for event_id in first_event_ids))
+        self.assertEqual(uuid.UUID(first_event_ids[0].removeprefix("evt-")).version, 7)
+
+        replay = self.client.post(
+            f"/api/v1/fare-rule-sets/{created['ruleSetId']}/publish",
+            json={},
+            headers={"Idempotency-Key": uuid7_key(915)},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual([event.event_id for event in self.publisher.published_events], first_event_ids)
+
+    def test_superseded_event_failure_rolls_back_state_and_retry_uses_same_event_ids(self) -> None:
+        created = self.create_rule_set(version="2026.07.supersede-failure")
+        original = self.store.fare_rule_sets[self.rs.rule_set_id]
+        self.publisher.fail_on_publish_number(2)
+
+        failed = self.client.post(
+            f"/api/v1/fare-rule-sets/{created['ruleSetId']}/publish",
+            json={},
+            headers={"Idempotency-Key": uuid7_key(916)},
+        )
+
+        self.assertEqual(failed.status_code, 503, failed.text)
+        self.assertEqual(self.store.fare_rule_sets[created["ruleSetId"]].status, RuleSetStatus.DRAFT)
+        self.assertEqual(self.store.fare_rule_sets[self.rs.rule_set_id], original)
+        first_published_event_id = self.publisher.published_events[0].event_id
+        expected_published_event_id = deterministic_rule_set_event_id(
+            created["ruleSetId"], "2026.07.supersede-failure", "published"
+        )
+        expected_superseded_event_id = deterministic_rule_set_event_id(self.rs.rule_set_id, self.rs.version, "superseded")
+        self.assertEqual(first_published_event_id, expected_published_event_id)
+
+        retry = self.client.post(
+            f"/api/v1/fare-rule-sets/{created['ruleSetId']}/publish",
+            json={},
+            headers={"Idempotency-Key": uuid7_key(916)},
+        )
+        self.assertEqual(retry.status_code, 200, retry.text)
+        event_ids = [event.event_id for event in self.publisher.published_events]
+        self.assertEqual(event_ids[0], event_ids[1])
+        self.assertEqual(event_ids[0], first_published_event_id)
+        self.assertNotEqual(event_ids[1], event_ids[2])
+        self.assertEqual(event_ids[2], expected_superseded_event_id)
+        self.assertEqual(uuid.UUID(event_ids[2].removeprefix("evt-")).version, 7)
+        self.assertEqual([event.event_type for event in self.publisher.published_events], [
+            "FareRuleSetPublished",
+            "FareRuleSetPublished",
+            "FareRuleSetSuperseded",
+        ])
 
     def test_fare_quote_happy_path(self) -> None:
         """POST /api/v1/fare-quotes returns 201 with quote details."""
