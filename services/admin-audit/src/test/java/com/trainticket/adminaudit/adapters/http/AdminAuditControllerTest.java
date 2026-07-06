@@ -68,10 +68,48 @@ class AdminAuditControllerTest {
             .andExpect(jsonPath("$.manualActionId").value(manualActionId))
             .andExpect(jsonPath("$.status").value("APPROVED"));
 
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/execute", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01120")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"resultSummary\":\"should not be exposed\"}"))
+            .andExpect(status().isNotFound());
+
         mockMvc.perform(get("/api/v1/admin/audit-trail").param("businessRef", "pi-1").param("limit", "20").param("offset", "0"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.total").value(3))
             .andExpect(jsonPath("$.items[0].resourceRef").value("pi-1"));
+    }
+
+    @Test
+    void rejectManualActionUsesOperatorRefContractAndIsIdempotent() throws Exception {
+        String requester = operatorId(register("reject-requester@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01118").andReturn());
+
+        MvcResult action = mockMvc.perform(post("/api/v1/admin/manual-actions")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01119")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"targetDomain":"payment","targetCommand":"RefundPayment","businessRef":"pi-reject","reasonCode":"CUSTOMER_REQUEST","description":"refund","requestedByOperatorId":"%s","requiresApproval":true}
+                    """.formatted(requester)))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        String manualActionId = actionId(action);
+        String body = "{\"operatorRef\":\"op-reviewer\",\"reason\":\"insufficient evidence\"}";
+
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/reject", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01121")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.manualActionId").value(manualActionId))
+            .andExpect(jsonPath("$.status").value("REJECTED"));
+
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/reject", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01121")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("REJECTED"));
     }
 
     @Test

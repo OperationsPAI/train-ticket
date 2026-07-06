@@ -272,17 +272,16 @@ export class CustomerServiceApplication {
     return this.consumedIntegrationEvents.size;
   }
 
-
   private async recordAdminAuditManualActionOutcome(envelope: EventEnvelope): Promise<void> {
     const manualActionId = requiredPayloadString(envelope.payload, "manualActionId");
     const action = this.manualActions.get(manualActionId);
     if (!action) {
       return;
     }
-    const outcome = envelope.eventType === "ManualActionRejected" ? "Rejected" : "Succeeded";
     const resultSummary = envelope.eventType === "ManualActionRejected"
       ? requiredPayloadString(envelope.payload, "reason")
       : requiredPayloadString(envelope.payload, "resultSummary");
+    const outcome = manualActionOutcome(envelope.eventType, resultSummary);
     const { action: updated, event } = action.recordOutcome({
       manualActionId,
       outcome,
@@ -340,6 +339,13 @@ function requiredPayloadString(payload: Record<string, unknown>, field: string):
     throw new DomainError("MISSING_REQUIRED_FIELD", `${field} is required`);
   }
   return value;
+}
+
+function manualActionOutcome(eventType: string, resultSummary: string): "Succeeded" | "Failed" | "Rejected" {
+  if (eventType === "ManualActionRejected") {
+    return "Rejected";
+  }
+  return resultSummary.trim().toUpperCase().startsWith("FAILED:") ? "Failed" : "Succeeded";
 }
 
 function caseReferencesEnvelope(snapshot: SupportCaseSnapshot, envelope: EventEnvelope): boolean {

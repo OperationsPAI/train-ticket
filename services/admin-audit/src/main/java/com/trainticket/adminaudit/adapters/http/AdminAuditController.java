@@ -81,7 +81,6 @@ public class AdminAuditController {
         )));
     }
 
-
     @PostMapping("/manual-actions/{manualActionId}/reject")
     public ResponseEntity<Object> rejectManualAction(
         @PathVariable String manualActionId,
@@ -90,27 +89,11 @@ public class AdminAuditController {
         HttpServletRequest httpRequest
     ) {
         request.validate();
-        RejectFingerprint fingerprint = new RejectFingerprint(manualActionId, request.rejectedByOperatorId(), request.reason());
+        RejectFingerprint fingerprint = new RejectFingerprint(manualActionId, request.operatorRef(), request.reason());
         return idempotency.execute(idempotencyKey, fingerprint, 200, () -> ManualActionResponse.from(service.rejectManualAction(
             manualActionId,
-            request.rejectedByOperatorId(),
+            request.operatorRef(),
             request.reason(),
-            correlationId(httpRequest)
-        )));
-    }
-
-    @PostMapping("/manual-actions/{manualActionId}/execute")
-    public ResponseEntity<Object> executeManualAction(
-        @PathVariable String manualActionId,
-        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-        @RequestBody ExecuteManualActionRequest request,
-        HttpServletRequest httpRequest
-    ) {
-        request.validate();
-        ExecuteFingerprint fingerprint = new ExecuteFingerprint(manualActionId, request.resultSummary());
-        return idempotency.execute(idempotencyKey, fingerprint, 200, () -> ManualActionResponse.from(service.executeManualAction(
-            manualActionId,
-            request.resultSummary(),
             correlationId(httpRequest)
         )));
     }
@@ -183,23 +166,15 @@ public class AdminAuditController {
         }
     }
 
-
-    public record RejectManualActionRequest(String rejectedByOperatorId, String reason) {
+    public record RejectManualActionRequest(String operatorRef, String reason) {
         void validate() {
-            requireText(rejectedByOperatorId, "rejectedByOperatorId");
+            requireText(operatorRef, "operatorRef");
             requireText(reason, "reason");
         }
     }
 
-    public record ExecuteManualActionRequest(String resultSummary) {
-        void validate() {
-            requireText(resultSummary, "resultSummary");
-        }
-    }
-
     private record ApproveFingerprint(String manualActionId, String approvedByOperatorId) {}
-    private record RejectFingerprint(String manualActionId, String rejectedByOperatorId, String reason) {}
-    private record ExecuteFingerprint(String manualActionId, String resultSummary) {}
+    private record RejectFingerprint(String manualActionId, String operatorRef, String reason) {}
 
     public record OperatorResponse(String operatorId, String email, String role, List<String> scopes, String status) {
         static OperatorResponse from(OperatorIdentity operator) {

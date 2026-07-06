@@ -70,7 +70,7 @@ echo "== 3. register approver and approve (admin-audit records execution fact in
 req POST admin-audit /api/v1/admin/operators '{"email":"manual-approver@example.com","role":"ADMIN","scopes":["OPERATOR_WRITE","AUDIT_READ"],"displayName":"Manual Approver"}'
 check_code 201 "register admin-audit approver"
 APPROVER=$(jget "['operatorId']")
-req POST admin-audit "/api/v1/admin/manual-actions/$MA/approve" "{"approvedByOperatorId":"$APPROVER"}"
+req POST admin-audit "/api/v1/admin/manual-actions/$MA/approve" "{\"approvedByOperatorId\":\"$APPROVER\"}"
 [ "$LAST_CODE" = 200 ] && ok "approve manual action [$LAST_CODE]" || bad "approve manual action [got $LAST_CODE want 200]"
 
 retry "ManualActionExecuted published" "stream_has_event events:admin-audit ManualActionExecuted '$MA'" 4 5

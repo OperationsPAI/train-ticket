@@ -231,30 +231,6 @@ public class AdminAuditService {
         return action;
     }
 
-    public ManualAction executeManualAction(String manualActionId, String resultSummary, String correlationId) {
-        ManualAction action = repository.findManualAction(manualActionId)
-            .orElseThrow(() -> new NotFoundException("manual action not found"));
-        int alreadyPublished = action.domainEvents().size();
-        try {
-            action.execute(resultSummary, Instant.now(clock), newCommandId(), normalizeCorrelationId(correlationId));
-        } catch (DomainRuleViolation violation) {
-            throw new PreconditionFailedException(violation.getMessage(), violation);
-        }
-        repository.saveManualAction(action);
-        publish(action.domainEvents().subList(alreadyPublished, action.domainEvents().size()));
-        recordAudit(
-            actorId(action),
-            actorDisplayName(action),
-            "MANUAL_ACTION_EXECUTED",
-            action.businessRef(),
-            action.targetDomain(),
-            action.reasonCode(),
-            normalizeCorrelationId(correlationId),
-            resultSummary
-        );
-        return action;
-    }
-
     public OperatorIdentity getOperator(String operatorId) {
         return repository.findOperator(operatorId)
             .orElseThrow(() -> new NotFoundException("operator not found"));
