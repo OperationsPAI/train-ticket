@@ -27,9 +27,13 @@ echo "  eligible=$(jget "['eligible']") amountDue=$(jget "['amountDue']")"
 echo "== 3. approve → old ticket teardown"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
 check_code 200 "approve CHANGE"
-sleep 8
-req GET post-sales "/api/v1/post-sales-cases/$CASE"
-CASE_STATUS=$(jget "['status']")
+CASE_STATUS=""
+for attempt in 1 2 3 4; do
+  sleep 6
+  req GET post-sales "/api/v1/post-sales-cases/$CASE"
+  CASE_STATUS=$(jget "['status']")
+  [ "$CASE_STATUS" = "APPLIED" ] && break
+done
 req GET entitlement-ticketing "/api/v1/entitlements/$ENT"
 ENT_STATUS=$(jget "['status']")
 echo "  case=$CASE_STATUS entitlement=$ENT_STATUS"
