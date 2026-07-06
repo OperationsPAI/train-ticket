@@ -1,0 +1,21 @@
+[project]
+name = "legacy-acl"
+version = "0.1.0"
+description = "Legacy ACL strangler facade"
+requires-python = ">=3.11"
+dependencies = [
+  "train-ticket-platform",
+]
+
+[dependency-groups]
+dev = [
+  "httpx2>=2.5.0",
+  "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+train-ticket-platform = { path = "../../platform/python-kit", editable = true }
