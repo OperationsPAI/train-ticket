@@ -148,6 +148,7 @@ class FarePricingDomainTest(unittest.TestCase):
                 input_hash="hash",
                 traveler_refs=("traveler-1",),
                 channel="web",
+                product_code="rail-flex",
                 currency="USD",
                 status=QuoteStatus.FAILED,
                 valid_from=NOW,

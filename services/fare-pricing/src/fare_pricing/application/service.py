@@ -151,14 +151,17 @@ class FarePricingService:
         self._store.save_rule_set(rule_set)
         return rule_set
 
-    def publish_rule_set(self, rule_set_id: str, published_at: datetime | None = None) -> tuple[FareRuleSet, tuple[FareRuleSet, ...], bool]:
+    def publish_rule_set(
+        self, rule_set_id: str, published_at: datetime | None = None
+    ) -> tuple[FareRuleSet, tuple[FareRuleSet, ...], bool, tuple[FareRuleSet, ...]]:
         now = published_at or datetime.now(UTC)
         rule_set = self._store.get_rule_set(rule_set_id)
         if rule_set.status == RuleSetStatus.PUBLISHED:
-            return rule_set, (), False
+            return rule_set, (), False, ()
         if rule_set.status not in {RuleSetStatus.DRAFT, RuleSetStatus.VALIDATED}:
             raise PricingError(f"fare rule set cannot be published from status {rule_set.status.value}")
         published = rule_set.publish(now)
+        originals: list[FareRuleSet] = [rule_set]
         superseded: list[FareRuleSet] = []
         for existing in list(self._store.fare_rule_sets.values()):
             if (
@@ -167,13 +170,18 @@ class FarePricingService:
                 and existing.channel == published.channel
                 and existing.product_code == published.product_code
             ):
+                originals.append(existing)
                 old = existing.supersede()
                 self._store.save_rule_set(old)
                 superseded.append(old)
         self._store.save_rule_set(published)
-        return published, tuple(superseded), True
+        return published, tuple(superseded), True, tuple(originals)
 
-    def find_published_rule_set_id(self, channel: str, at: datetime | None = None, product_code: str | None = None) -> str | None:
+    def restore_rule_sets(self, rule_sets: tuple[FareRuleSet, ...]) -> None:
+        for rule_set in rule_sets:
+            self._store.save_rule_set(rule_set)
+
+    def find_published_rule_set_id(self, channel: str, product_code: str, at: datetime | None = None) -> str | None:
         when = at or datetime.now(UTC)
         candidates = [
             rule_set
@@ -181,7 +189,7 @@ class FarePricingService:
             if rule_set.status == RuleSetStatus.PUBLISHED
             and rule_set.channel == channel
             and rule_set.is_effective(when)
-            and (product_code is None or rule_set.product_code == product_code)
+            and rule_set.product_code == product_code
         ]
         if not candidates:
             return None

@@ -314,6 +314,7 @@ class FareQuote:
     input_hash: str
     traveler_refs: tuple[str, ...]
     channel: str
+    product_code: str
     currency: str
     status: QuoteStatus
     valid_from: datetime
@@ -349,6 +350,7 @@ class FareQuote:
             self.input_hash,
             self.traveler_refs,
             self.channel,
+            self.product_code,
             self.currency,
             QuoteStatus.EXPIRED,
             self.valid_from,
@@ -442,6 +444,7 @@ def calculate_fare_quote(
             input_hash,
             tuple(traveler_refs),
             channel,
+            rule_set.product_code,
             normalized_currency,
             QuoteStatus.FAILED,
             quoted_at,
@@ -460,6 +463,7 @@ def calculate_fare_quote(
         input_hash,
         tuple(traveler_refs),
         channel,
+        rule_set.product_code,
         normalized_currency,
         QuoteStatus.QUOTED,
         quoted_at,

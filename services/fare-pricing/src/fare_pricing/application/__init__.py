@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from ..ids import prefixed_uuid7
 from ..ports import EventEnvelope
@@ -34,3 +35,17 @@ class DomainEventService:
             payload=payload or {},
         )
         self._publisher.publish(envelope)
+
+
+def deterministic_uuid(value: str) -> str:
+    uuid = uuid5(NAMESPACE_URL, f"train-ticket:fare-pricing:{value}")
+    uuid_int = (uuid.int & ~(0xF << 76)) | (0x7 << 76)
+    return str(uuid.__class__(int=uuid_int))
+
+
+def deterministic_prefixed_id(prefix: str, *parts: str) -> str:
+    return f"{prefix}-{deterministic_uuid(':'.join(parts))}"
+
+
+def deterministic_rule_set_event_id(rule_set_id: str, version: str, action: str) -> str:
+    return deterministic_prefixed_id("evt", rule_set_id, version, action)
