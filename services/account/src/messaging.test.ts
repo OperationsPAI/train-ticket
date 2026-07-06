@@ -74,7 +74,11 @@ describe("account event ports", () => {
     assert.equal(envelope.correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.equal(isPrefixedUuidV7(envelope.correlationId, ["corr"]), true);
     assert.match(envelope.occurredAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
-    assert.deepEqual(envelope.payload, { accountId: "acct_123" });
+    assert.deepEqual(envelope.payload, {
+      accountId: "acct_123",
+      occurredAt: envelope.occurredAt,
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+    });
     assert.deepEqual(Object.keys(envelope), [
       "eventId",
       "eventType",

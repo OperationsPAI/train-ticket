@@ -206,6 +206,31 @@ class JourneyOrderControllerTest {
             .andExpect(jsonPath("$.correlationId").value("corr-reused"));
     }
 
+
+    @Test
+    void frozenAccountCreateOrderViolationUsesCanonical422Body() throws Exception {
+        when(orderService.createOrder(any(JourneyOrderRequest.class), eq("0194f2e0-7b3e-7008-8284-5c26e8b0a008"), eq("corr-frozen")))
+            .thenThrow(new DomainRuleViolation("Account acct-frozen is FROZEN and cannot place new journey orders"));
+
+        mockMvc.perform(post("/api/v1/journey-orders")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7008-8284-5c26e8b0a008")
+                .header("X-Correlation-Id", "corr-frozen")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "accountId": "acct-frozen",
+                      "offerId": "offer-1",
+                      "offerVersion": 1,
+                      "travelerRefs": ["tvl-1"],
+                      "segmentRefs": ["seg-1"]
+                    }
+                    """))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("DOMAIN_RULE_VIOLATION"))
+            .andExpect(jsonPath("$.message").value("Account acct-frozen is FROZEN and cannot place new journey orders"))
+            .andExpect(jsonPath("$.correlationId").value("corr-frozen"));
+    }
+
     @Test
     void getOrderReturnsNotFoundThroughCanonicalHandler() throws Exception {
         when(orderService.getOrder("ord-missing")).thenReturn(Optional.empty());

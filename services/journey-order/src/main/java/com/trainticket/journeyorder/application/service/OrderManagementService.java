@@ -13,6 +13,8 @@ import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandle
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
+import com.trainticket.journeyorder.domain.AccountOrderGate;
+import com.trainticket.journeyorder.domain.AccountOrderState;
 import com.trainticket.journeyorder.domain.JourneyOrder;
 import com.trainticket.journeyorder.domain.JourneyOrderEvent;
 import com.trainticket.journeyorder.domain.Money;
@@ -40,6 +42,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final Map<String, StoredOrder> orderStore = new LinkedHashMap<>();
     private final Map<String, IdempotencyEntry<JourneyOrderResult>> createIdempotencyStore = new LinkedHashMap<>();
     private final Map<String, IdempotencyEntry<CancelJourneyOrderResult>> cancelIdempotencyStore = new LinkedHashMap<>();
+    private final Map<String, AccountOrderState> accountStateProjection = new LinkedHashMap<>();
     private final EventPublisher eventPublisher;
     private final Set<String> consumedEventIds = new HashSet<>();
     private final Clock clock;
@@ -64,6 +67,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             }
             return existing.result();
         }
+
+        AccountOrderGate.assertCanCreateOrder(request.accountId(), Optional.ofNullable(accountStateProjection.get(request.accountId())));
 
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
@@ -327,8 +332,15 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 case "RiskAssessmentResult" -> handleRiskAssessmentResult(envelope);
                 case "RiskBlockApplied" -> handleRiskBlockApplied(envelope);
                 case "RiskBlockLifted" -> handleRiskBlockLifted(envelope);
+                case "AccountCreated" -> handleAccountCreated(envelope);
+                case "AccountFrozen" -> handleAccountFrozen(envelope);
+                case "AccountUnfrozen" -> handleAccountUnfrozen(envelope);
+                case "AccountClosureStarted" -> handleAccountClosureStarted(envelope);
+                case "AccountClosed" -> handleAccountClosed(envelope);
                 case "EntitlementIssued" -> handleEntitlementIssued(envelope);
-                case "OfferExpired", "OfferQuoted", "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged" -> new EventSubscriber.Success();
+                case "OfferExpired", "OfferQuoted",
+                    "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged",
+                    "SessionOpened", "SessionRevoked", "PreferenceUpdated" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.FatalError("unsupported event type for journey-order: " + envelope.eventType());
             };
         } catch (RuntimeException ex) {
@@ -352,6 +364,32 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             order.confirm("payment-captured", envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
         }
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAccountCreated(EventEnvelope envelope) {
+        String accountId = accountIdFromPayload(envelope);
+        accountStateProjection.putIfAbsent(accountId, AccountOrderState.ACTIVE);
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAccountFrozen(EventEnvelope envelope) {
+        accountStateProjection.put(accountIdFromPayload(envelope), AccountOrderState.FROZEN);
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAccountUnfrozen(EventEnvelope envelope) {
+        accountStateProjection.put(accountIdFromPayload(envelope), AccountOrderState.ACTIVE);
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAccountClosureStarted(EventEnvelope envelope) {
+        accountIdFromPayload(envelope);
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAccountClosed(EventEnvelope envelope) {
+        accountStateProjection.put(accountIdFromPayload(envelope), AccountOrderState.CLOSED);
         return new EventSubscriber.Success();
     }
 
@@ -430,6 +468,14 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
+    }
+
+    private static String accountIdFromPayload(EventEnvelope envelope) {
+        String accountId = textPayload(envelope, "accountId", null);
+        if (accountId == null || accountId.isBlank()) {
+            throw new IllegalArgumentException("event payload missing accountId");
+        }
+        return accountId;
     }
 
     private JourneyOrder orderFromPayload(EventEnvelope envelope) {
