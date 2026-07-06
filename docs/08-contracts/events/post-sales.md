@@ -91,6 +91,22 @@ Last updated: 2026-07-04
 | `orderId` | `JourneyOrderId` | yes | Parent order. |
 | `approvedActions` | object | yes | Actions to execute. |
 
+**`approvedActions` shape (normative):**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `decisionKind` | enum | yes | `REFUND`, `CHANGE`, `COMPENSATION`. |
+| `approvalRef` | string | yes | Reference to the authorizing approval. |
+| `refund` | object | for REFUND | `{orderId, amount: Money, paymentIntentId?}` — payment resolves the intent by `orderId` (its `businessRef`) when `paymentIntentId` is absent. |
+| `steps` | object[] | yes | Execution steps. Each step has `type` plus type-specific fields: `VOID_ENTITLEMENT {entitlementId, reason, policy}`, `RELEASE_CAPACITY {segmentBookingId}`. |
+
+Execution completion is choreographed: `EntitlementVoided` →
+booking-orchestration cancels the segment booking
+(`SegmentBookingCancelled` carries `capacityHoldId`) →
+capacity-availability releases the hold (`CapacityReleased` carries
+`references.segmentBookingRef`) → post-sales marks the case applied
+(`PostSalesApplied`).
+
 ### PostSalesExecutionStarted
 
 | Field | Description |

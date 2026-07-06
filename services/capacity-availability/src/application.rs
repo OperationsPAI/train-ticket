@@ -523,6 +523,12 @@ impl CapacityService {
                     "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                     "releasedAt": unix_millis_to_rfc3339(e.released_at),
                     "releaseReason": e.release_reason,
+                    "references": {
+                        "sourceContext": e.references.source_context,
+                        "orderRef": e.references.order_ref,
+                        "segmentBookingRef": e.references.segment_booking_ref,
+                        "travelerRef": e.references.traveler_ref,
+                    },
                 }),
             ),
             DomainEvent::CapacityHoldExpired(e) => (

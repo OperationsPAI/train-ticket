@@ -108,9 +108,11 @@ public final class SegmentBooking {
     }
 
     public void markCapacityHolding(String capacityHoldId) {
-        requireStatus(SegmentBookingStatus.REQUESTED, SegmentBookingStatus.HOLDING);
+        // CapacityHeld and ProviderReservationConfirmed race on separate
+        // streams; a hold arriving after confirmation still records the hold
+        // reference (needed to release capacity later) without regressing state.
         this.capacityHoldId = requireText(capacityHoldId, "capacityHoldId");
-        if (status != SegmentBookingStatus.HOLDING) {
+        if (status == SegmentBookingStatus.REQUESTED) {
             status = SegmentBookingStatus.HOLDING;
             record(new SegmentCapacityHolding(nextEventId(), segmentBookingId, now(), capacityHoldId));
         }

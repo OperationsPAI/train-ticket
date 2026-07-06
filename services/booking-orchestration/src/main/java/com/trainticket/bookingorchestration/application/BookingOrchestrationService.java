@@ -336,11 +336,16 @@ public class BookingOrchestrationService {
 
     private void handleEntitlementVoided(Map<String, Object> payload, String correlationId, String causationId) {
         SegmentBooking booking = bySegmentBookingId(payload);
-        if (booking != null) {
-            String reason = firstText(payload, "failureMessage", "failureCode", "reason");
-            failSegmentBookingForEntitlement(booking, reason == null ? "entitlement processing failed" : reason,
-                correlationId, causationId);
+        if (booking == null) {
+            return;
         }
+        String reason = firstText(payload, "reason", "failureMessage", "failureCode");
+        String cancellationReason = reason == null ? "entitlement voided" : reason;
+        // A voided entitlement after ticketing is a cancellation (refund flow):
+        // emit SegmentBookingCancelled so capacity releases the hold.
+        booking.requestCancellation(cancellationReason);
+        booking.markCancelled(cancellationReason);
+        publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
     private void failSegmentBookingForEntitlement(SegmentBooking booking, String reason, String correlationId,
@@ -431,7 +436,7 @@ public class BookingOrchestrationService {
                 new SegmentReservationFailedPayload(failed.aggregateId(), failed.reason())));
             case SegmentBookingEvent.SegmentBookingCancelled cancelled -> Optional.of(new ContractEvent(
                 "SegmentBookingCancelled",
-                new SegmentBookingCancelledPayload(cancelled.aggregateId(), cancelled.reason())));
+                new SegmentBookingCancelledPayload(cancelled.aggregateId(), cancelled.reason(), holdIdForSegmentBooking(cancelled.aggregateId()))));
             case SegmentBookingEvent.SegmentTicketed ticketed -> Optional.of(new ContractEvent(
                 "SegmentTicketed",
                 new SegmentTicketedPayload(ticketed.aggregateId(), ticketed.entitlementId())));
@@ -626,7 +631,12 @@ public class BookingOrchestrationService {
     public record SegmentReservationConfirmedPayload(String segmentBookingId, ProviderReference providerReference,
                                                      String evidence) {}
     public record SegmentReservationFailedPayload(String segmentBookingId, String reason) {}
-    public record SegmentBookingCancelledPayload(String segmentBookingId, String reason) {}
+    public record SegmentBookingCancelledPayload(String segmentBookingId, String reason, String capacityHoldId) {}
+
+    private String holdIdForSegmentBooking(String segmentBookingId) {
+        SegmentBooking booking = segmentBookings.get(segmentBookingId);
+        return booking == null ? null : booking.capacityHoldId().orElse(null);
+    }
     public record SegmentTicketedPayload(String segmentBookingId, String entitlementId) {}
     public record BookingSagaCompletedPayload(String sagaId, String journeyOrderId) {}
     public record BookingSagaFailedPayload(String sagaId, String journeyOrderId, String reason) {}

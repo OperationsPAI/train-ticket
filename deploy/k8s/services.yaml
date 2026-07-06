@@ -8,6 +8,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: place-network
@@ -82,6 +85,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: service-plan
@@ -156,6 +162,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: capacity-availability
@@ -230,6 +239,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: fare-pricing
@@ -304,6 +316,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: trip-planning
@@ -378,6 +393,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: offer-management
@@ -452,6 +470,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: journey-order
@@ -526,6 +547,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: booking-orchestration
@@ -600,6 +624,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: payment
@@ -674,6 +701,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: provider-integration
@@ -748,6 +778,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: entitlement-ticketing
@@ -822,6 +855,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: fulfillment
@@ -896,6 +932,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: post-sales
@@ -970,6 +1009,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: notification
@@ -1044,6 +1086,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: traveler-profile
@@ -1118,6 +1163,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: risk-compliance
@@ -1192,6 +1240,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: account
@@ -1266,6 +1317,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: admin-audit
@@ -1340,6 +1394,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: customer-service
@@ -1414,6 +1471,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: finance-settlement
@@ -1488,6 +1548,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: reporting
@@ -1562,6 +1625,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: supplier-catalog

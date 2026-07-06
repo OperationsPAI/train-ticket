@@ -57,8 +57,17 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         InboundEventPayload payload = InboundEventPayload.from(envelope);
         String caseId = payload.requiredText("caseId");
         String reason = payload.optionalText("reason");
+        String intentId = payload.optionalPaymentIntentIdFromApprovedActions();
+        if (intentId == null) {
+            String orderRef = payload.orderRefFromApprovedActions();
+            intentId = orderRef == null ? null : paymentCommands.findIntentIdByBusinessRef(orderRef).orElse(null);
+        }
+        if (intentId == null) {
+            // Approval does not reference any payment this context knows about.
+            return;
+        }
         paymentCommands.requestRefund(
-            payload.paymentIntentIdFromApprovedActions(),
+            intentId,
             payload.moneyFromApprovedActions(),
             reason == null ? "post-sales-approved" : reason,
             caseId,
