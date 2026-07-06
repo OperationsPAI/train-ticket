@@ -1,17 +1,26 @@
 package com.trainticket.financesettlement.application;
 
-import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
+import com.trainticket.financesettlement.domain.EventMetadata;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
+import com.trainticket.financesettlement.domain.Invoice;
+import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
+import com.trainticket.financesettlement.domain.ReconciliationCompleted;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
+import com.trainticket.platformkit.messaging.PrefixedIds;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 public class FinanceSettlementApplicationService {
     private final RevenueRecognitionRepository revenueRecognitions;
     private final ReconciliationCaseRepository reconciliationCases;
+    private final InvoiceRepository invoices;
     private final EventPublisher eventPublisher;
     private final DomainEventEnvelopeMapper envelopeMapper;
+    private final Clock clock;
 
     public FinanceSettlementApplicationService(
         RevenueRecognitionRepository revenueRecognitions,
@@ -19,10 +28,23 @@ public class FinanceSettlementApplicationService {
         EventPublisher eventPublisher,
         DomainEventEnvelopeMapper envelopeMapper
     ) {
+        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
+    }
+
+    public FinanceSettlementApplicationService(
+        RevenueRecognitionRepository revenueRecognitions,
+        ReconciliationCaseRepository reconciliationCases,
+        InvoiceRepository invoices,
+        EventPublisher eventPublisher,
+        DomainEventEnvelopeMapper envelopeMapper,
+        Clock clock
+    ) {
         this.revenueRecognitions = revenueRecognitions;
         this.reconciliationCases = reconciliationCases;
+        this.invoices = invoices;
         this.eventPublisher = eventPublisher;
         this.envelopeMapper = envelopeMapper;
+        this.clock = clock;
     }
 
     public RevenueRecognition getRevenueRecognition(String revenueRecognitionId) {
@@ -33,6 +55,15 @@ public class FinanceSettlementApplicationService {
     public ReconciliationCase getReconciliationCase(String reconciliationCaseId) {
         return reconciliationCases.findById(reconciliationCaseId)
             .orElseThrow(() -> new ResourceNotFoundException("reconciliation case not found"));
+    }
+
+    public Invoice getInvoice(String invoiceId) {
+        return invoices.findById(invoiceId)
+            .orElseThrow(() -> new ResourceNotFoundException("invoice not found"));
+    }
+
+    List<RevenueRecognition> findRevenueRecognitionsByOrderId(String orderId) {
+        return revenueRecognitions.findByOrderId(orderId);
     }
 
     public Page<ReconciliationCase> listReconciliationCases(String orderId, int limit, int offset) {
@@ -46,9 +77,38 @@ public class FinanceSettlementApplicationService {
         return new Page<>(items, reconciliationCases.count(orderId), limit, offset);
     }
 
+    public Invoice generateInvoice(String orderId, String correlationId) {
+        requireText(orderId, "orderId");
+        return invoices.findByOrderId(orderId).orElseGet(() -> {
+            List<RevenueRecognition> recognitions = revenueRecognitions.findByOrderId(orderId);
+            if (recognitions.isEmpty()) {
+                throw new DomainRuleViolation("invoice requires recognized revenue for order");
+            }
+            Money total = recognitions.stream()
+                .map(RevenueRecognition::netAmount)
+                .reduce(Money::plus)
+                .orElseThrow();
+            Invoice invoice = Invoice.generate(
+                orderId,
+                total,
+                recognitions.stream().map(RevenueRecognition::revenueRecognitionId).toList(),
+                clock.instant(),
+                PrefixedIds.newCommandId(),
+                canonicalCorrelationId(correlationId)
+            );
+            invoices.save(invoice);
+            publish(invoice.domainEvents());
+            return invoice;
+        });
+    }
+
     public void saveAndPublish(RevenueRecognition recognition) {
+        saveAndPublish(recognition, 0);
+    }
+
+    public void saveAndPublish(RevenueRecognition recognition, int firstUnpublishedEventIndex) {
         revenueRecognitions.save(recognition);
-        publish(recognition.domainEvents());
+        publish(recognition.domainEvents().subList(firstUnpublishedEventIndex, recognition.domainEvents().size()));
     }
 
     public void saveAndPublish(ReconciliationCase reconciliationCase) {
@@ -56,16 +116,43 @@ public class FinanceSettlementApplicationService {
         publish(reconciliationCase.domainEvents());
     }
 
+    public void publishReconciliationCompleted(String orderId, String paymentIntentId, Money expectedAmount, Money actualAmount,
+                                               List<String> matchedRevenueRecognitionIds, List<String> sourceEventIds,
+                                               String status, Instant now, String causationId, String correlationId) {
+        ReconciliationCompleted completed = new ReconciliationCompleted(
+            "rec-" + com.trainticket.platformkit.idempotency.UuidV7.generate(),
+            orderId,
+            paymentIntentId == null ? "" : paymentIntentId,
+            status,
+            expectedAmount,
+            actualAmount,
+            matchedRevenueRecognitionIds,
+            sourceEventIds,
+            EventMetadata.create(now, PrefixedIds.newCommandId(), causationId, canonicalCorrelationId(correlationId),
+                Map.of("orderId", orderId, "reconciliationStatus", status))
+        );
+        publish(List.of(completed));
+    }
+
     private void publish(List<FinanceSettlementEvent> events) {
         for (FinanceSettlementEvent event : events) {
             try {
                 eventPublisher.publish(envelopeMapper.toEnvelope(event));
-            } catch (PublishFailedException ex) {
-                throw ex;
-            } catch (DomainRuleViolation ex) {
+            } catch (PublishFailedException | DomainRuleViolation ex) {
                 throw ex;
             }
         }
+    }
+
+    private static String requireText(String value, String name) {
+        if (value == null || value.isBlank()) {
+            throw new ValidationException(name + " is required");
+        }
+        return value;
+    }
+
+    private static String canonicalCorrelationId(String correlationId) {
+        return PrefixedIds.isCorrelationId(correlationId) ? correlationId : PrefixedIds.newCorrelationId();
     }
 
     public record Page<T>(List<T> items, long total, int limit, int offset) {}
