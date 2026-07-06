@@ -199,10 +199,15 @@ class FarePricingService:
         requested_segments = {ref.strip() for ref in segment_refs if ref.strip()}
         if not requested_segments:
             return None
-        for quote_id, linked_segments in self._store.fare_quote_segment_links.items():
-            if requested_segments.issubset(set(linked_segments)):
-                return quote_id
-        return None
+        # Several quotes can exist for the same segments (repeat purchases,
+        # repriced rule sets); the most recent one is the adjustment's
+        # original. fq-<uuid7> ids are time-ordered, so max() is newest.
+        matches = [
+            quote_id
+            for quote_id, linked_segments in self._store.fare_quote_segment_links.items()
+            if requested_segments.issubset(set(linked_segments))
+        ]
+        return max(matches) if matches else None
 
     def get_fare_quote(self, quote_id: str) -> FareQuote:
         return self._store.get_quote(quote_id)
