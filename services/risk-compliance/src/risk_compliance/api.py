@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
@@ -265,11 +265,34 @@ def create_app(
     service: RiskComplianceService | None = None,
     idempotency_store: IdempotencyStore | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Risk & Compliance", version="0.1.0")
-    app.state.assessment_repository = InMemoryAssessmentRepository()
     store = idempotency_store or BoundedInMemoryIdempotencyStore()
+    subscriber_config: dict[str, Any] | None = None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if subscriber_config is not None:
+            app.state.subscriber.start_in_background(
+                subscriber_config["subscriptions"],
+                subscriber_config["consumer_group"],
+                app.state.risk_service.handle_event,
+                consumer_name=subscriber_config["consumer_name"],
+            )
+        try:
+            yield
+        finally:
+            if subscriber_config is not None:
+                app.state.subscriber.stop()
+
+    app = FastAPI(title="Risk & Compliance", version="0.1.0", lifespan=lifespan)
+    app.state.assessment_repository = InMemoryAssessmentRepository()
     if service is None:
-        from .adapters.messaging.redis_streams import RedisEventPublisher
+        from .adapters.messaging.redis_streams import (
+            RISK_COMPLIANCE_CONSUMER_GROUP,
+            RISK_COMPLIANCE_SUBSCRIPTIONS,
+            RedisEventPublisher,
+            RedisEventSubscriber,
+            risk_compliance_consumer_name,
+        )
 
         app.state.publisher = RedisEventPublisher()
         app.state.risk_service = RiskComplianceService(
@@ -277,6 +300,12 @@ def create_app(
             repository=app.state.assessment_repository,
             idempotency_store=store,
         )
+        app.state.subscriber = RedisEventSubscriber()
+        subscriber_config = {
+            "subscriptions": RISK_COMPLIANCE_SUBSCRIPTIONS,
+            "consumer_group": RISK_COMPLIANCE_CONSUMER_GROUP,
+            "consumer_name": risk_compliance_consumer_name(),
+        }
     else:
         app.state.risk_service = service
         app.state.publisher = service.publisher
@@ -291,26 +320,4 @@ def create_app(
         error_body_factory=_risk_error_body,
     )
     configure_risk_endpoints(app, app.state.risk_service)
-    if service is None:
-        from .adapters.messaging.redis_streams import (
-            RISK_COMPLIANCE_CONSUMER_GROUP,
-            RISK_COMPLIANCE_SUBSCRIPTIONS,
-            RedisEventSubscriber,
-            risk_compliance_consumer_name,
-        )
-
-        app.state.subscriber = RedisEventSubscriber()
-
-        @app.on_event("startup")
-        def start_risk_subscriber() -> None:
-            app.state.subscriber.start_in_background(
-                RISK_COMPLIANCE_SUBSCRIPTIONS,
-                RISK_COMPLIANCE_CONSUMER_GROUP,
-                app.state.risk_service.handle_event,
-                consumer_name=risk_compliance_consumer_name(),
-            )
-
-        @app.on_event("shutdown")
-        def stop_risk_subscriber() -> None:
-            app.state.subscriber.stop()
     return app

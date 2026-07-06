@@ -131,6 +131,8 @@ class InMemoryAssessmentRepository:
         self._blocks: dict[str, RiskBlockApplied] = {}
         self._processed_event_ids: set[str] = set()
         self._account_order_times: dict[str, list[datetime]] = {}
+        self._account_lifted_at: dict[str, datetime] = {}
+        self._order_accounts: dict[str, str] = {}
 
     def get(self, assessment_id: str) -> RiskAssessmentResult:
         try:
@@ -159,10 +161,24 @@ class InMemoryAssessmentRepository:
     def remove_block(self, subject_ref: str) -> None:
         self._blocks.pop(subject_ref, None)
 
+    def remember_order_account(self, order_id: str, account_id: str) -> None:
+        self._order_accounts[order_id] = account_id
+
+    def account_for_order(self, order_id: str) -> str | None:
+        return self._order_accounts.get(order_id)
+
+    def record_account_lift(self, account_id: str, lifted_at: datetime) -> None:
+        self._account_lifted_at[account_id] = lifted_at
+        self._account_order_times[account_id] = [
+            seen_at for seen_at in self._account_order_times.get(account_id, [])
+            if seen_at > lifted_at
+        ]
+
     def record_order_attempt(self, account_id: str, occurred_at: datetime) -> int:
+        lifted_at = self._account_lifted_at.get(account_id)
         attempts = [
             seen_at for seen_at in self._account_order_times.get(account_id, [])
-            if occurred_at - seen_at <= FREQUENCY_WINDOW
+            if occurred_at - seen_at <= FREQUENCY_WINDOW and (lifted_at is None or seen_at > lifted_at)
         ]
         attempts.append(occurred_at)
         self._account_order_times[account_id] = attempts
@@ -241,6 +257,7 @@ class RiskComplianceService:
             return
         if self.repository.is_processed(envelope.eventId):
             return
+        self.repository.record_processed(envelope.eventId)
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
         assessment_envelope = _assessment_envelope(result, envelope.correlationId, envelope.eventId)
@@ -248,7 +265,6 @@ class RiskComplianceService:
         if block is not None:
             self.repository.save_block(block)
             self.publisher.publish(_block_applied_envelope(block, envelope.correlationId, assessment_envelope.eventId))
-        self.repository.record_processed(envelope.eventId)
 
     def lift_block(self, *, subject_ref: str, scope: str, reason_code: str, correlation_id: str) -> RiskBlockLifted:
         previous = self.repository.active_block(subject_ref)
@@ -257,12 +273,17 @@ class RiskComplianceService:
         lifted = _lifted_from_previous(previous, reason_code)
         self.publisher.publish(_block_lifted_envelope(lifted, correlation_id, prefixed_id("cmd")))
         self.repository.remove_block(subject_ref)
+        if previous.scope == BlockScope.ORDER.value:
+            account_id = self.repository.account_for_order(subject_ref)
+            if account_id is not None:
+                self.repository.record_account_lift(account_id, _coerce_datetime(lifted.allowedAt))
         return lifted
 
     def _assess_journey_order_created(self, envelope: EventEnvelope) -> tuple[RiskAssessmentResult, RiskBlockApplied | None]:
         payload = envelope.payload
         order_id = _required_payload_text(payload, "orderId")
         account_id = _required_payload_text(payload, "accountId")
+        self.repository.remember_order_account(order_id, account_id)
         occurred_at = _coerce_datetime(envelope.occurredAt)
         context = dict(payload)
         context["orderAttemptCount10m"] = self.repository.record_order_attempt(account_id, occurred_at)

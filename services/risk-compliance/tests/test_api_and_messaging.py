@@ -113,6 +113,26 @@ def test_missing_idempotency_key_is_validation_error() -> None:
     assert response.json()["code"] == "VALIDATION_FAILED"
 
 
+def journey_order_created_envelope(event_id: str, order_id: str, account_id: str, occurred_at: str = "2026-07-05T10:30:00.000Z") -> EventEnvelope:
+    return EventEnvelope(
+        eventId=event_id,
+        eventType="JourneyOrderCreated",
+        occurredAt=occurred_at,
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="journey-order",
+        schemaVersion=1,
+        payload={
+            "orderId": order_id,
+            "accountId": account_id,
+            "offerId": "offer-1",
+            "travelerRefs": [{"travelerId": "tvl-1", "maskedDocumentRef": "11***0001", "travelerType": "ADULT"}],
+            "segmentRefs": ["seg-1"],
+            "createdAt": occurred_at,
+        },
+    )
+
+
 class FailingPublisher(InMemoryEventPublisher):
     def publish(self, envelope: EventEnvelope) -> None:
         raise PublishFailed("downstream unavailable")
@@ -382,6 +402,50 @@ def test_journey_order_created_is_assessed_and_blocked_idempotently() -> None:
     }
     assert block.payload["blockId"].startswith("blk-")
     assert block.causationId == publisher.envelopes[0].eventId
+
+
+def test_journey_order_replay_does_not_publish_second_assessment_after_partial_delivery_failure() -> None:
+    class FailsAfterAssessmentPublisher(InMemoryEventPublisher):
+        def publish(self, envelope: EventEnvelope) -> None:
+            super().publish(envelope)
+            if envelope.eventType == "RiskAssessmentResult":
+                raise PublishFailed("block publication failed after assessment delivery")
+
+    publisher = FailsAfterAssessmentPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = journey_order_created_envelope(f"evt-{uuid7()}", "ord-partial", "acct-partial")
+
+    try:
+        service.handle_event(envelope)
+    except PublishFailed:
+        pass
+    service.handle_event(envelope)
+
+    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult"]
+    assert len(service.repository._assessments) == 1
+
+
+def test_lift_block_clears_account_frequency_window_for_same_account() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    account_id = "acct-lift-frequency"
+    for index in range(3):
+        service.handle_event(journey_order_created_envelope(f"evt-{uuid7()}", f"ord-lift-frequency-{index}", account_id))
+    blocked_order_id = "ord-lift-frequency-2"
+
+    lifted = service.lift_block(
+        subject_ref=blocked_order_id,
+        scope="ORDER",
+        reason_code="MANUAL_REVIEW_CLEARED",
+        correlation_id=f"corr-{uuid7()}",
+    )
+    service.handle_event(journey_order_created_envelope(f"evt-{uuid7()}", "ord-after-lift", account_id, lifted.allowedAt))
+
+    post_lift_assessment = publisher.envelopes[-1]
+    assert post_lift_assessment.eventType == "RiskAssessmentResult"
+    assert post_lift_assessment.payload["subjectRef"] == "ord-after-lift"
+    assert post_lift_assessment.payload["decision"] == "ALLOW"
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 1
 
 
 def test_lift_block_endpoint_publishes_lift_event() -> None:

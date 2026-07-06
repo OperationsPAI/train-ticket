@@ -57,19 +57,18 @@ BLOCKED_STATUS=$(jget "['status']")
 echo "  blocked order status=$BLOCKED_STATUS [$LAST_CODE]"
 [ "$BLOCKED_STATUS" = "CANCELLED" ] && ok "RiskBlockApplied cancelled order" || bad "blocked order not CANCELLED ($BLOCKED_STATUS)"
 
-echo "== 2. lift block and create fresh order"
+echo "== 2. lift block and create fresh order with same account"
 req POST risk-compliance /api/v1/risk-blocks/lift "{\"subjectRef\":\"$BLOCKED_ORDER\",\"scope\":\"ORDER\",\"reasonCode\":\"MANUAL_REVIEW_CLEARED\"}"
 check_code 201 "lift risk block"
 if wait_event RiskBlockLifted "$BLOCKED_ORDER"; then ok "RiskBlockLifted published"; else bad "missing RiskBlockLifted"; fi
 
-ACCT="acc-risk-lifted-$(uuid7)"
-LIFTED_ORDER=$(create_order "create order after lift with fresh risk context")
-echo "  liftedFresh=$LIFTED_ORDER"
+LIFTED_ORDER=$(create_order "create order after lift with same account")
+echo "  liftedSameAccount=$LIFTED_ORDER account=$ACCT"
 if wait_event RiskAssessmentResult "$LIFTED_ORDER"; then ok "RiskAssessmentResult for post-lift order"; else bad "missing RiskAssessmentResult after lift"; fi
 sleep 3
 req GET journey-order "/api/v1/journey-orders/$LIFTED_ORDER"
 LIFTED_STATUS=$(jget "['status']")
 echo "  post-lift order status=$LIFTED_STATUS [$LAST_CODE]"
-[ "$LIFTED_STATUS" = "CREATED" ] && ok "post-lift fresh order not blocked" || bad "post-lift fresh order unexpected status ($LIFTED_STATUS)"
+[ "$LIFTED_STATUS" = "CREATED" ] && ok "post-lift same-account order not blocked" || bad "post-lift same-account order unexpected status ($LIFTED_STATUS)"
 
 summary
