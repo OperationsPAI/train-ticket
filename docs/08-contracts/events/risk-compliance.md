@@ -4,13 +4,13 @@ Last updated: 2026-07-04
 
 ## Published Events
 
-### RiskAssessed
+### RiskAssessmentResult
 
 | Field | Description |
 |---|---|
 | **Producer** | risk-compliance |
 | **Consumers** | journey-order, payment, post-sales, account |
-| **Trigger** | `AssessRisk` command processed. |
+| **Trigger** | `AssessRisk` command or `JourneyOrderCreated` event processed. |
 
 **Payload:**
 
@@ -65,13 +65,13 @@ Last updated: 2026-07-04
 | `resolvedAt` | RFC3339 UTC | yes | When the challenge was resolved. |
 | `evidenceRef` | string | no | Reference to resolution evidence. |
 
-### SubjectBlocked
+### RiskBlockApplied
 
 | Field | Description |
 |---|---|
 | **Producer** | risk-compliance |
 | **Consumers** | journey-order, payment, account, booking-orchestration |
-| **Trigger** | `BlockSubject` command processed. |
+| **Trigger** | `BlockSubject` command processed or a blocking order-risk rule is hit. |
 
 **Payload:**
 
@@ -85,13 +85,13 @@ Last updated: 2026-07-04
 | `evidenceRef` | string | yes | Reference to evidence bundle. |
 | `blockedAt` | RFC3339 UTC | yes | When the block was applied. |
 
-### SubjectAllowed
+### RiskBlockLifted
 
 | Field | Description |
 |---|---|
 | **Producer** | risk-compliance |
 | **Consumers** | journey-order, payment, account, booking-orchestration |
-| **Trigger** | `AllowSubject` command processed. |
+| **Trigger** | `AllowSubject` command or HTTP risk-block lift command processed. |
 
 **Payload:**
 

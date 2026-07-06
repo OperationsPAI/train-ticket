@@ -33,6 +33,8 @@ from .application import (
     InMemoryEventPublisher,
     InMemoryEventSubscriber,
     PublishFailed,
+    RiskBlockApplied,
+    RiskBlockLifted,
     RiskComplianceService,
 )
 from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
@@ -75,6 +77,8 @@ __all__ = [
     "InMemoryEventPublisher",
     "InMemoryEventSubscriber",
     "PublishFailed",
+    "RiskBlockApplied",
+    "RiskBlockLifted",
     "RiskComplianceService",
     # Runtime
     "SERVICE_PROFILE",
