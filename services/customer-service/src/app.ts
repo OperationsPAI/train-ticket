@@ -12,6 +12,7 @@ import {
   type OpenSupportCaseRequest,
   type ReopenCaseRequest,
   type ResolveCaseRequest,
+  type RequestManualActionRequest,
 } from "./application/customer-service.js";
 import { InMemoryEventPublisher, newCommandId, type EventPublisher } from "./application/messaging.js";
 import {
@@ -91,6 +92,7 @@ const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const evidenceTypes = ["SCREENSHOT", "CALL_RECORDING", "CHAT_TRANSCRIPT", "EMAIL", "CHANNEL_RECEIPT", "PROVIDER_SUMMARY", "DOCUMENT", "OTHER"] as const;
 const accessLevels = ["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"] as const;
 const closeReasons = ["RESOLVED", "ESCALATED", "DUPLICATE", "NO_FURTHER_ACTION", "CUSTOMER_CLOSED"] as const;
+const manualActionTargetDomains = ["journey-order", "payment", "post-sales", "disruption-recovery", "account", "notification"] as const;
 
 export function opentelemetryInstrumentationFromEnv(tracer?: OTelTracer): InstrumentationHooks {
   const exporter = process.env.OTEL_TRACES_EXPORTER?.trim().toLowerCase();
@@ -243,6 +245,16 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     });
   });
 
+  app.post("/api/v1/support-cases/:caseId/manual-action-requests", async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const response = await withIdempotency(request, idempotencyStore, { caseId, body: request.body ?? null }, async () => {
+      const body = validateRequestManualAction(request.body);
+      const action = await application.requestManualAction(caseId, body, requestContext(request).correlationId, newCommandId());
+      return { statusCode: 202, body: { manualActionId: action.manualActionId, status: "REQUESTED" } };
+    });
+    return reply.status(response!.statusCode).send(response!.body);
+  });
+
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
   });
@@ -375,6 +387,19 @@ function validateReopen(value: unknown): ReopenCaseRequest {
   return { reason: requiredString(body, "reason"), requesterRef: requiredString(body, "requesterRef") };
 }
 
+function validateRequestManualAction(value: unknown): RequestManualActionRequest {
+  const body = objectBody(value);
+  return {
+    targetDomain: enumValue(body, "targetDomain", manualActionTargetDomains),
+    commandType: requiredString(body, "commandType"),
+    operatorRef: requiredString(body, "operatorRef"),
+    reason: requiredString(body, "reason"),
+    evidenceRefs: optionalStringArray(body, "evidenceRefs"),
+    description: requiredString(body, "description"),
+    requiresApproval: requiredBoolean(body, "requiresApproval"),
+  };
+}
+
 function objectBody(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ValidationError("Request body must be a JSON object");
@@ -399,6 +424,30 @@ function optionalString(body: Record<string, unknown>, field: string): string | 
     throw new ValidationError(`${field} must be a non-empty string`, { field });
   }
   return value;
+}
+
+function requiredBoolean(body: Record<string, unknown>, field: string): boolean {
+  const value = body[field];
+  if (typeof value !== "boolean") {
+    throw new ValidationError(`${field} is required`, { field });
+  }
+  return value;
+}
+
+function optionalStringArray(body: Record<string, unknown>, field: string): readonly string[] | undefined {
+  const value = body[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new ValidationError(`${field} must be an array`, { field });
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new ValidationError(`${field}[${index}] must be a non-empty string`, { field: `${field}[${index}]` });
+    }
+    return entry;
+  });
 }
 
 function enumValue<T extends readonly string[]>(body: Record<string, unknown>, field: string, allowed: T): T[number] {

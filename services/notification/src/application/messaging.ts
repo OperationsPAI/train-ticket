@@ -70,17 +70,6 @@ function domainEventPayload(event: NotificationDomainEvent): Record<string, unkn
         outcome: event.outcome,
         deliveredAt: event.deliveredAt.toISOString(),
       };
-    case "NotificationSent": {
-      const payload: Record<string, unknown> = {
-        notificationTaskId: event.notificationTaskId,
-        channel: event.channel,
-        sentAt: event.sentAt.toISOString(),
-      };
-      if (event.providerMessageId !== undefined) {
-        payload.providerMessageId = event.providerMessageId;
-      }
-      return payload;
-    }
     case "NotificationFailed": {
       const payload: Record<string, unknown> = {
         notificationTaskId: event.notificationTaskId,
@@ -97,15 +86,6 @@ function domainEventPayload(event: NotificationDomainEvent): Record<string, unkn
       }
       return payload;
     }
-    case "NotificationSuppressed":
-      return {
-        notificationTaskId: event.notificationTaskId,
-        recipientRef: event.recipientRef,
-        channel: event.channel,
-        intent: event.intent,
-        reason: event.reason,
-        suppressedAt: event.suppressedAt.toISOString(),
-      };
     case "NotificationCancelled":
       return {
         notificationTaskId: event.notificationTaskId,

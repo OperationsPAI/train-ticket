@@ -97,7 +97,7 @@ describe("notification messaging integration surface", () => {
     assert.equal(publisher.envelopes.length, 3);
     assert.equal(publisher.envelopes[0].eventType, "NotificationScheduled");
     assert.equal(publisher.envelopes[1].eventType, "NotificationDispatched");
-    assert.equal(publisher.envelopes[2].eventType, "NotificationSent");
+    assert.equal(publisher.envelopes[2].eventType, "NotificationDelivered");
     assert.equal(isPrefixedUuidV7(publisher.envelopes[0].eventId, ["evt"]), true);
     assert.equal(publisher.envelopes[0].producer, "notification");
     assert.equal(publisher.envelopes[0].correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
@@ -106,7 +106,7 @@ describe("notification messaging integration surface", () => {
     assert.equal(publisher.envelopes[0].payload.templateCode, "payment_captured");
   });
 
-  it("publishes NotificationSuppressed when user preferences opt out of non-transactional sends", async () => {
+  it("publishes NotificationCancelled when user preferences opt out of non-transactional sends", async () => {
     const publisher = new InMemoryEventPublisher();
     const service = new NotificationApplicationService(
       publisher,
@@ -123,9 +123,9 @@ describe("notification messaging integration surface", () => {
       payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001", transactionRequired: false },
     };
 
-    assert.equal(await service.handleExternalTrigger(upstream), "suppressed");
-    assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationSuppressed"]);
-    assert.equal(publisher.envelopes[1].payload.reason, "USER_PREFERENCE");
+    assert.equal(await service.handleExternalTrigger(upstream), "cancelled");
+    assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationCancelled"]);
+    assert.equal(publisher.envelopes[1].payload.reason, "SUPPRESSED_BY_PREFERENCES");
   });
 
   it("bypasses user preferences for transaction-required sends", async () => {
@@ -145,8 +145,8 @@ describe("notification messaging integration surface", () => {
       payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001", transactionRequired: true },
     };
 
-    assert.equal(await service.handleExternalTrigger(upstream), "sent");
-    assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationDispatched", "NotificationSent"]);
+    assert.equal(await service.handleExternalTrigger(upstream), "delivered");
+    assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationDispatched", "NotificationDelivered"]);
   });
 
   it("rejects conformant trigger events that do not identify a recipient", async () => {

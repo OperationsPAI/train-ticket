@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Notification + Customer Service closure: assert purchase emits NotificationSent,
-# open a support case for that order, then verify post-sales facts are attached
-# to the support timeline and resolving the case publishes SupportCaseResolved.
+# Notification + Customer Service closure: assert purchase emits NotificationDelivered,
+# open a support case for that order, run a refund through evaluate+approve, then
+# verify the PostSalesApplied fact is attached to the support timeline and resolving
+# the case publishes SupportCaseResolved.
 cd "$(dirname "$0")" && . ./lib.sh
 [ -f ./.refs.env ] || ./02-purchase.sh
 . ./.refs.env
@@ -25,11 +26,11 @@ PYEX
 echo "== 1. purchase notification delivery"
 FOUND=""
 for attempt in 1 2 3 4 5; do
-  FOUND=$(stream_mentions events:notification NotificationSent "nt-")
+  FOUND=$(stream_mentions events:notification NotificationDelivered "nt-")
   [ "$FOUND" = "yes" ] && break
   sleep 3
 done
-[ "$FOUND" = "yes" ] && ok "NotificationSent published after purchase" || bad "no NotificationSent observed"
+[ "$FOUND" = "yes" ] && ok "NotificationDelivered published after purchase" || bad "no NotificationDelivered observed"
 
 echo "== 2. open support case referencing order $ORDER"
 req POST customer-service /api/v1/support-cases "{\"requesterRef\":\"$TVL\",\"channel\":\"APP\",\"classification\":\"POST_SALES_HELP\",\"priority\":\"NORMAL\",\"description\":\"Help me with my order\",\"businessReferences\":{\"journeyOrderId\":\"$ORDER\"}}"
@@ -38,27 +39,32 @@ SUPPORT_CASE=$(jget "['caseId']")
 echo "  SUPPORT_CASE=$SUPPORT_CASE"
 
 if [ -z "${CASE:-}" ]; then
-  echo "== 3. create refund fact for support timeline"
+  echo "== 3. create and apply refund fact for support timeline"
   req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$ORDER\",\"caseType\":\"REFUND\",\"scope\":{\"orderItemRefs\":[\"$SB\"],\"segmentRefs\":[\"$SEG\"],\"travelerRefs\":[\"$TVL\"],\"entitlementRefs\":[\"$ENT\"]},\"reasonCode\":\"CUSTOMER_REQUEST\",\"actorRef\":\"$ACCT\"}"
   check_code 201 "open post-sales case"
   CASE=$(jget "['caseId']")
 else
   echo "== 3. reuse refund case $CASE"
 fi
-sleep 5
+req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
+check_code 200 "evaluate post-sales case"
+req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
+check_code 200 "approve post-sales case"
+sleep 8
 
 req GET customer-service "/api/v1/support-cases/$SUPPORT_CASE"
-TIMELINE_OK=$(echo "$RESP" | ORDER="$ORDER" python3 - << 'PYEX'
+TIMELINE_OK=$(echo "$RESP" | CASE="$CASE" python3 - << 'PYEX'
 import sys, json, os
 try:
     d=json.load(sys.stdin)
     entries=d.get('timeline', [])
-    print('yes' if any(os.environ['ORDER'] in json.dumps(e) for e in entries) else '')
+    needle=os.environ['CASE']
+    print('yes' if any(e.get('eventType') == 'PostSalesApplied' and needle in json.dumps(e) for e in entries) else '')
 except Exception:
     print('')
 PYEX
 )
-[ "$TIMELINE_OK" = "yes" ] && ok "support timeline attached order/post-sales fact" || bad "timeline missing post-sales/order fact"
+[ "$TIMELINE_OK" = "yes" ] && ok "support timeline attached PostSalesApplied refund fact" || bad "timeline missing PostSalesApplied refund fact"
 
 echo "== 4. resolve support case"
 req POST customer-service "/api/v1/support-cases/$SUPPORT_CASE/assign" "{\"ownerQueue\":\"tier1\"}"

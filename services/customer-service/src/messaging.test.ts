@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { CustomerServiceApplication } from "./application/customer-service.js";
-import { EvidenceRef, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
+import { EvidenceRef, ManualActionRequest, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
 import { isPrefixedUuidV7 } from "@trainticket/ts-kit";
 import { ConsumedEventDeduplicator, InMemoryEventPublisher, InMemoryEventSubscriber, toEventEnvelope, type EventEnvelope } from "./application/messaging.js";
 
@@ -75,6 +75,17 @@ describe("customer-service messaging ports", () => {
       SupportCaseAssigned: { caseId: "sc-doc", ownerQueue: "tier1", assignedTo: "op-owner", assignedBy: "op-doc" },
       SupportCaseEscalated: { caseId: "sc-doc", targetQueue: "tier2", reason: "needs supervisor", escalatedBy: "op-doc" },
       SupportCaseResolved: { caseId: "sc-doc", summary: "fixed", resolutionCode: "FIXED", resolvedBy: "op-doc" },
+      ManualActionRequested: {
+        manualActionId: "ma-doc",
+        caseId: "sc-doc",
+        targetDomain: "post-sales",
+        commandType: "ManualRefundReviewRequested",
+        operatorRef: "op-doc",
+        reason: "needs manual review",
+        evidenceRefs: ["evid-doc"],
+        description: "Review refund",
+        requiresApproval: true,
+      },
       SupportCaseClosed: { caseId: "sc-doc", reason: "RESOLVED", closedBy: "op-doc" },
       SupportCaseReopened: { caseId: "sc-doc", reason: "still broken", requesterRef: "tvl-doc" },
     };
@@ -133,20 +144,31 @@ describe("customer-service messaging ports", () => {
     assert.deepEqual(publisher.findByEventType("CaseTimelineEntryAppended").map((e) => e.payload.eventTypeCode), ["PostSalesApplied"]);
   });
 
-  it("Redis subscriber can be constructed with a loop failure hook", async () => {
+  it("reports Redis subscriber background loop failures", async () => {
     class FailingRedis {
+      public status = "ready";
       disconnect(): void {}
       async xgroup(): Promise<void> {}
-      async xreadgroup(): Promise<unknown> { throw new Error("read failed"); }
+      async call(command: string): Promise<unknown> {
+        if (command === "XREADGROUP") {
+          throw new Error("read failed");
+        }
+        return null;
+      }
       async xautoclaim(): Promise<unknown[]> { return ["0-0", []]; }
     }
     const observed: unknown[] = [];
     const subscriber = new RedisEventSubscriber(new FailingRedis() as never, (error) => observed.push(error));
 
     await subscriber.subscribe(["events:journey-order"], "customer-service", "customer-service-test", async () => {});
+    for (let attempt = 0; attempt < 20 && observed.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     await subscriber.stop();
 
-    assert.equal(observed.length, 0);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0] instanceof Error, true);
+    assert.match((observed[0] as Error).message, /background loop failed/);
   });
 
   it("in-memory subscriber applies consumer-side deduplication", async () => {
@@ -201,8 +223,22 @@ function buildDocumentedPayloadEvents(): CustomerServiceDomainEvent[] {
   const classified = opened.case.classify({ caseId: "sc-doc", classification: "PAYMENT_DISPUTE", priority: "URGENT", classifiedBy: "op-doc", classifiedAt: new Date("2026-07-05T10:32:00.000Z") });
   const assigned = classified.case.assign({ caseId: "sc-doc", ownerQueue: "tier1", assignedTo: "op-owner", assignedBy: "op-doc", assignedAt: new Date("2026-07-05T10:33:00.000Z") });
   const escalated = assigned.case.escalate({ caseId: "sc-doc", targetQueue: "tier2", reason: "needs supervisor", escalatedBy: "op-doc", escalatedAt: new Date("2026-07-05T10:34:00.000Z") });
+  const manualAction = ManualActionRequest.request({
+    manualActionId: "ma-doc",
+    caseId: "sc-doc",
+    targetDomain: "post-sales",
+    commandType: "ManualRefundReviewRequested",
+    operatorRef: "op-doc",
+    reason: "needs manual review",
+    evidenceRefs: ["evid-doc"],
+    description: "Review refund",
+    requiresApproval: true,
+    correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+    causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+    requestedAt: new Date("2026-07-05T10:34:30.000Z"),
+  });
   const resolved = assigned.case.resolve({ caseId: "sc-doc", summary: "fixed", resolutionCode: "FIXED", resolvedBy: "op-doc", resolvedAt: new Date("2026-07-05T10:35:00.000Z") });
   const closed = resolved.case.close({ caseId: "sc-doc", reason: "RESOLVED", closedBy: "op-doc", closedAt: new Date("2026-07-05T10:36:00.000Z") });
   const reopened = closed.case.reopen({ caseId: "sc-doc", reason: "still broken", requesterRef: "tvl-doc", reopenedAt: new Date("2026-07-05T10:37:00.000Z") });
-  return [opened.event, attached.event, classified.event, assigned.event, escalated.event, resolved.event, closed.event, reopened.event];
+  return [opened.event, attached.event, classified.event, assigned.event, escalated.event, manualAction.event, resolved.event, closed.event, reopened.event];
 }

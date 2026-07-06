@@ -16,7 +16,7 @@ export type ExternalNotificationTrigger = Readonly<{
   payload: Record<string, unknown>;
 }>;
 
-export type ExternalTriggerResult = "scheduled" | "sent" | "suppressed" | "failed" | "ignored";
+export type ExternalTriggerResult = "scheduled" | "delivered" | "cancelled" | "failed" | "ignored";
 
 export type UserPreference = Readonly<{
   recipientRef: string;
@@ -85,14 +85,14 @@ export class NotificationApplicationService {
     await this.publisher.publish(toEventEnvelope(scheduled));
 
     if (!command.transactionRequired && !await this.preferences.isEnabled(command.recipientRef, command.intent, command.channel)) {
-      const { task: suppressed, event } = task.suppress({
+      const { task: cancelled, event } = task.cancel({
         notificationTaskId: task.id,
-        reason: "USER_PREFERENCE",
-        suppressedAt: new Date(),
+        reason: "SUPPRESSED_BY_PREFERENCES",
+        cancelledAt: new Date(),
       });
-      void suppressed;
+      void cancelled;
       await this.publisher.publish(toEventEnvelope(event));
-      return "suppressed";
+      return "cancelled";
     }
 
     const dispatchedAt = new Date();
@@ -101,15 +101,16 @@ export class NotificationApplicationService {
 
     const delivery = await this.channelGateway.send(delivering.toSnapshot());
     if (delivery.ok) {
-      const { task: sent, event: sentEvent } = delivering.markSent({
+      const { task: delivered, event: deliveredEvent } = delivering.recordReceipt({
+        receiptId: newReceiptId(),
         notificationTaskId: delivering.id,
         channel: command.channel,
-        sentAt: new Date(),
-        providerMessageId: delivery.providerMessageId,
+        outcome: "Delivered",
+        recordedAt: new Date(),
       });
-      void sent;
-      await this.publisher.publish(toEventEnvelope(sentEvent));
-      return "sent";
+      void delivered;
+      await this.publisher.publish(toEventEnvelope(deliveredEvent));
+      return "delivered";
     }
 
     const { task: failed, event: failedEvent } = delivering.recordReceipt({

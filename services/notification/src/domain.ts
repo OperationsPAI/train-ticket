@@ -46,10 +46,8 @@ export type NotificationTaskStatus =
   | "Planned"
   | "Authorized"
   | "Delivering"
-  | "Sent"
   | "Delivered"
   | "Failed"
-  | "Suppressed"
   | "Cancelled";
 
 export type TemplateStatus =
@@ -177,21 +175,6 @@ export type NotificationDelivered = Readonly<{
   deliveredAt: Date;
 }>;
 
-export type NotificationSent = Readonly<{
-  type: "NotificationSent";
-  eventId: EventId;
-  eventType: string;
-  schemaVersion: number;
-  occurredAt: Date;
-  correlationId: CorrelationId;
-  causationId?: CausationId;
-  producer: string;
-  notificationTaskId: NotificationTaskId;
-  channel: ChannelType;
-  sentAt: Date;
-  providerMessageId?: string;
-}>;
-
 export type NotificationFailed = Readonly<{
   type: "NotificationFailed";
   eventId: EventId;
@@ -208,23 +191,6 @@ export type NotificationFailed = Readonly<{
   providerCode?: string;
   providerMessage?: string;
   failedAt: Date;
-}>;
-
-export type NotificationSuppressed = Readonly<{
-  type: "NotificationSuppressed";
-  eventId: EventId;
-  eventType: string;
-  schemaVersion: number;
-  occurredAt: Date;
-  correlationId: CorrelationId;
-  causationId?: CausationId;
-  producer: string;
-  notificationTaskId: NotificationTaskId;
-  recipientRef: RecipientRef;
-  channel: ChannelType;
-  intent: IntentType;
-  reason: "USER_PREFERENCE";
-  suppressedAt: Date;
 }>;
 
 export type NotificationCancelled = Readonly<{
@@ -245,9 +211,7 @@ export type NotificationDomainEvent =
   | NotificationScheduled
   | NotificationDispatched
   | NotificationDelivered
-  | NotificationSent
   | NotificationFailed
-  | NotificationSuppressed
   | NotificationCancelled;
 
 // ─── NotificationTask Aggregate ────────────────────────────────────────────────
@@ -356,78 +320,10 @@ export class NotificationTask {
     return { task: new NotificationTask(newSnapshot), event };
   }
 
-  markSent(command: { notificationTaskId: NotificationTaskId; channel: ChannelType; sentAt: Date; providerMessageId?: string }): { task: NotificationTask; event: NotificationSent } {
-    if (this.snapshot.status !== "Delivering" && this.snapshot.status !== "Planned" && this.snapshot.status !== "Authorized") {
-      throw new DomainError(
-        "TASK_NOT_SENDABLE",
-        `NotificationTask ${this.id} in ${this.snapshot.status} cannot be marked sent`,
-      );
-    }
-    if (command.notificationTaskId !== this.snapshot.notificationTaskId) {
-      throw new DomainError("TASK_ID_MISMATCH", "Sent notification task id does not match aggregate");
-    }
-    const newSnapshot: NotificationTaskSnapshot = deepFreeze({
-      ...this.snapshot,
-      status: "Sent" as const,
-      dispatchedAt: this.snapshot.dispatchedAt ?? new Date(command.sentAt),
-    });
-    const event: NotificationSent = deepFreeze({
-      type: "NotificationSent" as const,
-      eventId: newEventId(),
-      eventType: "NotificationSent",
-      schemaVersion: 1,
-      occurredAt: new Date(command.sentAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
-      producer: "notification",
-      notificationTaskId: this.snapshot.notificationTaskId,
-      channel: command.channel,
-      sentAt: new Date(command.sentAt),
-      providerMessageId: command.providerMessageId,
-    });
-    return { task: new NotificationTask(newSnapshot), event };
-  }
-
-  suppress(command: { notificationTaskId: NotificationTaskId; suppressedAt: Date; reason: "USER_PREFERENCE" }): { task: NotificationTask; event: NotificationSuppressed } {
-    if (this.snapshot.transactionRequired) {
-      throw new DomainError("TRANSACTION_REQUIRED_NOT_SUPPRESSIBLE", "Transaction-required notifications bypass user preferences");
-    }
-    if (this.snapshot.status !== "Planned" && this.snapshot.status !== "Authorized") {
-      throw new DomainError(
-        "TASK_NOT_SUPPRESSIBLE",
-        `NotificationTask ${this.id} in ${this.snapshot.status} cannot be suppressed`,
-      );
-    }
-    if (command.notificationTaskId !== this.snapshot.notificationTaskId) {
-      throw new DomainError("TASK_ID_MISMATCH", "Suppressed notification task id does not match aggregate");
-    }
-    const newSnapshot: NotificationTaskSnapshot = deepFreeze({
-      ...this.snapshot,
-      status: "Suppressed" as const,
-    });
-    const event: NotificationSuppressed = deepFreeze({
-      type: "NotificationSuppressed" as const,
-      eventId: newEventId(),
-      eventType: "NotificationSuppressed",
-      schemaVersion: 1,
-      occurredAt: new Date(command.suppressedAt),
-      correlationId: this.snapshot.correlationId,
-      causationId: this.snapshot.causationId,
-      producer: "notification",
-      notificationTaskId: this.snapshot.notificationTaskId,
-      recipientRef: this.snapshot.recipientRef,
-      channel: this.snapshot.channel,
-      intent: this.snapshot.intent,
-      reason: command.reason,
-      suppressedAt: new Date(command.suppressedAt),
-    });
-    return { task: new NotificationTask(newSnapshot), event };
-  }
-
   recordReceipt(
     command: RecordDeliveryReceipt,
   ): { task: NotificationTask; event: NotificationDelivered | NotificationFailed } {
-    if (this.snapshot.status === "Delivered" || this.snapshot.status === "Suppressed" || this.snapshot.status === "Cancelled") {
+    if (this.snapshot.status === "Delivered" || this.snapshot.status === "Cancelled") {
       throw new DomainError(
         "TASK_IN_TERMINAL_STATE",
         `NotificationTask ${this.id} is in terminal state ${this.snapshot.status}`,
@@ -489,7 +385,7 @@ export class NotificationTask {
   cancel(
     command: CancelNotification,
   ): { task: NotificationTask; event: NotificationCancelled } {
-    if (this.snapshot.status === "Delivered" || this.snapshot.status === "Sent" || this.snapshot.status === "Suppressed" || this.snapshot.status === "Cancelled") {
+    if (this.snapshot.status === "Delivered" || this.snapshot.status === "Cancelled") {
       throw new DomainError(
         "TASK_NOT_CANCELLABLE",
         `NotificationTask ${this.id} in ${this.snapshot.status} cannot be cancelled`,

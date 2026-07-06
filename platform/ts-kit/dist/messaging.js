@@ -254,6 +254,9 @@ export class RedisEventSubscriber {
                 if (String(error).includes("NOGROUP")) {
                     await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
                 }
+                if (!isRecoverableRedisReadError(error)) {
+                    throw error;
+                }
                 await sleep(1_000);
             }
         }
@@ -388,6 +391,10 @@ export function dlqStreamKey(context) {
 }
 export function redisUrl() {
     return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+function isRecoverableRedisReadError(error) {
+    const message = String(error);
+    return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
 }
 function sanitizedErrorForLog(error) {
     if (error instanceof Error) {
