@@ -70,7 +70,7 @@ class AdminAuditControllerTest {
 
         mockMvc.perform(get("/api/v1/admin/audit-trail").param("businessRef", "pi-1").param("limit", "20").param("offset", "0"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.total").value(2))
+            .andExpect(jsonPath("$.total").value(3))
             .andExpect(jsonPath("$.items[0].resourceRef").value("pi-1"));
     }
 

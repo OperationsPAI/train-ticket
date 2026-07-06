@@ -241,30 +241,68 @@ export class CustomerServiceApplication {
     if (this.consumedIntegrationEvents.has(envelope.eventId)) {
       return;
     }
+
+    if (envelope.producer === "admin-audit" && (envelope.eventType === "ManualActionExecuted" || envelope.eventType === "ManualActionRejected")) {
+      await this.recordAdminAuditManualActionOutcome(envelope);
+    } else {
+      for (const supportCase of this.cases.values()) {
+        if (caseReferencesEnvelope(supportCase.toSnapshot(), envelope)) {
+          await this.appendTimelineEntry(
+            supportCase.id,
+            envelope.eventType,
+            { sourceEventId: envelope.eventId, producer: envelope.producer, payload: envelope.payload },
+            "INTERNAL_ONLY",
+            new Date(envelope.occurredAt),
+            envelope.correlationId,
+            envelope.causationId,
+          );
+        }
+      }
+    }
+
     this.consumedIntegrationEvents.set(envelope.eventId, Object.freeze({
       source: envelope.producer,
       eventType: envelope.eventType,
       consumedAt: new Date(),
       payload: envelope.payload,
     }));
-
-    for (const supportCase of this.cases.values()) {
-      if (caseReferencesEnvelope(supportCase.toSnapshot(), envelope)) {
-        await this.appendTimelineEntry(
-          supportCase.id,
-          envelope.eventType,
-          { sourceEventId: envelope.eventId, producer: envelope.producer, payload: envelope.payload },
-          "INTERNAL_ONLY",
-          new Date(envelope.occurredAt),
-          envelope.correlationId,
-          envelope.causationId,
-        );
-      }
-    }
   }
 
   consumedIntegrationEventCount(): number {
     return this.consumedIntegrationEvents.size;
+  }
+
+
+  private async recordAdminAuditManualActionOutcome(envelope: EventEnvelope): Promise<void> {
+    const manualActionId = requiredPayloadString(envelope.payload, "manualActionId");
+    const action = this.manualActions.get(manualActionId);
+    if (!action) {
+      return;
+    }
+    const outcome = envelope.eventType === "ManualActionRejected" ? "Rejected" : "Succeeded";
+    const resultSummary = envelope.eventType === "ManualActionRejected"
+      ? requiredPayloadString(envelope.payload, "reason")
+      : requiredPayloadString(envelope.payload, "resultSummary");
+    const { action: updated, event } = action.recordOutcome({
+      manualActionId,
+      outcome,
+      resultSummary,
+      recordedAt: new Date(envelope.occurredAt),
+      correlationId: envelope.correlationId,
+      causationId: envelope.eventId,
+    });
+    this.manualActions.set(manualActionId, updated);
+    const eventEnvelope = toEventEnvelope(event, envelope.eventId);
+    await this.publisher.publish(eventEnvelope);
+    await this.appendTimelineEntry(
+      updated.caseId,
+      "ManualActionResultRecorded",
+      eventEnvelope.payload,
+      "INTERNAL_ONLY",
+      event.occurredAt,
+      envelope.correlationId,
+      envelope.eventId,
+    );
   }
 
   private async appendTimelineEntry(caseId: string, eventType: string, payload: Readonly<Record<string, unknown>>, visibility: "CUSTOMER_VISIBLE" | "INTERNAL_ONLY", occurredAt: Date, correlationId: string, causationId?: string): Promise<void> {
@@ -294,6 +332,14 @@ export class CustomerServiceApplication {
 
 export function isDomainError(error: unknown): error is DomainError {
   return error instanceof DomainError;
+}
+
+function requiredPayloadString(payload: Record<string, unknown>, field: string): string {
+  const value = stringField(payload, field);
+  if (value === undefined) {
+    throw new DomainError("MISSING_REQUIRED_FIELD", `${field} is required`);
+  }
+  return value;
 }
 
 function caseReferencesEnvelope(snapshot: SupportCaseSnapshot, envelope: EventEnvelope): boolean {
