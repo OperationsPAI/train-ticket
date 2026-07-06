@@ -220,6 +220,7 @@ pub fn router_with_config(config: RuntimeConfig) -> Router {
     let metadata = config.metadata.clone();
     let standard_routes = Router::new()
         .route("/health", get(health_handler))
+        .route("/healthz", get(health_handler))
         .route("/live", get(live_handler))
         .route("/livez", get(live_handler))
         .route("/ready", get(ready_handler))
@@ -576,6 +577,7 @@ mod tests {
 
         for path in [
             "/health",
+            "/healthz",
             "/live",
             "/livez",
             "/ready",

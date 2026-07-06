@@ -1,5 +1,6 @@
 package com.trainticket.travelerprofile.application;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,6 +39,7 @@ public class TravelerProfileService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
+    @Autowired
     public TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper) {
         this(eventPublisher, objectMapper, Clock.systemUTC());
     }

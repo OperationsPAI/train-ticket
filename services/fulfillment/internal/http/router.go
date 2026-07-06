@@ -41,9 +41,6 @@ func RouterWithConfig(service *application.Service, idSource goruntime.IDGenerat
 		Observer:        goruntime.ObserverFromEnv(profile.ServiceID),
 		RequestIDSource: idSource,
 	})
-	router.GET("/healthz", func(ctx *gin.Context) {
-		ctx.JSON(http.StatusOK, gin.H{"status": domain.Health()})
-	})
 	h := &Handler{svc: service, idempotency: idempotency.NewMemoryStore()}
 	idempotent := idempotency.Middleware(h.idempotency)
 	router.POST("/api/v1/fulfillment-records/boarding", idempotent, h.verifyBoarding)

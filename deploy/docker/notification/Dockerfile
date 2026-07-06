@@ -3,10 +3,9 @@ FROM node:26-alpine AS builder
 WORKDIR /src
 COPY platform/ts-kit/package.json platform/ts-kit/package-lock.json platform/ts-kit/tsconfig.json ./platform/ts-kit/
 COPY platform/ts-kit/src ./platform/ts-kit/src
-COPY platform/ts-kit/dist ./platform/ts-kit/dist
 RUN --mount=type=cache,target=/root/.npm cd platform/ts-kit && npm ci && npm run build
 COPY services/notification/package.json services/notification/package-lock.json services/notification/tsconfig.json ./services/notification/
-RUN --mount=type=cache,target=/root/.npm cd services/notification && npm ci
+RUN --mount=type=cache,target=/root/.npm cd services/notification && npm ci --install-links
 COPY services/notification/src ./services/notification/src
 RUN cd services/notification && npx tsc --noEmit false --outDir dist
 

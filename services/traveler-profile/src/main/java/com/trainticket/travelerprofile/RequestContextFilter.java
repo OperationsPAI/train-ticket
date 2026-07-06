@@ -12,7 +12,7 @@ import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-@Component
+@Component("travelerprofileRequestContextFilter")
 public class RequestContextFilter extends OncePerRequestFilter {
     public static final String REQUEST_ID_HEADER = "X-Request-Id";
     public static final String CORRELATION_ID_HEADER = "X-Correlation-Id";

@@ -178,9 +178,11 @@ func RegisterStandardEndpoints(router gin.IRouter, config GinConfig) {
 	}
 	metadata := config.Metadata
 
-	router.GET("/health", func(ctx *gin.Context) {
+	healthHandler := func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{"status": healthStatus, "service": metadata})
-	})
+	}
+	router.GET("/health", healthHandler)
+	router.GET("/healthz", healthHandler)
 	router.GET("/metadata", func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, metadata)
 	})

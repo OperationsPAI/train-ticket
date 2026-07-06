@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from reporting.application.service import ReportingApplicationService
 from reporting.ids import uuid7
 
@@ -21,12 +22,19 @@ class MessagingRuntime:
 
     def start(self) -> None:
         consumer_name = f"reporting-{os.getenv('HOSTNAME') or uuid7()}"
-        self.subscriber.subscribe(
-            reporting_subscription_streams(),
-            CONSUMER_GROUP,
-            consumer_name,
-            self.service.handle_event,
+        # subscribe() runs the consume loop; it must not block FastAPI
+        # lifespan startup, so it runs on a daemon thread.
+        self._thread = threading.Thread(
+            target=self.subscriber.subscribe,
+            args=(
+                reporting_subscription_streams(),
+                CONSUMER_GROUP,
+                consumer_name,
+                self.service.handle_event,
+            ),
+            daemon=True,
         )
+        self._thread.start()
 
     def stop(self) -> None:
         self.subscriber.stop()
