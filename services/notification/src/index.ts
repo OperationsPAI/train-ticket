@@ -57,6 +57,8 @@ export {
   type TemplateSnapshot,
   type RecipientPolicySnapshot,
   type DeliveryReceiptSnapshot,
+  newNotificationTaskId,
+  newReceiptId,
   type NotificationBoundaryProof,
 } from "./domain.js";
 export {
@@ -74,7 +76,7 @@ export {
   type EventPublisher,
   type EventSubscriber,
 } from "./application/messaging.js";
-export { NonConformantNotificationTrigger, NotificationApplicationService, type ExternalTriggerResult } from "./application/notification-service.js";
+export { NonConformantNotificationTrigger, NotificationApplicationService, type DeliveryResult, type ExternalTriggerResult, type NotificationChannelGateway, type UserPreference, type UserPreferenceRepository } from "./application/notification-service.js";
 export {
   NOTIFICATION_CONSUMER_GROUP,
   NOTIFICATION_PRODUCER,

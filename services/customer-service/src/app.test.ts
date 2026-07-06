@@ -287,6 +287,42 @@ describe("customer-service HTTP API", () => {
     assert.equal(invalidOnCreatedCase.json().correlationId, invalidOnCreatedCase.headers["x-correlation-id"]);
   });
 
+  it("requests manual actions idempotently without changing business state", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({ publisher });
+    const caseId = await openedCase(app);
+    const payload = {
+      targetDomain: "post-sales",
+      commandType: "ManualRefundReviewRequested",
+      operatorRef: "op-1",
+      reason: "needs manual review",
+      evidenceRefs: [],
+      description: "Review refund evidence",
+      requiresApproval: true,
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/manual-action-requests`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c017" },
+      payload,
+    });
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/manual-action-requests`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c017" },
+      payload,
+    });
+
+    assert.equal(first.statusCode, 202);
+    assert.match(first.json().manualActionId, /^ma-/);
+    assert.equal(first.json().status, "REQUESTED");
+    assert.deepEqual(replay.json(), first.json());
+    assert.equal(replay.statusCode, 202);
+    assert.deepEqual(publisher.findByEventType("ManualActionRequested").map((event) => event.payload.caseId), [caseId]);
+    assert.equal(publisher.findByEventType("ManualActionRequested")[0].payload.targetDomain, "post-sales");
+  });
+
   it("returns NOT_FOUND for unknown cases", async () => {
     const response = await createApp().inject("/api/v1/support-cases/sc-missing");
     assert.equal(response.statusCode, 404);
