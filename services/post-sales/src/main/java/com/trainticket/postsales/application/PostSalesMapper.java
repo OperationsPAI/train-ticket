@@ -27,6 +27,10 @@ public final class PostSalesMapper {
     }
 
     public static EventEnvelope toEnvelope(PostSalesEvent event) {
+        return toEnvelope(event, null);
+    }
+
+    public static EventEnvelope toEnvelope(PostSalesEvent event, PostSalesCase sourceCase) {
         EventMetadata metadata = event.metadata();
         return new EventEnvelope(
             PrefixedIds.isEventId(prefixed(metadata.eventId(), "evt-")) ? prefixed(metadata.eventId(), "evt-") : PrefixedIds.newEventId(),
@@ -36,7 +40,7 @@ public final class PostSalesMapper {
             prefixedCausation(metadata.causationId()),
             PRODUCER,
             metadata.schemaVersion(),
-            payload(event)
+            payload(event, sourceCase)
         );
     }
 
@@ -113,7 +117,7 @@ public final class PostSalesMapper {
         };
     }
 
-    private static Object payload(PostSalesEvent event) {
+    private static Object payload(PostSalesEvent event, PostSalesCase sourceCase) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("caseId", prefixed(event.caseId(), "psc-"));
         if (event instanceof PostSalesCaseOpened opened) {
@@ -132,7 +136,7 @@ public final class PostSalesMapper {
             payload.put("adjustmentQuoteId", evaluated.farePricingEvaluationRef());
         } else if (event instanceof PostSalesApproved approved) {
             payload.put("orderId", approved.journeyOrderId());
-            payload.put("approvedActions", approvedActions(approved));
+            payload.put("approvedActions", approvedActions(approved, sourceCase));
         } else if (event instanceof PostSalesRejected rejected) {
             payload.put("reason", rejected.reasonCode());
         } else if (event instanceof PostSalesApplied applied) {
@@ -150,10 +154,37 @@ public final class PostSalesMapper {
         };
     }
 
-    private static Map<String, Object> approvedActions(PostSalesApproved approved) {
+    private static Map<String, Object> approvedActions(PostSalesApproved approved, PostSalesCase sourceCase) {
         Map<String, Object> actions = new LinkedHashMap<>();
         actions.put("decisionKind", approved.decisionKind().name());
         actions.put("approvalRef", approved.approvalRef());
+        if (sourceCase == null) {
+            return actions;
+        }
+        // Normative execution steps (events/post-sales.md): downstream
+        // contexts act on these without any shared store.
+        if (sourceCase.decision() != null) {
+            Map<String, Object> refund = new LinkedHashMap<>();
+            refund.put("orderId", sourceCase.journeyOrderId());
+            refund.put("amount", money(sourceCase.decision().amountSnapshot().refundAmount()));
+            actions.put("refund", refund);
+        }
+        java.util.List<Map<String, Object>> steps = new java.util.ArrayList<>();
+        for (String entitlementRef : sourceCase.scope().entitlementRefs()) {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("type", "VOID_ENTITLEMENT");
+            step.put("entitlementId", entitlementRef);
+            step.put("reason", approved.decisionKind().name());
+            step.put("policy", "NORMAL");
+            steps.add(step);
+        }
+        for (String segmentBookingRef : sourceCase.scope().orderItemRefs()) {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("type", "RELEASE_CAPACITY");
+            step.put("segmentBookingId", segmentBookingRef);
+            steps.add(step);
+        }
+        actions.put("steps", steps);
         return actions;
     }
 

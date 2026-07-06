@@ -121,11 +121,34 @@ public class PostSalesApplicationService {
         return new PostSalesDecision(postSalesCase.caseId(), 1, kind, true, "ELIGIBLE", ruleSnapshot, amount, changeFlowSnapshot, now, now.plusSeconds(900));
     }
 
+    /**
+     * Capacity release is the terminal execution signal for refund cases
+     * (subscription table row 5): find the APPROVED case scoped to this
+     * segment booking and mark it applied.
+     */
+    public void applyForSegmentBooking(String segmentBookingRef, String causationId, String correlationId) {
+        for (PostSalesCase postSalesCase : repository.findAll()) {
+            if (!postSalesCase.scope().orderItemRefs().contains(segmentBookingRef)) {
+                continue;
+            }
+            java.time.Instant now = java.time.Instant.now(clock);
+            if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.APPROVED) {
+                postSalesCase.startExecution(now, "cmd-capacity-released", causationId, correlationId);
+            }
+            if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.EXECUTING) {
+                postSalesCase.applyResult("capacity released; refund executed", now, "cmd-capacity-released", causationId, correlationId);
+                repository.save(postSalesCase);
+                publishNewEvents(postSalesCase);
+            }
+            return;
+        }
+    }
+
     private void publishNewEvents(PostSalesCase postSalesCase) {
         List<PostSalesEvent> events = postSalesCase.domainEvents();
         int alreadyPublished = publishedEventCounts.getOrDefault(postSalesCase.caseId(), 0);
         for (PostSalesEvent event : events.subList(alreadyPublished, events.size())) {
-            eventPublisher.publish(PostSalesMapper.toEnvelope(event));
+            eventPublisher.publish(PostSalesMapper.toEnvelope(event, postSalesCase));
         }
         publishedEventCounts.put(postSalesCase.caseId(), events.size());
     }

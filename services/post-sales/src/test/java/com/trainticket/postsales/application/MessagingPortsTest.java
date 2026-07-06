@@ -113,7 +113,7 @@ class MessagingPortsTest {
     @Test
     void subscriberHandlerDeduplicatesDuplicateEventId() {
         RecordingConsumedEventLog log = new RecordingConsumedEventLog();
-        PostSalesEventHandler handler = new PostSalesEventHandler(log);
+        PostSalesEventHandler handler = new PostSalesEventHandler(log, null);
         EventEnvelope envelope = new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d001",
             "JourneyOrderCancelled",

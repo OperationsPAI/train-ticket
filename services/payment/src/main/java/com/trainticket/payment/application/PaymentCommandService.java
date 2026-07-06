@@ -86,6 +86,16 @@ public class PaymentCommandService {
         return intent;
     }
 
+    /** Latest captured (or created) intent for a business reference, used
+     * when post-sales approvals reference the order rather than the intent. */
+    public java.util.Optional<String> findIntentIdByBusinessRef(String businessRef) {
+        return intents.values().stream()
+            .filter(intent -> intent.businessRef().equals(businessRef))
+            .sorted(java.util.Comparator.comparing(PaymentIntent::paymentIntentId).reversed())
+            .map(PaymentIntent::paymentIntentId)
+            .findFirst();
+    }
+
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         Refund refund = Refund.request(intent, amount, businessCaseRef == null || businessCaseRef.isBlank() ? "case-" + idempotencyKey : businessCaseRef, reason, idempotencyKey, Instant.now(clock), commandId(idempotencyKey), correlationId);
