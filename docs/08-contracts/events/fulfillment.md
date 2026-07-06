@@ -55,7 +55,7 @@ Last updated: 2026-07-05
 |---|---|
 | **Producer** | fulfillment |
 | **Consumers** | entitlement-ticketing, journey-order, notification, finance-settlement |
-| **Trigger** | Segment fulfillment completed (arrival confirmed or segment finished). |
+| **Trigger** | Segment fulfillment completed (arrival confirmed or segment finished). RULING (2026-07-06): a fulfillment record may only complete after `BoardingVerified` for that entitlement — un-boarded records take the `NoShowRecorded` path instead. Consumers treat a `FulfillmentCompleted` for a ticket they have not seen boarded as an idempotent no-op, not an error. |
 
 **Payload:**
 
