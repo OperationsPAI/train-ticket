@@ -51,7 +51,7 @@ public final class TravelerProfile {
         String sourceCommandId,
         String correlationId
     ) {
-        String profileId = UUID.randomUUID().toString();
+        String profileId = com.trainticket.platformkit.idempotency.UuidV7.generate();
         String travelerRef = "TRV-" + profileId.substring(0, 8).toUpperCase();
         TravelerProfile profile = new TravelerProfile(profileId, travelerRef, accountId, displayName, birthDate);
         profile.domainEvents.add(new TravelerProfileCreated(
@@ -142,7 +142,7 @@ public final class TravelerProfile {
         Instant now, String sourceCommandId, String causationId, String correlationId
     ) {
         requireNotDeactivated();
-        String documentId = UUID.randomUUID().toString();
+        String documentId = com.trainticket.platformkit.idempotency.UuidV7.generate();
         String docHash = Integer.toHexString(Objects.hash(documentNumber));
         for (Document existing : documents.values()) {
             if (existing.documentType() == documentType && existing.documentNumberHash().equals(docHash)) {
@@ -222,7 +222,7 @@ public final class TravelerProfile {
         String sourceCommandId, String causationId, String correlationId
     ) {
         requireNotDeactivated();
-        String eligibilityId = UUID.randomUUID().toString();
+        String eligibilityId = com.trainticket.platformkit.idempotency.UuidV7.generate();
         EligibilitySummary summary = new EligibilitySummary(eligibilityId, eligibilityType, eligibilitySource, evidenceHash, validFrom, validUntil);
         eligibilitySummaries.put(eligibilityId, summary);
         domainEvents.add(new EligibilityGranted(profileId, eligibilityId, eligibilityType, eligibilitySource, validFrom, validUntil,

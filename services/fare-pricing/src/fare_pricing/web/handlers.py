@@ -91,6 +91,14 @@ def _correlation_id(request: Request) -> str:
     return str(getattr(request.state, "correlation_id", "") or prefixed_uuid7("corr"))
 
 
+def _contract_input_hash(segment_refs: list[str], channel: str, traveler_refs: list[str]) -> str:
+    """Normative inputHash per events/fare-pricing.md: sha256 of
+    sorted(segmentRefs)|channel|sorted(travelerRefs)."""
+    import hashlib
+    material = ",".join(sorted(segment_refs)) + "|" + channel + "|" + ",".join(sorted(traveler_refs))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _command_id() -> str:
     return prefixed_uuid7("cmd")
 
@@ -123,7 +131,7 @@ def compute_fare_quote(
     try:
         quote = service.compute_fare_quote(
             quote_id=prefixed_uuid7("fq"),
-            input_hash=request.headers["Idempotency-Key"],
+            input_hash=_contract_input_hash(list(req.segmentRefs), req.channel, list(req.travelerRefs)),
             traveler_refs=req.travelerRefs,
             channel=req.channel,
             rule_set_id=rule_set_id,

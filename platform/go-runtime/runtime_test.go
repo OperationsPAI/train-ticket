@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -61,7 +62,7 @@ func TestRequestIDsArePropagated(t *testing.T) {
 	}
 }
 
-func TestRequestIDIsGeneratedAndUsedAsCorrelationID(t *testing.T) {
+func TestRequestIDIsGeneratedAndCorrelationIDIsMinted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := NewGinRouter(GinConfig{RequestIDSource: func() string { return "generated-request" }})
 
@@ -73,8 +74,11 @@ func TestRequestIDIsGeneratedAndUsedAsCorrelationID(t *testing.T) {
 	if got := recorder.Header().Get(RequestIDHeader); got != "generated-request" {
 		t.Fatalf("unexpected generated request id: %q", got)
 	}
-	if got := recorder.Header().Get(CorrelationIDHeader); got != "generated-request" {
-		t.Fatalf("unexpected generated correlation id: %q", got)
+	// The messaging contract requires corr-<uuidv7> correlation ids; a missing
+	// inbound header mints one instead of reusing the request id.
+	got := recorder.Header().Get(CorrelationIDHeader)
+	if !strings.HasPrefix(got, "corr-") || len(got) != len("corr-")+36 {
+		t.Fatalf("correlation id not corr-<uuid>: %q", got)
 	}
 }
 

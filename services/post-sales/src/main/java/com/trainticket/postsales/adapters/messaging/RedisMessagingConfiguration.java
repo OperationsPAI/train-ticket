@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
-@ConditionalOnProperty(name = "post-sales.messaging.redis.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "post-sales.messaging.redis.enabled", havingValue = "true", matchIfMissing = true)
 public class RedisMessagingConfiguration {
     @Bean(destroyMethod = "close") RedisEventPublisher platformRedisEventPublisher(ObjectMapper objectMapper, RedisMessagingProperties properties) { return RedisEventPublisher.fromUrl(properties.redisUrl(), objectMapper); }
     @Bean EventPublisher redisEventPublisher(RedisEventPublisher publisher) { return envelope -> { try { publisher.publish(envelope); } catch (com.trainticket.platformkit.messaging.PublishFailedException e) { throw new PublishFailedException(e.getMessage(), e); } }; }

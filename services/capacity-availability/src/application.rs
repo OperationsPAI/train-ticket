@@ -249,13 +249,12 @@ impl CapacityService {
             InventoryPool::new(identity, units).unwrap()
         });
 
-        // Find an available capacity unit from the pool
+        // Find a unit that is actually free for the requested interval.
+        let interval =
+            StationInterval::new(0, 1).map_err(|e| AppError::Internal(e.to_string()))?;
         let unit_ref = pool
-            .capacity_units
-            .iter()
-            .next()
-            .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?
-            .clone();
+            .find_available_unit(&interval, now)
+            .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?;
 
         // Create the hold
         let hold = CapacityHold::request(
