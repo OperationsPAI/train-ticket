@@ -67,7 +67,10 @@ echo "  MA=$MA"
 retry "admin-audit consumed pending request" "stream_has_event events:customer-service ManualActionRequested '$MA' && k exec \$(redis_pod) -- redis-cli --no-raw XREVRANGE events:admin-audit + - COUNT 50 >/tmp/admin-audit-stream.txt && grep -q '$MA' /tmp/admin-audit-stream.txt" 4 5
 
 echo "== 3. register approver and approve (admin-audit records execution fact in phase 1)"
-req POST admin-audit /api/v1/admin/operators '{"email":"manual-approver@example.com","role":"ADMIN","scopes":["OPERATOR_WRITE","AUDIT_READ"],"displayName":"Manual Approver"}'
+# Unique email per run: a fixed address 409s on suite reruns within one
+# admin-audit pod lifetime.
+APPROVER_EMAIL="manual-approver-$(uuid7)@example.com"
+req POST admin-audit /api/v1/admin/operators "{\"email\":\"$APPROVER_EMAIL\",\"role\":\"ADMIN\",\"scopes\":[\"OPERATOR_WRITE\",\"AUDIT_READ\"],\"displayName\":\"Manual Approver\"}"
 check_code 201 "register admin-audit approver"
 APPROVER=$(jget "['operatorId']")
 req POST admin-audit "/api/v1/admin/manual-actions/$MA/approve" "{\"approvedByOperatorId\":\"$APPROVER\"}"
