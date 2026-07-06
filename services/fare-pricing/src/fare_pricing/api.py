@@ -159,15 +159,13 @@ def configure_fare_pricing_routes(
         app,
         idempotency_store or BoundedInMemoryIdempotencyStore(),
         require_key=True,
-        include_path_prefixes=("/api/v1/fare-quotes", "/api/v1/adjustment-quotes"),
+        include_path_prefixes=("/api/v1/fare-quotes", "/api/v1/adjustment-quotes", "/api/v1/fare-rule-sets"),
     )
     app.include_router(fare_pricing_router)
 
 
 def _install_default_rule_sets(store: "InMemoryStore") -> None:
-    """Phase-1 default pricing: fare-pricing has no rule-management API yet,
-    so an empty deployed store gets one published rule set per sales channel.
-    Replace with supplier-driven rule ingestion in a later phase."""
+    """Fallback pricing for empty deployments until managed rule sets are published."""
     from datetime import UTC, datetime, timedelta
     from decimal import Decimal
 
@@ -219,6 +217,7 @@ def _install_default_rule_sets(store: "InMemoryStore") -> None:
                     explanation=PriceExplanation("fare.change_fee", {"rule": "change-fee"}),
                 ),
             ),
+            contract_id="contract-default",
         ).publish(now)
         store.fare_rule_sets[rule_set.rule_set_id] = rule_set
 

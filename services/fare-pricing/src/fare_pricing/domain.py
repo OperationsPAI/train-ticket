@@ -180,6 +180,7 @@ class FareRuleSet:
     rules: tuple[FareRule, ...] = field(default_factory=tuple)
     status: RuleSetStatus = RuleSetStatus.DRAFT
     published_at: datetime | None = None
+    contract_id: str = ""
 
     def __post_init__(self) -> None:
         required_fields = {
@@ -193,7 +194,7 @@ class FareRuleSet:
         for field_name, value in required_fields.items():
             if not value.strip():
                 raise PricingError(f"{field_name} is required")
-        if self.status is RuleSetStatus.PUBLISHED and self.published_at is None:
+        if self.status in {RuleSetStatus.PUBLISHED, RuleSetStatus.SUPERSEDED} and self.published_at is None:
             raise PricingError("published rule sets must record published_at")
 
     def add_rule(self, rule: FareRule) -> Self:
@@ -212,6 +213,7 @@ class FareRuleSet:
             self.rules + (rule,),
             RuleSetStatus.DRAFT,
             None,
+            self.contract_id,
         )
 
     def validate_for_publication(self) -> Self:
@@ -227,6 +229,7 @@ class FareRuleSet:
             self.rules,
             RuleSetStatus.VALIDATED,
             None,
+            self.contract_id,
         )
 
     def publish(self, approved_at: datetime | None = None) -> Self:
@@ -243,6 +246,24 @@ class FareRuleSet:
             self.rules,
             RuleSetStatus.PUBLISHED,
             published_at,
+            self.contract_id,
+        )
+
+    def supersede(self) -> Self:
+        if self.status is not RuleSetStatus.PUBLISHED:
+            raise PricingError("only published fare rule sets can be superseded")
+        return FareRuleSet(
+            self.rule_set_id,
+            self.supplier_id,
+            self.product_code,
+            self.mode,
+            self.channel,
+            self.version,
+            self.effective_window,
+            self.rules,
+            RuleSetStatus.SUPERSEDED,
+            self.published_at,
+            self.contract_id,
         )
 
     def is_effective(self, when: datetime) -> bool:

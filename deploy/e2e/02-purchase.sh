@@ -26,7 +26,8 @@ echo "== 1b. fare quote (publishes FareQuoted for offer to consume)"
 req POST fare-pricing /api/v1/fare-quotes "{\"travelerRefs\":[\"$TVL\"],\"channel\":\"WEB\",\"segmentRefs\":[\"$SEG_FROM_SEARCH\"]}"
 check_code 201 "create fare quote"
 FQ=$(jget "['quoteId']"); FQ_STATUS=$(jget "['status']")
-echo "  FQ=$FQ status=$FQ_STATUS"
+FQ_TOTAL_MINOR=$(jget "['breakdown']['total']['minorUnits']")
+echo "  FQ=$FQ status=$FQ_STATUS totalMinor=$FQ_TOTAL_MINOR"
 sleep 3
 
 echo "== 2. create offer"
@@ -34,7 +35,9 @@ req POST offer-management /api/v1/offers "{\"accountId\":\"$ACCT\",\"channelId\"
 check_code 201 "create offer"
 OFFER=$(jget "['offerId']"); OFFERV=$(jget "['offerVersion']")
 TOTAL=$(jget "['total']")
+OFFER_TOTAL_MINOR=$(jget "['total']['minorUnits']")
 echo "  OFFER=$OFFER v$OFFERV total=$TOTAL"
+[ "$OFFER_TOTAL_MINOR" = "$FQ_TOTAL_MINOR" ] && ok "offer total follows fare quote" || bad "offer total $OFFER_TOTAL_MINOR does not match fare quote $FQ_TOTAL_MINOR"
 
 echo "== 3. create journey order"
 req POST journey-order /api/v1/journey-orders "{\"accountId\":\"$ACCT\",\"offerId\":\"$OFFER\",\"offerVersion\":${OFFERV:-1},\"travelerRefs\":[\"$TVL\"],\"segmentRefs\":[\"$SEG_FROM_SEARCH\"]}"
@@ -77,7 +80,8 @@ echo "  -- booking stream now:"
 last_events events:booking-orchestration 3
 
 echo "== 5. payment (contract fields) + capture"
-req POST payment /api/v1/payment-intents "{\"businessRef\":\"$ORDER\",\"purpose\":\"purchase\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":10750},\"payerRef\":\"$ACCT\"}"
+PAYMENT_MINOR=${OFFER_TOTAL_MINOR:-$FQ_TOTAL_MINOR}
+req POST payment /api/v1/payment-intents "{\"businessRef\":\"$ORDER\",\"purpose\":\"purchase\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":$PAYMENT_MINOR},\"payerRef\":\"$ACCT\"}"
 check_code 201 "create payment intent"
 PI=$(jget "['paymentIntentId']")
 echo "  PI=$PI"
@@ -134,5 +138,7 @@ PI=$PI
 SB=$SB
 SAGA=$SAGA
 ENT=$ENT
+FQ_TOTAL_MINOR=$FQ_TOTAL_MINOR
+OFFER_TOTAL_MINOR=$OFFER_TOTAL_MINOR
 EOF
 summary
