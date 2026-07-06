@@ -164,6 +164,53 @@ def configure_fare_pricing_routes(
     app.include_router(fare_pricing_router)
 
 
+def _install_default_rule_sets(store: "InMemoryStore") -> None:
+    """Phase-1 default pricing: fare-pricing has no rule-management API yet,
+    so an empty deployed store gets one published rule set per sales channel.
+    Replace with supplier-driven rule ingestion in a later phase."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from .domain import (
+        FareRule,
+        FareRuleSet,
+        Money,
+        PriceExplanation,
+        RuleKind,
+        ValidityWindow,
+    )
+
+    if store.fare_rule_sets:
+        return
+    now = datetime.now(UTC)
+    window = ValidityWindow(now - timedelta(days=1), now + timedelta(days=365))
+    for index, channel in enumerate(("WEB", "web", "MOBILE", "COUNTER")):
+        rule_set = FareRuleSet(
+            rule_set_id=f"ruleset-default-{index}-{channel}",
+            supplier_id="supplier-default",
+            product_code="rail-standard",
+            mode="rail",
+            channel=channel,
+            version="phase1-default",
+            effective_window=window,
+            rules=(
+                FareRule(
+                    rule_id="base",
+                    kind=RuleKind.BASE_FARE,
+                    amount=Money(Decimal("100.00"), "CNY"),
+                    explanation=PriceExplanation("fare.base", {"rule": "base"}),
+                ),
+                FareRule(
+                    rule_id="tax",
+                    kind=RuleKind.TAX,
+                    amount=Money(Decimal("7.50"), "CNY"),
+                    explanation=PriceExplanation("fare.tax", {"rule": "tax"}),
+                ),
+            ),
+        ).publish(now)
+        store.fare_rule_sets[rule_set.rule_set_id] = rule_set
+
+
 def create_app(
     tracer: TraceHook | None = None,
     otel_tracer: RuntimeTracer | None = None,
@@ -171,6 +218,9 @@ def create_app(
     idempotency_store: IdempotencyStore | None = None,
     event_publisher: EventPublisher | None = None,
 ) -> FastAPI:
+    if store is None:
+        store = InMemoryStore()
+        _install_default_rule_sets(store)
     app = FastAPI(title='Fare & Pricing', version="0.1.0")
     register_exception_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))

@@ -325,7 +325,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 case "PaymentExpired" -> handlePaymentExpired(envelope);
                 case "PostSalesApplied" -> handlePostSalesApplied(envelope);
                 case "RiskBlockApplied" -> handleRiskBlockApplied(envelope);
-                case "OfferExpired", "OfferQuoted", "TravelerProfileUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged", "RiskAssessmentResult", "RiskBlockLifted" -> new EventSubscriber.Success();
+                case "EntitlementIssued" -> handleEntitlementIssued(envelope);
+                case "OfferExpired", "OfferQuoted", "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged", "RiskAssessmentResult", "RiskBlockLifted" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.FatalError("unsupported event type for journey-order: " + envelope.eventType());
             };
         } catch (RuntimeException ex) {
@@ -343,6 +344,22 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
             order.recordPaymentCaptured(textPayload(envelope, "paymentIntentId", "payment-intent-unknown"), envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+        }
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
+            && order.confirmationConditions().canConfirm()) {
+            order.confirm("payment-captured", envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+        }
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleEntitlementIssued(EventEnvelope envelope) {
+        JourneyOrder order = orderFromPayload(envelope);
+        int eventCount = order.domainEvents().size();
+        order.recordEntitlementSummaryAccepted(envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
+            && order.confirmationConditions().canConfirm()) {
+            order.confirm("entitlement-issued", envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
         }
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
@@ -385,7 +402,13 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private JourneyOrder orderFromPayload(EventEnvelope envelope) {
         String orderId = textPayload(envelope, "orderId", null);
         if (orderId == null) {
-            throw new IllegalArgumentException("event payload missing orderId");
+            orderId = textPayload(envelope, "businessRef", null);
+        }
+        if (orderId == null) {
+            orderId = textPayload(envelope, "journeyOrderId", null);
+        }
+        if (orderId == null) {
+            throw new IllegalArgumentException("event payload missing orderId/businessRef");
         }
         StoredOrder stored = orderStore.get(orderId);
         if (stored == null) {

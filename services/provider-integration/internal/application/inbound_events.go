@@ -70,7 +70,9 @@ func validateSegmentReservationRequestedPayload(payload SegmentReservationReques
 	if err := validatePrefixedUUIDV7("travelerRef", payload.TravelerRef, "tvl"); err != nil {
 		return err
 	}
-	if err := validateUUIDV7("idempotencyKey", payload.IdempotencyKey); err != nil {
+	// The messaging contract types idempotencyKey as an opaque string;
+	// producers use composite business fingerprints, not bare UUIDs.
+	if err := validateRequiredToken("idempotencyKey", payload.IdempotencyKey); err != nil {
 		return err
 	}
 	return nil
@@ -81,5 +83,7 @@ func providerConfigRefForSegment(segmentRef string) string {
 	if provider, _, ok := strings.Cut(trimmed, ":"); ok {
 		return strings.TrimSpace(provider)
 	}
-	return trimmed
+	// Plain seg-* references carry no provider prefix; phase 1 routes all
+	// rail segments to the single configured provider.
+	return "cr-rail"
 }

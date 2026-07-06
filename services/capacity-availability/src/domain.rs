@@ -805,6 +805,28 @@ impl InventoryPool {
         }
     }
 
+    /// First unit (stable seat order) with no blocking hold overlapping the
+    /// interval. Used by hold placement so new holds do not pile onto an
+    /// already-held unit.
+    pub fn find_available_unit(
+        &self,
+        interval: &StationInterval,
+        now: u64,
+    ) -> Option<CapacityUnitRef> {
+        let mut units: Vec<&CapacityUnitRef> = self.capacity_units.iter().collect();
+        units.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        units
+            .into_iter()
+            .find(|unit| {
+                !self.holds.values().any(|existing| {
+                    existing.scope.capacity_unit_ref == **unit
+                        && existing.is_blocking_at(now)
+                        && existing.scope.station_interval.overlaps(interval)
+                })
+            })
+            .cloned()
+    }
+
     fn conflicting_hold(
         &self,
         requested_hold_id: &HoldId,
