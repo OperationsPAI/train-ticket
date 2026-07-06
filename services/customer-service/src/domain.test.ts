@@ -155,6 +155,8 @@ function appendTimelineCommand(overrides: Partial<AppendTimelineEntry> = {}): Ap
     payload: { manualActionId: "ma-test-001", targetDomain: "payment" },
     visibility: "INTERNAL_ONLY",
     occurredAt: new Date("2026-07-03T10:05:00.000Z"),
+    correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+    causationId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c221",
     ...overrides,
   };
 }

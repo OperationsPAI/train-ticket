@@ -16,7 +16,7 @@ export type ExternalNotificationTrigger = Readonly<{
   payload: Record<string, unknown>;
 }>;
 
-export type ExternalTriggerResult = "scheduled" | "delivered" | "cancelled" | "failed" | "ignored";
+export type ExternalTriggerResult = "delivered" | "cancelled" | "failed" | "ignored";
 
 export type UserPreference = Readonly<{
   recipientRef: string;

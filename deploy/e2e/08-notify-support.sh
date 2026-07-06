@@ -23,14 +23,36 @@ for m in re.finditer(r'\{.*\}', raw):
 PYEX
 }
 
+notification_delivered_for_recipient() { # RECIPIENT_REF -> yes/empty
+  k exec "$(redis_pod)" -- redis-cli XREVRANGE events:notification + - COUNT 240 > /tmp/notify-support-notification.txt 2>/dev/null
+  RECIPIENT="$1" python3 - << 'PYEX'
+import re, os, json
+raw = open("/tmp/notify-support-notification.txt").read()
+recipient = os.environ["RECIPIENT"]
+scheduled = set()
+for m in re.finditer(r'\{.*\}', raw):
+    try:
+        e = json.loads(m.group(0).encode().decode('unicode_escape'))
+    except Exception:
+        continue
+    payload = e.get("payload", {})
+    task_id = payload.get("notificationTaskId")
+    if e.get("eventType") == "NotificationScheduled" and payload.get("recipientRef") == recipient and isinstance(task_id, str):
+        scheduled.add(task_id)
+    elif e.get("eventType") == "NotificationDelivered" and task_id in scheduled:
+        print("yes")
+        break
+PYEX
+}
+
 echo "== 1. purchase notification delivery"
 FOUND=""
 for attempt in 1 2 3 4 5; do
-  FOUND=$(stream_mentions events:notification NotificationDelivered "nt-")
+  FOUND=$(notification_delivered_for_recipient "$TVL")
   [ "$FOUND" = "yes" ] && break
   sleep 3
 done
-[ "$FOUND" = "yes" ] && ok "NotificationDelivered published after purchase" || bad "no NotificationDelivered observed"
+[ "$FOUND" = "yes" ] && ok "NotificationDelivered published after purchase recipient $TVL" || bad "no NotificationDelivered observed for recipient $TVL"
 
 echo "== 2. open support case referencing order $ORDER"
 req POST customer-service /api/v1/support-cases "{\"requesterRef\":\"$TVL\",\"channel\":\"APP\",\"classification\":\"POST_SALES_HELP\",\"priority\":\"NORMAL\",\"description\":\"Help me with my order\",\"businessReferences\":{\"journeyOrderId\":\"$ORDER\"}}"

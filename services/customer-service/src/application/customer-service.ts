@@ -232,7 +232,7 @@ export class CustomerServiceApplication {
       requestedAt: new Date(),
     });
     this.manualActions.set(action.id, action);
-    await this.appendTimelineEntry(caseId, "ManualActionRequested", toEventEnvelope(event, causationId).payload, "INTERNAL_ONLY", event.occurredAt);
+    await this.appendTimelineEntry(caseId, "ManualActionRequested", toEventEnvelope(event, causationId).payload, "INTERNAL_ONLY", event.occurredAt, event.correlationId, event.causationId);
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return action.toSnapshot();
   }
@@ -256,6 +256,8 @@ export class CustomerServiceApplication {
           { sourceEventId: envelope.eventId, producer: envelope.producer, payload: envelope.payload },
           "INTERNAL_ONLY",
           new Date(envelope.occurredAt),
+          envelope.correlationId,
+          envelope.causationId,
         );
       }
     }
@@ -265,7 +267,7 @@ export class CustomerServiceApplication {
     return this.consumedIntegrationEvents.size;
   }
 
-  private async appendTimelineEntry(caseId: string, eventType: string, payload: Readonly<Record<string, unknown>>, visibility: "CUSTOMER_VISIBLE" | "INTERNAL_ONLY", occurredAt: Date): Promise<void> {
+  private async appendTimelineEntry(caseId: string, eventType: string, payload: Readonly<Record<string, unknown>>, visibility: "CUSTOMER_VISIBLE" | "INTERNAL_ONLY", occurredAt: Date, correlationId: string, causationId?: string): Promise<void> {
     const current = this.timelines.get(caseId) ?? CaseTimeline.create(caseId);
     const { timeline, event } = current.append({
       entryId: newTimelineEntryId(),
@@ -274,6 +276,8 @@ export class CustomerServiceApplication {
       payload,
       visibility,
       occurredAt,
+      correlationId,
+      causationId,
     });
     this.timelines.set(caseId, timeline);
     await this.publisher.publish(toEventEnvelope(event, event.causationId ?? newCommandId()));

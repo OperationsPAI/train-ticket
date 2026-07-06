@@ -141,7 +141,10 @@ describe("customer-service messaging ports", () => {
     const details = application.getSupportCase(opened.caseId);
     assert.equal(details.timeline.length, 1);
     assert.equal(details.timeline[0].eventType, "PostSalesApplied");
-    assert.deepEqual(publisher.findByEventType("CaseTimelineEntryAppended").map((e) => e.payload.eventTypeCode), ["PostSalesApplied"]);
+    const timelineEvents = publisher.findByEventType("CaseTimelineEntryAppended");
+    assert.deepEqual(timelineEvents.map((e) => e.payload.eventTypeCode), ["PostSalesApplied"]);
+    assert.equal(timelineEvents[0].correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    assert.equal(timelineEvents[0].causationId, "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c221");
   });
 
   it("reports Redis subscriber background loop failures", async () => {
