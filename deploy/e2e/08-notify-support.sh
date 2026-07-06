@@ -81,10 +81,13 @@ sleep 8
 TIMELINE_OK=""
 for attempt in 1 2 3 4; do
   req GET customer-service "/api/v1/support-cases/$SUPPORT_CASE"
-  TIMELINE_OK=$(echo "$RESP" | CASE="$CASE" python3 - << 'PYEX'
+  echo "$RESP" > /tmp/support_case.json
+  # NOTE: never pipe into `python3 - <<HEREDOC` — the heredoc replaces stdin,
+  # json.load(sys.stdin) sees EOF and the assert silently always fails.
+  TIMELINE_OK=$(CASE="$CASE" python3 - /tmp/support_case.json << 'PYEX'
 import sys, json, os
 try:
-    d=json.load(sys.stdin)
+    d=json.load(open(sys.argv[1]))
     entries=d.get('timeline', [])
     needle=os.environ['CASE']
     print('yes' if any(e.get('eventType') == 'PostSalesApplied' and needle in json.dumps(e) for e in entries) else '')
