@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(name = "ADMIN_AUDIT_REDIS_ENABLED", havingValue = "true", matchIfMissing = true)
 public class AdminAuditSubscriptionRunner implements CommandLineRunner {
-    static final List<String> SUBSCRIBED_STREAMS = List.of("events:customer-service");
+    public static final List<String> SUBSCRIBED_STREAMS = List.of("events:customer-service", "events:legacy-acl");
     static final String CONSUMER_GROUP = "admin-audit";
 
     private final EventSubscriber subscriber;

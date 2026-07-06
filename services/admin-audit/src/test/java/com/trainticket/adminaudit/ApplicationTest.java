@@ -7,6 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.trainticket.adminaudit.adapters.messaging.AdminAuditSubscriptionRunner;
+import com.trainticket.adminaudit.application.AdminAuditInboundEventHandler;
+import com.trainticket.adminaudit.application.AdminAuditService;
+import com.trainticket.adminaudit.application.ports.EventSubscriber;
+import com.trainticket.adminaudit.application.ports.InMemoryAdminAuditRepository;
+import com.trainticket.adminaudit.application.ports.EventPublisher;
+import com.trainticket.platformkit.messaging.EventEnvelope;
+
 import jakarta.servlet.ServletException;
 import java.io.IOException;
 import java.time.Clock;
@@ -78,6 +86,41 @@ class ApplicationTest {
         String correlationId = response.getHeader(RequestContextFilter.CORRELATION_ID_HEADER);
         assertNotNull(correlationId);
         assertTrue(correlationId.startsWith("corr-"));
+    }
+
+    @Test
+    void legacyAclEventsAreAuditedAndDoNotPoisonHandler() {
+        InMemoryAdminAuditRepository repository = new InMemoryAdminAuditRepository();
+        List<EventEnvelope> published = new ArrayList<>();
+        EventPublisher publisher = published::add;
+        AdminAuditService service = new AdminAuditService(
+            repository,
+            publisher,
+            Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC)
+        );
+        AdminAuditInboundEventHandler handler = new AdminAuditInboundEventHandler(service);
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8000-000000000001",
+            "LegacyCommandMapped",
+            Instant.parse("2026-01-01T00:00:00Z"),
+            "corr-0194f2e0-7b3e-7610-8000-000000000002",
+            "cmd-0194f2e0-7b3e-7610-8000-000000000003",
+            "legacy-acl",
+            1,
+            Map.of(
+                "legacyOperation", "PRESERVE",
+                "outcome", "SUCCEEDED",
+                "operatorRef", "op-1",
+                "sourceRef", "0194f2e0-7b3e-7610-8000-000000000004"
+            )
+        );
+
+        EventSubscriber.HandlerResult result = handler.handle(envelope);
+
+        assertEquals(EventSubscriber.HandlerResult.SUCCESS, result);
+        assertEquals(1, repository.countAuditEntries("0194f2e0-7b3e-7610-8000-000000000004"));
+        assertEquals("AuditEntryRecorded", published.getFirst().eventType());
+        assertTrue(AdminAuditSubscriptionRunner.SUBSCRIBED_STREAMS.contains("events:legacy-acl"));
     }
 
     private static final class RecordingTracer implements RuntimeTracer {

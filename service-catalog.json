@@ -718,6 +718,26 @@
         "Eta"
       ],
       "rationale": "Go fits real-time dispatch APIs, adapter calls, and low-latency state updates."
+    },
+    {
+      "id": "legacy-acl",
+      "path": "services/legacy-acl",
+      "domain": "Legacy ACL",
+      "language": "python",
+      "runtime": "python",
+      "phase": "phase-1-core",
+      "status": "integration-ready",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-071",
+        "WP-23"
+      ],
+      "docs": [
+        "docs/08-contracts/api/legacy-acl.md",
+        "docs/08-contracts/events/legacy-acl.md"
+      ],
+      "owns": [],
+      "rationale": "Python/FastAPI strangler facade maps legacy entrypoints to bounded-context HTTP commands without owning state."
     }
   ]
 }
