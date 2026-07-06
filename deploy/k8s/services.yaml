@@ -1,0 +1,1627 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: place-network
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: place-network
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: place-network
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: place-network
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: place-network
+          image: train-ticket/place-network:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: place-network
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: place-network
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: place-network
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-plan
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: service-plan
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: service-plan
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: service-plan
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: service-plan
+          image: train-ticket/service-plan:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-plan
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: service-plan
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: service-plan
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capacity-availability
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: capacity-availability
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capacity-availability
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: capacity-availability
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: capacity-availability
+          image: train-ticket/capacity-availability:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capacity-availability
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: capacity-availability
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: capacity-availability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fare-pricing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fare-pricing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fare-pricing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fare-pricing
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: fare-pricing
+          image: train-ticket/fare-pricing:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fare-pricing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fare-pricing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: fare-pricing
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trip-planning
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: trip-planning
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trip-planning
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trip-planning
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: trip-planning
+          image: train-ticket/trip-planning:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trip-planning
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: trip-planning
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: trip-planning
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: offer-management
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: offer-management
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: offer-management
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: offer-management
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: offer-management
+          image: train-ticket/offer-management:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: offer-management
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: offer-management
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: offer-management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: journey-order
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: journey-order
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: journey-order
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: journey-order
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: journey-order
+          image: train-ticket/journey-order:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: journey-order
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: journey-order
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: journey-order
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-orchestration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: booking-orchestration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: booking-orchestration
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: booking-orchestration
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: booking-orchestration
+          image: train-ticket/booking-orchestration:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-orchestration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: booking-orchestration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: booking-orchestration
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: payment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: payment
+          image: train-ticket/payment:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: payment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: payment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider-integration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: provider-integration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: provider-integration
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: provider-integration
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: provider-integration
+          image: train-ticket/provider-integration:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: provider-integration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: provider-integration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: provider-integration
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: entitlement-ticketing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: entitlement-ticketing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: entitlement-ticketing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: entitlement-ticketing
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: entitlement-ticketing
+          image: train-ticket/entitlement-ticketing:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: entitlement-ticketing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: entitlement-ticketing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: entitlement-ticketing
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fulfillment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fulfillment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fulfillment
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fulfillment
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: fulfillment
+          image: train-ticket/fulfillment:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fulfillment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fulfillment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: fulfillment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: post-sales
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: post-sales
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: post-sales
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: post-sales
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: post-sales
+          image: train-ticket/post-sales:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: post-sales
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: post-sales
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: post-sales
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: notification
+          image: train-ticket/notification:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: notification
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traveler-profile
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: traveler-profile
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traveler-profile
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traveler-profile
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: traveler-profile
+          image: train-ticket/traveler-profile:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traveler-profile
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: traveler-profile
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: traveler-profile
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-compliance
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: risk-compliance
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: risk-compliance
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: risk-compliance
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: risk-compliance
+          image: train-ticket/risk-compliance:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: risk-compliance
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: risk-compliance
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: risk-compliance
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: account
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: account
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: account
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: account
+          image: train-ticket/account:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: account
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: account
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-audit
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: admin-audit
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: admin-audit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: admin-audit
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: admin-audit
+          image: train-ticket/admin-audit:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-audit
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: admin-audit
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: admin-audit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-service
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: customer-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: customer-service
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: customer-service
+          image: train-ticket/customer-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-service
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: customer-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finance-settlement
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: finance-settlement
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: finance-settlement
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: finance-settlement
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: finance-settlement
+          image: train-ticket/finance-settlement:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: finance-settlement
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: finance-settlement
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: finance-settlement
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reporting
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reporting
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: reporting
+          image: train-ticket/reporting:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: reporting
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplier-catalog
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: supplier-catalog
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: supplier-catalog
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: supplier-catalog
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: supplier-catalog
+          image: train-ticket/supplier-catalog:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplier-catalog
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: supplier-catalog
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: supplier-catalog
