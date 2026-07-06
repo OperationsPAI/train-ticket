@@ -120,4 +120,16 @@ check_code 200 "evaluate refund"
 REFUND_RULE=$(jget "['refundableAmount']['minorUnits']")
 [ "$REFUND_RULE" = "9000" ] && ok "refundable = 90.00 CNY (120.00 - 30.00)" || bad "refundable wrong ($REFUND_RULE, expected 9000)"
 
+echo "== 5. restore default pricing (supersede back so later suite runs keep 107.50/8750)"
+RESTORE_VERSION="e2e-restore-$(date +%s)"
+req POST fare-pricing /api/v1/fare-rule-sets "{\"supplierId\":\"supplier-default\",\"contractId\":\"contract-default\",\"productCode\":\"rail-standard\",\"mode\":\"rail\",\"channel\":\"WEB\",\"version\":\"$RESTORE_VERSION\",\"effectiveWindow\":{\"startsAt\":\"2026-07-01T00:00:00Z\",\"endsAt\":\"2027-12-31T00:00:00Z\"},\"rules\":[{\"ruleId\":\"base\",\"kind\":\"base_fare\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":10000},\"explanation\":{\"code\":\"fare.base\",\"parameters\":{\"rule\":\"base\"}},\"refundable\":true},{\"ruleId\":\"tax\",\"kind\":\"tax\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":750},\"explanation\":{\"code\":\"fare.tax\",\"parameters\":{\"rule\":\"tax\"}},\"refundable\":true},{\"ruleId\":\"refund-fee\",\"kind\":\"refund_fee\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":2000},\"explanation\":{\"code\":\"fare.refund_fee\",\"parameters\":{\"rule\":\"refund-fee\"}},\"refundable\":true},{\"ruleId\":\"change-fee\",\"kind\":\"change_fee\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":1500},\"explanation\":{\"code\":\"fare.change_fee\",\"parameters\":{\"rule\":\"change-fee\"}},\"refundable\":true}]}"
+check_code 201 "create restore rule set"
+RESTORE_ID=$(jget "['ruleSetId']")
+req POST fare-pricing "/api/v1/fare-rule-sets/$RESTORE_ID/publish" '{}'
+check_code 200 "publish restore rule set"
+sleep 2
+req POST fare-pricing /api/v1/fare-quotes "{\"travelerRefs\":[\"$TVL_RULE\"],\"channel\":\"WEB\",\"segmentRefs\":[\"$SEG_RULE\"]}"
+RESTORED_TOTAL=$(jget "['breakdown']['total']['minorUnits']")
+[ "$RESTORED_TOTAL" = "10750" ] && ok "default pricing restored (107.50)" || bad "restore failed (total=$RESTORED_TOTAL)"
+
 summary
