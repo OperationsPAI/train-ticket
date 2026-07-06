@@ -71,6 +71,7 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 | `travelerRefs` | string[] | yes | Traveler references (`tvl-<uuid>`). |
 | `channel` | string | yes | Sales channel. |
 | `segmentRefs` | string[] | yes | Service segment references. |
+| `productCode` | string | no | RULING (2026-07-07): product to price; defaults to `rail-standard`. Rule-set selection is by `channel + productCode` (newest published, in window) — matching the publish/supersede scope. |
 | `fareRuleRefs` | string[] | no | Specific fare rules to apply. |
 
 **Response (201):**
@@ -122,6 +123,16 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 **Response (200):** Full quote details.
 
 **Error codes:** `NOT_FOUND`
+
+## Reliability ruling (2026-07-07)
+
+Rule-set publish/supersede facts must not be lost to a publish failure:
+if emitting `FareRuleSetPublished`/`FareRuleSetSuperseded` fails, the state
+transition is rolled back and the command returns 503 UNAVAILABLE for the
+caller to retry. Event ids derive deterministically from
+(ruleSetId, version, action) so a retried publish re-emits identical facts
+(consumer-side eventId dedup makes replay safe). This is the phase-1
+answer to publish-before-commit gaps; a durable outbox is future scope.
 
 ## Open Issues
 

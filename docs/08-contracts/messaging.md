@@ -68,6 +68,7 @@ context.
 | 19 | `customer-service` | `events:customer-service` | SupportCaseOpened, SupportCaseResolved |
 | 20 | `finance-settlement` | `events:finance-settlement` | RevenueRecognized, RevenueRecognitionReversed, ReconciliationCompleted, InvoiceGenerated |
 | 21 | `reporting` | `events:reporting` | MetricDefined, MetricVersionPublished, ReadModelRebuilt |
+| 21b | `legacy-acl` | `events:legacy-acl` | LegacyCommandMapped |
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped |
 
 ### Dead-Letter Streams
@@ -240,6 +241,7 @@ plus notification/finance/reporting fan-in.
 | 45 | `events:customer-service` | `admin-audit` | RULING (2026-07-06): ManualActionRequested intake — support-side requests open pending manual actions in Admin & Audit |
 | 46 | `events:admin-audit` | `customer-service` | RULING (2026-07-06): ManualActionExecuted/ManualActionRejected outcomes recorded on the support case timeline (ManualActionResultRecorded) |
 | 47 | `events:account` | `journey-order` | RULING (2026-07-06): AccountFrozen/AccountUnfrozen/AccountClosed gate order creation — frozen or closed accounts cannot place orders |
+| 48 | `events:legacy-acl` | `admin-audit` | RULING (2026-07-07): LegacyCommandMapped recorded as audit entries (DR-014 audit reference) |
 
 ### Cross-Cutting Consumers
 
