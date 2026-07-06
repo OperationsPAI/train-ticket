@@ -255,7 +255,7 @@ export class RedisEventSubscriber {
                     await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
                 }
                 if (!isRecoverableRedisReadError(error)) {
-                    throw error;
+                    this.onLoopFailure(error);
                 }
                 await sleep(1_000);
             }
