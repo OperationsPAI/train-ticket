@@ -18,7 +18,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -38,7 +38,9 @@ class TravelerControllerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .addFilters(new RequestContextFilter(new NoOpRuntimeTracer()))
             .setControllerAdvice(new PlatformKitExceptionHandler())
-            .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
+            // Boot 4's web stack converts with Jackson 3 (tools.jackson); the
+            // controller's JsonNode parameters need the matching converter.
+            .setMessageConverters(new JacksonJsonHttpMessageConverter())
             .build();
     }
 
