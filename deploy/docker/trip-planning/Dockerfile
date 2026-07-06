@@ -5,6 +5,7 @@ ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 COPY platform/python-kit ./platform/python-kit
 COPY services/trip-planning/pyproject.toml services/trip-planning/uv.lock ./services/trip-planning/
 COPY services/trip-planning/src ./services/trip-planning/src
+RUN sed -i 's/editable = true/editable = false/' services/trip-planning/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv uv venv /opt/venv &&     uv pip install --python /opt/venv/bin/python ./platform/python-kit ./services/trip-planning "uvicorn[standard]"
 
 FROM python:3.12-slim

@@ -1,5 +1,6 @@
 package com.trainticket.journeyorder.application.service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
@@ -43,6 +44,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final Set<String> consumedEventIds = new HashSet<>();
     private final Clock clock;
 
+    @Autowired
     public OrderManagementService(EventPublisher eventPublisher, Clock clock) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;

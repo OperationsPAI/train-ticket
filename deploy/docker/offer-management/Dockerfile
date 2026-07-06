@@ -3,10 +3,9 @@ FROM node:26-alpine AS builder
 WORKDIR /src
 COPY platform/ts-kit/package.json platform/ts-kit/package-lock.json platform/ts-kit/tsconfig.json ./platform/ts-kit/
 COPY platform/ts-kit/src ./platform/ts-kit/src
-COPY platform/ts-kit/dist ./platform/ts-kit/dist
 RUN --mount=type=cache,target=/root/.npm cd platform/ts-kit && npm ci && npm run build
 COPY services/offer-management/package.json services/offer-management/package-lock.json services/offer-management/tsconfig.json ./services/offer-management/
-RUN --mount=type=cache,target=/root/.npm cd services/offer-management && npm ci
+RUN --mount=type=cache,target=/root/.npm cd services/offer-management && npm ci --install-links
 COPY services/offer-management/src ./services/offer-management/src
 RUN cd services/offer-management && npx tsc --noEmit false --outDir dist
 

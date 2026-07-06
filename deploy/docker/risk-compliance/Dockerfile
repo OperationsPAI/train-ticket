@@ -5,6 +5,7 @@ ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 COPY platform/python-kit ./platform/python-kit
 COPY services/risk-compliance/pyproject.toml services/risk-compliance/uv.lock ./services/risk-compliance/
 COPY services/risk-compliance/src ./services/risk-compliance/src
+RUN sed -i 's/editable = true/editable = false/' services/risk-compliance/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv uv venv /opt/venv &&     uv pip install --python /opt/venv/bin/python ./platform/python-kit ./services/risk-compliance "uvicorn[standard]"
 
 FROM python:3.12-slim
