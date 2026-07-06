@@ -16,7 +16,7 @@
       "language": "rust",
       "runtime": "rust",
       "phase": "phase-1-foundation",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-003"
@@ -63,7 +63,7 @@
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-core",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-004"
@@ -85,7 +85,7 @@
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-core",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-005"
@@ -109,7 +109,7 @@
       "language": "rust",
       "runtime": "rust",
       "phase": "phase-1-core",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-006"
@@ -133,7 +133,7 @@
       "language": "python",
       "runtime": "python",
       "phase": "phase-1-core",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-007"
@@ -157,7 +157,7 @@
       "language": "python",
       "runtime": "python",
       "phase": "phase-1-search-foundation",
-      "status": "implemented-foundation",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-008-Trip-Planning-search-foundation"
@@ -181,7 +181,7 @@
       "language": "typescript",
       "runtime": "node",
       "phase": "phase-1-offer-domain-foundation",
-      "status": "implemented-foundation",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-009-Offer-Management-domain-foundation"
@@ -211,7 +211,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-domain-foundation",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-010-Journey-Order-domain-foundation"
@@ -240,7 +240,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-core",
-      "status": "status-reconciliation-needed",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-011"
@@ -262,7 +262,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-domain-foundation",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-012-Payment-domain-foundation"
@@ -285,7 +285,7 @@
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-acl-foundation",
-      "status": "status-reconciliation-needed",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-015"
@@ -308,7 +308,7 @@
       "language": "rust",
       "runtime": "rust",
       "phase": "phase-1-domain-foundation",
-      "status": "status-reconciliation-needed",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-013"
@@ -333,7 +333,7 @@
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-limited",
-      "status": "implemented",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "REQ-018"
@@ -361,7 +361,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-core",
-      "status": "status-reconciliation-needed",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-014"
@@ -383,7 +383,7 @@
       "language": "typescript",
       "runtime": "node",
       "phase": "phase-1-domain-foundation",
-      "status": "implemented-foundation",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-019",
@@ -409,7 +409,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-domain-foundation",
-      "status": "implemented",
+      "status": "integration-ready",
       "priority": "P0",
       "workPackages": [
         "REQ-017"
@@ -432,7 +432,7 @@
       "language": "python",
       "runtime": "python",
       "phase": "phase-1-support",
-      "status": "implemented",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "WP-17"
@@ -455,7 +455,7 @@
       "language": "typescript",
       "runtime": "node",
       "phase": "phase-1-account-domain-foundation",
-      "status": "implemented-foundation",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "REQ-021",
@@ -482,7 +482,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-support",
-      "status": "implemented",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "WP-19"
@@ -505,7 +505,7 @@
       "language": "typescript",
       "runtime": "node",
       "phase": "phase-1-support",
-      "status": "implemented",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "WP-20"
@@ -528,7 +528,7 @@
       "language": "java",
       "runtime": "jvm",
       "phase": "phase-1-limited",
-      "status": "tested",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "REQ-024"
@@ -554,7 +554,7 @@
       "language": "python",
       "runtime": "python",
       "phase": "phase-1-limited",
-      "status": "implemented",
+      "status": "integration-ready",
       "priority": "P2",
       "workPackages": [
         "REQ-025",
@@ -579,7 +579,7 @@
       "language": "golang",
       "runtime": "go",
       "phase": "phase-1-support",
-      "status": "skeleton",
+      "status": "integration-ready",
       "priority": "P1",
       "workPackages": [
         "WP-02",

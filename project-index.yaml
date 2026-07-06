@@ -17,7 +17,7 @@ requirements:
     title: "Polyglot bounded-context skeleton"
     description: "Initialize one service skeleton per DDD bounded context and one platform shared-kernel module."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: service-catalog.json
         description: "Machine-readable service ownership and language catalog."
@@ -38,7 +38,7 @@ requirements:
     title: "Polyglot devcontainer toolchain"
     description: "The development container includes the runtime tools needed by the selected Java, Go, Python, Rust, and TypeScript skeletons, plus a reproducible AgentM/ARL worker snapshot image."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: .devcontainer/Dockerfile
         description: "Installs language toolchains and operational CLI tools."
@@ -66,7 +66,7 @@ requirements:
     title: "Shared Kernel contract baseline"
     description: "Define the first active shared-kernel contract primitives for cross-context references, money, time windows, and event envelopes."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: platform/shared-kernel-rust/src/lib.rs
         description: "Rust reference implementation for shared IDs, value objects, and event envelope invariants."
@@ -86,7 +86,7 @@ requirements:
     title: "Place and network master-data primitives"
     description: "Define validated Place, TransportNode, and ProviderPlaceMapping domain primitives for Place & Network master data, including explicit low-confidence provider mapping gaps."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/place-network/internal/domain/master_data.go
         description: "Go domain primitives and validation for places, transport nodes, and provider place mappings."
@@ -105,7 +105,7 @@ requirements:
     title: "Service Plan domain foundation"
     description: "Define the first coherent Go domain foundation for Service Plan schedules, including plans, patterns, stops, calendars, timetables, scheduled services, service segments, and plan versions."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/service-plan/internal/domain/service_plan.go
         description: "Go domain model and validation for ServicePlan, ServicePattern, ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, and PlanVersion."
@@ -127,7 +127,7 @@ requirements:
     title: "Capacity and Availability domain foundation"
     description: "Define the first Rust domain foundation for inventory pools, station intervals, capacity holds, and non-locking availability snapshots."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/capacity-availability/src/lib.rs
         description: "Rust domain model and invariants for InventoryPool, StationInterval, CapacityHold lifecycle, and AvailabilitySnapshot calculation."
@@ -149,7 +149,7 @@ requirements:
     title: "Fare and Pricing domain foundation"
     description: "Define the first Python domain foundation for rule-set publication, quote calculation, immutable pricing snapshots, and basic post-sales refund/change fee assessment."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/fare-pricing/src/fare_pricing/domain.py
         description: "Fare & Pricing domain models and invariants for FareRuleSet, FareRule, FareQuote, RuleSnapshot, FareBreakdown, PriceExplanation, FeeAssessment, and AdjustmentQuote."
@@ -220,7 +220,7 @@ requirements:
     title: "Provider Integration ACL foundation"
     description: "Implement the Provider Integration anti-corruption layer foundation in Go. Owns ProviderAdapter, ProviderRequestLog, WebhookInbox, ProviderOutbox, ProviderReconciliationBatch aggregates with signature-verified webhooks, idempotent external call logging, status probes, and reconciliation import."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/provider-integration/internal/domain/provider_adapter.go
         description: "ProviderAdapter aggregate with capability matrix, auth config, SLA policy, and lifecycle commands."
@@ -285,7 +285,7 @@ requirements:
     title: "Risk & Compliance domain foundation"
     description: "Implement the Risk & Compliance domain foundation in Python. This domain owns risk assessments, challenges, block/allow decisions, and evidence summaries for order and payment flows."
     priority: P1
-    status: tested
+    status: implemented
     code:
       - path: services/risk-compliance/src/risk_compliance/domain.py
         description: "Domain model with RiskAssessment, Challenge, RiskDecision, EvidenceSummary aggregates and commands."
@@ -505,7 +505,7 @@ requirements:
     title: "Journey Order domain foundation"
     description: "Define the Journey Order aggregate lifecycle in Java: creation from valid Offer, OrderItems with TravelerRefs and SegmentOrderSnapshots, MonetarySummary invariants, and the order state machine (Created to Confirmed via PendingPayment, with Cancelled and Failed as terminal states)."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrder.java
         description: "JourneyOrder aggregate root with state machine, creation, payment, entitlement, confirmation, cancellation, and post-sales adjustment commands."
@@ -566,7 +566,7 @@ requirements:
     title: "Booking Orchestration domain foundation"
     description: "Implement the Booking Orchestration domain foundation in Java. Owns SegmentBooking, BookingSaga, ReservationRequestLog, CompensationCase aggregates with persisted saga step coordination, idempotent provider request logging, and controlled compensation."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBooking.java
         description: "SegmentBooking aggregate root with lifecycle from REQUESTED through CONFIRMED, TICKETED, CANCELLED and FAILED states."
@@ -661,7 +661,7 @@ requirements:
     title: "Payment domain foundation"
     description: "Implement the Payment domain foundation in Java. Owns PaymentIntent lifecycle with authorization/capture/refund balance invariants, Refund lifecycle with settled/failed/manual-review states, ChannelCallbackRecord idempotency and duplicate detection, LatePaymentCase isolation for captures after cancellation or expiration, IdempotencyLedger for business key idempotency, and domain events including PaymentIntentCreated, PaymentAuthorized, PaymentCaptured, PaymentFailed, PaymentIntentCancelled, PaymentIntentExpired, RefundRequested, RefundSettled, RefundFailed, ChannelCallbackReceived, DuplicateChannelCallbackDetected, and LatePaymentDetected."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntent.java
         description: "PaymentIntent aggregate root with creation, authorization, capture, failure, cancellation, expiration, refund balance, and late-capture isolation."
@@ -737,7 +737,7 @@ requirements:
     title: "Entitlement & Ticketing domain foundation"
     description: "Implement the Entitlement & Ticketing domain foundation in Rust. Owns Entitlement lifecycle (Requested to Used/Voided/Suspended), CredentialRegistry uniqueness, and domain events for ticketing state changes. Key invariants: Issued entitlement must have a unique Credential; same SegmentBookingId + TravelerId + issuePurpose is idempotent. Used entitlement cannot be ordinarily voided; Voided is irreversible. Suspended entitlement cannot pass boarding verification. Issuance must satisfy Booking, Payment, Capacity, Traveler, and Risk conditions."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/entitlement-ticketing/src/lib.rs
         description: "Entitlement aggregate root with lifecycle, CredentialRegistry, state machine, audit trail, and domain events."
@@ -766,7 +766,7 @@ requirements:
     title: "Supplier Catalog domain foundation"
     description: "Implement the Supplier Catalog domain foundation in Go. Owns supplier master data: suppliers, carriers, contracts, product capabilities, and external code mappings."
     priority: P1
-    status: tested
+    status: implemented
     code:
       - path: services/supplier-catalog/internal/domain/supplier_catalog.go
         description: "Go domain model for Supplier, Carrier, Contract, ProductCapability, and ExternalCode aggregates."
@@ -797,7 +797,7 @@ requirements:
     title: "Finance Settlement domain foundation"
     description: "Implement the Finance Settlement domain foundation in Java. Consumes order/payment/post-sales events to build revenue recognition defaults, reconciliation views, and settlement records."
     priority: P1
-    status: tested
+    status: implemented
     code:
       - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/RevenueRecognition.java
         description: "RevenueRecognition aggregate with recognize/reverse lifecycle."
@@ -870,12 +870,44 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/reporting.md, docs/03-ddd-final/phase-1-contract.md, docs/08-contracts/events/reporting.md"
 
-  # Legacy WP-derived references below. Do not use as active backlog without
+
+  - {id: REQ-028, title: "Shared contract conformance baseline", status: implemented, ref: docs/08-contracts/shared-primitives.md}
+  - {id: REQ-029, title: "Cross-context event contract specification", status: implemented, ref: docs/08-contracts/events}
+  - {id: REQ-031, title: "Messaging contract specification", status: implemented, ref: docs/08-contracts/messaging.md}
+  - {id: REQ-032, title: "Trip Planning HTTP API and event bus adapter", status: implemented, ref: services/trip-planning}
+  - {id: REQ-033, title: "Offer Management HTTP API and event bus adapter", status: implemented, ref: services/offer-management}
+  - {id: REQ-034, title: "Journey Order HTTP API and event bus adapter", status: implemented, ref: services/journey-order}
+  - {id: REQ-035, title: "Booking Orchestration HTTP API and event bus adapter", status: implemented, ref: services/booking-orchestration}
+  - {id: REQ-036, title: "Capacity Availability HTTP API and event bus adapter", status: implemented, ref: services/capacity-availability}
+  - {id: REQ-037, title: "Admin Audit HTTP API and messaging adapter", status: implemented, ref: services/admin-audit}
+  - {id: REQ-038, title: "Payment HTTP API and event bus adapter", status: implemented, ref: services/payment}
+  - {id: REQ-039, title: "Provider Integration HTTP API and messaging adapter", status: implemented, ref: services/provider-integration}
+  - {id: REQ-040, title: "Traveler Profile HTTP API and messaging adapter", status: implemented, ref: services/traveler-profile}
+  - {id: REQ-041, title: "Entitlement Ticketing HTTP API and messaging adapter", status: implemented, ref: services/entitlement-ticketing}
+  - {id: REQ-042, title: "Place Network HTTP API and messaging adapter", status: implemented, ref: services/place-network}
+  - {id: REQ-043, title: "Service Plan HTTP API and event bus adapter", status: implemented, ref: services/service-plan}
+  - {id: REQ-044, title: "Post Sales HTTP API and messaging adapter", status: implemented, ref: services/post-sales}
+  - {id: REQ-045, title: "Notification HTTP API and messaging adapter", status: implemented, ref: services/notification}
+  - {id: REQ-046, title: "Risk Compliance HTTP API and messaging adapter", status: implemented, ref: services/risk-compliance}
+  - {id: REQ-047, title: "Fulfillment HTTP API and messaging adapter", status: implemented, ref: services/fulfillment}
+  - {id: REQ-048, title: "Finance Settlement HTTP API and messaging adapter", status: implemented, ref: services/finance-settlement}
+  - {id: REQ-049, title: "Supplier Catalog HTTP API and messaging adapter", status: implemented, ref: services/supplier-catalog}
+  - {id: REQ-050, title: "Reporting HTTP API and event bus adapter", status: implemented, ref: services/reporting}
+  - {id: REQ-051, title: "Account HTTP API and messaging adapter", status: implemented, ref: services/account}
+  - {id: REQ-052, title: "Customer Service HTTP API and messaging adapter", status: implemented, ref: services/customer-service}
+  - {id: REQ-053, title: "Fare Pricing HTTP API and event bus adapter", status: implemented, ref: services/fare-pricing}
+  - {id: REQ-054, title: "Integration-ready status reconciliation", status: implemented, ref: service-catalog.json}
+  - {id: REQ-055, title: "Java platform kit", status: implemented, ref: platform/java-kit}
+  - {id: REQ-056, title: "Go platform kit", status: implemented, ref: platform/go-kit}
+  - {id: REQ-057, title: "Python platform kit", status: implemented, ref: platform/python-kit}
+  - {id: REQ-058, title: "Rust platform kit", status: implemented, ref: platform/rust-kit}
+  - {id: REQ-059, title: "TypeScript platform kit", status: implemented, ref: platform/ts-kit}
+
   - id: REQ-014
     title: "Post Sales domain foundation"
     description: "Implement the Post Sales domain foundation in Java. Owns the post-sales case lifecycle: eligibility evaluation, fee/refund/change decisions, execution plan orchestration, and manual exception tracking. Key invariants: Post Sales must never directly modify JourneyOrder invariants, MonetarySummary, or lifecycle state — only publish result events or send controlled commands. Every eligibility and fee decision must reference a frozen RuleSnapshot, RuleVersion, and input timestamp; confirmed execution amounts cannot be silently rewritten. Already-Used or Boarded entitlements cannot be ordinarily voided; such cases must enter Compensation or manual exception with full audit."
     priority: P0
-    status: tested
+    status: implemented
     code:
       - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesCase.java
         description: "PostSalesCase aggregate root with lifecycle from OPENED through ELIGIBILITY_CHECKING, QUOTED, APPROVED, EXECUTING, APPLIED, REJECTED, FAILED, CANCELLED, and MANUAL_REVIEW_REQUIRED states."
@@ -919,7 +951,6 @@ requirements:
     confidence: confirmed
     source: "docs/02-domains/post-sales.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
 
-  # regenerating the rewrite plan.
   - id: REQ-027
     title: "Field-level cross-domain contract specification"
     description: "Author the authoritative field-level cross-domain contract specification under docs/08-contracts/. This document set is the single source of truth every service must conform to for cross-context communication."
@@ -1000,6 +1031,7 @@ requirements:
     confidence: confirmed
     source: "docs/08-contracts/events/, docs/03-ddd-final/phase-1-contract.md"
 
+  # Legacy WP-derived references below. Do not use as active backlog without regenerating the rewrite plan.
   - id: REQ-101
     title: "WP-01 Shared kernel contracts"
     description: "Define common IDs, value objects, and event envelope."
