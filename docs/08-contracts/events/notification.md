@@ -84,7 +84,7 @@ Last updated: 2026-07-04
 |---|---|
 | **Producer** | notification |
 | **Consumers** | none |
-| **Trigger** | `CancelNotification` command processed. |
+| **Trigger** | `CancelNotification` command processed. RULING (2026-07-06): preference-based suppression is expressed as this event with `reason` = `SUPPRESSED_BY_PREFERENCES` (never emitted for `transactionRequired` notifications, which bypass preferences). There are no `NotificationSent`/`NotificationSuppressed` events — successful delivery is `NotificationDispatched` then `NotificationDelivered`. |
 
 **Payload:**
 
@@ -96,9 +96,9 @@ Last updated: 2026-07-04
 
 ## Consumed Events
 
-None in this foundation phase. In future phases, the notification domain will
-consume events from Journey Order, Payment, Entitlement & Ticketing, Post Sales,
-and other upstream bounded contexts.
+Notification subscribes to `events:journey-order`, `events:booking-orchestration`,
+`events:payment`, `events:entitlement-ticketing`, and `events:post-sales`
+(messaging.md subscription table) and schedules notifications from those facts.
 
 ## Key Commands
 

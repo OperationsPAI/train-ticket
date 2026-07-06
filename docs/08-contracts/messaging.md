@@ -60,7 +60,7 @@ context.
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementSuspended, EntitlementReinstated |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved |
 | 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied |
-| 14 | `notification` | `events:notification` | NotificationScheduled, NotificationSent, NotificationFailed, NotificationSuppressed |
+| 14 | `notification` | `events:notification` | NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled |
 | 15 | `traveler-profile` | `events:traveler-profile` | TravelerProfileUpdated, TravelerDocumentVerified, TravelerEligibilityChanged |
 | 16 | `risk-compliance` | `events:risk-compliance` | RiskAssessmentResult, RiskBlockApplied, RiskBlockLifted |
 | 17 | `account` | `events:account` | AccountCreated, AccountSuspended, AccountClosed |

@@ -178,6 +178,23 @@ timestamps, and Money.
 
 **Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`
 
+### Request Manual Action
+
+**POST** `/api/v1/support-cases/{caseId}/manual-action-requests`
+
+**Idempotency:** REQUIRED
+
+**Request:** fields per `RequestManualAction` in events/customer-service.md
+(`targetDomain`, `commandType`, `operatorRef`, `reason`, `description`,
+`requiresApproval`, optional `evidenceRefs`).
+
+**Response (202):** `{ "manualActionId": "ma-<uuid>", "status": "REQUESTED" }` —
+publishes the `ManualActionRequested` fact. Customer Service only records the
+request; execution stays with Admin & Audit (WP-20 boundary: no business-state
+mutation from support).
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
+
 ## Bus-only commands
 
 The following commands are consumed from the event bus only and have no HTTP
@@ -185,7 +202,7 @@ endpoint:
 
 | Command | Trigger | Description |
 |---|---|---|
-| `RequestManualAction` | Customer Service UI | Request a manual action against a target domain (e.g. payment, order). |
+| ~~`RequestManualAction`~~ | — | RULING (2026-07-06): promoted to an HTTP command — see `POST /api/v1/support-cases/{caseId}/manual-action-requests` above; there is no command-bus infrastructure in phase 1. |
 | `RecordActionOutcome` | Customer Service UI / Admin & Audit | Record the outcome of a manual action. |
 | `AppendTimelineEntry` | Customer Service UI / Internal | Append an event to the case timeline. |
 
