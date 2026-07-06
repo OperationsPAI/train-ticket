@@ -26,4 +26,9 @@ public class InMemoryPostSalesRepository implements PostSalesRepository {
     public Optional<PostSalesCase> findByIdempotencyKey(String idempotencyKey) {
         return Optional.ofNullable(caseIdByIdempotencyKey.get(idempotencyKey)).flatMap(this::findById);
     }
+
+    @Override
+    public java.util.List<PostSalesCase> findAll() {
+        return java.util.List.copyOf(byId.values());
+    }
 }

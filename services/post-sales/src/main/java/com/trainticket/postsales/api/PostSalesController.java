@@ -104,7 +104,11 @@ public class PostSalesController {
         @NotNull List<String> entitlementRefs
     ) {
         PostSalesScope toDomain() {
-            return new PostSalesScope(orderItemRefs, segmentRefs, travelerRefs, entitlementRefs);
+            return new PostSalesScope(
+                orderItemRefs == null ? List.of() : orderItemRefs,
+                segmentRefs == null ? List.of() : segmentRefs,
+                travelerRefs == null ? List.of() : travelerRefs,
+                entitlementRefs == null ? List.of() : entitlementRefs);
         }
     }
 }

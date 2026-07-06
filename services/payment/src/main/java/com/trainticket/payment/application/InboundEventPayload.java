@@ -70,15 +70,33 @@ final class InboundEventPayload {
     }
 
     String paymentIntentIdFromApprovedActions() {
+        String value = optionalPaymentIntentIdFromApprovedActions();
+        if (value == null) {
+            throw new DomainRuleViolation("approvedActions.paymentIntentId is required");
+        }
+        return value;
+    }
+
+    String optionalPaymentIntentIdFromApprovedActions() {
         Map<?, ?> approvedActions = asMap(payload.get("approvedActions"), "approvedActions");
         Object value = approvedActions.get("paymentIntentId");
         if (value == null && approvedActions.get("refund") != null) {
             value = asMap(approvedActions.get("refund"), "approvedActions.refund").get("paymentIntentId");
         }
-        if (!(value instanceof String text) || text.isBlank()) {
-            throw new DomainRuleViolation("approvedActions.paymentIntentId is required");
+        return value instanceof String text && !text.isBlank() ? text : null;
+    }
+
+    String orderRefFromApprovedActions() {
+        Map<?, ?> approvedActions = asMap(payload.get("approvedActions"), "approvedActions");
+        Object refund = approvedActions.get("refund");
+        if (refund instanceof Map<?, ?> refundAction) {
+            Object orderId = refundAction.get("orderId");
+            if (orderId instanceof String text && !text.isBlank()) {
+                return text;
+            }
         }
-        return text;
+        Object direct = payload.get("orderId");
+        return direct instanceof String text && !text.isBlank() ? text : null;
     }
 
     private static Money moneyFromObject(Object value, String field) {

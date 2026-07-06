@@ -54,7 +54,7 @@ public final class PostSalesCase {
         String sourceCommandId,
         String correlationId
     ) {
-        PostSalesCase postSalesCase = new PostSalesCase(UUID.randomUUID().toString(), journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey);
+        PostSalesCase postSalesCase = new PostSalesCase(com.trainticket.platformkit.idempotency.UuidV7.generate(), journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey);
         postSalesCase.domainEvents.add(new PostSalesCaseOpened(postSalesCase.caseId, journeyOrderId, caseType, scope, reasonCode, actorRef,
             metadata(occurredAt, sourceCommandId, sourceCommandId, correlationId, postSalesCase.status)));
         postSalesCase.domainEvents.add(new PostSalesRequested(postSalesCase.caseId, journeyOrderId, caseType, scope, reasonCode,
