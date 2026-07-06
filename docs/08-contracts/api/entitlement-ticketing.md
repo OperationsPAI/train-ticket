@@ -37,7 +37,7 @@ timestamps, and Money.
 | `journeyOrderId` | string | Order ID. |
 | `credentialNo` | string | Unique credential/ticket number. |
 | `credentialType` | string | Type: `E_TICKET`, `PAPER_TICKET`, `PICKUP_CODE`, `BOARDING_PASS`, `FERRY_TICKET`, `COACH_E_TICKET`, `RIDE_CODE` |
-| `status` | enum | `ISSUED`, `VOIDED`, `BOARDED`, `NO_SHOW`, `SUSPENDED` |
+| `status` | enum | `ISSUED`, `VOIDED`, `BOARDED`, `NO_SHOW`, `SUSPENDED`. RULING (2026-07-06): there is no `USED` status — `FulfillmentCompleted` leaves the ticket `BOARDED`; `BOARDED`, `NO_SHOW`, and `VOIDED` are terminal. |
 | `issuedAt` | timestamp | Issue timestamp. |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `PRECONDITION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`
