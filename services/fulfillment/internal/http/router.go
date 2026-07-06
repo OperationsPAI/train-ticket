@@ -44,6 +44,7 @@ func RouterWithConfig(service *application.Service, idSource goruntime.IDGenerat
 	h := &Handler{svc: service, idempotency: idempotency.NewMemoryStore()}
 	idempotent := idempotency.Middleware(h.idempotency)
 	router.POST("/api/v1/fulfillment-records/boarding", idempotent, h.verifyBoarding)
+	router.POST("/api/v1/fulfillment-records/completions", idempotent, h.fulfillmentCompleted)
 	router.POST("/api/v1/fulfillment-records/no-show", idempotent, h.recordNoShow)
 	router.GET("/api/v1/fulfillment-records/:fulfillmentRecordId", h.getFulfillmentRecord)
 	return router
@@ -80,6 +81,43 @@ func (h *Handler) verifyBoarding(ctx *gin.Context) {
 		Source:           domain.FulfillmentSource(req.Source),
 		SourceEventID:    req.SourceEventID,
 		OccurredAt:       occurredAt,
+	}, commandMetadata(ctx))
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, result)
+}
+
+type fulfillmentCompletedRequest struct {
+	EntitlementID    string `json:"entitlementId"`
+	SegmentBookingID string `json:"segmentBookingId"`
+	JourneyOrderID   string `json:"journeyOrderId"`
+	TravelerID       string `json:"travelerId"`
+	SegmentRef       string `json:"segmentRef"`
+	CompletionSource string `json:"completionSource"`
+	CompletedAt      string `json:"completedAt"`
+}
+
+func (h *Handler) fulfillmentCompleted(ctx *gin.Context) {
+	var req fulfillmentCompletedRequest
+	if err := decodeJSON(ctx, &req); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	completedAt, err := parseRequiredTime(req.CompletedAt, "completedAt")
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	result, err := h.svc.RecordFulfillmentCompleted(ctx.Request.Context(), application.FulfillmentCompletedCommand{
+		EntitlementID:    domain.EntitlementRef(req.EntitlementID),
+		SegmentBookingID: domain.SegmentBookingRef(req.SegmentBookingID),
+		JourneyOrderID:   domain.OrderRef(req.JourneyOrderID),
+		TravelerID:       domain.TravelerRef(req.TravelerID),
+		SegmentRef:       domain.SegmentRef(req.SegmentRef),
+		CompletionSource: domain.CompletionSource(req.CompletionSource),
+		CompletedAt:      completedAt,
 	}, commandMetadata(ctx))
 	if err != nil {
 		writeMappedError(ctx, err)

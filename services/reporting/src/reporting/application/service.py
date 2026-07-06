@@ -133,7 +133,7 @@ def default_repository() -> ReportingReadRepository:
         metrics=(MetricRef("metric-revenue", "1.0.0"),),
         current_snapshot=snapshot,
         last_built_at=published_at,
-        source_events=("RevenueRecognized", "ReconciliationCompleted", "InvoiceGenerated"),
+        source_events=("RevenueRecognized", "ReconciliationCompleted", "InvoiceGenerated", "BoardingVerified", "FulfillmentCompleted", "NoShowRecorded"),
     )
     return ReportingReadRepository(
         metrics={revenue_metric.metric_id: revenue_metric, support_metric.metric_id: support_metric},
