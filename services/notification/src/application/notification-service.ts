@@ -1,8 +1,9 @@
-import crypto from "node:crypto";
-
 import {
   type ChannelType,
-  NotificationTask,
+  type NotificationTask,
+  NotificationTask as NotificationTaskAggregate,
+  newNotificationTaskId,
+  newReceiptId,
   type ScheduleNotification,
 } from "../domain.js";
 import { type EventEnvelope, type EventPublisher, toEventEnvelope } from "./messaging.js";
@@ -15,12 +16,46 @@ export type ExternalNotificationTrigger = Readonly<{
   payload: Record<string, unknown>;
 }>;
 
-export type ExternalTriggerResult = "scheduled" | "ignored";
+export type ExternalTriggerResult = "delivered" | "cancelled" | "failed" | "ignored";
+
+export type UserPreference = Readonly<{
+  recipientRef: string;
+  intent: string;
+  channel: ChannelType;
+  enabled: boolean;
+}>;
+
+export interface UserPreferenceRepository {
+  isEnabled(recipientRef: string, intent: string, channel: ChannelType): Promise<boolean> | boolean;
+}
+
+export type DeliveryResult =
+  | Readonly<{ ok: true; providerMessageId?: string }>
+  | Readonly<{ ok: false; outcome: "Bounced" | "Rejected" | "Timeout" | "Expired"; providerCode?: string; providerMessage?: string }>;
+
+export interface NotificationChannelGateway {
+  send(task: ReturnType<NotificationTask["toSnapshot"]>): Promise<DeliveryResult> | DeliveryResult;
+}
 
 export class NonConformantNotificationTrigger extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NonConformantNotificationTrigger";
+  }
+}
+
+class AllowAllPreferences implements UserPreferenceRepository {
+  isEnabled(): boolean {
+    return true;
+  }
+}
+
+class DirectSuccessGateway implements NotificationChannelGateway {
+  async send(task: ReturnType<NotificationTask["toSnapshot"]>): Promise<DeliveryResult> {
+    if (task.channel === "IN_APP") {
+      return { ok: true };
+    }
+    return { ok: true, providerMessageId: `${task.channel.toLowerCase()}-${task.notificationTaskId}` };
   }
 }
 
@@ -33,7 +68,11 @@ type TriggerMapping = Readonly<{
 }>;
 
 export class NotificationApplicationService {
-  constructor(private readonly publisher: EventPublisher) {}
+  constructor(
+    private readonly publisher: EventPublisher,
+    private readonly preferences: UserPreferenceRepository = new AllowAllPreferences(),
+    private readonly channelGateway: NotificationChannelGateway = new DirectSuccessGateway(),
+  ) {}
 
   async handleExternalTrigger(envelope: EventEnvelope): Promise<ExternalTriggerResult> {
     const command = scheduleCommandFromEnvelope(envelope);
@@ -42,9 +81,50 @@ export class NotificationApplicationService {
       return "ignored";
     }
 
-    const { event } = NotificationTask.schedule(command);
-    await this.publisher.publish(toEventEnvelope(event));
-    return "scheduled";
+    const { task, event: scheduled } = NotificationTaskAggregate.schedule(command);
+    await this.publisher.publish(toEventEnvelope(scheduled));
+
+    if (!command.transactionRequired && !await this.preferences.isEnabled(command.recipientRef, command.intent, command.channel)) {
+      const { task: cancelled, event } = task.cancel({
+        notificationTaskId: task.id,
+        reason: "SUPPRESSED_BY_PREFERENCES",
+        cancelledAt: new Date(),
+      });
+      void cancelled;
+      await this.publisher.publish(toEventEnvelope(event));
+      return "cancelled";
+    }
+
+    const dispatchedAt = new Date();
+    const { task: delivering, event: dispatched } = task.dispatch({ notificationTaskId: task.id, dispatchedAt });
+    await this.publisher.publish(toEventEnvelope(dispatched));
+
+    const delivery = await this.channelGateway.send(delivering.toSnapshot());
+    if (delivery.ok) {
+      const { task: delivered, event: deliveredEvent } = delivering.recordReceipt({
+        receiptId: newReceiptId(),
+        notificationTaskId: delivering.id,
+        channel: command.channel,
+        outcome: "Delivered",
+        recordedAt: new Date(),
+      });
+      void delivered;
+      await this.publisher.publish(toEventEnvelope(deliveredEvent));
+      return "delivered";
+    }
+
+    const { task: failed, event: failedEvent } = delivering.recordReceipt({
+      receiptId: newReceiptId(),
+      notificationTaskId: delivering.id,
+      channel: command.channel,
+      outcome: delivery.outcome,
+      providerCode: delivery.providerCode,
+      providerMessage: delivery.providerMessage,
+      recordedAt: new Date(),
+    });
+    void failed;
+    await this.publisher.publish(toEventEnvelope(failedEvent));
+    return "failed";
   }
 }
 
@@ -63,7 +143,7 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope): ScheduleNotificat
   }
 
   return {
-    notificationTaskId: `nt-${crypto.randomUUID()}`,
+    notificationTaskId: newNotificationTaskId(),
     triggerEventId: envelope.eventId,
     triggerEventType: envelope.eventType,
     correlationId: envelope.correlationId,
@@ -72,7 +152,7 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope): ScheduleNotificat
     templateCode: mapping.templateCode,
     channel: mapping.channel,
     intent: mapping.intent,
-    transactionRequired: true,
+    transactionRequired: booleanValue(payload.transactionRequired) ?? true,
     variables: mapping.variables(payload),
     scheduledAt: new Date(),
   };
@@ -105,6 +185,18 @@ function mappingFor(eventType: string): TriggerMapping | undefined {
       return refundMapping();
     case "EntitlementIssued":
       return ticketIssuedMapping();
+    case "PostSalesEligibilityEvaluated":
+      return postSalesMapping("post_sales_eligibility", "POST_SALES_ELIGIBILITY");
+    case "PostSalesDecisionQuoted":
+      return postSalesMapping("post_sales_decision", "POST_SALES_DECISION");
+    case "PostSalesExecutionStarted":
+      return postSalesMapping("post_sales_execution", "POST_SALES_EXECUTION");
+    case "PostSalesApplied":
+      return postSalesMapping("post_sales_applied", "POST_SALES_APPLIED");
+    case "PostSalesFailed":
+      return postSalesMapping("post_sales_failed", "POST_SALES_FAILED");
+    case "ChangeApplied":
+      return postSalesMapping("change_applied", "CHANGE_APPLIED");
     default:
       return undefined;
   }
@@ -150,12 +242,22 @@ function ticketIssuedMapping(): TriggerMapping {
   };
 }
 
+function postSalesMapping(templateCode: string, intent: string): TriggerMapping {
+  return {
+    templateCode,
+    intent,
+    channel: "IN_APP",
+    recipient: (payload) => recipientFromDirectFields(payload) ?? stringValue(payload.actorRef),
+    variables: (payload) => pickStringVariables(payload, ["caseId", "orderId", "journeyOrderId", "reasonCode", "decisionKind", "approvalRef", "reason"]),
+  };
+}
+
 function recipientFromOrderEvent(payload: Record<string, unknown>): string | undefined {
   return recipientFromDirectFields(payload) ?? recipientFromTravelerRefs(payload.travelerRefs);
 }
 
 function recipientFromDirectFields(payload: Record<string, unknown>): string | undefined {
-  return stringValue(payload.recipientRef) ?? stringValue(payload.travelerId);
+  return stringValue(payload.recipientRef) ?? stringValue(payload.travelerId) ?? stringValue(payload.accountId) ?? stringValue(payload.actorRef);
 }
 
 function recipientFromTravelerRefs(value: unknown): string | undefined {
@@ -193,4 +295,8 @@ function pickStringVariables(payload: Record<string, unknown>, keys: readonly st
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }

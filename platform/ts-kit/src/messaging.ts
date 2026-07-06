@@ -361,6 +361,11 @@ export class RedisEventSubscriber implements EventSubscriber {
         if (String(error).includes("NOGROUP")) {
           await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
         }
+        if (!isRecoverableRedisReadError(error)) {
+          // Unknown errors are reported, never fatal: an unlisted driver
+          // message must not silently kill the subscriber loop.
+          this.onLoopFailure(error);
+        }
         await sleep(1_000);
       }
     }
@@ -515,6 +520,11 @@ export function dlqStreamKey(context: string): string {
 
 export function redisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+
+function isRecoverableRedisReadError(error: unknown): boolean {
+  const message = String(error);
+  return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
 }
 
 function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> {

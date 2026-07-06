@@ -14,9 +14,7 @@
  *   4. Delivery receipts are appended facts; a receipt never mutates the task's request payload.
  */
 
-import crypto from "node:crypto";
-
-import { newEventId } from "@trainticket/ts-kit";
+import { newEventId, uuidV7 } from "@trainticket/ts-kit";
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
@@ -715,6 +713,14 @@ const boundaryProof: NotificationBoundaryProof = Object.freeze({
 
 export function notificationBoundaryProof(): NotificationBoundaryProof {
   return boundaryProof;
+}
+
+export function newNotificationTaskId(now: Date = new Date()): NotificationTaskId {
+  return `nt-${uuidV7(now)}`;
+}
+
+export function newReceiptId(now: Date = new Date()): ReceiptId {
+  return `rct-${uuidV7(now)}`;
 }
 
 // ─── Idempotency key generation ────────────────────────────────────────────────
