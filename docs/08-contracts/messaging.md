@@ -66,7 +66,7 @@ context.
 | 17 | `account` | `events:account` | AccountCreated, AccountSuspended, AccountClosed |
 | 18 | `admin-audit` | `events:admin-audit` | ManualActionCompleted, ApprovalGranted, ApprovalDenied |
 | 19 | `customer-service` | `events:customer-service` | SupportCaseOpened, SupportCaseResolved |
-| 20 | `finance-settlement` | `events:finance-settlement` | RevenueRecognized, ReconciliationCompleted, InvoiceGenerated |
+| 20 | `finance-settlement` | `events:finance-settlement` | RevenueRecognized, RevenueRecognitionReversed, ReconciliationCompleted, InvoiceGenerated |
 | 21 | `reporting` | `events:reporting` | MetricDefined, MetricVersionPublished, ReadModelRebuilt |
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierUpdated, ContractAmended, ProductCapabilityChanged |
 
