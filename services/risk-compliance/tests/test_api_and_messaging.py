@@ -11,7 +11,7 @@ from risk_compliance import (
     RiskComplianceService,
     create_app,
 )
-from risk_compliance.application import is_prefixed_uuid7, is_uuid7, uuid7
+from risk_compliance.application import deterministic_event_id, deterministic_prefixed_id, is_prefixed_uuid7, is_uuid7, uuid7
 
 
 def fake_app():
@@ -178,7 +178,7 @@ def test_publish_failure_returns_unavailable_body_after_save() -> None:
     assert response.status_code == 503
     assert response.json()["code"] == "UNAVAILABLE"
     assert response.json()["details"] == {"deliverySemantics": "AT_LEAST_ONCE"}
-    assert len(repository._assessments) == 1
+    assert repository.count() == 1
 
 
 def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
@@ -194,9 +194,9 @@ def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
 
     assert first.status_code == 503
     assert retry.status_code == 201
-    assert len(repository._assessments) == 1
+    assert repository.count() == 1
     assert len(publisher.envelopes) == 1
-    assert retry.json() == next(iter(repository._assessments.values())).to_dict()
+    assert retry.json() == repository.values()[0].to_dict()
 
 
 def test_idempotent_replay_returns_original_result() -> None:
@@ -400,7 +400,10 @@ def test_journey_order_created_is_assessed_and_blocked_idempotently() -> None:
         "evidenceRef": publisher.envelopes[0].payload["evidenceRef"],
         "blockedAt": block.payload["blockedAt"],
     }
-    assert block.payload["blockId"].startswith("blk-")
+    assert block.payload["blockId"] == deterministic_prefixed_id("blk", publisher.envelopes[0].payload["assessmentId"], "block")
+    assert block.payload["blockId"].split("-", 1)[1][14] == "7"
+    assert block.eventId == deterministic_event_id(block.payload["blockId"])
+    assert block.eventId.split("-", 1)[1][14] == "7"
     assert block.causationId == publisher.envelopes[0].eventId
 
 
@@ -415,14 +418,16 @@ def test_journey_order_replay_does_not_publish_second_assessment_after_partial_d
     service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
     envelope = journey_order_created_envelope(f"evt-{uuid7()}", "ord-partial", "acct-partial")
 
-    try:
-        service.handle_event(envelope)
-    except PublishFailed:
-        pass
-    service.handle_event(envelope)
+    for _ in range(2):
+        try:
+            service.handle_event(envelope)
+        except PublishFailed:
+            pass
 
-    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult"]
-    assert len(service.repository._assessments) == 1
+    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult", "RiskAssessmentResult"]
+    assert publisher.envelopes[1].eventId == publisher.envelopes[0].eventId
+    assert publisher.envelopes[1].payload["assessmentId"] == publisher.envelopes[0].payload["assessmentId"]
+    assert service.assessment_count() == 1
 
 
 def test_lift_block_clears_account_frequency_window_for_same_account() -> None:

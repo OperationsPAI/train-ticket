@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeAlias
+from uuid import NAMESPACE_URL, uuid5
 
 from train_ticket_platform.events import EventEnvelope, envelope_factory, rfc3339_utc
 from train_ticket_platform.idempotency import IdempotencyRecord, IdempotencyStore
@@ -28,6 +29,7 @@ DEFAULT_POLICY_VERSION = PolicyVersionRef(policy_set_id="risk-rules", version="1
 FREQUENCY_WINDOW = timedelta(minutes=10)
 FREQUENCY_THRESHOLD = 3
 BLOCKING_DECISIONS = {Decision.DENY, Decision.CHALLENGE}
+BLOCKING_DECISION_VALUES = {decision.value for decision in BLOCKING_DECISIONS}
 RiskScenario: TypeAlias = str
 EventHandler: TypeAlias = Callable[[EventEnvelope], None]
 InMemoryEventSubscriber = PlatformInMemoryEventSubscriber
@@ -139,6 +141,15 @@ class InMemoryAssessmentRepository:
             return self._assessments[assessment_id]
         except KeyError as exc:
             raise AssessmentNotFoundError(assessment_id) from exc
+
+    def find(self, assessment_id: str) -> RiskAssessmentResult | None:
+        return self._assessments.get(assessment_id)
+
+    def count(self) -> int:
+        return len(self._assessments)
+
+    def values(self) -> tuple[RiskAssessmentResult, ...]:
+        return tuple(self._assessments.values())
 
     def save(self, assessment: RiskAssessmentResult) -> None:
         self._assessments[assessment.assessmentId] = assessment
@@ -252,19 +263,30 @@ class RiskComplianceService:
     def get_assessment(self, assessment_id: str) -> RiskAssessmentResult:
         return self.repository.get(assessment_id)
 
+    def assessment_count(self) -> int:
+        return self.repository.count()
+
+    def assessments(self) -> tuple[RiskAssessmentResult, ...]:
+        return self.repository.values()
+
     def handle_event(self, envelope: EventEnvelope) -> None:
         if envelope.eventType != "JourneyOrderCreated":
             return
         if self.repository.is_processed(envelope.eventId):
             return
-        self.repository.record_processed(envelope.eventId)
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
-        assessment_envelope = _assessment_envelope(result, envelope.correlationId, envelope.eventId)
+        assessment_envelope = _assessment_envelope(
+            result,
+            envelope.correlationId,
+            envelope.eventId,
+            event_id=deterministic_event_id(result.assessmentId),
+        )
         self.publisher.publish(assessment_envelope)
         if block is not None:
             self.repository.save_block(block)
             self.publisher.publish(_block_applied_envelope(block, envelope.correlationId, assessment_envelope.eventId))
+        self.repository.record_processed(envelope.eventId)
 
     def lift_block(self, *, subject_ref: str, scope: str, reason_code: str, correlation_id: str) -> RiskBlockLifted:
         previous = self.repository.active_block(subject_ref)
@@ -283,12 +305,17 @@ class RiskComplianceService:
         payload = envelope.payload
         order_id = _required_payload_text(payload, "orderId")
         account_id = _required_payload_text(payload, "accountId")
+        assessment_id = deterministic_prefixed_id("asmt", envelope.eventId, "assessment")
+        existing = self.repository.find(assessment_id)
+        if existing is not None:
+            block = _block_from_result(existing) if existing.decision in BLOCKING_DECISION_VALUES else None
+            return existing, block
         self.repository.remember_order_account(order_id, account_id)
         occurred_at = _coerce_datetime(envelope.occurredAt)
         context = dict(payload)
         context["orderAttemptCount10m"] = self.repository.record_order_attempt(account_id, occurred_at)
         assessment = assess_risk(
-            assessment_id=prefixed_id("asmt"),
+            assessment_id=assessment_id,
             subject_ref=order_id,
             scenario="order_risk",
             input_data=context,
@@ -302,6 +329,20 @@ class RiskComplianceService:
 
 def prefixed_id(prefix: str) -> str:
     return new_prefixed_uuid7(prefix)
+
+
+def deterministic_uuid(value: str) -> str:
+    uuid = uuid5(NAMESPACE_URL, f"train-ticket:risk-compliance:{value}")
+    uuid_int = (uuid.int & ~(0xF << 76)) | (0x7 << 76)
+    return str(uuid.__class__(int=uuid_int))
+
+
+def deterministic_prefixed_id(prefix: str, *parts: str) -> str:
+    return f"{prefix}-{deterministic_uuid(':'.join(parts))}"
+
+
+def deterministic_event_id(fact_id: str) -> str:
+    return deterministic_prefixed_id("evt", fact_id, "event")
 
 
 def uuid7() -> str:
@@ -444,7 +485,13 @@ def _to_result(assessment: RiskAssessment) -> RiskAssessmentResult:
     )
 
 
-def _assessment_envelope(result: RiskAssessmentResult, correlation_id: str, causation_id: str) -> EventEnvelope:
+def _assessment_envelope(
+    result: RiskAssessmentResult,
+    correlation_id: str,
+    causation_id: str,
+    *,
+    event_id: str | None = None,
+) -> EventEnvelope:
     return envelope_factory(
         event_type="RiskAssessmentResult",
         producer=PRODUCER,
@@ -453,12 +500,13 @@ def _assessment_envelope(result: RiskAssessmentResult, correlation_id: str, caus
         causation_id=causation_id,
         occurred_at=result.assessedAt,
         schema_version=SCHEMA_VERSION,
+        event_id=event_id,
     )
 
 
 def _block_from_result(result: RiskAssessmentResult) -> RiskBlockApplied:
     decision = block_subject(
-        decision_id=prefixed_id("blk"),
+        decision_id=deterministic_prefixed_id("blk", result.assessmentId, "block"),
         subject_ref=result.subjectRef,
         scope=BlockScope.ORDER,
         reason_code=result.reasonCode,
@@ -473,7 +521,7 @@ def _block_from_result(result: RiskAssessmentResult) -> RiskBlockApplied:
         reasonCode=decision.reason_code,
         policyVersion=decision.policy_version.version,
         evidenceRef=result.evidenceRef,
-        blockedAt=rfc3339_utc(decision.decided_at),
+        blockedAt=result.assessedAt,
     )
 
 
@@ -507,6 +555,7 @@ def _block_applied_envelope(block: RiskBlockApplied, correlation_id: str, causat
         causation_id=causation_id,
         occurred_at=block.blockedAt,
         schema_version=SCHEMA_VERSION,
+        event_id=deterministic_event_id(block.blockId),
     )
 
 
