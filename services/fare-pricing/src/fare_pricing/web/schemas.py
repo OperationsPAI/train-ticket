@@ -51,6 +51,32 @@ class RuleSnapshotSchema(BaseModel):
     digest: str
 
 
+class EffectiveWindowSchema(BaseModel):
+    startsAt: datetime
+    endsAt: datetime
+
+
+class FareRuleSetRuleSchema(BaseModel):
+    ruleId: str = Field(..., min_length=1)
+    kind: Literal["base_fare", "tax", "fee", "discount", "refund_fee", "change_fee"]
+    amount: MoneySchema
+    explanation: PriceExplanationSchema
+    refundable: bool = True
+
+
+class CreateFareRuleSetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    supplierId: str = Field(..., min_length=1)
+    contractId: str = Field(..., min_length=1)
+    productCode: str = Field(..., min_length=1)
+    mode: str = Field(..., min_length=1)
+    channel: str = Field(..., min_length=1)
+    version: str = Field(..., min_length=1)
+    effectiveWindow: EffectiveWindowSchema
+    rules: list[FareRuleSetRuleSchema] = Field(..., min_length=1)
+
+
 class FareQuoteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
