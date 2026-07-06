@@ -78,8 +78,10 @@ req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
 check_code 200 "approve post-sales case"
 sleep 8
 
-req GET customer-service "/api/v1/support-cases/$SUPPORT_CASE"
-TIMELINE_OK=$(echo "$RESP" | CASE="$CASE" python3 - << 'PYEX'
+TIMELINE_OK=""
+for attempt in 1 2 3 4; do
+  req GET customer-service "/api/v1/support-cases/$SUPPORT_CASE"
+  TIMELINE_OK=$(echo "$RESP" | CASE="$CASE" python3 - << 'PYEX'
 import sys, json, os
 try:
     d=json.load(sys.stdin)
@@ -90,6 +92,9 @@ except Exception:
     print('')
 PYEX
 )
+  [ "$TIMELINE_OK" = "yes" ] && break
+  sleep 6
+done
 [ "$TIMELINE_OK" = "yes" ] && ok "support timeline attached PostSalesApplied refund fact" || bad "timeline missing PostSalesApplied refund fact"
 
 echo "== 4. resolve support case"
