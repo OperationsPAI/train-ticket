@@ -4,7 +4,9 @@
 # verify the PostSalesApplied fact is attached to the support timeline and resolving
 # the case publishes SupportCaseResolved.
 cd "$(dirname "$0")" && . ./lib.sh
-[ -f ./.refs.env ] || ./02-purchase.sh
+# Always purchase fresh: earlier suite scripts leave used/refunded orders
+# in .refs.env, and this chain needs a refundable, un-fulfilled ticket.
+bash ./02-purchase.sh > /tmp/notify-support-base.log 2>&1 || true
 . ./.refs.env
 ensure_curl_pod
 
