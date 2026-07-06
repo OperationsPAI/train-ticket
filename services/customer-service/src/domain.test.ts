@@ -100,6 +100,8 @@ function recordOutcomeCommand(overrides: Partial<RecordActionOutcome> = {}): Rec
     outcome: "Succeeded",
     resultSummary: "Payment retry completed successfully",
     approvalRef: "aprv-test-001",
+    correlationId: testCorrelationId,
+    causationId: "evt-test-outcome",
     recordedAt: new Date("2026-07-03T10:10:00.000Z"),
     ...overrides,
   };

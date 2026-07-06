@@ -218,6 +218,8 @@ export type RecordActionOutcome = Readonly<{
   outcome: "Succeeded" | "Failed" | "Rejected" | "Cancelled";
   resultSummary: string;
   approvalRef?: ApprovalRef;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
   recordedAt: Date;
 }>;
 
@@ -1027,8 +1029,8 @@ export class ManualActionRequest {
       eventType: "ManualActionResultRecorded",
       schemaVersion: 1,
       occurredAt: new Date(command.recordedAt),
-      correlationId: this.snapshot.caseId, // use caseId as correlation for tracing
-      causationId: this.snapshot.manualActionId,
+      correlationId: command.correlationId,
+      causationId: command.causationId,
       producer: "customer-service",
       manualActionId: this.snapshot.manualActionId,
       caseId: this.snapshot.caseId,

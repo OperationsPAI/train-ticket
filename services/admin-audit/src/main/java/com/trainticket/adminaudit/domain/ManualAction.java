@@ -73,7 +73,39 @@ public final class ManualAction {
         String sourceCommandId,
         String correlationId
     ) {
-        String actionId = "ma-" + UUID.randomUUID().toString();
+        return requestWithId(
+            "ma-" + UUID.randomUUID(),
+            targetDomain,
+            targetCommand,
+            businessRef,
+            reasonCode,
+            description,
+            requestedBy,
+            requiresApproval,
+            now,
+            sourceCommandId,
+            correlationId
+        );
+    }
+
+    /**
+     * Rehydrate a manual action request from an upstream governance request fact.
+     * The caller supplies the canonical manualActionId so replay is deterministic.
+     */
+    public static ManualAction requestWithId(
+        String manualActionId,
+        String targetDomain,
+        String targetCommand,
+        String businessRef,
+        String reasonCode,
+        String description,
+        OperatorRef requestedBy,
+        boolean requiresApproval,
+        Instant now,
+        String sourceCommandId,
+        String correlationId
+    ) {
+        String actionId = requireText(manualActionId, "manualActionId");
         ManualAction action = new ManualAction(
             actionId,
             targetDomain,

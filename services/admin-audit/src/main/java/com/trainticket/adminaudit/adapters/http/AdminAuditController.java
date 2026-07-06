@@ -81,6 +81,23 @@ public class AdminAuditController {
         )));
     }
 
+    @PostMapping("/manual-actions/{manualActionId}/reject")
+    public ResponseEntity<Object> rejectManualAction(
+        @PathVariable String manualActionId,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+        @RequestBody RejectManualActionRequest request,
+        HttpServletRequest httpRequest
+    ) {
+        request.validate();
+        RejectFingerprint fingerprint = new RejectFingerprint(manualActionId, request.operatorRef(), request.reason());
+        return idempotency.execute(idempotencyKey, fingerprint, 200, () -> ManualActionResponse.from(service.rejectManualAction(
+            manualActionId,
+            request.operatorRef(),
+            request.reason(),
+            correlationId(httpRequest)
+        )));
+    }
+
     @GetMapping("/audit-trail")
     public AuditTrailPage listAuditTrail(
         @RequestParam(value = "businessRef", required = false) String businessRef,
@@ -149,7 +166,15 @@ public class AdminAuditController {
         }
     }
 
+    public record RejectManualActionRequest(String operatorRef, String reason) {
+        void validate() {
+            requireText(operatorRef, "operatorRef");
+            requireText(reason, "reason");
+        }
+    }
+
     private record ApproveFingerprint(String manualActionId, String approvedByOperatorId) {}
+    private record RejectFingerprint(String manualActionId, String operatorRef, String reason) {}
 
     public record OperatorResponse(String operatorId, String email, String role, List<String> scopes, String status) {
         static OperatorResponse from(OperatorIdentity operator) {
@@ -191,7 +216,7 @@ public class AdminAuditController {
 
     public record ApprovalResponse(String manualActionId, String status) {
         static ApprovalResponse from(ManualAction action) {
-            return new ApprovalResponse(action.manualActionId(), action.state().name());
+            return new ApprovalResponse(action.manualActionId(), "APPROVED");
         }
     }
 
