@@ -16,9 +16,7 @@
  *   4. Case closure requires either a resolution record or explicit escalation.
  */
 
-import crypto from "node:crypto";
-
-import { newCorrelationId, newEventId } from "@trainticket/ts-kit";
+import { newEventId, uuidV7 } from "@trainticket/ts-kit";
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
@@ -268,6 +266,8 @@ export type AppendTimelineEntry = Readonly<{
   payload: Readonly<Record<string, unknown>>;
   visibility: TimelineVisibility;
   occurredAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
 }>;
 
 // ─── Domain Events ─────────────────────────────────────────────────────────────
@@ -643,7 +643,7 @@ export class SupportCase {
     }
 
     const escalation: EscalationInfo = deepFreeze({
-      escalationRef: `escl-${crypto.randomUUID()}`,
+      escalationRef: `escl-${uuidV7()}`,
       targetQueue: command.targetQueue,
       reason: command.reason,
       escalatedAt: new Date(command.escalatedAt),
@@ -1126,7 +1126,8 @@ export class CaseTimeline {
       eventType: "CaseTimelineEntryAppended",
       schemaVersion: 1,
       occurredAt: new Date(command.occurredAt),
-      correlationId: newCorrelationId(),
+      correlationId: command.correlationId,
+      causationId: command.causationId,
       producer: "customer-service",
       entryId: command.entryId,
       caseId: command.caseId,

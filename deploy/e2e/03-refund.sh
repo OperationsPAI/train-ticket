@@ -74,6 +74,46 @@ NOTIF_OK=$(stream_mentions events:notification NotificationScheduled "$TVL")
 [ "$NOTIF_OK" = "yes" ] && ok "notification scheduled for our traveler" || bad "no NotificationScheduled for traveler"
 FIN_OK=$(stream_mentions events:finance-settlement RevenueRecognized "$ORDER")
 [ "$FIN_OK" = "yes" ] && ok "RevenueRecognized for our order" || bad "no RevenueRecognized mentioning order"
+RECON_OK=$(stream_mentions events:finance-settlement ReconciliationCompleted "$ORDER")
+[ "$RECON_OK" = "yes" ] && ok "ReconciliationCompleted for our order" || bad "no ReconciliationCompleted mentioning order"
+REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognitionReversed '"minorUnits": 8750')
+[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reversal published" || bad "no 87.50 revenue reversal"
+invoice_event_count() {
+  k exec "$(redis_pod)" -- redis-cli XREVRANGE events:finance-settlement + - COUNT 100 > /tmp/invoice-events.txt 2>/dev/null
+  ORDER_REF="$ORDER" python3 - << 'PYEX'
+import re, os, json
+count = 0
+raw = open("/tmp/invoice-events.txt").read()
+for m in re.finditer(r'\{.*\}', raw):
+    try:
+        e = json.loads(m.group(0).encode().decode('unicode_escape'))
+        if e.get("eventType") == "InvoiceGenerated" and e.get("payload", {}).get("orderId") == os.environ["ORDER_REF"]:
+            count += 1
+    except Exception:
+        pass
+print(count)
+PYEX
+}
+generate_invoice_fixed_key() {
+  local key=$1 body="{\"orderId\":\"$ORDER\"}" out
+  out=$(k exec -i e2e-curl -- curl -s -w $'\n%{http_code}' -X POST "http://finance-settlement:8080/api/v1/invoices" \
+    -H 'Content-Type: application/json' \
+    -H "Idempotency-Key: $key" \
+    -d "$body" 2>/dev/null)
+  LAST_CODE=$(echo "$out" | tail -1)
+  RESP=$(echo "$out" | sed '$d')
+}
+INV_EVT_BEFORE=$(invoice_event_count)
+INVOICE_KEY=$(uuid7)
+generate_invoice_fixed_key "$INVOICE_KEY"
+INV_CODE_1=$LAST_CODE; INV_ID=$(jget "['invoiceId']")
+generate_invoice_fixed_key "$INVOICE_KEY"
+INV_CODE_2=$LAST_CODE; INV_ID_REPLAY=$(jget "['invoiceId']")
+INV_EVT_AFTER=$(invoice_event_count)
+INV_EVT_DELTA=$((INV_EVT_AFTER - INV_EVT_BEFORE))
+[ "$INV_CODE_1" = "201" ] && [ "$INV_CODE_2" = "201" ] && [ -n "$INV_ID" ] && [ "$INV_ID" = "$INV_ID_REPLAY" ] && [ "$INV_EVT_DELTA" -eq 1 ] && ok "GenerateInvoice fixed-key replay returns same invoice without duplicate event" || bad "GenerateInvoice replay failed ($INV_CODE_1/$INV_CODE_2 $INV_ID/$INV_ID_REPLAY events+$INV_EVT_DELTA)"
+INV_EVT_OK=$(stream_mentions events:finance-settlement InvoiceGenerated "$ORDER")
+[ "$INV_EVT_OK" = "yes" ] && ok "InvoiceGenerated for our order" || bad "no InvoiceGenerated mentioning order"
 RPT_LEN=$(xlen events:reporting)
 [ "${RPT_LEN:-0}" -gt 0 ] 2>/dev/null && ok "reporting published ReadModelRebuilt facts (XLEN=$RPT_LEN)" || bad "reporting stream empty"
 req GET reporting /api/v1/dashboards/dash-revenue

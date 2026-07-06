@@ -2,6 +2,7 @@ package com.trainticket.financesettlement.adapters.http;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -11,6 +12,7 @@ import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import java.time.Instant;
+import com.trainticket.platformkit.idempotency.UuidV7;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -94,5 +96,44 @@ class FinanceSettlementControllerTest {
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.code").value("NOT_FOUND"))
             .andExpect(jsonPath("$.correlationId").value("corr-0194f2e0-7b3e-7610-8284-5c26e8b0f002"));
+    }
+
+    @Test
+    void generateInvoiceIsIdempotent() throws Exception {
+        String key = UuidV7.generate();
+        mockMvc.perform(post("/api/v1/invoices")
+                .header("Idempotency-Key", key)
+                .contentType("application/json")
+                .content("{\"orderId\":\"" + orderId + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.orderId").value(orderId))
+            .andExpect(jsonPath("$.totalAmount.minorUnits").value(12000));
+
+        mockMvc.perform(post("/api/v1/invoices")
+                .header("Idempotency-Key", key)
+                .contentType("application/json")
+                .content("{\"orderId\":\"" + orderId + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.orderId").value(orderId))
+            .andExpect(jsonPath("$.totalAmount.minorUnits").value(12000));
+    }
+
+    @Test
+    void generateInvoiceRejectsMissingIdempotencyKey() throws Exception {
+        mockMvc.perform(post("/api/v1/invoices")
+                .contentType("application/json")
+                .content("{\"orderId\":\"" + orderId + "\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void generateInvoiceRejectsNonUuidV7IdempotencyKey() throws Exception {
+        mockMvc.perform(post("/api/v1/invoices")
+                .header("Idempotency-Key", "550e8400-e29b-41d4-a716-446655440000")
+                .contentType("application/json")
+                .content("{\"orderId\":\"" + orderId + "\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
     }
 }
