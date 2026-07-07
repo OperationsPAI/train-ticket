@@ -7,7 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.trainticket.payment.RequestContextFilter;
 import com.trainticket.platformkit.http.ApiError;
 import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
+import com.trainticket.payment.application.EventPublisher;
 import com.trainticket.payment.application.PaymentCommandService;
+import com.trainticket.payment.infrastructure.persistence.InMemoryPaymentIntentRepository;
+import com.trainticket.payment.infrastructure.persistence.InMemoryRefundRepository;
+import com.trainticket.payment.infrastructure.persistence.InMemoryReservationPaymentRequestRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -23,7 +27,7 @@ class PaymentControllerTest {
 
     @BeforeEach
     void setUp() {
-        PaymentCommandService service = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), envelope -> { });
+        PaymentCommandService service = testPaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), envelope -> { });
         controller = new PaymentController(service);
         exceptionHandler = new PlatformKitExceptionHandler();
     }
@@ -116,6 +120,16 @@ class PaymentControllerTest {
 
     private ResponseEntity<?> createIntent(String key, String businessRef) {
         return controller.createPaymentIntent(key, new CreatePaymentIntentRequest(businessRef, "purchase", new MoneyJson("CNY", 35000L), "acct-1"), request("/api/v1/payment-intents"));
+    }
+
+    private static PaymentCommandService testPaymentCommandService(Clock clock, EventPublisher publisher) {
+        return new PaymentCommandService(
+            clock,
+            publisher,
+            new InMemoryPaymentIntentRepository(),
+            new InMemoryRefundRepository(),
+            new InMemoryReservationPaymentRequestRepository()
+        );
     }
 
     private MockHttpServletRequest request(String uri) {

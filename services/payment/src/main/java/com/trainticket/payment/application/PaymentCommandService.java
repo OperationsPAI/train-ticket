@@ -10,10 +10,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import com.trainticket.payment.domain.ports.PaymentIntentRepository;
+import com.trainticket.payment.domain.ports.RefundRepository;
+import com.trainticket.payment.domain.ports.ReservationPaymentRequestRepository;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PaymentCommandService {
@@ -21,15 +23,25 @@ public class PaymentCommandService {
 
     private final Clock clock;
     private final EventPublisher eventPublisher;
-    private final Map<String, PaymentIntent> intents = new ConcurrentHashMap<>();
-    private final Map<String, Refund> refunds = new ConcurrentHashMap<>();
-    private final Map<String, ReservationPaymentRequest> reservationPaymentRequests = new ConcurrentHashMap<>();
+    private final PaymentIntentRepository paymentIntentRepository;
+    private final RefundRepository refundRepository;
+    private final ReservationPaymentRequestRepository reservationPaymentRequestRepository;
 
-    public PaymentCommandService(Clock clock, EventPublisher eventPublisher) {
+    public PaymentCommandService(
+        Clock clock,
+        EventPublisher eventPublisher,
+        PaymentIntentRepository paymentIntentRepository,
+        RefundRepository refundRepository,
+        ReservationPaymentRequestRepository reservationPaymentRequestRepository
+    ) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
+        this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
+        this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
+        this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
     }
 
+    @Transactional
     public ReservationPaymentRequest recordReservationPaymentRequest(
         String eventId,
         String segmentBookingId,
@@ -50,38 +62,44 @@ public class PaymentCommandService {
             correlationId,
             requestedAt
         );
-        reservationPaymentRequests.putIfAbsent(request.segmentBookingId(), request);
-        return reservationPaymentRequests.get(request.segmentBookingId());
+        return reservationPaymentRequestRepository.saveIfAbsent(request);
     }
 
+    @Transactional
     public PaymentIntent createIntent(String businessRef, String purpose, Money amount, String payerRef, String idempotencyKey, String correlationId) {
         Instant now = Instant.now(clock);
         PaymentIntent intent = PaymentIntent.create(businessRef, purpose, amount, payerRef, now.plusSeconds(900), idempotencyKey, now, commandId(idempotencyKey), correlationId);
-        intents.put(intent.paymentIntentId(), intent);
+        paymentIntentRepository.save(intent);
         publish(intent.domainEvents());
         return intent;
     }
 
+    @Transactional
     public PaymentIntent cancelIntent(String paymentIntentId, String reason, String idempotencyKey, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         int before = intent.domainEvents().size();
         intent.cancel(reason, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
     }
 
+    @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         int before = intent.domainEvents().size();
         intent.capture(intent.amount().subtract(intent.capturedAmount()), DEFAULT_CHANNEL, "txn-" + idempotencyKey, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
     }
 
+    @Transactional
     public PaymentIntent authorizeIntent(String paymentIntentId, String idempotencyKey, String correlationId, String channelTransactionRef) {
         PaymentIntent intent = getIntent(paymentIntentId);
         int before = intent.domainEvents().size();
         intent.authorize(intent.amount(), DEFAULT_CHANNEL, "auth-" + requireText(channelTransactionRef, "channelTransactionRef"), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
     }
@@ -89,43 +107,31 @@ public class PaymentCommandService {
     /** Latest captured (or created) intent for a business reference, used
      * when post-sales approvals reference the order rather than the intent. */
     public java.util.Optional<String> findIntentIdByBusinessRef(String businessRef) {
-        return intents.values().stream()
-            .filter(intent -> intent.businessRef().equals(businessRef))
-            .sorted(java.util.Comparator.comparing(PaymentIntent::paymentIntentId).reversed())
-            .map(PaymentIntent::paymentIntentId)
-            .findFirst();
+        return paymentIntentRepository.findLatestByBusinessRef(businessRef).map(PaymentIntent::paymentIntentId);
     }
 
+    @Transactional
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         Refund refund = Refund.request(intent, amount, businessCaseRef == null || businessCaseRef.isBlank() ? "case-" + idempotencyKey : businessCaseRef, reason, idempotencyKey, Instant.now(clock), commandId(idempotencyKey), correlationId);
-        refunds.put(refund.refundId(), refund);
+        refundRepository.save(refund);
         publish(refund.domainEvents());
         return refund;
     }
 
     public ReservationPaymentRequest getReservationPaymentRequest(String segmentBookingId) {
-        ReservationPaymentRequest request = reservationPaymentRequests.get(requireText(segmentBookingId, "segmentBookingId"));
-        if (request == null) {
-            throw new NotFoundException("reservation payment request not found");
-        }
-        return request;
+        return reservationPaymentRequestRepository.findBySegmentBookingId(requireText(segmentBookingId, "segmentBookingId"))
+            .orElseThrow(() -> new NotFoundException("reservation payment request not found"));
     }
 
     public PaymentIntent getIntent(String paymentIntentId) {
-        PaymentIntent intent = intents.get(requireText(paymentIntentId, "paymentIntentId"));
-        if (intent == null) {
-            throw new NotFoundException("payment intent not found");
-        }
-        return intent;
+        return paymentIntentRepository.findById(requireText(paymentIntentId, "paymentIntentId"))
+            .orElseThrow(() -> new NotFoundException("payment intent not found"));
     }
 
     public Refund getRefund(String refundId) {
-        Refund refund = refunds.get(requireText(refundId, "refundId"));
-        if (refund == null) {
-            throw new NotFoundException("refund not found");
-        }
-        return refund;
+        return refundRepository.findById(requireText(refundId, "refundId"))
+            .orElseThrow(() -> new NotFoundException("refund not found"));
     }
 
     private void publishNewEvents(List<PaymentEvent> events, int previousSize) {

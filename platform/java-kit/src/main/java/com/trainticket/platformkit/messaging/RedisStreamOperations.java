@@ -2,7 +2,7 @@ package com.trainticket.platformkit.messaging;
 
 import java.util.List;
 
-interface RedisStreamOperations {
+public interface RedisStreamOperations {
     void createGroup(String stream, String group);
 
     String publish(String stream, String envelopeJson);

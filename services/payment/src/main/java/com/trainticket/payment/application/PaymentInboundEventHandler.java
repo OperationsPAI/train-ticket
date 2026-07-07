@@ -4,6 +4,8 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 @Component
 public class PaymentInboundEventHandler implements EventSubscriber.EventHandler {
@@ -16,18 +18,27 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
     }
 
     @Override
+    @Transactional
     public HandlerResult handle(EventEnvelope envelope) {
-        if (deduplicator.isProcessed(envelope.eventId())) {
-            return HandlerResult.SUCCESS;
-        }
         try {
+            if (!deduplicator.recordIfNew(envelope.eventId())) {
+                return HandlerResult.SUCCESS;
+            }
             dispatch(envelope);
-            deduplicator.recordProcessed(envelope.eventId());
             return HandlerResult.SUCCESS;
         } catch (DomainRuleViolation | IllegalArgumentException exception) {
             return HandlerResult.FATAL_FAILURE;
         } catch (RuntimeException exception) {
+            rollbackCurrentTransactionIfActive();
             return HandlerResult.TRANSIENT_FAILURE;
+        }
+    }
+
+    private static void rollbackCurrentTransactionIfActive() {
+        try {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+        } catch (RuntimeException ignored) {
+            // Unit tests may run with a no-op transaction manager outside a real transaction.
         }
     }
 
