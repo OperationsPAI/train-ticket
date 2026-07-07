@@ -301,7 +301,23 @@ impl PostgresCapacityService {
         idempotency_key: &str,
         correlation_id: &str,
     ) -> Result<ReleaseHoldResponse, AppError> {
-        let fingerprint = format!("release:{hold_id}");
+        self.release_hold_with_reason(
+            hold_id,
+            idempotency_key,
+            correlation_id,
+            "client-requested-release",
+        )
+        .await
+    }
+
+    async fn release_hold_with_reason(
+        &self,
+        hold_id: &str,
+        idempotency_key: &str,
+        correlation_id: &str,
+        release_reason: &'static str,
+    ) -> Result<ReleaseHoldResponse, AppError> {
+        let fingerprint = format!("release:{hold_id}:{release_reason}");
         if let Some(resp) = self
             .idempotency_replay::<ReleaseHoldResponse>(idempotency_key, &fingerprint)
             .await?
@@ -317,7 +333,7 @@ impl PostgresCapacityService {
                 pool.release_hold(
                     &HoldId::new(hold_id).map_err(to_internal)?,
                     now,
-                    "client-requested-release",
+                    release_reason,
                 )
                 .map_err(map_hold_mutation_error)
             },
@@ -559,6 +575,28 @@ impl PostgresCapacityService {
             .collect()
     }
 
+    async fn find_releasable_hold_by_segment_booking(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        segment_booking_ref: &str,
+    ) -> Result<Option<Snapshot<CapacityHoldSnapshot>>, StorageError> {
+        let sql = format!(
+            "SELECT id, version, data FROM {HOLD_TABLE} WHERE data #>> '{{references,segmentBookingRef}}' = $1 AND data ->> 'state' IN ('Held', 'Confirmed') ORDER BY updated_at DESC LIMIT 1"
+        );
+        let row: Option<(String, i64, Value)> = sqlx::query_as(&sql)
+            .bind(segment_booking_ref)
+            .fetch_optional(&mut **tx)
+            .await?;
+        row.map(|(id, version, data)| {
+            Ok(Snapshot {
+                id,
+                version,
+                data: serde_json::from_value(data)?,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn handle_inbound_event(&self, envelope: WireEnvelope) -> HandlerResult {
         let result = match envelope.event_type.as_str() {
             "SegmentReservationRequested" => {
@@ -570,6 +608,7 @@ impl PostgresCapacityService {
             "SegmentBookingCancelled" | "PostSalesApplied" => {
                 self.handle_release_requested(envelope).await
             }
+            "EntitlementVoided" => self.handle_entitlement_voided(envelope).await,
             _ => Ok(()),
         };
         match result {
@@ -808,6 +847,168 @@ impl PostgresCapacityService {
             },
         )
         .await
+    }
+
+    async fn handle_entitlement_voided(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        let Some(segment_booking_ref) =
+            segment_booking_ref_from_entitlement_voided(&envelope.payload)
+        else {
+            return Ok(());
+        };
+        let idempotency_key = format!(
+            "{}:{}:entitlement-voided-release",
+            envelope.event_id, segment_booking_ref
+        );
+        let fingerprint =
+            format!("release-by-segment-booking:{segment_booking_ref}:entitlement-voided");
+        self.handle_inbound_segment_booking_release(
+            envelope,
+            &segment_booking_ref,
+            &idempotency_key,
+            &fingerprint,
+            "entitlement-voided",
+        )
+        .await
+    }
+
+    async fn handle_inbound_segment_booking_release(
+        &self,
+        envelope: WireEnvelope,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        fingerprint: &str,
+        release_reason: &'static str,
+    ) -> Result<(), InboundEventError> {
+        let stream = stream_for_producer(&envelope.producer);
+        for attempt in 0..MAX_RETRIES {
+            let result = self
+                .try_handle_inbound_segment_booking_release(
+                    &envelope,
+                    &stream,
+                    segment_booking_ref,
+                    idempotency_key,
+                    fingerprint,
+                    release_reason,
+                )
+                .await;
+            match result {
+                Err(InboundEventError::Transient(message))
+                    if message.contains("optimistic concurrency conflict")
+                        && attempt + 1 < MAX_RETRIES =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+        Err(InboundEventError::Transient(
+            "capacity hold write conflict".into(),
+        ))
+    }
+
+    async fn try_handle_inbound_segment_booking_release(
+        &self,
+        envelope: &WireEnvelope,
+        stream: &str,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        fingerprint: &str,
+        release_reason: &'static str,
+    ) -> Result<(), InboundEventError> {
+        let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
+        if !mark_event_processing(&mut tx, &envelope.event_id, stream)
+            .await
+            .map_err(inbound_transient)?
+        {
+            tx.rollback().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let Some(hold_snapshot) = self
+            .find_releasable_hold_by_segment_booking(&mut tx, segment_booking_ref)
+            .await
+            .map_err(inbound_transient)?
+        else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        if self
+            .claim_idempotency::<ReleaseHoldResponse>(&mut tx, idempotency_key, fingerprint)
+            .await
+            .map_err(inbound_from_app_error)?
+            .is_some()
+        {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let hold_id = hold_snapshot.id.clone();
+        let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        let Some(loaded_pool) = self
+            .inventory_repo
+            .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
+            .await
+            .map_err(inbound_transient)?
+        else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        let mut pool = loaded_pool
+            .data
+            .try_into_domain()
+            .map_err(inbound_from_app_error)?;
+        let hold_id_value = HoldId::new(&hold_id).map_err(inbound_fatal)?;
+        let Some(current_hold) = pool.hold(&hold_id_value) else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        if !matches!(
+            current_hold.state,
+            CapacityHoldState::Held | CapacityHoldState::Confirmed
+        ) {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let event = pool
+            .release_hold(&hold_id_value, now_millis(), release_reason)
+            .map_err(map_hold_mutation_error)
+            .map_err(inbound_from_app_error)?;
+        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+            .map_err(inbound_from_app_error)?;
+        self.inventory_repo
+            .save(
+                &mut tx,
+                &pool_id,
+                Some(loaded_pool.version),
+                &InventoryPoolSnapshot::from_domain(&pool),
+            )
+            .await
+            .map_err(inbound_transient)?;
+        let hold = pool
+            .hold(&hold_id_value)
+            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?;
+        self.upsert_hold_snapshot(&mut tx, &hold_id, hold)
+            .await
+            .map_err(inbound_from_app_error)?;
+        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
+            .await
+            .map_err(inbound_transient)?;
+        let resp = ReleaseHoldResponse {
+            hold_id,
+            status: "RELEASED".to_string(),
+        };
+        self.finish_idempotency(
+            &mut tx,
+            idempotency_key,
+            fingerprint,
+            200,
+            serde_json::to_value(&resp).map_err(inbound_transient)?,
+        )
+        .await
+        .map_err(inbound_from_app_error)?;
+        tx.commit().await.map_err(inbound_transient)?;
+        Ok(())
     }
 
     async fn handle_inbound_hold_mutation<T, M, R>(
@@ -1336,6 +1537,13 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn segment_booking_ref_from_entitlement_voided(value: &Value) -> Option<String> {
+    value
+        .get("references")
+        .and_then(|references| string_field(references, "segmentBookingRef"))
+        .or_else(|| string_field(value, "segmentBookingId"))
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1399,6 +1607,35 @@ mod tests {
             "snapshot pool version 1 was not current".into(),
         ));
         assert!(matches!(err, AppError::Conflict(_)));
+    }
+
+    #[test]
+    fn entitlement_voided_segment_booking_ref_prefers_references_shape() {
+        let payload = json!({
+            "entitlementId": "ent-1",
+            "segmentBookingId": "legacy-sb",
+            "references": {
+                "segmentBookingRef": "sb-1"
+            }
+        });
+
+        assert_eq!(
+            segment_booking_ref_from_entitlement_voided(&payload),
+            Some("sb-1".to_string())
+        );
+    }
+
+    #[test]
+    fn entitlement_voided_segment_booking_ref_accepts_legacy_direct_field() {
+        let payload = json!({
+            "entitlementId": "ent-1",
+            "segmentBookingId": "sb-legacy"
+        });
+
+        assert_eq!(
+            segment_booking_ref_from_entitlement_voided(&payload),
+            Some("sb-legacy".to_string())
+        );
     }
 
     #[test]

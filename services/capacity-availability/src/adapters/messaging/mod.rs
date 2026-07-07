@@ -139,6 +139,7 @@ pub mod redis_subscriber {
             let selected_streams = if streams.is_empty() {
                 vec![
                     "events:booking-orchestration".to_string(),
+                    "events:entitlement-ticketing".to_string(),
                     "events:post-sales".to_string(),
                 ]
             } else {
