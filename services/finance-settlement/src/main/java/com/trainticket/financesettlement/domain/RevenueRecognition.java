@@ -20,6 +20,7 @@ public final class RevenueRecognition {
     private boolean reversed;
     private Money reversedAmount;
     private String reversalReason;
+    private long version;
 
     private RevenueRecognition(
         String revenueRecognitionId, String orderId, String orderItemId,
@@ -65,6 +66,27 @@ public final class RevenueRecognition {
         return recognition;
     }
 
+    public static RevenueRecognition rehydrate(
+        String revenueRecognitionId, String orderId, String orderItemId, String componentCode,
+        Money amount, String recognitionPolicyVersion, String sourceEventId, Instant recognizedAt,
+        boolean reversed, Money reversedAmount, String reversalReason
+    ) {
+        RevenueRecognition recognition = new RevenueRecognition(revenueRecognitionId, orderId, orderItemId, componentCode,
+            amount, recognitionPolicyVersion, sourceEventId, recognizedAt);
+        recognition.reversed = reversed;
+        recognition.reversedAmount = Objects.requireNonNull(reversedAmount, "reversedAmount is required");
+        recognition.reversalReason = reversalReason;
+        return recognition;
+    }
+
+    public RevenueRecognition withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
+
     public void reverse(String reason, String sourceEventId, Money reversalAmount, Instant now, String sourceCommandId, String causationId, String correlationId) {
         if (reversed) return;
         if (reversalAmount.isZero() || reversalAmount.isNegative()) {
@@ -102,6 +124,7 @@ public final class RevenueRecognition {
     public Money netAmount() { return amount.minus(reversedAmount); }
     public String reversalReason() { return reversalReason; }
     public List<FinanceSettlementEvent> domainEvents() { return Collections.unmodifiableList(domainEvents); }
+    public long version() { return version; }
 
     private static String requireText(String value, String name) {
         if (Objects.requireNonNull(value, name + " is required").isBlank())

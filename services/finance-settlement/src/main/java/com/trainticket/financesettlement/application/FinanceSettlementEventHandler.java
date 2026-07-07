@@ -1,5 +1,7 @@
 package com.trainticket.financesettlement.application;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.trainticket.financesettlement.domain.ConsumedEventLog;
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.Money;
@@ -12,20 +14,27 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 public class FinanceSettlementEventHandler implements EventSubscriber.EventHandler {
+    private static final Logger LOGGER = LoggerFactory.getLogger(FinanceSettlementEventHandler.class);
     private final ConsumedEventLogRepository consumedEvents;
     private final PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
     private final SegmentBookingOrderReferenceRepository segmentBookingOrderReferences;
-    private final ConcurrentMap<String, PaymentCaptureFact> capturesByOrderId = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Money> approvedRefundsByCaseId = new ConcurrentHashMap<>();
+    private final FinanceSettlementProjectionRepository projections;
     private final Clock clock;
     private final FinanceSettlementApplicationService service;
 
     public FinanceSettlementEventHandler(ConsumedEventLogRepository consumedEvents, Clock clock) {
-        this(consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(), clock, null);
+        this(
+            consumedEvents,
+            new InMemoryPaymentIntentOrderReferenceRepository(),
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            new InMemoryFinanceSettlementProjectionRepository(),
+            clock,
+            null
+        );
     }
 
     public FinanceSettlementEventHandler(
@@ -34,7 +43,14 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Clock clock,
         FinanceSettlementApplicationService service
     ) {
-        this(consumedEvents, paymentIntentOrderReferences, new InMemorySegmentBookingOrderReferenceRepository(), clock, service);
+        this(
+            consumedEvents,
+            paymentIntentOrderReferences,
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            new InMemoryFinanceSettlementProjectionRepository(),
+            clock,
+            service
+        );
     }
 
     public FinanceSettlementEventHandler(
@@ -44,31 +60,67 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Clock clock,
         FinanceSettlementApplicationService service
     ) {
+        this(
+            consumedEvents,
+            paymentIntentOrderReferences,
+            segmentBookingOrderReferences,
+            new InMemoryFinanceSettlementProjectionRepository(),
+            clock,
+            service
+        );
+    }
+
+    public FinanceSettlementEventHandler(
+        ConsumedEventLogRepository consumedEvents,
+        PaymentIntentOrderReferenceRepository paymentIntentOrderReferences,
+        SegmentBookingOrderReferenceRepository segmentBookingOrderReferences,
+        FinanceSettlementProjectionRepository projections,
+        Clock clock,
+        FinanceSettlementApplicationService service
+    ) {
         this.consumedEvents = consumedEvents;
         this.paymentIntentOrderReferences = paymentIntentOrderReferences;
         this.segmentBookingOrderReferences = segmentBookingOrderReferences;
+        this.projections = projections;
         this.clock = clock;
         this.service = service;
     }
 
     @Override
+    @Transactional
     public HandlerResult handle(EventEnvelope envelope) {
-        if (consumedEvents.existsByEventId(envelope.eventId())) {
+        ConsumedEventLog log = ConsumedEventLog.record(envelope.eventId(), envelope.producer(), envelope.eventType(), clock.instant());
+        boolean preRecorded = consumedEvents.guardsTransactionally();
+        if (preRecorded && !consumedEvents.recordIfNew(log)) {
+            return HandlerResult.SUCCESS;
+        }
+        if (!preRecorded && consumedEvents.existsByEventId(envelope.eventId())) {
             return HandlerResult.SUCCESS;
         }
         try {
             dispatch(envelope);
-            consumedEvents.save(ConsumedEventLog.record(
-                envelope.eventId(),
-                envelope.producer(),
-                envelope.eventType(),
-                clock.instant()
-            ));
+            if (!preRecorded) {
+                consumedEvents.save(log);
+            }
             return HandlerResult.SUCCESS;
         } catch (PublishFailedException | OutOfOrderEventException ex) {
+            LOGGER.warn("service=finance-settlement eventId={} eventType={} transient handling failure",
+                envelope.eventId(), envelope.eventType(), ex);
+            rollbackCurrentTransactionIfActive();
             return HandlerResult.TRANSIENT_FAILURE;
         } catch (DomainRuleViolation | IllegalArgumentException ex) {
+            LOGGER.warn("service=finance-settlement eventId={} eventType={} fatal handling failure",
+                envelope.eventId(), envelope.eventType(), ex);
+            rollbackCurrentTransactionIfActive();
             return HandlerResult.FATAL_FAILURE;
+        }
+    }
+
+    private static void rollbackCurrentTransactionIfActive() {
+        try {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+        } catch (RuntimeException ignored) {
+            // Unit tests may run without a Spring-managed transaction.
         }
     }
 
@@ -79,6 +131,9 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             case "PaymentIntentCreated" -> rememberPaymentIntentOrderReference(payload);
             case "SegmentReservationRequested" -> rememberSegmentBookingOrderReference(payload);
             case "PaymentCaptured" -> {
+                LOGGER.info("service=finance-settlement PaymentCaptured eventId={} serviceWired={} projections={} serviceRepos={}",
+                    envelope.eventId(), service != null, projections.getClass().getSimpleName(),
+                    service == null ? "-" : service.describeWiring());
                 if (service != null) recognizeCapturedPayment(envelope, payload);
             }
             case "ProviderReservationConfirmed", "SegmentBookingCancelled" -> {
@@ -88,7 +143,9 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             case "PostSalesApplied" -> {
                 if (service != null) applyPostSales(envelope, payload);
             }
-            default -> { }
+            default -> {
+                // Streams contain event types that do not affect finance settlement.
+            }
         }
     }
 
@@ -107,7 +164,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             .orElseThrow(() -> new OutOfOrderEventException("PaymentCaptured received before order reference"));
         paymentIntentOrderReferences.save(paymentIntentId, orderId);
         Money captured = money(payload.get("capturedAmount"), "capturedAmount");
-        capturesByOrderId.put(orderId, new PaymentCaptureFact(paymentIntentId, captured, envelope.eventId()));
+        projections.saveCapture(orderId, new PaymentCaptureFact(paymentIntentId, captured, envelope.eventId()));
         RevenueRecognition recognition = RevenueRecognition.recognize(
             orderId,
             orderItemReference(payload, orderId),
@@ -143,7 +200,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         }
 
         String orderId = orderReference.get();
-        PaymentCaptureFact capture = capturesByOrderId.get(orderId);
+        PaymentCaptureFact capture = projections.findCapture(orderId).orElse(null);
         Money actual = capture == null ? Money.zero(Currency.getInstance("CNY")) : capture.amount();
         List<RevenueRecognition> recognitions = serviceRevenue(orderId);
         Money expected = sumOrZero(recognitions, actual.currency());
@@ -191,18 +248,20 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
     private void rememberApprovedRefund(Map<String, Object> payload) {
         String caseId = optionalText(payload, "caseId").orElse(optionalText(payload, "postSalesCaseId").orElse(null));
-        if (caseId == null) return;
+        if (caseId == null) {
+            return;
+        }
         Object approvedActions = payload.get("approvedActions");
         if (approvedActions instanceof Map<?, ?> actions && actions.get("refund") instanceof Map<?, ?> refund) {
-            approvedRefundsByCaseId.put(caseId, money(((Map<?, ?>) refund).get("amount"), "approvedActions.refund.amount"));
+            projections.saveApprovedRefund(caseId, money(((Map<?, ?>) refund).get("amount"), "approvedActions.refund.amount"));
         }
     }
 
     private void applyPostSales(EventEnvelope envelope, Map<String, Object> payload) {
         String orderId = text(payload, "orderId");
         String caseId = optionalText(payload, "caseId").orElse(optionalText(payload, "postSalesCaseId").orElse(""));
-        Money refund = Optional.ofNullable(approvedRefundsByCaseId.get(caseId))
-            .or(() -> Optional.ofNullable(approvedRefundsByCaseId.get(orderId)))
+        Money refund = projections.findApprovedRefund(caseId)
+            .or(() -> projections.findApprovedRefund(orderId))
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
         Optional<RevenueRecognition> matchingRecognition = serviceRevenue(orderId).stream()
             .filter(recognition -> !recognition.reversed())
@@ -235,7 +294,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             envelope.correlationId()
         );
         service.saveAndPublish(originalRecognition, firstUnpublishedEventIndex);
-        PaymentCaptureFact capture = capturesByOrderId.get(orderId);
+        PaymentCaptureFact capture = projections.findCapture(orderId).orElse(null);
         Money expected = capture == null ? refund.negate() : capture.amount().minus(refund);
         service.publishReconciliationCompleted(
             orderId,
@@ -300,7 +359,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         return Money.of(currencyCode, majorUnits.toPlainString());
     }
 
-    private record PaymentCaptureFact(String paymentIntentId, Money amount, String sourceEventId) {}
+    public record PaymentCaptureFact(String paymentIntentId, Money amount, String sourceEventId) {}
 
     private static final class OutOfOrderEventException extends RuntimeException {
         private OutOfOrderEventException(String message) {

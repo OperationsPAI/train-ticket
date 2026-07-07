@@ -40,12 +40,8 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     public static RedisEventSubscriber fromUrl(String redisUrl, ObjectMapper objectMapper) {
-        RedisClient client = RedisClient.create(redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl);
-        StatefulRedisConnection<String, String> connection = client.connect();
-        return new RedisEventSubscriber(new LettuceRedisStreamOperations(connection), objectMapper, () -> {
-            connection.close();
-            client.shutdown();
-        });
+        LazyLettuceRedisStreamOperations streams = new LazyLettuceRedisStreamOperations(redisUrl);
+        return new RedisEventSubscriber(streams, objectMapper, streams);
     }
 
     RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable) {
@@ -67,7 +63,6 @@ public class RedisEventSubscriber implements EventSubscriber {
         if (streamNames.isEmpty()) {
             throw new SubscribeFailedException("at least one stream is required", null);
         }
-        createGroups(streamNames, group);
         running.set(true);
         executor.submit(() -> poll(streamNames, group, consumerName, handler));
     }
@@ -76,36 +71,20 @@ public class RedisEventSubscriber implements EventSubscriber {
         recover(stream, group, consumerName, handler);
     }
 
-    private void createGroups(List<String> streamNames, String group) {
-        for (String stream : streamNames) {
-            try {
-                streams.createGroup(stream, group);
-            } catch (RuntimeException exception) {
-                throw new SubscribeFailedException("consumer group could not be created", exception);
-            }
-        }
-    }
-
     private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
         while (running.get()) {
             for (String stream : streamNames) {
                 try {
+                    streams.createGroup(stream, group);
                     recover(stream, group, consumerName, handler);
                     for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
                         handle(stream, group, consumerName, message, handler, streams.deliveryCount(stream, group, message.id()));
                     }
                 } catch (RuntimeException exception) {
                     // Keep the subscriber alive; messages read but not acked remain in the Redis PEL for recovery/DLQ policy.
-                    // A non-persistent Redis loses consumer groups on restart: NOGROUP
-                    // means "recreate the group and carry on". Anything else backs off
-                    // so a dead connection never turns this loop into a hot spin.
-                    if (isNoGroup(exception)) {
-                        try {
-                            streams.createGroup(stream, group);
-                        } catch (RuntimeException ignored) {
-                            // Redis still down; the backoff below paces the retry.
-                        }
-                    }
+                    // Consumer-group creation and polling both happen in this background loop so Redis outages
+                    // never abort service startup. Failures back off and retry on the next loop.
+                    LOGGER.warn("service={} stream={} poll iteration failed; backing off", group, stream, exception);
                     sleepQuietly(POLL_FAILURE_BACKOFF_MILLIS);
                 }
             }
@@ -151,6 +130,9 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             result = handler.handle(envelope);
         } catch (RuntimeException exception) {
+            LOGGER.warn(
+                "service={} stream={} eventId={} attempt={} handler threw; message stays pending for retry",
+                group, stream, envelope.eventId(), deliveryAttempts, exception);
             rememberLastFailure(stream, message.id(), exception);
             return;
         }

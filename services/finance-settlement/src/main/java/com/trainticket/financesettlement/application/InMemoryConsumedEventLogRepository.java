@@ -18,4 +18,5 @@ public class InMemoryConsumedEventLogRepository implements ConsumedEventLogRepos
     public void save(ConsumedEventLog log) {
         consumedEvents.put(log.eventId(), log);
     }
+
 }

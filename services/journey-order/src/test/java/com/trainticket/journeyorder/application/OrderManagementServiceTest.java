@@ -11,6 +11,7 @@ import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult
 import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
+import com.trainticket.journeyorder.application.service.InMemoryJourneyOrderStateRepository;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.platformkit.messaging.EventEnvelope;
@@ -110,6 +111,85 @@ class OrderManagementServiceTest {
 
         assertThrows(OrderManagementService.IdempotencyKeyReused.class, () ->
             service.createOrder(differentRequest, "idem-reused", "corr-1"));
+    }
+
+    @Test
+    void idempotencyEntriesSurviveNewServiceInstanceWithSameStore() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        List<EventEnvelope> restartPublished = new ArrayList<>();
+        EventPublisherAdapter publisher = restartPublished::add;
+        OrderManagementService beforeRestart = new OrderManagementService(publisher, FIXED_CLOCK, repository);
+
+        JourneyOrderRequest createRequest = new JourneyOrderRequest(
+            "account-restart",
+            "offer-restart",
+            1,
+            List.of("tvl-1"),
+            List.of("seg-1")
+        );
+        JourneyOrderResult created = beforeRestart.createOrder(createRequest, "idem-restart-create", "corr-1");
+        CancelJourneyOrderResult cancelled = beforeRestart.cancelOrder(
+            new CancelJourneyOrderRequest(created.orderId(), "restart check"),
+            "idem-restart-cancel",
+            "corr-1"
+        );
+        restartPublished.clear();
+
+        OrderManagementService afterRestart = new OrderManagementService(publisher, FIXED_CLOCK, repository);
+
+        assertEquals(created.orderId(), afterRestart
+            .createOrder(createRequest, "idem-restart-create", "corr-2")
+            .orderId());
+        assertEquals(cancelled, afterRestart.cancelOrder(
+            new CancelJourneyOrderRequest(created.orderId(), "restart check"),
+            "idem-restart-cancel",
+            "corr-2"
+        ));
+        assertTrue(restartPublished.isEmpty());
+    }
+
+    @Test
+    void paymentExpiredPersistsCancellationBeforeAck() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService expiryService = new OrderManagementService(
+            envelope -> published.add(envelope),
+            FIXED_CLOCK,
+            repository
+        );
+        JourneyOrderResult created = expiryService.createOrder(
+            new JourneyOrderRequest("account-expiry", "offer-expiry", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-payment-expiry",
+            "corr-1"
+        );
+        OrderManagementService.StoredOrder stored = repository.findOrder(created.orderId()).orElseThrow();
+        stored.order().markBookingAndCapacityAccepted(
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "cmd-test",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cc03"
+        );
+        stored.order().markPendingPayment(
+            "initial-ticket-purchase",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "cmd-test",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cc03"
+        );
+        repository.saveOrder(stored.order(), stored.idempotencyKey());
+        published.clear();
+
+        EventSubscriber.HandlerResult result = expiryService.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cc02",
+            "PaymentExpired",
+            Instant.parse("2026-07-05T10:02:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cc03",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cc01",
+            "payment",
+            1,
+            Map.of("orderId", created.orderId(), "paymentIntentId", "intent-expiry")
+        ));
+
+        assertEquals(new EventSubscriber.Success(), result);
+        assertEquals("CANCELLED", expiryService.getOrder(created.orderId()).orElseThrow().status());
+        assertEquals(1, published.stream().filter(event -> event.eventType().equals("JourneyOrderCancelled")).count());
     }
 
     @Test
@@ -314,6 +394,9 @@ class OrderManagementServiceTest {
 
     private List<EventEnvelope> published() {
         return List.copyOf(published);
+    }
+
+    private interface EventPublisherAdapter extends com.trainticket.journeyorder.application.port.out.EventPublisher {
     }
 
 }
