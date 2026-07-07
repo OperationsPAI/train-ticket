@@ -23,7 +23,6 @@ public class RedisMessagingConfiguration {
     }
 
     @Bean
-    @Primary
     EventPublisher redisEventPublisher(LazyRedisEventPublisher publisher) {
         return envelope -> {
             try {
