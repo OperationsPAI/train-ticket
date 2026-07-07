@@ -44,3 +44,25 @@ def test_unexpected_handler_exception_uses_dlq_policy_without_escaping(caplog) -
     assert fields["attempts"] == "1"
     assert fields["deadLetteredAt"].endswith("Z")
     assert "moving message to DLQ" in caplog.text
+
+
+def test_process_entry_uses_supplied_consumer_name_for_max_delivery_dlq() -> None:
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._client = FakeRedis()
+    subscriber._dedup = set()
+    subscriber._dedup_lock = None
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={"x": 1})
+    fields = {"envelope": json.dumps(envelope.to_json_dict())}
+
+    subscriber._process_entry(
+        "events:tester",
+        "tester",
+        "1-0",
+        fields,
+        lambda _: None,
+        5,
+        consumer_name="tester-consumer",
+    )
+
+    dlq_fields = subscriber._client.dlq_entries[0][1]
+    assert dlq_fields["consumerName"] == "tester-consumer"

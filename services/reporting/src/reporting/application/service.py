@@ -175,7 +175,7 @@ class ReportingApplicationService:
             if self.repository.record_consumed_event(envelope):
                 self._rebuild_stale_dashboards(envelope)
         except Exception as exc:  # pragma: no cover - defensive boundary for broker callback
-            return HandlerResult.fatal_error(str(exc))
+            return HandlerResult.transient_error(str(exc))
         return HandlerResult.success()
 
     def _rebuild_stale_dashboards(self, envelope: EventEnvelope) -> None:

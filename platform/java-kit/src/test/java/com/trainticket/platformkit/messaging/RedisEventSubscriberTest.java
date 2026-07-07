@@ -66,10 +66,36 @@ class RedisEventSubscriberTest {
         assertThat(metadata.get().deadLetteredAt()).isNotBlank();
     }
 
+
+    @Test
+    void maxDeliveryAttemptsUsesLastRuntimeExceptionAsFailureReason() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        FakeRedisStreams streams = new FakeRedisStreams(List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
+        ));
+        streams.deliveryCount = RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS;
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+
+        subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> {
+            throw new IllegalStateException("payment parse failed");
+        });
+
+        for (int i = 0; i < 20 && streams.dlqMetadata.get() == null; i++) {
+            Thread.sleep(50);
+        }
+        subscriber.close();
+
+        assertThat(streams.dlqMetadata.get()).isNotNull();
+        assertThat(streams.dlqMetadata.get().failureReason()).isEqualTo("IllegalStateException: payment parse failed");
+        assertThat(streams.dlqMetadata.get().attempts()).isEqualTo(RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS);
+    }
+
     private static final class FakeRedisStreams implements RedisStreamOperations {
         private final List<StreamEntry> firstBatch;
         private final List<String> acked = new ArrayList<>();
         private boolean delivered;
+        private int deliveryCount = 1;
         private volatile String dlqStream;
         private final AtomicReference<DlqMetadata> dlqMetadata = new AtomicReference<>();
 
@@ -102,7 +128,7 @@ class RedisEventSubscriberTest {
 
         @Override
         public int deliveryCount(String stream, String group, String messageId) {
-            return 1;
+            return deliveryCount;
         }
 
         @Override

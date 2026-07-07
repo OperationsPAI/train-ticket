@@ -356,13 +356,14 @@ class RedisEventSubscriber(EventSubscriber):
         fields: Mapping[Any, Any],
         handler: Callable[[EventEnvelope], Any],
         delivery_count: int = 0,
+        consumer_name: str = "unknown",
     ) -> None:
         if delivery_count >= MAX_DELIVERY_ATTEMPTS:
             envelope_json = self._extract_envelope_json(fields)
-            self._move_to_dlq(stream, group, "unknown", envelope_json or "{}", "MaxDeliveryAttempts", delivery_count)
+            self._move_to_dlq(stream, group, consumer_name, envelope_json or "{}", "MaxDeliveryAttempts", delivery_count)
             self._xack(stream, group, entry_id)
             return
-        self._process_message(stream, group, "unknown", entry_id, fields, handler)
+        self._process_message(stream, group, consumer_name, entry_id, fields, handler)
 
 
 class InMemoryEventPublisher(EventPublisher):

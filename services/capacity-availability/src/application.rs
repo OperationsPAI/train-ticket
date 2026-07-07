@@ -75,11 +75,15 @@ impl CapacityService {
     }
 
     fn handle_segment_reservation_confirmed(&self, envelope: &WireEnvelope) -> HandlerResult {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
-            return HandlerResult::FatalError("missing capacityHoldId".into());
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return HandlerResult::FatalError("missing segmentBookingId".into());
         };
-        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
-        match self.confirm_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
+        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, segment_booking_ref);
+        match self.confirm_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+        ) {
             Ok(_) | Err(AppError::PreconditionFailed(_)) | Err(AppError::NotFound(_)) => {
                 HandlerResult::Success
             }
@@ -404,6 +408,33 @@ impl CapacityService {
             }
         }
         Err(AppError::NotFound("hold not found".into()))
+    }
+
+    fn confirm_hold_by_segment_booking(
+        &self,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        correlation_id: &str,
+    ) -> Result<ConfirmHoldResponse, AppError> {
+        let hold_id = {
+            let pools = self
+                .pools
+                .lock()
+                .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
+            pools
+                .values()
+                .flat_map(|pool| pool.holds())
+                .find(|hold| {
+                    hold.scope.references.segment_booking_ref.as_deref()
+                        == Some(segment_booking_ref)
+                        && matches!(hold.state, CapacityHoldState::Held)
+                })
+                .map(|hold| hold.hold_id.to_string())
+        };
+        let Some(hold_id) = hold_id else {
+            return Err(AppError::NotFound("hold not found".into()));
+        };
+        self.confirm_hold(&hold_id, idempotency_key, correlation_id)
     }
 
     /// Release a hold.

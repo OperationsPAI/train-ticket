@@ -116,16 +116,26 @@ public class RedisEventSubscriber implements EventSubscriber {
             streams.ack(stream, group, message.id());
             return;
         }
-        if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
-            moveToDlq(stream, group, consumerName, message.id(), json, "MaxDeliveryAttempts", deliveryAttempts);
-            streams.ack(stream, group, message.id());
-            return;
-        }
         EventEnvelope envelope;
         try {
             envelope = deserialize(json);
         } catch (SubscribeFailedException exception) {
             moveToDlq(stream, group, consumerName, message.id(), json, exception, deliveryAttempts);
+            streams.ack(stream, group, message.id());
+            return;
+        }
+        if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
+            RuntimeException lastException = null;
+            try {
+                handler.handle(envelope);
+            } catch (RuntimeException exception) {
+                lastException = exception;
+            }
+            if (lastException != null) {
+                moveToDlq(stream, group, consumerName, message.id(), json, lastException, deliveryAttempts);
+            } else {
+                moveToDlq(stream, group, consumerName, message.id(), json, "MaxDeliveryAttempts", deliveryAttempts);
+            }
             streams.ack(stream, group, message.id());
             return;
         }

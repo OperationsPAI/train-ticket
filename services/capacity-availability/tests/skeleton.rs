@@ -646,6 +646,89 @@ async fn postgres_post_sales_applied_without_hold_pointer_is_acked() {
     assert_eq!(result, HandlerResult::Success);
 }
 
+#[test]
+fn in_memory_segment_reservation_confirmed_without_capacity_hold_id_is_acked() {
+    use capacity_availability::adapters::messaging::InMemoryEventPublisher;
+    use capacity_availability::application::CapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let service = CapacityService::new(Arc::new(InMemoryEventPublisher::new()));
+    let result = service.handle_inbound_event(WireEnvelope {
+        event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa41".to_string(),
+        event_type: "SegmentReservationConfirmed".to_string(),
+        schema_version: 1,
+        producer: "booking-orchestration".to_string(),
+        causation_id: None,
+        correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa42".to_string(),
+        occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        payload: json!({
+            "segmentBookingId": "sb-1",
+            "evidence": "confirmed"
+        }),
+    });
+
+    assert_eq!(result, HandlerResult::Success);
+}
+
+#[test]
+fn in_memory_segment_reservation_confirmed_missing_segment_booking_id_is_fatal() {
+    use capacity_availability::adapters::messaging::InMemoryEventPublisher;
+    use capacity_availability::application::CapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let service = CapacityService::new(Arc::new(InMemoryEventPublisher::new()));
+    let result = service.handle_inbound_event(WireEnvelope {
+        event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa43".to_string(),
+        event_type: "SegmentReservationConfirmed".to_string(),
+        schema_version: 1,
+        producer: "booking-orchestration".to_string(),
+        causation_id: None,
+        correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa44".to_string(),
+        occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        payload: json!({"evidence": "confirmed"}),
+    });
+
+    assert!(
+        matches!(result, HandlerResult::FatalError(message) if message.contains("segmentBookingId"))
+    );
+}
+
+#[tokio::test]
+async fn postgres_segment_reservation_confirmed_missing_segment_booking_id_is_fatal() {
+    use capacity_availability::adapters::storage::PostgresCapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use rust_kit::storage::Storage;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://capacity:capacity@127.0.0.1:1/capacity")
+        .unwrap();
+    let service = PostgresCapacityService::from_storage(Storage::new(pool)).unwrap();
+
+    let result = service
+        .handle_inbound_event(WireEnvelope {
+            event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa47".to_string(),
+            event_type: "SegmentReservationConfirmed".to_string(),
+            schema_version: 1,
+            producer: "booking-orchestration".to_string(),
+            causation_id: None,
+            correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa48".to_string(),
+            occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            payload: json!({"evidence": "confirmed"}),
+        })
+        .await;
+
+    assert!(
+        matches!(result, HandlerResult::FatalError(message) if message.contains("segmentBookingId"))
+    );
+}
+
 #[tokio::test]
 async fn api_responses_include_runtime_correlation_and_request_headers() {
     let app = test_router();
