@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { OptimisticConcurrencyConflict, SnapshotRepository } from "./storage.js";
+import { OptimisticConcurrencyConflict, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
 
 type QueryCall = Readonly<{ sql: string; params: unknown[] }>;
+
+
+
+class FakeIdempotencyDb {
+  private row: { request_hash: string; status_code: number; response_body: unknown } | undefined;
+
+  async query(sql: string, params: unknown[]) {
+    if (sql.includes("INSERT INTO idempotency_records")) {
+      if (this.row) {
+        return { rows: [], rowCount: 0 };
+      }
+      this.row = {
+        request_hash: params[1] as string,
+        status_code: params[2] as number,
+        response_body: params[3],
+      };
+      return { rows: [this.row], rowCount: 1 };
+    }
+    if (sql.includes("SELECT request_hash, status_code, response_body")) {
+      return { rows: this.row ? [this.row] : [], rowCount: this.row ? 1 : 0 };
+    }
+    throw new Error(`Unexpected query ${sql}`);
+  }
+}
 
 class FakeSnapshotDb {
   public readonly calls: QueryCall[] = [];
@@ -57,5 +81,21 @@ describe("SnapshotRepository", () => {
       () => new SnapshotRepository(new FakeSnapshotDb() as never, "test_snapshots; drop table outbox"),
       /Invalid snapshot table name/u,
     );
+  });
+});
+
+
+describe("PostgresIdempotencyStore", () => {
+  it("inserts atomically and returns the already visible record on conflict", async () => {
+    const store = new PostgresIdempotencyStore(new FakeIdempotencyDb() as never);
+
+    const inserted = await store.set("key-1", { fingerprint: "hash-a", statusCode: 201, body: { ok: true } });
+    assert.equal(inserted, undefined);
+
+    const replay = await store.set("key-1", { fingerprint: "hash-a", statusCode: 500, body: { ignored: true } });
+    assert.deepEqual(replay, { fingerprint: "hash-a", statusCode: 201, body: { ok: true } });
+
+    const reused = await store.set("key-1", { fingerprint: "hash-b", statusCode: 202, body: { ignored: true } });
+    assert.deepEqual(reused, { fingerprint: "hash-a", statusCode: 201, body: { ok: true } });
   });
 });

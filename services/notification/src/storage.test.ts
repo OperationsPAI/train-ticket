@@ -41,20 +41,8 @@ describe("notification PostgreSQL pilot seams", () => {
     assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationDispatched", "NotificationDelivered"]);
   });
 
-  it("reads IN_APP notification query data through the storage adapter when configured", async () => {
-    const app = createApp({}, {
-      ready: () => true,
-      listInAppNotifications: async (recipientRef) => [{ notificationTaskId: "nt-1", recipientRef, channel: "IN_APP" }],
-    });
-
-    const response = await app.inject({ method: "GET", url: "/api/v1/in-app-notifications?recipientRef=usr-test-001" });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), { notifications: [{ notificationTaskId: "nt-1", recipientRef: "usr-test-001", channel: "IN_APP" }] });
-  });
-
   it("marks readiness unavailable while configured storage is not ready", async () => {
-    const app = createApp({}, { ready: () => false, listInAppNotifications: async () => [] });
+    const app = createApp({}, { ready: () => false });
 
     const response = await app.inject("/readyz");
 

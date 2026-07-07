@@ -68,5 +68,5 @@ export declare class PostgresIdempotencyStore implements IdempotencyStore {
     private readonly db;
     constructor(db: Database);
     get(key: string): Promise<IdempotencyRecord | undefined>;
-    set(key: string, record: IdempotencyRecord): Promise<void>;
+    set(key: string, record: IdempotencyRecord): Promise<IdempotencyRecord | void>;
 }

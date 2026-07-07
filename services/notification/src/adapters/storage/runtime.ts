@@ -17,13 +17,12 @@ import {
 import { NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
 import { type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
-import { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository, listInAppNotifications } from "./notification-repository.js";
+import { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
 
 export type NotificationStorageRuntime = Readonly<{
   ready: () => boolean;
   failure: () => unknown;
   handleExternalTrigger: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">;
-  listInAppNotifications: (recipientRef: string, limit?: number) => Promise<readonly unknown[]>;
   stop: () => Promise<void>;
 }>;
 
@@ -72,7 +71,6 @@ export async function startNotificationStorage(): Promise<NotificationStorageRun
         throw error;
       }
     }),
-    listInAppNotifications: async (recipientRef, limit) => withTransaction(pool, (client) => listInAppNotifications(client, recipientRef, limit)),
     stop: async () => {
       await relay.stop();
       await Promise.allSettled([redis.quit(), pool.end()]);

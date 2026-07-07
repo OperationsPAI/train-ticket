@@ -223,8 +223,18 @@ export class PostgresIdempotencyStore {
         return row ? { fingerprint: row.request_hash, statusCode: row.status_code, body: row.response_body } : undefined;
     }
     async set(key, record) {
-        await this.db.query(`INSERT INTO idempotency_records (key, request_hash, status_code, response_body)
-       VALUES ($1, $2, $3, $4)`, [key, record.fingerprint, record.statusCode, record.body ?? null]);
+        const inserted = await this.db.query(`INSERT INTO idempotency_records (key, request_hash, status_code, response_body)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING
+       RETURNING request_hash, status_code, response_body`, [key, record.fingerprint, record.statusCode, record.body ?? null]);
+        if ((inserted.rowCount ?? 0) > 0) {
+            return undefined;
+        }
+        const existing = await this.get(key);
+        if (!existing) {
+            throw new Error("Idempotency record conflict could not be read back");
+        }
+        return existing;
     }
 }
 function assertSqlIdentifier(identifier, label) {

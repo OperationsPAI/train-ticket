@@ -286,12 +286,23 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
     return row ? { fingerprint: row.request_hash, statusCode: row.status_code, body: row.response_body } : undefined;
   }
 
-  async set(key: string, record: IdempotencyRecord): Promise<void> {
-    await this.db.query(
+  async set(key: string, record: IdempotencyRecord): Promise<IdempotencyRecord | void> {
+    const inserted = await this.db.query(
       `INSERT INTO idempotency_records (key, request_hash, status_code, response_body)
-       VALUES ($1, $2, $3, $4)`,
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING
+       RETURNING request_hash, status_code, response_body`,
       [key, record.fingerprint, record.statusCode, record.body ?? null],
-    );
+    ) as QueryResult<{ request_hash: string; status_code: number; response_body: unknown }>;
+    if ((inserted.rowCount ?? 0) > 0) {
+      return undefined;
+    }
+
+    const existing = await this.get(key);
+    if (!existing) {
+      throw new Error("Idempotency record conflict could not be read back");
+    }
+    return existing;
   }
 }
 

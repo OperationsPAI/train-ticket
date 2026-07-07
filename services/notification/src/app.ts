@@ -109,7 +109,6 @@ export function metadata(): ServiceMetadata {
 
 export type AppStorage = Readonly<{
   ready: () => boolean;
-  listInAppNotifications: (recipientRef: string, limit?: number) => Promise<readonly unknown[]>;
 }>;
 
 export function createApp(instrumentation: InstrumentationHooks = {}, storage?: AppStorage): FastifyInstance {
@@ -143,19 +142,6 @@ export function createApp(instrumentation: InstrumentationHooks = {}, storage?: 
   app.get("/ready", async (_request, reply) => readyBody(reply, storage));
   app.get("/readyz", async (_request, reply) => readyBody(reply, storage));
 
-  app.get("/api/v1/in-app-notifications", async (request, reply) => {
-    if (!storage) {
-      sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
-      return;
-    }
-    const query = request.query as { recipientRef?: string; limit?: string | number };
-    if (!query.recipientRef) {
-      sendError(reply, 400, "VALIDATION_FAILED", "recipientRef query parameter is required", requestContext(request), { field: "recipientRef" });
-      return;
-    }
-    const limit = query.limit === undefined ? undefined : Number(query.limit);
-    return { notifications: await storage.listInAppNotifications(query.recipientRef, Number.isFinite(limit) ? limit : undefined) };
-  });
 
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
