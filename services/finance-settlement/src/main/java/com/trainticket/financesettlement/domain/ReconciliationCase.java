@@ -21,6 +21,7 @@ public final class ReconciliationCase {
     private String resolution;
     private String resolutionNote;
     private final List<FinanceSettlementEvent> domainEvents;
+    private long version;
 
     public enum ReconciliationCaseStatus { OPEN, INVESTIGATING, MANUAL_REVIEW, ESCALATED, RESOLVED, REJECTED }
 
@@ -68,6 +69,27 @@ public final class ReconciliationCase {
                        "differenceType", differenceType, "status", rc.status.name()))
         ));
         return rc;
+    }
+
+    public static ReconciliationCase rehydrate(
+        String reconciliationCaseId, String orderId, String paymentIntentId, String differenceType,
+        Money expectedAmount, Money actualAmount, String description, Instant openedAt,
+        ReconciliationCaseStatus status, String resolution, String resolutionNote
+    ) {
+        ReconciliationCase reconciliationCase = new ReconciliationCase(reconciliationCaseId, orderId, paymentIntentId,
+            differenceType, expectedAmount, actualAmount, description, openedAt);
+        reconciliationCase.status = Objects.requireNonNull(status, "status is required");
+        reconciliationCase.resolution = resolution;
+        reconciliationCase.resolutionNote = resolutionNote;
+        return reconciliationCase;
+    }
+
+    public ReconciliationCase withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
     }
 
     public void markInvestigating(Instant now, String sourceCommandId, String causationId, String correlationId) {
@@ -121,6 +143,7 @@ public final class ReconciliationCase {
     public String resolution() { return resolution; }
     public String resolutionNote() { return resolutionNote; }
     public List<FinanceSettlementEvent> domainEvents() { return Collections.unmodifiableList(domainEvents); }
+    public long version() { return version; }
 
     private void requireStatus(ReconciliationCaseStatus expected) {
         if (status != expected)

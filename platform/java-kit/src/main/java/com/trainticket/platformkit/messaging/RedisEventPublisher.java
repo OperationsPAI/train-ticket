@@ -19,12 +19,8 @@ public class RedisEventPublisher implements EventPublisher, AutoCloseable {
     }
 
     public static RedisEventPublisher fromUrl(String redisUrl, ObjectMapper objectMapper) {
-        RedisClient client = RedisClient.create(redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl);
-        StatefulRedisConnection<String, String> connection = client.connect();
-        return new RedisEventPublisher(new LettuceRedisStreamOperations(connection), objectMapper, () -> {
-            connection.close();
-            client.shutdown();
-        });
+        LazyLettuceRedisStreamOperations streams = new LazyLettuceRedisStreamOperations(redisUrl);
+        return new RedisEventPublisher(streams, objectMapper, streams);
     }
 
     RedisEventPublisher(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable) {

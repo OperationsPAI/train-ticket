@@ -29,6 +29,19 @@ public final class BookingSagaStep {
         this.compensationAction = requireText(compensationAction, "compensationAction");
     }
 
+    public static BookingSagaStep rehydrate(String name, String idempotencyKey, Duration timeout, int retryLimit,
+                                             String compensationAction, BookingStepStatus status, int attemptNumber,
+                                             String failureReason) {
+        BookingSagaStep step = new BookingSagaStep(name, idempotencyKey, timeout, retryLimit, compensationAction);
+        if (attemptNumber < 0) {
+            throw new IllegalArgumentException("attemptNumber must be zero or greater");
+        }
+        step.status = Objects.requireNonNull(status, "status is required");
+        step.attemptNumber = attemptNumber;
+        step.failureReason = failureReason;
+        return step;
+    }
+
     public String name() {
         return name;
     }

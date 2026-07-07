@@ -25,6 +25,7 @@ public final class BookingSaga {
     private final Map<String, BookingSagaStep> stepsByIdempotencyKey = new LinkedHashMap<>();
     private BookingSagaStatus status = BookingSagaStatus.PLANNED;
     private String terminalReason;
+    private long version;
 
     private BookingSaga(String sagaId, String journeyOrderId, String idempotencyKey, Clock clock) {
         this.sagaId = requireText(sagaId, "sagaId");
@@ -49,6 +50,28 @@ public final class BookingSaga {
         return saga;
     }
 
+    public static BookingSaga rehydrate(String sagaId, String journeyOrderId, String idempotencyKey, BookingSagaStatus status,
+                                        List<BookingSagaStep> steps, String terminalReason, Clock clock) {
+        BookingSaga saga = new BookingSaga(sagaId, journeyOrderId, idempotencyKey, clock);
+        if (steps == null || steps.isEmpty()) {
+            throw new IllegalArgumentException("saga plan must contain at least one step");
+        }
+        for (BookingSagaStep step : steps) {
+            saga.addStep(step);
+        }
+        saga.status = java.util.Objects.requireNonNull(status, "status is required");
+        saga.terminalReason = terminalReason;
+        return saga;
+    }
+
+    public BookingSaga withVersion(long version) {
+        if (version < 0) {
+            throw new IllegalArgumentException("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
+
     public String sagaId() {
         return sagaId;
     }
@@ -63,6 +86,10 @@ public final class BookingSaga {
 
     public BookingSagaStatus status() {
         return status;
+    }
+
+    public long version() {
+        return version;
     }
 
     public Optional<String> terminalReason() {

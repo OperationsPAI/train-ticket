@@ -16,6 +16,7 @@ public final class Invoice {
     private final List<String> revenueRecognitionIds;
     private final Instant generatedAt;
     private final List<FinanceSettlementEvent> domainEvents;
+    private long version;
 
     private Invoice(String invoiceId, String orderId, String invoiceNumber, Money totalAmount, List<String> revenueRecognitionIds, Instant generatedAt) {
         this.invoiceId = requireText(invoiceId, "invoiceId");
@@ -51,6 +52,19 @@ public final class Invoice {
         return invoice;
     }
 
+    public static Invoice rehydrate(String invoiceId, String orderId, String invoiceNumber, Money totalAmount,
+                                    List<String> revenueRecognitionIds, Instant generatedAt) {
+        return new Invoice(invoiceId, orderId, invoiceNumber, totalAmount, revenueRecognitionIds, generatedAt);
+    }
+
+    public Invoice withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
+
     public String invoiceId() { return invoiceId; }
     public String orderId() { return orderId; }
     public String invoiceNumber() { return invoiceNumber; }
@@ -58,6 +72,7 @@ public final class Invoice {
     public List<String> revenueRecognitionIds() { return revenueRecognitionIds; }
     public Instant generatedAt() { return generatedAt; }
     public List<FinanceSettlementEvent> domainEvents() { return Collections.unmodifiableList(domainEvents); }
+    public long version() { return version; }
 
     private static String requireText(String value, String name) {
         if (Objects.requireNonNull(value, name + " is required").isBlank()) {

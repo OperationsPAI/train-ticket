@@ -10,6 +10,7 @@ import com.trainticket.platformkit.messaging.RedisEventSubscriber;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -19,12 +20,14 @@ public class RedisMessagingConfig {
     private static final Logger log = LoggerFactory.getLogger(RedisMessagingConfig.class);
 
     @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(EventPublisher.class)
     public RedisEventPublisher platformRedisEventPublisher(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
         log.info("Connecting platform Redis event publisher");
         return RedisEventPublisher.fromUrl(redisUrl, objectMapper);
     }
 
     @Bean
+    @ConditionalOnMissingBean(EventPublisher.class)
     public EventPublisher redisEventPublisher(RedisEventPublisher publisher) {
         return envelope -> {
             try {

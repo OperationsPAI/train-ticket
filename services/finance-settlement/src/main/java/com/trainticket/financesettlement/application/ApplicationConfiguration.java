@@ -41,9 +41,10 @@ public class ApplicationConfiguration {
         ConsumedEventLogRepository consumedEvents,
         PaymentIntentOrderReferenceRepository paymentIntentOrderReferences,
         SegmentBookingOrderReferenceRepository segmentBookingOrderReferences,
+        FinanceSettlementProjectionRepository projections,
         Clock clock,
         FinanceSettlementApplicationService service
     ) {
-        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, segmentBookingOrderReferences, clock, service);
+        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, segmentBookingOrderReferences, projections, clock, service);
     }
 }
