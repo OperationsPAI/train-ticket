@@ -19,6 +19,7 @@ public final class Refund {
     private RefundStatus status;
     private String channelRefundTransactionId;
     private int attemptCount;
+    private long version;
 
     private Refund(String refundId, String paymentIntentId, Money amount, String sourceCaseRef, String reasonCode, String idempotencyKey) {
         this.refundId = requireText(refundId, "refundId");
@@ -32,6 +33,35 @@ public final class Refund {
         this.idempotencyKey = requireText(idempotencyKey, "idempotencyKey");
         this.domainEvents = new ArrayList<>();
         this.status = RefundStatus.REQUESTED;
+    }
+
+
+    public static Refund rehydrate(
+        String refundId,
+        String paymentIntentId,
+        Money amount,
+        String sourceCaseRef,
+        String reasonCode,
+        String idempotencyKey,
+        RefundStatus status,
+        String channelRefundTransactionId,
+        int attemptCount,
+        List<PaymentEvent> domainEvents
+    ) {
+        Refund refund = new Refund(refundId, paymentIntentId, amount, sourceCaseRef, reasonCode, idempotencyKey);
+        refund.status = Objects.requireNonNull(status, "status is required");
+        refund.channelRefundTransactionId = channelRefundTransactionId;
+        refund.attemptCount = attemptCount;
+        refund.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return refund;
+    }
+
+    public Refund withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
     }
 
     public static Refund request(
@@ -68,6 +98,7 @@ public final class Refund {
     public RefundStatus status() { return status; }
     public String channelRefundTransactionId() { return channelRefundTransactionId; }
     public int attemptCount() { return attemptCount; }
+    public long version() { return version; }
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
 
     public boolean semanticallyMatches(String paymentIntentId, Money amount, String sourceCaseRef, String reasonCode, String idempotencyKey) {

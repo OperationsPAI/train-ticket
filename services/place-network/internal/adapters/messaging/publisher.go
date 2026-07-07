@@ -27,7 +27,7 @@ func NewPublisher(client streamAppender) *RedisPublisher {
 	return &RedisPublisher{client: client}
 }
 
-func (p *RedisPublisher) Publish(envelope domain.EventEnvelope) error {
+func (p *RedisPublisher) Publish(ctx context.Context, envelope domain.EventEnvelope) error {
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("publish failed: %w", err)
@@ -39,7 +39,7 @@ func (p *RedisPublisher) Publish(envelope domain.EventEnvelope) error {
 		if attempt > 0 {
 			time.Sleep(time.Duration(50*(1<<attempt)) * time.Millisecond)
 		}
-		if _, err := p.client.XAdd(context.Background(), args).Result(); err == nil {
+		if _, err := p.client.XAdd(ctx, args).Result(); err == nil {
 			return nil
 		} else {
 			lastErr = err
