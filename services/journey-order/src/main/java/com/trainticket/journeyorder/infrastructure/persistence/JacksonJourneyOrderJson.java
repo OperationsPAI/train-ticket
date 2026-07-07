@@ -28,14 +28,67 @@ final class JacksonJourneyOrderJson {
     }
 
     static JourneyOrderSnapshot orderSnapshot(JourneyOrder order, String idempotencyKey, ObjectMapper mapper) {
-        ObjectNode node = mapper.valueToTree(order);
+        // JourneyOrder and OrderItem are behavior-rich classes without Jackson-visible
+        // properties, so the snapshot is assembled field by field (mirror of toOrder).
+        ObjectNode node = mapper.createObjectNode();
         node.put("orderId", order.orderId());
         node.put("accountId", order.accountId());
+        node.put("channelRef", order.channelRef());
         node.put("status", com.trainticket.journeyorder.application.service.OrderManagementService.toApiStatus(order));
         node.put("state", order.state().name());
         node.put("idempotencyKey", idempotencyKey);
         node.put("createdAt", order.timeline().isEmpty() ? null : order.timeline().getFirst().occurredAt().toString());
+        node.set("offerSnapshot", mapper.valueToTree(order.offerSnapshot()));
+        node.set("travelers", mapper.valueToTree(order.travelers()));
+        node.set("segments", mapper.valueToTree(order.segments()));
+        node.set("orderItems", orderItemsNode(order.orderItems(), mapper));
+        node.set("confirmationConditions", mapper.valueToTree(order.confirmationConditions()));
+        node.set("timeline", mapper.valueToTree(order.timeline()));
         return new JourneyOrderSnapshot(node);
+    }
+
+    private static com.fasterxml.jackson.databind.node.ArrayNode orderItemsNode(List<OrderItem> items, ObjectMapper mapper) {
+        com.fasterxml.jackson.databind.node.ArrayNode array = mapper.createArrayNode();
+        for (OrderItem item : items) {
+            ObjectNode n = array.addObject();
+            n.put("orderItemId", item.orderItemId());
+            n.put("type", item.type().name());
+            n.put("description", item.description());
+            ObjectNode amount = n.putObject("amount");
+            amount.put("currency", item.amount().currency().getCurrencyCode());
+            amount.put("amount", item.amount().amount().toPlainString());
+            n.put("commercialReasonRef", item.commercialReasonRef());
+            n.set("bindings", mapper.valueToTree(item.bindings()));
+            n.put("cancelled", item.cancelled());
+            n.put("cancellationReason", item.cancellationReason());
+        }
+        return array;
+    }
+
+    private static List<OrderItem> toOrderItems(com.fasterxml.jackson.databind.JsonNode array, ObjectMapper mapper) {
+        List<OrderItem> items = new java.util.ArrayList<>();
+        if (array == null || array.isNull()) {
+            return items;
+        }
+        for (com.fasterxml.jackson.databind.JsonNode n : array) {
+            OrderItem item = new OrderItem(
+                n.path("orderItemId").asText(),
+                com.trainticket.journeyorder.domain.OrderItemType.valueOf(n.path("type").asText()),
+                n.path("description").asText(),
+                com.trainticket.journeyorder.domain.Money.of(
+                    n.path("amount").path("currency").asText(),
+                    n.path("amount").path("amount").asText()
+                ),
+                n.path("commercialReasonRef").asText(),
+                mapper.convertValue(n.get("bindings"),
+                    new TypeReference<List<com.trainticket.journeyorder.domain.OrderLineBinding>>() {})
+            );
+            if (n.path("cancelled").asBoolean(false)) {
+                item.cancel(n.path("cancellationReason").asText("cancelled"));
+            }
+            items.add(item);
+        }
+        return items;
     }
 
     static JourneyOrder toOrder(JourneyOrderSnapshot snapshot, ObjectMapper mapper) {
@@ -48,7 +101,7 @@ final class JacksonJourneyOrderJson {
             mapper.convertValue(n.get("offerSnapshot"), OfferSnapshotRef.class),
             mapper.convertValue(n.get("travelers"), new TypeReference<List<TravelerRef>>() {}),
             mapper.convertValue(n.get("segments"), new TypeReference<List<SegmentOrderSnapshot>>() {}),
-            mapper.convertValue(n.get("orderItems"), new TypeReference<List<OrderItem>>() {}),
+            toOrderItems(n.get("orderItems"), mapper),
             OrderLifecycleState.valueOf(n.path("state").asText()),
             mapper.convertValue(n.get("confirmationConditions"), ConfirmationConditions.class),
             mapper.convertValue(n.get("timeline"), new TypeReference<List<TimelineFact>>() {})
