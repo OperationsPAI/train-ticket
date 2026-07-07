@@ -33,14 +33,13 @@ echo "  entitlement stream:"; last_events events:entitlement-ticketing 2
 
 echo "== 5. final states"
 CASE_STATUS=""
-# APPLIED waits on CapacityReleased; today that release is booking's lazy
-# fallback (~90s after hold) — poll long enough to cover it. REQ-078 will
-# make capacity release promptly on EntitlementVoided.
-for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+# APPLIED waits on CapacityReleased from the prompt EntitlementVoided-driven
+# release path; this should complete within 30s.
+for attempt in 1 2 3 4 5 6; do
   req GET post-sales "/api/v1/post-sales-cases/$CASE"
   CASE_STATUS=$(jget "['status']")
   [ "$CASE_STATUS" = "APPLIED" ] && break
-  sleep 8
+  sleep 5
 done
 echo "  case status: $CASE_STATUS [$LAST_CODE]"
 [ "$CASE_STATUS" = "APPLIED" ] && ok "case APPLIED" || bad "case not applied ($CASE_STATUS)"

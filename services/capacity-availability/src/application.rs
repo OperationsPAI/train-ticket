@@ -38,6 +38,7 @@ impl CapacityService {
             "SegmentBookingCancelled" | "PostSalesApplied" => {
                 self.handle_release_trigger(&envelope)
             }
+            "EntitlementVoided" => self.handle_entitlement_voided(&envelope),
             _ => HandlerResult::Success,
         }
     }
@@ -98,6 +99,32 @@ impl CapacityService {
         let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
         match self.release_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
             Ok(_) | Err(AppError::NotFound(_)) => HandlerResult::Success,
+            Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
+                HandlerResult::TransientError(message)
+            }
+            Err(error) => HandlerResult::FatalError(error.message().to_string()),
+        }
+    }
+
+    fn handle_entitlement_voided(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(segment_booking_ref) =
+            segment_booking_ref_from_entitlement_voided(&envelope.payload)
+        else {
+            return HandlerResult::Success;
+        };
+        let idempotency_key = format!(
+            "{}:{}:entitlement-voided-release",
+            envelope.event_id, segment_booking_ref
+        );
+        match self.release_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+            "entitlement-voided",
+        ) {
+            Ok(_) | Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
+                HandlerResult::Success
+            }
             Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
                 HandlerResult::TransientError(message)
             }
@@ -362,7 +389,22 @@ impl CapacityService {
         idempotency_key: &str,
         correlation_id: &str,
     ) -> Result<ReleaseHoldResponse, AppError> {
-        let fingerprint = format!("release:{}", hold_id);
+        self.release_hold_with_reason(
+            hold_id,
+            idempotency_key,
+            correlation_id,
+            "client-requested-release",
+        )
+    }
+
+    fn release_hold_with_reason(
+        &self,
+        hold_id: &str,
+        idempotency_key: &str,
+        correlation_id: &str,
+        release_reason: &'static str,
+    ) -> Result<ReleaseHoldResponse, AppError> {
+        let fingerprint = format!("release:{}:{}", hold_id, release_reason);
         if let Some(resp) =
             self.idempotency_replay::<ReleaseHoldResponse>(idempotency_key, &fingerprint)?
         {
@@ -387,7 +429,7 @@ impl CapacityService {
                     &HoldId::new(hold_id)
                         .map_err(|_| AppError::NotFound("hold not found".into()))?,
                     now,
-                    "client-requested-release",
+                    release_reason,
                 ) {
                     Ok(event) => {
                         self.publish_domain_event(&event, correlation_id)
@@ -404,6 +446,37 @@ impl CapacityService {
             }
         }
         Err(AppError::NotFound("hold not found".into()))
+    }
+
+    fn release_hold_by_segment_booking(
+        &self,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        correlation_id: &str,
+        release_reason: &'static str,
+    ) -> Result<ReleaseHoldResponse, AppError> {
+        let hold_id = {
+            let pools = self
+                .pools
+                .lock()
+                .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
+            pools
+                .values()
+                .flat_map(|pool| pool.holds())
+                .find(|hold| {
+                    hold.scope.references.segment_booking_ref.as_deref()
+                        == Some(segment_booking_ref)
+                        && matches!(
+                            hold.state,
+                            CapacityHoldState::Held | CapacityHoldState::Confirmed
+                        )
+                })
+                .map(|hold| hold.hold_id.to_string())
+        };
+        let Some(hold_id) = hold_id else {
+            return Err(AppError::NotFound("hold not found".into()));
+        };
+        self.release_hold_with_reason(&hold_id, idempotency_key, correlation_id, release_reason)
     }
 
     fn idempotency_replay<T: DeserializeOwned>(
@@ -733,6 +806,13 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn segment_booking_ref_from_entitlement_voided(value: &Value) -> Option<String> {
+    value
+        .get("references")
+        .and_then(|references| string_field(references, "segmentBookingRef"))
+        .or_else(|| string_field(value, "segmentBookingId"))
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -744,6 +824,58 @@ fn now_millis() -> u64 {
 mod tests {
     use super::*;
     use crate::adapters::messaging::InMemoryEventPublisher;
+
+    #[test]
+    fn entitlement_voided_releases_matching_hold_by_segment_booking_ref() {
+        let publisher = Arc::new(InMemoryEventPublisher::new());
+        let service = CapacityService::new(publisher.clone());
+        let correlation_id = rust_kit::messaging::correlation_id();
+        let response = service
+            .hold_capacity(
+                HoldCapacityRequest {
+                    segment_ref: "service-segment:G123:sha-nkg".into(),
+                    traveler_ref: "traveler-1".into(),
+                    class_ref: "first".into(),
+                    quantity: 1,
+                    segment_booking_id: "sb-1".into(),
+                },
+                "idem-hold-1",
+                &correlation_id,
+            )
+            .unwrap();
+
+        let inbound = WireEnvelope::try_new(
+            "EntitlementVoided",
+            unix_millis_to_rfc3339(now_millis()),
+            correlation_id,
+            None::<String>,
+            "entitlement-ticketing",
+            json!({
+                "entitlementId": "ent-1",
+                "references": { "segmentBookingRef": "sb-1" },
+                "voidedAt": "2026-07-07T00:00:00.000Z",
+                "reason": "REFUND",
+                "policy": "NORMAL"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            service.handle_inbound_event(inbound),
+            HandlerResult::Success
+        );
+        assert_eq!(
+            service.get_hold(&response.hold_id).unwrap().status,
+            "RELEASED"
+        );
+        let released = publisher
+            .published()
+            .into_iter()
+            .find(|envelope| envelope.event_type == "CapacityReleased")
+            .expect("CapacityReleased is published");
+        assert_eq!(released.payload["releaseReason"], "entitlement-voided");
+        assert_eq!(released.payload["references"]["segmentBookingRef"], "sb-1");
+    }
 
     #[test]
     fn capacity_hold_failed_payload_matches_contract_fields() {
