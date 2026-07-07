@@ -524,6 +524,62 @@ fn subscriber_decision_logic_retries_dlqs_and_dedups() {
     assert_eq!(*calls.lock().unwrap(), 1);
 }
 
+#[test]
+fn in_memory_segment_reservation_requested_missing_idempotency_key_is_fatal() {
+    use capacity_availability::adapters::messaging::InMemoryEventPublisher;
+    use capacity_availability::application::CapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let service = CapacityService::new(Arc::new(InMemoryEventPublisher::new()));
+    let result = service.handle_inbound_event(WireEnvelope {
+        event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa11".to_string(),
+        event_type: "SegmentReservationRequested".to_string(),
+        schema_version: 1,
+        producer: "booking-orchestration".to_string(),
+        causation_id: None,
+        correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa12".to_string(),
+        occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        payload: json!({
+            "segmentBookingId": "sb-1",
+            "segmentRef": "seg-1",
+            "travelerRef": "traveler-1"
+        }),
+    });
+
+    assert!(
+        matches!(result, HandlerResult::FatalError(message) if message.contains("idempotencyKey"))
+    );
+}
+
+#[test]
+fn in_memory_post_sales_applied_without_hold_pointer_is_acked() {
+    use capacity_availability::adapters::messaging::InMemoryEventPublisher;
+    use capacity_availability::application::CapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let service = CapacityService::new(Arc::new(InMemoryEventPublisher::new()));
+    let result = service.handle_inbound_event(WireEnvelope {
+        event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa21".to_string(),
+        event_type: "PostSalesApplied".to_string(),
+        schema_version: 1,
+        producer: "post-sales".to_string(),
+        causation_id: None,
+        correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa22".to_string(),
+        occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        payload: json!({
+            "caseId": "psc-1",
+            "orderId": "ord-1",
+            "resultSummary": {}
+        }),
+    });
+
+    assert_eq!(result, HandlerResult::Success);
+}
+
 #[tokio::test]
 async fn postgres_inbound_classifies_known_event_schema_errors_as_fatal() {
     use capacity_availability::adapters::storage::PostgresCapacityService;
@@ -547,13 +603,47 @@ async fn postgres_inbound_classifies_known_event_schema_errors_as_fatal() {
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa02".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
-            payload: json!({"segmentRef": "seg-1", "travelerRef": "traveler-1"}),
+            payload: json!({"segmentBookingId": "sb-1", "segmentRef": "seg-1", "travelerRef": "traveler-1"}),
         })
         .await;
 
     assert!(
-        matches!(result, HandlerResult::FatalError(message) if message.contains("segmentBookingId"))
+        matches!(result, HandlerResult::FatalError(message) if message.contains("idempotencyKey"))
     );
+}
+
+#[tokio::test]
+async fn postgres_post_sales_applied_without_hold_pointer_is_acked() {
+    use capacity_availability::adapters::storage::PostgresCapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use rust_kit::storage::Storage;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://capacity:capacity@127.0.0.1:1/capacity")
+        .unwrap();
+    let service = PostgresCapacityService::from_storage(Storage::new(pool)).unwrap();
+
+    let result = service
+        .handle_inbound_event(WireEnvelope {
+            event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa31".to_string(),
+            event_type: "PostSalesApplied".to_string(),
+            schema_version: 1,
+            producer: "post-sales".to_string(),
+            causation_id: None,
+            correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa32".to_string(),
+            occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            payload: json!({
+                "caseId": "psc-1",
+                "orderId": "ord-1",
+                "resultSummary": {}
+            }),
+        })
+        .await;
+
+    assert_eq!(result, HandlerResult::Success);
 }
 
 #[tokio::test]

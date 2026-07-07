@@ -391,11 +391,12 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
   }
 
-  private async processEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, handler: EventHandler): Promise<void> {
+  private async processEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, handler: EventHandler, deliveryAttempts = 1): Promise<void> {
     const [entryId, fields] = entry;
+    const attempts = Math.max(1, deliveryAttempts);
     const envelopeJson = fieldValue(fields, "envelope");
     if (!envelopeJson) {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", 1);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
       return;
     }
 
@@ -403,7 +404,7 @@ export class RedisEventSubscriber implements EventSubscriber {
     try {
       envelope = JSON.parse(envelopeJson) as EventEnvelope;
     } catch (error) {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, error, 1);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
       return;
     }
 
@@ -419,7 +420,6 @@ export class RedisEventSubscriber implements EventSubscriber {
       result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
       failureReason = failureReasonFromHandlerResult(rawResult);
     } catch (error) {
-      console.error(sanitizedErrorForLog(error));
       result = error instanceof HandlerError
         ? (error.kind === "fatal" ? "dlq" : "retry")
         : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
@@ -432,7 +432,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       return;
     }
     if (result === "dlq") {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, 1);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
     }
   }
 
@@ -444,7 +444,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
         await this.deadLetterAndAck(stream, group, consumerName, entry, "MaxDeliveries", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
       } else {
-        await this.processEntry(stream, group, consumerName, entry, handler);
+        await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
       }
     }
   }

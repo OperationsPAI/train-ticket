@@ -35,9 +35,8 @@ impl CapacityService {
         match envelope.event_type.as_str() {
             "SegmentReservationRequested" => self.handle_segment_reservation_requested(&envelope),
             "SegmentReservationConfirmed" => self.handle_segment_reservation_confirmed(&envelope),
-            "SegmentBookingCancelled" | "PostSalesApplied" => {
-                self.handle_release_trigger(&envelope)
-            }
+            "SegmentBookingCancelled" => self.handle_release_trigger(&envelope),
+            "PostSalesApplied" => self.handle_post_sales_applied(&envelope),
             "EntitlementVoided" => self.handle_entitlement_voided(&envelope),
             _ => HandlerResult::Success,
         }
@@ -53,8 +52,9 @@ impl CapacityService {
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
             return HandlerResult::FatalError("missing travelerRef".into());
         };
-        let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
-            .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
+        let Some(idempotency_key) = string_field(&envelope.payload, "idempotencyKey") else {
+            return HandlerResult::FatalError("missing idempotencyKey".into());
+        };
         let request = HoldCapacityRequest {
             segment_ref,
             traveler_ref,
@@ -99,6 +99,30 @@ impl CapacityService {
         let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
         match self.release_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
             Ok(_) | Err(AppError::NotFound(_)) => HandlerResult::Success,
+            Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
+                HandlerResult::TransientError(message)
+            }
+            Err(error) => HandlerResult::FatalError(error.message().to_string()),
+        }
+    }
+
+    fn handle_post_sales_applied(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(segment_booking_ref) = post_sales_release_ref(&envelope.payload) else {
+            return HandlerResult::Success;
+        };
+        let idempotency_key = format!(
+            "{}:{}:post-sales-applied-release",
+            envelope.event_id, segment_booking_ref
+        );
+        match self.release_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+            "post-sales-applied",
+        ) {
+            Ok(_) | Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
+                HandlerResult::Success
+            }
             Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
                 HandlerResult::TransientError(message)
             }
@@ -811,6 +835,29 @@ fn segment_booking_ref_from_entitlement_voided(value: &Value) -> Option<String> 
         .get("references")
         .and_then(|references| string_field(references, "segmentBookingRef"))
         .or_else(|| string_field(value, "segmentBookingId"))
+}
+
+fn post_sales_release_ref(value: &Value) -> Option<String> {
+    value
+        .get("references")
+        .and_then(|references| {
+            string_field(references, "segmentBookingRef")
+                .or_else(|| string_field(references, "segmentBookingId"))
+                .or_else(|| string_field(references, "capacityHoldId"))
+                .or_else(|| string_field(references, "holdId"))
+        })
+        .or_else(|| {
+            value.get("scope").and_then(|scope| {
+                string_field(scope, "segmentBookingRef")
+                    .or_else(|| string_field(scope, "segmentBookingId"))
+                    .or_else(|| string_field(scope, "capacityHoldId"))
+                    .or_else(|| string_field(scope, "holdId"))
+            })
+        })
+        .or_else(|| string_field(value, "segmentBookingRef"))
+        .or_else(|| string_field(value, "segmentBookingId"))
+        .or_else(|| string_field(value, "capacityHoldId"))
+        .or_else(|| string_field(value, "holdId"))
 }
 
 fn now_millis() -> u64 {

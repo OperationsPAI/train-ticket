@@ -605,9 +605,8 @@ impl PostgresCapacityService {
             "SegmentReservationConfirmed" => {
                 self.handle_segment_reservation_confirmed(envelope).await
             }
-            "SegmentBookingCancelled" | "PostSalesApplied" => {
-                self.handle_release_requested(envelope).await
-            }
+            "SegmentBookingCancelled" => self.handle_release_requested(envelope).await,
+            "PostSalesApplied" => self.handle_post_sales_applied(envelope).await,
             "EntitlementVoided" => self.handle_entitlement_voided(envelope).await,
             _ => Ok(()),
         };
@@ -631,8 +630,9 @@ impl PostgresCapacityService {
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
             return Err(InboundEventError::Fatal("missing travelerRef".into()));
         };
-        let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
-            .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
+        let Some(idempotency_key) = string_field(&envelope.payload, "idempotencyKey") else {
+            return Err(InboundEventError::Fatal("missing idempotencyKey".into()));
+        };
         let request = HoldCapacityRequest {
             segment_ref,
             traveler_ref,
@@ -845,6 +845,29 @@ impl PostgresCapacityService {
                 hold_id: hold_id.clone(),
                 status: "RELEASED".to_string(),
             },
+        )
+        .await
+    }
+
+    async fn handle_post_sales_applied(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        let Some(segment_booking_ref) = post_sales_release_ref(&envelope.payload) else {
+            return Ok(());
+        };
+        let idempotency_key = format!(
+            "{}:{}:post-sales-applied-release",
+            envelope.event_id, segment_booking_ref
+        );
+        let fingerprint =
+            format!("release-by-segment-booking:{segment_booking_ref}:post-sales-applied");
+        self.handle_inbound_segment_booking_release(
+            envelope,
+            &segment_booking_ref,
+            &idempotency_key,
+            &fingerprint,
+            "post-sales-applied",
         )
         .await
     }
@@ -1545,6 +1568,29 @@ fn segment_booking_ref_from_entitlement_voided(value: &Value) -> Option<String> 
         .get("references")
         .and_then(|references| string_field(references, "segmentBookingRef"))
         .or_else(|| string_field(value, "segmentBookingId"))
+}
+
+fn post_sales_release_ref(value: &Value) -> Option<String> {
+    value
+        .get("references")
+        .and_then(|references| {
+            string_field(references, "segmentBookingRef")
+                .or_else(|| string_field(references, "segmentBookingId"))
+                .or_else(|| string_field(references, "capacityHoldId"))
+                .or_else(|| string_field(references, "holdId"))
+        })
+        .or_else(|| {
+            value.get("scope").and_then(|scope| {
+                string_field(scope, "segmentBookingRef")
+                    .or_else(|| string_field(scope, "segmentBookingId"))
+                    .or_else(|| string_field(scope, "capacityHoldId"))
+                    .or_else(|| string_field(scope, "holdId"))
+            })
+        })
+        .or_else(|| string_field(value, "segmentBookingRef"))
+        .or_else(|| string_field(value, "segmentBookingId"))
+        .or_else(|| string_field(value, "capacityHoldId"))
+        .or_else(|| string_field(value, "holdId"))
 }
 
 fn now_millis() -> u64 {

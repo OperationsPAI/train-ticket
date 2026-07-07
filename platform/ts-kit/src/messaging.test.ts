@@ -65,10 +65,36 @@ describe("EventEnvelope factory", () => {
       /cmd- or evt-|cmd-/,
     );
   });
+
+
 });
 
 
 describe("RedisEventSubscriber DLQ observability", () => {
+
+  it("uses pending delivery count as DLQ attempts for claimed poison entries", async () => {
+    const xadds: unknown[][] = [];
+    const redis = {
+      xadd: async (...args: unknown[]) => { xadds.push(args); return "2-1"; },
+      xack: async () => 1,
+      xautoclaim: async () => ["0-0", [["2-0", ["envelope", JSON.stringify(createEventEnvelope({ eventType: "Poisoned", producer: "ts-kit-test", payload: {} }))]]]],
+      xpending: async () => [["2-0", "consumer-old", 10_000, 3]],
+    };
+    const subscriber = new RedisEventSubscriber(redis as never);
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await (subscriber as unknown as { claimAndProcess: (stream: string, group: string, consumerName: string, handler: () => unknown) => Promise<void> })
+        .claimAndProcess("events:ts-kit-test", "ts-kit", "consumer-a", () => { throw new HandlerError("fatal", "bad payload"); });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const args = xadds[0];
+    assert.equal(args[13], "attempts");
+    assert.equal(args[14], "3");
+  });
+
   it("adds attribution metadata and warns when dead-lettering fatal handler errors", async () => {
     const xadds: unknown[][] = [];
     const xacks: unknown[][] = [];
