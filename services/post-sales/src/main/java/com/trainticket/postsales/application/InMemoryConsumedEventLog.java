@@ -12,4 +12,9 @@ public class InMemoryConsumedEventLog implements ConsumedEventLog {
     public boolean recordIfFirstSeen(String eventId) {
         return consumedEventIds.add(eventId);
     }
+
+    @Override
+    public void discard(String eventId) {
+        consumedEventIds.remove(eventId);
+    }
 }

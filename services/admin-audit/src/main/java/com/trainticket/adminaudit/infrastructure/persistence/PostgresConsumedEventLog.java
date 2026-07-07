@@ -12,7 +12,13 @@ import org.springframework.stereotype.Component;
 @ConditionalOnBean(DataSource.class)
 public class PostgresConsumedEventLog implements ConsumedEventLog {
     private final ProcessedEventStore store;
-    public PostgresConsumedEventLog(DataSource dataSource) { this.store = new ProcessedEventStore(dataSource); }
-    @Override public boolean alreadyProcessed(String eventId) { return store.isProcessed(eventId); }
-    @Override public void recordProcessed(String eventId) { store.recordIfNew(eventId, null); }
+
+    public PostgresConsumedEventLog(DataSource dataSource) {
+        this.store = new ProcessedEventStore(dataSource);
+    }
+
+    @Override
+    public boolean recordIfNew(String eventId) {
+        return store.recordIfNew(eventId, null);
+    }
 }

@@ -8,8 +8,6 @@ import com.trainticket.postsales.application.EventSubscriber;
 import com.trainticket.postsales.application.PostSalesEventHandler;
 import com.trainticket.postsales.application.PublishFailedException;
 import com.trainticket.postsales.application.SubscribeFailedException;
-import jakarta.annotation.PostConstruct;
-import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;

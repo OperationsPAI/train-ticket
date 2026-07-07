@@ -1,6 +1,7 @@
 package com.trainticket.travelerprofile.application;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import com.trainticket.platformkit.idempotency.IdempotencyStore;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,8 +27,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,22 +35,34 @@ public class TravelerProfileService {
     private static final String PRODUCER = "traveler-profile";
 
     private final TravelerProfileStore store;
-    private final ConcurrentMap<String, IdempotencyRecord> idempotencyRecords = new ConcurrentHashMap<>();
+    private final IdempotencyStore idempotencyStore;
     private final EventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper) {
-        this(new InMemoryTravelerProfileStore(), eventPublisher, objectMapper, Clock.systemUTC());
+        this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC());
     }
 
     @Autowired
-    public TravelerProfileService(TravelerProfileStore store, EventPublisher eventPublisher, ObjectMapper objectMapper) {
-        this(store, eventPublisher, objectMapper, Clock.systemUTC());
+    public TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper
+    ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC());
     }
 
-    TravelerProfileService(TravelerProfileStore store, EventPublisher eventPublisher, ObjectMapper objectMapper, Clock clock) {
+    TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        Clock clock
+    ) {
         this.store = store;
+        this.idempotencyStore = idempotencyStore;
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -61,8 +72,8 @@ public class TravelerProfileService {
     public TravelerCreatedView create(CreateTravelerCommand command, String requestFingerprint) {
         validateCreate(command);
         String key = scopedKey("POST:/api/v1/travelers", command.idempotencyKey());
-        IdempotencyRecord replay = idempotencyRecords.get(key);
-        if (replay != null) { return replay.responseAs(TravelerCreatedView.class, requestFingerprint); }
+        TravelerCreatedView replay = replayIfPresent(key, requestFingerprint, TravelerCreatedView.class);
+        if (replay != null) { return replay; }
         Instant now = now();
         String commandId = commandId();
         TravelerProfile aggregate = TravelerProfile.create(
@@ -106,7 +117,7 @@ public class TravelerProfileService {
         store.save(stored);
         publishNewEvents(aggregate.domainEvents(), 0, stored);
         TravelerCreatedView response = new TravelerCreatedView(travelerId, stored.snapshotVersion(), stored.travelerType(), stored.createdAt());
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response));
+        saveIdempotentResponse(key, requestFingerprint, response);
         return response;
     }
 
@@ -118,8 +129,8 @@ public class TravelerProfileService {
     public TravelerProfileView update(UpdateTravelerCommand command, String requestFingerprint) {
         validateUpdate(command);
         String key = scopedKey("PATCH:/api/v1/travelers/" + command.travelerId(), command.idempotencyKey());
-        IdempotencyRecord replay = idempotencyRecords.get(key);
-        if (replay != null) { return replay.responseAs(TravelerProfileView.class, requestFingerprint); }
+        TravelerProfileView replay = replayIfPresent(key, requestFingerprint, TravelerProfileView.class);
+        if (replay != null) { return replay; }
         TravelerState current = find(command.travelerId());
         TravelerProfile aggregate = current.aggregate();
         int eventOffset = aggregate.domainEvents().size();
@@ -150,15 +161,15 @@ public class TravelerProfileService {
         store.save(updated);
         publishNewEvents(aggregate.domainEvents(), eventOffset, updated);
         TravelerProfileView response = toView(updated);
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response));
+        saveIdempotentResponse(key, requestFingerprint, response);
         return response;
     }
 
     @Transactional
     public EligibilityResult determineEligibility(String travelerId, String idempotencyKey, String correlationId, String requestFingerprint) {
         String key = scopedKey("POST:/api/v1/travelers/" + travelerId + "/eligibility", idempotencyKey);
-        IdempotencyRecord replay = idempotencyRecords.get(key);
-        if (replay != null) { return replay.responseAs(EligibilityResult.class, requestFingerprint); }
+        EligibilityResult replay = replayIfPresent(key, requestFingerprint, EligibilityResult.class);
+        if (replay != null) { return replay; }
         TravelerState traveler = find(travelerId);
         TravelerProfile aggregate = traveler.aggregate();
         int eventOffset = aggregate.domainEvents().size();
@@ -187,7 +198,7 @@ public class TravelerProfileService {
         EligibilityResult result = new EligibilityResult(travelerId, eligibilityRef, eligible, now, now.plus(365, ChronoUnit.DAYS));
         store.save(traveler);
         publishNewEvents(aggregate.domainEvents(), eventOffset, traveler);
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, result));
+        saveIdempotentResponse(key, requestFingerprint, result);
         return result;
     }
 
@@ -403,11 +414,32 @@ public class TravelerProfileService {
         return scope + ":" + idempotencyKey;
     }
 
-    private record IdempotencyRecord(String requestFingerprint, Object response) {
-        static IdempotencyRecord of(String requestFingerprint, Object response) { return new IdempotencyRecord(requestFingerprint, response); }
-        <T> T responseAs(Class<T> type, String candidateFingerprint) {
-            if (!requestFingerprint.equals(candidateFingerprint)) { throw new IdempotencyKeyReusedException(); }
-            return type.cast(response);
+    private <T> T replayIfPresent(String key, String requestFingerprint, Class<T> responseType) {
+        return idempotencyStore.find(key)
+            .map(stored -> responseFromStored(stored, requestFingerprint, responseType))
+            .orElse(null);
+    }
+
+    private void saveIdempotentResponse(String key, String requestFingerprint, Object response) {
+        try {
+            byte[] body = objectMapper.writeValueAsBytes(response);
+            idempotencyStore.saveIfAbsent(
+                key,
+                new IdempotencyStore.StoredResponse(requestFingerprint, 200, "application/json", Map.of(), body)
+            );
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalStateException("idempotent response could not be encoded", exception);
+        }
+    }
+
+    private <T> T responseFromStored(IdempotencyStore.StoredResponse stored, String requestFingerprint, Class<T> responseType) {
+        if (!stored.fingerprint().equals(requestFingerprint)) {
+            throw new IdempotencyKeyReusedException();
+        }
+        try {
+            return objectMapper.readValue(stored.body(), responseType);
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("idempotent response could not be decoded", exception);
         }
     }
 
