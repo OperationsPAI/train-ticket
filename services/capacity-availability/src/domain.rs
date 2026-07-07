@@ -379,6 +379,18 @@ impl CapacityHold {
     fn mark_held(&mut self) {
         self.state = CapacityHoldState::Held;
     }
+    pub fn restore_state(
+        &mut self,
+        state: CapacityHoldState,
+        confirmed_at: Option<u64>,
+        released_at: Option<u64>,
+        expired_at: Option<u64>,
+    ) {
+        self.state = state;
+        self.confirmed_at = confirmed_at;
+        self.released_at = released_at;
+        self.expired_at = expired_at;
+    }
 
     fn confirm(&mut self, now: u64) -> DomainResult<()> {
         match self.state {
@@ -539,6 +551,26 @@ pub enum HoldFailureReason {
     OverlappingHold { conflicting_hold_id: HoldId },
 }
 
+impl HoldFailureReason {
+    pub fn contract_reason(&self) -> &'static str {
+        match self {
+            HoldFailureReason::UnknownCapacityUnit => "UNKNOWN_CAPACITY_UNIT",
+            HoldFailureReason::IdempotencyConflict { .. } => "IDEMPOTENCY_CONFLICT",
+            HoldFailureReason::OverlappingHold { .. } => "OVERLAPPING_HOLD",
+        }
+    }
+
+    pub fn conflicting_hold_id(&self) -> Option<&HoldId> {
+        match self {
+            HoldFailureReason::OverlappingHold {
+                conflicting_hold_id,
+            } => Some(conflicting_hold_id),
+            HoldFailureReason::UnknownCapacityUnit
+            | HoldFailureReason::IdempotencyConflict { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryPoolState {
     Initialized,
@@ -593,6 +625,22 @@ impl InventoryPool {
 
     pub fn hold(&self, hold_id: &HoldId) -> Option<&CapacityHold> {
         self.holds.get(hold_id)
+    }
+
+    pub fn capacity_unit_refs(&self) -> Vec<CapacityUnitRef> {
+        self.capacity_units.iter().cloned().collect()
+    }
+
+    pub fn holds(&self) -> Vec<&CapacityHold> {
+        self.holds.values().collect()
+    }
+
+    pub fn restore_hold(&mut self, hold: CapacityHold) -> DomainResult<()> {
+        self.ensure_unit_known(&hold.scope.capacity_unit_ref)?;
+        self.idempotency_index
+            .insert(hold.idempotency_key.clone(), hold.hold_id.clone());
+        self.holds.insert(hold.hold_id.clone(), hold);
+        Ok(())
     }
 
     pub fn request_hold(&mut self, mut hold: CapacityHold, now: u64) -> DomainResult<DomainEvent> {
