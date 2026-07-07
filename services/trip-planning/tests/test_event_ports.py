@@ -35,6 +35,70 @@ class EventPublisherTest(unittest.TestCase):
         self.assertEqual(envelope.correlationId, "corr-published")
         self.assertEqual(envelope.payload["intentRef"], response.json()["intentRef"])
 
+    def test_search_saves_itinerary_and_outbox_in_same_unit_of_work(self) -> None:
+        class RecordingStore:
+            def __init__(self) -> None:
+                self.in_transaction = False
+                self.saved_inside_transaction = False
+
+            def transaction(self):
+                store = self
+
+                class Context:
+                    def __enter__(self):
+                        store.in_transaction = True
+                        return self
+
+                    def __exit__(self, exc_type, exc, traceback):
+                        store.in_transaction = False
+
+                return Context()
+
+            def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[object]:
+                return []
+
+            def save_itinerary(self, itinerary: dict[str, object]) -> None:
+                self.saved_inside_transaction = self.in_transaction
+
+            def load(self) -> None:
+                return None
+
+        class RecordingPublisher(FakeEventPublisher):
+            def __init__(self, store: RecordingStore) -> None:
+                super().__init__()
+                self.store = store
+                self.published_inside_transaction = False
+
+            def publish(self, envelope: EventEnvelope) -> None:
+                self.published_inside_transaction = self.store.in_transaction
+                super().publish(envelope)
+
+        import trip_planning.api as api
+
+        store = RecordingStore()
+        publisher = RecordingPublisher(store)
+        original = api._active_plan_store
+        api._active_plan_store = store
+        try:
+            client = TestClient(create_app(event_publisher=publisher, start_event_subscriber=False))
+            api._active_plan_store = store
+            response = client.post(
+                "/api/v1/itineraries/search",
+                json={
+                    "originRef": "station:A",
+                    "destinationRef": "station:B",
+                    "departureDate": "2026-08-01",
+                    "travelerRefs": ["tvl-1"],
+                    "channel": "WEB",
+                },
+            )
+        finally:
+            api._active_plan_store = original
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(store.saved_inside_transaction)
+        self.assertTrue(publisher.published_inside_transaction)
+
     def test_fake_publisher_records_events(self) -> None:
         publisher = FakeEventPublisher()
         envelope = EventEnvelope(

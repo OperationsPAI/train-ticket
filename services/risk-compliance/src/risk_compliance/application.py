@@ -154,6 +154,12 @@ class InMemoryAssessmentRepository:
     def save(self, assessment: RiskAssessmentResult) -> None:
         self._assessments[assessment.assessmentId] = assessment
 
+    def try_mark_processed(self, event_id: str) -> bool:
+        if event_id in self._processed_event_ids:
+            return False
+        self._processed_event_ids.add(event_id)
+        return True
+
     def is_processed(self, event_id: str) -> bool:
         return event_id in self._processed_event_ids
 
@@ -287,7 +293,11 @@ class RiskComplianceService:
             self._handle_event_in_transaction(envelope)
 
     def _handle_event_in_transaction(self, envelope: EventEnvelope) -> None:
-        if self.repository.is_processed(envelope.eventId):
+        try_mark_processed = getattr(self.repository, "try_mark_processed", None)
+        if callable(try_mark_processed):
+            if not try_mark_processed(envelope.eventId):
+                return
+        elif self.repository.is_processed(envelope.eventId):
             return
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
@@ -301,7 +311,8 @@ class RiskComplianceService:
         if block is not None:
             self.repository.save_block(block)
             self.publisher.publish(_block_applied_envelope(block, envelope.correlationId, assessment_envelope.eventId))
-        self.repository.record_processed(envelope.eventId)
+        if try_mark_processed is None:
+            self.repository.record_processed(envelope.eventId)
 
     def lift_block(self, *, subject_ref: str, scope: str, reason_code: str, correlation_id: str) -> RiskBlockLifted:
         previous = self.repository.active_block(subject_ref)

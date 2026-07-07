@@ -196,7 +196,7 @@ def _configure_postgres(app: FastAPI) -> tuple[Any | None, Any | None, Any | Non
     relay = OutboxRelay(pool)
     relay.start()
     app.state.outbox_relay = relay
-    return plan_store, TransactionalOutboxPublisher(pool), PostgresIdempotencyStore(pool)
+    return plan_store, TransactionalOutboxPublisher(plan_store), PostgresIdempotencyStore(pool)
 
 def _require_string(payload: Mapping[str, object], field_name: str) -> str:
     value = payload.get(field_name)
@@ -270,6 +270,9 @@ class PlanStore:
     def apply(self, event_type: str, payload: Mapping[str, object]) -> None:
         with self._lock:
             self._apply_locked(event_type, payload)
+
+    def load(self) -> None:
+        return None
 
     def _apply_locked(self, event_type: str, payload: Mapping[str, object]) -> None:
         if event_type in ("ServicePlanPublished", "ScheduledServiceCreated"):
@@ -484,15 +487,9 @@ def _start_subscriber(subscriber: EventSubscriber, handler: Callable[[Any], None
     return start_trip_planning_subscription(subscriber, handler)
 
 
-def _replay_upstream_events(subscriber: EventSubscriber, handler: Callable[[Any], None]) -> None:
-    replay = getattr(subscriber, "replay", None)
-    if not callable(replay):
-        return
-    try:
-        replay(handler)
-    except Exception:
-        logger.exception("trip-planning plan index replay failed")
-        raise
+def _load_plan_index_from_db() -> None:
+    if hasattr(_active_plan_store, "load"):
+        _active_plan_store.load()
 
 
 def _stop_subscriber(subscriber: EventSubscriber | None, thread: threading.Thread | None) -> None:
@@ -525,11 +522,8 @@ def create_app(
         if active_subscriber is None and start_event_subscriber:
             active_subscriber = _default_subscriber()
         handler = lambda envelope: _handle_upstream_event(app, envelope)
-        if active_subscriber is not None and start_event_subscriber:
-            _replay_upstream_events(active_subscriber, handler)
+        _load_plan_index_from_db()
         subscriber_thread = _start_subscriber(active_subscriber, handler) if active_subscriber is not None and start_event_subscriber else None
-        if hasattr(_active_plan_store, "load"):
-            _active_plan_store.load()
         app.state.event_subscriber = active_subscriber
         app.state.subscriber_thread = subscriber_thread
         try:
@@ -570,21 +564,23 @@ def create_app(
         except TripPlanningValidationError as exc:
             return _canonical_error(400, "VALIDATION_FAILED", str(exc), correlation_id)
 
-        for itinerary in response["itineraries"]:
-            if isinstance(itinerary, dict):
-                app.state.itineraries[itinerary["itineraryRef"]] = itinerary
-                save_itinerary = getattr(_active_plan_store, "save_itinerary", None)
-                if callable(save_itinerary):
-                    save_itinerary(itinerary)
+        event = build_itinerary_proposed_event(
+            str(response["intentRef"]),
+            tuple(response["itineraries"]),  # type: ignore[arg-type]
+            planning_snapshot_refs,
+            correlation_id=correlation_id,
+        )
+        transaction = getattr(_active_plan_store, "transaction", None)
         try:
-            publisher.publish(
-                build_itinerary_proposed_event(
-                    str(response["intentRef"]),
-                    tuple(response["itineraries"]),  # type: ignore[arg-type]
-                    planning_snapshot_refs,
-                    correlation_id=correlation_id,
-                )
-            )
+            context = transaction() if callable(transaction) else nullcontext()
+            with context:
+                for itinerary in response["itineraries"]:
+                    if isinstance(itinerary, dict):
+                        app.state.itineraries[itinerary["itineraryRef"]] = itinerary
+                        save_itinerary = getattr(_active_plan_store, "save_itinerary", None)
+                        if callable(save_itinerary):
+                            save_itinerary(itinerary)
+                publisher.publish(event)
         except PublishFailed:
             return _canonical_error(503, "UNAVAILABLE", "Event bus is unavailable", correlation_id)
         return response

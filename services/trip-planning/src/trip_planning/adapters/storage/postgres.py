@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
@@ -8,6 +10,22 @@ from train_ticket_platform.storage import OutboxAppender, SnapshotRepository
 from trip_planning.domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint
 from trip_planning.events import EventEnvelope
 
+
+_CLEAR_TABLE_SQL = (
+    "DELETE FROM plan_index_events",
+    "DELETE FROM plan_services",
+    "DELETE FROM plan_segments",
+    "DELETE FROM plan_nodes",
+    "DELETE FROM itinerary_snapshots",
+)
+
+
+class _TxState:
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+
+_TX: ContextVar[_TxState | None] = ContextVar("trip_planning_postgres_tx", default=None)
 
 
 def _jsonb_payload(value: Mapping[str, Any]) -> Any:
@@ -18,9 +36,6 @@ def _jsonb_payload(value: Mapping[str, Any]) -> Any:
     except ImportError:  # pragma: no cover - psycopg optional in unit tests
         return json.dumps(dict(value), separators=(",", ":"))
 
-def _json_obj(data: Mapping[str, Any] | str) -> Mapping[str, Any]:
-    return json.loads(data) if isinstance(data, str) else data
-
 
 def _dt(value: datetime | str) -> datetime:
     if isinstance(value, datetime):
@@ -29,14 +44,12 @@ def _dt(value: datetime | str) -> datetime:
 
 
 class TransactionalOutboxPublisher:
-    def __init__(self, pool: Any, outbox: OutboxAppender | None = None) -> None:
-        self._pool = pool
+    def __init__(self, store: "PostgresPlanStore", outbox: OutboxAppender | None = None) -> None:
+        self._store = store
         self._outbox = outbox or OutboxAppender()
 
     def publish(self, envelope: EventEnvelope) -> None:
-        with self._pool.connection() as conn:
-            with conn.transaction():
-                self._outbox.append(conn, envelope)
+        self._store.with_connection(lambda conn: self._outbox.append(conn, envelope))
 
 
 class PostgresPlanStore:
@@ -44,11 +57,33 @@ class PostgresPlanStore:
         self._pool = pool
         self._itineraries = SnapshotRepository("itinerary_snapshots")
 
-    def clear(self) -> None:
+    @contextmanager
+    def transaction(self):
+        state = _TX.get()
+        if state is not None:
+            yield state.connection
+            return
         with self._pool.connection() as conn:
             with conn.transaction():
-                for table in ("plan_index_events", "plan_services", "plan_segments", "plan_nodes", "itinerary_snapshots"):
-                    conn.execute(f"DELETE FROM {table}")
+                token = _TX.set(_TxState(conn))
+                try:
+                    yield conn
+                finally:
+                    _TX.reset(token)
+
+    def with_connection(self, fn: Any) -> Any:
+        state = _TX.get()
+        if state is not None:
+            return fn(state.connection)
+        with self.transaction() as conn:
+            return fn(conn)
+
+    def clear(self) -> None:
+        def delete_all(conn: Any) -> None:
+            for statement in _CLEAR_TABLE_SQL:
+                conn.execute(statement)
+
+        self.with_connection(delete_all)
 
     def apply_envelope(self, envelope: Any) -> bool:
         event_id = str(getattr(envelope, "eventId", ""))
@@ -56,20 +91,20 @@ class PostgresPlanStore:
         payload = dict(getattr(envelope, "payload", {}) or {})
         producer = str(getattr(envelope, "producer", ""))
         occurred_at = getattr(envelope, "occurredAt", "")
-        with self._pool.connection() as conn:
-            with conn.transaction():
-                if event_id:
-                    row = conn.execute("INSERT INTO processed_events(event_id, stream) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING event_id", (event_id, f"events:{producer}")).fetchone()
-                    if row is None:
-                        return False
-                    conn.execute("INSERT INTO plan_index_events(event_id, event_type, producer, occurred_at, payload) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (event_id, event_type, producer, str(occurred_at), _jsonb_payload(payload)))
-                self._apply_locked(conn, event_type, payload)
-        return True
+
+        def write(conn: Any) -> bool:
+            if event_id:
+                row = conn.execute("INSERT INTO processed_events(event_id, stream) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING event_id", (event_id, f"events:{producer}")).fetchone()
+                if row is None:
+                    return False
+                conn.execute("INSERT INTO plan_index_events(event_id, event_type, producer, occurred_at, payload) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (event_id, event_type, producer, str(occurred_at), _jsonb_payload(payload)))
+            self._apply_locked(conn, event_type, payload)
+            return True
+
+        return bool(self.with_connection(write))
 
     def apply(self, event_type: str, payload: Mapping[str, object]) -> None:
-        with self._pool.connection() as conn:
-            with conn.transaction():
-                self._apply_locked(conn, event_type, dict(payload))
+        self.with_connection(lambda conn: self._apply_locked(conn, event_type, dict(payload)))
 
     def load(self) -> None:
         # State is already durable in read-model tables; this method preserves the
@@ -128,12 +163,13 @@ class PostgresPlanStore:
 
     def save_itinerary(self, itinerary: Mapping[str, object]) -> None:
         ref = str(itinerary["itineraryRef"])
-        with self._pool.connection() as conn:
-            with conn.transaction():
-                snap = self._itineraries.get(conn, ref)
-                self._itineraries.save(conn, ref, dict(itinerary), None if snap is None else int(snap[0]))
+
+        def write(conn: Any) -> None:
+            snap = self._itineraries.get(conn, ref)
+            self._itineraries.save(conn, ref, dict(itinerary), None if snap is None else int(snap[0]))
+
+        self.with_connection(write)
 
     def get_itinerary(self, itinerary_ref: str) -> dict[str, object] | None:
-        with self._pool.connection() as conn:
-            snap = self._itineraries.get(conn, itinerary_ref)
+        snap = self.with_connection(lambda conn: self._itineraries.get(conn, itinerary_ref))
         return None if snap is None else dict(snap[1])

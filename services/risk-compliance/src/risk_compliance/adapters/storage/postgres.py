@@ -134,6 +134,9 @@ class PostgresAssessmentRepository:
             self._assessments.save(conn, assessment.assessmentId, _assessment_to_json(assessment), None if snap is None else int(snap[0]))
         self.with_connection(write)
 
+    def try_mark_processed(self, event_id: str) -> bool:
+        return bool(self.with_connection(lambda conn: self._processed.try_mark_processed(conn, event_id, "events:journey-order")))
+
     def is_processed(self, event_id: str) -> bool:
         return self.with_connection(lambda conn: conn.execute("SELECT 1 FROM processed_events WHERE event_id = %s", (event_id,)).fetchone() is not None)
 
