@@ -2,15 +2,26 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
+import os
+from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 
 from .ids import prefixed_uuid7, uuid7
 from .runtime import health, profile
 from .application import DomainEventService
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
+from train_ticket_platform.storage import (
+    DatabaseConfig,
+    DatabasePool,
+    OutboxRelay,
+    PostgresIdempotencyStore,
+    ReadinessGate,
+    run_migrations,
+)
 from .application.service import FarePricingService, InMemoryStore
+from .adapters.storage import PostgresFarePricingStore
 from .adapters.messaging.publisher import RedisEventPublisher
 from .ports.messaging import EventPublisher
 from .web.errors import register_exception_handlers
@@ -44,8 +55,6 @@ def opentelemetry_tracer_from_env(service_name: str) -> RuntimeTracer | None:
     bootstrap installs an SDK/exporter. That keeps tests collector-free while
     allowing OTEL_* environment configuration to drive real deployments.
     """
-    import os
-
     exporter = os.getenv("OTEL_TRACES_EXPORTER", "").strip().lower()
     if not exporter or exporter == "none":
         return None
@@ -128,11 +137,19 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/ready")
-    def ready_endpoint() -> dict[str, str]:
+    def ready_endpoint(response: Response) -> dict[str, str]:
+        gate = getattr(app.state, "readiness", None)
+        if gate is not None and not gate.ready:
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/readyz")
-    def readyz_endpoint() -> dict[str, str]:
+    def readyz_endpoint(response: Response) -> dict[str, str]:
+        gate = getattr(app.state, "readiness", None)
+        if gate is not None and not gate.ready:
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/metadata")
@@ -150,7 +167,15 @@ def configure_fare_pricing_routes(
     if store is None:
         store = InMemoryStore()
     service = FarePricingService(store)
+    unit_of_work = getattr(store, "unit_of_work", None)
+    if callable(unit_of_work):
+        @app.middleware("http")
+        async def fare_pricing_unit_of_work_middleware(request: Request, call_next: Any):
+            with unit_of_work():
+                return await call_next(request)
+
     publisher = event_publisher or RedisEventPublisher()
+    app.state.publish_events_synchronously = not isinstance(store, PostgresFarePricingStore)
     app.state.fare_pricing_service = service
     app.state.fare_pricing_store = store
     app.state.domain_event_service = DomainEventService(publisher)
@@ -164,7 +189,7 @@ def configure_fare_pricing_routes(
     app.include_router(fare_pricing_router)
 
 
-def _install_default_rule_sets(store: "InMemoryStore") -> None:
+def _install_default_rule_sets(store: Any) -> None:
     """Fallback pricing for empty deployments until managed rule sets are published."""
     from datetime import UTC, datetime, timedelta
     from decimal import Decimal
@@ -178,8 +203,12 @@ def _install_default_rule_sets(store: "InMemoryStore") -> None:
         ValidityWindow,
     )
 
-    if store.fare_rule_sets:
-        return
+    try:
+        if store.all_rule_sets():
+            return
+    except AttributeError:
+        if store.fare_rule_sets:
+            return
     now = datetime.now(UTC)
     window = ValidityWindow(now - timedelta(days=1), now + timedelta(days=365))
     for index, channel in enumerate(("WEB", "web", "MOBILE", "COUNTER")):
@@ -219,7 +248,30 @@ def _install_default_rule_sets(store: "InMemoryStore") -> None:
             ),
             contract_id="contract-default",
         ).publish(now)
-        store.fare_rule_sets[rule_set.rule_set_id] = rule_set
+        store.save_rule_set(rule_set)
+
+
+def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None]:
+    config = DatabaseConfig.from_env()
+    if config is None:
+        store = InMemoryStore()
+        _install_default_rule_sets(store)
+        return store, None  # type: ignore[return-value]
+    readiness = ReadinessGate()
+    pool = DatabasePool(config)
+    app.state.database_pool = pool
+    app.state.readiness = readiness
+    # In the container the package lives in site-packages, so the source-tree
+    # heuristic below cannot find the SQL; the image sets MIGRATIONS_DIR.
+    env_dir = os.environ.get("MIGRATIONS_DIR")
+    migrations_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parents[3] / "migrations"
+    run_migrations(pool, migrations_dir, readiness)
+    store = PostgresFarePricingStore(pool)
+    _install_default_rule_sets(store)
+    relay = OutboxRelay(pool)
+    relay.start()
+    app.state.outbox_relay = relay
+    return store, PostgresIdempotencyStore(pool)
 
 
 def create_app(
@@ -229,11 +281,21 @@ def create_app(
     idempotency_store: IdempotencyStore | None = None,
     event_publisher: EventPublisher | None = None,
 ) -> FastAPI:
-    if store is None:
-        store = InMemoryStore()
-        _install_default_rule_sets(store)
     app = FastAPI(title='Fare & Pricing', version="0.1.0")
+    if store is None:
+        store, default_idempotency_store = _postgres_store_from_env(app)
+        idempotency_store = idempotency_store or default_idempotency_store
     register_exception_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     configure_fare_pricing_routes(app, store, idempotency_store, event_publisher)
+
+    @app.on_event("shutdown")
+    def _shutdown_storage() -> None:
+        relay = getattr(app.state, "outbox_relay", None)
+        if relay is not None:
+            relay.stop()
+        pool = getattr(app.state, "database_pool", None)
+        if pool is not None:
+            pool.close()
+
     return app

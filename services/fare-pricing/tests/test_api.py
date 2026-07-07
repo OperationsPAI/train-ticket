@@ -884,3 +884,16 @@ class FarePricingMessagingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_ready_returns_503_when_readiness_gate_is_false() -> None:
+    from train_ticket_platform.storage import ReadinessGate
+
+    app = create_app(store=InMemoryStore(), event_publisher=FakeEventPublisher())
+    gate = ReadinessGate()
+    gate.mark_failed("migration failed")
+    app.state.readiness = gate
+    client = TestClient(app)
+
+    assert client.get("/ready").status_code == 503
+    assert client.get("/readyz").status_code == 503
