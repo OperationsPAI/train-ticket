@@ -1,5 +1,6 @@
-package com.trainticket.platformkit.messaging;
+package com.trainticket.payment.infrastructure.persistence;
 
+import com.trainticket.platformkit.messaging.RedisStreamOperations;
 import io.lettuce.core.Consumer;
 import io.lettuce.core.Limit;
 import io.lettuce.core.Range;
@@ -16,10 +17,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-final class LettuceRedisStreamOperations implements RedisStreamOperations {
+final class PublicLettuceRedisStreamOperations implements RedisStreamOperations {
     private final StatefulRedisConnection<String, String> connection;
 
-    LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
+    PublicLettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
         this.connection = Objects.requireNonNull(connection, "connection is required");
     }
 
@@ -28,7 +29,6 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
         try {
             connection.sync().xgroupCreate(XReadArgs.StreamOffset.from(stream, "$"), group, XGroupCreateArgs.Builder.mkstream());
         } catch (RedisBusyException ignored) {
-            // Existing group is safe on restart.
         }
     }
 
@@ -42,7 +42,7 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
         return connection.sync()
             .xreadgroup(Consumer.from(group, consumerName), XReadArgs.Builder.block(Duration.ofSeconds(2)).count(10), XReadArgs.StreamOffset.lastConsumed(stream))
             .stream()
-            .map(LettuceRedisStreamOperations::toEntry)
+            .map(PublicLettuceRedisStreamOperations::toEntry)
             .toList();
     }
 
@@ -52,7 +52,7 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
             .xautoclaim(stream, XAutoClaimArgs.Builder.xautoclaim(Consumer.from(group, consumerName), Duration.ofSeconds(60), "0-0").count(100))
             .getMessages()
             .stream()
-            .map(LettuceRedisStreamOperations::toEntry)
+            .map(PublicLettuceRedisStreamOperations::toEntry)
             .toList();
     }
 
@@ -63,10 +63,7 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
             return 1;
         }
         long redeliveryCount = messages.getFirst().getRedeliveryCount();
-        if (redeliveryCount >= Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        return Math.max(1, (int) redeliveryCount);
+        return redeliveryCount >= Integer.MAX_VALUE ? Integer.MAX_VALUE : Math.max(1, (int) redeliveryCount);
     }
 
     @Override
@@ -76,14 +73,14 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
 
     @Override
     public void moveToDlq(String stream, String envelopeJson) {
-        connection.sync().xadd(RedisStreamNames.dlqFor(stream), XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("d", envelopeJson));
+        connection.sync().xadd(com.trainticket.platformkit.messaging.RedisStreamNames.dlqFor(stream), XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("d", envelopeJson));
     }
 
     private static StreamEntry toEntry(StreamMessage<String, String> message) {
-        String envelopeJson = message.getBody().get("d");
-        if (envelopeJson == null) {
-            envelopeJson = message.getBody().get("envelope");
+        String body = message.getBody().get("d");
+        if (body == null) {
+            body = message.getBody().get("envelope");
         }
-        return new StreamEntry(message.getId(), envelopeJson);
+        return new StreamEntry(message.getId(), body);
     }
 }
