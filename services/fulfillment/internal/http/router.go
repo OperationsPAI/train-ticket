@@ -41,13 +41,20 @@ func RouterWithConfig(service *application.Service, idSource goruntime.IDGenerat
 		Observer:        goruntime.ObserverFromEnv(profile.ServiceID),
 		RequestIDSource: idSource,
 	})
-	h := &Handler{svc: service, idempotency: idempotency.NewMemoryStore()}
+	RegisterRoutes(router, service, idempotency.NewMemoryStore())
+	return router
+}
+
+func RegisterRoutes(router gin.IRouter, service *application.Service, store idempotency.Store) {
+	if store == nil {
+		store = idempotency.NewMemoryStore()
+	}
+	h := &Handler{svc: service, idempotency: store}
 	idempotent := idempotency.Middleware(h.idempotency)
 	router.POST("/api/v1/fulfillment-records/boarding", idempotent, h.verifyBoarding)
 	router.POST("/api/v1/fulfillment-records/completions", idempotent, h.fulfillmentCompleted)
 	router.POST("/api/v1/fulfillment-records/no-show", idempotent, h.recordNoShow)
 	router.GET("/api/v1/fulfillment-records/:fulfillmentRecordId", h.getFulfillmentRecord)
-	return router
 }
 
 type verifyBoardingRequest struct {

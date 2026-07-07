@@ -24,6 +24,52 @@ func (p *recordingPublisher) Publish(_ context.Context, envelope EventEnvelope) 
 	return nil
 }
 
+type memoryRepository struct {
+	services map[string]ScheduledService
+	segments map[string]ServiceSegment
+}
+
+func newMemoryRepository() *memoryRepository {
+	return &memoryRepository{services: map[string]ScheduledService{}, segments: map[string]ServiceSegment{}}
+}
+func (r *memoryRepository) SaveScheduledService(_ context.Context, service ScheduledService) error {
+	r.services[service.ScheduledServiceRef] = service
+	return nil
+}
+func (r *memoryRepository) FindScheduledService(_ context.Context, ref string) (ScheduledService, error) {
+	service, ok := r.services[ref]
+	if !ok {
+		return ScheduledService{}, ErrNotFound
+	}
+	return service, nil
+}
+func (r *memoryRepository) ListScheduledServices(_ context.Context, query ListScheduledServicesQuery) (PaginatedScheduledServices, error) {
+	items := make([]ScheduledService, 0, len(r.services))
+	for _, service := range r.services {
+		if query.CarrierID == "" || service.CarrierID == query.CarrierID {
+			items = append(items, service)
+		}
+	}
+	return PaginatedScheduledServices{Items: items, Total: len(items), Limit: query.Limit, Offset: query.Offset}, nil
+}
+func (r *memoryRepository) SaveServiceSegment(_ context.Context, segment ServiceSegment) error {
+	r.segments[segment.SegmentRef] = segment
+	return nil
+}
+
+type failingRepository struct{ err error }
+
+func (r failingRepository) SaveScheduledService(context.Context, ScheduledService) error {
+	return r.err
+}
+func (r failingRepository) FindScheduledService(context.Context, string) (ScheduledService, error) {
+	return ScheduledService{}, r.err
+}
+func (r failingRepository) ListScheduledServices(context.Context, ListScheduledServicesQuery) (PaginatedScheduledServices, error) {
+	return PaginatedScheduledServices{}, r.err
+}
+func (r failingRepository) SaveServiceSegment(context.Context, ServiceSegment) error { return r.err }
+
 func TestPublisherReceivesCorrectServicePlanEnvelope(t *testing.T) {
 	publisher := &recordingPublisher{}
 	service := NewService(publisher)
@@ -164,5 +210,50 @@ func TestInvalidCarrierIDRejectedBeforePublish(t *testing.T) {
 	}
 	if len(publisher.envelopes) != 0 {
 		t.Fatalf("expected no events for invalid carrierId, got %d", len(publisher.envelopes))
+	}
+}
+
+func TestRepositoryReadErrorsPropagateWithoutMemoryFallback(t *testing.T) {
+	boom := errors.New("postgres unavailable")
+	service := NewService(NoopPublisher{}).WithRepository(failingRepository{err: boom})
+	_, err := service.GetScheduledService(context.Background(), "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c701")
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected get storage error, got %v", err)
+	}
+	_, err = service.ListScheduledServices(context.Background(), ListScheduledServicesQuery{})
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected list storage error, got %v", err)
+	}
+}
+
+func TestCreateServiceSegmentAfterRestartUsesPersistedService(t *testing.T) {
+	repository := newMemoryRepository()
+	first := NewService(NoopPublisher{}).WithRepository(repository)
+	_, err := first.CreateScheduledService(context.Background(), CreateScheduledServiceCommand{
+		ServiceRef:        "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c801",
+		CarrierID:         "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001",
+		ServiceNumber:     "G1234",
+		DepartureTime:     time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:       time.Date(2026, 7, 5, 12, 30, 0, 0, time.UTC),
+		OriginNodeID:      "node-a",
+		DestinationNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("create service before restart: %v", err)
+	}
+
+	restarted := NewService(NoopPublisher{}).WithRepository(repository)
+	result, err := restarted.CreateServiceSegment(context.Background(), CreateServiceSegmentCommand{
+		ScheduledServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c801",
+		OriginStopRef:       "node-a",
+		DestinationStopRef:  "node-b",
+		DepartureTime:       time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:         time.Date(2026, 7, 5, 12, 30, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("create segment after restart: %v", err)
+	}
+	if result.ScheduledServiceRef != "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c801" || result.SegmentRef == "" {
+		t.Fatalf("unexpected segment result: %#v", result)
 	}
 }

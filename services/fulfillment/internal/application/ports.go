@@ -52,6 +52,8 @@ type ConsumedEventLog interface {
 	Claim(ctx context.Context, eventID string) (bool, error)
 }
 
+type UnitOfWork func(context.Context, func(context.Context) error) error
+
 type IDGenerator func(prefix string) string
 
 type Clock func() time.Time
@@ -62,6 +64,7 @@ type Service struct {
 	consumed ConsumedEventLog
 	idGen    IDGenerator
 	clock    Clock
+	uow      UnitOfWork
 	mu       sync.Mutex
 	tickets  map[string]TicketProjection
 }
@@ -83,6 +86,20 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{repo: repo, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}}
+}
+
+func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
+	if s != nil {
+		s.uow = uow
+	}
+	return s
+}
+
+func (s *Service) within(ctx context.Context, fn func(context.Context) error) error {
+	if s.uow == nil {
+		return fn(ctx)
+	}
+	return s.uow(ctx, fn)
 }
 
 type CommandMetadata struct {
@@ -146,18 +163,25 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 	if err := validateVerifyBoarding(cmd); err != nil {
 		return BoardingResult{}, err
 	}
-	record, err := s.readyRecordForCommand(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
-	if err != nil {
+	var result BoardingResult
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
+		if err != nil {
+			return err
+		}
+		receivedAt := s.clock().UTC()
+		if err := record.VerifyBoarding(cmd.EntitlementID, cmd.Source, cmd.SourceEventID, cmd.OccurredAt.UTC(), receivedAt, nil); err != nil {
+			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+		}
+		if err := s.saveAndPublishPending(txCtx, record, meta); err != nil {
+			return err
+		}
+		result = BoardingResult{FulfillmentRecordID: record.FulfillmentRecordID, EntitlementID: record.EntitlementID, Status: record.Status, OccurredAt: cmd.OccurredAt.UTC()}
+		return nil
+	}); err != nil {
 		return BoardingResult{}, err
 	}
-	receivedAt := s.clock().UTC()
-	if err := record.VerifyBoarding(cmd.EntitlementID, cmd.Source, cmd.SourceEventID, cmd.OccurredAt.UTC(), receivedAt, nil); err != nil {
-		return BoardingResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
-	}
-	if err := s.saveAndPublishPending(ctx, record, meta); err != nil {
-		return BoardingResult{}, err
-	}
-	return BoardingResult{FulfillmentRecordID: record.FulfillmentRecordID, EntitlementID: record.EntitlementID, Status: record.Status, OccurredAt: cmd.OccurredAt.UTC()}, nil
+	return result, nil
 }
 
 func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, meta CommandMetadata) (NoShowResult, error) {
@@ -167,18 +191,25 @@ func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, met
 	if err := validateNoShow(cmd); err != nil {
 		return NoShowResult{}, err
 	}
-	record, err := s.readyRecordForCommand(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
-	if err != nil {
+	var result NoShowResult
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
+		if err != nil {
+			return err
+		}
+		assessedAt := s.clock().UTC()
+		if err := record.RecordNoShow(cmd.Reason, assessedAt); err != nil {
+			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+		if err := s.saveAndPublishPending(txCtx, record, meta); err != nil {
+			return err
+		}
+		result = NoShowResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, AssessedAt: assessedAt}
+		return nil
+	}); err != nil {
 		return NoShowResult{}, err
 	}
-	assessedAt := s.clock().UTC()
-	if err := record.RecordNoShow(cmd.Reason, assessedAt); err != nil {
-		return NoShowResult{}, fmt.Errorf("%w: %v", ErrConflict, err)
-	}
-	if err := s.saveAndPublishPending(ctx, record, meta); err != nil {
-		return NoShowResult{}, err
-	}
-	return NoShowResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, AssessedAt: assessedAt}, nil
+	return result, nil
 }
 
 func (s *Service) RecordFulfillmentCompleted(ctx context.Context, cmd FulfillmentCompletedCommand, meta CommandMetadata) (FulfillmentCompletedResult, error) {
@@ -188,17 +219,24 @@ func (s *Service) RecordFulfillmentCompleted(ctx context.Context, cmd Fulfillmen
 	if err := validateSegmentProgress(cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, domain.FulfillmentSource(cmd.CompletionSource), cmd.CompletedAt, "completedAt"); err != nil {
 		return FulfillmentCompletedResult{}, err
 	}
-	record, err := s.readyRecordForCommand(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
-	if err != nil {
+	var result FulfillmentCompletedResult
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
+		if err != nil {
+			return err
+		}
+		if err := record.CompleteFulfillment(cmd.CompletionSource, cmd.CompletedAt.UTC()); err != nil {
+			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+		}
+		if err := s.saveAndPublishPending(txCtx, record, meta); err != nil {
+			return err
+		}
+		result = FulfillmentCompletedResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, CompletedAt: cmd.CompletedAt.UTC()}
+		return nil
+	}); err != nil {
 		return FulfillmentCompletedResult{}, err
 	}
-	if err := record.CompleteFulfillment(cmd.CompletionSource, cmd.CompletedAt.UTC()); err != nil {
-		return FulfillmentCompletedResult{}, fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
-	}
-	if err := s.saveAndPublishPending(ctx, record, meta); err != nil {
-		return FulfillmentCompletedResult{}, err
-	}
-	return FulfillmentCompletedResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, CompletedAt: cmd.CompletedAt.UTC()}, nil
+	return result, nil
 }
 
 func (s *Service) GetFulfillmentRecord(ctx context.Context, id domain.FulfillmentRecordID) (*domain.FulfillmentRecord, error) {
@@ -335,19 +373,28 @@ func (s *Service) applyEntitlementVoided(payload json.RawMessage) error {
 }
 
 func (s *Service) readyRecordForCommand(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
-	s.mu.Lock()
-	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
-	s.mu.Unlock()
-	if !ok {
-		return nil, ErrNotFound
+	record, err := s.readyRecord(ctx, entitlementID, segmentBookingID, segmentRef)
+	if err != nil {
+		return nil, err
 	}
-	if projection.JourneyOrderID != journeyOrderID || projection.TravelerID != travelerID {
-		return nil, fmt.Errorf("%w: command references do not match ticket read model", ErrDomainRuleViolation)
+	if record.JourneyOrderID != journeyOrderID || record.TravelerID != travelerID {
+		return nil, fmt.Errorf("%w: command references do not match persisted fulfillment record", ErrDomainRuleViolation)
 	}
-	return s.readyRecord(ctx, entitlementID, segmentBookingID, segmentRef)
+	return record, nil
 }
 
 func (s *Service) readyRecord(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
+	record, err := s.repo.FindByEntitlementSegment(ctx, entitlementID, segmentBookingID, segmentRef)
+	if err == nil {
+		if s.isTicketVoided(entitlementID, segmentBookingID) {
+			return nil, fmt.Errorf("%w: entitlement is VOIDED", ErrDomainRuleViolation)
+		}
+		return record, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
 	s.mu.Unlock()
@@ -361,6 +408,13 @@ func (s *Service) readyRecord(ctx context.Context, entitlementID domain.Entitlem
 		return nil, fmt.Errorf("%w: segmentRef does not match ticket read model", ErrDomainRuleViolation)
 	}
 	return s.ensureRecordFromProjection(ctx, projection)
+}
+
+func (s *Service) isTicketVoided(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
+	return ok && projection.Voided
 }
 
 func (s *Service) upsertTicketAndRecord(ctx context.Context, projection TicketProjection) error {

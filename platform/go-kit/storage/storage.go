@@ -53,7 +53,14 @@ func ReadyCheck(pool *pgxpool.Pool, migrationsReady func() bool) func(context.Co
 		if migrationsReady != nil && !migrationsReady() {
 			return fmt.Errorf("schema migrations are not ready")
 		}
-		return pool.Ping(ctx)
+		var one int
+		if err := pool.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
+			return err
+		}
+		if one != 1 {
+			return fmt.Errorf("postgres readiness probe returned %d", one)
+		}
+		return nil
 	}
 }
 

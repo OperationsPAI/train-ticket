@@ -38,14 +38,21 @@ func RouterWithService(service *application.Service) *gin.Engine {
 		HealthStatus: domain.Health(),
 		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
-	h := Handler{service: service, idempotency: idempotency.NewMemoryStore()}
+	RegisterRoutes(router, service, idempotency.NewMemoryStore())
+	return router
+}
+
+func RegisterRoutes(router gin.IRouter, service *application.Service, store idempotency.Store) {
+	if store == nil {
+		store = idempotency.NewMemoryStore()
+	}
+	h := Handler{service: service, idempotency: store}
 	idempotent := idempotency.Middleware(h.idempotency)
 	router.POST("/api/v1/suppliers", idempotent, h.postSupplier)
 	router.GET("/api/v1/suppliers/:supplierId", h.getSupplier)
 	router.GET("/api/v1/suppliers", h.listSuppliers)
 	router.POST("/api/v1/carriers", idempotent, h.postCarrier)
 	router.POST("/api/v1/contracts", idempotent, h.postContract)
-	return router
 }
 
 type registerSupplierRequest struct {
@@ -95,7 +102,12 @@ func (h Handler) getSupplier(c *gin.Context) {
 func (h Handler) listSuppliers(c *gin.Context) {
 	limit := queryInt(c, "limit", 20)
 	offset := queryInt(c, "offset", 0)
-	c.JSON(http.StatusOK, h.service.ListSuppliers(c.Request.Context(), c.Query("status"), limit, offset))
+	resp, err := h.service.ListSuppliers(c.Request.Context(), c.Query("status"), limit, offset)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h Handler) postCarrier(c *gin.Context) {
