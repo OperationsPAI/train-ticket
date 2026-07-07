@@ -2004,11 +2004,22 @@ struct EntitlementIssuedPayload {
 struct EntitlementVoidedPayload {
     entitlement_id: String,
     segment_booking_id: String,
+    references: EntitlementVoidedReferences,
     voided_at: String,
     reason: &'static str,
     policy: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     business_case_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct EntitlementVoidedReferences {
+    segment_booking_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    traveler_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2551,7 +2562,8 @@ impl InMemoryEntitlementService {
             .to_string();
         validate_prefixed_uuid(&order_id, "orderId", "ord-")?;
 
-        let actions = approved_void_actions(payload.get("approvedActions"));
+        let actions = approved_void_actions(payload.get("approvedActions"))
+            .map_err(ApiErrorKind::ValidationFailed)?;
         if actions.is_empty() {
             return Ok(());
         }
@@ -2596,26 +2608,20 @@ impl InMemoryEntitlementService {
 
         let mut pending_keys = Vec::new();
         for entitlement_id in entitlement_ids {
-            if !actions
+            let Some(action) = actions
                 .iter()
-                .any(|action| action.matches_entitlement(&entitlement_id))
-            {
+                .find(|action| action.matches_entitlement(&entitlement_id))
+            else {
                 continue;
-            }
-            let action = actions
-                .iter()
-                .find(|action| action.matches_entitlement(&entitlement_id));
-            let reason = action
-                .map(|action| action.reason.clone())
-                .unwrap_or(VoidReason::Refund);
-            let policy = action
-                .map(|action| action.policy.clone())
-                .unwrap_or(VoidPolicy::Normal);
-            let segment_booking_id = state
+            };
+            let reason = action.reason.clone();
+            let policy = action.policy.clone();
+            let entitlement_details = state
                 .entitlements
                 .get(&entitlement_id)
-                .map(|entitlement| entitlement.segment_booking_id.clone())
+                .cloned()
                 .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?;
+            let segment_booking_id = entitlement_details.segment_booking_id.clone();
             let pending_key = PendingEventKey::new(&entitlement_id, "EntitlementVoided");
             if state.pending_events.contains_key(&pending_key) {
                 pending_keys.push(pending_key);
@@ -2647,7 +2653,12 @@ impl InMemoryEntitlementService {
             }
             let payload = EntitlementVoidedPayload {
                 entitlement_id: entitlement_id.clone(),
-                segment_booking_id,
+                segment_booking_id: segment_booking_id.clone(),
+                references: EntitlementVoidedReferences {
+                    segment_booking_ref: segment_booking_id,
+                    order_ref: Some(entitlement_details.journey_order_id),
+                    traveler_ref: Some(entitlement_details.traveler_ref),
+                },
                 voided_at,
                 reason: reason_to_contract(&reason),
                 policy: policy_to_contract(&policy),
@@ -2918,12 +2929,12 @@ impl EntitlementApi for InMemoryEntitlementService {
                 .state
                 .lock()
                 .expect("entitlement service lock poisoned");
-            let segment_booking_id = state
+            let entitlement_details = state
                 .entitlements
                 .get(&entitlement_id)
-                .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?
-                .segment_booking_id
-                .clone();
+                .cloned()
+                .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".to_string()))?;
+            let segment_booking_id = entitlement_details.segment_booking_id.clone();
             let aggregate = state.aggregates.get_mut(&entitlement_id).ok_or_else(|| {
                 ApiErrorKind::NotFound("entitlement aggregate not found".to_string())
             })?;
@@ -2956,7 +2967,12 @@ impl EntitlementApi for InMemoryEntitlementService {
             }
             let event_payload = EntitlementVoidedPayload {
                 entitlement_id: entitlement_id.clone(),
-                segment_booking_id,
+                segment_booking_id: segment_booking_id.clone(),
+                references: EntitlementVoidedReferences {
+                    segment_booking_ref: segment_booking_id,
+                    order_ref: Some(entitlement_details.journey_order_id),
+                    traveler_ref: Some(entitlement_details.traveler_ref),
+                },
                 voided_at: voided_at.clone(),
                 reason: command.reason.to_contract(),
                 policy: command.policy.to_contract(),
@@ -3035,33 +3051,34 @@ impl EntitlementApi for InMemoryEntitlementService {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ApprovedVoidAction {
-    entitlement_ref: Option<String>,
+    entitlement_ref: String,
     reason: VoidReason,
     policy: VoidPolicy,
 }
 
 impl ApprovedVoidAction {
     fn matches_entitlement(&self, entitlement_id: &str) -> bool {
-        self.entitlement_ref
-            .as_deref()
-            .is_none_or(|reference| reference == entitlement_id)
+        self.entitlement_ref == entitlement_id
     }
 }
 
-fn approved_void_actions(value: Option<&Value>) -> Vec<ApprovedVoidAction> {
+fn approved_void_actions(value: Option<&Value>) -> Result<Vec<ApprovedVoidAction>, String> {
     let Some(value) = value else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut actions = Vec::new();
-    collect_void_actions(value, &mut actions);
-    actions
+    collect_void_actions(value, &mut actions)?;
+    Ok(actions)
 }
 
-fn collect_void_actions(value: &Value, actions: &mut Vec<ApprovedVoidAction>) {
+fn collect_void_actions(
+    value: &Value,
+    actions: &mut Vec<ApprovedVoidAction>,
+) -> Result<(), String> {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_void_actions(item, actions);
+                collect_void_actions(item, actions)?;
             }
         }
         Value::Object(map) => {
@@ -3069,33 +3086,37 @@ fn collect_void_actions(value: &Value, actions: &mut Vec<ApprovedVoidAction>) {
                 || action_type(map.get("actionType")).is_some_and(is_void_action_type)
                 || action_type(map.get("stepType")).is_some_and(is_void_action_type)
             {
+                let entitlement_ref = map
+                    .get("entitlementId")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or_else(|| "VOID_ENTITLEMENT missing entitlementId".to_string())?
+                    .to_string();
+                let reason = map
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "VOID_ENTITLEMENT missing reason".to_string())
+                    .and_then(parse_void_reason)?;
+                let policy = map
+                    .get("policy")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "VOID_ENTITLEMENT missing policy".to_string())
+                    .and_then(parse_void_policy)?;
                 actions.push(ApprovedVoidAction {
-                    entitlement_ref: map
-                        .get("entitlementId")
-                        .and_then(Value::as_str)
-                        .or_else(|| map.get("entitlementRef").and_then(Value::as_str))
-                        .or_else(|| map.get("targetRef").and_then(Value::as_str))
-                        .map(ToString::to_string),
-                    reason: map
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .map(parse_void_reason)
-                        .unwrap_or(VoidReason::Refund),
-                    policy: map
-                        .get("policy")
-                        .and_then(Value::as_str)
-                        .map(parse_void_policy)
-                        .unwrap_or(VoidPolicy::Normal),
+                    entitlement_ref,
+                    reason,
+                    policy,
                 });
             }
             for nested in map.values() {
                 if nested.is_array() || nested.is_object() {
-                    collect_void_actions(nested, actions);
+                    collect_void_actions(nested, actions)?;
                 }
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn action_type(value: Option<&Value>) -> Option<&str> {
@@ -3109,13 +3130,14 @@ fn is_void_action_type(value: &str) -> bool {
     )
 }
 
-fn parse_void_reason(value: &str) -> VoidReason {
+fn parse_void_reason(value: &str) -> Result<VoidReason, String> {
     match value {
-        "CHANGE" => VoidReason::Change,
-        "DISRUPTION" => VoidReason::Disruption,
-        "RISK" => VoidReason::Risk,
-        "MANUAL_CORRECTION" => VoidReason::ManualCorrection,
-        _ => VoidReason::Refund,
+        "REFUND" => Ok(VoidReason::Refund),
+        "CHANGE" => Ok(VoidReason::Change),
+        "DISRUPTION" => Ok(VoidReason::Disruption),
+        "RISK" => Ok(VoidReason::Risk),
+        "MANUAL_CORRECTION" => Ok(VoidReason::ManualCorrection),
+        other => Err(format!("VOID_ENTITLEMENT invalid reason {other}")),
     }
 }
 
@@ -3129,10 +3151,11 @@ pub(crate) fn reason_to_contract(value: &VoidReason) -> &'static str {
     }
 }
 
-fn parse_void_policy(value: &str) -> VoidPolicy {
+fn parse_void_policy(value: &str) -> Result<VoidPolicy, String> {
     match value {
-        "EXCEPTIONAL_RULE" => VoidPolicy::ExceptionalRule,
-        _ => VoidPolicy::Normal,
+        "NORMAL" => Ok(VoidPolicy::Normal),
+        "EXCEPTIONAL_RULE" => Ok(VoidPolicy::ExceptionalRule),
+        other => Err(format!("VOID_ENTITLEMENT invalid policy {other}")),
     }
 }
 
@@ -3552,7 +3575,7 @@ mod api_domain_wiring_tests {
                     "caseId": "psc-0194f2e0-7b3e-7610-0284-5c26e8b0f777",
                     "orderId": "ord-0194f2e0-7b3e-7610-0284-5c26e8b0f222",
                     "approvedActions": [
-                        {"type": "VOID_ENTITLEMENT", "reason": "REFUND", "policy": "NORMAL"}
+                        {"type": "VOID_ENTITLEMENT", "entitlementId": issue_response.entitlement_id, "reason": "REFUND", "policy": "NORMAL"}
                     ]
                 }),
             ))
@@ -3584,6 +3607,27 @@ mod api_domain_wiring_tests {
             "psc-0194f2e0-7b3e-7610-0284-5c26e8b0f777"
         );
         assert!(voided.payload.get("status").is_none());
+    }
+
+    #[test]
+    fn post_sales_void_action_requires_contract_fields_and_enums() {
+        let missing_entitlement = approved_void_actions(Some(&json!({
+            "steps": [{"type": "VOID_ENTITLEMENT", "reason": "REFUND", "policy": "NORMAL"}]
+        })))
+        .unwrap_err();
+        assert!(missing_entitlement.contains("entitlementId"));
+
+        let missing_reason = approved_void_actions(Some(&json!({
+            "steps": [{"type": "VOID_ENTITLEMENT", "entitlementId": "ent-0194f2e0-7b3e-7610-0284-5c26e8b0f111", "policy": "NORMAL"}]
+        })))
+        .unwrap_err();
+        assert!(missing_reason.contains("reason"));
+
+        let invalid_policy = approved_void_actions(Some(&json!({
+            "steps": [{"type": "VOID_ENTITLEMENT", "entitlementId": "ent-0194f2e0-7b3e-7610-0284-5c26e8b0f111", "reason": "REFUND", "policy": "FORCE"}]
+        })))
+        .unwrap_err();
+        assert!(invalid_policy.contains("invalid policy"));
     }
 
     #[tokio::test]

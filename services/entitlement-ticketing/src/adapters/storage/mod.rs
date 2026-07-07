@@ -355,7 +355,8 @@ impl PostgresEntitlementService {
         {
             return Err(InboundEventError::Fatal("missing approvedActions".into()));
         }
-        let actions = approved_void_actions(envelope.payload.get("approvedActions"));
+        let actions = approved_void_actions(envelope.payload.get("approvedActions"))
+            .map_err(InboundEventError::Fatal)?;
         if actions.is_empty() {
             let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
             mark_once(&mut tx, &envelope).await?;
@@ -397,21 +398,14 @@ impl PostgresEntitlementService {
             .await
             .map_err(inbound_from_api_error)?;
         for snapshot in snapshots {
-            if !actions
+            let Some(action) = actions
                 .iter()
-                .any(|action| action.matches_entitlement(&snapshot.id))
-            {
+                .find(|action| action.matches_entitlement(&snapshot.id))
+            else {
                 continue;
-            }
-            let action = actions
-                .iter()
-                .find(|action| action.matches_entitlement(&snapshot.id));
-            let reason = action
-                .map(|a| a.reason.clone())
-                .unwrap_or(VoidReason::Refund);
-            let policy = action
-                .map(|a| a.policy.clone())
-                .unwrap_or(VoidPolicy::Normal);
+            };
+            let reason = action.reason.clone();
+            let policy = action.policy.clone();
             let mut entitlement = snapshot
                 .data
                 .try_into_domain()
@@ -1273,6 +1267,11 @@ fn entitlement_voided_envelope(
         serde_json::to_value(EntitlementVoidedPayload {
             entitlement_id: aggregate.id.to_string(),
             segment_booking_id: aggregate.segment_booking_ref.to_string(),
+            references: EntitlementVoidedReferences {
+                segment_booking_ref: aggregate.segment_booking_ref.to_string(),
+                order_ref: Some(aggregate.journey_order_ref.to_string()),
+                traveler_ref: Some(aggregate.traveler_ref.to_string()),
+            },
             voided_at,
             reason: reason_to_contract(reason),
             policy: policy_to_contract(policy),
@@ -1339,6 +1338,21 @@ mod tests {
             segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0aa14".to_string(),
             issue_purpose: IssuePurposeDto::Initial,
         }
+    }
+
+    #[test]
+    fn post_sales_void_action_contract_violations_are_fatal_before_db_writes() {
+        let missing_entitlement = approved_void_actions(Some(&serde_json::json!({
+            "steps": [{"type": "VOID_ENTITLEMENT", "reason": "REFUND", "policy": "NORMAL"}]
+        })))
+        .unwrap_err();
+        assert!(missing_entitlement.contains("entitlementId"));
+
+        let invalid_reason = approved_void_actions(Some(&serde_json::json!({
+            "steps": [{"type": "VOID_ENTITLEMENT", "entitlementId": "ent-0194f2e0-7b3e-7610-8284-5c26e8b0aa15", "reason": "OTHER", "policy": "NORMAL"}]
+        })))
+        .unwrap_err();
+        assert!(invalid_reason.contains("invalid reason"));
     }
 
     #[tokio::test]
