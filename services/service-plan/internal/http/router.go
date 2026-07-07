@@ -101,7 +101,7 @@ func (h Handler) createScheduledService(ctx *gin.Context) {
 }
 
 func (h Handler) getScheduledService(ctx *gin.Context) {
-	service, err := h.service.GetScheduledService(ctx.Param("serviceRef"))
+	service, err := h.service.GetScheduledService(ctx.Request.Context(), ctx.Param("serviceRef"))
 	if err != nil {
 		writeMappedError(ctx, err)
 		return
@@ -120,7 +120,12 @@ func (h Handler) listScheduledServices(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "offset must be a non-negative integer", nil)
 		return
 	}
-	ctx.JSON(http.StatusOK, h.service.ListScheduledServices(application.ListScheduledServicesQuery{Limit: limit, Offset: offset, CarrierID: strings.TrimSpace(ctx.Query("carrierId"))}))
+	page, err := h.service.ListScheduledServices(ctx.Request.Context(), application.ListScheduledServicesQuery{Limit: limit, Offset: offset, CarrierID: strings.TrimSpace(ctx.Query("carrierId"))})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, page)
 }
 
 func (h Handler) createServiceSegment(ctx *gin.Context) {
@@ -167,7 +172,7 @@ func writeMappedError(ctx *gin.Context, err error) {
 	case errors.Is(err, application.ErrPublish):
 		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Service is temporarily unavailable", nil)
 	default:
-		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Service is temporarily unavailable", nil)
+		httpkit.WriteError(ctx, http.StatusInternalServerError, httpkit.Unavailable, "internal error", nil)
 	}
 }
 

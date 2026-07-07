@@ -373,19 +373,28 @@ func (s *Service) applyEntitlementVoided(payload json.RawMessage) error {
 }
 
 func (s *Service) readyRecordForCommand(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
-	s.mu.Lock()
-	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
-	s.mu.Unlock()
-	if !ok {
-		return nil, ErrNotFound
+	record, err := s.readyRecord(ctx, entitlementID, segmentBookingID, segmentRef)
+	if err != nil {
+		return nil, err
 	}
-	if projection.JourneyOrderID != journeyOrderID || projection.TravelerID != travelerID {
-		return nil, fmt.Errorf("%w: command references do not match ticket read model", ErrDomainRuleViolation)
+	if record.JourneyOrderID != journeyOrderID || record.TravelerID != travelerID {
+		return nil, fmt.Errorf("%w: command references do not match persisted fulfillment record", ErrDomainRuleViolation)
 	}
-	return s.readyRecord(ctx, entitlementID, segmentBookingID, segmentRef)
+	return record, nil
 }
 
 func (s *Service) readyRecord(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
+	record, err := s.repo.FindByEntitlementSegment(ctx, entitlementID, segmentBookingID, segmentRef)
+	if err == nil {
+		if s.isTicketVoided(entitlementID, segmentBookingID) {
+			return nil, fmt.Errorf("%w: entitlement is VOIDED", ErrDomainRuleViolation)
+		}
+		return record, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
 	s.mu.Unlock()
@@ -399,6 +408,13 @@ func (s *Service) readyRecord(ctx context.Context, entitlementID domain.Entitlem
 		return nil, fmt.Errorf("%w: segmentRef does not match ticket read model", ErrDomainRuleViolation)
 	}
 	return s.ensureRecordFromProjection(ctx, projection)
+}
+
+func (s *Service) isTicketVoided(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	projection, ok := s.tickets[ticketKey(entitlementID, segmentBookingID)]
+	return ok && projection.Voided
 }
 
 func (s *Service) upsertTicketAndRecord(ctx context.Context, projection TicketProjection) error {

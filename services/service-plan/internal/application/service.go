@@ -291,10 +291,10 @@ func (s *Service) buildScheduledService(command CreateScheduledServiceCommand) (
 	return scheduledServiceState{aggregate: aggregate, view: view}, result, nil
 }
 
-func (s *Service) GetScheduledService(serviceRef string) (ScheduledService, error) {
+func (s *Service) GetScheduledService(ctx context.Context, serviceRef string) (ScheduledService, error) {
 	serviceRef = strings.TrimSpace(serviceRef)
 	if s.repository != nil {
-		return s.repository.FindScheduledService(context.TODO(), serviceRef)
+		return s.repository.FindScheduledService(ctx, serviceRef)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,13 +305,14 @@ func (s *Service) GetScheduledService(serviceRef string) (ScheduledService, erro
 	return state.view, nil
 }
 
-func (s *Service) ListScheduledServices(query ListScheduledServicesQuery) PaginatedScheduledServices {
+func (s *Service) ListScheduledServices(ctx context.Context, query ListScheduledServicesQuery) (PaginatedScheduledServices, error) {
 	if s.repository != nil {
-		page, err := s.repository.ListScheduledServices(context.TODO(), query)
-		if err == nil {
-			return page
-		}
+		return s.repository.ListScheduledServices(ctx, query)
 	}
+	return s.listScheduledServicesFromMemory(query), nil
+}
+
+func (s *Service) listScheduledServicesFromMemory(query ListScheduledServicesQuery) PaginatedScheduledServices {
 	if query.Limit <= 0 {
 		query.Limit = 20
 	}
@@ -348,14 +349,11 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		return CreateServiceSegmentResult{}, err
 	}
 
-	s.mu.Lock()
-	state, exists := s.scheduledServices[strings.TrimSpace(command.ScheduledServiceRef)]
-	if !exists {
-		s.mu.Unlock()
-		return CreateServiceSegmentResult{}, fmt.Errorf("%w: scheduled service", ErrNotFound)
+	state, err := s.loadScheduledServiceState(ctx, strings.TrimSpace(command.ScheduledServiceRef))
+	if err != nil {
+		return CreateServiceSegmentResult{}, err
 	}
-	if !hasDomainSegment(state.aggregate, command.OriginStopRef, command.DestinationStopRef) {
-		s.mu.Unlock()
+	if !serviceViewHasSegment(state.view, command.OriginStopRef, command.DestinationStopRef) {
 		return CreateServiceSegmentResult{}, fmt.Errorf("%w: requested segment is not part of scheduled service", ErrDomainRule)
 	}
 	segment := ServiceSegment{
@@ -376,10 +374,10 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		"arrivalTime":         segment.ArrivalTime,
 	})
 	if err != nil {
-		s.mu.Unlock()
 		return CreateServiceSegmentResult{}, err
 	}
 	envelope := s.newEnvelope("ServicePlanChanged", command.CorrelationID, command.CausationID, payload)
+	s.mu.Lock()
 	s.segments[segment.SegmentRef] = segment
 	s.pendingEvents = append(s.pendingEvents, envelope)
 	s.mu.Unlock()
@@ -399,6 +397,53 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		return CreateServiceSegmentResult{}, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
 	return result, nil
+}
+
+func (s *Service) loadScheduledServiceState(ctx context.Context, serviceRef string) (scheduledServiceState, error) {
+	if s.repository != nil {
+		service, err := s.repository.FindScheduledService(ctx, serviceRef)
+		if err != nil {
+			return scheduledServiceState{}, err
+		}
+		state, err := s.stateFromScheduledService(service)
+		if err != nil {
+			return scheduledServiceState{}, err
+		}
+		s.mu.Lock()
+		s.scheduledServices[service.ScheduledServiceRef] = state
+		s.mu.Unlock()
+		return state, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, exists := s.scheduledServices[serviceRef]
+	if !exists {
+		return scheduledServiceState{}, fmt.Errorf("%w: scheduled service", ErrNotFound)
+	}
+	return state, nil
+}
+
+func (s *Service) stateFromScheduledService(service ScheduledService) (scheduledServiceState, error) {
+	command := CreateScheduledServiceCommand{
+		ServiceRef:        service.ScheduledServiceRef,
+		CarrierID:         service.CarrierID,
+		ServiceNumber:     service.ServiceNumber,
+		DepartureTime:     service.DepartureTime,
+		ArrivalTime:       service.ArrivalTime,
+		OriginNodeID:      service.OriginNodeID,
+		DestinationNodeID: service.DestinationNodeID,
+		Status:            service.Status,
+	}
+	state, _, err := s.buildScheduledService(command)
+	if err != nil {
+		return scheduledServiceState{}, err
+	}
+	state.view = service
+	return state, nil
+}
+
+func serviceViewHasSegment(service ScheduledService, originStopRef, destinationStopRef string) bool {
+	return strings.TrimSpace(service.OriginNodeID) == strings.TrimSpace(originStopRef) && strings.TrimSpace(service.DestinationNodeID) == strings.TrimSpace(destinationStopRef)
 }
 
 func (s *Service) removePendingEvent(eventID string) {
@@ -530,15 +575,4 @@ func serviceDate(value time.Time) time.Time {
 
 func domainRule(err error) error {
 	return fmt.Errorf("%w: %v", ErrDomainRule, err)
-}
-
-func hasDomainSegment(service domain.ScheduledService, originStopRef, destinationStopRef string) bool {
-	originStopRef = strings.TrimSpace(originStopRef)
-	destinationStopRef = strings.TrimSpace(destinationStopRef)
-	for _, segment := range service.Segments() {
-		if string(segment.FromNodeID) == originStopRef && string(segment.ToNodeID) == destinationStopRef {
-			return true
-		}
-	}
-	return false
 }
