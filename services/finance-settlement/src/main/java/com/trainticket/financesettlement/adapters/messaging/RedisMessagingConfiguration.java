@@ -68,6 +68,8 @@ public class RedisMessagingConfiguration {
 
             @Override
             public void start() {
+                org.slf4j.LoggerFactory.getLogger(RedisMessagingConfiguration.class)
+                    .info("service=finance-settlement subscribing handlerClass={}", handler.getClass().getName());
                 subscriber.subscribe(
                     RedisMessagingProperties.SUBSCRIBED_STREAMS,
                     RedisMessagingProperties.CONSUMER_GROUP,

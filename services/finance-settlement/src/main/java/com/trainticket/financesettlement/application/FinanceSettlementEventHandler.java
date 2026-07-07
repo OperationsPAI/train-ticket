@@ -1,5 +1,7 @@
 package com.trainticket.financesettlement.application;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.trainticket.financesettlement.domain.ConsumedEventLog;
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.Money;
@@ -16,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 public class FinanceSettlementEventHandler implements EventSubscriber.EventHandler {
+    private static final Logger LOGGER = LoggerFactory.getLogger(FinanceSettlementEventHandler.class);
     private final ConsumedEventLogRepository consumedEvents;
     private final PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
     private final SegmentBookingOrderReferenceRepository segmentBookingOrderReferences;
@@ -101,9 +104,13 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             }
             return HandlerResult.SUCCESS;
         } catch (PublishFailedException | OutOfOrderEventException ex) {
+            LOGGER.warn("service=finance-settlement eventId={} eventType={} transient handling failure",
+                envelope.eventId(), envelope.eventType(), ex);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.TRANSIENT_FAILURE;
         } catch (DomainRuleViolation | IllegalArgumentException ex) {
+            LOGGER.warn("service=finance-settlement eventId={} eventType={} fatal handling failure",
+                envelope.eventId(), envelope.eventType(), ex);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.FATAL_FAILURE;
         }
@@ -124,6 +131,9 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             case "PaymentIntentCreated" -> rememberPaymentIntentOrderReference(payload);
             case "SegmentReservationRequested" -> rememberSegmentBookingOrderReference(payload);
             case "PaymentCaptured" -> {
+                LOGGER.info("service=finance-settlement PaymentCaptured eventId={} serviceWired={} projections={} serviceRepos={}",
+                    envelope.eventId(), service != null, projections.getClass().getSimpleName(),
+                    service == null ? "-" : service.describeWiring());
                 if (service != null) recognizeCapturedPayment(envelope, payload);
             }
             case "ProviderReservationConfirmed", "SegmentBookingCancelled" -> {

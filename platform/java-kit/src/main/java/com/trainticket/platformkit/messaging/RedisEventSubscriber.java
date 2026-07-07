@@ -84,6 +84,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                     // Keep the subscriber alive; messages read but not acked remain in the Redis PEL for recovery/DLQ policy.
                     // Consumer-group creation and polling both happen in this background loop so Redis outages
                     // never abort service startup. Failures back off and retry on the next loop.
+                    LOGGER.warn("service={} stream={} poll iteration failed; backing off", group, stream, exception);
                     sleepQuietly(POLL_FAILURE_BACKOFF_MILLIS);
                 }
             }
@@ -129,6 +130,9 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             result = handler.handle(envelope);
         } catch (RuntimeException exception) {
+            LOGGER.warn(
+                "service={} stream={} eventId={} attempt={} handler threw; message stays pending for retry",
+                group, stream, envelope.eventId(), deliveryAttempts, exception);
             rememberLastFailure(stream, message.id(), exception);
             return;
         }

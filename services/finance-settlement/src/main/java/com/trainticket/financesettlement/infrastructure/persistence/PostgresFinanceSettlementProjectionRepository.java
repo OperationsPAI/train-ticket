@@ -58,7 +58,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             orderId,
             capture.paymentIntentId(),
             capture.amount().currency().getCurrencyCode(),
-            capture.amount().amount().toPlainString(),
+            capture.amount().amount(),
             capture.sourceEventId()
         );
     }
@@ -85,7 +85,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                 """,
             caseId,
             amount.currency().getCurrencyCode(),
-            amount.amount().toPlainString()
+            amount.amount()
         );
     }
 

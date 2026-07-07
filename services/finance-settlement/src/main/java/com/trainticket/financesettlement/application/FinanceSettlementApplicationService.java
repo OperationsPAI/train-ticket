@@ -102,6 +102,11 @@ public class FinanceSettlementApplicationService {
         });
     }
 
+    public String describeWiring() {
+        return revenueRecognitions.getClass().getSimpleName() + "/" + reconciliationCases.getClass().getSimpleName()
+            + "/" + invoices.getClass().getSimpleName() + "/" + eventPublisher.getClass().getSimpleName();
+    }
+
     public void saveAndPublish(RevenueRecognition recognition) {
         saveAndPublish(recognition, 0);
     }
