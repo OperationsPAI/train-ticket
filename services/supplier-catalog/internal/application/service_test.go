@@ -56,7 +56,10 @@ func TestPublishFailureRetainsEventAndFlushesOnRetry(t *testing.T) {
 	if len(publisher.envelopes) != 0 {
 		t.Fatalf("unexpected published envelopes after failure: %d", len(publisher.envelopes))
 	}
-	suppliers := service.ListSuppliers(context.Background(), "", 20, 0)
+	suppliers, err := service.ListSuppliers(context.Background(), "", 20, 0)
+	if err != nil {
+		t.Fatalf("list suppliers: %v", err)
+	}
 	if suppliers.Total != 1 {
 		t.Fatalf("expected mutation retained after publish failure, got %d suppliers", suppliers.Total)
 	}

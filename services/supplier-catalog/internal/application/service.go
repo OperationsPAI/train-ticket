@@ -195,12 +195,9 @@ func (s *Service) GetSupplier(ctx context.Context, supplierID string) (domain.Su
 	return supplier, nil
 }
 
-func (s *Service) ListSuppliers(ctx context.Context, status string, limit, offset int) SupplierList {
+func (s *Service) ListSuppliers(ctx context.Context, status string, limit, offset int) (SupplierList, error) {
 	if s.repository != nil {
-		list, err := s.repository.ListSuppliers(ctx, status, limit, offset)
-		if err == nil {
-			return list
-		}
+		return s.repository.ListSuppliers(ctx, status, limit, offset)
 	}
 	if limit <= 0 {
 		limit = 20
@@ -231,7 +228,7 @@ func (s *Service) ListSuppliers(ctx context.Context, status string, limit, offse
 		}
 		items = items[offset:end]
 	}
-	return SupplierList{Items: items, Total: total, Limit: limit, Offset: offset}
+	return SupplierList{Items: items, Total: total, Limit: limit, Offset: offset}, nil
 }
 
 func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierCommand) (CarrierView, error) {

@@ -39,14 +39,15 @@ func (s *ReservationService) within(ctx context.Context, fn func(context.Context
 func (s *ReservationService) RequestReservation(ctx context.Context, cmd application.RequestProviderReservationCommand) (application.ProviderReservationResult, error) {
 	if existing, err := s.findReservation(ctx, cmd.SegmentBookingID); err == nil {
 		return existing, nil
+	} else if !errors.Is(err, application.ErrNotFound) {
+		return application.ProviderReservationResult{}, err
 	}
-	var result application.ProviderReservationResult
+	created, err := application.BuildProviderReservationResult(cmd)
+	if err != nil {
+		return application.ProviderReservationResult{}, err
+	}
+	var inserted bool
 	if err := s.within(ctx, func(txCtx context.Context) error {
-		mem := application.NewInMemoryReservationService(s.publisher)
-		created, err := mem.RequestReservation(txCtx, cmd)
-		if err != nil {
-			return err
-		}
 		data, err := json.Marshal(created)
 		if err != nil {
 			return err
@@ -58,15 +59,26 @@ func (s *ReservationService) RequestReservation(ctx context.Context, cmd applica
 			}
 			return err
 		}
-		result = created
-		return nil
+		inserted = true
+		if s.publisher == nil {
+			return nil
+		}
+		envelope, err := application.NewEventEnvelope("ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
+			"segmentBookingId":   created.SegmentBookingID,
+			"providerReference":  created.ProviderReference,
+			"normalizedEvidence": created.NormalizedEvidence,
+		})
+		if err != nil {
+			return err
+		}
+		return s.publisher.Publish(txCtx, envelope)
 	}); err != nil {
 		return application.ProviderReservationResult{}, err
 	}
-	if result.SegmentBookingID == "" {
+	if !inserted {
 		return s.findReservation(ctx, cmd.SegmentBookingID)
 	}
-	return result, nil
+	return created, nil
 }
 
 func (s *ReservationService) CancelReservation(ctx context.Context, cmd application.CancelProviderReservationCommand) (application.CancelProviderReservationResult, error) {

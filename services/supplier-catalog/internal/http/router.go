@@ -102,7 +102,12 @@ func (h Handler) getSupplier(c *gin.Context) {
 func (h Handler) listSuppliers(c *gin.Context) {
 	limit := queryInt(c, "limit", 20)
 	offset := queryInt(c, "offset", 0)
-	c.JSON(http.StatusOK, h.service.ListSuppliers(c.Request.Context(), c.Query("status"), limit, offset))
+	resp, err := h.service.ListSuppliers(c.Request.Context(), c.Query("status"), limit, offset)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h Handler) postCarrier(c *gin.Context) {

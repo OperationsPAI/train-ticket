@@ -183,27 +183,30 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
 
 	if err := s.within(ctx, func(txCtx context.Context) error {
-		s.mu.Lock()
-		if _, exists := s.scheduledServices[state.view.ScheduledServiceRef]; exists {
-			s.mu.Unlock()
-			return fmt.Errorf("%w: scheduled service already exists", ErrConflict)
-		}
-		s.scheduledServices[state.view.ScheduledServiceRef] = state
-		s.pendingEvents = append(s.pendingEvents, envelope)
-		s.mu.Unlock()
 		if s.repository != nil {
 			if err := s.repository.SaveScheduledService(txCtx, state.view); err != nil {
 				return err
 			}
+		} else {
+			s.mu.Lock()
+			if _, exists := s.scheduledServices[state.view.ScheduledServiceRef]; exists {
+				s.mu.Unlock()
+				return fmt.Errorf("%w: scheduled service already exists", ErrConflict)
+			}
+			s.mu.Unlock()
 		}
 		if err := s.publisher.Publish(txCtx, envelope); err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrPublish, err)
 		}
-		s.removePendingEvent(envelope.EventID)
 		return nil
 	}); err != nil {
-		return CreateScheduledServiceResult{}, fmt.Errorf("%w: %v", ErrPublish, err)
+		return CreateScheduledServiceResult{}, err
 	}
+	s.mu.Lock()
+	s.scheduledServices[state.view.ScheduledServiceRef] = state
+	s.pendingEvents = append(s.pendingEvents, envelope)
+	s.removePendingEventLocked(envelope.EventID)
+	s.mu.Unlock()
 	return result, nil
 }
 
@@ -449,6 +452,10 @@ func serviceViewHasSegment(service ScheduledService, originStopRef, destinationS
 func (s *Service) removePendingEvent(eventID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.removePendingEventLocked(eventID)
+}
+
+func (s *Service) removePendingEventLocked(eventID string) {
 	for i, pending := range s.pendingEvents {
 		if pending.EventID == eventID {
 			s.pendingEvents = append(s.pendingEvents[:i], s.pendingEvents[i+1:]...)
