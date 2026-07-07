@@ -21,7 +21,7 @@ const MAX_RETRIES: usize = 3;
 
 #[derive(Clone)]
 pub struct PostgresCapacityService {
-    pool: PgPool,
+    storage: Storage,
     inventory_repo: SnapshotRepository,
     hold_repo: SnapshotRepository,
     snapshot_repo: SnapshotRepository,
@@ -44,12 +44,18 @@ impl PostgresCapacityService {
                 }
             }
         }
-        Self::new(storage.pool().clone())
+        Self::from_storage(storage)
     }
 
     pub fn new(pool: PgPool) -> Result<Self, StorageError> {
+        let storage = Storage::new(pool);
+        storage.mark_migrations_ready();
+        Self::from_storage(storage)
+    }
+
+    pub fn from_storage(storage: Storage) -> Result<Self, StorageError> {
         Ok(Self {
-            pool,
+            storage,
             inventory_repo: SnapshotRepository::new(INVENTORY_TABLE)?,
             hold_repo: SnapshotRepository::new(HOLD_TABLE)?,
             snapshot_repo: SnapshotRepository::new(SNAPSHOT_TABLE)?,
@@ -57,7 +63,11 @@ impl PostgresCapacityService {
     }
 
     pub fn pool(&self) -> &PgPool {
-        &self.pool
+        self.storage.pool()
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        self.storage.is_ready().await
     }
 
     pub async fn query_availability(
@@ -118,7 +128,7 @@ impl PostgresCapacityService {
             available_count,
             status,
         };
-        let mut tx = self.pool.begin().await.map_err(to_app_storage)?;
+        let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
         self.snapshot_repo
             .save(&mut tx, &response.snapshot_id, None, &response)
             .await
@@ -163,7 +173,7 @@ impl PostgresCapacityService {
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
         let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
-        let mut tx = self.pool.begin().await.map_err(to_app_storage)?;
+        let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
         if let Some(resp) = self
             .claim_idempotency::<HoldCapacityResponse>(&mut tx, idempotency_key, fingerprint)
             .await?
@@ -342,7 +352,7 @@ impl PostgresCapacityService {
                     .await?
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
                 let pool_id = hold_snapshot.data.inventory_pool_id.clone();
-                let mut tx = self.pool.begin().await.map_err(to_app_storage)?;
+                let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
                 if let Some(resp) = self
                     .claim_idempotency::<T>(&mut tx, idempotency_key, fingerprint)
                     .await?
@@ -458,7 +468,7 @@ impl PostgresCapacityService {
         idempotency_key: &str,
         fingerprint: &str,
     ) -> Result<Option<T>, AppError> {
-        let store = DbIdempotencyStore::new(self.pool.clone());
+        let store = DbIdempotencyStore::new(self.pool().clone());
         let Some(record) = store
             .get_async(idempotency_key)
             .await
@@ -521,7 +531,7 @@ impl PostgresCapacityService {
         hold_id: &str,
     ) -> Result<Option<Snapshot<CapacityHoldSnapshot>>, AppError> {
         self.hold_repo
-            .get::<CapacityHoldSnapshot>(&self.pool, hold_id)
+            .get::<CapacityHoldSnapshot>(self.pool(), hold_id)
             .await
             .map_err(to_app_storage)
     }
@@ -537,7 +547,7 @@ impl PostgresCapacityService {
         let rows: Vec<(Value,)> = sqlx::query_as(&sql)
             .bind(scheduled_service_ref)
             .bind(segment_ref)
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool())
             .await
             .map_err(to_app_storage)?;
         rows.into_iter()
@@ -632,7 +642,7 @@ impl PostgresCapacityService {
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
         let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
-        let mut tx = self.pool.begin().await.map_err(inbound_transient)?;
+        let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
             .await
             .map_err(inbound_transient)?
@@ -860,7 +870,7 @@ impl PostgresCapacityService {
         M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
         R: Fn(&DomainEvent) -> T,
     {
-        let mut tx = self.pool.begin().await.map_err(inbound_transient)?;
+        let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
             .await
             .map_err(inbound_transient)?

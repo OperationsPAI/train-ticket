@@ -5,6 +5,8 @@ pub mod domain;
 pub mod ports;
 
 use axum::Router;
+#[cfg(feature = "redis-impl")]
+use axum::{Json, http::StatusCode, routing::get};
 use serde::Serialize;
 use shared_kernel::{OpenTelemetryObserver, RuntimeConfig, apply_runtime, router_with_config};
 
@@ -122,10 +124,59 @@ pub fn router_with_service(service: std::sync::Arc<CapacityService>) -> Router {
 pub fn router_with_postgres_service(
     service: std::sync::Arc<adapters::storage::PostgresCapacityService>,
 ) -> Router {
-    let api_router = api::postgres_router(service);
-    let standard_router = router_with_config(runtime_config());
+    let api_router = api::postgres_router(service.clone());
+    let metadata = serde_json::to_value(metadata()).unwrap_or_else(|_| serde_json::json!({}));
+    let standard_router = Router::new()
+        .route("/health", get(health_handler))
+        .route("/healthz", get(health_handler))
+        .route("/live", get(live_handler))
+        .route("/livez", get(live_handler))
+        .route("/ready", get(postgres_ready_handler))
+        .route("/readyz", get(postgres_ready_handler))
+        .route(
+            "/metadata",
+            get(move || {
+                let metadata = metadata.clone();
+                async move { Json(metadata) }
+            }),
+        )
+        .layer(axum::extract::Extension(service));
     let full_router = axum::Router::new().merge(standard_router).merge(api_router);
     apply_runtime(full_router, runtime_config())
+}
+
+#[cfg(feature = "redis-impl")]
+#[derive(Debug, Serialize)]
+struct ProbeResponse {
+    status: &'static str,
+}
+
+#[cfg(feature = "redis-impl")]
+async fn health_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: health() })
+}
+
+#[cfg(feature = "redis-impl")]
+async fn live_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: "alive" })
+}
+
+#[cfg(feature = "redis-impl")]
+async fn postgres_ready_handler(
+    axum::extract::Extension(service): axum::extract::Extension<
+        std::sync::Arc<adapters::storage::PostgresCapacityService>,
+    >,
+) -> (StatusCode, Json<ProbeResponse>) {
+    if service.is_ready().await {
+        (StatusCode::OK, Json(ProbeResponse { status: "ready" }))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ProbeResponse {
+                status: "not_ready",
+            }),
+        )
+    }
 }
 
 #[cfg(feature = "redis-impl")]

@@ -1,5 +1,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -55,6 +59,7 @@ impl From<serde_json::Error> for StorageError {
 #[derive(Clone)]
 pub struct Storage {
     pool: PgPool,
+    migrations_ready: Arc<AtomicBool>,
 }
 
 impl Storage {
@@ -73,23 +78,45 @@ impl Storage {
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            migrations_ready: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            migrations_ready: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 
+    pub fn mark_migrations_ready(&self) {
+        self.migrations_ready.store(true, Ordering::SeqCst);
+    }
+
     pub async fn is_ready(&self) -> bool {
-        sqlx::query("SELECT 1").execute(&self.pool).await.is_ok()
+        if !self.migrations_ready.load(Ordering::SeqCst) {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                sqlx::query("SELECT 1").execute(&self.pool),
+            )
+            .await,
+            Ok(Ok(_))
+        )
     }
 
     pub async fn migrate_dir(&self, migrations_dir: impl AsRef<Path>) -> Result<(), StorageError> {
-        run_migrations(&self.pool, migrations_dir).await
+        run_migrations(&self.pool, migrations_dir).await?;
+        self.mark_migrations_ready();
+        Ok(())
     }
 }
 
