@@ -8,6 +8,7 @@ import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -17,6 +18,7 @@ public class PostgresRefundRepository implements RefundRepository {
     private final ObjectMapper objectMapper;
     private final SnapshotRepository<JacksonPaymentJson.RefundSnapshot> snapshots;
 
+    @Autowired
     public PostgresRefundRepository(DataSource dataSource, ObjectMapper objectMapper) {
         this(objectMapper, new SnapshotRepository<>(dataSource, objectMapper, "refund_snapshots", JacksonPaymentJson.RefundSnapshot.class));
     }

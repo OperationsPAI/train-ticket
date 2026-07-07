@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -18,6 +19,7 @@ public class PostgresReservationPaymentRequestRepository implements ReservationP
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public PostgresReservationPaymentRequestRepository(DataSource dataSource, ObjectMapper objectMapper) {
         this.jdbc = new JdbcTemplate(dataSource);
         this.objectMapper = objectMapper;

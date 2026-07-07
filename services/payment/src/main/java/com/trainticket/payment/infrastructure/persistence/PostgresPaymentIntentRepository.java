@@ -10,6 +10,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -20,6 +21,7 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
     private final SnapshotRepository<JacksonPaymentJson.PaymentIntentSnapshot> snapshots;
     private final JdbcOperations jdbc;
 
+    @Autowired
     public PostgresPaymentIntentRepository(DataSource dataSource, ObjectMapper objectMapper) {
         this(objectMapper, new SnapshotRepository<>(dataSource, objectMapper, "payment_intent_snapshots", JacksonPaymentJson.PaymentIntentSnapshot.class), new JdbcTemplate(dataSource));
     }
