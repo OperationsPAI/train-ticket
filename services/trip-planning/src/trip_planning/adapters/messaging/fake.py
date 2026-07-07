@@ -20,10 +20,9 @@ class FakeEventPublisher:
 class FakeEventSubscriber:
     def __init__(self, envelopes: Sequence[EventEnvelope] | None = None) -> None:
         self.handlers: list[tuple[Sequence[str], str, str, Callable[[EventEnvelope], Any]]] = []
+        self.envelopes = list(envelopes or ())
         self.seen: set[str] = set()
         self.stopped = False
-        for envelope in envelopes or ():
-            self.simulate_message(envelope)
 
     def subscribe(self, streams: Sequence[str], group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         self.handlers.append((list(streams), group, consumer_name, handler))
@@ -32,7 +31,12 @@ class FakeEventSubscriber:
         if envelope.eventId in self.seen:
             return
         self.seen.add(envelope.eventId)
+        self.envelopes.append(envelope)
         for _streams, _group, _consumer_name, handler in self.handlers:
+            handler(envelope)
+
+    def replay(self, handler: Callable[[EventEnvelope], Any]) -> None:
+        for envelope in self.envelopes:
             handler(envelope)
 
     def stop(self) -> None:
