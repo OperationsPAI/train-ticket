@@ -1,4 +1,4 @@
-import { DeduplicatingEventHandler, fatalHandling, successfulHandling } from "../../application/messaging.js";
+import { DeduplicatingEventHandler, transientHandling, successfulHandling } from "../../application/messaging.js";
 import { NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
 import { startNotificationStorage, type NotificationStorageRuntime } from "../storage/runtime.js";
 import { RedisStreamEventPublisher } from "./publisher.js";
@@ -28,13 +28,13 @@ export async function startNotificationMessaging(existingStorage?: NotificationS
         if (result === "retry") {
           throw new Error("Notification storage handler requested retry");
         }
-        return result === "dlq" ? fatalHandling() : successfulHandling();
+        return result === "dlq" ? transientHandling() : successfulHandling();
       }
       await application?.handleExternalTrigger(envelope);
       return successfulHandling();
     } catch (error) {
       if (error instanceof NonConformantNotificationTrigger) {
-        return fatalHandling(error);
+        return transientHandling(error);
       }
       throw error;
     }

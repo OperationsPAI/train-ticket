@@ -341,7 +341,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 case "OfferExpired", "OfferQuoted",
                     "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged",
                     "SessionOpened", "SessionRevoked", "PreferenceUpdated" -> new EventSubscriber.Success();
-                default -> new EventSubscriber.FatalError("unsupported event type for journey-order: " + envelope.eventType());
+                default -> new EventSubscriber.Success();
             };
         } catch (RuntimeException ex) {
             consumedEventIds.remove(envelope.eventId());

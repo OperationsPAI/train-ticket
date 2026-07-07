@@ -285,13 +285,13 @@ class OrderManagementServiceTest {
     }
 
     @Test
-    void unknownEventTypeRemainsFatal() {
+    void unknownEventTypeIsAckSkipped() {
         EventSubscriber.HandlerResult result = service.handle(accountEvent(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cb01",
             "UnknownAccountEvent",
             "acct-gated"));
 
-        assertTrue(result instanceof EventSubscriber.FatalError);
+        assertEquals(new EventSubscriber.Success(), result);
     }
 
     private static void assertNotNull(Object obj) {

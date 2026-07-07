@@ -728,10 +728,13 @@ pub mod redis_runtime {
                             group,
                             &message.id,
                             &message.raw_envelope,
+                            consumer_name,
+                            "delivery attempts exhausted",
+                            message.delivery_count,
                         )
                         .await?;
                     } else {
-                        self.process_message(connection, group, message, handler)
+                        self.process_message(connection, group, consumer_name, message, handler)
                             .await?;
                     }
                 }
@@ -742,11 +745,26 @@ pub mod redis_runtime {
             &self,
             connection: &mut redis::aio::MultiplexedConnection,
             group: &str,
+            consumer_name: &str,
             message: StreamMessage,
             handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
         ) -> Result<(), SubscribeFailed> {
-            let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
-                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            let envelope: EventEnvelope = match serde_json::from_str(&message.raw_envelope) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    return move_to_dlq(
+                        connection,
+                        &message.stream,
+                        group,
+                        &message.id,
+                        &message.raw_envelope,
+                        consumer_name,
+                        &failure_reason(&error),
+                        message.delivery_count,
+                    )
+                    .await;
+                }
+            };
             if self.state.has_seen(&envelope.event_id) {
                 return ack(connection, &message.stream, group, &message.id).await;
             }
@@ -764,6 +782,9 @@ pub mod redis_runtime {
                         group,
                         &message.id,
                         &message.raw_envelope,
+                        consumer_name,
+                        "handler returned fatal error",
+                        message.delivery_count,
                     )
                     .await
                 }
@@ -826,8 +847,14 @@ pub mod redis_runtime {
                     }
                 };
                 for message in parse_stream_messages(response) {
-                    self.process_message(&mut connection, &group, message, handler.as_ref())
-                        .await?;
+                    self.process_message(
+                        &mut connection,
+                        &group,
+                        &consumer_name,
+                        message,
+                        handler.as_ref(),
+                    )
+                    .await?;
                 }
             }
             Ok(())
@@ -955,8 +982,12 @@ pub mod redis_runtime {
         group: &str,
         id: &str,
         raw_envelope: &str,
+        consumer_name: &str,
+        failure_reason: &str,
+        attempts: u64,
     ) -> Result<(), SubscribeFailed> {
         let dlq = format!("{stream}:dlq");
+        let metadata = DeadLetterMetadata::new(group, consumer_name, failure_reason, attempts);
         let _: String = redis::cmd("XADD")
             .arg(dlq)
             .arg("MAXLEN")
@@ -965,11 +996,87 @@ pub mod redis_runtime {
             .arg("*")
             .arg("envelope")
             .arg(raw_envelope)
+            .arg("consumerGroup")
+            .arg(&metadata.consumer_group)
+            .arg("consumerName")
+            .arg(&metadata.consumer_name)
+            .arg("failureReason")
+            .arg(&metadata.failure_reason)
+            .arg("attempts")
+            .arg(metadata.attempts.to_string())
+            .arg("deadLetteredAt")
+            .arg(&metadata.dead_lettered_at)
             .query_async(&mut *connection)
             .await
             .map_err(|error| SubscribeFailed(error.to_string()))?;
+        warn_dead_letter(group, stream, raw_envelope, &metadata.failure_reason);
         ack(connection, stream, group, id).await
     }
+    fn warn_dead_letter(group: &str, stream: &str, raw_envelope: &str, failure_reason: &str) {
+        log::warn!(
+            "dead-lettered event service={} stream={} eventId={} reason={}",
+            group,
+            stream,
+            event_id_from(raw_envelope),
+            failure_reason
+        );
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct DeadLetterMetadata {
+        consumer_group: String,
+        consumer_name: String,
+        failure_reason: String,
+        attempts: u64,
+        dead_lettered_at: String,
+    }
+
+    impl DeadLetterMetadata {
+        fn new(group: &str, consumer_name: &str, reason: &str, attempts: u64) -> Self {
+            Self {
+                consumer_group: non_empty_or_unknown(group),
+                consumer_name: non_empty_or_unknown(consumer_name),
+                failure_reason: truncate_failure_reason(reason),
+                attempts: attempts.max(1),
+                dead_lettered_at: now_rfc3339_utc(),
+            }
+        }
+    }
+
+    fn non_empty_or_unknown(value: &str) -> String {
+        if value.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            value.to_string()
+        }
+    }
+
+    fn truncate_failure_reason(reason: &str) -> String {
+        let value = if reason.trim().is_empty() {
+            "unknown"
+        } else {
+            reason
+        };
+        value.chars().take(500).collect()
+    }
+
+    fn failure_reason(error: &dyn std::error::Error) -> String {
+        truncate_failure_reason(&format!("{}: {}", std::any::type_name_of_val(error), error))
+    }
+
+    fn event_id_from(raw_envelope: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(raw_envelope)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("eventId")
+                    .and_then(|event_id| event_id.as_str())
+                    .map(ToString::to_string)
+            })
+            .filter(|event_id| !event_id.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     fn redis_value_to_string(value: &redis::Value) -> Option<String> {
         match value {
             redis::Value::Data(bytes) => String::from_utf8(bytes.clone()).ok(),
@@ -991,6 +1098,71 @@ pub mod redis_runtime {
                 redis::Value::Int(5),
             ])]);
             assert_eq!(parse_xpending_delivery_count(value), Some(5));
+        }
+
+        #[test]
+        fn dead_letter_metadata_carries_attribution() {
+            let metadata = DeadLetterMetadata::new("journey-order", "consumer-1", "fatal", 3);
+            assert_eq!(metadata.consumer_group, "journey-order");
+            assert_eq!(metadata.consumer_name, "consumer-1");
+            assert_eq!(metadata.failure_reason, "fatal");
+            assert_eq!(metadata.attempts, 3);
+            assert!(metadata.dead_lettered_at.ends_with('Z'));
+        }
+
+        #[test]
+        fn dead_letter_failure_reason_is_truncated() {
+            let reason = "x".repeat(600);
+            assert_eq!(truncate_failure_reason(&reason).len(), 500);
+        }
+
+        #[test]
+        fn dead_letter_warn_log_includes_attribution() {
+            install_test_logger();
+            captured_logs()
+                .lock()
+                .expect("log capture lock poisoned")
+                .clear();
+            warn_dead_letter(
+                "journey-order",
+                "events:payment",
+                r#"{"eventId":"evt-1"}"#,
+                "fatal",
+            );
+            let logs = captured_logs().lock().expect("log capture lock poisoned");
+            assert!(logs.iter().any(|line| line.contains("dead-lettered event service=journey-order stream=events:payment eventId=evt-1 reason=fatal")));
+        }
+
+        static TEST_LOGGER: TestLogger = TestLogger;
+        static CAPTURED_LOGS: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> =
+            std::sync::OnceLock::new();
+
+        struct TestLogger;
+
+        impl log::Log for TestLogger {
+            fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+                metadata.level() <= log::Level::Warn
+            }
+
+            fn log(&self, record: &log::Record<'_>) {
+                if self.enabled(record.metadata()) {
+                    captured_logs()
+                        .lock()
+                        .expect("log capture lock poisoned")
+                        .push(record.args().to_string());
+                }
+            }
+
+            fn flush(&self) {}
+        }
+
+        fn captured_logs() -> &'static std::sync::Mutex<Vec<String>> {
+            CAPTURED_LOGS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn install_test_logger() {
+            let _ = log::set_logger(&TEST_LOGGER);
+            log::set_max_level(log::LevelFilter::Warn);
         }
 
         #[tokio::test]

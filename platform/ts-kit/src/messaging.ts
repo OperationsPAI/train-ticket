@@ -355,7 +355,7 @@ export class RedisEventSubscriber implements EventSubscriber {
           ...streams,
           ...streams.map(() => ">"),
         ) as StreamMessages[] | null;
-        await this.processMessages(messages, group, handler);
+        await this.processMessages(messages, group, consumerName, handler);
       } catch (error) {
         // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
         if (String(error).includes("NOGROUP")) {
@@ -383,27 +383,27 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
   }
 
-  private async processMessages(messages: StreamMessages[] | null, group: string, handler: EventHandler): Promise<void> {
+  private async processMessages(messages: StreamMessages[] | null, group: string, consumerName: string, handler: EventHandler): Promise<void> {
     for (const [stream, entries] of messages ?? []) {
       for (const entry of entries) {
-        await this.processEntry(stream, group, entry, handler);
+        await this.processEntry(stream, group, consumerName, entry, handler);
       }
     }
   }
 
-  private async processEntry(stream: string, group: string, entry: StreamEntry, handler: EventHandler): Promise<void> {
+  private async processEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, handler: EventHandler): Promise<void> {
     const [entryId, fields] = entry;
     const envelopeJson = fieldValue(fields, "envelope");
     if (!envelopeJson) {
-      await this.deadLetterAndAck(stream, group, entry);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, "missing envelope field");
       return;
     }
 
     let envelope: EventEnvelope;
     try {
       envelope = JSON.parse(envelopeJson) as EventEnvelope;
-    } catch {
-      await this.deadLetterAndAck(stream, group, entry);
+    } catch (error) {
+      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason(error));
       return;
     }
 
@@ -413,14 +413,17 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
 
     let result: "ack" | "retry" | "dlq";
+    let dlqReason = "handler requested dead letter";
     try {
       const rawResult = await handler(envelope);
       result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+      dlqReason = resultFailureReason(rawResult);
     } catch (error) {
       console.error(sanitizedErrorForLog(error));
       result = error instanceof HandlerError
         ? (error.kind === "fatal" ? "dlq" : "retry")
         : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+      dlqReason = failureReason(error);
     }
 
     if (result === "ack") {
@@ -429,7 +432,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       return;
     }
     if (result === "dlq") {
-      await this.deadLetterAndAck(stream, group, entry);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, dlqReason);
     }
   }
 
@@ -439,9 +442,9 @@ export class RedisEventSubscriber implements EventSubscriber {
     const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
     for (const entry of entries) {
       if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
-        await this.deadLetterAndAck(stream, group, entry);
+        await this.deadLetterAndAck(stream, group, consumerName, entry, "delivery attempts exhausted", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
       } else {
-        await this.processEntry(stream, group, entry, handler);
+        await this.processEntry(stream, group, consumerName, entry, handler);
       }
     }
   }
@@ -459,9 +462,29 @@ export class RedisEventSubscriber implements EventSubscriber {
     return counts;
   }
 
-  private async deadLetterAndAck(stream: string, group: string, entry: StreamEntry): Promise<void> {
+  private async deadLetterAndAck(stream: string, group: string, consumerName: string, entry: StreamEntry, reason: string, attempts = 1): Promise<void> {
     const envelopeJson = fieldValue(entry[1], "envelope") ?? JSON.stringify({});
-    await this.redis.xadd(dlqForStream(stream), "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", envelopeJson);
+    const metadata = deadLetterMetadata(group, consumerName, reason, attempts);
+    await this.redis.xadd(
+      dlqForStream(stream),
+      "MAXLEN",
+      "~",
+      STREAM_MAXLEN,
+      "*",
+      "envelope",
+      envelopeJson,
+      "consumerGroup",
+      metadata.consumerGroup,
+      "consumerName",
+      metadata.consumerName,
+      "failureReason",
+      metadata.failureReason,
+      "attempts",
+      metadata.attempts,
+      "deadLetteredAt",
+      metadata.deadLetteredAt,
+    );
+    console.warn(`WARN dead-lettered event service=${group} stream=${stream} eventId=${eventIdFrom(envelopeJson)} reason=${metadata.failureReason}`);
     await this.redis.xack(stream, group, entry[0]);
   }
 
@@ -520,6 +543,43 @@ export function dlqStreamKey(context: string): string {
 
 export function redisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+
+function deadLetterMetadata(group: string, consumerName: string, reason: string, attempts: number): Readonly<{ consumerGroup: string; consumerName: string; failureReason: string; attempts: string; deadLetteredAt: string }> {
+  return {
+    consumerGroup: group || "unknown",
+    consumerName: consumerName || "unknown",
+    failureReason: truncateFailureReason(reason || "unknown"),
+    attempts: String(Math.max(1, attempts)),
+    deadLetteredAt: new Date().toISOString(),
+  };
+}
+
+function resultFailureReason(result: EventHandlerResult | StringHandlerResult | undefined): string {
+  if (result && typeof result === "object" && "error" in result && result.error) {
+    return failureReason(result.error);
+  }
+  return "handler requested dead letter";
+}
+
+function failureReason(error: unknown): string {
+  if (error instanceof Error) {
+    return truncateFailureReason(`${error.name || "Error"}${error.message ? `: ${error.message}` : ""}`);
+  }
+  return truncateFailureReason(String(error));
+}
+
+function truncateFailureReason(reason: string): string {
+  return reason.length > 500 ? reason.slice(0, 500) : reason;
+}
+
+function eventIdFrom(envelopeJson: string): string {
+  try {
+    const parsed = JSON.parse(envelopeJson) as { eventId?: unknown };
+    return typeof parsed.eventId === "string" && parsed.eventId.length > 0 ? parsed.eventId : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function isRecoverableRedisReadError(error: unknown): boolean {

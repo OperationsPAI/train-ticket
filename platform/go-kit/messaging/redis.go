@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -202,7 +204,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 		}
 		for _, stream := range result {
 			for _, msg := range stream.Messages {
-				b.processMessage(ctx, stream.Stream, group, msg, handler)
+				b.processMessageForConsumer(ctx, stream.Stream, group, consumer, msg, handler)
 			}
 		}
 	}
@@ -215,7 +217,7 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 			return
 		}
 		for _, m := range messages {
-			b.processMessage(ctx, stream, group, m, handler)
+			b.processMessageForConsumer(ctx, stream, group, consumer, m, handler)
 		}
 		if next == "0-0" || next == start {
 			return
@@ -224,15 +226,23 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 	}
 }
 func (b *RedisEventBus) processMessage(ctx context.Context, stream, group string, message redis.XMessage, handler Handler) {
+	b.processMessageForConsumer(ctx, stream, group, "unknown", message, handler)
+}
+
+func (b *RedisEventBus) processMessageForConsumer(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) {
 	raw, ok := message.Values[EnvelopeField].(string)
+	attempts := b.deliveryAttempts(ctx, stream, group, message.ID)
 	if !ok || strings.TrimSpace(raw) == "" {
-		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "missing envelope field", attempts)
 		return
 	}
-	attempts := b.deliveryAttempts(ctx, stream, group, message.ID)
 	var envelope EventEnvelope
-	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.Validate() != nil {
-		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, failureReason(err), attempts)
+		return
+	}
+	if err := envelope.Validate(); err != nil {
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, failureReason(err), attempts)
 		return
 	}
 	if b.dedup != nil && b.dedup.Seen(envelope.EventID) {
@@ -241,7 +251,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group string
 	}
 	if err := handler(ctx, envelope); err != nil {
 		if IsFatalHandlerError(err) || attempts >= MaxDeliveryAttempts {
-			b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
+			b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, failureReason(err), attempts)
 		}
 		return
 	}
@@ -257,7 +267,60 @@ func (b *RedisEventBus) deliveryAttempts(ctx context.Context, stream, group, id 
 	}
 	return entries[0].RetryCount
 }
-func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, id, raw string) {
-	_ = b.client.XAdd(ctx, &redis.XAddArgs{Stream: stream + DeadLetterSuffix, MaxLen: MaxLen, Approx: true, Values: map[string]any{EnvelopeField: raw}}).Err()
+func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, consumerName, id, raw, reason string, attempts int64) {
+	fields := deadLetterFields(raw, group, consumerName, reason, attempts)
+	_ = b.client.XAdd(ctx, &redis.XAddArgs{Stream: stream + DeadLetterSuffix, MaxLen: MaxLen, Approx: true, Values: fields}).Err()
+	warnDeadLetter(group, stream, raw, fields)
 	_ = b.client.XAck(ctx, stream, group, id).Err()
+}
+
+func warnDeadLetter(group, stream, raw string, fields map[string]any) {
+	slog.Warn("dead-lettered event", "service", group, "stream", stream, "eventId", eventIDFrom(raw), "reason", fields["failureReason"])
+}
+
+func deadLetterFields(raw, group, consumerName, reason string, attempts int64) map[string]any {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if strings.TrimSpace(group) == "" {
+		group = "unknown"
+	}
+	if strings.TrimSpace(consumerName) == "" {
+		consumerName = "unknown"
+	}
+	return map[string]any{
+		EnvelopeField:    raw,
+		"consumerGroup":  group,
+		"consumerName":   consumerName,
+		"failureReason":  truncateFailureReason(reason),
+		"attempts":       fmt.Sprintf("%d", attempts),
+		"deadLetteredAt": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func failureReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	return truncateFailureReason(fmt.Sprintf("%s: %s", reflect.TypeOf(err).String(), err.Error()))
+}
+
+func truncateFailureReason(reason string) string {
+	if len(reason) > 500 {
+		return reason[:500]
+	}
+	if strings.TrimSpace(reason) == "" {
+		return "unknown"
+	}
+	return reason
+}
+
+func eventIDFrom(raw string) string {
+	var parsed struct {
+		EventID string `json:"eventId"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil || strings.TrimSpace(parsed.EventID) == "" {
+		return "unknown"
+	}
+	return parsed.EventID
 }

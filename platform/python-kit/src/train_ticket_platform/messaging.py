@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from datetime import datetime, timezone
 import json
+import logging
 import os
 import socket
 import threading
@@ -20,6 +22,7 @@ CLAIM_MIN_IDLE_MS = 60000
 CLAIM_COUNT = 100
 POLL_BLOCK_MS = 2000
 POLL_COUNT = 10
+_LOG = logging.getLogger(__name__)
 
 
 class PublishFailed(RuntimeError):
@@ -161,7 +164,7 @@ class RedisEventSubscriber(EventSubscriber):
                     count=POLL_COUNT,
                     block=POLL_BLOCK_MS,
                 )
-                self._process_results(results, group, handler)
+                self._process_results(results, group, consumer_name, handler)
             except Exception as exc:
                 if self._stop_requested.is_set():
                     break
@@ -220,48 +223,50 @@ class RedisEventSubscriber(EventSubscriber):
             claimed = self._client.xautoclaim(stream, group, consumer_name, CLAIM_MIN_IDLE_MS, "0", count=CLAIM_COUNT)
             messages = claimed[1] if claimed and len(claimed) > 1 else []
             for msg_id, msg_data in messages:
-                self._process_message(stream, group, msg_id, msg_data, handler)
+                self._process_message(stream, group, consumer_name, msg_id, msg_data, handler)
 
-    def _process_results(self, results: Any, group: str, handler: Callable[[EventEnvelope], Any]) -> None:
+    def _process_results(self, results: Any, group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         for stream_name, messages in results or []:
             stream = stream_name.decode("utf-8") if isinstance(stream_name, bytes) else str(stream_name)
             for msg_id, msg_data in messages:
-                self._process_message(stream, group, msg_id, msg_data, handler)
+                self._process_message(stream, group, consumer_name, msg_id, msg_data, handler)
 
-    def _process_message(self, stream: str, group: str, msg_id: bytes | str, msg_data: Mapping[Any, Any], handler: Callable[[EventEnvelope], Any]) -> None:
+    def _process_message(self, stream: str, group: str, consumer_name: str, msg_id: bytes | str, msg_data: Mapping[Any, Any], handler: Callable[[EventEnvelope], Any]) -> None:
         msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
         envelope_json = self._extract_envelope_json(msg_data)
         try:
             envelope = self._deserialize_envelope(json.loads(envelope_json))
-        except Exception:
-            self._move_to_dlq(stream, envelope_json or "{}")
+        except Exception as exc:
+            self._move_to_dlq(stream, envelope_json or "{}", group, consumer_name, _failure_reason(exc), self._delivery_count(stream, group, msg_id_str))
             self._xack(stream, group, msg_id_str)
             return
         if self._already_seen(envelope.eventId):
             self._xack(stream, group, msg_id_str)
             return
-        if self._delivery_count(stream, group, msg_id_str) >= MAX_DELIVERY_ATTEMPTS:
-            self._move_to_dlq(stream, envelope_json)
+        delivery_count = self._delivery_count(stream, group, msg_id_str)
+        if delivery_count >= MAX_DELIVERY_ATTEMPTS:
+            self._move_to_dlq(stream, envelope_json, group, consumer_name, "delivery attempts exhausted", delivery_count)
             self._xack(stream, group, msg_id_str)
             return
         try:
             result = handler(envelope)
         except TransientHandlerError:
             return
-        except FatalHandlerError:
-            self._move_to_dlq(stream, envelope_json)
+        except FatalHandlerError as exc:
+            self._move_to_dlq(stream, envelope_json, group, consumer_name, _failure_reason(exc), self._delivery_count(stream, group, msg_id_str))
             self._xack(stream, group, msg_id_str)
             return
-        except Exception:
-            if self._delivery_count(stream, group, msg_id_str) >= MAX_DELIVERY_ATTEMPTS:
-                self._move_to_dlq(stream, envelope_json)
+        except Exception as exc:
+            delivery_count = self._delivery_count(stream, group, msg_id_str)
+            if delivery_count >= MAX_DELIVERY_ATTEMPTS:
+                self._move_to_dlq(stream, envelope_json, group, consumer_name, _failure_reason(exc), delivery_count)
                 self._xack(stream, group, msg_id_str)
             return
         if isinstance(result, HandlerResult):
             if result.status is HandlerStatus.TRANSIENT_ERROR:
                 return
             if result.status is HandlerStatus.FATAL_ERROR:
-                self._move_to_dlq(stream, envelope_json)
+                self._move_to_dlq(stream, envelope_json, group, consumer_name, result.message or "handler returned FATAL_ERROR", self._delivery_count(stream, group, msg_id_str))
                 self._xack(stream, group, msg_id_str)
                 return
         self._record_seen(envelope.eventId)
@@ -314,8 +319,16 @@ class RedisEventSubscriber(EventSubscriber):
         with lock:
             seen.add(event_id)
 
-    def _move_to_dlq(self, stream: str, envelope_json: str) -> None:
-        self._client.xadd(dlq_for_stream(stream), {"envelope": envelope_json}, maxlen=MAXLEN, approximate=True)
+    def _move_to_dlq(self, stream: str, envelope_json: str, consumer_group: str, consumer_name: str, failure_reason: str, attempts: int) -> None:
+        fields = _dead_letter_fields(envelope_json, consumer_group, consumer_name, failure_reason, attempts)
+        self._client.xadd(dlq_for_stream(stream), fields, maxlen=MAXLEN, approximate=True)
+        _LOG.warning(
+            "dead-lettered event service=%s stream=%s eventId=%s reason=%s",
+            consumer_group,
+            stream,
+            _event_id_from(envelope_json),
+            fields["failureReason"],
+        )
 
     def _xack(self, stream: str, group: str, msg_id: str) -> None:
         self._client.xack(stream, group, msg_id)
@@ -335,10 +348,38 @@ class RedisEventSubscriber(EventSubscriber):
     ) -> None:
         if delivery_count >= MAX_DELIVERY_ATTEMPTS:
             envelope_json = self._extract_envelope_json(fields)
-            self._move_to_dlq(stream, envelope_json or "{}")
+            self._move_to_dlq(stream, envelope_json or "{}", group, "unknown", "delivery attempts exhausted", delivery_count)
             self._xack(stream, group, entry_id)
             return
-        self._process_message(stream, group, entry_id, fields, handler)
+        self._process_message(stream, group, "unknown", entry_id, fields, handler)
+
+
+def _dead_letter_fields(envelope_json: str, consumer_group: str, consumer_name: str, failure_reason: str, attempts: int) -> dict[str, str]:
+    return {
+        "envelope": envelope_json,
+        "consumerGroup": consumer_group or "unknown",
+        "consumerName": consumer_name or "unknown",
+        "failureReason": _truncate_failure_reason(failure_reason or "unknown"),
+        "attempts": str(max(1, attempts)),
+        "deadLetteredAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
+
+
+def _failure_reason(exc: BaseException) -> str:
+    message = str(exc)
+    return _truncate_failure_reason(f"{exc.__class__.__name__}{': ' + message if message else ''}")
+
+
+def _truncate_failure_reason(reason: str) -> str:
+    return reason[:500]
+
+
+def _event_id_from(envelope_json: str) -> str:
+    try:
+        event_id = json.loads(envelope_json).get("eventId")
+    except Exception:
+        return "unknown"
+    return event_id if isinstance(event_id, str) and event_id else "unknown"
 
 
 class InMemoryEventPublisher(EventPublisher):

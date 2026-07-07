@@ -1,4 +1,5 @@
 import json
+import logging
 
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.messaging import MAX_DELIVERY_ATTEMPTS, RedisEventSubscriber, dlq_for_stream
@@ -8,10 +9,10 @@ class FakeRedis:
     def __init__(self) -> None:
         self.acks: list[tuple[str, str, str]] = []
         self.dlq_entries: list[tuple[str, dict[str, str]]] = []
-        self.delivery_count = MAX_DELIVERY_ATTEMPTS
+        self.delivery_counts = [MAX_DELIVERY_ATTEMPTS - 1, MAX_DELIVERY_ATTEMPTS]
 
     def xpending_range(self, stream: str, group: str, min: str, max: str, count: int) -> list[dict[str, int]]:
-        return [{"times_delivered": self.delivery_count}]
+        return [{"times_delivered": self.delivery_counts.pop(0)}]
 
     def xadd(self, stream: str, fields: dict[str, str], maxlen: int, approximate: bool) -> None:
         self.dlq_entries.append((stream, fields))
@@ -20,7 +21,8 @@ class FakeRedis:
         self.acks.append((stream, group, msg_id))
 
 
-def test_unexpected_handler_exception_uses_dlq_policy_without_escaping() -> None:
+def test_unexpected_handler_exception_uses_dlq_policy_without_escaping(caplog) -> None:
+    caplog.set_level(logging.WARNING)
     subscriber = object.__new__(RedisEventSubscriber)
     subscriber._client = FakeRedis()
     subscriber._dedup = set()
@@ -31,7 +33,14 @@ def test_unexpected_handler_exception_uses_dlq_policy_without_escaping() -> None
     def handler(_: EventEnvelope) -> None:
         raise ValueError("poison message")
 
-    subscriber._process_message("events:tester", "tester", "1-0", fields, handler)
+    subscriber._process_message("events:tester", "tester", "consumer-1", "1-0", fields, handler)
 
     assert subscriber._client.acks == [("events:tester", "tester", "1-0")]
     assert subscriber._client.dlq_entries[0][0] == dlq_for_stream("events:tester")
+    dlq_fields = subscriber._client.dlq_entries[0][1]
+    assert dlq_fields["consumerGroup"] == "tester"
+    assert dlq_fields["consumerName"] == "consumer-1"
+    assert dlq_fields["failureReason"] == "ValueError: poison message"
+    assert dlq_fields["attempts"] == str(MAX_DELIVERY_ATTEMPTS)
+    assert dlq_fields["deadLetteredAt"].endswith("Z")
+    assert "dead-lettered event service=tester stream=events:tester" in caplog.text

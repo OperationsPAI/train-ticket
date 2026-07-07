@@ -15,7 +15,7 @@ public interface RedisStreamOperations {
 
     void ack(String stream, String group, String messageId);
 
-    void moveToDlq(String stream, String envelopeJson);
+    void moveToDlq(String stream, String envelopeJson, DeadLetterMetadata metadata);
 
     record StreamEntry(String id, String envelopeJson) {
     }

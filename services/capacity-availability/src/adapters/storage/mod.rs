@@ -575,7 +575,7 @@ impl PostgresCapacityService {
         match result {
             Ok(()) => HandlerResult::Success,
             Err(InboundEventError::Transient(message)) => HandlerResult::TransientError(message),
-            Err(InboundEventError::Fatal(message)) => HandlerResult::FatalError(message),
+            Err(InboundEventError::Fatal(message)) => HandlerResult::TransientError(message),
         }
     }
 

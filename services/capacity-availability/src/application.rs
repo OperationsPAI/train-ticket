@@ -47,10 +47,10 @@ impl CapacityService {
             return HandlerResult::Success;
         };
         let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
-            return HandlerResult::FatalError("missing segmentRef".into());
+            return HandlerResult::TransientError("missing segmentRef".into());
         };
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
-            return HandlerResult::FatalError("missing travelerRef".into());
+            return HandlerResult::TransientError("missing travelerRef".into());
         };
         let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
             .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
