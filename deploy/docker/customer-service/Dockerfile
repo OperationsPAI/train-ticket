@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.npm cd platform/ts-kit && npm ci && npm run
 COPY services/customer-service/package.json services/customer-service/package-lock.json services/customer-service/tsconfig.json ./services/customer-service/
 RUN --mount=type=cache,target=/root/.npm cd services/customer-service && npm ci --install-links
 COPY services/customer-service/src ./services/customer-service/src
+COPY services/customer-service/migrations ./services/customer-service/migrations
 RUN cd services/customer-service && npx tsc --noEmit false --outDir dist
 
 FROM node:26-alpine
@@ -15,6 +16,7 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder --chown=app:app /src/services/customer-service/package.json ./package.json
 COPY --from=builder --chown=app:app /src/services/customer-service/node_modules ./node_modules
 COPY --from=builder --chown=app:app /src/services/customer-service/dist ./dist
+COPY --from=builder --chown=app:app /src/services/customer-service/migrations ./migrations
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080

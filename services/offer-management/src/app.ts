@@ -35,7 +35,7 @@ export type HealthStatus = Readonly<{
 }>;
 
 export type ProbeStatus = Readonly<{
-  status: "ok";
+  status: "ok" | "not_ready";
   probe: "live" | "ready";
 }>;
 
@@ -143,6 +143,12 @@ type AppDependencies = Readonly<{
   quoteCommandFactory?: (request: QuoteOfferRequest) => QuoteOfferCommand | Promise<QuoteOfferCommand>;
   upstreamRepository?: UpstreamStateRepository;
   idempotencyStore?: IdempotencyStore;
+  storage?: AppStorage;
+}>;
+
+export type AppStorage = Readonly<{
+  ready: () => boolean | Promise<boolean>;
+  runCommand?: <T>(upstreamRepository: UpstreamStateRepository, operation: (application: OfferApplicationService) => Promise<T>) => Promise<T>;
 }>;
 
 const defaultOfferRepository = new InMemoryOfferRepository();
@@ -165,6 +171,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
     dependencies.quoteCommandFactory ?? ((request) => buildQuoteOfferCommand(upstreamRepository, request)),
   );
   const idempotencyStore = dependencies.idempotencyStore ?? defaultIdempotencyStore;
+  const runWithOfferService = dependencies.storage?.runCommand ?? (<T>(_upstream: UpstreamStateRepository, operation: (service: OfferApplicationService) => Promise<T>) => operation(offerService));
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
   app.addHook("onRequest", async (request, reply) => {
@@ -191,8 +198,8 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
   app.get("/metadata", async () => metadata());
   app.get("/live", async () => probeBody("live"));
   app.get("/livez", async () => probeBody("live"));
-  app.get("/ready", async () => probeBody("ready"));
-  app.get("/readyz", async () => probeBody("ready"));
+  app.get("/ready", async (_request, reply) => readyBody(reply, dependencies.storage));
+  app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
 
   // -----------------------------------------------------------------------
   // Offer Management API — POST /api/v1/offers
@@ -222,13 +229,13 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
           }
 
           const { accountId, channelId, itineraryRef, travelerRefs, quoteRequestId } = request.body;
-          const { response: responseBody } = await offerService.quoteOffer({
+          const { response: responseBody } = await runWithOfferService(upstreamRepository, (service) => service.quoteOffer({
             accountId: accountId!,
             channelId: channelId!,
             itineraryRef: itineraryRef!,
             travelerRefs: travelerRefs!,
             quoteRequestId,
-          }, ctx.correlationId);
+          }, ctx.correlationId));
 
           return { statusCode: 201, body: responseBody };
         },
@@ -260,7 +267,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
     const ctx = requestContext(request);
     const { offerId } = request.params;
 
-    const offer = await offerService.getOffer(offerId);
+    const offer = await runWithOfferService(upstreamRepository, (service) => service.getOffer(offerId));
     if (!offer) {
       sendError(reply, 404, "NOT_FOUND", `Offer ${offerId} not found`, ctx);
       return reply;
@@ -319,6 +326,14 @@ function healthBody(): HealthStatus {
 
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
+}
+
+async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
+  if (storage && !await storage.ready()) {
+    reply.status(503);
+    return { status: "not_ready", probe: "ready" };
+  }
+  return probeBody("ready");
 }
 
 function traceContext(request: AppRequest, context: RequestContext = requestContext(request)): RequestTraceContext {

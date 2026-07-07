@@ -3,6 +3,7 @@ import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHoo
 import { RedisEventPublisher } from "./adapters/messaging/publisher.js";
 import { uuidV7 } from "@trainticket/ts-kit";
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { startCustomerServiceStorage } from "./adapters/storage/runtime.js";
 import { CUSTOMER_SERVICE_CONSUMER_GROUP, CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
 
 export type BootstrapOptions = Readonly<{
@@ -24,6 +25,7 @@ export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): numbe
 }
 
 export async function bootstrap(options: BootstrapOptions = {}) {
+  const storage = process.env.DATABASE_URL ? await startCustomerServiceStorage() : undefined;
   const publisher = new RedisEventPublisher();
   const application = new CustomerServiceApplication(publisher);
   const subscriber = new RedisEventSubscriber();
@@ -31,17 +33,20 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     CUSTOMER_SERVICE_SUBSCRIPTIONS,
     CUSTOMER_SERVICE_CONSUMER_GROUP,
     `${CUSTOMER_SERVICE_CONSUMER_GROUP}-${process.env.HOSTNAME ?? uuidV7()}`,
-    (envelope) => application.handleIntegrationEvent(envelope as never),
+    (envelope) => storage ? storage.handleIntegrationEvent(envelope as never) : application.handleIntegrationEvent(envelope as never),
   );
 
   const app = createApp({
     instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
     publisher,
     application,
+    idempotencyStore: storage?.idempotencyStore,
+    storage,
   });
   app.addHook("onClose", async () => {
     await subscriber.stop();
     await publisher.close();
+    await storage?.stop();
   });
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;

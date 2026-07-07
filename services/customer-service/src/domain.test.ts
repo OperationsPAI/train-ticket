@@ -685,3 +685,17 @@ describe("Customer Service domain foundation", () => {
     });
   });
 });
+
+describe("customer-service persistence duplicate signature", () => {
+  it("normalizes undefined and null business references to the same duplicate signature", async () => {
+    const { duplicateBusinessRef } = await import("./adapters/storage/customer-service-repository.js");
+    const withoutReference = SupportCase.open(openCommand({ businessReferences: undefined })).case.toSnapshot();
+    const withNullReference = {
+      ...withoutReference,
+      businessReferences: { journeyOrderId: null } as never,
+    };
+
+    assert.equal(duplicateBusinessRef(withoutReference), "__NO_BUSINESS_REF__");
+    assert.equal(duplicateBusinessRef(withNullReference), duplicateBusinessRef(withoutReference));
+  });
+});

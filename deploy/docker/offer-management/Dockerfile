@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.npm cd platform/ts-kit && npm ci && npm run
 COPY services/offer-management/package.json services/offer-management/package-lock.json services/offer-management/tsconfig.json ./services/offer-management/
 RUN --mount=type=cache,target=/root/.npm cd services/offer-management && npm ci --install-links
 COPY services/offer-management/src ./services/offer-management/src
+COPY services/offer-management/migrations ./services/offer-management/migrations
 RUN cd services/offer-management && npx tsc --noEmit false --outDir dist
 
 FROM node:26-alpine
@@ -15,6 +16,7 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder --chown=app:app /src/services/offer-management/package.json ./package.json
 COPY --from=builder --chown=app:app /src/services/offer-management/node_modules ./node_modules
 COPY --from=builder --chown=app:app /src/services/offer-management/dist ./dist
+COPY --from=builder --chown=app:app /src/services/offer-management/migrations ./migrations
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080
