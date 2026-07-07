@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"sort"
 	"strings"
 
@@ -172,7 +173,7 @@ func LoadMigrations(fsys fs.FS, dir string) ([]Migration, error) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".sql") {
 			continue
 		}
-		body, err := fs.ReadFile(fsys, strings.TrimRight(dir, "/")+"/"+name)
+		body, err := fs.ReadFile(fsys, path.Join(dir, name))
 		if err != nil {
 			return nil, err
 		}
