@@ -21,6 +21,7 @@ public final class PostSalesCase {
     private PostSalesDecision decision;
     private PostSalesExecutionPlan executionPlanAggregate;
     private String terminalReason;
+    private long version;
 
     private PostSalesCase(
         String caseId,
@@ -76,6 +77,34 @@ public final class PostSalesCase {
         return open(journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey, occurredAt, sourceCommandId, correlationId);
     }
 
+
+    public static PostSalesCase rehydrate(
+        String caseId,
+        String journeyOrderId,
+        PostSalesCaseType caseType,
+        PostSalesScope scope,
+        String reasonCode,
+        String actorRef,
+        String idempotencyKey,
+        PostSalesCaseStatus status,
+        PostSalesDecision decision,
+        List<PostSalesStep> executionPlan,
+        PostSalesExecutionPlan executionPlanAggregate,
+        String terminalReason,
+        List<PostSalesEvent> domainEvents
+    ) {
+        PostSalesCase postSalesCase = new PostSalesCase(caseId, journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey);
+        postSalesCase.status = Objects.requireNonNull(status, "status is required");
+        postSalesCase.decision = decision;
+        postSalesCase.executionPlan.clear();
+        postSalesCase.executionPlan.addAll(Objects.requireNonNull(executionPlan, "executionPlan is required").stream().map(PostSalesStep::copy).toList());
+        postSalesCase.executionPlanAggregate = executionPlanAggregate;
+        postSalesCase.terminalReason = terminalReason;
+        postSalesCase.domainEvents.clear();
+        postSalesCase.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return postSalesCase;
+    }
+
     public String caseId() { return caseId; }
     public String journeyOrderId() { return journeyOrderId; }
     public PostSalesCaseType caseType() { return caseType; }
@@ -87,6 +116,14 @@ public final class PostSalesCase {
     public PostSalesDecision decision() { return decision; }
     public PostSalesExecutionPlan executionPlanAggregate() { return executionPlanAggregate; }
     public String terminalReason() { return terminalReason; }
+    public long version() { return version; }
+    public PostSalesCase withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
     public List<PostSalesStep> executionPlan() { return executionPlan.stream().map(PostSalesStep::copy).toList(); }
     public List<PostSalesEvent> domainEvents() { return List.copyOf(domainEvents); }
 
