@@ -2,6 +2,8 @@
 // HTTP API layer per docs/08-contracts/api/capacity-availability.md
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "redis-impl")]
+use crate::adapters::storage::PostgresCapacityService;
 use crate::application::{
     AppError, AvailabilitySnapshotResponse, CapacityService, HoldCapacityRequest,
 };
@@ -29,6 +31,23 @@ pub fn router(service: Arc<CapacityService>) -> Router {
             post(release_hold),
         )
         .route("/api/v1/capacity-holds/{hold_id}", get(get_hold))
+        .layer(Extension(service))
+}
+
+#[cfg(feature = "redis-impl")]
+pub fn postgres_router(service: Arc<PostgresCapacityService>) -> Router {
+    Router::new()
+        .route("/api/v1/availability-snapshots", get(query_availability_pg))
+        .route("/api/v1/capacity-holds", post(hold_capacity_pg))
+        .route(
+            "/api/v1/capacity-holds/{hold_id}/confirm",
+            post(confirm_hold_pg),
+        )
+        .route(
+            "/api/v1/capacity-holds/{hold_id}/release",
+            post(release_hold_pg),
+        )
+        .route("/api/v1/capacity-holds/{hold_id}", get(get_hold_pg))
         .layer(Extension(service))
 }
 
@@ -245,6 +264,123 @@ async fn get_hold(
     let correlation_id = context.correlation_id().to_string();
     let result = service
         .get_hold(&hold_id)
+        .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
+    Ok(Json(GetHoldResponseJson {
+        hold_id: result.hold_id,
+        segment_ref: result.segment_ref,
+        status: result.status,
+        held_until: result.held_until,
+        requested_at: result.requested_at,
+        traveler_ref: result.traveler_ref,
+        class_ref: result.class_ref,
+    }))
+}
+
+#[cfg(feature = "redis-impl")]
+async fn query_availability_pg(
+    Extension(service): Extension<Arc<PostgresCapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    Query(query): Query<AvailabilityQuery>,
+) -> Result<Json<AvailabilitySnapshotJson>, AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let result = service
+        .query_availability(
+            &query.scheduled_service_ref.unwrap_or_default(),
+            &query.segment_ref.unwrap_or_default(),
+        )
+        .await
+        .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
+    Ok(Json(to_availability_json(result)))
+}
+
+#[cfg(feature = "redis-impl")]
+async fn hold_capacity_pg(
+    Extension(service): Extension<Arc<PostgresCapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    body: Result<Json<HoldCapacityJson>, JsonRejection>,
+) -> Result<(StatusCode, Json<HoldCapacityResponseJson>), AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
+    let Json(body) = body.map_err(|e| {
+        AppErrorResponse::new(
+            AppError::ValidationFailed(e.body_text()),
+            correlation_id.clone(),
+        )
+    })?;
+    let result = service
+        .hold_capacity(
+            HoldCapacityRequest {
+                segment_ref: body.segment_ref,
+                traveler_ref: body.traveler_ref,
+                class_ref: body.class_ref,
+                quantity: body.quantity,
+                segment_booking_id: body.segment_booking_id,
+            },
+            &idempotency_key,
+            &correlation_id,
+        )
+        .await
+        .map_err(|e| AppErrorResponse::new(e, correlation_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(HoldCapacityResponseJson {
+            hold_id: result.hold_id,
+            segment_ref: result.segment_ref,
+            status: result.status,
+            held_until: result.held_until,
+        }),
+    ))
+}
+
+#[cfg(feature = "redis-impl")]
+async fn confirm_hold_pg(
+    Extension(service): Extension<Arc<PostgresCapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    axum::extract::Path(hold_id): axum::extract::Path<String>,
+) -> Result<Json<ConfirmHoldResponseJson>, AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
+    let result = service
+        .confirm_hold(&hold_id, &idempotency_key, &correlation_id)
+        .await
+        .map_err(|e| AppErrorResponse::new(e, correlation_id.clone()))?;
+    Ok(Json(ConfirmHoldResponseJson {
+        hold_id: result.hold_id,
+        status: result.status,
+    }))
+}
+
+#[cfg(feature = "redis-impl")]
+async fn release_hold_pg(
+    Extension(service): Extension<Arc<PostgresCapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    axum::extract::Path(hold_id): axum::extract::Path<String>,
+) -> Result<Json<ReleaseHoldResponseJson>, AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let idempotency_key = get_idempotency_key(&headers, &correlation_id)?;
+    let result = service
+        .release_hold(&hold_id, &idempotency_key, &correlation_id)
+        .await
+        .map_err(|e| AppErrorResponse::new(e, correlation_id.clone()))?;
+    Ok(Json(ReleaseHoldResponseJson {
+        hold_id: result.hold_id,
+        status: result.status,
+    }))
+}
+
+#[cfg(feature = "redis-impl")]
+async fn get_hold_pg(
+    Extension(service): Extension<Arc<PostgresCapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    axum::extract::Path(hold_id): axum::extract::Path<String>,
+) -> Result<Json<GetHoldResponseJson>, AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let result = service
+        .get_hold(&hold_id)
+        .await
         .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
     Ok(Json(GetHoldResponseJson {
         hold_id: result.hold_id,

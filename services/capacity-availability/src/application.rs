@@ -250,8 +250,7 @@ impl CapacityService {
         });
 
         // Find a unit that is actually free for the requested interval.
-        let interval =
-            StationInterval::new(0, 1).map_err(|e| AppError::Internal(e.to_string()))?;
+        let interval = StationInterval::new(0, 1).map_err(|e| AppError::Internal(e.to_string()))?;
         let unit_ref = pool
             .find_available_unit(&interval, now)
             .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?;
@@ -541,16 +540,20 @@ impl CapacityService {
                     "expiredAt": unix_millis_to_rfc3339(e.expired_at),
                 }),
             ),
-            DomainEvent::CapacityHoldFailed(e) => (
-                "CapacityHoldFailed",
-                json!({
+            DomainEvent::CapacityHoldFailed(e) => {
+                let mut payload = json!({
                     "requestedHoldId": e.requested_hold_id.to_string(),
                     "inventoryPoolId": e.inventory_pool_id.to_string(),
                     "capacityUnitRef": e.capacity_unit_ref.to_string(),
                     "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
-                    "reason": format!("{:?}", e.reason),
-                }),
-            ),
+                    "idempotencyKey": e.idempotency_key.to_string(),
+                    "reason": e.reason.contract_reason(),
+                });
+                if let Some(conflicting_hold_id) = e.reason.conflicting_hold_id() {
+                    payload["conflictingHoldId"] = json!(conflicting_hold_id.to_string());
+                }
+                ("CapacityHoldFailed", payload)
+            }
         };
 
         let envelope = WireEnvelope::try_new(
@@ -571,7 +574,7 @@ impl CapacityService {
 // Request / Response DTOs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AvailabilitySnapshotResponse {
     pub snapshot_id: String,
     pub snapshot_version: u64,
@@ -586,7 +589,7 @@ pub struct AvailabilitySnapshotResponse {
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RemainingByClass {
     pub class_ref: String,
     pub total: usize,
@@ -603,7 +606,7 @@ pub struct HoldCapacityRequest {
 }
 
 impl HoldCapacityRequest {
-    fn fingerprint(&self) -> String {
+    pub(crate) fn fingerprint(&self) -> String {
         format!(
             "hold:{}:{}:{}:{}:{}",
             self.segment_ref,
@@ -735,4 +738,61 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::messaging::InMemoryEventPublisher;
+
+    #[test]
+    fn capacity_hold_failed_payload_matches_contract_fields() {
+        let publisher = Arc::new(InMemoryEventPublisher::new());
+        let service = CapacityService::new(publisher.clone());
+        let event = DomainEvent::CapacityHoldFailed(CapacityHoldFailed {
+            envelope: EventEnvelope::new(
+                "CapacityHoldFailed",
+                123,
+                "booking-orchestration",
+                None::<String>,
+                "capacity-availability",
+            ),
+            requested_hold_id: HoldId::new("hold-requested").unwrap(),
+            inventory_pool_id: InventoryPoolId::new("pool-seg-first").unwrap(),
+            capacity_unit_ref: CapacityUnitRef::new("01A").unwrap(),
+            interval: StationInterval::new(1, 3).unwrap(),
+            idempotency_key: IdempotencyKey::new("0194f2e0-7b3e-7610-0284-5c26e8b0cf51").unwrap(),
+            reason: HoldFailureReason::OverlappingHold {
+                conflicting_hold_id: HoldId::new("hold-conflict").unwrap(),
+            },
+            references: ReferenceMetadata::new(
+                "booking-orchestration",
+                "purchase-hold",
+                Some("order-1"),
+                Some("segment-booking-1"),
+                Some("traveler-1"),
+            )
+            .unwrap(),
+        });
+
+        service
+            .publish_domain_event(&event, "corr-0194f2e0-7b3e-7610-0284-5c26e8b0cf52")
+            .unwrap();
+        let published = publisher.published();
+        assert_eq!(published.len(), 1);
+        let payload = &published[0].payload;
+        assert_eq!(payload["requestedHoldId"], "hold-requested");
+        assert_eq!(payload["inventoryPoolId"], "pool-seg-first");
+        assert_eq!(payload["capacityUnitRef"], "01A");
+        assert_eq!(
+            payload["interval"],
+            serde_json::json!({"fromSeq": 1, "toSeq": 3})
+        );
+        assert_eq!(
+            payload["idempotencyKey"],
+            "0194f2e0-7b3e-7610-0284-5c26e8b0cf51"
+        );
+        assert_eq!(payload["reason"], "OVERLAPPING_HOLD");
+        assert_eq!(payload["conflictingHoldId"], "hold-conflict");
+    }
 }

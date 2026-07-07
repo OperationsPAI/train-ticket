@@ -803,3 +803,66 @@ fn xautoclaim_raw_reply_parses_tuple_shape() {
         redis::from_redis_value(parsed.ids[0].map.get("envelope").unwrap()).unwrap();
     assert_eq!(envelope, r#"{"eventId":"evt-1"}"#);
 }
+
+#[cfg(feature = "redis-impl")]
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing at a migrated disposable Postgres database"]
+async fn postgres_readiness_reports_ready_when_storage_is_marked_ready() {
+    use capacity_availability::PostgresCapacityService;
+    use rust_kit::storage::Storage;
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::Arc;
+
+    let database_url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let storage = Storage::new(pool);
+    storage.mark_migrations_ready();
+    let service = Arc::new(PostgresCapacityService::from_storage(storage).unwrap());
+    let app = capacity_availability::router_with_postgres_service(service);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .header("x-correlation-id", "test-ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[cfg(feature = "redis-impl")]
+#[tokio::test]
+async fn postgres_readiness_returns_503_when_database_is_disconnected() {
+    use capacity_availability::PostgresCapacityService;
+    use rust_kit::storage::Storage;
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::Arc;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://capacity:capacity@127.0.0.1:1/capacity")
+        .unwrap();
+    let storage = Storage::new(pool);
+    storage.mark_migrations_ready();
+    let service = Arc::new(PostgresCapacityService::from_storage(storage).unwrap());
+    let app = capacity_availability::router_with_postgres_service(service);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .header("x-correlation-id", "test-not-ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
