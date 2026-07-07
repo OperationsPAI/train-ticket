@@ -59,6 +59,8 @@ public class BookingOrchestrationPersistenceConfiguration {
 
     @Bean(destroyMethod = "close")
     LazyRedisOutboxRelayLifecycle outboxRelayLifecycle(DataSource dataSource, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
-        return new LazyRedisOutboxRelayLifecycle(dataSource, redisUrl);
+        LazyRedisOutboxRelayLifecycle lifecycle = new LazyRedisOutboxRelayLifecycle(dataSource, redisUrl);
+        lifecycle.start();
+        return lifecycle;
     }
 }
