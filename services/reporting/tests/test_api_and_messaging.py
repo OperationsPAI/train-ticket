@@ -214,6 +214,29 @@ class MessagingTest(unittest.TestCase):
         self.assertIsNone(subscriber._deserialize_envelope(minimal).causationId)
         self.assertEqual(subscriber._deserialize_envelope(with_causation).causationId, with_causation["causationId"])
 
+
+    def test_reporting_projection_exception_is_transient_not_fatal(self) -> None:
+        class FailingRepository:
+            def record_consumed_event(self, _: EventEnvelope) -> bool:
+                raise RuntimeError("projection store unavailable")
+
+        service = ReportingApplicationService(repository=FailingRepository())  # type: ignore[arg-type]
+        envelope = EventEnvelope(
+            eventId="evt-reporting-transient",
+            eventType="PaymentCaptured",
+            occurredAt="2026-07-05T10:30:00.000Z",
+            correlationId="corr-1",
+            producer="payment",
+            schemaVersion=1,
+            payload={},
+            causationId="evt-1",
+        )
+
+        result = service.handle_event(envelope)
+
+        self.assertEqual(result.status.value, "TRANSIENT_ERROR")
+        self.assertIn("projection store unavailable", result.message)
+
     def test_subscriber_dedups_duplicate_event_id(self) -> None:
         service = ReportingApplicationService()
         subscriber = FakeSubscriber()

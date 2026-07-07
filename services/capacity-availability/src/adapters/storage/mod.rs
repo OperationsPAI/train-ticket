@@ -597,6 +597,28 @@ impl PostgresCapacityService {
         .transpose()
     }
 
+    async fn find_confirmable_hold_by_segment_booking(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        segment_booking_ref: &str,
+    ) -> Result<Option<Snapshot<CapacityHoldSnapshot>>, StorageError> {
+        let sql = format!(
+            "SELECT id, version, data FROM {HOLD_TABLE} WHERE data #>> '{{references,segmentBookingRef}}' = $1 AND data ->> 'state' = 'Held' ORDER BY updated_at DESC LIMIT 1"
+        );
+        let row: Option<(String, i64, Value)> = sqlx::query_as(&sql)
+            .bind(segment_booking_ref)
+            .fetch_optional(&mut **tx)
+            .await?;
+        row.map(|(id, version, data)| {
+            Ok(Snapshot {
+                id,
+                version,
+                data: serde_json::from_value(data)?,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn handle_inbound_event(&self, envelope: WireEnvelope) -> HandlerResult {
         let result = match envelope.event_type.as_str() {
             "SegmentReservationRequested" => {
@@ -605,9 +627,9 @@ impl PostgresCapacityService {
             "SegmentReservationConfirmed" => {
                 self.handle_segment_reservation_confirmed(envelope).await
             }
-            "SegmentBookingCancelled" | "PostSalesApplied" => {
-                self.handle_release_requested(envelope).await
-            }
+            "SegmentBookingCancelled" => self.handle_segment_booking_cancelled(envelope).await,
+            "SegmentTicketed" => self.handle_segment_ticketed(envelope).await,
+            "PostSalesApplied" => self.handle_post_sales_applied(envelope).await,
             "EntitlementVoided" => self.handle_entitlement_voided(envelope).await,
             _ => Ok(()),
         };
@@ -623,7 +645,7 @@ impl PostgresCapacityService {
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
         let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId") else {
-            return Ok(());
+            return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
         };
         let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
             return Err(InboundEventError::Fatal("missing segmentRef".into()));
@@ -631,8 +653,12 @@ impl PostgresCapacityService {
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
             return Err(InboundEventError::Fatal("missing travelerRef".into()));
         };
-        let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
-            .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
+        let Some(_) = string_field(&envelope.payload, "journeyOrderId") else {
+            return Err(InboundEventError::Fatal("missing journeyOrderId".into()));
+        };
+        let Some(idempotency_key) = string_field(&envelope.payload, "idempotencyKey") else {
+            return Err(InboundEventError::Fatal("missing idempotencyKey".into()));
+        };
         let request = HoldCapacityRequest {
             segment_ref,
             traveler_ref,
@@ -795,56 +821,223 @@ impl PostgresCapacityService {
         &self,
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
-            return Ok(());
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
         };
-        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
-        self.handle_inbound_hold_mutation(
+        let Some(_) = string_field(&envelope.payload, "evidence") else {
+            return Err(InboundEventError::Fatal("missing evidence".into()));
+        };
+        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, segment_booking_ref);
+        let fingerprint = format!("confirm-by-segment-booking:{segment_booking_ref}");
+        self.handle_inbound_segment_booking_confirm(
             envelope,
-            &hold_id,
+            &segment_booking_ref,
             &idempotency_key,
-            &format!("confirm:{hold_id}"),
-            200,
-            |pool, now| {
-                pool.confirm_hold(&HoldId::new(&hold_id).map_err(to_internal)?, now)
-                    .map_err(map_hold_mutation_error)
-            },
-            |_| ConfirmHoldResponse {
-                hold_id: hold_id.clone(),
-                status: "CONFIRMED".to_string(),
-            },
+            &fingerprint,
         )
         .await
     }
 
-    async fn handle_release_requested(
+    async fn handle_inbound_segment_booking_confirm(
+        &self,
+        envelope: WireEnvelope,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        fingerprint: &str,
+    ) -> Result<(), InboundEventError> {
+        let stream = stream_for_producer(&envelope.producer);
+        for attempt in 0..MAX_RETRIES {
+            let result = self
+                .try_handle_inbound_segment_booking_confirm(
+                    &envelope,
+                    &stream,
+                    segment_booking_ref,
+                    idempotency_key,
+                    fingerprint,
+                )
+                .await;
+            match result {
+                Err(InboundEventError::Transient(message))
+                    if message.contains("optimistic concurrency conflict")
+                        && attempt + 1 < MAX_RETRIES =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+        Err(InboundEventError::Transient(
+            "capacity hold write conflict".into(),
+        ))
+    }
+
+    async fn try_handle_inbound_segment_booking_confirm(
+        &self,
+        envelope: &WireEnvelope,
+        stream: &str,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        fingerprint: &str,
+    ) -> Result<(), InboundEventError> {
+        let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
+        if !mark_event_processing(&mut tx, &envelope.event_id, stream)
+            .await
+            .map_err(inbound_transient)?
+        {
+            tx.rollback().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let Some(hold_snapshot) = self
+            .find_confirmable_hold_by_segment_booking(&mut tx, segment_booking_ref)
+            .await
+            .map_err(inbound_transient)?
+        else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        if self
+            .claim_idempotency::<ConfirmHoldResponse>(&mut tx, idempotency_key, fingerprint)
+            .await
+            .map_err(inbound_from_app_error)?
+            .is_some()
+        {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let hold_id = hold_snapshot.id.clone();
+        let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        let Some(loaded_pool) = self
+            .inventory_repo
+            .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
+            .await
+            .map_err(inbound_transient)?
+        else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        let mut pool = loaded_pool
+            .data
+            .try_into_domain()
+            .map_err(inbound_from_app_error)?;
+        let hold_id_value = HoldId::new(&hold_id).map_err(inbound_fatal)?;
+        let Some(current_hold) = pool.hold(&hold_id_value) else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        if !matches!(current_hold.state, CapacityHoldState::Held) {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let event = pool
+            .confirm_hold(&hold_id_value, now_millis())
+            .map_err(map_hold_mutation_error)
+            .map_err(inbound_from_app_error)?;
+        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+            .map_err(inbound_from_app_error)?;
+        self.inventory_repo
+            .save(
+                &mut tx,
+                &pool_id,
+                Some(loaded_pool.version),
+                &InventoryPoolSnapshot::from_domain(&pool),
+            )
+            .await
+            .map_err(inbound_transient)?;
+        let hold = pool
+            .hold(&hold_id_value)
+            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?;
+        self.upsert_hold_snapshot(&mut tx, &hold_id, hold)
+            .await
+            .map_err(inbound_from_app_error)?;
+        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
+            .await
+            .map_err(inbound_transient)?;
+        let resp = ConfirmHoldResponse {
+            hold_id,
+            status: "CONFIRMED".to_string(),
+        };
+        self.finish_idempotency(
+            &mut tx,
+            idempotency_key,
+            fingerprint,
+            200,
+            serde_json::to_value(&resp).map_err(inbound_transient)?,
+        )
+        .await
+        .map_err(inbound_from_app_error)?;
+        tx.commit().await.map_err(inbound_transient)?;
+        Ok(())
+    }
+
+    async fn handle_segment_booking_cancelled(
         &self,
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
-            .or_else(|| string_field(&envelope.payload, "holdId"))
-        else {
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
+        };
+        let Some(_) = string_field(&envelope.payload, "reason") else {
+            return Err(InboundEventError::Fatal("missing reason".into()));
+        };
+        let idempotency_key = format!(
+            "{}:{}:segment-booking-cancelled-release",
+            envelope.event_id, segment_booking_ref
+        );
+        let fingerprint =
+            format!("release-by-segment-booking:{segment_booking_ref}:segment-booking-cancelled");
+        self.handle_inbound_segment_booking_release(
+            envelope,
+            &segment_booking_ref,
+            &idempotency_key,
+            &fingerprint,
+            "segment-booking-cancelled",
+        )
+        .await
+    }
+
+    async fn handle_segment_ticketed(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        for field in ["segmentBookingId", "entitlementId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return Err(InboundEventError::Fatal(format!("missing {field}")));
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_post_sales_applied(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        for field in ["caseId", "orderId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return Err(InboundEventError::Fatal(format!("missing {field}")));
+            }
+        }
+        if envelope
+            .payload
+            .get("resultSummary")
+            .is_none_or(Value::is_null)
+        {
+            return Err(InboundEventError::Fatal("missing resultSummary".into()));
+        }
+        let Some(segment_booking_ref) = post_sales_release_ref(&envelope.payload) else {
             return Ok(());
         };
-        let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
-        self.handle_inbound_hold_mutation(
+        let idempotency_key = format!(
+            "{}:{}:post-sales-applied-release",
+            envelope.event_id, segment_booking_ref
+        );
+        let fingerprint =
+            format!("release-by-segment-booking:{segment_booking_ref}:post-sales-applied");
+        self.handle_inbound_segment_booking_release(
             envelope,
-            &hold_id,
+            &segment_booking_ref,
             &idempotency_key,
-            &format!("release:{hold_id}"),
-            200,
-            |pool, now| {
-                pool.release_hold(
-                    &HoldId::new(&hold_id).map_err(to_internal)?,
-                    now,
-                    "client-requested-release",
-                )
-                .map_err(map_hold_mutation_error)
-            },
-            |_| ReleaseHoldResponse {
-                hold_id: hold_id.clone(),
-                status: "RELEASED".to_string(),
-            },
+            &fingerprint,
+            "post-sales-applied",
         )
         .await
     }
@@ -856,8 +1049,13 @@ impl PostgresCapacityService {
         let Some(segment_booking_ref) =
             segment_booking_ref_from_entitlement_voided(&envelope.payload)
         else {
-            return Ok(());
+            return Err(InboundEventError::Fatal("missing segmentBookingRef".into()));
         };
+        for field in ["entitlementId", "voidedAt", "reason", "policy"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return Err(InboundEventError::Fatal(format!("missing {field}")));
+            }
+        }
         let idempotency_key = format!(
             "{}:{}:entitlement-voided-release",
             envelope.event_id, segment_booking_ref
@@ -1011,6 +1209,7 @@ impl PostgresCapacityService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn handle_inbound_hold_mutation<T, M, R>(
         &self,
         envelope: WireEnvelope,
@@ -1055,6 +1254,7 @@ impl PostgresCapacityService {
         ))
     }
 
+    #[allow(dead_code)]
     async fn try_handle_inbound_hold_mutation<T, M, R>(
         &self,
         envelope: &WireEnvelope,
@@ -1170,9 +1370,12 @@ fn inbound_fatal(error: impl std::fmt::Display) -> InboundEventError {
 
 fn inbound_from_app_error(error: AppError) -> InboundEventError {
     match error {
-        AppError::Unavailable(message)
-        | AppError::Internal(message)
-        | AppError::Conflict(message) => InboundEventError::Transient(message),
+        AppError::Unavailable(message) | AppError::Internal(message) => {
+            InboundEventError::Transient(message)
+        }
+        AppError::Conflict(message) if message.contains("optimistic concurrency conflict") => {
+            InboundEventError::Transient(message)
+        }
         error => InboundEventError::Fatal(error.message().to_string()),
     }
 }
@@ -1511,7 +1714,7 @@ fn to_app_storage(error: impl std::fmt::Display) -> AppError {
     let message = error.to_string();
     if message.contains("optimistic concurrency conflict") {
         AppError::Conflict(message)
-    } else if message == "IDEMPOTENCY_KEY_REUSED" {
+    } else if message == "IDEMPOTENCY_KEY_REUSED" || message.contains("IDEMPOTENCY_KEY_REUSED") {
         AppError::IdempotencyKeyReused(
             "Idempotency-Key was reused with a different request body".into(),
         )
@@ -1542,6 +1745,29 @@ fn segment_booking_ref_from_entitlement_voided(value: &Value) -> Option<String> 
         .get("references")
         .and_then(|references| string_field(references, "segmentBookingRef"))
         .or_else(|| string_field(value, "segmentBookingId"))
+}
+
+fn post_sales_release_ref(value: &Value) -> Option<String> {
+    value
+        .get("references")
+        .and_then(|references| {
+            string_field(references, "segmentBookingRef")
+                .or_else(|| string_field(references, "segmentBookingId"))
+                .or_else(|| string_field(references, "capacityHoldId"))
+                .or_else(|| string_field(references, "holdId"))
+        })
+        .or_else(|| {
+            value.get("scope").and_then(|scope| {
+                string_field(scope, "segmentBookingRef")
+                    .or_else(|| string_field(scope, "segmentBookingId"))
+                    .or_else(|| string_field(scope, "capacityHoldId"))
+                    .or_else(|| string_field(scope, "holdId"))
+            })
+        })
+        .or_else(|| string_field(value, "segmentBookingRef"))
+        .or_else(|| string_field(value, "segmentBookingId"))
+        .or_else(|| string_field(value, "capacityHoldId"))
+        .or_else(|| string_field(value, "holdId"))
 }
 
 fn now_millis() -> u64 {

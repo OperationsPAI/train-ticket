@@ -635,6 +635,145 @@ pub mod redis_runtime {
         })))
     }
 
+    #[async_trait]
+    trait StreamOps: Send {
+        async fn create_group(&mut self, stream: &str, group: &str) -> Result<(), SubscribeFailed>;
+        async fn recover_pending(
+            &mut self,
+            stream: &str,
+            group: &str,
+            consumer_name: &str,
+        ) -> Result<Vec<StreamMessage>, SubscribeFailed>;
+        async fn read_group(
+            &mut self,
+            streams: &[String],
+            group: &str,
+            consumer_name: &str,
+        ) -> Result<Vec<StreamMessage>, SubscribeFailed>;
+        async fn delivery_count(
+            &mut self,
+            stream: &str,
+            group: &str,
+            id: &str,
+        ) -> Result<u64, SubscribeFailed>;
+        async fn xadd_dlq(
+            &mut self,
+            dlq: &str,
+            raw_envelope: &str,
+            fields: Vec<(&'static str, String)>,
+        ) -> Result<(), SubscribeFailed>;
+        async fn ack(&mut self, stream: &str, group: &str, id: &str)
+        -> Result<(), SubscribeFailed>;
+    }
+
+    struct RedisStreamOps {
+        connection: redis::aio::MultiplexedConnection,
+    }
+
+    #[async_trait]
+    impl StreamOps for RedisStreamOps {
+        async fn create_group(&mut self, stream: &str, group: &str) -> Result<(), SubscribeFailed> {
+            let result: RedisResult<String> = redis::cmd("XGROUP")
+                .arg("CREATE")
+                .arg(stream)
+                .arg(group)
+                .arg("$")
+                .arg("MKSTREAM")
+                .query_async(&mut self.connection)
+                .await;
+            if let Err(error) = result {
+                if !error.to_string().contains("BUSYGROUP") {
+                    return Err(SubscribeFailed(format!(
+                        "failed to create consumer group for {stream}: {error}"
+                    )));
+                }
+            }
+            Ok(())
+        }
+
+        async fn recover_pending(
+            &mut self,
+            stream: &str,
+            group: &str,
+            consumer_name: &str,
+        ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
+            let response: redis::Value = redis::cmd("XAUTOCLAIM")
+                .arg(stream)
+                .arg(group)
+                .arg(consumer_name)
+                .arg(60_000)
+                .arg("0-0")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut self.connection)
+                .await
+                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            Ok(parse_autoclaim_messages(stream, response))
+        }
+
+        async fn read_group(
+            &mut self,
+            streams: &[String],
+            group: &str,
+            consumer_name: &str,
+        ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
+            let response: redis::Value = redis::cmd("XREADGROUP")
+                .arg("GROUP")
+                .arg(group)
+                .arg(consumer_name)
+                .arg("BLOCK")
+                .arg(2_000)
+                .arg("COUNT")
+                .arg(10)
+                .arg("STREAMS")
+                .arg(streams)
+                .arg(vec![">"; streams.len()])
+                .query_async(&mut self.connection)
+                .await
+                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            Ok(parse_stream_messages(response))
+        }
+
+        async fn delivery_count(
+            &mut self,
+            stream: &str,
+            group: &str,
+            id: &str,
+        ) -> Result<u64, SubscribeFailed> {
+            pending_delivery_count(&mut self.connection, stream, group, id).await
+        }
+
+        async fn xadd_dlq(
+            &mut self,
+            dlq: &str,
+            raw_envelope: &str,
+            fields: Vec<(&'static str, String)>,
+        ) -> Result<(), SubscribeFailed> {
+            let _: String = redis::cmd("XADD")
+                .arg(dlq)
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(RETENTION_MAXLEN)
+                .arg("*")
+                .arg("envelope")
+                .arg(raw_envelope)
+                .arg(fields)
+                .query_async(&mut self.connection)
+                .await
+                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            Ok(())
+        }
+
+        async fn ack(
+            &mut self,
+            stream: &str,
+            group: &str,
+            id: &str,
+        ) -> Result<(), SubscribeFailed> {
+            ack(&mut self.connection, stream, group, id).await
+        }
+    }
+
     #[derive(Clone)]
     pub struct RedisEventSubscriber {
         client: redis::Client,
@@ -658,80 +797,59 @@ pub mod redis_runtime {
         pub fn shutdown(&self) {
             self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         }
-        async fn create_groups(
-            connection: &mut redis::aio::MultiplexedConnection,
+        async fn create_groups_with_ops(
+            ops: &mut dyn StreamOps,
             streams: &[String],
             group: &str,
         ) -> Result<(), SubscribeFailed> {
             for stream in streams {
-                let result: RedisResult<String> = redis::cmd("XGROUP")
-                    .arg("CREATE")
-                    .arg(stream)
-                    .arg(group)
-                    .arg("$")
-                    .arg("MKSTREAM")
-                    .query_async(&mut *connection)
-                    .await;
-                if let Err(error) = result {
-                    if !error.to_string().contains("BUSYGROUP") {
-                        return Err(SubscribeFailed(format!(
-                            "failed to create consumer group for {stream}: {error}"
-                        )));
-                    }
-                }
+                ops.create_group(stream, group).await?;
             }
             Ok(())
         }
         // A non-persistent Redis loses consumer groups on restart: a NOGROUP
         // error means recreate the groups and carry on. Every consume error
         // backs off so a dead connection never hot-spins the subscribe loop.
-        async fn handle_consume_error(
-            connection: &mut redis::aio::MultiplexedConnection,
+        async fn handle_consume_error_with_ops(
+            ops: &mut dyn StreamOps,
             streams: &[String],
             group: &str,
             error: &str,
         ) {
             if error.to_uppercase().contains("NOGROUP") {
-                let _ = Self::create_groups(connection, streams, group).await;
+                let _ = Self::create_groups_with_ops(ops, streams, group).await;
             }
             sleep(Duration::from_secs(1)).await;
         }
-        async fn recover_pending(
+        async fn recover_pending_with_ops(
             &self,
-            connection: &mut redis::aio::MultiplexedConnection,
+            ops: &mut dyn StreamOps,
             streams: &[String],
             group: &str,
             consumer_name: &str,
             handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
         ) -> Result<(), SubscribeFailed> {
             for stream in streams {
-                let response: redis::Value = redis::cmd("XAUTOCLAIM")
-                    .arg(stream)
-                    .arg(group)
-                    .arg(consumer_name)
-                    .arg(60_000)
-                    .arg("0-0")
-                    .arg("COUNT")
-                    .arg(100)
-                    .query_async(&mut *connection)
-                    .await
-                    .map_err(|error| SubscribeFailed(error.to_string()))?;
-                for mut message in parse_autoclaim_messages(stream, response) {
-                    message.delivery_count =
-                        pending_delivery_count(connection, stream, group, &message.id)
-                            .await
-                            .unwrap_or(message.delivery_count);
+                let mut messages = ops.recover_pending(stream, group, consumer_name).await?;
+                for message in &mut messages {
+                    message.delivery_count = ops
+                        .delivery_count(&message.stream, group, &message.id)
+                        .await
+                        .unwrap_or(message.delivery_count);
                     if message.delivery_count >= MAX_DELIVERY_ATTEMPTS {
                         move_to_dlq(
-                            connection,
+                            ops,
                             &message.stream,
                             group,
+                            consumer_name,
                             &message.id,
                             &message.raw_envelope,
+                            "MaxDeliveryAttempts",
+                            message.delivery_count,
                         )
                         .await?;
                     } else {
-                        self.process_message(connection, group, message, handler)
+                        self.process_message(ops, group, consumer_name, message.clone(), handler)
                             .await?;
                     }
                 }
@@ -740,32 +858,100 @@ pub mod redis_runtime {
         }
         async fn process_message(
             &self,
-            connection: &mut redis::aio::MultiplexedConnection,
+            ops: &mut dyn StreamOps,
             group: &str,
+            consumer_name: &str,
             message: StreamMessage,
             handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
         ) -> Result<(), SubscribeFailed> {
-            let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
-                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            let envelope: EventEnvelope = match serde_json::from_str(&message.raw_envelope) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    return move_to_dlq(
+                        ops,
+                        &message.stream,
+                        group,
+                        consumer_name,
+                        &message.id,
+                        &message.raw_envelope,
+                        &error.to_string(),
+                        message.delivery_count,
+                    )
+                    .await;
+                }
+            };
             if self.state.has_seen(&envelope.event_id) {
-                return ack(connection, &message.stream, group, &message.id).await;
+                return ops.ack(&message.stream, group, &message.id).await;
             }
             match handler(envelope.clone()).await {
                 Ok(()) => {
                     self.state.mark_consumed(&envelope.event_id);
-                    ack(connection, &message.stream, group, &message.id).await
+                    ops.ack(&message.stream, group, &message.id).await
                 }
                 Err(HandlerError::Transient(_)) => Ok(()),
-                Err(HandlerError::Fatal(_)) => {
+                Err(HandlerError::Fatal(reason)) => {
                     self.state.mark_consumed(&envelope.event_id);
                     move_to_dlq(
-                        connection,
+                        ops,
                         &message.stream,
                         group,
+                        consumer_name,
                         &message.id,
                         &message.raw_envelope,
+                        &reason,
+                        message.delivery_count,
                     )
                     .await
+                }
+            }
+        }
+
+        async fn subscribe_with_ops(
+            &self,
+            ops: &mut dyn StreamOps,
+            streams: Vec<String>,
+            group: String,
+            consumer_name: String,
+            handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
+            run_once: bool,
+        ) -> Result<(), SubscribeFailed> {
+            Self::create_groups_with_ops(ops, &streams, &group).await?;
+            loop {
+                if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(());
+                }
+                if let Err(error) = self
+                    .recover_pending_with_ops(
+                        ops,
+                        &streams,
+                        &group,
+                        &consumer_name,
+                        handler.as_ref(),
+                    )
+                    .await
+                {
+                    Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
+                    if run_once {
+                        return Err(error);
+                    }
+                    continue;
+                }
+                let messages = match ops.read_group(&streams, &group, &consumer_name).await {
+                    Ok(messages) => messages,
+                    Err(error) => {
+                        Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
+                        if run_once {
+                            return Err(error);
+                        }
+                        continue;
+                    }
+                };
+                for message in messages {
+                    self.process_message(ops, &group, &consumer_name, message, handler.as_ref())
+                        .await?;
+                }
+                if run_once {
+                    return Ok(());
                 }
             }
         }
@@ -779,58 +965,14 @@ pub mod redis_runtime {
             consumer_name: String,
             handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
         ) -> Result<(), SubscribeFailed> {
-            let mut connection = self
+            let connection = self
                 .client
                 .get_multiplexed_async_connection()
                 .await
                 .map_err(|error| SubscribeFailed(error.to_string()))?;
-            Self::create_groups(&mut connection, &streams, &group).await?;
-            while !self.stop.load(std::sync::atomic::Ordering::SeqCst) {
-                if let Err(error) = self
-                    .recover_pending(
-                        &mut connection,
-                        &streams,
-                        &group,
-                        &consumer_name,
-                        handler.as_ref(),
-                    )
-                    .await
-                {
-                    Self::handle_consume_error(&mut connection, &streams, &group, &error.0).await;
-                    continue;
-                }
-                let response: RedisResult<redis::Value> = redis::cmd("XREADGROUP")
-                    .arg("GROUP")
-                    .arg(&group)
-                    .arg(&consumer_name)
-                    .arg("BLOCK")
-                    .arg(2_000)
-                    .arg("COUNT")
-                    .arg(10)
-                    .arg("STREAMS")
-                    .arg(&streams)
-                    .arg(vec![">"; streams.len()])
-                    .query_async(&mut connection)
-                    .await;
-                let response = match response {
-                    Ok(value) => value,
-                    Err(error) => {
-                        Self::handle_consume_error(
-                            &mut connection,
-                            &streams,
-                            &group,
-                            &error.to_string(),
-                        )
-                        .await;
-                        continue;
-                    }
-                };
-                for message in parse_stream_messages(response) {
-                    self.process_message(&mut connection, &group, message, handler.as_ref())
-                        .await?;
-                }
-            }
-            Ok(())
+            let mut ops = RedisStreamOps { connection };
+            self.subscribe_with_ops(&mut ops, streams, group, consumer_name, handler, false)
+                .await
         }
     }
 
@@ -950,25 +1092,63 @@ pub mod redis_runtime {
         }
     }
     async fn move_to_dlq(
-        connection: &mut redis::aio::MultiplexedConnection,
+        ops: &mut dyn StreamOps,
         stream: &str,
         group: &str,
+        consumer_name: &str,
         id: &str,
         raw_envelope: &str,
+        reason: &str,
+        attempts: u64,
     ) -> Result<(), SubscribeFailed> {
         let dlq = format!("{stream}:dlq");
-        let _: String = redis::cmd("XADD")
-            .arg(dlq)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(RETENTION_MAXLEN)
-            .arg("*")
-            .arg("envelope")
-            .arg(raw_envelope)
-            .query_async(&mut *connection)
-            .await
-            .map_err(|error| SubscribeFailed(error.to_string()))?;
-        ack(connection, stream, group, id).await
+        let failure_reason = truncate_failure_reason(reason);
+        log::warn!(
+            "service={} stream={} eventId={} failureReason={} moving message to DLQ",
+            group,
+            stream,
+            event_id_for_log(raw_envelope),
+            failure_reason
+        );
+        ops.xadd_dlq(
+            &dlq,
+            raw_envelope,
+            dlq_metadata_fields(
+                group,
+                consumer_name,
+                &failure_reason,
+                attempts,
+                &crate::messaging::now_rfc3339_utc(),
+            ),
+        )
+        .await?;
+        ops.ack(stream, group, id).await
+    }
+
+    fn truncate_failure_reason(reason: &str) -> String {
+        reason.chars().take(500).collect()
+    }
+
+    fn event_id_for_log(raw_envelope: &str) -> String {
+        serde_json::from_str::<EventEnvelope>(raw_envelope)
+            .map(|envelope| envelope.event_id)
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+
+    fn dlq_metadata_fields(
+        group: &str,
+        consumer_name: &str,
+        failure_reason: &str,
+        attempts: u64,
+        dead_lettered_at: &str,
+    ) -> Vec<(&'static str, String)> {
+        vec![
+            ("consumerGroup", group.to_string()),
+            ("consumerName", consumer_name.to_string()),
+            ("failureReason", failure_reason.to_string()),
+            ("attempts", attempts.max(1).to_string()),
+            ("deadLetteredAt", dead_lettered_at.to_string()),
+        ]
     }
     fn redis_value_to_string(value: &redis::Value) -> Option<String> {
         match value {
@@ -991,6 +1171,176 @@ pub mod redis_runtime {
                 redis::Value::Int(5),
             ])]);
             assert_eq!(parse_xpending_delivery_count(value), Some(5));
+        }
+
+        #[test]
+        fn dlq_metadata_fields_are_camel_case_and_attributed() {
+            let fields = dlq_metadata_fields(
+                "capacity-availability",
+                "capacity-availability-1",
+                "Fatal: missing segmentRef",
+                0,
+                "2026-07-07T12:00:00.000Z",
+            );
+            assert_eq!(
+                fields,
+                vec![
+                    ("consumerGroup", "capacity-availability".to_string()),
+                    ("consumerName", "capacity-availability-1".to_string()),
+                    ("failureReason", "Fatal: missing segmentRef".to_string()),
+                    ("attempts", "1".to_string()),
+                    ("deadLetteredAt", "2026-07-07T12:00:00.000Z".to_string()),
+                ]
+            );
+        }
+
+        #[derive(Default)]
+        struct FakeStreamOps {
+            read_messages: Vec<StreamMessage>,
+            dlq_entries: Vec<(String, String, Vec<(&'static str, String)>)>,
+            acked: Vec<(String, String, String)>,
+            created_groups: Vec<(String, String)>,
+        }
+
+        #[async_trait]
+        impl StreamOps for FakeStreamOps {
+            async fn create_group(
+                &mut self,
+                stream: &str,
+                group: &str,
+            ) -> Result<(), SubscribeFailed> {
+                self.created_groups
+                    .push((stream.to_string(), group.to_string()));
+                Ok(())
+            }
+
+            async fn recover_pending(
+                &mut self,
+                _stream: &str,
+                _group: &str,
+                _consumer_name: &str,
+            ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
+                Ok(Vec::new())
+            }
+
+            async fn read_group(
+                &mut self,
+                _streams: &[String],
+                _group: &str,
+                _consumer_name: &str,
+            ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
+                Ok(std::mem::take(&mut self.read_messages))
+            }
+
+            async fn delivery_count(
+                &mut self,
+                _stream: &str,
+                _group: &str,
+                _id: &str,
+            ) -> Result<u64, SubscribeFailed> {
+                Ok(1)
+            }
+
+            async fn xadd_dlq(
+                &mut self,
+                dlq: &str,
+                raw_envelope: &str,
+                fields: Vec<(&'static str, String)>,
+            ) -> Result<(), SubscribeFailed> {
+                self.dlq_entries
+                    .push((dlq.to_string(), raw_envelope.to_string(), fields));
+                Ok(())
+            }
+
+            async fn ack(
+                &mut self,
+                stream: &str,
+                group: &str,
+                id: &str,
+            ) -> Result<(), SubscribeFailed> {
+                self.acked
+                    .push((stream.to_string(), group.to_string(), id.to_string()));
+                Ok(())
+            }
+        }
+
+        #[tokio::test]
+        async fn subscription_processing_fatal_handler_writes_dlq_metadata_warn_log_and_acks() {
+            let mut logger = logtest::Logger::start();
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let envelope = EventEnvelope::canonical(
+                "PoisonEvent",
+                correlation_id(),
+                Some(command_id()),
+                "payment",
+                serde_json::json!({"id":"1"}),
+            );
+            let raw = serde_json::to_string(&envelope).unwrap();
+            let mut ops = FakeStreamOps {
+                read_messages: vec![StreamMessage {
+                    stream: "events:payment".to_string(),
+                    id: "1-0".to_string(),
+                    raw_envelope: raw.clone(),
+                    delivery_count: 3,
+                }],
+                ..Default::default()
+            };
+
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:payment".to_string()],
+                    "journey-order".to_string(),
+                    "consumer-1".to_string(),
+                    Box::new(|_| {
+                        Box::pin(async { Err(HandlerError::Fatal("poison root cause".into())) })
+                    }),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                ops.created_groups,
+                vec![("events:payment".to_string(), "journey-order".to_string())]
+            );
+            assert_eq!(ops.dlq_entries.len(), 1);
+            assert_eq!(ops.dlq_entries[0].0, "events:payment:dlq");
+            assert_eq!(ops.dlq_entries[0].1, raw);
+            let metadata: std::collections::HashMap<_, _> =
+                ops.dlq_entries[0].2.iter().cloned().collect();
+            assert_eq!(
+                metadata.get("consumerGroup"),
+                Some(&"journey-order".to_string())
+            );
+            assert_eq!(
+                metadata.get("consumerName"),
+                Some(&"consumer-1".to_string())
+            );
+            assert_eq!(
+                metadata.get("failureReason"),
+                Some(&"poison root cause".to_string())
+            );
+            assert_eq!(metadata.get("attempts"), Some(&"3".to_string()));
+            assert!(metadata.get("deadLetteredAt").is_some());
+            assert_eq!(
+                ops.acked,
+                vec![(
+                    "events:payment".to_string(),
+                    "journey-order".to_string(),
+                    "1-0".to_string()
+                )]
+            );
+            assert!(subscriber.state.has_seen(&envelope.event_id));
+            let log = logger.pop().expect("expected WARN DLQ log");
+            assert_eq!(log.level(), log::Level::Warn);
+            assert!(log.args().contains("events:payment"));
+            assert!(log.args().contains(&envelope.event_id));
+            assert!(log.args().contains("poison root cause"));
         }
 
         #[tokio::test]

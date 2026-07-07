@@ -75,8 +75,19 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     }
 
     @Override
-    public void moveToDlq(String stream, String envelopeJson) {
-        connection.sync().xadd(RedisStreamNames.dlqFor(stream), XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("envelope", envelopeJson));
+    public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {
+        connection.sync().xadd(
+            RedisStreamNames.dlqFor(stream),
+            XAddArgs.Builder.maxlen(100_000).approximateTrimming(),
+            Map.of(
+                "envelope", envelopeJson,
+                "consumerGroup", metadata.consumerGroup(),
+                "consumerName", metadata.consumerName(),
+                "failureReason", metadata.failureReason(),
+                "attempts", String.valueOf(metadata.attempts()),
+                "deadLetteredAt", metadata.deadLetteredAt()
+            )
+        );
     }
 
     private static StreamEntry toEntry(StreamMessage<String, String> message) {
