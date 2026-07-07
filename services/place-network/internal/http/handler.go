@@ -50,7 +50,7 @@ func (h *Handler) CreatePlace(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "invalid request body: "+err.Error(), nil)
 		return
 	}
-	resp, err := h.svc.CreatePlace(application.CreatePlaceRequest{PlaceType: req.PlaceType, CanonicalName: req.CanonicalName, Code: req.Code, Timezone: req.Timezone, CorrelationID: correlationID(ctx)})
+	resp, err := h.svc.CreatePlaceContext(ctx.Request.Context(), application.CreatePlaceRequest{PlaceType: req.PlaceType, CanonicalName: req.CanonicalName, Code: req.Code, Timezone: req.Timezone, CorrelationID: correlationID(ctx)})
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return
@@ -96,7 +96,7 @@ func (h *Handler) CreateTransportNode(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "invalid request body: "+err.Error(), nil)
 		return
 	}
-	resp, err := h.svc.CreateTransportNode(application.CreateTransportNodeRequest{PlaceID: req.PlaceID, DisplayName: req.DisplayName, ServingModes: req.ServingModes, CorrelationID: correlationID(ctx)})
+	resp, err := h.svc.CreateTransportNodeContext(ctx.Request.Context(), application.CreateTransportNodeRequest{PlaceID: req.PlaceID, DisplayName: req.DisplayName, ServingModes: req.ServingModes, CorrelationID: correlationID(ctx)})
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return

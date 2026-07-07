@@ -1,24 +1,29 @@
 package application
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain/ports"
 )
 
+type UnitOfWork func(context.Context, func() error) error
+
 type ServiceConfig struct {
-	Places    ports.PlaceRepository
-	Nodes     ports.TransportNodeRepository
-	Publisher EventPublisher
-	Clock     domain.Clock
+	Places     ports.PlaceRepository
+	Nodes      ports.TransportNodeRepository
+	Publisher  EventPublisher
+	Clock      domain.Clock
+	UnitOfWork UnitOfWork
 }
 
 type Service struct {
-	places    ports.PlaceRepository
-	nodes     ports.TransportNodeRepository
-	publisher EventPublisher
-	clock     domain.Clock
+	places     ports.PlaceRepository
+	nodes      ports.TransportNodeRepository
+	publisher  EventPublisher
+	clock      domain.Clock
+	unitOfWork UnitOfWork
 }
 
 func NewService(cfg ServiceConfig) *Service {
@@ -30,7 +35,11 @@ func NewService(cfg ServiceConfig) *Service {
 	if clock == nil {
 		clock = domain.RealClock{}
 	}
-	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock}
+	unitOfWork := cfg.UnitOfWork
+	if unitOfWork == nil {
+		unitOfWork = func(_ context.Context, fn func() error) error { return fn() }
+	}
+	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock, unitOfWork: unitOfWork}
 }
 
 type CreatePlaceRequest struct {
@@ -50,6 +59,10 @@ type CreatePlaceResponse struct {
 }
 
 func (s *Service) CreatePlace(req CreatePlaceRequest) (*CreatePlaceResponse, error) {
+	return s.CreatePlaceContext(context.Background(), req)
+}
+
+func (s *Service) CreatePlaceContext(ctx context.Context, req CreatePlaceRequest) (*CreatePlaceResponse, error) {
 	placeType := domain.PlaceType(req.PlaceType)
 	if !validPlaceTypeForAPI(placeType) {
 		return nil, NewDomainError("VALIDATION_FAILED", fmt.Sprintf("unsupported place type: %q", req.PlaceType))
@@ -62,8 +75,25 @@ func (s *Service) CreatePlace(req CreatePlaceRequest) (*CreatePlaceResponse, err
 	}
 	place.SetOptionalReferenceData(req.Code, req.Timezone)
 	place.MarkCreatedAt(now)
-	if err := s.places.Save(place); err != nil {
-		return nil, NewDomainError("CONFLICT", err.Error())
+	if err := s.unitOfWork(ctx, func() error {
+		if err := s.places.Save(place); err != nil {
+			return NewDomainError("CONFLICT", err.Error())
+		}
+		event := domain.PlaceUpdatedEvent{
+			PlaceID:       place.ID,
+			PlaceType:     place.Type,
+			CanonicalName: place.CanonicalName,
+			Code:          req.Code,
+			Timezone:      req.Timezone,
+			Status:        place.Status,
+			UpdatedAt:     domain.FormatTimestamp(now),
+		}
+		if err := s.publisher.Publish(domain.NewEventEnvelope("PlaceRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
+			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	response := &CreatePlaceResponse{
@@ -74,18 +104,6 @@ func (s *Service) CreatePlace(req CreatePlaceRequest) (*CreatePlaceResponse, err
 		CreatedAt:     domain.FormatTimestamp(now),
 	}
 
-	event := domain.PlaceUpdatedEvent{
-		PlaceID:       place.ID,
-		PlaceType:     place.Type,
-		CanonicalName: place.CanonicalName,
-		Code:          req.Code,
-		Timezone:      req.Timezone,
-		Status:        place.Status,
-		UpdatedAt:     domain.FormatTimestamp(now),
-	}
-	if err := s.publisher.Publish(domain.NewEventEnvelope("PlaceRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
-		return nil, NewDomainError("UNAVAILABLE", "event publisher unavailable")
-	}
 	return response, nil
 }
 
@@ -200,6 +218,10 @@ type CreateTransportNodeResponse struct {
 }
 
 func (s *Service) CreateTransportNode(req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
+	return s.CreateTransportNodeContext(context.Background(), req)
+}
+
+func (s *Service) CreateTransportNodeContext(ctx context.Context, req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
 	placeID := domain.PlaceID(req.PlaceID)
 	place, err := s.places.FindByID(placeID)
 	if err != nil || place == nil {
@@ -215,15 +237,20 @@ func (s *Service) CreateTransportNode(req CreateTransportNodeRequest) (*CreateTr
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.MarkCreatedAt(now)
-	if err := s.nodes.Save(node); err != nil {
-		return nil, NewDomainError("CONFLICT", err.Error())
-	}
 	servingModes := stringModes(node.ServingModes)
-	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, CreatedAt: domain.FormatTimestamp(now)}
-	event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, UpdatedAt: domain.FormatTimestamp(now)}
-	if err := s.publisher.Publish(domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
-		return nil, NewDomainError("UNAVAILABLE", "event publisher unavailable")
+	if err := s.unitOfWork(ctx, func() error {
+		if err := s.nodes.Save(node); err != nil {
+			return NewDomainError("CONFLICT", err.Error())
+		}
+		event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, UpdatedAt: domain.FormatTimestamp(now)}
+		if err := s.publisher.Publish(domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
+			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
+	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, CreatedAt: domain.FormatTimestamp(now)}
 	return response, nil
 }
 
