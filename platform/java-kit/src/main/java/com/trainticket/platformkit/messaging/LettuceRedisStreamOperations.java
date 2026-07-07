@@ -16,10 +16,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-final class LettuceRedisStreamOperations implements RedisStreamOperations {
+public final class LettuceRedisStreamOperations implements RedisStreamOperations {
     private final StatefulRedisConnection<String, String> connection;
 
-    LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
+    public LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
         this.connection = Objects.requireNonNull(connection, "connection is required");
     }
 
@@ -34,7 +34,7 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
 
     @Override
     public String publish(String stream, String envelopeJson) {
-        return connection.sync().xadd(stream, XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("d", envelopeJson));
+        return connection.sync().xadd(stream, XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("envelope", envelopeJson));
     }
 
     @Override
@@ -76,14 +76,10 @@ final class LettuceRedisStreamOperations implements RedisStreamOperations {
 
     @Override
     public void moveToDlq(String stream, String envelopeJson) {
-        connection.sync().xadd(RedisStreamNames.dlqFor(stream), XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("d", envelopeJson));
+        connection.sync().xadd(RedisStreamNames.dlqFor(stream), XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("envelope", envelopeJson));
     }
 
     private static StreamEntry toEntry(StreamMessage<String, String> message) {
-        String envelopeJson = message.getBody().get("d");
-        if (envelopeJson == null) {
-            envelopeJson = message.getBody().get("envelope");
-        }
-        return new StreamEntry(message.getId(), envelopeJson);
+        return new StreamEntry(message.getId(), message.getBody().get("envelope"));
     }
 }

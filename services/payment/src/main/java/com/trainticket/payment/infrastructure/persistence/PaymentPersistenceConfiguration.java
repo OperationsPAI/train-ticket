@@ -7,6 +7,7 @@ import com.trainticket.platformkit.persistence.DataSources;
 import com.trainticket.platformkit.persistence.DbIdempotencyStore;
 import com.trainticket.platformkit.persistence.MigrationRunner;
 import com.trainticket.platformkit.persistence.OutboxAppender;
+import com.trainticket.platformkit.messaging.LettuceRedisStreamOperations;
 import com.trainticket.platformkit.persistence.OutboxRelay;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
@@ -73,7 +74,7 @@ public class PaymentPersistenceConfiguration {
         PaymentOutboxRelayLifecycle(DataSource dataSource, String redisUrl) {
             this.client = RedisClient.create(redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl);
             this.connection = client.connect();
-            this.relay = new OutboxRelay(dataSource, new PublicLettuceRedisStreamOperations(connection));
+            this.relay = new OutboxRelay(dataSource, new LettuceRedisStreamOperations(connection));
         }
 
         @PostConstruct
