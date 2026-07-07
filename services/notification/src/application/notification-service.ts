@@ -171,7 +171,22 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope): ScheduleNotificat
     transactionRequired: booleanValue(payload.transactionRequired) ?? true,
     variables: mapping.variables(payload),
     scheduledAt: new Date(),
+    triggerBusinessRef: triggerBusinessRef(envelope),
   };
+}
+
+function triggerBusinessRef(envelope: EventEnvelope): string | undefined {
+  const payload = envelope.payload;
+  const businessRef = stringValue(payload.orderId)
+    ?? stringValue(payload.journeyOrderId)
+    ?? stringValue(payload.paymentIntentId)
+    ?? stringValue(payload.refundId)
+    ?? stringValue(payload.entitlementId)
+    ?? stringValue(payload.segmentBookingId)
+    ?? stringValue(payload.caseId)
+    ?? stringValue(payload.postSalesCaseId)
+    ?? stringValue(payload.businessRef);
+  return businessRef ? `${envelope.eventType}:${businessRef}` : undefined;
 }
 
 function mappingFor(eventType: string): TriggerMapping | undefined {

@@ -56,6 +56,19 @@ export async function withTransaction<T>(pool: Pool, operation: (client: PoolCli
   }
 }
 
+export async function checkPostgresReadiness(pool: Pool, timeoutMs = 200): Promise<boolean> {
+  let client: PoolClient | undefined;
+  try {
+    client = await withTimeout(pool.connect(), timeoutMs);
+    await withTimeout(client.query("SELECT 1"), timeoutMs);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    client?.release();
+  }
+}
+
 export class MigrationRunner {
   private ready = false;
   private lastFailure: unknown;
@@ -134,7 +147,7 @@ export class SnapshotRepository<TSnapshot> {
     if (expectedVersion === undefined) {
       const inserted = await this.db.query(
         `INSERT INTO ${this.tableName} (id, version, data) VALUES ($1, 1, $2)
-         ON CONFLICT (id) DO NOTHING
+         ON CONFLICT DO NOTHING
          RETURNING id, version, data`,
         [id, snapshot],
       ) as QueryResult<{ id: string; version: string | number | bigint; data: TSnapshot }>;
@@ -311,6 +324,23 @@ function assertSqlIdentifier(identifier: string, label: string): string {
     throw new Error(`Invalid ${label} name`);
   }
   return identifier;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("PostgreSQL readiness check timed out")), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function sleep(milliseconds: number): Promise<void> {

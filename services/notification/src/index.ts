@@ -88,5 +88,5 @@ export {
 export { RedisStreamEventPublisher } from "./adapters/messaging/publisher.js";
 export { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 export { startNotificationMessaging, type NotificationMessagingRuntime } from "./adapters/messaging/runtime.js";
-export { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository, listInAppNotifications } from "./adapters/storage/notification-repository.js";
+export { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository } from "./adapters/storage/notification-repository.js";
 export { startNotificationStorage, type NotificationStorageRuntime } from "./adapters/storage/runtime.js";

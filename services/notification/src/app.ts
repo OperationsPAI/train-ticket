@@ -108,7 +108,7 @@ export function metadata(): ServiceMetadata {
 }
 
 export type AppStorage = Readonly<{
-  ready: () => boolean;
+  ready: () => boolean | Promise<boolean>;
 }>;
 
 export function createApp(instrumentation: InstrumentationHooks = {}, storage?: AppStorage): FastifyInstance {
@@ -166,8 +166,8 @@ function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
 }
 
-function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): ProbeStatus {
-  if (storage && !storage.ready()) {
+async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
+  if (storage && !await storage.ready()) {
     reply.status(503);
     return { status: "not_ready", probe: "ready" };
   }

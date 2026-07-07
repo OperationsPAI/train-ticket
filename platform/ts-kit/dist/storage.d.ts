@@ -14,6 +14,7 @@ export type SnapshotRecord<TSnapshot> = Readonly<{
 export declare function databaseUrl(): string;
 export declare function createPostgresPool(config?: PoolConfig | string): Pool;
 export declare function withTransaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>): Promise<T>;
+export declare function checkPostgresReadiness(pool: Pool, timeoutMs?: number): Promise<boolean>;
 export declare class MigrationRunner {
     private readonly pool;
     private readonly migrationsDirectory;

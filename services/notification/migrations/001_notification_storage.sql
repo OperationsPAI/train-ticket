@@ -12,6 +12,10 @@ CREATE INDEX IF NOT EXISTS notification_task_snapshots_recipient_in_app_idx
 CREATE UNIQUE INDEX IF NOT EXISTS notification_task_snapshots_trigger_recipient_template_idx
   ON notification_task_snapshots ((data->>'triggerEventId'), (data->>'recipientRef'), (data->>'templateCode'));
 
+CREATE UNIQUE INDEX IF NOT EXISTS notification_task_snapshots_business_recipient_template_idx
+  ON notification_task_snapshots ((data->>'triggerBusinessRef'), (data->>'recipientRef'), (data->>'templateCode'))
+  WHERE data->>'triggerBusinessRef' IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS outbox (
   seq          bigserial PRIMARY KEY,
   event_id     text NOT NULL UNIQUE,

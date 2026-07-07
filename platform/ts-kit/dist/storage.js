@@ -41,6 +41,20 @@ export async function withTransaction(pool, operation) {
         client.release();
     }
 }
+export async function checkPostgresReadiness(pool, timeoutMs = 200) {
+    let client;
+    try {
+        client = await withTimeout(pool.connect(), timeoutMs);
+        await withTimeout(client.query("SELECT 1"), timeoutMs);
+        return true;
+    }
+    catch {
+        return false;
+    }
+    finally {
+        client?.release();
+    }
+}
 export class MigrationRunner {
     pool;
     migrationsDirectory;
@@ -106,7 +120,7 @@ export class SnapshotRepository {
     async save(id, snapshot, expectedVersion) {
         if (expectedVersion === undefined) {
             const inserted = await this.db.query(`INSERT INTO ${this.tableName} (id, version, data) VALUES ($1, 1, $2)
-         ON CONFLICT (id) DO NOTHING
+         ON CONFLICT DO NOTHING
          RETURNING id, version, data`, [id, snapshot]);
             const row = inserted.rows[0];
             if (!row) {
@@ -242,6 +256,19 @@ function assertSqlIdentifier(identifier, label) {
         throw new Error(`Invalid ${label} name`);
     }
     return identifier;
+}
+function withTimeout(promise, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("PostgreSQL readiness check timed out")), timeoutMs);
+        timer.unref?.();
+        promise.then((value) => {
+            clearTimeout(timer);
+            resolve(value);
+        }, (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
 }
 function sleep(milliseconds) {
     return new Promise((resolve) => {

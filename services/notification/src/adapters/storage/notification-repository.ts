@@ -37,23 +37,6 @@ export class PostgresUserPreferenceRepository implements UserPreferenceRepositor
   }
 }
 
-export async function listInAppNotifications(client: PoolClient, recipientRef: string, limit = 50): Promise<NotificationTaskSnapshot[]> {
-  const cappedLimit = Math.max(1, Math.min(limit, 100));
-  const result = await client.query(
-    `SELECT data
-     FROM notification_task_snapshots
-     WHERE data->>'recipientRef' = $1 AND data->>'channel' = 'IN_APP'
-     ORDER BY updated_at DESC
-     LIMIT $2`,
-    [recipientRef, cappedLimit],
-  ) as QueryResult<{ data: NotificationTaskSnapshot }>;
-  return result.rows.map((row) => deserializeSnapshot(row.data));
-}
-
 function serializeSnapshot(snapshot: NotificationTaskSnapshot): NotificationTaskSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as NotificationTaskSnapshot;
-}
-
-function deserializeSnapshot(snapshot: NotificationTaskSnapshot): NotificationTaskSnapshot {
-  return snapshot;
 }
