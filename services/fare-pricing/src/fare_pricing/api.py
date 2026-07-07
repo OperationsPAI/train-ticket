@@ -261,7 +261,10 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     pool = DatabasePool(config)
     app.state.database_pool = pool
     app.state.readiness = readiness
-    migrations_dir = Path(__file__).resolve().parents[3] / "migrations"
+    # In the container the package lives in site-packages, so the source-tree
+    # heuristic below cannot find the SQL; the image sets MIGRATIONS_DIR.
+    env_dir = os.environ.get("MIGRATIONS_DIR")
+    migrations_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parents[3] / "migrations"
     run_migrations(pool, migrations_dir, readiness)
     store = PostgresFarePricingStore(pool)
     _install_default_rule_sets(store)
