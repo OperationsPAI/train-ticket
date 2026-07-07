@@ -1,5 +1,6 @@
 package com.trainticket.journeyorder.infrastructure.persistence;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
 import java.sql.Connection;
 import java.sql.Statement;

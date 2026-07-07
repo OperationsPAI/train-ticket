@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import java.time.Clock;
 import com.trainticket.financesettlement.infrastructure.persistence.FinanceSettlementReadiness;
 import java.time.Instant;

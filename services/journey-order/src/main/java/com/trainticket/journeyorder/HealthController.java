@@ -1,5 +1,6 @@
 package com.trainticket.journeyorder;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import java.time.Clock;
 import com.trainticket.journeyorder.infrastructure.persistence.JourneyOrderReadiness;
 import java.time.Instant;

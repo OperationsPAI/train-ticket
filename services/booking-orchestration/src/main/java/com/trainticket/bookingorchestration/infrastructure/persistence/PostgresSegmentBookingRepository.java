@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.infrastructure.persistence;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.bookingorchestration.application.SegmentBookingRepository;
 import com.trainticket.bookingorchestration.domain.SegmentBooking;
@@ -21,6 +22,7 @@ public class PostgresSegmentBookingRepository implements SegmentBookingRepositor
     private final SnapshotRepository<JacksonBookingOrchestrationJson.SegmentBookingSnapshot> snapshots;
     private final JdbcOperations jdbc;
 
+    @Autowired
     public PostgresSegmentBookingRepository(DataSource dataSource, ObjectMapper objectMapper) {
         this(
             objectMapper,

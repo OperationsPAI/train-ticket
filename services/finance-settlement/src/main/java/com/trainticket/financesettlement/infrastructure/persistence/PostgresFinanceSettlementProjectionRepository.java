@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.infrastructure.persistence;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.financesettlement.application.FinanceSettlementEventHandler;
 import com.trainticket.financesettlement.application.FinanceSettlementProjectionRepository;
 import com.trainticket.financesettlement.domain.Money;
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Repository;
 public class PostgresFinanceSettlementProjectionRepository implements FinanceSettlementProjectionRepository {
     private final JdbcOperations jdbc;
 
+    @Autowired
     public PostgresFinanceSettlementProjectionRepository(DataSource dataSource) {
         this(new JdbcTemplate(dataSource));
     }

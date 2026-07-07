@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import java.time.Clock;
 import com.trainticket.bookingorchestration.infrastructure.persistence.BookingOrchestrationReadiness;
 import java.time.Instant;

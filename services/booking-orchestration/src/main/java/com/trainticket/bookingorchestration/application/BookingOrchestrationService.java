@@ -1,5 +1,6 @@
 package com.trainticket.bookingorchestration.application;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.bookingorchestration.domain.BookingEvent;
@@ -47,6 +48,7 @@ public class BookingOrchestrationService {
             new InMemoryPaymentIntentSagaReferenceRepository(), new InMemoryConsumedEventRepository());
     }
 
+    @Autowired
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher, BookingSagaRepository sagas,
                                        SegmentBookingRepository segmentBookings,
                                        PaymentIntentSagaReferenceRepository paymentIntentRefs,

@@ -1,5 +1,6 @@
 package com.trainticket.journeyorder.infrastructure.persistence;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.journeyorder.application.port.in.CancelJourneyOrderResult;
@@ -32,6 +33,7 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     private final JdbcOperations jdbc;
     private final ProcessedEventStore events;
 
+    @Autowired
     public PostgresJourneyOrderStateRepository(DataSource dataSource, ObjectMapper mapper) {
         this(
             mapper,

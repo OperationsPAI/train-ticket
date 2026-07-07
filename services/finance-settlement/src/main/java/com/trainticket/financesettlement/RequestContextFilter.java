@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.platformkit.http.CorrelationIds;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import jakarta.servlet.FilterChain;
@@ -24,6 +25,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
         this(new NoOpRuntimeTracer());
     }
 
+    @Autowired
     public RequestContextFilter(RuntimeTracer tracer) {
         this.tracer = tracer;
     }
