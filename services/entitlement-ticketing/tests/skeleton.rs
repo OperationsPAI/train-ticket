@@ -266,6 +266,18 @@ async fn published_entitlement_events_use_contract_payload_shapes() {
         voided_payload["segmentBookingId"],
         "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111"
     );
+    assert_eq!(
+        voided_payload["references"]["segmentBookingRef"],
+        "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c111"
+    );
+    assert_eq!(
+        voided_payload["references"]["orderRef"],
+        "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c222"
+    );
+    assert_eq!(
+        voided_payload["references"]["travelerRef"],
+        "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0c333"
+    );
     assert!(voided_payload["voidedAt"].as_str().unwrap().ends_with('Z'));
     assert_eq!(voided_payload["reason"], "REFUND");
     assert_eq!(voided_payload["policy"], "NORMAL");

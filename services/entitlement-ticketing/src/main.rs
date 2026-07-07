@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (app, subscriber_handle) = entitlement_ticketing::build_runtime()?;
+    let (app, subscriber_handle) = entitlement_ticketing::build_runtime().await?;
     let port = std::env::var("PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
