@@ -6,8 +6,8 @@ use crate::domain::*;
 use crate::ports::WireEnvelope;
 use rust_kit::messaging::{HandlerResult, stream_for_producer};
 use rust_kit::storage::{
-    DbIdempotencyStore, OutboxAppender, PgTransaction, Snapshot, SnapshotRepository, Storage,
-    StorageError, mark_event_processing,
+    DbIdempotencyStore, IdempotencyTxDecision, OutboxAppender, PgTransaction, Snapshot,
+    SnapshotRepository, Storage, StorageError, mark_event_processing,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -30,10 +30,19 @@ pub struct PostgresCapacityService {
 impl PostgresCapacityService {
     pub async fn from_env() -> Result<Self, StorageError> {
         let storage = Storage::from_env().await?;
-        if storage.migrate_dir("migrations").await.is_err() {
-            storage
-                .migrate_dir("services/capacity-availability/migrations")
-                .await?;
+        let migrations_dir =
+            std::env::var("MIGRATIONS_DIR").unwrap_or_else(|_| "/app/migrations".into());
+        match storage.migrate_dir(&migrations_dir).await {
+            Ok(()) => {}
+            Err(primary_error) => {
+                if migrations_dir == "/app/migrations" {
+                    storage
+                        .migrate_dir("services/capacity-availability/migrations")
+                        .await?;
+                } else {
+                    return Err(primary_error);
+                }
+            }
         }
         Self::new(storage.pool().clone())
     }
@@ -155,6 +164,13 @@ impl PostgresCapacityService {
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
         let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
         let mut tx = self.pool.begin().await.map_err(to_app_storage)?;
+        if let Some(resp) = self
+            .claim_idempotency::<HoldCapacityResponse>(&mut tx, idempotency_key, fingerprint)
+            .await?
+        {
+            tx.commit().await.map_err(to_app_storage)?;
+            return Ok(resp);
+        }
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -225,7 +241,7 @@ impl PostgresCapacityService {
             status: "HELD".to_string(),
             held_until: unix_millis_to_rfc3339(now + 300_000),
         };
-        DbIdempotencyStore::record_response(
+        self.finish_idempotency(
             &mut tx,
             idempotency_key,
             fingerprint,
@@ -233,8 +249,7 @@ impl PostgresCapacityService {
             serde_json::to_value(&response)
                 .map_err(|error| AppError::Internal(error.to_string()))?,
         )
-        .await
-        .map_err(to_app_storage)?;
+        .await?;
         tx.commit().await.map_err(to_app_storage)?;
         Ok(response)
     }
@@ -328,6 +343,13 @@ impl PostgresCapacityService {
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
                 let pool_id = hold_snapshot.data.inventory_pool_id.clone();
                 let mut tx = self.pool.begin().await.map_err(to_app_storage)?;
+                if let Some(resp) = self
+                    .claim_idempotency::<T>(&mut tx, idempotency_key, fingerprint)
+                    .await?
+                {
+                    tx.commit().await.map_err(to_app_storage)?;
+                    return Ok(resp);
+                }
                 let loaded_pool = self
                     .inventory_repo
                     .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -354,7 +376,7 @@ impl PostgresCapacityService {
                     .await
                     .map_err(to_app_storage)?;
                 let resp = response(&event);
-                DbIdempotencyStore::record_response(
+                self.finish_idempotency(
                     &mut tx,
                     idempotency_key,
                     fingerprint,
@@ -362,8 +384,7 @@ impl PostgresCapacityService {
                     serde_json::to_value(&resp)
                         .map_err(|error| AppError::Internal(error.to_string()))?,
                 )
-                .await
-                .map_err(to_app_storage)?;
+                .await?;
                 tx.commit().await.map_err(to_app_storage)?;
                 Ok(resp)
             }
@@ -453,6 +474,46 @@ impl PostgresCapacityService {
         serde_json::from_value(record.body)
             .map(Some)
             .map_err(|_| AppError::Internal("Failed to deserialize cached response".into()))
+    }
+
+    async fn claim_idempotency<T: for<'de> Deserialize<'de>>(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        idempotency_key: &str,
+        fingerprint: &str,
+    ) -> Result<Option<T>, AppError> {
+        match DbIdempotencyStore::claim_response(tx, idempotency_key, fingerprint)
+            .await
+            .map_err(to_app_storage)?
+        {
+            IdempotencyTxDecision::Claimed => Ok(None),
+            IdempotencyTxDecision::Replay(record) => serde_json::from_value(record.body)
+                .map(Some)
+                .map_err(|_| AppError::Internal("Failed to deserialize cached response".into())),
+        }
+    }
+
+    async fn finish_idempotency(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        idempotency_key: &str,
+        fingerprint: &str,
+        status_code: u16,
+        response_body: Value,
+    ) -> Result<(), AppError> {
+        match DbIdempotencyStore::record_response(
+            tx,
+            idempotency_key,
+            fingerprint,
+            status_code,
+            response_body,
+        )
+        .await
+        .map_err(to_app_storage)?
+        {
+            IdempotencyTxDecision::Claimed => Ok(()),
+            IdempotencyTxDecision::Replay(_) => Ok(()),
+        }
     }
 
     async fn load_hold(
@@ -579,6 +640,15 @@ impl PostgresCapacityService {
             tx.rollback().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        if self
+            .claim_idempotency::<HoldCapacityResponse>(&mut tx, idempotency_key, fingerprint)
+            .await
+            .map_err(inbound_from_app_error)?
+            .is_some()
+        {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -659,7 +729,7 @@ impl PostgresCapacityService {
             status: "HELD".to_string(),
             held_until: unix_millis_to_rfc3339(now + 300_000),
         };
-        DbIdempotencyStore::record_response(
+        self.finish_idempotency(
             &mut tx,
             idempotency_key,
             fingerprint,
@@ -667,7 +737,7 @@ impl PostgresCapacityService {
             serde_json::to_value(&response).map_err(inbound_transient)?,
         )
         .await
-        .map_err(inbound_transient)?;
+        .map_err(inbound_from_app_error)?;
         tx.commit().await.map_err(inbound_transient)?;
         Ok(())
     }
@@ -741,7 +811,7 @@ impl PostgresCapacityService {
         response: R,
     ) -> Result<(), InboundEventError>
     where
-        T: Serialize,
+        T: Serialize + for<'de> Deserialize<'de>,
         M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
         R: Fn(&DomainEvent) -> T,
     {
@@ -786,7 +856,7 @@ impl PostgresCapacityService {
         response: &R,
     ) -> Result<(), InboundEventError>
     where
-        T: Serialize,
+        T: Serialize + for<'de> Deserialize<'de>,
         M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
         R: Fn(&DomainEvent) -> T,
     {
@@ -796,6 +866,15 @@ impl PostgresCapacityService {
             .map_err(inbound_transient)?
         {
             tx.rollback().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        if self
+            .claim_idempotency::<T>(&mut tx, idempotency_key, fingerprint)
+            .await
+            .map_err(inbound_from_app_error)?
+            .is_some()
+        {
+            tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
         let hold_snapshot = self
@@ -850,7 +929,7 @@ impl PostgresCapacityService {
             .await
             .map_err(inbound_transient)?;
         let resp = response(&event);
-        DbIdempotencyStore::record_response(
+        self.finish_idempotency(
             &mut tx,
             idempotency_key,
             fingerprint,
@@ -858,7 +937,7 @@ impl PostgresCapacityService {
             serde_json::to_value(&resp).map_err(inbound_transient)?,
         )
         .await
-        .map_err(inbound_transient)?;
+        .map_err(inbound_from_app_error)?;
         tx.commit().await.map_err(inbound_transient)?;
         Ok(())
     }
@@ -1217,6 +1296,10 @@ fn to_app_storage(error: impl std::fmt::Display) -> AppError {
     let message = error.to_string();
     if message.contains("optimistic concurrency conflict") {
         AppError::Conflict(message)
+    } else if message == "IDEMPOTENCY_KEY_REUSED" {
+        AppError::IdempotencyKeyReused(
+            "Idempotency-Key was reused with a different request body".into(),
+        )
     } else {
         AppError::Unavailable(message)
     }

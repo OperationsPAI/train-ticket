@@ -384,6 +384,12 @@ pub async fn mark_event_processing(
     Ok(result.rows_affected() == 1)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdempotencyTxDecision {
+    Claimed,
+    Replay(IdempotencyRecord),
+}
+
 #[derive(Clone)]
 pub struct DbIdempotencyStore {
     pool: PgPool,
@@ -444,23 +450,92 @@ impl DbIdempotencyStore {
         }
     }
 
+    pub async fn claim_response(
+        tx: &mut PgTransaction<'_>,
+        key: &str,
+        request_hash: &str,
+    ) -> Result<IdempotencyTxDecision, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO idempotency_records (key, request_hash, status_code, response_body) VALUES ($1, $2, 0, NULL) ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(key)
+        .bind(request_hash)
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(IdempotencyTxDecision::Claimed);
+        }
+        Self::decision_for_existing(tx, key, request_hash).await
+    }
+
     pub async fn record_response(
         tx: &mut PgTransaction<'_>,
         key: &str,
         request_hash: &str,
         status_code: u16,
         response_body: Value,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
+    ) -> Result<IdempotencyTxDecision, StorageError> {
+        let result = sqlx::query(
             "INSERT INTO idempotency_records (key, request_hash, status_code, response_body) VALUES ($1, $2, $3, $4) ON CONFLICT (key) DO NOTHING",
         )
         .bind(key)
         .bind(request_hash)
         .bind(i32::from(status_code))
-        .bind(response_body)
+        .bind(&response_body)
         .execute(&mut **tx)
         .await?;
-        Ok(())
+        if result.rows_affected() == 1 {
+            return Ok(IdempotencyTxDecision::Claimed);
+        }
+
+        let existing = Self::decision_for_existing(tx, key, request_hash).await?;
+        match existing {
+            IdempotencyTxDecision::Claimed => {
+                sqlx::query(
+                    "UPDATE idempotency_records SET status_code = $2, response_body = $3 WHERE key = $1 AND request_hash = $4 AND status_code = 0 AND response_body IS NULL",
+                )
+                .bind(key)
+                .bind(i32::from(status_code))
+                .bind(response_body)
+                .bind(request_hash)
+                .execute(&mut **tx)
+                .await?;
+                Ok(IdempotencyTxDecision::Claimed)
+            }
+            replay => Ok(replay),
+        }
+    }
+
+    async fn decision_for_existing(
+        tx: &mut PgTransaction<'_>,
+        key: &str,
+        request_hash: &str,
+    ) -> Result<IdempotencyTxDecision, StorageError> {
+        let Some((fingerprint, status_code, body)) = sqlx::query_as::<_, (String, i32, Option<Value>)>(
+            "SELECT request_hash, status_code, response_body FROM idempotency_records WHERE key = $1 FOR UPDATE",
+        )
+        .bind(key)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            return Err(StorageError::Database(
+                "idempotency insert conflicted but existing record was not found".into(),
+            ));
+        };
+        if fingerprint != request_hash {
+            return Err(StorageError::IdempotencyKeyReused);
+        }
+        if status_code == 0 {
+            return Ok(IdempotencyTxDecision::Claimed);
+        }
+        let status_code = u16::try_from(status_code).map_err(|_| {
+            StorageError::Database(format!("stored status code {status_code} is invalid"))
+        })?;
+        Ok(IdempotencyTxDecision::Replay(IdempotencyRecord {
+            fingerprint,
+            status_code,
+            body: body.unwrap_or(Value::Null),
+        }))
     }
 }
 
@@ -544,5 +619,140 @@ mod tests {
     fn snapshot_repository_rejects_unsafe_table_names() {
         assert!(SnapshotRepository::new("inventory_pool_snapshots").is_ok());
         assert!(SnapshotRepository::new("inventory_pool_snapshots; DROP TABLE outbox").is_err());
+    }
+
+    #[test]
+    fn idempotency_tx_decision_replay_carries_stored_record() {
+        let record = IdempotencyRecord {
+            fingerprint: "sha256:same".into(),
+            status_code: 201,
+            body: serde_json::json!({ "status": "HELD" }),
+        };
+        let decision = IdempotencyTxDecision::Replay(record.clone());
+        assert_eq!(decision, IdempotencyTxDecision::Replay(record));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at a disposable Postgres database"]
+    async fn concurrent_different_idempotency_hash_rolls_back_loser_side_effects() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS idempotency_records (key text PRIMARY KEY, request_hash text NOT NULL, status_code int NOT NULL, response_body jsonb, created_at timestamptz NOT NULL DEFAULT now())",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let side_effect_table = format!(
+            "test_idempotency_side_effects_{}",
+            uuid::Uuid::now_v7().simple()
+        );
+        sqlx::query(&format!(
+            "CREATE TABLE {side_effect_table} (id text PRIMARY KEY, writer text NOT NULL)"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let key = format!("idem-{}", uuid::Uuid::now_v7());
+        let winner_hash = "sha256:winner";
+        let loser_hash = "sha256:loser";
+
+        let mut winner = pool.begin().await.unwrap();
+        assert_eq!(
+            DbIdempotencyStore::claim_response(&mut winner, &key, winner_hash)
+                .await
+                .unwrap(),
+            IdempotencyTxDecision::Claimed
+        );
+        sqlx::query(&format!(
+            "INSERT INTO {side_effect_table} (id, writer) VALUES ($1, 'winner')"
+        ))
+        .bind("effect-winner")
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+
+        let loser_pool = pool.clone();
+        let loser_key = key.clone();
+        let loser_table = side_effect_table.clone();
+        let loser = tokio::spawn(async move {
+            let mut tx = loser_pool.begin().await.unwrap();
+            let claimed = DbIdempotencyStore::claim_response(&mut tx, &loser_key, loser_hash).await;
+            match claimed {
+                Ok(IdempotencyTxDecision::Claimed) => {
+                    sqlx::query(&format!(
+                        "INSERT INTO {loser_table} (id, writer) VALUES ($1, 'loser')"
+                    ))
+                    .bind("effect-loser")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    Ok(())
+                }
+                Ok(IdempotencyTxDecision::Replay(_)) => {
+                    tx.commit().await.unwrap();
+                    Ok(())
+                }
+                Err(error) => {
+                    tx.rollback().await.unwrap();
+                    Err(error)
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !loser.is_finished(),
+            "loser must wait on the winner's uncommitted key"
+        );
+        assert_eq!(
+            DbIdempotencyStore::record_response(
+                &mut winner,
+                &key,
+                winner_hash,
+                201,
+                serde_json::json!({ "status": "HELD" }),
+            )
+            .await
+            .unwrap(),
+            IdempotencyTxDecision::Claimed
+        );
+        winner.commit().await.unwrap();
+
+        let loser_result = loser.await.unwrap();
+        assert!(matches!(
+            loser_result,
+            Err(StorageError::IdempotencyKeyReused)
+        ));
+        let (request_hash, status_code): (String, i32) = sqlx::query_as(
+            "SELECT request_hash, status_code FROM idempotency_records WHERE key = $1",
+        )
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(request_hash, winner_hash);
+        assert_eq!(status_code, 201);
+        let (side_effects,): (i64,) =
+            sqlx::query_as(&format!("SELECT count(*) FROM {side_effect_table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(side_effects, 1);
+        sqlx::query(&format!("DROP TABLE {side_effect_table}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM idempotency_records WHERE key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }
