@@ -1,0 +1,47 @@
+# Load generator — applied on demand, NOT part of deploy/k8s kustomization.
+#   start:  kubectl -n train-ticket apply -f deploy/loadgen/loadgen.yaml
+#   tune:   edit the ConfigMap (or use deploy/loadgen/run.sh) + rollout restart
+#   pause:  kubectl -n train-ticket scale deploy/loadgen --replicas=0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: loadgen
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loadgen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadgen
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: loadgen
+          image: train-ticket/loadgen:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LOADGEN_CONFIG
+              value: /etc/loadgen/config.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loadgen
+              readOnly: true
+            - name: state
+              mountPath: /data
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+      volumes:
+        - name: config
+          configMap:
+            name: loadgen-config
+        - name: state
+          emptyDir: {}   # registry survives container restarts, not pod deletion
