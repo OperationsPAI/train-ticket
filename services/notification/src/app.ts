@@ -17,7 +17,7 @@ export type HealthStatus = Readonly<{
 }>;
 
 export type ProbeStatus = Readonly<{
-  status: "ok";
+  status: "ok" | "not_ready";
   probe: "live" | "ready";
 }>;
 
@@ -107,7 +107,12 @@ export function metadata(): ServiceMetadata {
   };
 }
 
-export function createApp(instrumentation: InstrumentationHooks = {}): FastifyInstance {
+export type AppStorage = Readonly<{
+  ready: () => boolean;
+  listInAppNotifications: (recipientRef: string, limit?: number) => Promise<readonly unknown[]>;
+}>;
+
+export function createApp(instrumentation: InstrumentationHooks = {}, storage?: AppStorage): FastifyInstance {
   const app: FastifyInstance = Fastify({ logger: false });
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
@@ -135,8 +140,22 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
 
   app.get("/live", async () => probeBody("live"));
   app.get("/livez", async () => probeBody("live"));
-  app.get("/ready", async () => probeBody("ready"));
-  app.get("/readyz", async () => probeBody("ready"));
+  app.get("/ready", async (_request, reply) => readyBody(reply, storage));
+  app.get("/readyz", async (_request, reply) => readyBody(reply, storage));
+
+  app.get("/api/v1/in-app-notifications", async (request, reply) => {
+    if (!storage) {
+      sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
+      return;
+    }
+    const query = request.query as { recipientRef?: string; limit?: string | number };
+    if (!query.recipientRef) {
+      sendError(reply, 400, "VALIDATION_FAILED", "recipientRef query parameter is required", requestContext(request), { field: "recipientRef" });
+      return;
+    }
+    const limit = query.limit === undefined ? undefined : Number(query.limit);
+    return { notifications: await storage.listInAppNotifications(query.recipientRef, Number.isFinite(limit) ? limit : undefined) };
+  });
 
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
@@ -159,6 +178,14 @@ function healthBody(): HealthStatus {
 
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
+}
+
+function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): ProbeStatus {
+  if (storage && !storage.ready()) {
+    reply.status(503);
+    return { status: "not_ready", probe: "ready" };
+  }
+  return probeBody("ready");
 }
 
 function traceContext(request: AppRequest, context: RequestContext = requestContext(request)): RequestTraceContext {
