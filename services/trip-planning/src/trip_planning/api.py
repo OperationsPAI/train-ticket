@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from datetime import datetime, timedelta
+import os
+from pathlib import Path
 from hashlib import sha256
 import logging
 import threading
 from typing import Any, Protocol
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -17,6 +19,7 @@ from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIn
 from .application_ports import EventPublisher, EventSubscriber
 from .events import PublishFailed, build_itinerary_proposed_event, new_uuid7
 from train_ticket_platform.idempotency import configure_idempotency_middleware
+from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
 from .runtime import health, profile
 
@@ -132,7 +135,10 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health(), "service": profile()}
 
     @app.get("/readyz")
-    def readyz_endpoint() -> dict[str, str]:
+    def readyz_endpoint(response: Response) -> dict[str, str]:
+        if not _storage_ready(app):
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/health")
@@ -144,13 +150,53 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/ready")
-    def ready_endpoint() -> dict[str, str]:
+    def ready_endpoint(response: Response) -> dict[str, str]:
+        if not _storage_ready(app):
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/metadata")
     def metadata_endpoint() -> dict[str, object]:
         return {"service": profile(), "observability": {"tracing": "opt-in", "default": "noop"}}
 
+
+
+def _storage_ready(app: FastAPI) -> bool:
+    gate = getattr(app.state, "readiness", None)
+    if gate is not None and not gate.ready:
+        return False
+    pool = getattr(app.state, "database_pool", None)
+    if pool is None:
+        return True
+    try:
+        with pool.connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return True
+    except Exception:
+        if gate is not None:
+            gate.mark_failed("database readiness check failed")
+        return False
+
+
+def _configure_postgres(app: FastAPI) -> tuple[Any | None, Any | None, Any | None]:
+    config = DatabaseConfig.from_env()
+    if config is None:
+        return None, None, None
+    from .adapters.storage import PostgresPlanStore, TransactionalOutboxPublisher
+
+    readiness = ReadinessGate()
+    pool = DatabasePool(config)
+    app.state.database_pool = pool
+    app.state.readiness = readiness
+    env_dir = os.environ.get("MIGRATIONS_DIR")
+    migrations_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parents[2] / "migrations"
+    run_migrations(pool, migrations_dir, readiness)
+    plan_store = PostgresPlanStore(pool)
+    relay = OutboxRelay(pool)
+    relay.start()
+    app.state.outbox_relay = relay
+    return plan_store, TransactionalOutboxPublisher(pool), PostgresIdempotencyStore(pool)
 
 def _require_string(payload: Mapping[str, object], field_name: str) -> str:
     value = payload.get(field_name)
@@ -298,6 +344,7 @@ class PlanStore:
 
 
 _plan_store = PlanStore()
+_active_plan_store: Any = _plan_store
 
 
 def _contract_candidate(origin_ref: str, destination_ref: str, departure_date: str, channel: str) -> Itinerary:
@@ -387,7 +434,7 @@ def _search_contract_response(payload: Mapping[str, object]) -> tuple[dict[str, 
         departure_window_end=f"{departure_date}T23:59:59Z",
         passenger_count=len(traveler_refs),
     )
-    real_candidates = _plan_store.candidates(origin_ref, destination_ref, departure_date)
+    real_candidates = _active_plan_store.candidates(origin_ref, destination_ref, departure_date)
     candidate_pool = (
         tuple(_candidate_for_intent(candidate, origin_ref, destination_ref) for candidate in real_candidates)
         if real_candidates
@@ -422,7 +469,7 @@ def _occurred_at_text(envelope: Any) -> str:
 
 
 def _handle_upstream_event(app: FastAPI, envelope: Any) -> None:
-    _plan_store.apply_envelope(envelope)
+    _active_plan_store.apply_envelope(envelope)
     app.state.consumed_events[envelope.eventId] = {
         "eventType": envelope.eventType,
         "producer": envelope.producer,
@@ -465,7 +512,11 @@ def create_app(
     event_subscriber: EventSubscriber | None = None,
     start_event_subscriber: bool = True,
 ) -> FastAPI:
-    publisher = event_publisher if event_publisher is not None else _default_publisher()
+    global _active_plan_store
+    postgres_plan_store: Any | None = None
+    postgres_publisher: Any | None = None
+    postgres_idempotency_store: Any | None = None
+    publisher = event_publisher if event_publisher is not None else None
     subscriber = event_subscriber if event_subscriber is not None else None
 
     @asynccontextmanager
@@ -477,17 +528,29 @@ def create_app(
         if active_subscriber is not None and start_event_subscriber:
             _replay_upstream_events(active_subscriber, handler)
         subscriber_thread = _start_subscriber(active_subscriber, handler) if active_subscriber is not None and start_event_subscriber else None
+        if hasattr(_active_plan_store, "load"):
+            _active_plan_store.load()
         app.state.event_subscriber = active_subscriber
         app.state.subscriber_thread = subscriber_thread
         try:
             yield
         finally:
             _stop_subscriber(getattr(app.state, "event_subscriber", None), subscriber_thread)
+            relay = getattr(app.state, "outbox_relay", None)
+            if relay is not None:
+                relay.stop()
+            pool = getattr(app.state, "database_pool", None)
+            if pool is not None:
+                pool.close()
 
     app = FastAPI(title="Trip Planning", version="0.1.0", lifespan=lifespan)
+    postgres_plan_store, postgres_publisher, postgres_idempotency_store = _configure_postgres(app)
+    _active_plan_store = postgres_plan_store or _plan_store
+    if publisher is None:
+        publisher = postgres_publisher or _default_publisher()
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     app.state.itineraries = {}
-    configure_idempotency_middleware(app, require_key=False, include_path_prefixes=("/api/v1/itineraries/search",))
+    configure_idempotency_middleware(app, postgres_idempotency_store, require_key=False, include_path_prefixes=("/api/v1/itineraries/search",))
     app.state.consumed_events = {}
     app.state.upstream_event_payloads = {}
 
@@ -510,6 +573,9 @@ def create_app(
         for itinerary in response["itineraries"]:
             if isinstance(itinerary, dict):
                 app.state.itineraries[itinerary["itineraryRef"]] = itinerary
+                save_itinerary = getattr(_active_plan_store, "save_itinerary", None)
+                if callable(save_itinerary):
+                    save_itinerary(itinerary)
         try:
             publisher.publish(
                 build_itinerary_proposed_event(
@@ -527,6 +593,10 @@ def create_app(
     def get_itinerary(itineraryRef: str, request: Request) -> Any:
         correlation_id: str = request.state.correlation_id
         itinerary = app.state.itineraries.get(itineraryRef)
+        if itinerary is None:
+            get_itinerary = getattr(_active_plan_store, "get_itinerary", None)
+            if callable(get_itinerary):
+                itinerary = get_itinerary(itineraryRef)
         if itinerary is None:
             return _canonical_error(404, "NOT_FOUND", f"Itinerary {itineraryRef} not found", correlation_id)
         return itinerary
