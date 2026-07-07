@@ -7,6 +7,8 @@ dependencies = [
   "httpx2>=2.5.0",
   "fastapi==0.138.1",
   "redis>=5.0.0",
+  "psycopg[binary]>=3.2.0",
+  "psycopg-pool>=3.2.0",
   "uuid6>=2024.7.10",
 ]
 

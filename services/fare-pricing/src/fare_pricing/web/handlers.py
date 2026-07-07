@@ -5,7 +5,10 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from fare_pricing.application import DomainEventService, deterministic_rule_set_event_id
+from fare_pricing.application import deterministic_rule_set_event_id
+from fare_pricing.ports import EventEnvelope
+from train_ticket_platform.messaging import PublishFailed
+from train_ticket_platform.storage import OptimisticConcurrencyError
 from fare_pricing.ids import prefixed_uuid7
 from fare_pricing.application.service import (
     FarePricingService,
@@ -28,8 +31,6 @@ from fare_pricing.domain import (
     RuleSnapshot,
     ValidityWindow,
 )
-
-from train_ticket_platform.messaging import PublishFailed
 
 from .errors import ApiError
 from .schemas import AdjustmentQuoteRequest, CreateFareRuleSetRequest, FareQuoteRequest
@@ -119,6 +120,10 @@ def _domain_error(exc: Exception) -> ApiError:
     return ApiError("DOMAIN_RULE_VIOLATION", str(exc), 422)
 
 
+def _conflict_error(exc: Exception) -> ApiError:
+    return ApiError("CONFLICT", str(exc), 409)
+
+
 def _correlation_id(request: Request) -> str:
     return str(getattr(request.state, "correlation_id", "") or prefixed_uuid7("corr"))
 
@@ -136,19 +141,16 @@ def _command_id() -> str:
     return prefixed_uuid7("cmd")
 
 
-def _publish_event(request: Request, event_type: str, causation_id: str, payload: dict[str, Any], event_id: str | None = None) -> None:
-    event_service: DomainEventService = request.app.state.domain_event_service
-    try:
-        event_service.publish_event(
-            event_type=event_type,
-            causation_id=causation_id,
-            correlation_id=_correlation_id(request),
-            payload=payload,
-            occurred_at=datetime.now(UTC),
-            event_id=event_id,
-        )
-    except PublishFailed as exc:
-        raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
+def _event_envelope(request: Request, event_type: str, causation_id: str, payload: dict[str, Any], event_id: str | None = None) -> EventEnvelope:
+    return EventEnvelope(
+        event_id=event_id or prefixed_uuid7("evt"),
+        event_type=event_type,
+        occurred_at=datetime.now(UTC),
+        causation_id=causation_id,
+        correlation_id=_correlation_id(request),
+        payload=payload,
+    )
+
 
 
 def _effective_datetime(value: datetime) -> datetime:
@@ -197,33 +199,43 @@ def publish_fare_rule_set(request: Request, rule_set_id: str) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
     causation_id = _command_id()
     try:
-        published, superseded, newly_published, originals = service.publish_rule_set(rule_set_id)
+        with service.transaction():
+            published, superseded, newly_published, originals = service.publish_rule_set(rule_set_id)
+            if newly_published:
+                envelopes = [
+                    _event_envelope(
+                        request,
+                        "FareRuleSetPublished",
+                        causation_id,
+                        _fare_rule_set_published_payload(published),
+                        deterministic_rule_set_event_id(published.rule_set_id, published.version, "published"),
+                    )
+                ]
+                envelopes.extend(
+                    _event_envelope(
+                        request,
+                        "FareRuleSetSuperseded",
+                        causation_id,
+                        _fare_rule_set_superseded_payload(old_rule_set, published),
+                        deterministic_rule_set_event_id(old_rule_set.rule_set_id, old_rule_set.version, "superseded"),
+                    )
+                    for old_rule_set in superseded
+                )
+                service.append_outbox(tuple(envelopes))
+                if getattr(request.app.state, "publish_events_synchronously", True):
+                    try:
+                        for envelope in envelopes:
+                            request.app.state.domain_event_service._publisher.publish(envelope)
+                    except PublishFailed as exc:
+                        service.restore_rule_sets(originals)
+                        raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
+        return _rule_set_to_response(published)
     except RuleSetNotFoundError as exc:
         raise ApiError("NOT_FOUND", f"Fare rule set not found: {rule_set_id}", 404) from exc
+    except OptimisticConcurrencyError as exc:
+        raise _conflict_error(exc) from exc
     except PricingError as exc:
         raise _domain_error(exc) from exc
-
-    if newly_published:
-        try:
-            _publish_event(
-                request,
-                "FareRuleSetPublished",
-                causation_id,
-                _fare_rule_set_published_payload(published),
-                deterministic_rule_set_event_id(published.rule_set_id, published.version, "published"),
-            )
-            for old_rule_set in superseded:
-                _publish_event(
-                    request,
-                    "FareRuleSetSuperseded",
-                    causation_id,
-                    _fare_rule_set_superseded_payload(old_rule_set, published),
-                    deterministic_rule_set_event_id(old_rule_set.rule_set_id, old_rule_set.version, "superseded"),
-                )
-        except ApiError:
-            service.restore_rule_sets(originals)
-            raise
-    return _rule_set_to_response(published)
 
 
 @router.post("/fare-quotes", status_code=201)
@@ -238,20 +250,29 @@ def compute_fare_quote(
 
     causation_id = _command_id()
     try:
-        quote = service.compute_fare_quote(
-            quote_id=prefixed_uuid7("fq"),
-            input_hash=_contract_input_hash(list(req.segmentRefs), req.channel, list(req.travelerRefs)),
-            traveler_refs=req.travelerRefs,
-            channel=req.channel,
-            rule_set_id=rule_set_id,
-            requested_currency="CNY",
-            segment_refs=req.segmentRefs,
-        )
+        with service.transaction():
+            quote = service.compute_fare_quote(
+                quote_id=prefixed_uuid7("fq"),
+                input_hash=_contract_input_hash(list(req.segmentRefs), req.channel, list(req.travelerRefs)),
+                traveler_refs=req.travelerRefs,
+                channel=req.channel,
+                rule_set_id=rule_set_id,
+                requested_currency="CNY",
+                segment_refs=req.segmentRefs,
+            )
+            envelope = _event_envelope(request, "FareQuoteComputed", causation_id, _fare_quote_event_payload(quote))
+            service.append_outbox((envelope,))
+            if getattr(request.app.state, "publish_events_synchronously", True):
+                try:
+                    request.app.state.domain_event_service._publisher.publish(envelope)
+                except PublishFailed as exc:
+                    raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
+    except OptimisticConcurrencyError as exc:
+        raise _conflict_error(exc) from exc
     except (PricingError, RuleSetNotFoundError) as exc:
         raise _domain_error(exc) from exc
 
     resp = _fare_quote_to_response(quote)
-    _publish_event(request, "FareQuoteComputed", causation_id, _fare_quote_event_payload(quote))
     return resp
 
 
@@ -282,19 +303,28 @@ def compute_adjustment_quote(
 
     causation_id = _command_id()
     try:
-        aq = service.compute_adjustment_quote(
-            assessment_id=prefixed_uuid7("fa"),
-            adjustment_quote_id=prefixed_uuid7("aq"),
-            purpose=purpose,
-            original_quote_id=original_quote_id,
-            rule_set_id=rule_set_id,
-            target_quote_id=original_quote_id if purpose == AssessmentPurpose.CHANGE else None,
-        )
+        with service.transaction():
+            aq = service.compute_adjustment_quote(
+                assessment_id=prefixed_uuid7("fa"),
+                adjustment_quote_id=prefixed_uuid7("aq"),
+                purpose=purpose,
+                original_quote_id=original_quote_id,
+                rule_set_id=rule_set_id,
+                target_quote_id=original_quote_id if purpose == AssessmentPurpose.CHANGE else None,
+            )
+            envelope = _event_envelope(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq, req))
+            service.append_outbox((envelope,))
+            if getattr(request.app.state, "publish_events_synchronously", True):
+                try:
+                    request.app.state.domain_event_service._publisher.publish(envelope)
+                except PublishFailed as exc:
+                    raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
+    except OptimisticConcurrencyError as exc:
+        raise _conflict_error(exc) from exc
     except (PricingError, QuoteNotFoundError, RuleSetNotFoundError) as exc:
         raise _domain_error(exc) from exc
 
     resp = _adjustment_quote_to_response(aq)
-    _publish_event(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq, req))
     return resp
 
 
