@@ -35,7 +35,8 @@ impl CapacityService {
         match envelope.event_type.as_str() {
             "SegmentReservationRequested" => self.handle_segment_reservation_requested(&envelope),
             "SegmentReservationConfirmed" => self.handle_segment_reservation_confirmed(&envelope),
-            "SegmentBookingCancelled" => self.handle_release_trigger(&envelope),
+            "SegmentBookingCancelled" => self.handle_segment_booking_cancelled(&envelope),
+            "SegmentTicketed" => self.handle_segment_ticketed(&envelope),
             "PostSalesApplied" => self.handle_post_sales_applied(&envelope),
             "EntitlementVoided" => self.handle_entitlement_voided(&envelope),
             _ => HandlerResult::Success,
@@ -51,6 +52,9 @@ impl CapacityService {
         };
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
             return HandlerResult::FatalError("missing travelerRef".into());
+        };
+        let Some(_) = string_field(&envelope.payload, "journeyOrderId") else {
+            return HandlerResult::FatalError("missing journeyOrderId".into());
         };
         let Some(idempotency_key) = string_field(&envelope.payload, "idempotencyKey") else {
             return HandlerResult::FatalError("missing idempotencyKey".into());
@@ -78,6 +82,12 @@ impl CapacityService {
         let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
             return HandlerResult::FatalError("missing segmentBookingId".into());
         };
+        let Some(_) = string_field(&envelope.payload, "providerReference") else {
+            return HandlerResult::FatalError("missing providerReference".into());
+        };
+        let Some(_) = string_field(&envelope.payload, "evidence") else {
+            return HandlerResult::FatalError("missing evidence".into());
+        };
         let idempotency_key = format!("{}:{}:confirm", envelope.event_id, segment_booking_ref);
         match self.confirm_hold_by_segment_booking(
             &segment_booking_ref,
@@ -94,15 +104,26 @@ impl CapacityService {
         }
     }
 
-    fn handle_release_trigger(&self, envelope: &WireEnvelope) -> HandlerResult {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
-            .or_else(|| string_field(&envelope.payload, "holdId"))
-        else {
-            return HandlerResult::FatalError("missing capacityHoldId".into());
+    fn handle_segment_booking_cancelled(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return HandlerResult::FatalError("missing segmentBookingId".into());
         };
-        let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
-        match self.release_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
-            Ok(_) | Err(AppError::NotFound(_)) => HandlerResult::Success,
+        let Some(_) = string_field(&envelope.payload, "reason") else {
+            return HandlerResult::FatalError("missing reason".into());
+        };
+        let idempotency_key = format!(
+            "{}:{}:segment-booking-cancelled-release",
+            envelope.event_id, segment_booking_ref
+        );
+        match self.release_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+            "segment-booking-cancelled",
+        ) {
+            Ok(_) | Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
+                HandlerResult::Success
+            }
             Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
                 HandlerResult::TransientError(message)
             }
@@ -110,7 +131,28 @@ impl CapacityService {
         }
     }
 
+    fn handle_segment_ticketed(&self, envelope: &WireEnvelope) -> HandlerResult {
+        for field in ["segmentBookingId", "entitlementId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return HandlerResult::FatalError(format!("missing {field}"));
+            }
+        }
+        HandlerResult::Success
+    }
+
     fn handle_post_sales_applied(&self, envelope: &WireEnvelope) -> HandlerResult {
+        for field in ["caseId", "orderId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return HandlerResult::FatalError(format!("missing {field}"));
+            }
+        }
+        if envelope
+            .payload
+            .get("resultSummary")
+            .is_none_or(Value::is_null)
+        {
+            return HandlerResult::FatalError("missing resultSummary".into());
+        }
         let Some(segment_booking_ref) = post_sales_release_ref(&envelope.payload) else {
             return HandlerResult::Success;
         };
@@ -140,6 +182,11 @@ impl CapacityService {
         else {
             return HandlerResult::FatalError("missing segmentBookingRef".into());
         };
+        for field in ["entitlementId", "voidedAt", "reason", "policy"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return HandlerResult::FatalError(format!("missing {field}"));
+            }
+        }
         let idempotency_key = format!(
             "{}:{}:entitlement-voided-release",
             envelope.event_id, segment_booking_ref

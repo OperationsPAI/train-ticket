@@ -543,6 +543,7 @@ fn in_memory_segment_reservation_requested_missing_idempotency_key_is_fatal() {
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
         payload: json!({
             "segmentBookingId": "sb-1",
+            "journeyOrderId": "ord-1",
             "segmentRef": "seg-1",
             "travelerRef": "traveler-1"
         }),
@@ -603,7 +604,7 @@ async fn postgres_inbound_classifies_known_event_schema_errors_as_fatal() {
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa02".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
-            payload: json!({"segmentBookingId": "sb-1", "segmentRef": "seg-1", "travelerRef": "traveler-1"}),
+            payload: json!({"segmentBookingId": "sb-1", "journeyOrderId": "ord-1", "segmentRef": "seg-1", "travelerRef": "traveler-1"}),
         })
         .await;
 
@@ -665,6 +666,7 @@ fn in_memory_segment_reservation_confirmed_without_capacity_hold_id_is_acked() {
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
         payload: json!({
             "segmentBookingId": "sb-1",
+            "providerReference": "prov-1",
             "evidence": "confirmed"
         }),
     });
@@ -727,6 +729,201 @@ async fn postgres_segment_reservation_confirmed_missing_segment_booking_id_is_fa
     assert!(
         matches!(result, HandlerResult::FatalError(message) if message.contains("segmentBookingId"))
     );
+}
+
+#[test]
+fn in_memory_capacity_inbound_event_contract_classification_matrix() {
+    use capacity_availability::adapters::messaging::InMemoryEventPublisher;
+    use capacity_availability::application::CapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+
+    fn envelope(event_type: &str, producer: &str, payload: Value) -> WireEnvelope {
+        WireEnvelope {
+            event_id: format!("evt-0194f2e0-7b3e-7610-0284-5c26e8{:04}", event_type.len()),
+            event_type: event_type.to_string(),
+            schema_version: 1,
+            producer: producer.to_string(),
+            causation_id: None,
+            correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fb01".to_string(),
+            occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            payload,
+        }
+    }
+
+    let service = CapacityService::new(Arc::new(InMemoryEventPublisher::new()));
+    let cases = [
+        (
+            envelope(
+                "SegmentReservationRequested",
+                "booking-orchestration",
+                json!({"segmentBookingId":"sb-1","journeyOrderId":"ord-1","segmentRef":"seg-1","travelerRef":"traveler-1"}),
+            ),
+            "fatal",
+            "idempotencyKey",
+        ),
+        (
+            envelope(
+                "SegmentReservationConfirmed",
+                "booking-orchestration",
+                json!({"segmentBookingId":"sb-1","providerReference":"prov-1","evidence":"confirmed"}),
+            ),
+            "success",
+            "",
+        ),
+        (
+            envelope(
+                "SegmentReservationConfirmed",
+                "booking-orchestration",
+                json!({"evidence":"confirmed"}),
+            ),
+            "fatal",
+            "segmentBookingId",
+        ),
+        (
+            envelope(
+                "SegmentBookingCancelled",
+                "booking-orchestration",
+                json!({"segmentBookingId":"sb-1","reason":"customer"}),
+            ),
+            "success",
+            "",
+        ),
+        (
+            envelope(
+                "SegmentBookingCancelled",
+                "booking-orchestration",
+                json!({"reason":"customer"}),
+            ),
+            "fatal",
+            "segmentBookingId",
+        ),
+        (
+            envelope(
+                "SegmentTicketed",
+                "booking-orchestration",
+                json!({"segmentBookingId":"sb-1","entitlementId":"ent-1"}),
+            ),
+            "success",
+            "",
+        ),
+        (
+            envelope(
+                "PostSalesApplied",
+                "post-sales",
+                json!({"caseId":"psc-1","orderId":"ord-1","resultSummary":{}}),
+            ),
+            "success",
+            "",
+        ),
+        (
+            envelope(
+                "EntitlementVoided",
+                "entitlement-ticketing",
+                json!({"entitlementId":"ent-1","voidedAt":"2026-07-03T10:30:00.000Z","reason":"REFUND","policy":"NORMAL"}),
+            ),
+            "fatal",
+            "segmentBookingRef",
+        ),
+    ];
+
+    for (event, expected, detail) in cases {
+        let result = service.handle_inbound_event(event);
+        match expected {
+            "success" => assert_eq!(result, HandlerResult::Success),
+            "fatal" => assert!(
+                matches!(result, HandlerResult::FatalError(message) if message.contains(detail))
+            ),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn postgres_capacity_inbound_event_contract_classification_pre_db_matrix() {
+    use capacity_availability::adapters::storage::PostgresCapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use rust_kit::storage::Storage;
+    use serde_json::{Value, json};
+    use sqlx::postgres::PgPoolOptions;
+
+    fn envelope(event_type: &str, producer: &str, payload: Value) -> WireEnvelope {
+        WireEnvelope {
+            event_id: format!("evt-0194f2e0-7b3e-7610-0284-5c26e8{:04}", event_type.len()),
+            event_type: event_type.to_string(),
+            schema_version: 1,
+            producer: producer.to_string(),
+            causation_id: None,
+            correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fb02".to_string(),
+            occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            payload,
+        }
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://capacity:capacity@127.0.0.1:1/capacity")
+        .unwrap();
+    let service = PostgresCapacityService::from_storage(Storage::new(pool)).unwrap();
+
+    let fatal_cases = [
+        (
+            envelope(
+                "SegmentReservationRequested",
+                "booking-orchestration",
+                json!({"segmentBookingId":"sb-1","journeyOrderId":"ord-1","segmentRef":"seg-1","travelerRef":"traveler-1"}),
+            ),
+            "idempotencyKey",
+        ),
+        (
+            envelope(
+                "SegmentReservationConfirmed",
+                "booking-orchestration",
+                json!({"evidence":"confirmed"}),
+            ),
+            "segmentBookingId",
+        ),
+        (
+            envelope(
+                "SegmentBookingCancelled",
+                "booking-orchestration",
+                json!({"reason":"customer"}),
+            ),
+            "segmentBookingId",
+        ),
+        (
+            envelope(
+                "EntitlementVoided",
+                "entitlement-ticketing",
+                json!({"entitlementId":"ent-1","voidedAt":"2026-07-03T10:30:00.000Z","reason":"REFUND","policy":"NORMAL"}),
+            ),
+            "segmentBookingRef",
+        ),
+    ];
+    for (event, detail) in fatal_cases {
+        let result = service.handle_inbound_event(event).await;
+        assert!(matches!(result, HandlerResult::FatalError(message) if message.contains(detail)));
+    }
+
+    let success_cases = [
+        envelope(
+            "SegmentTicketed",
+            "booking-orchestration",
+            json!({"segmentBookingId":"sb-1","entitlementId":"ent-1"}),
+        ),
+        envelope(
+            "PostSalesApplied",
+            "post-sales",
+            json!({"caseId":"psc-1","orderId":"ord-1","resultSummary":{}}),
+        ),
+    ];
+    for event in success_cases {
+        assert_eq!(
+            service.handle_inbound_event(event).await,
+            HandlerResult::Success
+        );
+    }
 }
 
 #[tokio::test]

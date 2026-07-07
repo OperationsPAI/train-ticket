@@ -68,33 +68,35 @@ class RedisEventSubscriberTest {
 
 
     @Test
-    void maxDeliveryAttemptsUsesLastRuntimeExceptionAsFailureReason() throws Exception {
+    void maxDeliveryAttemptsUsesLastRuntimeExceptionAsFailureReasonWithoutRedispatching() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
         FakeRedisStreams streams = new FakeRedisStreams(List.of(
             new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
         ));
-        streams.deliveryCount = RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS;
+        streams.autoClaimEnabled = true;
         RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
 
-        subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> {
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> {
             throw new IllegalStateException("payment parse failed");
         });
-
-        for (int i = 0; i < 20 && streams.dlqMetadata.get() == null; i++) {
-            Thread.sleep(50);
-        }
-        subscriber.close();
+        streams.deliveryCount = RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS;
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> {
+            throw new AssertionError("handler must not be called at max delivery attempts");
+        });
 
         assertThat(streams.dlqMetadata.get()).isNotNull();
         assertThat(streams.dlqMetadata.get().failureReason()).isEqualTo("IllegalStateException: payment parse failed");
         assertThat(streams.dlqMetadata.get().attempts()).isEqualTo(RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS);
+        assertThat(streams.acked).contains("1-0");
     }
 
     private static final class FakeRedisStreams implements RedisStreamOperations {
         private final List<StreamEntry> firstBatch;
         private final List<String> acked = new ArrayList<>();
         private boolean delivered;
+        private boolean autoClaimEnabled;
+        private int autoClaimCalls;
         private int deliveryCount = 1;
         private volatile String dlqStream;
         private final AtomicReference<DlqMetadata> dlqMetadata = new AtomicReference<>();
@@ -123,7 +125,11 @@ class RedisEventSubscriberTest {
 
         @Override
         public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
-            return List.of();
+            if (!autoClaimEnabled) {
+                return List.of();
+            }
+            autoClaimCalls++;
+            return autoClaimCalls <= 2 ? firstBatch : List.of();
         }
 
         @Override

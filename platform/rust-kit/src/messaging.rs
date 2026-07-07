@@ -741,6 +741,7 @@ pub mod redis_runtime {
             }
             Ok(())
         }
+        #[cfg_attr(test, allow(dead_code))]
         async fn process_message(
             &self,
             connection: &mut redis::aio::MultiplexedConnection,
@@ -787,6 +788,46 @@ pub mod redis_runtime {
                         message.delivery_count,
                     )
                     .await
+                }
+            }
+        }
+
+        #[cfg(test)]
+        async fn process_message_with_dlq_writer<F, Fut>(
+            &self,
+            group: &str,
+            consumer_name: &str,
+            message: StreamMessage,
+            handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
+            mut write_dlq: F,
+        ) -> Result<bool, SubscribeFailed>
+        where
+            F: FnMut(String, String, String, u64) -> Fut,
+            Fut: Future<Output = Result<(), SubscribeFailed>>,
+        {
+            let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
+                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            match handler(envelope.clone()).await {
+                Ok(()) => Ok(false),
+                Err(HandlerError::Transient(_)) => Ok(false),
+                Err(HandlerError::Fatal(reason)) => {
+                    self.state.mark_consumed(&envelope.event_id);
+                    let failure_reason = truncate_failure_reason(&reason);
+                    log::warn!(
+                        "service={} stream={} eventId={} failureReason={} moving message to DLQ",
+                        group,
+                        message.stream,
+                        event_id_for_log(&message.raw_envelope),
+                        failure_reason
+                    );
+                    write_dlq(
+                        message.raw_envelope.clone(),
+                        consumer_name.to_string(),
+                        failure_reason,
+                        message.delivery_count,
+                    )
+                    .await?;
+                    Ok(true)
                 }
             }
         }
@@ -1083,6 +1124,58 @@ pub mod redis_runtime {
                     ("deadLetteredAt", "2026-07-07T12:00:00.000Z".to_string()),
                 ]
             );
+        }
+
+        #[tokio::test]
+        async fn subscription_processing_fatal_handler_writes_dlq_metadata() {
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let envelope = EventEnvelope::canonical(
+                "PoisonEvent",
+                correlation_id(),
+                Some(command_id()),
+                "payment",
+                serde_json::json!({"id":"1"}),
+            );
+            let raw = serde_json::to_string(&envelope).unwrap();
+            let captured = Arc::new(Mutex::new(Vec::<(String, String, String, u64)>::new()));
+            let captured_for_writer = Arc::clone(&captured);
+            let wrote = subscriber
+                .process_message_with_dlq_writer(
+                    "journey-order",
+                    "consumer-1",
+                    StreamMessage {
+                        stream: "events:payment".to_string(),
+                        id: "1-0".to_string(),
+                        raw_envelope: raw.clone(),
+                        delivery_count: 3,
+                    },
+                    &|_| Box::pin(async { Err(HandlerError::Fatal("poison root cause".into())) }),
+                    move |raw, consumer, reason, attempts| {
+                        let captured = Arc::clone(&captured_for_writer);
+                        async move {
+                            captured
+                                .lock()
+                                .expect("capture lock poisoned")
+                                .push((raw, consumer, reason, attempts));
+                            Ok(())
+                        }
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(wrote);
+            let captured = captured.lock().expect("capture lock poisoned");
+            assert_eq!(captured.len(), 1);
+            assert_eq!(captured[0].0, raw);
+            assert_eq!(captured[0].1, "consumer-1");
+            assert_eq!(captured[0].2, "poison root cause");
+            assert_eq!(captured[0].3, 3);
+            assert!(subscriber.state.has_seen(&envelope.event_id));
         }
 
         #[tokio::test]

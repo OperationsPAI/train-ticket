@@ -627,7 +627,8 @@ impl PostgresCapacityService {
             "SegmentReservationConfirmed" => {
                 self.handle_segment_reservation_confirmed(envelope).await
             }
-            "SegmentBookingCancelled" => self.handle_release_requested(envelope).await,
+            "SegmentBookingCancelled" => self.handle_segment_booking_cancelled(envelope).await,
+            "SegmentTicketed" => self.handle_segment_ticketed(envelope).await,
             "PostSalesApplied" => self.handle_post_sales_applied(envelope).await,
             "EntitlementVoided" => self.handle_entitlement_voided(envelope).await,
             _ => Ok(()),
@@ -651,6 +652,9 @@ impl PostgresCapacityService {
         };
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
             return Err(InboundEventError::Fatal("missing travelerRef".into()));
+        };
+        let Some(_) = string_field(&envelope.payload, "journeyOrderId") else {
+            return Err(InboundEventError::Fatal("missing journeyOrderId".into()));
         };
         let Some(idempotency_key) = string_field(&envelope.payload, "idempotencyKey") else {
             return Err(InboundEventError::Fatal("missing idempotencyKey".into()));
@@ -820,6 +824,12 @@ impl PostgresCapacityService {
         let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
             return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
         };
+        let Some(_) = string_field(&envelope.payload, "providerReference") else {
+            return Err(InboundEventError::Fatal("missing providerReference".into()));
+        };
+        let Some(_) = string_field(&envelope.payload, "evidence") else {
+            return Err(InboundEventError::Fatal("missing evidence".into()));
+        };
         let idempotency_key = format!("{}:{}:confirm", envelope.event_id, segment_booking_ref);
         let fingerprint = format!("confirm-by-segment-booking:{segment_booking_ref}");
         self.handle_inbound_segment_booking_confirm(
@@ -962,42 +972,60 @@ impl PostgresCapacityService {
         Ok(())
     }
 
-    async fn handle_release_requested(
+    async fn handle_segment_booking_cancelled(
         &self,
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
-            .or_else(|| string_field(&envelope.payload, "holdId"))
-        else {
-            return Err(InboundEventError::Fatal("missing capacityHoldId".into()));
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
         };
-        let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
-        self.handle_inbound_hold_mutation(
+        let Some(_) = string_field(&envelope.payload, "reason") else {
+            return Err(InboundEventError::Fatal("missing reason".into()));
+        };
+        let idempotency_key = format!(
+            "{}:{}:segment-booking-cancelled-release",
+            envelope.event_id, segment_booking_ref
+        );
+        let fingerprint =
+            format!("release-by-segment-booking:{segment_booking_ref}:segment-booking-cancelled");
+        self.handle_inbound_segment_booking_release(
             envelope,
-            &hold_id,
+            &segment_booking_ref,
             &idempotency_key,
-            &format!("release:{hold_id}"),
-            200,
-            |pool, now| {
-                pool.release_hold(
-                    &HoldId::new(&hold_id).map_err(to_internal)?,
-                    now,
-                    "client-requested-release",
-                )
-                .map_err(map_hold_mutation_error)
-            },
-            |_| ReleaseHoldResponse {
-                hold_id: hold_id.clone(),
-                status: "RELEASED".to_string(),
-            },
+            &fingerprint,
+            "segment-booking-cancelled",
         )
         .await
+    }
+
+    async fn handle_segment_ticketed(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        for field in ["segmentBookingId", "entitlementId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return Err(InboundEventError::Fatal(format!("missing {field}")));
+            }
+        }
+        Ok(())
     }
 
     async fn handle_post_sales_applied(
         &self,
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
+        for field in ["caseId", "orderId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return Err(InboundEventError::Fatal(format!("missing {field}")));
+            }
+        }
+        if envelope
+            .payload
+            .get("resultSummary")
+            .is_none_or(Value::is_null)
+        {
+            return Err(InboundEventError::Fatal("missing resultSummary".into()));
+        }
         let Some(segment_booking_ref) = post_sales_release_ref(&envelope.payload) else {
             return Ok(());
         };
@@ -1026,6 +1054,11 @@ impl PostgresCapacityService {
         else {
             return Err(InboundEventError::Fatal("missing segmentBookingRef".into()));
         };
+        for field in ["entitlementId", "voidedAt", "reason", "policy"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return Err(InboundEventError::Fatal(format!("missing {field}")));
+            }
+        }
         let idempotency_key = format!(
             "{}:{}:entitlement-voided-release",
             envelope.event_id, segment_booking_ref
@@ -1179,6 +1212,7 @@ impl PostgresCapacityService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn handle_inbound_hold_mutation<T, M, R>(
         &self,
         envelope: WireEnvelope,
@@ -1223,6 +1257,7 @@ impl PostgresCapacityService {
         ))
     }
 
+    #[allow(dead_code)]
     async fn try_handle_inbound_hold_mutation<T, M, R>(
         &self,
         envelope: &WireEnvelope,

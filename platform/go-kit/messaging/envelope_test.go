@@ -1,11 +1,17 @@
 package messaging
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"testing"
 	"time"
+
+	miniredis "github.com/alicebob/miniredis/v2"
+	redis "github.com/redis/go-redis/v9"
 )
 
 func TestNewEventEnvelopeCanonicalShape(t *testing.T) {
@@ -71,5 +77,68 @@ func TestDeadLetterFieldsIncludeAttributionMetadata(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339Nano, fields["deadLetteredAt"].(string)); err != nil {
 		t.Fatalf("deadLetteredAt must be RFC3339 UTC: %v", err)
+	}
+}
+
+func TestRedisSubscriptionFatalHandlerMovesMessageToDLQWithMetadataAndWarnLog(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	bus := NewRedisEventBusWithClient(client, RedisConfig{ReadBlock: 10 * time.Millisecond, RecoveryEvery: time.Hour})
+	defer bus.Close()
+
+	envelope, err := NewEventEnvelope("PoisonEvent", "payment", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"id": "1"}, EnvelopeOptions{Now: time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuffer bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logBuffer)
+	defer log.SetOutput(originalWriter)
+
+	stream := StreamName("payment")
+	if err := bus.Subscribe(ctx, Subscription{Streams: []string{"payment"}, Group: "journey-order", ConsumerName: "consumer-1"}, func(context.Context, EventEnvelope) error {
+		return FatalHandlerError(errors.New("poison root cause"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.client.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{EnvelopeField: string(body)}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	var dlq []redis.XMessage
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, err := bus.client.XRange(ctx, stream+DeadLetterSuffix, "-", "+").Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(messages) > 0 {
+			dlq = messages
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(dlq) != 1 {
+		t.Fatalf("expected one DLQ message, got %d", len(dlq))
+	}
+	fields := dlq[0].Values
+	if fields["consumerGroup"] != "journey-order" || fields["consumerName"] != "consumer-1" {
+		t.Fatalf("missing attribution metadata: %#v", fields)
+	}
+	if !strings.Contains(fields["failureReason"].(string), "poison root cause") || fields["attempts"] != "1" {
+		t.Fatalf("missing failure metadata: %#v", fields)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, fields["deadLetteredAt"].(string)); err != nil {
+		t.Fatalf("bad deadLetteredAt: %v", err)
+	}
+	if logText := logBuffer.String(); !strings.Contains(logText, "WARN service=journey-order") || !strings.Contains(logText, envelope.EventID) || !strings.Contains(logText, "poison root cause") {
+		t.Fatalf("missing WARN DLQ log: %s", logText)
 	}
 }

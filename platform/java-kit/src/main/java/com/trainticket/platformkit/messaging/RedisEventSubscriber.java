@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +20,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     public static final int MAX_DELIVERY_ATTEMPTS = 5;
     private static final Logger LOGGER = LoggerFactory.getLogger(RedisEventSubscriber.class);
     private static final long POLL_FAILURE_BACKOFF_MILLIS = 1_000;
+    private static final int LAST_FAILURE_CACHE_SIZE = 1_024;
 
     private final RedisStreamOperations streams;
     private final ObjectMapper objectMapper;
@@ -25,6 +28,12 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final AtomicBoolean running = new AtomicBoolean();
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
+    private final Map<String, RuntimeException> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, RuntimeException> eldest) {
+            return size() > LAST_FAILURE_CACHE_SIZE;
+        }
+    };
 
     public RedisEventSubscriber(StatefulRedisConnection<String, String> connection, ObjectMapper objectMapper) {
         this(new LettuceRedisStreamOperations(connection), objectMapper, connection::close);
@@ -125,12 +134,7 @@ public class RedisEventSubscriber implements EventSubscriber {
             return;
         }
         if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
-            RuntimeException lastException = null;
-            try {
-                handler.handle(envelope);
-            } catch (RuntimeException exception) {
-                lastException = exception;
-            }
+            RuntimeException lastException = removeLastFailure(message.id());
             if (lastException != null) {
                 moveToDlq(stream, group, consumerName, message.id(), json, lastException, deliveryAttempts);
             } else {
@@ -147,17 +151,31 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             result = handler.handle(envelope);
         } catch (RuntimeException exception) {
+            rememberLastFailure(message.id(), exception);
             return;
         }
         if (result == HandlerResult.SUCCESS) {
             consumedEvents.recordConsumed(group, envelope.eventId());
             streams.ack(stream, group, message.id());
+            removeLastFailure(message.id());
         } else if (result == HandlerResult.FATAL_FAILURE) {
+            removeLastFailure(message.id());
             moveToDlq(stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", deliveryAttempts);
             streams.ack(stream, group, message.id());
         }
     }
 
+    private void rememberLastFailure(String messageId, RuntimeException exception) {
+        synchronized (lastFailures) {
+            lastFailures.put(messageId, exception);
+        }
+    }
+
+    private RuntimeException removeLastFailure(String messageId) {
+        synchronized (lastFailures) {
+            return lastFailures.remove(messageId);
+        }
+    }
 
     private void moveToDlq(String stream, String group, String consumerName, String messageId, String envelopeJson, Throwable reason, int attempts) {
         String reasonText = reason.getClass().getSimpleName() + ": " + Objects.toString(reason.getMessage(), "");

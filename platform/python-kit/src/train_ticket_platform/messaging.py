@@ -223,13 +223,31 @@ class RedisEventSubscriber(EventSubscriber):
             claimed = self._client.xautoclaim(stream, group, consumer_name, CLAIM_MIN_IDLE_MS, "0", count=CLAIM_COUNT)
             messages = claimed[1] if claimed and len(claimed) > 1 else []
             for msg_id, msg_data in messages:
-                self._process_message(stream, group, consumer_name, msg_id, msg_data, handler)
+                msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
+                self._process_entry(
+                    stream,
+                    group,
+                    msg_id_str,
+                    msg_data,
+                    handler,
+                    self._delivery_count(stream, group, msg_id_str),
+                    consumer_name,
+                )
 
     def _process_results(self, results: Any, group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         for stream_name, messages in results or []:
             stream = stream_name.decode("utf-8") if isinstance(stream_name, bytes) else str(stream_name)
             for msg_id, msg_data in messages:
-                self._process_message(stream, group, consumer_name, msg_id, msg_data, handler)
+                msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
+                self._process_entry(
+                    stream,
+                    group,
+                    msg_id_str,
+                    msg_data,
+                    handler,
+                    self._delivery_count(stream, group, msg_id_str),
+                    consumer_name,
+                )
 
     def _process_message(self, stream: str, group: str, consumer_name: str, msg_id: bytes | str, msg_data: Mapping[Any, Any], handler: Callable[[EventEnvelope], Any]) -> None:
         msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
@@ -355,15 +373,16 @@ class RedisEventSubscriber(EventSubscriber):
         entry_id: str,
         fields: Mapping[Any, Any],
         handler: Callable[[EventEnvelope], Any],
-        delivery_count: int = 0,
-        consumer_name: str = "unknown",
+        delivery_count: int,
+        consumer_name: str | None = None,
     ) -> None:
+        actual_consumer_name = consumer_name or default_consumer_name(group)
         if delivery_count >= MAX_DELIVERY_ATTEMPTS:
             envelope_json = self._extract_envelope_json(fields)
-            self._move_to_dlq(stream, group, consumer_name, envelope_json or "{}", "MaxDeliveryAttempts", delivery_count)
+            self._move_to_dlq(stream, group, actual_consumer_name, envelope_json or "{}", "MaxDeliveryAttempts", delivery_count)
             self._xack(stream, group, entry_id)
             return
-        self._process_message(stream, group, consumer_name, entry_id, fields, handler)
+        self._process_message(stream, group, actual_consumer_name, entry_id, fields, handler)
 
 
 class InMemoryEventPublisher(EventPublisher):
