@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
+import os
+from pathlib import Path
 from typing import Any, Protocol
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -11,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
 from .domain import DashboardReadModel, MetricCategory, MetricDefinition, ReportingError
 from train_ticket_platform.idempotency import configure_idempotency_middleware
+from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
 from .ids import uuid7
 from .runtime import health, profile
@@ -204,7 +207,10 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/readyz")
-    def readyz_endpoint() -> dict[str, str]:
+    def readyz_endpoint(response: Response) -> dict[str, str]:
+        if not _storage_ready(app):
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/health")
@@ -216,7 +222,10 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/ready")
-    def ready_endpoint() -> dict[str, str]:
+    def ready_endpoint(response: Response) -> dict[str, str]:
+        if not _storage_ready(app):
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/metadata")
@@ -300,18 +309,52 @@ def configure_error_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=exc.status_code, content=_error_body(request, code, message))
 
 
+
+def _storage_ready(app: FastAPI) -> bool:
+    gate = getattr(app.state, "readiness", None)
+    if gate is not None and not gate.ready:
+        return False
+    pool = getattr(app.state, "database_pool", None)
+    if pool is None:
+        return True
+    try:
+        with pool.connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return True
+    except Exception:
+        if gate is not None:
+            gate.mark_failed("database readiness check failed")
+        return False
+
+
+def _postgres_service_from_env(app: FastAPI) -> tuple[ReportingApplicationService, Any | None]:
+    config = DatabaseConfig.from_env()
+    if config is None:
+        return ReportingApplicationService(), None
+    from .adapters.storage import PostgresReportingApplicationService
+
+    readiness = ReadinessGate()
+    pool = DatabasePool(config)
+    app.state.database_pool = pool
+    app.state.readiness = readiness
+    env_dir = os.environ.get("MIGRATIONS_DIR")
+    migrations_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parents[2] / "migrations"
+    run_migrations(pool, migrations_dir, readiness)
+    service = PostgresReportingApplicationService(pool)
+    relay = OutboxRelay(pool)
+    relay.start()
+    app.state.outbox_relay = relay
+    return service, PostgresIdempotencyStore(pool)
+
 def create_app(
     tracer: TraceHook | None = None,
     otel_tracer: RuntimeTracer | None = None,
     service: ReportingApplicationService | None = None,
     enable_messaging: bool = False,
 ) -> FastAPI:
-    app_service = service or ReportingApplicationService()
+    default_idempotency_store = None
+    app_service = service
     messaging_runtime = None
-    if enable_messaging:
-        from .adapters.messaging.runtime import MessagingRuntime
-
-        messaging_runtime = MessagingRuntime(app_service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -322,13 +365,24 @@ def create_app(
         finally:
             if messaging_runtime is not None:
                 messaging_runtime.stop()
+            relay = getattr(_.state, "outbox_relay", None)
+            if relay is not None:
+                relay.stop()
+            pool = getattr(_.state, "database_pool", None)
+            if pool is not None:
+                pool.close()
 
     app = FastAPI(title="Reporting", version="0.1.0", lifespan=lifespan)
+    if app_service is None:
+        app_service, default_idempotency_store = _postgres_service_from_env(app)
+    if enable_messaging:
+        from .adapters.messaging.runtime import MessagingRuntime
+        messaging_runtime = MessagingRuntime(app_service)
     configure_error_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     configure_reporting_endpoints(app, app_service)
     app.state.reporting_service = app_service
-    configure_idempotency_middleware(app, require_key=True, include_path_prefixes=("/api/v1/test-command",))
+    configure_idempotency_middleware(app, default_idempotency_store, require_key=True, include_path_prefixes=("/api/v1/test-command",))
     return app
 
 
