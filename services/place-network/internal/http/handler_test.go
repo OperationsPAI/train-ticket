@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ type recordingPublisher struct {
 	events []domain.EventEnvelope
 }
 
-func (p *recordingPublisher) Publish(envelope domain.EventEnvelope) error {
+func (p *recordingPublisher) Publish(_ context.Context, envelope domain.EventEnvelope) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.events = append(p.events, envelope)

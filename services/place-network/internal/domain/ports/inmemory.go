@@ -1,6 +1,7 @@
 package ports
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -25,7 +26,7 @@ func NewInMemoryPlaceRepository() *InMemoryPlaceRepository {
 	}
 }
 
-func (r *InMemoryPlaceRepository) Save(place domain.Place) error {
+func (r *InMemoryPlaceRepository) Save(_ context.Context, place domain.Place) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.places[place.ID]; exists {
@@ -37,7 +38,7 @@ func (r *InMemoryPlaceRepository) Save(place domain.Place) error {
 	return nil
 }
 
-func (r *InMemoryPlaceRepository) FindByID(id domain.PlaceID) (*domain.Place, error) {
+func (r *InMemoryPlaceRepository) FindByID(_ context.Context, id domain.PlaceID) (*domain.Place, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	place, exists := r.places[id]
@@ -47,15 +48,32 @@ func (r *InMemoryPlaceRepository) FindByID(id domain.PlaceID) (*domain.Place, er
 	return &place, nil
 }
 
-func (r *InMemoryPlaceRepository) FindAll() ([]domain.Place, error) {
+func (r *InMemoryPlaceRepository) FindPage(_ context.Context, filter PlaceListFilter) (PlacePage, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	places := make([]domain.Place, 0, len(r.places))
 	for _, place := range r.places {
-		places = append(places, place)
+		if filter.Status == "" || string(place.Status) == filter.Status {
+			places = append(places, place)
+		}
 	}
 	sort.Slice(places, func(i, j int) bool { return r.seq[places[i].ID] < r.seq[places[j].ID] })
-	return places, nil
+	limit := filter.Limit
+	if limit < 0 {
+		limit = 0
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(places) {
+		offset = len(places)
+	}
+	end := offset + limit
+	if end > len(places) {
+		end = len(places)
+	}
+	return PlacePage{Items: append([]domain.Place(nil), places[offset:end]...), Total: len(places)}, nil
 }
 
 type InMemoryTransportNodeRepository struct {
@@ -67,7 +85,7 @@ func NewInMemoryTransportNodeRepository() *InMemoryTransportNodeRepository {
 	return &InMemoryTransportNodeRepository{nodes: make(map[domain.TransportNodeID]domain.TransportNode)}
 }
 
-func (r *InMemoryTransportNodeRepository) Save(node domain.TransportNode) error {
+func (r *InMemoryTransportNodeRepository) Save(_ context.Context, node domain.TransportNode) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.nodes[node.ID]; exists {
@@ -77,7 +95,7 @@ func (r *InMemoryTransportNodeRepository) Save(node domain.TransportNode) error 
 	return nil
 }
 
-func (r *InMemoryTransportNodeRepository) FindByID(id domain.TransportNodeID) (*domain.TransportNode, error) {
+func (r *InMemoryTransportNodeRepository) FindByID(_ context.Context, id domain.TransportNodeID) (*domain.TransportNode, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	node, exists := r.nodes[id]
@@ -87,7 +105,7 @@ func (r *InMemoryTransportNodeRepository) FindByID(id domain.TransportNodeID) (*
 	return &node, nil
 }
 
-func (r *InMemoryTransportNodeRepository) FindByPlaceID(placeID domain.PlaceID) ([]domain.TransportNode, error) {
+func (r *InMemoryTransportNodeRepository) FindByPlaceID(_ context.Context, placeID domain.PlaceID) ([]domain.TransportNode, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	nodes := make([]domain.TransportNode, 0)
