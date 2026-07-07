@@ -124,15 +124,22 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 
 **Error codes:** `NOT_FOUND`
 
-## Reliability ruling (2026-07-07)
+## Reliability ruling (2026-07-07, updated Wave-10)
 
-Rule-set publish/supersede facts must not be lost to a publish failure:
-if emitting `FareRuleSetPublished`/`FareRuleSetSuperseded` fails, the state
-transition is rolled back and the command returns 503 UNAVAILABLE for the
-caller to retry. Event ids derive deterministically from
-(ruleSetId, version, action) so a retried publish re-emits identical facts
-(consumer-side eventId dedup makes replay safe). This is the phase-1
-answer to publish-before-commit gaps; a durable outbox is future scope.
+Fare-pricing now follows `docs/08-contracts/persistence.md` transactional
+outbox semantics. HTTP success means the state change and its outbox rows
+committed in one PostgreSQL transaction; Redis delivery is asynchronous and
+at-least-once through the outbox relay ordered by `outbox.seq`. Rule-set
+publish/supersede writes `FareRuleSetPublished` and
+`FareRuleSetSuperseded` envelopes into the same transaction as publishing the
+new rule set and superseding older matching rule sets. Event ids remain
+deterministic from `(ruleSetId, version, action)`, so relay retries and
+duplicate stream deliveries are safe with durable consumer dedup.
+
+The former phase-1 "publish failure -> rollback + 503" paragraph is
+superseded by `persistence.md`: after a service adopts the transactional
+outbox there is no publish-failure HTTP path; rollback/503 applies only to
+database transaction failure.
 
 ## Open Issues
 

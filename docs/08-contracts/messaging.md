@@ -220,6 +220,7 @@ plus notification/finance/reporting fan-in.
 | 24 | `events:entitlement-ticketing` | `fulfillment` | EntitlementIssued to prepare for boarding verification |
 | 25 | `events:entitlement-ticketing` | `booking-orchestration` | EntitlementIssued to mark segment ticketed |
 | 26 | `events:entitlement-ticketing` | `notification` | Ticketing events for user notifications |
+| 26a | `events:entitlement-ticketing` | `capacity-availability` | RULING (2026-07-07): EntitlementVoided (payload `references.segmentBookingRef`) releases the matching hold promptly. Closes the refund-applied gap: post-sales flips APPLIED on `CapacityReleased`, which previously only arrived via booking-orchestration's lazy fallback (~90s). Row 30 (release on PostSalesApplied) stays as idempotent backstop. |
 | 27 | `events:fulfillment` | `transfer-management` | future-scope; arrival/delay facts are not part of the phase-1 contract |
 | 28 | `events:fulfillment` | `entitlement-ticketing` | BoardingVerified for entitlement lifecycle |
 | 29 | `events:post-sales` | `payment` | PostSalesApproved to trigger refund |

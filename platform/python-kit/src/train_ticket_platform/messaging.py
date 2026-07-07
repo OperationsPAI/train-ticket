@@ -271,6 +271,10 @@ class RedisEventSubscriber(EventSubscriber):
         envelope = msg_data.get(b"envelope") if hasattr(msg_data, "get") else None
         if envelope is None and hasattr(msg_data, "get"):
             envelope = msg_data.get("envelope")
+        if envelope is None and hasattr(msg_data, "get"):
+            envelope = msg_data.get(b"d")
+        if envelope is None and hasattr(msg_data, "get"):
+            envelope = msg_data.get("d")
         if isinstance(envelope, bytes):
             return envelope.decode("utf-8")
         if isinstance(envelope, str):
