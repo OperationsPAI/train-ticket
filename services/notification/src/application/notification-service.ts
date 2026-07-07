@@ -29,6 +29,11 @@ export interface UserPreferenceRepository {
   isEnabled(recipientRef: string, intent: string, channel: ChannelType): Promise<boolean> | boolean;
 }
 
+export interface NotificationTaskStore {
+  saveNew(task: NotificationTask): Promise<{ version: bigint }> | { version: bigint };
+  save(task: NotificationTask, expectedVersion: bigint): Promise<{ version: bigint }> | { version: bigint };
+}
+
 export type DeliveryResult =
   | Readonly<{ ok: true; providerMessageId?: string }>
   | Readonly<{ ok: false; outcome: "Bounced" | "Rejected" | "Timeout" | "Expired"; providerCode?: string; providerMessage?: string }>;
@@ -72,6 +77,7 @@ export class NotificationApplicationService {
     private readonly publisher: EventPublisher,
     private readonly preferences: UserPreferenceRepository = new AllowAllPreferences(),
     private readonly channelGateway: NotificationChannelGateway = new DirectSuccessGateway(),
+    private readonly taskStore?: NotificationTaskStore,
   ) {}
 
   async handleExternalTrigger(envelope: EventEnvelope): Promise<ExternalTriggerResult> {
@@ -82,6 +88,7 @@ export class NotificationApplicationService {
     }
 
     const { task, event: scheduled } = NotificationTaskAggregate.schedule(command);
+    let version = (await this.taskStore?.saveNew(task))?.version;
     await this.publisher.publish(toEventEnvelope(scheduled));
 
     if (!command.transactionRequired && !await this.preferences.isEnabled(command.recipientRef, command.intent, command.channel)) {
@@ -90,13 +97,18 @@ export class NotificationApplicationService {
         reason: "SUPPRESSED_BY_PREFERENCES",
         cancelledAt: new Date(),
       });
-      void cancelled;
+      if (version !== undefined) {
+        version = (await this.taskStore?.save(cancelled, version))?.version ?? version;
+      }
       await this.publisher.publish(toEventEnvelope(event));
       return "cancelled";
     }
 
     const dispatchedAt = new Date();
     const { task: delivering, event: dispatched } = task.dispatch({ notificationTaskId: task.id, dispatchedAt });
+    if (version !== undefined) {
+      version = (await this.taskStore?.save(delivering, version))?.version ?? version;
+    }
     await this.publisher.publish(toEventEnvelope(dispatched));
 
     const delivery = await this.channelGateway.send(delivering.toSnapshot());
@@ -108,7 +120,9 @@ export class NotificationApplicationService {
         outcome: "Delivered",
         recordedAt: new Date(),
       });
-      void delivered;
+      if (version !== undefined) {
+        version = (await this.taskStore?.save(delivered, version))?.version ?? version;
+      }
       await this.publisher.publish(toEventEnvelope(deliveredEvent));
       return "delivered";
     }
@@ -122,7 +136,9 @@ export class NotificationApplicationService {
       providerMessage: delivery.providerMessage,
       recordedAt: new Date(),
     });
-    void failed;
+    if (version !== undefined) {
+      await this.taskStore?.save(failed, version);
+    }
     await this.publisher.publish(toEventEnvelope(failedEvent));
     return "failed";
   }
@@ -155,7 +171,22 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope): ScheduleNotificat
     transactionRequired: booleanValue(payload.transactionRequired) ?? true,
     variables: mapping.variables(payload),
     scheduledAt: new Date(),
+    triggerBusinessRef: triggerBusinessRef(envelope),
   };
+}
+
+function triggerBusinessRef(envelope: EventEnvelope): string | undefined {
+  const payload = envelope.payload;
+  const businessRef = stringValue(payload.orderId)
+    ?? stringValue(payload.journeyOrderId)
+    ?? stringValue(payload.paymentIntentId)
+    ?? stringValue(payload.refundId)
+    ?? stringValue(payload.entitlementId)
+    ?? stringValue(payload.segmentBookingId)
+    ?? stringValue(payload.caseId)
+    ?? stringValue(payload.postSalesCaseId)
+    ?? stringValue(payload.businessRef);
+  return businessRef ? `${envelope.eventType}:${businessRef}` : undefined;
 }
 
 function mappingFor(eventType: string): TriggerMapping | undefined {
