@@ -34,6 +34,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/place_network
           resources:
             requests:
               cpu: 50m
@@ -111,6 +113,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/service_plan
           resources:
             requests:
               cpu: 50m
@@ -188,6 +192,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/capacity_availability
           resources:
             requests:
               cpu: 50m
@@ -265,6 +271,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/fare_pricing
           resources:
             requests:
               cpu: 50m
@@ -342,6 +350,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/trip_planning
           resources:
             requests:
               cpu: 50m
@@ -419,6 +429,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/offer_management
           resources:
             requests:
               cpu: 50m
@@ -496,6 +508,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/journey_order
           resources:
             requests:
               cpu: 50m
@@ -573,6 +587,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/booking_orchestration
           resources:
             requests:
               cpu: 50m
@@ -650,6 +666,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/payment
           resources:
             requests:
               cpu: 50m
@@ -727,6 +745,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/provider_integration
           resources:
             requests:
               cpu: 50m
@@ -804,6 +824,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/entitlement_ticketing
           resources:
             requests:
               cpu: 50m
@@ -881,6 +903,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/fulfillment
           resources:
             requests:
               cpu: 50m
@@ -958,6 +982,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/post_sales
           resources:
             requests:
               cpu: 50m
@@ -1035,6 +1061,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/notification
           resources:
             requests:
               cpu: 50m
@@ -1112,6 +1140,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/traveler_profile
           resources:
             requests:
               cpu: 50m
@@ -1189,6 +1219,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/risk_compliance
           resources:
             requests:
               cpu: 50m
@@ -1266,6 +1298,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/account
           resources:
             requests:
               cpu: 50m
@@ -1343,6 +1377,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/admin_audit
           resources:
             requests:
               cpu: 50m
@@ -1420,6 +1456,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/customer_service
           resources:
             requests:
               cpu: 50m
@@ -1497,6 +1535,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/finance_settlement
           resources:
             requests:
               cpu: 50m
@@ -1574,6 +1614,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/reporting
           resources:
             requests:
               cpu: 50m
@@ -1651,6 +1693,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/supplier_catalog
           resources:
             requests:
               cpu: 50m
@@ -1726,6 +1770,8 @@ spec:
               value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/legacy_acl
           resources:
             requests:
               cpu: 50m
