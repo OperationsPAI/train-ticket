@@ -172,6 +172,53 @@ func TestVerifyBoardingRequiresPreparedTicketAndRejectsVoided(t *testing.T) {
 	}
 }
 
+func TestCommandPathContinuesAfterRestartWithPersistedRecord(t *testing.T) {
+	repo := NewInMemoryRepository()
+	publisher := &recordingPublisher{}
+	first := NewService(repo, publisher, NewInMemoryConsumedEventLog(), func(prefix string) string {
+		return prefix + "-00000000-0000-7000-8000-000000000101"
+	}, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
+	seedTicket(t, first, "ent-restart1", "sb-restart1", "ord-restart1", "tvl-restart1", "seg-restart1")
+	_, err := first.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-restart1", SegmentBookingID: "sb-restart1", JourneyOrderID: "ord-restart1", TravelerID: "tvl-restart1", SegmentRef: "seg-restart1", Source: domain.FulfillmentSourceGate, SourceEventID: "gate-restart", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("boarding before restart: %v", err)
+	}
+
+	restarted := NewService(repo, publisher, NewInMemoryConsumedEventLog(), nil, nil)
+	_, err = restarted.RecordFulfillmentCompleted(context.Background(), FulfillmentCompletedCommand{EntitlementID: "ent-restart1", SegmentBookingID: "sb-restart1", JourneyOrderID: "ord-restart1", TravelerID: "tvl-restart1", SegmentRef: "seg-restart1", CompletionSource: domain.CompletionSourceArrival, CompletedAt: time.Date(2026, 7, 5, 11, 0, 0, 0, time.UTC)}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("completion after restart: %v", err)
+	}
+	record, err := repo.FindByEntitlementSegment(context.Background(), "ent-restart1", "sb-restart1", "seg-restart1")
+	if err != nil {
+		t.Fatalf("find persisted record: %v", err)
+	}
+	if record.Status != domain.FulfillmentStatusCompleted {
+		t.Fatalf("expected completed record after restart, got %s", record.Status)
+	}
+}
+
+func TestNoShowCommandContinuesAfterRestartWithPersistedRecord(t *testing.T) {
+	repo := NewInMemoryRepository()
+	first := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), func(prefix string) string {
+		return prefix + "-00000000-0000-7000-8000-000000000102"
+	}, nil)
+	seedTicket(t, first, "ent-restart2", "sb-restart2", "ord-restart2", "tvl-restart2", "seg-restart2")
+
+	restarted := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
+	_, err := restarted.RecordNoShow(context.Background(), RecordNoShowCommand{EntitlementID: "ent-restart2", SegmentBookingID: "sb-restart2", JourneyOrderID: "ord-restart2", TravelerID: "tvl-restart2", SegmentRef: "seg-restart2", Reason: domain.NoShowReasonManualRecord}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("no-show after restart: %v", err)
+	}
+	record, err := repo.FindByEntitlementSegment(context.Background(), "ent-restart2", "sb-restart2", "seg-restart2")
+	if err != nil {
+		t.Fatalf("find persisted record: %v", err)
+	}
+	if record.Status != domain.FulfillmentStatusNoShow {
+		t.Fatalf("expected no-show record after restart, got %s", record.Status)
+	}
+}
+
 func TestFulfillmentCompletedPublishesContractEvent(t *testing.T) {
 	publisher := &recordingPublisher{}
 	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
