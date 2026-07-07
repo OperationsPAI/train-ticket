@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 from fare_pricing.domain import (
     AdjustmentQuote,
@@ -37,6 +39,19 @@ class InMemoryStore:
     adjustment_quotes: dict[str, AdjustmentQuote] = field(default_factory=dict)
     fare_quote_segment_links: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
+    def transaction(self) -> Any:
+        return nullcontext()
+
+    def all_rule_sets(self) -> tuple[FareRuleSet, ...]:
+        return tuple(self.fare_rule_sets.values())
+
+    def published_rule_sets(self, channel: str, product_code: str) -> tuple[FareRuleSet, ...]:
+        return tuple(
+            rule_set
+            for rule_set in self.fare_rule_sets.values()
+            if rule_set.status == RuleSetStatus.PUBLISHED and rule_set.channel == channel and rule_set.product_code == product_code
+        )
+
     def get_rule_set(self, rule_set_id: str) -> FareRuleSet:
         if rule_set_id not in self.fare_rule_sets:
             raise RuleSetNotFoundError(f"Fare rule set not found: {rule_set_id}")
@@ -56,6 +71,9 @@ class InMemoryStore:
     def save_rule_set(self, rule_set: FareRuleSet) -> None:
         self.fare_rule_sets[rule_set.rule_set_id] = rule_set
 
+    def append_outbox(self, envelopes: tuple[Any, ...]) -> None:
+        return None
+
     def get_adjustment_quote(self, adjustment_quote_id: str) -> AdjustmentQuote:
         if adjustment_quote_id not in self.adjustment_quotes:
             raise AdjustmentQuoteNotFoundError(f"Adjustment quote not found: {adjustment_quote_id}")
@@ -65,8 +83,17 @@ class InMemoryStore:
 class FarePricingService:
     """Application service that orchestrates fare pricing operations."""
 
-    def __init__(self, store: InMemoryStore) -> None:
+    def __init__(self, store: Any) -> None:
         self._store = store
+
+    def transaction(self) -> Any:
+        transaction = getattr(self._store, "transaction", None)
+        return transaction() if callable(transaction) else nullcontext()
+
+    def append_outbox(self, envelopes: tuple[Any, ...]) -> None:
+        append = getattr(self._store, "append_outbox", None)
+        if callable(append):
+            append(envelopes)
 
     def compute_fare_quote(
         self,
@@ -143,7 +170,10 @@ class FarePricingService:
         return aq
 
     def create_rule_set(self, rule_set: FareRuleSet) -> FareRuleSet:
-        existing = self._store.fare_rule_sets.get(rule_set.rule_set_id)
+        try:
+            existing = self._store.get_rule_set(rule_set.rule_set_id)
+        except RuleSetNotFoundError:
+            existing = None
         if existing is not None:
             if existing != rule_set:
                 raise PricingError(f"fare rule set already exists with different content: {rule_set.rule_set_id}")
@@ -163,7 +193,7 @@ class FarePricingService:
         published = rule_set.publish(now)
         originals: list[FareRuleSet] = [rule_set]
         superseded: list[FareRuleSet] = []
-        for existing in list(self._store.fare_rule_sets.values()):
+        for existing in list(self._store.all_rule_sets() if hasattr(self._store, "all_rule_sets") else self._store.fare_rule_sets.values()):
             if (
                 existing.rule_set_id != published.rule_set_id
                 and existing.status == RuleSetStatus.PUBLISHED
@@ -183,9 +213,13 @@ class FarePricingService:
 
     def find_published_rule_set_id(self, channel: str, product_code: str, at: datetime | None = None) -> str | None:
         when = at or datetime.now(UTC)
+        if hasattr(self._store, "published_rule_sets"):
+            source = self._store.published_rule_sets(channel, product_code)
+        else:
+            source = self._store.fare_rule_sets.values()
         candidates = [
             rule_set
-            for rule_set in self._store.fare_rule_sets.values()
+            for rule_set in source
             if rule_set.status == RuleSetStatus.PUBLISHED
             and rule_set.channel == channel
             and rule_set.is_effective(when)
@@ -197,13 +231,17 @@ class FarePricingService:
         return candidates[0].rule_set_id
 
     def link_fare_quote_to_segments(self, quote_id: str, segment_refs: list[str]) -> None:
-        if quote_id not in self._store.fare_quotes:
-            raise QuoteNotFoundError(f"Fare quote not found: {quote_id}")
+        self._store.get_quote(quote_id)
         normalized_refs = tuple(sorted(ref for ref in segment_refs if ref.strip()))
         if normalized_refs:
-            self._store.fare_quote_segment_links[quote_id] = normalized_refs
+            if hasattr(self._store, "link_fare_quote_to_segments") and not isinstance(self._store, InMemoryStore):
+                self._store.link_fare_quote_to_segments(quote_id, normalized_refs)
+            else:
+                self._store.fare_quote_segment_links[quote_id] = normalized_refs
 
     def find_fare_quote_id_for_segments(self, segment_refs: list[str]) -> str | None:
+        if hasattr(self._store, "find_fare_quote_id_for_segments") and not isinstance(self._store, InMemoryStore):
+            return self._store.find_fare_quote_id_for_segments(segment_refs)
         requested_segments = {ref.strip() for ref in segment_refs if ref.strip()}
         if not requested_segments:
             return None
