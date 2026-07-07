@@ -1254,16 +1254,20 @@ fn domain_event_to_wire(
                 "expiredAt": unix_millis_to_rfc3339(e.expired_at),
             }),
         ),
-        DomainEvent::CapacityHoldFailed(e) => (
-            "CapacityHoldFailed",
-            json!({
+        DomainEvent::CapacityHoldFailed(e) => {
+            let mut payload = json!({
                 "requestedHoldId": e.requested_hold_id.to_string(),
                 "inventoryPoolId": e.inventory_pool_id.to_string(),
                 "capacityUnitRef": e.capacity_unit_ref.to_string(),
                 "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
-                "reason": format!("{:?}", e.reason),
-            }),
-        ),
+                "idempotencyKey": e.idempotency_key.to_string(),
+                "reason": e.reason.contract_reason(),
+            });
+            if let Some(conflicting_hold_id) = e.reason.conflicting_hold_id() {
+                payload["conflictingHoldId"] = json!(conflicting_hold_id.to_string());
+            }
+            ("CapacityHoldFailed", payload)
+        }
     };
     WireEnvelope::try_new(
         event_type,

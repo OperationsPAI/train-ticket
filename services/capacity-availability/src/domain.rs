@@ -551,6 +551,26 @@ pub enum HoldFailureReason {
     OverlappingHold { conflicting_hold_id: HoldId },
 }
 
+impl HoldFailureReason {
+    pub fn contract_reason(&self) -> &'static str {
+        match self {
+            HoldFailureReason::UnknownCapacityUnit => "UNKNOWN_CAPACITY_UNIT",
+            HoldFailureReason::IdempotencyConflict { .. } => "IDEMPOTENCY_CONFLICT",
+            HoldFailureReason::OverlappingHold { .. } => "OVERLAPPING_HOLD",
+        }
+    }
+
+    pub fn conflicting_hold_id(&self) -> Option<&HoldId> {
+        match self {
+            HoldFailureReason::OverlappingHold {
+                conflicting_hold_id,
+            } => Some(conflicting_hold_id),
+            HoldFailureReason::UnknownCapacityUnit
+            | HoldFailureReason::IdempotencyConflict { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryPoolState {
     Initialized,
