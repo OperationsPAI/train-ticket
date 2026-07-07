@@ -16,10 +16,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-final class LettuceRedisStreamOperations implements RedisStreamOperations {
+public final class LettuceRedisStreamOperations implements RedisStreamOperations {
     private final StatefulRedisConnection<String, String> connection;
 
-    LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
+    public LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
         this.connection = Objects.requireNonNull(connection, "connection is required");
     }
 
