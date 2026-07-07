@@ -167,6 +167,13 @@ def configure_fare_pricing_routes(
     if store is None:
         store = InMemoryStore()
     service = FarePricingService(store)
+    unit_of_work = getattr(store, "unit_of_work", None)
+    if callable(unit_of_work):
+        @app.middleware("http")
+        async def fare_pricing_unit_of_work_middleware(request: Request, call_next: Any):
+            with unit_of_work():
+                return await call_next(request)
+
     publisher = event_publisher or RedisEventPublisher()
     app.state.publish_events_synchronously = not isinstance(store, PostgresFarePricingStore)
     app.state.fare_pricing_service = service

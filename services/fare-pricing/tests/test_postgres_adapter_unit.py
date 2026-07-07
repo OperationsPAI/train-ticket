@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+from contextvars import Context
 from datetime import UTC, datetime, timedelta
+import os
+from pathlib import Path
+
+import pytest
 
 from fare_pricing.adapters.storage.postgres import PostgresFarePricingStore, domain_to_json
 from fare_pricing.domain import FareRule, FareRuleSet, Money, PriceExplanation, RuleKind, ValidityWindow
 from fare_pricing.ports import EventEnvelope
-from train_ticket_platform.storage import OutboxAppender
+from train_ticket_platform.storage import (
+    DatabaseConfig,
+    DatabasePool,
+    OptimisticConcurrencyError,
+    OutboxAppender,
+    ReadinessGate,
+    run_migrations,
+)
 
 
 class FakeConn:
@@ -91,8 +103,9 @@ def test_save_loaded_rule_set_uses_snapshot_version_for_optimistic_update() -> N
     conn = SnapshotFakeConn(rows=[(7, domain_to_json(original)), (8,)])
     store = PostgresFarePricingStore(SingleConnectionPool(conn))
 
-    store.get_rule_set(original.rule_set_id)
-    store.save_rule_set(updated)
+    with store.unit_of_work():
+        store.get_rule_set(original.rule_set_id)
+        store.save_rule_set(updated)
 
     update_sql, update_params = conn.commands[1]
     assert "UPDATE fare_rule_set_snapshots SET version = version + 1" in update_sql
@@ -102,7 +115,6 @@ def test_save_loaded_rule_set_uses_snapshot_version_for_optimistic_update() -> N
 
 def test_save_loaded_quote_conflict_raises_optimistic_concurrency() -> None:
     from fare_pricing.domain import calculate_fare_quote
-    from train_ticket_platform.storage import OptimisticConcurrencyError
 
     original = rule_set("frs-quote-conflict")
     quote = calculate_fare_quote(
@@ -118,9 +130,10 @@ def test_save_loaded_quote_conflict_raises_optimistic_concurrency() -> None:
     conn = SnapshotFakeConn(rows=[(3, domain_to_json(quote)), None])
     store = PostgresFarePricingStore(SingleConnectionPool(conn))
 
-    loaded = store.get_quote(quote.quote_id)
     try:
-        store.save_quote(loaded.expire(loaded.valid_until))
+        with store.unit_of_work():
+            loaded = store.get_quote(quote.quote_id)
+            store.save_quote(loaded.expire(loaded.valid_until))
     except OptimisticConcurrencyError:
         pass
     else:  # pragma: no cover - assertion branch
@@ -129,3 +142,68 @@ def test_save_loaded_quote_conflict_raises_optimistic_concurrency() -> None:
     update_sql, update_params = conn.commands[1]
     assert "UPDATE fare_quote_snapshots SET version = version + 1" in update_sql
     assert update_params[1:] == (quote.quote_id, 3)
+
+
+def test_interleaved_request_contexts_keep_loaded_versions_isolated() -> None:
+    original = rule_set("frs-isolated")
+    conn = SnapshotFakeConn(rows=[(5, domain_to_json(original)), (5, domain_to_json(original)), (6,), None])
+    store = PostgresFarePricingStore(SingleConnectionPool(conn))
+
+    first_context = Context()
+    second_context = Context()
+    first_uow = store.unit_of_work()
+    second_uow = store.unit_of_work()
+    first_context.run(first_uow.__enter__)
+    second_context.run(second_uow.__enter__)
+    try:
+        first_loaded = first_context.run(store.get_rule_set, original.rule_set_id)
+        second_loaded = second_context.run(store.get_rule_set, original.rule_set_id)
+        assert first_loaded.rule_set_id == second_loaded.rule_set_id == original.rule_set_id
+
+        first_context.run(store.save_rule_set, first_loaded.supersede())
+        with pytest.raises(OptimisticConcurrencyError):
+            second_context.run(store.save_rule_set, second_loaded.supersede())
+    finally:
+        second_context.run(second_uow.__exit__, None, None, None)
+        first_context.run(first_uow.__exit__, None, None, None)
+
+    first_update = conn.commands[2]
+    second_update = conn.commands[3]
+    assert first_update[1][1:] == (original.rule_set_id, 5)
+    assert second_update[1][1:] == (original.rule_set_id, 5)
+
+
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="requires live Postgres via DATABASE_URL")
+def test_real_postgres_two_transactions_detect_write_conflict() -> None:
+    migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
+    pool = DatabasePool(DatabaseConfig(os.environ["DATABASE_URL"]), min_size=1, max_size=4)
+    try:
+        run_migrations(pool, migrations_dir, ReadinessGate())
+        store = PostgresFarePricingStore(pool)
+        aggregate = rule_set("frs-live-conflict")
+        with pool.connection() as conn:
+            with conn.transaction():
+                conn.execute("DELETE FROM fare_rule_set_snapshots WHERE id = %s", (aggregate.rule_set_id,))
+        store.save_rule_set(aggregate)
+
+        first_context = Context()
+        second_context = Context()
+        first_transaction = store.transaction()
+        second_transaction = store.transaction()
+        first_context.run(first_transaction.__enter__)
+        second_context.run(second_transaction.__enter__)
+        first_open = True
+        try:
+            first_loaded = first_context.run(store.get_rule_set, aggregate.rule_set_id)
+            second_loaded = second_context.run(store.get_rule_set, aggregate.rule_set_id)
+            first_context.run(store.save_rule_set, first_loaded.supersede())
+            first_context.run(first_transaction.__exit__, None, None, None)
+            first_open = False
+            with pytest.raises(OptimisticConcurrencyError):
+                second_context.run(store.save_rule_set, second_loaded.supersede())
+        finally:
+            second_context.run(second_transaction.__exit__, None, None, None)
+            if first_open:
+                first_context.run(first_transaction.__exit__, None, None, None)
+    finally:
+        pool.close()

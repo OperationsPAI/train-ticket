@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
-import threading
 from typing import Any
 
 from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
@@ -287,6 +288,15 @@ def domain_to_json(entity: FareRuleSet | FareQuote | AdjustmentQuote) -> dict[st
     return _adjustment_quote_to_json(entity)
 
 
+@dataclass(slots=True)
+class _UnitOfWorkState:
+    connection: Any | None = None
+    loaded_versions: dict[tuple[str, str], int] = field(default_factory=dict)
+
+
+_UNIT_OF_WORK: ContextVar[_UnitOfWorkState | None] = ContextVar("fare_pricing_postgres_uow", default=None)
+
+
 class PostgresFarePricingStore:
     """Postgres adapter preserving the in-memory store interface for fare-pricing."""
 
@@ -296,38 +306,55 @@ class PostgresFarePricingStore:
         self._rule_sets = SnapshotRepository("fare_rule_set_snapshots")
         self._quotes = SnapshotRepository("fare_quote_snapshots")
         self._adjustment_quotes = SnapshotRepository("adjustment_quote_snapshots")
-        self._loaded_versions: dict[tuple[str, str], int] = {}
-        self._version_lock = threading.Lock()
-        self._state = threading.local()
 
     @contextmanager
     def transaction(self):
-        local = getattr(self._state, "connection", None)
-        if local is not None:
-            yield local
+        state = _UNIT_OF_WORK.get()
+        if state is not None and state.connection is not None:
+            yield state.connection
             return
         with self._pool.connection() as conn:
             with conn.transaction():
-                self._state.connection = conn
+                token = _UNIT_OF_WORK.set(_UnitOfWorkState(connection=conn))
                 try:
                     yield conn
                 finally:
-                    self._state.connection = None
+                    _UNIT_OF_WORK.reset(token)
+
+    @contextmanager
+    def unit_of_work(self):
+        """Create an isolated identity map for a request that manages its own connection lifecycle."""
+        if _UNIT_OF_WORK.get() is not None:
+            yield
+            return
+        token = _UNIT_OF_WORK.set(_UnitOfWorkState())
+        try:
+            yield
+        finally:
+            _UNIT_OF_WORK.reset(token)
 
     def _with_conn(self, func: Callable[[Any], Any]) -> Any:
-        local = getattr(self._state, "connection", None)
-        if local is not None:
-            return func(local)
+        state = _UNIT_OF_WORK.get()
+        if state is not None and state.connection is not None:
+            return func(state.connection)
         with self._pool.connection() as conn:
             return func(conn)
 
+    @staticmethod
+    def _version_map() -> dict[tuple[str, str], int] | None:
+        state = _UNIT_OF_WORK.get()
+        return state.loaded_versions if state is not None else None
+
     def _remember_version(self, aggregate: str, aggregate_id: str, version: int) -> None:
-        with self._version_lock:
-            self._loaded_versions[(aggregate, aggregate_id)] = version
+        versions = self._version_map()
+        if versions is not None:
+            versions[(aggregate, aggregate_id)] = version
 
     def _take_loaded_version(self, aggregate: str, aggregate_id: str) -> int | None:
-        with self._version_lock:
-            return self._loaded_versions.pop((aggregate, aggregate_id), None)
+        versions = self._version_map()
+        if versions is None:
+            return None
+        return versions.pop((aggregate, aggregate_id), None)
 
     @staticmethod
     def _raise_conflict(exc: OptimisticConcurrencyError) -> None:
