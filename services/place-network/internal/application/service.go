@@ -58,11 +58,7 @@ type CreatePlaceResponse struct {
 	CreatedAt     string `json:"createdAt"`
 }
 
-func (s *Service) CreatePlace(req CreatePlaceRequest) (*CreatePlaceResponse, error) {
-	return s.CreatePlaceContext(context.Background(), req)
-}
-
-func (s *Service) CreatePlaceContext(ctx context.Context, req CreatePlaceRequest) (*CreatePlaceResponse, error) {
+func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*CreatePlaceResponse, error) {
 	placeType := domain.PlaceType(req.PlaceType)
 	if !validPlaceTypeForAPI(placeType) {
 		return nil, NewDomainError("VALIDATION_FAILED", fmt.Sprintf("unsupported place type: %q", req.PlaceType))
@@ -123,11 +119,7 @@ type GetPlaceResponse struct {
 	Nodes         []NodeSummary `json:"nodes"`
 }
 
-func (s *Service) GetPlace(id domain.PlaceID) (*GetPlaceResponse, error) {
-	return s.GetPlaceContext(context.Background(), id)
-}
-
-func (s *Service) GetPlaceContext(ctx context.Context, id domain.PlaceID) (*GetPlaceResponse, error) {
+func (s *Service) GetPlace(ctx context.Context, id domain.PlaceID) (*GetPlaceResponse, error) {
 	place, err := s.places.FindByID(ctx, id)
 	if err != nil || place == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
@@ -169,11 +161,7 @@ type ListPlacesResponse struct {
 	Offset int            `json:"offset"`
 }
 
-func (s *Service) ListPlaces(req ListPlacesRequest) (*ListPlacesResponse, error) {
-	return s.ListPlacesContext(context.Background(), req)
-}
-
-func (s *Service) ListPlacesContext(ctx context.Context, req ListPlacesRequest) (*ListPlacesResponse, error) {
+func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListPlacesResponse, error) {
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
@@ -212,11 +200,7 @@ type CreateTransportNodeResponse struct {
 	CreatedAt    string   `json:"createdAt"`
 }
 
-func (s *Service) CreateTransportNode(req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
-	return s.CreateTransportNodeContext(context.Background(), req)
-}
-
-func (s *Service) CreateTransportNodeContext(ctx context.Context, req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
+func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
 	placeID := domain.PlaceID(req.PlaceID)
 	place, err := s.places.FindByID(ctx, placeID)
 	if err != nil || place == nil {
@@ -257,11 +241,7 @@ type GetTransportNodeResponse struct {
 	CreatedAt    string   `json:"createdAt"`
 }
 
-func (s *Service) GetTransportNode(id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
-	return s.GetTransportNodeContext(context.Background(), id)
-}
-
-func (s *Service) GetTransportNodeContext(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
+func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
 	node, err := s.nodes.FindByID(ctx, id)
 	if err != nil || node == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))

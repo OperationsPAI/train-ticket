@@ -14,11 +14,7 @@ type IdempotencyStore struct {
 
 func NewIdempotencyStore(db DBTX) *IdempotencyStore { return &IdempotencyStore{db: db} }
 
-func (s *IdempotencyStore) Get(key string) (idempotency.Record, bool) {
-	return s.GetContext(context.Background(), key)
-}
-
-func (s *IdempotencyStore) GetContext(ctx context.Context, key string) (idempotency.Record, bool) {
+func (s *IdempotencyStore) Get(ctx context.Context, key string) (idempotency.Record, bool) {
 	var record idempotency.Record
 	var body []byte
 	row := s.db.QueryRow(ctx, `SELECT request_hash, status_code, COALESCE(response_body::text, '') FROM idempotency_records WHERE key = $1`, strings.TrimSpace(key))
@@ -33,11 +29,7 @@ func (s *IdempotencyStore) GetContext(ctx context.Context, key string) (idempote
 	return record, true
 }
 
-func (s *IdempotencyStore) Put(key string, record idempotency.Record) error {
-	return s.PutContext(context.Background(), key, record)
-}
-
-func (s *IdempotencyStore) PutContext(ctx context.Context, key string, record idempotency.Record) error {
+func (s *IdempotencyStore) Put(ctx context.Context, key string, record idempotency.Record) error {
 	var body any
 	if len(record.Body) > 0 && json.Valid(record.Body) {
 		body = json.RawMessage(record.Body)

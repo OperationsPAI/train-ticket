@@ -81,7 +81,7 @@ func bindJSON(ctx *gin.Context, target any) bool {
 
 func (h Handler) writeCachedJSON(ctx *gin.Context, status int, body any) {
 	metadata, _ := idempotency.FromContext(ctx)
-	bytes, err := idempotency.StoreJSON(h.idempotency, metadata.Key, metadata.Fingerprint, status, body)
+	bytes, err := idempotency.StoreJSON(ctx.Request.Context(), h.idempotency, metadata.Key, metadata.Fingerprint, status, body)
 	if err != nil {
 		h.writeError(ctx, application.ErrUnavailable)
 		return

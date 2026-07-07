@@ -21,14 +21,8 @@ type Record struct {
 }
 
 type Store interface {
-	Get(key string) (Record, bool)
-	Put(key string, record Record) error
-}
-
-type ContextStore interface {
-	Store
-	GetContext(ctx context.Context, key string) (Record, bool)
-	PutContext(ctx context.Context, key string, record Record) error
+	Get(ctx context.Context, key string) (Record, bool)
+	Put(ctx context.Context, key string, record Record) error
 }
 
 type MemoryStore struct {
@@ -37,13 +31,13 @@ type MemoryStore struct {
 }
 
 func NewMemoryStore() *MemoryStore { return &MemoryStore{records: map[string]Record{}} }
-func (s *MemoryStore) Get(key string) (Record, bool) {
+func (s *MemoryStore) Get(_ context.Context, key string) (Record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, ok := s.records[key]
 	return r, ok
 }
-func (s *MemoryStore) Put(key string, record Record) error {
+func (s *MemoryStore) Put(_ context.Context, key string, record Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records[key] = record
@@ -60,8 +54,8 @@ func BodyFingerprint(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func Replay(store Store, key, fingerprint string) (Record, bool, error) {
-	record, ok := store.Get(strings.TrimSpace(key))
+func Replay(ctx context.Context, store Store, key, fingerprint string) (Record, bool, error) {
+	record, ok := store.Get(ctx, strings.TrimSpace(key))
 	if !ok {
 		return Record{}, false, nil
 	}

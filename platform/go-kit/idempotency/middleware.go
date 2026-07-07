@@ -91,13 +91,13 @@ func FromContext(ctx *gin.Context) (ContextValue, bool) {
 	return metadata, ok
 }
 
-func StoreJSON(store Store, key, fingerprint string, status int, body any) ([]byte, error) {
+func StoreJSON(ctx context.Context, store Store, key, fingerprint string, status int, body any) ([]byte, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	if store != nil {
-		if err := store.Put(strings.TrimSpace(key), Record{Fingerprint: fingerprint, Status: status, Body: append([]byte(nil), encoded...), Response: body}); err != nil {
+		if err := store.Put(ctx, strings.TrimSpace(key), Record{Fingerprint: fingerprint, Status: status, Body: append([]byte(nil), encoded...), Response: body}); err != nil {
 			return nil, err
 		}
 	}
@@ -105,22 +105,9 @@ func StoreJSON(store Store, key, fingerprint string, status int, body any) ([]by
 }
 
 func replay(ctx context.Context, store Store, key, fingerprint string) (Record, bool, error) {
-	if contextStore, ok := store.(ContextStore); ok {
-		record, found := contextStore.GetContext(ctx, strings.TrimSpace(key))
-		if !found {
-			return Record{}, false, nil
-		}
-		if record.Fingerprint != fingerprint {
-			return Record{}, true, ErrKeyReused
-		}
-		return record, true, nil
-	}
-	return Replay(store, key, fingerprint)
+	return Replay(ctx, store, key, fingerprint)
 }
 
 func put(ctx context.Context, store Store, key string, record Record) error {
-	if contextStore, ok := store.(ContextStore); ok {
-		return contextStore.PutContext(ctx, strings.TrimSpace(key), record)
-	}
-	return store.Put(strings.TrimSpace(key), record)
+	return store.Put(ctx, strings.TrimSpace(key), record)
 }
