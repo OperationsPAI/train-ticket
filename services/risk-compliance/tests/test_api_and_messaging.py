@@ -424,10 +424,21 @@ def test_journey_order_replay_does_not_publish_second_assessment_after_partial_d
         except PublishFailed:
             pass
 
-    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult", "RiskAssessmentResult"]
-    assert publisher.envelopes[1].eventId == publisher.envelopes[0].eventId
-    assert publisher.envelopes[1].payload["assessmentId"] == publisher.envelopes[0].payload["assessmentId"]
+    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult"]
     assert service.assessment_count() == 1
+
+
+def test_journey_order_duplicate_is_acknowledged_before_side_effects() -> None:
+    class DuplicateRepository(InMemoryAssessmentRepository):
+        def try_mark_processed(self, event_id: str) -> bool:
+            return False
+
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, DuplicateRepository())
+    service.handle_event(journey_order_created_envelope(f"evt-{uuid7()}", "ord-duplicate", "acct-duplicate"))
+
+    assert publisher.envelopes == []
+    assert service.assessment_count() == 0
 
 
 def test_lift_block_clears_account_frequency_window_for_same_account() -> None:
