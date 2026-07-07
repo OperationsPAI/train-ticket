@@ -4,8 +4,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -13,7 +18,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class RedisEventSubscriber implements EventSubscriber {
     public static final int MAX_DELIVERY_ATTEMPTS = 5;
+    private static final Logger LOGGER = LoggerFactory.getLogger(RedisEventSubscriber.class);
     private static final long POLL_FAILURE_BACKOFF_MILLIS = 1_000;
+    private static final int LAST_FAILURE_CACHE_SIZE = 1_024;
 
     private final RedisStreamOperations streams;
     private final ObjectMapper objectMapper;
@@ -21,6 +28,12 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final AtomicBoolean running = new AtomicBoolean();
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
+    private final Map<FailureKey, RuntimeException> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<FailureKey, RuntimeException> eldest) {
+            return size() > LAST_FAILURE_CACHE_SIZE;
+        }
+    };
 
     public RedisEventSubscriber(StatefulRedisConnection<String, String> connection, ObjectMapper objectMapper) {
         this(new LettuceRedisStreamOperations(connection), objectMapper, connection::close);
@@ -79,7 +92,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                 try {
                     recover(stream, group, consumerName, handler);
                     for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
-                        handle(stream, group, message, handler, streams.deliveryCount(stream, group, message.id()));
+                        handle(stream, group, consumerName, message, handler, streams.deliveryCount(stream, group, message.id()));
                     }
                 } catch (RuntimeException exception) {
                     // Keep the subscriber alive; messages read but not acked remain in the Redis PEL for recovery/DLQ policy.
@@ -101,19 +114,14 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private void recover(String stream, String group, String consumerName, EventHandler handler) {
         for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
-            handle(stream, group, message, handler, streams.deliveryCount(stream, group, message.id()));
+            handle(stream, group, consumerName, message, handler, streams.deliveryCount(stream, group, message.id()));
         }
     }
 
-    private void handle(String stream, String group, RedisStreamOperations.StreamEntry message, EventHandler handler, int deliveryAttempts) {
+    private void handle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler, int deliveryAttempts) {
         String json = message.envelopeJson();
         if (json == null) {
-            streams.moveToDlq(stream, "{}");
-            streams.ack(stream, group, message.id());
-            return;
-        }
-        if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
-            streams.moveToDlq(stream, json);
+            moveToDlq(stream, group, consumerName, message.id(), "{}", "MissingEnvelope", deliveryAttempts);
             streams.ack(stream, group, message.id());
             return;
         }
@@ -121,7 +129,17 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             envelope = deserialize(json);
         } catch (SubscribeFailedException exception) {
-            streams.moveToDlq(stream, json);
+            moveToDlq(stream, group, consumerName, message.id(), json, exception, deliveryAttempts);
+            streams.ack(stream, group, message.id());
+            return;
+        }
+        if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
+            RuntimeException lastException = removeLastFailure(stream, message.id());
+            if (lastException != null) {
+                moveToDlq(stream, group, consumerName, message.id(), json, lastException, deliveryAttempts);
+            } else {
+                moveToDlq(stream, group, consumerName, message.id(), json, "MaxDeliveryAttempts", deliveryAttempts);
+            }
             streams.ack(stream, group, message.id());
             return;
         }
@@ -133,15 +151,64 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             result = handler.handle(envelope);
         } catch (RuntimeException exception) {
+            rememberLastFailure(stream, message.id(), exception);
             return;
         }
         if (result == HandlerResult.SUCCESS) {
             consumedEvents.recordConsumed(group, envelope.eventId());
             streams.ack(stream, group, message.id());
+            removeLastFailure(stream, message.id());
         } else if (result == HandlerResult.FATAL_FAILURE) {
-            streams.moveToDlq(stream, json);
+            removeLastFailure(stream, message.id());
+            moveToDlq(stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", deliveryAttempts);
             streams.ack(stream, group, message.id());
         }
+    }
+
+    private void rememberLastFailure(String stream, String messageId, RuntimeException exception) {
+        synchronized (lastFailures) {
+            lastFailures.put(new FailureKey(stream, messageId), exception);
+        }
+    }
+
+    private RuntimeException removeLastFailure(String stream, String messageId) {
+        synchronized (lastFailures) {
+            return lastFailures.remove(new FailureKey(stream, messageId));
+        }
+    }
+
+    private record FailureKey(String stream, String messageId) {}
+
+    private void moveToDlq(String stream, String group, String consumerName, String messageId, String envelopeJson, Throwable reason, int attempts) {
+        String reasonText = reason.getClass().getSimpleName() + ": " + Objects.toString(reason.getMessage(), "");
+        moveToDlq(stream, group, consumerName, messageId, envelopeJson, reasonText, attempts);
+    }
+
+    private void moveToDlq(String stream, String group, String consumerName, String messageId, String envelopeJson, String reason, int attempts) {
+        EventEnvelope envelope = tryDeserialize(envelopeJson);
+        String eventId = envelope == null ? "unknown" : envelope.eventId();
+        String truncatedReason = truncate(reason);
+        LOGGER.warn(
+            "service={} stream={} eventId={} failureReason={} moving message to DLQ",
+            group,
+            stream,
+            eventId,
+            truncatedReason
+        );
+        streams.moveToDlq(stream, envelopeJson, new DlqMetadata(group, consumerName, truncatedReason, Math.max(1, attempts), Instant.now().toString()));
+    }
+
+    private EventEnvelope tryDeserialize(String json) {
+        try {
+            return deserialize(json);
+        } catch (RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private static String truncate(String reason) {
+        String value = Objects.toString(reason, "unknown");
+        return value.length() <= 500 ? value : value.substring(0, 500);
     }
 
     private static boolean isNoGroup(RuntimeException exception) {

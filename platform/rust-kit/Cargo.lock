@@ -895,6 +895,19 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+dependencies = [
+ "value-bag",
+]
+
+[[package]]
+name = "logtest"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb3e43a8657c1d64516dcc9db8ca03826a4aceaf89d5ce1b37b59f6ff0e43026"
+dependencies = [
+ "lazy_static",
+ "log",
+]
 
 [[package]]
 name = "matchit"
@@ -1257,6 +1270,7 @@ dependencies = [
  "axum",
  "chrono",
  "log",
+ "logtest",
  "redis",
  "serde",
  "serde_json",
@@ -1973,6 +1987,12 @@ dependencies = [
  "rand 0.10.2",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "value-bag"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ba6f5989077681266825251a52748b8c1d8a4ad098cc37e440103d0ea717fc0"
 
 [[package]]
 name = "vcpkg"

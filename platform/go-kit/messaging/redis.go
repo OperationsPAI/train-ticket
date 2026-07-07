@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"sync"
@@ -202,7 +203,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 		}
 		for _, stream := range result {
 			for _, msg := range stream.Messages {
-				b.processMessage(ctx, stream.Stream, group, msg, handler)
+				b.processMessage(ctx, stream.Stream, group, consumer, msg, handler)
 			}
 		}
 	}
@@ -215,7 +216,7 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 			return
 		}
 		for _, m := range messages {
-			b.processMessage(ctx, stream, group, m, handler)
+			b.processMessage(ctx, stream, group, consumer, m, handler)
 		}
 		if next == "0-0" || next == start {
 			return
@@ -223,16 +224,16 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 		start = next
 	}
 }
-func (b *RedisEventBus) processMessage(ctx context.Context, stream, group string, message redis.XMessage, handler Handler) {
+func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) {
 	raw, ok := message.Values[EnvelopeField].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
-		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "MissingEnvelope", 1)
 		return
 	}
 	attempts := b.deliveryAttempts(ctx, stream, group, message.ID)
 	var envelope EventEnvelope
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.Validate() != nil {
-		b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "InvalidEnvelope", attempts)
 		return
 	}
 	if b.dedup != nil && b.dedup.Seen(envelope.EventID) {
@@ -241,7 +242,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group string
 	}
 	if err := handler(ctx, envelope); err != nil {
 		if IsFatalHandlerError(err) || attempts >= MaxDeliveryAttempts {
-			b.moveToDLQAndAck(ctx, stream, group, message.ID, raw)
+			b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, err, attempts)
 		}
 		return
 	}
@@ -257,7 +258,54 @@ func (b *RedisEventBus) deliveryAttempts(ctx context.Context, stream, group, id 
 	}
 	return entries[0].RetryCount
 }
-func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, id, raw string) {
-	_ = b.client.XAdd(ctx, &redis.XAddArgs{Stream: stream + DeadLetterSuffix, MaxLen: MaxLen, Approx: true, Values: map[string]any{EnvelopeField: raw}}).Err()
+func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, consumer, id, raw string, reason any, attempts int64) {
+	failureReason := truncateFailureReason(reason)
+	log.Printf("WARN service=%s stream=%s eventId=%s failureReason=%s moving message to DLQ", group, stream, eventIDForLog(raw), failureReason)
+	_ = b.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: stream + DeadLetterSuffix,
+		MaxLen: MaxLen,
+		Approx: true,
+		Values: dlqFields(raw, group, consumer, failureReason, attempts),
+	}).Err()
 	_ = b.client.XAck(ctx, stream, group, id).Err()
+}
+
+func dlqFields(raw, group, consumer, failureReason string, attempts int64) map[string]any {
+	return map[string]any{
+		EnvelopeField:    raw,
+		"consumerGroup":  group,
+		"consumerName":   consumer,
+		"failureReason":  failureReason,
+		"attempts":       fmt.Sprintf("%d", maxInt64(1, attempts)),
+		"deadLetteredAt": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func truncateFailureReason(reason any) string {
+	text := fmt.Sprint(reason)
+	if err, ok := reason.(error); ok {
+		text = fmt.Sprintf("%T: %s", err, err.Error())
+	}
+	if len(text) > 500 {
+		return text[:500]
+	}
+	if strings.TrimSpace(text) == "" {
+		return "unknown"
+	}
+	return text
+}
+
+func eventIDForLog(raw string) string {
+	var envelope EventEnvelope
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.EventID == "" {
+		return "unknown"
+	}
+	return envelope.EventID
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }

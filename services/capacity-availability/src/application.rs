@@ -35,9 +35,9 @@ impl CapacityService {
         match envelope.event_type.as_str() {
             "SegmentReservationRequested" => self.handle_segment_reservation_requested(&envelope),
             "SegmentReservationConfirmed" => self.handle_segment_reservation_confirmed(&envelope),
-            "SegmentBookingCancelled" | "PostSalesApplied" => {
-                self.handle_release_trigger(&envelope)
-            }
+            "SegmentBookingCancelled" => self.handle_segment_booking_cancelled(&envelope),
+            "SegmentTicketed" => self.handle_segment_ticketed(&envelope),
+            "PostSalesApplied" => self.handle_post_sales_applied(&envelope),
             "EntitlementVoided" => self.handle_entitlement_voided(&envelope),
             _ => HandlerResult::Success,
         }
@@ -45,7 +45,7 @@ impl CapacityService {
 
     fn handle_segment_reservation_requested(&self, envelope: &WireEnvelope) -> HandlerResult {
         let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId") else {
-            return HandlerResult::Success;
+            return HandlerResult::FatalError("missing segmentBookingId".into());
         };
         let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
             return HandlerResult::FatalError("missing segmentRef".into());
@@ -53,8 +53,12 @@ impl CapacityService {
         let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
             return HandlerResult::FatalError("missing travelerRef".into());
         };
-        let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
-            .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
+        let Some(_) = string_field(&envelope.payload, "journeyOrderId") else {
+            return HandlerResult::FatalError("missing journeyOrderId".into());
+        };
+        let Some(idempotency_key) = string_field(&envelope.payload, "idempotencyKey") else {
+            return HandlerResult::FatalError("missing idempotencyKey".into());
+        };
         let request = HoldCapacityRequest {
             segment_ref,
             traveler_ref,
@@ -75,11 +79,18 @@ impl CapacityService {
     }
 
     fn handle_segment_reservation_confirmed(&self, envelope: &WireEnvelope) -> HandlerResult {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
-            return HandlerResult::Success;
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return HandlerResult::FatalError("missing segmentBookingId".into());
         };
-        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
-        match self.confirm_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
+        let Some(_) = string_field(&envelope.payload, "evidence") else {
+            return HandlerResult::FatalError("missing evidence".into());
+        };
+        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, segment_booking_ref);
+        match self.confirm_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+        ) {
             Ok(_) | Err(AppError::PreconditionFailed(_)) | Err(AppError::NotFound(_)) => {
                 HandlerResult::Success
             }
@@ -90,15 +101,71 @@ impl CapacityService {
         }
     }
 
-    fn handle_release_trigger(&self, envelope: &WireEnvelope) -> HandlerResult {
-        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
-            .or_else(|| string_field(&envelope.payload, "holdId"))
-        else {
+    fn handle_segment_booking_cancelled(&self, envelope: &WireEnvelope) -> HandlerResult {
+        let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
+            return HandlerResult::FatalError("missing segmentBookingId".into());
+        };
+        let Some(_) = string_field(&envelope.payload, "reason") else {
+            return HandlerResult::FatalError("missing reason".into());
+        };
+        let idempotency_key = format!(
+            "{}:{}:segment-booking-cancelled-release",
+            envelope.event_id, segment_booking_ref
+        );
+        match self.release_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+            "segment-booking-cancelled",
+        ) {
+            Ok(_) | Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
+                HandlerResult::Success
+            }
+            Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
+                HandlerResult::TransientError(message)
+            }
+            Err(error) => HandlerResult::FatalError(error.message().to_string()),
+        }
+    }
+
+    fn handle_segment_ticketed(&self, envelope: &WireEnvelope) -> HandlerResult {
+        for field in ["segmentBookingId", "entitlementId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return HandlerResult::FatalError(format!("missing {field}"));
+            }
+        }
+        HandlerResult::Success
+    }
+
+    fn handle_post_sales_applied(&self, envelope: &WireEnvelope) -> HandlerResult {
+        for field in ["caseId", "orderId"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return HandlerResult::FatalError(format!("missing {field}"));
+            }
+        }
+        if envelope
+            .payload
+            .get("resultSummary")
+            .is_none_or(Value::is_null)
+        {
+            return HandlerResult::FatalError("missing resultSummary".into());
+        }
+        let Some(segment_booking_ref) = post_sales_release_ref(&envelope.payload) else {
             return HandlerResult::Success;
         };
-        let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
-        match self.release_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
-            Ok(_) | Err(AppError::NotFound(_)) => HandlerResult::Success,
+        let idempotency_key = format!(
+            "{}:{}:post-sales-applied-release",
+            envelope.event_id, segment_booking_ref
+        );
+        match self.release_hold_by_segment_booking(
+            &segment_booking_ref,
+            &idempotency_key,
+            &envelope.correlation_id,
+            "post-sales-applied",
+        ) {
+            Ok(_) | Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
+                HandlerResult::Success
+            }
             Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
                 HandlerResult::TransientError(message)
             }
@@ -110,8 +177,13 @@ impl CapacityService {
         let Some(segment_booking_ref) =
             segment_booking_ref_from_entitlement_voided(&envelope.payload)
         else {
-            return HandlerResult::Success;
+            return HandlerResult::FatalError("missing segmentBookingRef".into());
         };
+        for field in ["entitlementId", "voidedAt", "reason", "policy"] {
+            if string_field(&envelope.payload, field).is_none() {
+                return HandlerResult::FatalError(format!("missing {field}"));
+            }
+        }
         let idempotency_key = format!(
             "{}:{}:entitlement-voided-release",
             envelope.event_id, segment_booking_ref
@@ -380,6 +452,33 @@ impl CapacityService {
             }
         }
         Err(AppError::NotFound("hold not found".into()))
+    }
+
+    fn confirm_hold_by_segment_booking(
+        &self,
+        segment_booking_ref: &str,
+        idempotency_key: &str,
+        correlation_id: &str,
+    ) -> Result<ConfirmHoldResponse, AppError> {
+        let hold_id = {
+            let pools = self
+                .pools
+                .lock()
+                .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
+            pools
+                .values()
+                .flat_map(|pool| pool.holds())
+                .find(|hold| {
+                    hold.scope.references.segment_booking_ref.as_deref()
+                        == Some(segment_booking_ref)
+                        && matches!(hold.state, CapacityHoldState::Held)
+                })
+                .map(|hold| hold.hold_id.to_string())
+        };
+        let Some(hold_id) = hold_id else {
+            return Err(AppError::NotFound("hold not found".into()));
+        };
+        self.confirm_hold(&hold_id, idempotency_key, correlation_id)
     }
 
     /// Release a hold.
@@ -811,6 +910,29 @@ fn segment_booking_ref_from_entitlement_voided(value: &Value) -> Option<String> 
         .get("references")
         .and_then(|references| string_field(references, "segmentBookingRef"))
         .or_else(|| string_field(value, "segmentBookingId"))
+}
+
+fn post_sales_release_ref(value: &Value) -> Option<String> {
+    value
+        .get("references")
+        .and_then(|references| {
+            string_field(references, "segmentBookingRef")
+                .or_else(|| string_field(references, "segmentBookingId"))
+                .or_else(|| string_field(references, "capacityHoldId"))
+                .or_else(|| string_field(references, "holdId"))
+        })
+        .or_else(|| {
+            value.get("scope").and_then(|scope| {
+                string_field(scope, "segmentBookingRef")
+                    .or_else(|| string_field(scope, "segmentBookingId"))
+                    .or_else(|| string_field(scope, "capacityHoldId"))
+                    .or_else(|| string_field(scope, "holdId"))
+            })
+        })
+        .or_else(|| string_field(value, "segmentBookingRef"))
+        .or_else(|| string_field(value, "segmentBookingId"))
+        .or_else(|| string_field(value, "capacityHoldId"))
+        .or_else(|| string_field(value, "holdId"))
 }
 
 fn now_millis() -> u64 {

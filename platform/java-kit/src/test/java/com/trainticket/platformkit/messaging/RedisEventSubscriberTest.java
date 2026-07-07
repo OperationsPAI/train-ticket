@@ -2,14 +2,20 @@ package com.trainticket.platformkit.messaging;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 class RedisEventSubscriberTest {
     @Test
@@ -38,10 +44,80 @@ class RedisEventSubscriberTest {
         assertThat(streams.acked).doesNotContain("1-0");
     }
 
+
+    @Test
+    void fatalHandlerResultMovesMessageToDlqWithAttributionMetadata() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        FakeRedisStreams streams = new FakeRedisStreams(List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
+        ));
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+        AtomicReference<DlqMetadata> metadata = streams.dlqMetadata;
+        Logger logger = (Logger) LoggerFactory.getLogger(RedisEventSubscriber.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> HandlerResult.FATAL_FAILURE);
+
+            for (int i = 0; i < 20 && metadata.get() == null; i++) {
+                Thread.sleep(50);
+            }
+        } finally {
+            subscriber.close();
+            logger.detachAppender(logs);
+        }
+        assertThat(metadata.get()).isNotNull();
+        assertThat(streams.acked).contains("1-0");
+        assertThat(streams.dlqStream).isEqualTo("events:payment");
+        assertThat(metadata.get().consumerGroup()).isEqualTo("journey-order");
+        assertThat(metadata.get().consumerName()).isEqualTo("consumer-1");
+        assertThat(metadata.get().failureReason()).isEqualTo("HandlerResult.FATAL_FAILURE");
+        assertThat(metadata.get().attempts()).isEqualTo(1);
+        assertThat(metadata.get().deadLetteredAt()).isNotBlank();
+        assertThat(logs.list)
+            .anySatisfy(eventLog -> {
+                assertThat(eventLog.getLoggerName()).isEqualTo(RedisEventSubscriber.class.getName());
+                assertThat(eventLog.getLevel()).isEqualTo(Level.WARN);
+                assertThat(eventLog.getFormattedMessage()).contains("events:payment", event.eventId(), "HandlerResult.FATAL_FAILURE");
+            });
+    }
+
+
+    @Test
+    void maxDeliveryAttemptsUsesLastRuntimeExceptionAsFailureReasonWithoutRedispatching() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        FakeRedisStreams streams = new FakeRedisStreams(List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
+        ));
+        streams.autoClaimEnabled = true;
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> {
+            throw new IllegalStateException("payment parse failed");
+        });
+        streams.deliveryCount = RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS;
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> {
+            throw new AssertionError("handler must not be called at max delivery attempts");
+        });
+
+        assertThat(streams.dlqMetadata.get()).isNotNull();
+        assertThat(streams.dlqMetadata.get().failureReason()).isEqualTo("IllegalStateException: payment parse failed");
+        assertThat(streams.dlqMetadata.get().attempts()).isEqualTo(RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS);
+        assertThat(streams.acked).contains("1-0");
+    }
+
     private static final class FakeRedisStreams implements RedisStreamOperations {
         private final List<StreamEntry> firstBatch;
         private final List<String> acked = new ArrayList<>();
         private boolean delivered;
+        private boolean autoClaimEnabled;
+        private int autoClaimCalls;
+        private int deliveryCount = 1;
+        private volatile String dlqStream;
+        private final AtomicReference<DlqMetadata> dlqMetadata = new AtomicReference<>();
 
         private FakeRedisStreams(List<StreamEntry> firstBatch) {
             this.firstBatch = firstBatch;
@@ -67,12 +143,16 @@ class RedisEventSubscriberTest {
 
         @Override
         public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
-            return List.of();
+            if (!autoClaimEnabled) {
+                return List.of();
+            }
+            autoClaimCalls++;
+            return autoClaimCalls <= 2 ? firstBatch : List.of();
         }
 
         @Override
         public int deliveryCount(String stream, String group, String messageId) {
-            return 1;
+            return deliveryCount;
         }
 
         @Override
@@ -81,7 +161,9 @@ class RedisEventSubscriberTest {
         }
 
         @Override
-        public void moveToDlq(String stream, String envelopeJson) {
+        public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {
+            this.dlqStream = stream;
+            this.dlqMetadata.set(metadata);
         }
     }
 }
