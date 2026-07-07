@@ -1,5 +1,7 @@
 package com.trainticket.payment.infrastructure.persistence;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -175,10 +177,21 @@ final class JacksonPaymentJson {
         return value;
     }
 
-    record PaymentIntentSnapshot(ObjectNode data) {
+    // @JsonValue/@JsonCreator keep the column payload as the aggregate JSON
+    // itself; a bare record would wrap it as {"data": {...}} and break every
+    // raw JSONB query (e.g. the businessRef refund lookup).
+    record PaymentIntentSnapshot(@JsonValue ObjectNode data) {
+        @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+        static PaymentIntentSnapshot of(ObjectNode data) {
+            return new PaymentIntentSnapshot(data);
+        }
     }
 
-    record RefundSnapshot(ObjectNode data) {
+    record RefundSnapshot(@JsonValue ObjectNode data) {
+        @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+        static RefundSnapshot of(ObjectNode data) {
+            return new RefundSnapshot(data);
+        }
     }
 
     private static PaymentEvent toPaymentEvent(EventEnvelope envelope, com.fasterxml.jackson.databind.JsonNode payload) {
