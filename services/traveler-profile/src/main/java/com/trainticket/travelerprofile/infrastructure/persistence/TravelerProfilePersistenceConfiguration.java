@@ -60,6 +60,18 @@ public class TravelerProfilePersistenceConfiguration {
         return new DbIdempotencyStore(dataSource, objectMapper);
     }
 
+    @Bean
+    @Primary
+    PostgresTravelerProfileStore postgresTravelerProfileStore(DataSource dataSource, ObjectMapper objectMapper) {
+        return new PostgresTravelerProfileStore(dataSource, objectMapper);
+    }
+
+    @Bean
+    @Primary
+    PostgresConsumedEventLog postgresConsumedEventLog(DataSource dataSource) {
+        return new PostgresConsumedEventLog(dataSource);
+    }
+
     @Bean(destroyMethod = "close")
     LazyRedisOutboxRelayLifecycle outboxRelayLifecycle(
         DataSource dataSource,

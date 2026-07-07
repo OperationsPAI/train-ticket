@@ -6,13 +6,11 @@ import com.trainticket.travelerprofile.application.TravelerState;
 import com.trainticket.travelerprofile.application.TravelerProfileStore;
 import java.util.Optional;
 import javax.sql.DataSource;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.context.annotation.Primary;
-import org.springframework.stereotype.Repository;
 
-@Repository
-@Primary
-@ConditionalOnBean(DataSource.class)
+// Registered as an explicit @Bean in TravelerProfilePersistenceConfiguration:
+// @ConditionalOnBean on a scanned component is evaluated in scan order, so it
+// can miss a DataSource whose defining configuration class scans later and
+// silently fall back to the in-memory store.
 public class PostgresTravelerProfileStore implements TravelerProfileStore {
     private final ObjectMapper objectMapper;
     private final SnapshotRepository<TravelerJson.TravelerSnapshot> snapshots;

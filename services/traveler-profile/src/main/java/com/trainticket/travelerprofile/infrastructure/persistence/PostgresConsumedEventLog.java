@@ -3,13 +3,9 @@ package com.trainticket.travelerprofile.infrastructure.persistence;
 import com.trainticket.platformkit.persistence.ProcessedEventStore;
 import com.trainticket.travelerprofile.application.ConsumedEventLog;
 import javax.sql.DataSource;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.context.annotation.Primary;
-import org.springframework.stereotype.Component;
 
-@Component
-@Primary
-@ConditionalOnBean(DataSource.class)
+// Registered as an explicit @Bean in TravelerProfilePersistenceConfiguration
+// for the same scan-order reason as PostgresTravelerProfileStore.
 public class PostgresConsumedEventLog extends ConsumedEventLog {
     private final ProcessedEventStore store;
 
