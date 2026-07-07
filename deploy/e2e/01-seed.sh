@@ -55,5 +55,8 @@ N_SH=$N_SH
 SS=$SS
 SEG=$SEG
 EOF
-cp /tmp/e2e-refs.env "$(dirname "$0")/.refs.env" 2>/dev/null || true
+# script already cd'd to its own dir at the top; a second dirname "$0"
+# here resolves wrong when invoked from the repo root and the copy was
+# silently skipped, breaking every later script's `. ./.refs.env`.
+cp /tmp/e2e-refs.env ./.refs.env
 summary
