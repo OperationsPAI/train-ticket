@@ -21,6 +21,7 @@ public final class TravelerProfile {
     private String primaryDocumentId;
     private final Map<String, EligibilitySummary> eligibilitySummaries;
     private PreferenceSnapshot preferences;
+    private long version;
     private final List<TravelerProfileEvent> domainEvents;
 
     private TravelerProfile(
@@ -62,6 +63,39 @@ public final class TravelerProfile {
         return profile;
     }
 
+
+    public static TravelerProfile rehydrate(
+        String profileId,
+        String travelerRef,
+        String accountId,
+        String displayName,
+        String birthDate,
+        TravelerProfileStatus status,
+        String statusReason,
+        List<Document> documents,
+        String primaryDocumentId,
+        List<EligibilitySummary> eligibilitySummaries,
+        PreferenceSnapshot preferences,
+        List<TravelerProfileEvent> domainEvents
+    ) {
+        TravelerProfile profile = new TravelerProfile(profileId, travelerRef, accountId, displayName, birthDate);
+        profile.status = Objects.requireNonNull(status, "status is required");
+        profile.statusReason = statusReason;
+        profile.documents.clear();
+        for (Document document : Objects.requireNonNull(documents, "documents are required")) {
+            profile.documents.put(document.documentId(), document);
+        }
+        profile.primaryDocumentId = primaryDocumentId;
+        profile.eligibilitySummaries.clear();
+        for (EligibilitySummary summary : Objects.requireNonNull(eligibilitySummaries, "eligibilitySummaries are required")) {
+            profile.eligibilitySummaries.put(summary.eligibilityId(), summary);
+        }
+        profile.preferences = Objects.requireNonNull(preferences, "preferences are required");
+        profile.domainEvents.clear();
+        profile.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return profile;
+    }
+
     // --- Accessors ---
     public String profileId() { return profileId; }
     public String travelerRef() { return travelerRef; }
@@ -74,6 +108,14 @@ public final class TravelerProfile {
     public Document primaryDocument() { return primaryDocumentId != null ? documents.get(primaryDocumentId) : null; }
     public List<EligibilitySummary> eligibilitySummaries() { return List.copyOf(eligibilitySummaries.values()); }
     public PreferenceSnapshot preferences() { return preferences; }
+    public long version() { return version; }
+    public TravelerProfile withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
     public List<TravelerProfileEvent> domainEvents() { return List.copyOf(domainEvents); }
 
     // --- Lifecycle commands ---
@@ -143,7 +185,7 @@ public final class TravelerProfile {
     ) {
         requireNotDeactivated();
         String documentId = com.trainticket.platformkit.idempotency.UuidV7.generate();
-        String docHash = Integer.toHexString(Objects.hash(documentNumber));
+        String docHash = Document.hash(documentNumber);
         for (Document existing : documents.values()) {
             if (existing.documentType() == documentType && existing.documentNumberHash().equals(docHash)) {
                 throw new DomainRuleViolation("duplicate document type " + documentType + " for this profile");

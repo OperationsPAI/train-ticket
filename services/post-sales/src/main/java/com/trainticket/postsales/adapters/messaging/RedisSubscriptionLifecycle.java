@@ -3,8 +3,6 @@ package com.trainticket.postsales.adapters.messaging;
 import com.trainticket.postsales.application.PostSalesEventHandler;
 import jakarta.annotation.PostConstruct;
 import java.util.List;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
 
 public class RedisSubscriptionLifecycle {
     private final com.trainticket.postsales.application.EventSubscriber subscriber;

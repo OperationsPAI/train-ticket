@@ -9,12 +9,12 @@ public class InMemoryConsumedEventLog implements ConsumedEventLog {
     private final Set<String> processed = ConcurrentHashMap.newKeySet();
 
     @Override
-    public boolean alreadyProcessed(String eventId) {
-        return processed.contains(eventId);
+    public boolean recordIfNew(String eventId) {
+        return processed.add(eventId);
     }
 
     @Override
-    public void recordProcessed(String eventId) {
-        processed.add(eventId);
+    public void discard(String eventId) {
+        processed.remove(eventId);
     }
 }

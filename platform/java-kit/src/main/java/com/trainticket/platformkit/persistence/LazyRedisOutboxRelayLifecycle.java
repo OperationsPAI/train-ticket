@@ -1,126 +1,112 @@
 package com.trainticket.platformkit.persistence;
 
 import com.trainticket.platformkit.messaging.LettuceRedisStreamOperations;
-import com.trainticket.platformkit.messaging.RedisStreamOperations;
-import com.trainticket.platformkit.messaging.DlqMetadata;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
-import java.util.List;
+import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.sql.DataSource;
-import org.springframework.context.SmartLifecycle;
 
-public class LazyRedisOutboxRelayLifecycle implements SmartLifecycle, AutoCloseable {
+/**
+ * Starts the outbox relay without opening Redis during Spring bean construction.
+ * The first scheduled poll creates the Redis connection; failures are retried
+ * on later polls and exposed through {@link #isReady()} instead of aborting
+ * service startup.
+ */
+public final class LazyRedisOutboxRelayLifecycle implements AutoCloseable {
+    private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(250);
+    private static final String DEFAULT_REDIS_URL = "redis://localhost:6379";
+
     private final DataSource dataSource;
     private final String redisUrl;
-    private final RedisClient client;
-    private StatefulRedisConnection<String, String> connection;
-    private OutboxRelay relay;
-    private volatile boolean dependencyReady = true;
-    private volatile boolean running;
+    private final ScheduledExecutorService executor;
+    private final AtomicBoolean started = new AtomicBoolean();
+
+    private volatile RedisClient client;
+    private volatile StatefulRedisConnection<String, String> connection;
+    private volatile OutboxRelay relay;
+    private volatile boolean redisReady;
+    private volatile long nextConnectionAttemptNanos;
+    private volatile Duration reconnectBackoff = Duration.ofSeconds(1);
 
     public LazyRedisOutboxRelayLifecycle(DataSource dataSource, String redisUrl) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource is required");
-        this.redisUrl = redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl;
-        this.client = RedisClient.create(this.redisUrl);
+        this.redisUrl = redisUrl == null || redisUrl.isBlank() ? DEFAULT_REDIS_URL : redisUrl;
+        this.executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "outbox-relay-lifecycle");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
-    @Override
-    public synchronized void start() {
-        if (running) {
-            return;
-        }
-        relay = new OutboxRelay(dataSource, new LazyRedisStreamOperations());
-        relay.start();
-        running = true;
-    }
-
-    private synchronized LettuceRedisStreamOperations operations() {
-        try {
-            if (connection == null || !connection.isOpen()) {
-                connection = client.connect();
-            }
-            dependencyReady = true;
-            return new LettuceRedisStreamOperations(connection);
-        } catch (RuntimeException exception) {
-            dependencyReady = false;
-            throw exception;
+    public void start() {
+        if (started.compareAndSet(false, true)) {
+            executor.scheduleWithFixedDelay(this::pollOrRetry, 0, DEFAULT_POLL_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
         }
     }
 
     public boolean isReady() {
-        return dependencyReady && (relay == null || relay.isDependencyReady());
+        return redisReady;
     }
 
-    @Override
-    public boolean isRunning() {
-        return running;
-    }
-
-    @Override
-    public boolean isAutoStartup() {
-        return true;
-    }
-
-    @Override
-    public int getPhase() {
-        return Integer.MAX_VALUE;
-    }
-
-    @Override
-    public synchronized void stop() {
-        close();
-    }
-
-    @Override
-    public synchronized void close() {
-        running = false;
-        if (relay != null) {
-            relay.close();
+    private void pollOrRetry() {
+        if (relay == null && System.nanoTime() < nextConnectionAttemptNanos) {
+            return;
         }
-        if (connection != null) {
-            connection.close();
+        try {
+            ensureRelay().pollOnce();
+            redisReady = true;
+            reconnectBackoff = Duration.ofSeconds(1);
+        } catch (RuntimeException exception) {
+            redisReady = false;
+            closeRedisResources();
+            nextConnectionAttemptNanos = System.nanoTime() + reconnectBackoff.toNanos();
+            reconnectBackoff = reconnectBackoff.multipliedBy(2).compareTo(Duration.ofSeconds(5)) > 0
+                ? Duration.ofSeconds(5)
+                : reconnectBackoff.multipliedBy(2);
         }
-        client.shutdown();
+    }
+
+    private OutboxRelay ensureRelay() {
+        OutboxRelay current = relay;
+        if (current != null) {
+            return current;
+        }
+        RedisClient newClient = RedisClient.create(redisUrl);
+        StatefulRedisConnection<String, String> newConnection = newClient.connect();
+        OutboxRelay newRelay = new OutboxRelay(dataSource, new LettuceRedisStreamOperations(newConnection));
+        client = newClient;
+        connection = newConnection;
+        relay = newRelay;
+        return newRelay;
+    }
+
+    private void closeRedisResources() {
+        OutboxRelay currentRelay = relay;
+        StatefulRedisConnection<String, String> currentConnection = connection;
+        RedisClient currentClient = client;
         relay = null;
         connection = null;
-        dependencyReady = true;
+        client = null;
+        if (currentRelay != null) {
+            currentRelay.close();
+        }
+        if (currentConnection != null) {
+            currentConnection.close();
+        }
+        if (currentClient != null) {
+            currentClient.shutdown();
+        }
     }
 
-    private final class LazyRedisStreamOperations implements RedisStreamOperations {
-        @Override
-        public void createGroup(String stream, String group) {
-            operations().createGroup(stream, group);
-        }
-
-        @Override
-        public String publish(String stream, String envelopeJson) {
-            return operations().publish(stream, envelopeJson);
-        }
-
-        @Override
-        public List<RedisStreamOperations.StreamEntry> readGroup(String stream, String group, String consumerName) {
-            return operations().readGroup(stream, group, consumerName);
-        }
-
-        @Override
-        public List<RedisStreamOperations.StreamEntry> autoClaim(String stream, String group, String consumerName) {
-            return operations().autoClaim(stream, group, consumerName);
-        }
-
-        @Override
-        public int deliveryCount(String stream, String group, String messageId) {
-            return operations().deliveryCount(stream, group, messageId);
-        }
-
-        @Override
-        public void ack(String stream, String group, String messageId) {
-            operations().ack(stream, group, messageId);
-        }
-
-        @Override
-        public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {
-            operations().moveToDlq(stream, envelopeJson, metadata);
-        }
+    @Override
+    public void close() {
+        started.set(false);
+        executor.shutdownNow();
+        closeRedisResources();
     }
 }
