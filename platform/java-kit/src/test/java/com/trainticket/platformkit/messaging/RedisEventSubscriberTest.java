@@ -2,6 +2,10 @@ package com.trainticket.platformkit.messaging;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.ArrayList;
@@ -11,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 class RedisEventSubscriberTest {
     @Test
@@ -49,13 +54,20 @@ class RedisEventSubscriberTest {
         ));
         RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
         AtomicReference<DlqMetadata> metadata = streams.dlqMetadata;
+        Logger logger = (Logger) LoggerFactory.getLogger(RedisEventSubscriber.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> HandlerResult.FATAL_FAILURE);
 
-        subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> HandlerResult.FATAL_FAILURE);
-
-        for (int i = 0; i < 20 && metadata.get() == null; i++) {
-            Thread.sleep(50);
+            for (int i = 0; i < 20 && metadata.get() == null; i++) {
+                Thread.sleep(50);
+            }
+        } finally {
+            subscriber.close();
+            logger.detachAppender(logs);
         }
-        subscriber.close();
         assertThat(metadata.get()).isNotNull();
         assertThat(streams.acked).contains("1-0");
         assertThat(streams.dlqStream).isEqualTo("events:payment");
@@ -64,6 +76,12 @@ class RedisEventSubscriberTest {
         assertThat(metadata.get().failureReason()).isEqualTo("HandlerResult.FATAL_FAILURE");
         assertThat(metadata.get().attempts()).isEqualTo(1);
         assertThat(metadata.get().deadLetteredAt()).isNotBlank();
+        assertThat(logs.list)
+            .anySatisfy(eventLog -> {
+                assertThat(eventLog.getLoggerName()).isEqualTo(RedisEventSubscriber.class.getName());
+                assertThat(eventLog.getLevel()).isEqualTo(Level.WARN);
+                assertThat(eventLog.getFormattedMessage()).contains("events:payment", event.eventId(), "HandlerResult.FATAL_FAILURE");
+            });
     }
 
 

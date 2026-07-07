@@ -28,9 +28,9 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final AtomicBoolean running = new AtomicBoolean();
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
-    private final Map<String, RuntimeException> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
+    private final Map<FailureKey, RuntimeException> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<String, RuntimeException> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<FailureKey, RuntimeException> eldest) {
             return size() > LAST_FAILURE_CACHE_SIZE;
         }
     };
@@ -134,7 +134,7 @@ public class RedisEventSubscriber implements EventSubscriber {
             return;
         }
         if (deliveryAttempts >= MAX_DELIVERY_ATTEMPTS) {
-            RuntimeException lastException = removeLastFailure(message.id());
+            RuntimeException lastException = removeLastFailure(stream, message.id());
             if (lastException != null) {
                 moveToDlq(stream, group, consumerName, message.id(), json, lastException, deliveryAttempts);
             } else {
@@ -151,31 +151,33 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             result = handler.handle(envelope);
         } catch (RuntimeException exception) {
-            rememberLastFailure(message.id(), exception);
+            rememberLastFailure(stream, message.id(), exception);
             return;
         }
         if (result == HandlerResult.SUCCESS) {
             consumedEvents.recordConsumed(group, envelope.eventId());
             streams.ack(stream, group, message.id());
-            removeLastFailure(message.id());
+            removeLastFailure(stream, message.id());
         } else if (result == HandlerResult.FATAL_FAILURE) {
-            removeLastFailure(message.id());
+            removeLastFailure(stream, message.id());
             moveToDlq(stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", deliveryAttempts);
             streams.ack(stream, group, message.id());
         }
     }
 
-    private void rememberLastFailure(String messageId, RuntimeException exception) {
+    private void rememberLastFailure(String stream, String messageId, RuntimeException exception) {
         synchronized (lastFailures) {
-            lastFailures.put(messageId, exception);
+            lastFailures.put(new FailureKey(stream, messageId), exception);
         }
     }
 
-    private RuntimeException removeLastFailure(String messageId) {
+    private RuntimeException removeLastFailure(String stream, String messageId) {
         synchronized (lastFailures) {
-            return lastFailures.remove(messageId);
+            return lastFailures.remove(new FailureKey(stream, messageId));
         }
     }
+
+    private record FailureKey(String stream, String messageId) {}
 
     private void moveToDlq(String stream, String group, String consumerName, String messageId, String envelopeJson, Throwable reason, int attempts) {
         String reasonText = reason.getClass().getSimpleName() + ": " + Objects.toString(reason.getMessage(), "");
