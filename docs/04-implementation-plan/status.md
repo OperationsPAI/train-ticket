@@ -1,40 +1,46 @@
-# Superseded Historical Implementation Status
+# Implementation Plan Status
 
-> **Superseded:** This file records an earlier AgentM loop and an old WP-oriented
-> interpretation. The project is now being prepared for a full rewrite /
-> greenfield rebuild. Do not treat `WP-01`, the `WP-xx` sequence, or the blocker
-> list below as the current execution plan. Start from
-> `docs/00-current-status.md` and regenerate any implementation plan from the
-> current DDD baseline and rewrite priorities.
+Last updated: 2026-07-07. Authoritative snapshot: `docs/00-current-status.md`.
 
-## Accepted Work
-- Accepted DDD baseline remains the implementation target under `docs/03-ddd-final`.
-- Repository status accepted: current source is legacy train-ticket microservice code with no verified DDD work package completion and no `src/test` coverage for required invariants.
-- Phase 1 priority accepted: start with WP-01, WP-02, WP-03, and WP-05.
+## Phase 1 — DONE (certified 2026-07-07)
 
-## Rejected Work
-- WP-01 brief rejected after 2 attempts.
-  - Provider Integration coverage is ambiguous: listed provider/channel facts are external facts and must be mapped before becoming core events.
-  - `ts-common` contract example payloads risk becoming shared domain-event payload ownership.
-  - Future-scope domains were included as implementation inputs despite Phase 1-only acceptance.
-  - EventMetadata UUID representation and validation boundary are underspecified.
-- Completion claim rejected for WP-01..WP-23: no assessed work package is complete in current source.
+WP-01..WP-23 delivered via AgentM WorkGraph (REQ-003..REQ-071, all merged
+to `refactor/greenfield-ddd`). Certification: 11 e2e scripts / 159
+asserts green on the live kind cluster, 24/24 pods healthy. Six
+future-scope domains excluded by roadmap ruling: waitlist,
+wallet-promotion, dispatch, ancillary, transfer, disruption-recovery.
 
-## Blockers
-- No approved WP-01 implementation brief exists.
-- Provider Integration coverage decision is required: exclude it from the producer matrix and cover through ACL mapping examples, or add a Provider Integration-owned normalized/archived fact that is not consumed as Payment or Booking state until mapped.
-- WP-01 must constrain shared-kernel payload examples to test-only non-normative stubs.
-- WP-01 must limit acceptance evidence to final Phase 1 domains and keep future-scope domains out of implementation inputs.
-- WP-01 must specify UUID storage/validation and JSON behavior for EventMetadata.
-- Current source still has direct legacy writes that violate baseline redlines: order payment/cancel/delete/rebook/admin updates and order-derived seat allocation.
+## Phase 2 — engineering hardening (IN PROGRESS)
 
-## Next Executable Steps
-1. Revise WP-01 brief only; do not implement yet.
-2. Define the exact Phase 1 envelope coverage matrix and Provider Integration handling.
-3. State that contract example payloads are test-only local stubs; real payloads stay in producer bounded contexts.
-4. Remove future-scope domains from WP-01 acceptance evidence or mark them non-acceptance references only.
-5. Choose EventMetadata UUID representation and validation boundary; require lowercase RFC-4122 JSON output and deserialization/rehydration validation.
-6. After WP-01 brief approval, implement the smallest shared-kernel slice with immutable value/reference objects, `DomainEventEnvelope`/`EventMetadata`, and unit tests.
-7. Prepare WP-02 brief for Place & Network.
-8. Prepare WP-03 brief for Service Plan after WP-02 dependency is explicit.
-9. Prepare WP-05 brief for Capacity & Availability after shared refs are available.
+Architecture ruling: `docs/08-contracts/persistence.md`.
+
+### Wave 10 — persistence foundation
+| Task | Scope |
+|---|---|
+| REQ-072 | PostgreSQL deployment (PVC, per-service DBs, secrets), DATABASE_URL wiring for all services, redis AOF |
+| REQ-073 | java-kit `persistence` module + pilot migration: payment |
+| REQ-074 | python-kit `storage.py` + pilot migration: fare-pricing (also retires the rollback+503 ruling section) |
+| REQ-075 | ts-kit `storage.ts` + pilot migration: notification |
+| REQ-076 | go-kit `storage/` + pilot migration: place-network |
+| REQ-077 | rust-kit `storage.rs` + pilot migration: capacity-availability |
+
+REQ-073..077 depend on REQ-072. Live gate per pilot: full e2e regression
+plus a restart-survival check (`kubectl delete pod` mid-flow, state
+intact afterwards).
+
+### Wave 11 — persistence rollout
+Remaining stateful services migrate in per-language batches using the
+proven kit modules (17 services; legacy-acl is stateless and exempt).
+A new `deploy/e2e/12-restart.sh` certifies cross-service restart
+survival once the rollout completes.
+
+### Wave 12 — channels & tidy
+- Notification: SMTP adapter + in-cluster mailpit; channel selection per
+  contract (IN_APP remains default).
+- Repo tidy: future-scope skeleton READMEs, docs sweep, dead-code pass.
+
+## Historical planning material
+
+Earlier revisions of this file tracked the pre-implementation WP-01
+brief cycle (rejections/blockers). That content is obsolete — the merged
+PR trail on `refactor/greenfield-ddd` is the historical record.

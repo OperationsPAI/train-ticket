@@ -1,100 +1,73 @@
 # Current Project Status
 
-Last updated: 2026-07-05
+Last updated: 2026-07-07
 
-## Status
+## Status: Phase 1 functionally complete; Phase 2 (engineering hardening) in progress
 
-This repository is being prepared for a full rewrite / greenfield rebuild of the
-Train Ticket system.
+The greenfield DDD rewrite has delivered a working, end-to-end-verified
+system. All Phase-1 work packages (WP-01..WP-23 of the accepted roadmap)
+are implemented, merged to `refactor/greenfield-ddd`, and certified on the
+live kind cluster.
 
-The current tree is a greenfield skeleton: DDD reference documents, a service
-catalog, per-bounded-context service skeletons, and a devcontainer. It is not a
-partially completed implementation of the old Train Ticket services.
+## What runs today
 
-## Authoritative Current Framing
+23 deployed business services + redis (event bus), all under
+`deploy/k8s/`, images built by `deploy/build-images.sh`:
 
-- Build new code from the accepted DDD design and current rewrite decisions.
-- Treat the old `WP-01` / `WP-xx` work-package plan as legacy planning material.
-  It must not be used as the current execution backlog unless it is explicitly
-  regenerated and re-approved for the rewrite.
-- Treat `project-index.yaml` entries `REQ-101` through `REQ-123` as legacy
-  references, not active implementation requirements.
-- Treat `REQ-003` as the first regenerated active slice: a minimal Shared
-  Kernel contract baseline in `platform/shared-kernel-rust`.
-- Treat `REQ-004` as the regenerated Place & Network slice: validated
-  master-data primitives in `services/place-network`.
-- Treat `REQ-005` as the regenerated Service Plan slice: a tested Go domain
-  foundation in `services/service-plan` covering ServicePlan, ServicePattern,
-  ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, and
-  PlanVersion invariants.
-- Treat `REQ-006` as the regenerated Capacity & Availability slice: a tested
-  Rust domain foundation in `services/capacity-availability` covering
-  InventoryPool identity, StationInterval overlap, CapacityHold lifecycle and
-  conflict rules, and non-locking AvailabilitySnapshot calculation.
-- Treat `REQ-007` as a regenerated active slice: the first tested Fare & Pricing
-  domain foundation in `services/fare-pricing`, covering rule-set publication,
-  quote calculation, immutable rule snapshots, and basic refund/change fee
-  assessment.
-- Treat `REQ-008` as the regenerated Trip Planning search foundation in
-  `services/trip-planning`, covering validated trip intent, deterministic
-  itinerary candidate ranking, and non-authoritative price/availability hints.
-- Treat `REQ-009` as the regenerated Offer Management domain foundation in
-  `services/offer-management`, covering immutable offer snapshots, TTL/lifecycle
-  behavior, passenger mix, risk disclosures, and non-mutation boundary proof.
-- Treat `REQ-010` as the regenerated Journey Order domain foundation in
-  `services/journey-order`, covering the JourneyOrder aggregate lifecycle, order
-  creation from valid Offer, OrderItems with TravelerRefs and SegmentOrderSnapshots,
-  MonetarySummary invariants, ConfirmationConditions guards, and the order state
-  machine (Created, PendingPayment, Confirmed, with Cancelled as terminal).
-- Treat `REQ-016` as the current OpenTelemetry collection baseline: a local
-  OTLP collector configuration and service-side telemetry environment contract.
-- Treat `REQ-011` through `REQ-015` as status-reconciliation-needed where local
-  service metadata or code references those IDs. They must not be promoted to
-  authoritative active slices until this status file is updated with their
-  accepted scope.
-- Treat legacy `WP-01` / `WP-xx` identifiers in service runtime profiles as
-  traceability-only metadata. Runtime health/profile payloads that still expose
-  them do not make those WP IDs an active backlog or completion signal.
-- Treat `docs/04-implementation-plan/status.md` as a superseded historical
-  AgentM loop record, not as the current blocker list.
-- Legacy service behavior may be consulted only as reference material or through
-  a future Legacy ACL / strangler strategy; it must not be copied forward as the
-  implementation source of truth.
+| Language | Services |
+|---|---|
+| Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, journey-order, payment, post-sales, traveler-profile |
+| Python (FastAPI) | fare-pricing, legacy-acl, reporting, risk-compliance, trip-planning |
+| Node (TS) | account, customer-service, notification, offer-management |
+| Go | fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
+| Rust | capacity-availability, entitlement-ticketing |
 
-## Current Source Of Truth
+`services/` also contains six future-scope skeletons that are NOT
+deployed and NOT part of Phase 1: ancillary-service, dispatch,
+disruption-recovery, transfer-management, waitlist, wallet-promotion.
+Treat them as placeholders until a roadmap decision activates them.
 
-Use these documents to understand the intended domain model and skeleton layout:
+## Verification baseline
 
-1. `docs/03-ddd-final/` — accepted DDD baseline and decision records.
-2. `docs/02-domains/` — bounded-context details.
-3. `docs/05-service-architecture/` — service skeleton and language assignment.
-4. `service-catalog.json` — machine-readable service/domain/language map.
-5. `docs/07-observability/` — OpenTelemetry collection and runtime telemetry
-   contract.
-6. This file — current project-status framing for the rewrite.
+`deploy/e2e/01..11` — 11 self-contained, rerunnable scripts, 159
+asserts, all green at certification (2026-07-07):
 
-When a new implementation plan is needed, create it from the current DDD baseline
-and the actual rewrite priorities instead of resuming the legacy WP sequence.
+seed(6) purchase(15) refund(15) change(8) fulfillment(11) risk(7)
+fare-rules(29) notify-support(9) manual-action(7) account-gate(19)
+legacy-acl(33).
 
-## Development Environment
+The legacy-acl script walks a complete order lifecycle exclusively
+through the strangler facade's legacy-shaped endpoints.
 
-The standard development environment is the configured devcontainer. It contains
-the Java, Go, Python, Rust, TypeScript, and operational tools needed for full
-skeleton validation.
+## Governance
 
-Use host checks only as a quick adaptive smoke test:
+- Cross-service contracts live in `docs/08-contracts/` (api/, events/,
+  messaging.md, shared-primitives.md, persistence.md). Rulings in those
+  files are binding; PRs are reviewed field-by-field against them.
+- Established invariants: deterministic event ids derived from consumed
+  eventId/sourceRef; consumer-side eventId dedup; HTTP Idempotency-Key
+  on every mutating endpoint; camelCase payload fields,
+  SCREAMING_SNAKE enums, RFC3339 UTC timestamps.
 
-```bash
-make check
-```
+## Phase 2 — engineering hardening (current backlog)
 
-Use the devcontainer or CI for authoritative validation:
+Ruling: `docs/08-contracts/persistence.md`. In flight:
 
-```bash
-.devcontainer/scripts/check.sh
-make check-strict
-```
+1. PostgreSQL persistence (aggregate snapshots + optimistic concurrency)
+   replacing all in-memory state, service by service.
+2. Transactional outbox + durable consumer dedup (replaces the
+   rollback+503 publish pattern).
+3. Redis AOF for bus durability.
+4. Notification real channel adapters (SMTP via in-cluster mailpit).
+5. Repo tidy: stale docs refreshed, future-scope skeletons marked.
 
-`make check` may skip language checks when host tools are missing. `make
-check-strict` must not skip required toolchains and is the validation gate for
-container/CI work.
+Known accepted gaps after Phase 2: payment remains a simulated provider
+boundary; legacy-acl rebook books the first leg only (caller follows up)
+— both by explicit ruling.
+
+## Historical note
+
+Earlier revisions of this file (and `docs/04-implementation-plan/status.md`)
+described the repo as a skeleton with WP-01 "rejected" briefs. That
+reflected the pre-implementation planning phase and is obsolete; the
+authoritative history is the merged PR trail on `refactor/greenfield-ddd`.
