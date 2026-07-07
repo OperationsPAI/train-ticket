@@ -32,7 +32,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	migrations, err := storage.LoadMigrations(os.DirFS("."), "migrations")
+	migrationsDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationsDir == "" {
+		migrationsDir = "/app/migrations"
+	}
+	migrations, err := storage.LoadMigrations(os.DirFS(migrationsDir), ".")
 	if err != nil {
 		log.Fatal(err)
 	}

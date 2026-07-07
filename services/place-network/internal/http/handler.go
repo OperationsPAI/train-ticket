@@ -59,7 +59,7 @@ func (h *Handler) CreatePlace(ctx *gin.Context) {
 }
 
 func (h *Handler) GetPlace(ctx *gin.Context) {
-	resp, err := h.svc.GetPlace(domain.PlaceID(ctx.Param("placeId")))
+	resp, err := h.svc.GetPlaceContext(ctx.Request.Context(), domain.PlaceID(ctx.Param("placeId")))
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return
@@ -78,7 +78,7 @@ func (h *Handler) ListPlaces(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "offset must be an integer", nil)
 		return
 	}
-	resp, err := h.svc.ListPlaces(application.ListPlacesRequest{Limit: limit, Offset: offset, Status: ctx.Query("status")})
+	resp, err := h.svc.ListPlacesContext(ctx.Request.Context(), application.ListPlacesRequest{Limit: limit, Offset: offset, Status: ctx.Query("status")})
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return
@@ -105,7 +105,7 @@ func (h *Handler) CreateTransportNode(ctx *gin.Context) {
 }
 
 func (h *Handler) GetTransportNode(ctx *gin.Context) {
-	resp, err := h.svc.GetTransportNode(domain.TransportNodeID(ctx.Param("nodeId")))
+	resp, err := h.svc.GetTransportNodeContext(ctx.Request.Context(), domain.TransportNodeID(ctx.Param("nodeId")))
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return

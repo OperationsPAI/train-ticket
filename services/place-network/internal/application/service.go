@@ -8,7 +8,7 @@ import (
 	"github.com/trainticket/greenfield/services/place-network/internal/domain/ports"
 )
 
-type UnitOfWork func(context.Context, func() error) error
+type UnitOfWork func(context.Context, func(context.Context) error) error
 
 type ServiceConfig struct {
 	Places     ports.PlaceRepository
@@ -37,7 +37,7 @@ func NewService(cfg ServiceConfig) *Service {
 	}
 	unitOfWork := cfg.UnitOfWork
 	if unitOfWork == nil {
-		unitOfWork = func(_ context.Context, fn func() error) error { return fn() }
+		unitOfWork = func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 	}
 	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock, unitOfWork: unitOfWork}
 }
@@ -75,8 +75,8 @@ func (s *Service) CreatePlaceContext(ctx context.Context, req CreatePlaceRequest
 	}
 	place.SetOptionalReferenceData(req.Code, req.Timezone)
 	place.MarkCreatedAt(now)
-	if err := s.unitOfWork(ctx, func() error {
-		if err := s.places.Save(place); err != nil {
+	if err := s.unitOfWork(ctx, func(txCtx context.Context) error {
+		if err := s.places.Save(txCtx, place); err != nil {
 			return NewDomainError("CONFLICT", err.Error())
 		}
 		event := domain.PlaceUpdatedEvent{
@@ -88,7 +88,7 @@ func (s *Service) CreatePlaceContext(ctx context.Context, req CreatePlaceRequest
 			Status:        place.Status,
 			UpdatedAt:     domain.FormatTimestamp(now),
 		}
-		if err := s.publisher.Publish(domain.NewEventEnvelope("PlaceRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
+		if err := s.publisher.Publish(txCtx, domain.NewEventEnvelope("PlaceRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
 		}
 		return nil
@@ -124,11 +124,15 @@ type GetPlaceResponse struct {
 }
 
 func (s *Service) GetPlace(id domain.PlaceID) (*GetPlaceResponse, error) {
-	place, err := s.places.FindByID(id)
+	return s.GetPlaceContext(context.Background(), id)
+}
+
+func (s *Service) GetPlaceContext(ctx context.Context, id domain.PlaceID) (*GetPlaceResponse, error) {
+	place, err := s.places.FindByID(ctx, id)
 	if err != nil || place == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
 	}
-	nodes, err := s.nodes.FindByPlaceID(id)
+	nodes, err := s.nodes.FindByPlaceID(ctx, id)
 	if err != nil {
 		return nil, NewDomainError("UNAVAILABLE", "failed to load transport nodes")
 	}
@@ -166,16 +170,10 @@ type ListPlacesResponse struct {
 }
 
 func (s *Service) ListPlaces(req ListPlacesRequest) (*ListPlacesResponse, error) {
-	places, err := s.places.FindAll()
-	if err != nil {
-		return nil, NewDomainError("UNAVAILABLE", "failed to list places")
-	}
-	filtered := make([]domain.Place, 0, len(places))
-	for _, place := range places {
-		if req.Status == "" || string(place.Status) == req.Status {
-			filtered = append(filtered, place)
-		}
-	}
+	return s.ListPlacesContext(context.Background(), req)
+}
+
+func (s *Service) ListPlacesContext(ctx context.Context, req ListPlacesRequest) (*ListPlacesResponse, error) {
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
@@ -188,18 +186,15 @@ func (s *Service) ListPlaces(req ListPlacesRequest) (*ListPlacesResponse, error)
 		offset = 0
 	}
 	responseOffset := offset
-	end := offset + limit
-	if offset > len(filtered) {
-		offset = len(filtered)
+	page, err := s.places.FindPage(ctx, ports.PlaceListFilter{Limit: limit, Offset: offset, Status: req.Status})
+	if err != nil {
+		return nil, NewDomainError("UNAVAILABLE", "failed to list places")
 	}
-	if end > len(filtered) {
-		end = len(filtered)
-	}
-	items := make([]PlaceSummary, 0, end-offset)
-	for _, place := range filtered[offset:end] {
+	items := make([]PlaceSummary, 0, len(page.Items))
+	for _, place := range page.Items {
 		items = append(items, PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Code: place.Code, Timezone: place.Timezone, Status: string(place.Status)})
 	}
-	return &ListPlacesResponse{Items: items, Total: len(filtered), Limit: limit, Offset: responseOffset}, nil
+	return &ListPlacesResponse{Items: items, Total: page.Total, Limit: limit, Offset: responseOffset}, nil
 }
 
 type CreateTransportNodeRequest struct {
@@ -223,7 +218,7 @@ func (s *Service) CreateTransportNode(req CreateTransportNodeRequest) (*CreateTr
 
 func (s *Service) CreateTransportNodeContext(ctx context.Context, req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
 	placeID := domain.PlaceID(req.PlaceID)
-	place, err := s.places.FindByID(placeID)
+	place, err := s.places.FindByID(ctx, placeID)
 	if err != nil || place == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", req.PlaceID))
 	}
@@ -238,12 +233,12 @@ func (s *Service) CreateTransportNodeContext(ctx context.Context, req CreateTran
 	}
 	node.MarkCreatedAt(now)
 	servingModes := stringModes(node.ServingModes)
-	if err := s.unitOfWork(ctx, func() error {
-		if err := s.nodes.Save(node); err != nil {
+	if err := s.unitOfWork(ctx, func(txCtx context.Context) error {
+		if err := s.nodes.Save(txCtx, node); err != nil {
 			return NewDomainError("CONFLICT", err.Error())
 		}
 		event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, UpdatedAt: domain.FormatTimestamp(now)}
-		if err := s.publisher.Publish(domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
+		if err := s.publisher.Publish(txCtx, domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
 		}
 		return nil
@@ -263,7 +258,11 @@ type GetTransportNodeResponse struct {
 }
 
 func (s *Service) GetTransportNode(id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
-	node, err := s.nodes.FindByID(id)
+	return s.GetTransportNodeContext(context.Background(), id)
+}
+
+func (s *Service) GetTransportNodeContext(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
+	node, err := s.nodes.FindByID(ctx, id)
 	if err != nil || node == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}

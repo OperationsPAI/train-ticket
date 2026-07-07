@@ -7,17 +7,21 @@ import (
 )
 
 type TxRunner interface {
-	Within(context.Context, func() error) error
+	Within(context.Context, func(context.Context) error) error
 }
 
-func ProcessedEventHandler(txRunner TxRunner, guard *ProcessedEvents, stream string, next messaging.Handler) messaging.Handler {
+type ContextDBProvider interface {
+	DBFor(context.Context) DBTX
+}
+
+func ProcessedEventHandler(txRunner TxRunner, db ContextDBProvider, stream string, next messaging.Handler) messaging.Handler {
 	return func(ctx context.Context, envelope messaging.EventEnvelope) error {
-		return txRunner.Within(ctx, func() error {
-			fresh, err := guard.TryRecord(ctx, envelope.EventID, stream)
+		return txRunner.Within(ctx, func(txCtx context.Context) error {
+			fresh, err := NewProcessedEvents(db.DBFor(txCtx)).TryRecord(txCtx, envelope.EventID, stream)
 			if err != nil || !fresh {
 				return err
 			}
-			return next(ctx, envelope)
+			return next(txCtx, envelope)
 		})
 	}
 }

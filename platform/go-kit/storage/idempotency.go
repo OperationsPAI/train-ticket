@@ -15,9 +15,13 @@ type IdempotencyStore struct {
 func NewIdempotencyStore(db DBTX) *IdempotencyStore { return &IdempotencyStore{db: db} }
 
 func (s *IdempotencyStore) Get(key string) (idempotency.Record, bool) {
+	return s.GetContext(context.Background(), key)
+}
+
+func (s *IdempotencyStore) GetContext(ctx context.Context, key string) (idempotency.Record, bool) {
 	var record idempotency.Record
 	var body []byte
-	row := s.db.QueryRow(context.Background(), `SELECT request_hash, status_code, COALESCE(response_body::text, '') FROM idempotency_records WHERE key = $1`, strings.TrimSpace(key))
+	row := s.db.QueryRow(ctx, `SELECT request_hash, status_code, COALESCE(response_body::text, '') FROM idempotency_records WHERE key = $1`, strings.TrimSpace(key))
 	var bodyText string
 	if err := row.Scan(&record.Fingerprint, &record.Status, &bodyText); err != nil {
 		return idempotency.Record{}, false
@@ -30,10 +34,14 @@ func (s *IdempotencyStore) Get(key string) (idempotency.Record, bool) {
 }
 
 func (s *IdempotencyStore) Put(key string, record idempotency.Record) error {
+	return s.PutContext(context.Background(), key, record)
+}
+
+func (s *IdempotencyStore) PutContext(ctx context.Context, key string, record idempotency.Record) error {
 	var body any
 	if len(record.Body) > 0 && json.Valid(record.Body) {
 		body = json.RawMessage(record.Body)
 	}
-	_, err := s.db.Exec(context.Background(), `INSERT INTO idempotency_records (key, request_hash, status_code, response_body) VALUES ($1, $2, $3, $4) ON CONFLICT (key) DO NOTHING`, strings.TrimSpace(key), record.Fingerprint, record.Status, body)
+	_, err := s.db.Exec(ctx, `INSERT INTO idempotency_records (key, request_hash, status_code, response_body) VALUES ($1, $2, $3, $4) ON CONFLICT (key) DO NOTHING`, strings.TrimSpace(key), record.Fingerprint, record.Status, body)
 	return err
 }

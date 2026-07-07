@@ -1,6 +1,7 @@
 package idempotency
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -22,6 +23,12 @@ type Record struct {
 type Store interface {
 	Get(key string) (Record, bool)
 	Put(key string, record Record) error
+}
+
+type ContextStore interface {
+	Store
+	GetContext(ctx context.Context, key string) (Record, bool)
+	PutContext(ctx context.Context, key string, record Record) error
 }
 
 type MemoryStore struct {

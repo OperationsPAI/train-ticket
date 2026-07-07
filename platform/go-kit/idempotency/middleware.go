@@ -2,6 +2,7 @@ package idempotency
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -53,7 +54,7 @@ func Middleware(store Store) gin.HandlerFunc {
 		}
 		ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
 		fingerprint := Fingerprint(ctx.Request.Method, ctx.Request.URL.Path, body)
-		record, ok, err := Replay(store, key, fingerprint)
+		record, ok, err := replay(ctx.Request.Context(), store, key, fingerprint)
 		if err != nil {
 			httpkit.WriteIdempotencyReused(ctx)
 			ctx.Abort()
@@ -69,7 +70,7 @@ func Middleware(store Store) gin.HandlerFunc {
 		ctx.Set(ContextKey, ContextValue{Key: key, Fingerprint: fingerprint})
 		ctx.Next()
 		if !ctx.IsAborted() && capture.Status() < http.StatusBadRequest && capture.body.Len() > 0 {
-			_ = store.Put(key, Record{Fingerprint: fingerprint, Status: capture.Status(), Body: append([]byte(nil), capture.body.Bytes()...)})
+			_ = put(ctx.Request.Context(), store, key, Record{Fingerprint: fingerprint, Status: capture.Status(), Body: append([]byte(nil), capture.body.Bytes()...)})
 		}
 	}
 }
@@ -101,4 +102,25 @@ func StoreJSON(store Store, key, fingerprint string, status int, body any) ([]by
 		}
 	}
 	return encoded, nil
+}
+
+func replay(ctx context.Context, store Store, key, fingerprint string) (Record, bool, error) {
+	if contextStore, ok := store.(ContextStore); ok {
+		record, found := contextStore.GetContext(ctx, strings.TrimSpace(key))
+		if !found {
+			return Record{}, false, nil
+		}
+		if record.Fingerprint != fingerprint {
+			return Record{}, true, ErrKeyReused
+		}
+		return record, true, nil
+	}
+	return Replay(store, key, fingerprint)
+}
+
+func put(ctx context.Context, store Store, key string, record Record) error {
+	if contextStore, ok := store.(ContextStore); ok {
+		return contextStore.PutContext(ctx, strings.TrimSpace(key), record)
+	}
+	return store.Put(strings.TrimSpace(key), record)
 }
