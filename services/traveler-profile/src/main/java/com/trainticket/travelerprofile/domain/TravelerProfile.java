@@ -185,7 +185,7 @@ public final class TravelerProfile {
     ) {
         requireNotDeactivated();
         String documentId = com.trainticket.platformkit.idempotency.UuidV7.generate();
-        String docHash = Integer.toHexString(Objects.hash(documentNumber));
+        String docHash = Document.hash(documentNumber);
         for (Document existing : documents.values()) {
             if (existing.documentType() == documentType && existing.documentNumberHash().equals(docHash)) {
                 throw new DomainRuleViolation("duplicate document type " + documentType + " for this profile");

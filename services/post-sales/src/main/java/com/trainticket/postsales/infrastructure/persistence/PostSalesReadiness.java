@@ -1,6 +1,7 @@
 package com.trainticket.postsales.infrastructure.persistence;
 
 import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
+import com.trainticket.postsales.adapters.messaging.RedisMessagingConfiguration.RedisMessagingReadiness;
 import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,19 +12,27 @@ import org.springframework.stereotype.Component;
 public class PostSalesReadiness {
     private final Optional<DataSource> dataSource;
     private final Optional<LazyRedisOutboxRelayLifecycle> outboxRelay;
+    private final Optional<RedisMessagingReadiness> redisMessaging;
 
     public PostSalesReadiness(Optional<DataSource> dataSource) {
-        this(dataSource, Optional.empty());
+        this(dataSource, Optional.empty(), Optional.empty());
     }
 
     @Autowired
-    public PostSalesReadiness(Optional<DataSource> dataSource, Optional<LazyRedisOutboxRelayLifecycle> outboxRelay) {
+    public PostSalesReadiness(
+        Optional<DataSource> dataSource,
+        Optional<LazyRedisOutboxRelayLifecycle> outboxRelay,
+        Optional<RedisMessagingReadiness> redisMessaging
+    ) {
         this.dataSource = dataSource;
         this.outboxRelay = outboxRelay;
+        this.redisMessaging = redisMessaging;
     }
 
     public boolean isReady() {
-        return isDatabaseReady() && outboxRelay.map(LazyRedisOutboxRelayLifecycle::isReady).orElse(true);
+        return isDatabaseReady()
+            && outboxRelay.map(LazyRedisOutboxRelayLifecycle::isReady).orElse(true)
+            && redisMessaging.map(RedisMessagingReadiness::isReady).orElse(true);
     }
 
     private boolean isDatabaseReady() {

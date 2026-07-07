@@ -1,12 +1,16 @@
 package com.trainticket.travelerprofile.domain;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.Objects;
 
 public final class Document {
     private final String documentId;
     private final DocumentType documentType;
-    private final String documentNumber;
+    private final String maskedDocumentRef;
     private final String documentNumberHash;
     private final String issuingCountry;
     private final Instant issuedAt;
@@ -30,8 +34,9 @@ public final class Document {
     ) {
         this.documentId = requireText(documentId, "documentId");
         this.documentType = Objects.requireNonNull(documentType, "documentType is required");
-        this.documentNumber = requireText(documentNumber, "documentNumber");
-        this.documentNumberHash = Integer.toHexString(Objects.hash(documentNumber));
+        String normalizedDocumentNumber = requireText(documentNumber, "documentNumber");
+        this.maskedDocumentRef = mask(normalizedDocumentNumber);
+        this.documentNumberHash = hash(normalizedDocumentNumber);
         this.issuingCountry = requireText(issuingCountry, "issuingCountry");
         this.issuedAt = Objects.requireNonNull(issuedAt, "issuedAt is required");
         this.expiresAt = Objects.requireNonNull(expiresAt, "expiresAt is required");
@@ -47,7 +52,8 @@ public final class Document {
     public static Document rehydrate(
         String documentId,
         DocumentType documentType,
-        String documentNumber,
+        String maskedDocumentRef,
+        String documentNumberHash,
         String issuingCountry,
         Instant issuedAt,
         Instant expiresAt,
@@ -58,7 +64,17 @@ public final class Document {
         Instant verifiedAt,
         String verifier
     ) {
-        Document document = new Document(documentId, documentType, documentNumber, issuingCountry, issuedAt, expiresAt, displayName, primaryDocument);
+        Document document = new Document(
+            documentId,
+            documentType,
+            requireText(maskedDocumentRef, "maskedDocumentRef"),
+            requireText(documentNumberHash, "documentNumberHash"),
+            issuingCountry,
+            issuedAt,
+            expiresAt,
+            displayName,
+            primaryDocument
+        );
         document.status = Objects.requireNonNull(status, "status is required");
         document.statusReason = statusReason;
         document.verifiedAt = verifiedAt;
@@ -66,9 +82,34 @@ public final class Document {
         return document;
     }
 
+    private Document(
+        String documentId,
+        DocumentType documentType,
+        String maskedDocumentRef,
+        String documentNumberHash,
+        String issuingCountry,
+        Instant issuedAt,
+        Instant expiresAt,
+        String displayName,
+        boolean primaryDocument
+    ) {
+        this.documentId = requireText(documentId, "documentId");
+        this.documentType = Objects.requireNonNull(documentType, "documentType is required");
+        this.maskedDocumentRef = requireText(maskedDocumentRef, "maskedDocumentRef");
+        this.documentNumberHash = requireText(documentNumberHash, "documentNumberHash");
+        this.issuingCountry = requireText(issuingCountry, "issuingCountry");
+        this.issuedAt = Objects.requireNonNull(issuedAt, "issuedAt is required");
+        this.expiresAt = Objects.requireNonNull(expiresAt, "expiresAt is required");
+        this.displayName = requireText(displayName, "displayName");
+        this.primaryDocument = primaryDocument;
+        this.status = DocumentStatus.PENDING_VERIFICATION;
+        if (!expiresAt.isAfter(issuedAt)) {
+            throw new DomainRuleViolation("document expiresAt must be after issuedAt");
+        }
+    }
+
     public String documentId() { return documentId; }
     public DocumentType documentType() { return documentType; }
-    public String documentNumber() { return documentNumber; }
     public String documentNumberHash() { return documentNumberHash; }
     public String issuingCountry() { return issuingCountry; }
     public Instant issuedAt() { return issuedAt; }
@@ -126,10 +167,24 @@ public final class Document {
     }
 
     public String maskedDocumentRef() {
-        if (documentNumber.length() <= 4) {
-            return "***" + documentNumber;
+        return maskedDocumentRef;
+    }
+
+    public static String hash(String documentNumber) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(requireText(documentNumber, "documentNumber").getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
         }
-        return documentNumber.substring(0, 2) + "***" + documentNumber.substring(documentNumber.length() - 4);
+    }
+
+    public static String mask(String documentNumber) {
+        String value = requireText(documentNumber, "documentNumber");
+        if (value.length() <= 4) {
+            return "***" + value;
+        }
+        return value.substring(0, 2) + "***" + value.substring(value.length() - 4);
     }
 
     private static String requireText(String value, String name) {
