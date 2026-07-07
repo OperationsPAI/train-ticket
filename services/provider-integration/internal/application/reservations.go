@@ -72,7 +72,6 @@ type ProviderReservationService interface {
 type InMemoryReservationService struct {
 	mu            sync.Mutex
 	publisher     EventPublisher
-	mapping       domain.StatusMappingCatalog
 	results       map[string]ProviderReservationResult
 	cancellations map[string]CancelProviderReservationResult
 }
@@ -80,13 +79,34 @@ type InMemoryReservationService struct {
 func NewInMemoryReservationService(publisher EventPublisher) *InMemoryReservationService {
 	return &InMemoryReservationService{
 		publisher:     publisher,
-		mapping:       defaultReservationMappingCatalog(),
 		results:       map[string]ProviderReservationResult{},
 		cancellations: map[string]CancelProviderReservationResult{},
 	}
 }
 
 func (s *InMemoryReservationService) RequestReservation(ctx context.Context, cmd RequestProviderReservationCommand) (ProviderReservationResult, error) {
+	result, err := BuildProviderReservationResult(cmd)
+	if err != nil {
+		return ProviderReservationResult{}, err
+	}
+	s.mu.Lock()
+	s.results[result.SegmentBookingID] = result
+	s.mu.Unlock()
+	if err := s.publish(ctx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
+		"segmentBookingId":   result.SegmentBookingID,
+		"providerReference":  result.ProviderReference,
+		"normalizedEvidence": result.NormalizedEvidence,
+	}); err != nil {
+		return ProviderReservationResult{}, ErrUnavailable
+	}
+	return result, nil
+}
+
+// BuildProviderReservationResult validates and maps a provider reservation command
+// into the persisted reservation snapshot without mutating process-local state or
+// publishing integration events. Persistent adapters use this to keep provider
+// interaction rules in the application layer while handling storage at the edge.
+func BuildProviderReservationResult(cmd RequestProviderReservationCommand) (ProviderReservationResult, error) {
 	if err := validateReservationCommand(cmd); err != nil {
 		return ProviderReservationResult{}, err
 	}
@@ -101,30 +121,19 @@ func (s *InMemoryReservationService) RequestReservation(ctx context.Context, cmd
 	if err := log.MarkSucceeded(&domain.ProviderRef{ConfirmationCode: providerReference, ExternalID: providerReference}); err != nil {
 		return ProviderReservationResult{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
 	}
-	decision, err := s.mapProviderStatus(cmd, providerReference)
+	decision, err := mapProviderStatus(cmd, providerReference)
 	if err != nil {
 		return ProviderReservationResult{}, err
 	}
 	if decision.Fact == nil || decision.Fact.Kind != domain.FactProviderReservationConfirmed {
 		return ProviderReservationResult{}, fmt.Errorf("%w: provider reservation was not confirmed", ErrDomainRule)
 	}
-	result := ProviderReservationResult{
+	return ProviderReservationResult{
 		SegmentBookingID:   strings.TrimSpace(cmd.SegmentBookingID),
 		Status:             ReservationConfirmed,
 		ProviderReference:  string(decision.Fact.ProviderReference),
 		NormalizedEvidence: normalizedEvidence(decision.Fact),
-	}
-	s.mu.Lock()
-	s.results[result.SegmentBookingID] = result
-	s.mu.Unlock()
-	if err := s.publish(ctx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
-		"segmentBookingId":   result.SegmentBookingID,
-		"providerReference":  result.ProviderReference,
-		"normalizedEvidence": result.NormalizedEvidence,
-	}); err != nil {
-		return ProviderReservationResult{}, ErrUnavailable
-	}
-	return result, nil
+	}, nil
 }
 
 func (s *InMemoryReservationService) CancelReservation(ctx context.Context, cmd CancelProviderReservationCommand) (CancelProviderReservationResult, error) {
@@ -155,7 +164,7 @@ func (s *InMemoryReservationService) publish(ctx context.Context, eventType, cor
 	return s.publisher.Publish(ctx, envelope)
 }
 
-func (s *InMemoryReservationService) mapProviderStatus(cmd RequestProviderReservationCommand, providerReference string) (domain.ProviderMappingDecision, error) {
+func mapProviderStatus(cmd RequestProviderReservationCommand, providerReference string) (domain.ProviderMappingDecision, error) {
 	identity, err := domain.NewProviderRequestIdentity(domain.ProviderID(cmd.ProviderConfigRef), domain.ProviderRequestID(newLogID()), domain.OperationConfirmReservation, domain.IdempotencyKey(cmd.IdempotencyKey), domain.CorrelationID(canonicalCorrelationID(cmd.CorrelationID)), domain.BusinessRef(cmd.SegmentBookingID))
 	if err != nil {
 		return domain.ProviderMappingDecision{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
@@ -164,7 +173,7 @@ func (s *InMemoryReservationService) mapProviderStatus(cmd RequestProviderReserv
 	if err != nil {
 		return domain.ProviderMappingDecision{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
 	}
-	decision, err := s.mapping.Map(status)
+	decision, err := defaultReservationMappingCatalog().Map(status)
 	if err != nil {
 		return domain.ProviderMappingDecision{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
 	}

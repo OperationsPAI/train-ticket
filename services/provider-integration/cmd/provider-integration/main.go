@@ -4,41 +4,69 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
+	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
+	"github.com/trainticket/greenfield/platform/go-kit/storage"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/adapters/messaging"
+	adapterpg "github.com/trainticket/greenfield/services/provider-integration/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/config"
+	"github.com/trainticket/greenfield/services/provider-integration/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/provider-integration/internal/http"
 )
 
 func main() {
 	cfg := config.FromEnv()
-	ctx := context.Background()
-	publisher, err := messaging.NewRedisPublisher(cfg.RedisURL)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	pool, err := storage.NewPool(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer publisher.Close()
-
+	defer pool.Close()
+	migrationsDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationsDir == "" {
+		migrationsDir = "/app/migrations"
+	}
+	migrationsList, err := storage.LoadMigrations(os.DirFS(migrationsDir), ".")
+	if err != nil {
+		log.Fatal(err)
+	}
+	runner := storage.NewMigrationRunner(pool)
+	if err := runner.Run(ctx, migrationsList); err != nil {
+		log.Fatal(err)
+	}
+	redisClient, err := kitmessaging.NewRedisClient(cfg.RedisURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		_ = redisClient.Close()
+		log.Fatal(err)
+	}
+	defer func() { _ = redisClient.Close() }()
+	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
+	transactor := adapterpg.NewTransactor(pool)
+	publisher := adapterpg.NewOutboxPublisherWithProvider(transactor)
 	subscriber, err := messaging.NewRedisSubscriber(cfg.RedisURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer subscriber.Close()
-	service := application.NewInMemoryReservationService(publisher)
-	consumedEvents := application.NewInMemoryConsumedEventLog()
+	service := adapterpg.NewReservationServiceWithProvider(transactor, publisher)
+	consumedEvents := adapterpg.NewProcessedEventsWithProvider(transactor)
 	consumerName := "provider-integration-" + hostname()
-	if err := subscriber.Subscribe(ctx, nil, messaging.ProviderIntegrationGroup, consumerName, application.DeduplicatingHandler(consumedEvents, application.NewInboundEventHandler(service))); err != nil {
+	if err := subscriber.Subscribe(ctx, nil, messaging.ProviderIntegrationGroup, consumerName, adapterpg.DeduplicatingHandler(consumedEvents, application.NewInboundEventHandler(service))); err != nil {
 		log.Fatal(err)
 	}
-
-	server := goruntime.NewHTTPServer(goruntime.ServerConfig{
-		Address: ":" + cfg.HTTPPort,
-		Handler: apphttp.RouterWithDependencies(service, idempotency.NewMemoryStore()),
-	})
-	if err := server.ListenAndServe(); err != nil {
+	profile := domain.Profile()
+	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
+	apphttp.NewHandler(service, storage.NewIdempotencyStore(pool)).Register(router)
+	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + cfg.HTTPPort, Handler: router})
+	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
 	}
 }
