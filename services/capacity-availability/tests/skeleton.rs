@@ -525,6 +525,38 @@ fn subscriber_decision_logic_retries_dlqs_and_dedups() {
 }
 
 #[tokio::test]
+async fn postgres_inbound_classifies_known_event_schema_errors_as_fatal() {
+    use capacity_availability::adapters::storage::PostgresCapacityService;
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    use rust_kit::storage::Storage;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://capacity:capacity@127.0.0.1:1/capacity")
+        .unwrap();
+    let service = PostgresCapacityService::from_storage(Storage::new(pool)).unwrap();
+
+    let result = service
+        .handle_inbound_event(WireEnvelope {
+            event_id: "evt-0194f2e0-7b3e-7610-0284-5c26e8b0fa01".to_string(),
+            event_type: "SegmentReservationRequested".to_string(),
+            schema_version: 1,
+            producer: "booking-orchestration".to_string(),
+            causation_id: None,
+            correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa02".to_string(),
+            occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            payload: json!({"segmentRef": "seg-1", "travelerRef": "traveler-1"}),
+        })
+        .await;
+
+    assert!(
+        matches!(result, HandlerResult::FatalError(message) if message.contains("segmentBookingId"))
+    );
+}
+
+#[tokio::test]
 async fn api_responses_include_runtime_correlation_and_request_headers() {
     let app = test_router();
     let response = app

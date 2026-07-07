@@ -355,7 +355,7 @@ export class RedisEventSubscriber implements EventSubscriber {
           ...streams,
           ...streams.map(() => ">"),
         ) as StreamMessages[] | null;
-        await this.processMessages(messages, group, handler);
+        await this.processMessages(messages, group, consumerName, handler);
       } catch (error) {
         // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
         if (String(error).includes("NOGROUP")) {
@@ -383,27 +383,27 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
   }
 
-  private async processMessages(messages: StreamMessages[] | null, group: string, handler: EventHandler): Promise<void> {
+  private async processMessages(messages: StreamMessages[] | null, group: string, consumerName: string, handler: EventHandler): Promise<void> {
     for (const [stream, entries] of messages ?? []) {
       for (const entry of entries) {
-        await this.processEntry(stream, group, entry, handler);
+        await this.processEntry(stream, group, consumerName, entry, handler);
       }
     }
   }
 
-  private async processEntry(stream: string, group: string, entry: StreamEntry, handler: EventHandler): Promise<void> {
+  private async processEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, handler: EventHandler): Promise<void> {
     const [entryId, fields] = entry;
     const envelopeJson = fieldValue(fields, "envelope");
     if (!envelopeJson) {
-      await this.deadLetterAndAck(stream, group, entry);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", 1);
       return;
     }
 
     let envelope: EventEnvelope;
     try {
       envelope = JSON.parse(envelopeJson) as EventEnvelope;
-    } catch {
-      await this.deadLetterAndAck(stream, group, entry);
+    } catch (error) {
+      await this.deadLetterAndAck(stream, group, consumerName, entry, error, 1);
       return;
     }
 
@@ -413,14 +413,17 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
 
     let result: "ack" | "retry" | "dlq";
+    let failureReason: unknown = "HandlerResult.dlq";
     try {
       const rawResult = await handler(envelope);
       result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+      failureReason = failureReasonFromHandlerResult(rawResult);
     } catch (error) {
       console.error(sanitizedErrorForLog(error));
       result = error instanceof HandlerError
         ? (error.kind === "fatal" ? "dlq" : "retry")
         : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+      failureReason = error;
     }
 
     if (result === "ack") {
@@ -429,7 +432,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       return;
     }
     if (result === "dlq") {
-      await this.deadLetterAndAck(stream, group, entry);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, 1);
     }
   }
 
@@ -439,9 +442,9 @@ export class RedisEventSubscriber implements EventSubscriber {
     const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
     for (const entry of entries) {
       if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
-        await this.deadLetterAndAck(stream, group, entry);
+        await this.deadLetterAndAck(stream, group, consumerName, entry, "MaxDeliveries", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
       } else {
-        await this.processEntry(stream, group, entry, handler);
+        await this.processEntry(stream, group, consumerName, entry, handler);
       }
     }
   }
@@ -459,9 +462,35 @@ export class RedisEventSubscriber implements EventSubscriber {
     return counts;
   }
 
-  private async deadLetterAndAck(stream: string, group: string, entry: StreamEntry): Promise<void> {
+  private async deadLetterAndAck(stream: string, group: string, consumerName: string, entry: StreamEntry, reason: unknown, attempts: number): Promise<void> {
     const envelopeJson = fieldValue(entry[1], "envelope") ?? JSON.stringify({});
-    await this.redis.xadd(dlqForStream(stream), "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", envelopeJson);
+    const failureReason = truncateFailureReason(reason);
+    console.warn({
+      service: group,
+      stream,
+      eventId: eventIdForLog(envelopeJson),
+      failureReason,
+      message: "moving message to DLQ",
+    });
+    await this.redis.xadd(
+      dlqForStream(stream),
+      "MAXLEN",
+      "~",
+      STREAM_MAXLEN,
+      "*",
+      "envelope",
+      envelopeJson,
+      "consumerGroup",
+      group,
+      "consumerName",
+      consumerName,
+      "failureReason",
+      failureReason,
+      "attempts",
+      String(Math.max(1, attempts)),
+      "deadLetteredAt",
+      new Date().toISOString(),
+    );
     await this.redis.xack(stream, group, entry[0]);
   }
 
@@ -522,6 +551,22 @@ export function redisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
 }
 
+function truncateFailureReason(reason: unknown): string {
+  const text = reason instanceof Error
+    ? `${reason.name || "Error"}: ${reason.message || "Handler failed"}`
+    : String(reason || "unknown");
+  return text.length > 500 ? text.slice(0, 500) : text;
+}
+
+function eventIdForLog(envelopeJson: string): string {
+  try {
+    const envelope = JSON.parse(envelopeJson) as { eventId?: unknown };
+    return typeof envelope.eventId === "string" ? envelope.eventId : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 function isRecoverableRedisReadError(error: unknown): boolean {
   const message = String(error);
   return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
@@ -547,6 +592,19 @@ function normalizeHandlerResult(result: EventHandlerResult | StringHandlerResult
 
 function handlerSucceeded(result: EventHandlerResult | StringHandlerResult): boolean {
   return normalizeHandlerResult(result) === "ack";
+}
+
+function failureReasonFromHandlerResult(result: EventHandlerResult | StringHandlerResult | undefined): unknown {
+  if (result === undefined || result === "ack" || result === "retry") {
+    return "HandlerResult.dlq";
+  }
+  if (result === "dlq") {
+    return "HandlerResult.dlq";
+  }
+  if (!result.ok) {
+    return result.error ?? `HandlerResult.${result.kind ?? result.errorType ?? "transient"}`;
+  }
+  return "HandlerResult.dlq";
 }
 
 function occurredAt(value: Date | string | undefined): string {

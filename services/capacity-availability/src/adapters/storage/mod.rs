@@ -623,7 +623,7 @@ impl PostgresCapacityService {
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
         let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId") else {
-            return Ok(());
+            return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
         };
         let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
             return Err(InboundEventError::Fatal("missing segmentRef".into()));
@@ -796,7 +796,7 @@ impl PostgresCapacityService {
         envelope: WireEnvelope,
     ) -> Result<(), InboundEventError> {
         let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
-            return Ok(());
+            return Err(InboundEventError::Fatal("missing capacityHoldId".into()));
         };
         let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
         self.handle_inbound_hold_mutation(
@@ -824,7 +824,7 @@ impl PostgresCapacityService {
         let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
             .or_else(|| string_field(&envelope.payload, "holdId"))
         else {
-            return Ok(());
+            return Err(InboundEventError::Fatal("missing capacityHoldId".into()));
         };
         let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
         self.handle_inbound_hold_mutation(
@@ -856,7 +856,7 @@ impl PostgresCapacityService {
         let Some(segment_booking_ref) =
             segment_booking_ref_from_entitlement_voided(&envelope.payload)
         else {
-            return Ok(());
+            return Err(InboundEventError::Fatal("missing segmentBookingRef".into()));
         };
         let idempotency_key = format!(
             "{}:{}:entitlement-voided-release",
@@ -1170,9 +1170,12 @@ fn inbound_fatal(error: impl std::fmt::Display) -> InboundEventError {
 
 fn inbound_from_app_error(error: AppError) -> InboundEventError {
     match error {
-        AppError::Unavailable(message)
-        | AppError::Internal(message)
-        | AppError::Conflict(message) => InboundEventError::Transient(message),
+        AppError::Unavailable(message) | AppError::Internal(message) => {
+            InboundEventError::Transient(message)
+        }
+        AppError::Conflict(message) if message.contains("optimistic concurrency conflict") => {
+            InboundEventError::Transient(message)
+        }
         error => InboundEventError::Fatal(error.message().to_string()),
     }
 }
@@ -1511,7 +1514,7 @@ fn to_app_storage(error: impl std::fmt::Display) -> AppError {
     let message = error.to_string();
     if message.contains("optimistic concurrency conflict") {
         AppError::Conflict(message)
-    } else if message == "IDEMPOTENCY_KEY_REUSED" {
+    } else if message == "IDEMPOTENCY_KEY_REUSED" || message.contains("IDEMPOTENCY_KEY_REUSED") {
         AppError::IdempotencyKeyReused(
             "Idempotency-Key was reused with a different request body".into(),
         )

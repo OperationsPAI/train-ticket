@@ -726,12 +726,15 @@ pub mod redis_runtime {
                             connection,
                             &message.stream,
                             group,
+                            consumer_name,
                             &message.id,
                             &message.raw_envelope,
+                            "MaxDeliveryAttempts",
+                            message.delivery_count,
                         )
                         .await?;
                     } else {
-                        self.process_message(connection, group, message, handler)
+                        self.process_message(connection, group, consumer_name, message, handler)
                             .await?;
                     }
                 }
@@ -742,11 +745,26 @@ pub mod redis_runtime {
             &self,
             connection: &mut redis::aio::MultiplexedConnection,
             group: &str,
+            consumer_name: &str,
             message: StreamMessage,
             handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
         ) -> Result<(), SubscribeFailed> {
-            let envelope: EventEnvelope = serde_json::from_str(&message.raw_envelope)
-                .map_err(|error| SubscribeFailed(error.to_string()))?;
+            let envelope: EventEnvelope = match serde_json::from_str(&message.raw_envelope) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    return move_to_dlq(
+                        connection,
+                        &message.stream,
+                        group,
+                        consumer_name,
+                        &message.id,
+                        &message.raw_envelope,
+                        &error.to_string(),
+                        message.delivery_count,
+                    )
+                    .await;
+                }
+            };
             if self.state.has_seen(&envelope.event_id) {
                 return ack(connection, &message.stream, group, &message.id).await;
             }
@@ -756,14 +774,17 @@ pub mod redis_runtime {
                     ack(connection, &message.stream, group, &message.id).await
                 }
                 Err(HandlerError::Transient(_)) => Ok(()),
-                Err(HandlerError::Fatal(_)) => {
+                Err(HandlerError::Fatal(reason)) => {
                     self.state.mark_consumed(&envelope.event_id);
                     move_to_dlq(
                         connection,
                         &message.stream,
                         group,
+                        consumer_name,
                         &message.id,
                         &message.raw_envelope,
+                        &reason,
+                        message.delivery_count,
                     )
                     .await
                 }
@@ -826,8 +847,14 @@ pub mod redis_runtime {
                     }
                 };
                 for message in parse_stream_messages(response) {
-                    self.process_message(&mut connection, &group, message, handler.as_ref())
-                        .await?;
+                    self.process_message(
+                        &mut connection,
+                        &group,
+                        &consumer_name,
+                        message,
+                        handler.as_ref(),
+                    )
+                    .await?;
                 }
             }
             Ok(())
@@ -953,10 +980,21 @@ pub mod redis_runtime {
         connection: &mut redis::aio::MultiplexedConnection,
         stream: &str,
         group: &str,
+        consumer_name: &str,
         id: &str,
         raw_envelope: &str,
+        reason: &str,
+        attempts: u64,
     ) -> Result<(), SubscribeFailed> {
         let dlq = format!("{stream}:dlq");
+        let failure_reason = truncate_failure_reason(reason);
+        log::warn!(
+            "service={} stream={} eventId={} failureReason={} moving message to DLQ",
+            group,
+            stream,
+            event_id_for_log(raw_envelope),
+            failure_reason
+        );
         let _: String = redis::cmd("XADD")
             .arg(dlq)
             .arg("MAXLEN")
@@ -965,10 +1003,43 @@ pub mod redis_runtime {
             .arg("*")
             .arg("envelope")
             .arg(raw_envelope)
+            .arg(dlq_metadata_fields(
+                group,
+                consumer_name,
+                &failure_reason,
+                attempts,
+                &crate::messaging::now_rfc3339_utc(),
+            ))
             .query_async(&mut *connection)
             .await
             .map_err(|error| SubscribeFailed(error.to_string()))?;
         ack(connection, stream, group, id).await
+    }
+
+    fn truncate_failure_reason(reason: &str) -> String {
+        reason.chars().take(500).collect()
+    }
+
+    fn event_id_for_log(raw_envelope: &str) -> String {
+        serde_json::from_str::<EventEnvelope>(raw_envelope)
+            .map(|envelope| envelope.event_id)
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+
+    fn dlq_metadata_fields(
+        group: &str,
+        consumer_name: &str,
+        failure_reason: &str,
+        attempts: u64,
+        dead_lettered_at: &str,
+    ) -> Vec<(&'static str, String)> {
+        vec![
+            ("consumerGroup", group.to_string()),
+            ("consumerName", consumer_name.to_string()),
+            ("failureReason", failure_reason.to_string()),
+            ("attempts", attempts.max(1).to_string()),
+            ("deadLetteredAt", dead_lettered_at.to_string()),
+        ]
     }
     fn redis_value_to_string(value: &redis::Value) -> Option<String> {
         match value {
@@ -991,6 +1062,27 @@ pub mod redis_runtime {
                 redis::Value::Int(5),
             ])]);
             assert_eq!(parse_xpending_delivery_count(value), Some(5));
+        }
+
+        #[test]
+        fn dlq_metadata_fields_are_camel_case_and_attributed() {
+            let fields = dlq_metadata_fields(
+                "capacity-availability",
+                "capacity-availability-1",
+                "Fatal: missing segmentRef",
+                0,
+                "2026-07-07T12:00:00.000Z",
+            );
+            assert_eq!(
+                fields,
+                vec![
+                    ("consumerGroup", "capacity-availability".to_string()),
+                    ("consumerName", "capacity-availability-1".to_string()),
+                    ("failureReason", "Fatal: missing segmentRef".to_string()),
+                    ("attempts", "1".to_string()),
+                    ("deadLetteredAt", "2026-07-07T12:00:00.000Z".to_string()),
+                ]
+            );
         }
 
         #[tokio::test]

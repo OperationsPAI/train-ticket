@@ -45,7 +45,7 @@ impl CapacityService {
 
     fn handle_segment_reservation_requested(&self, envelope: &WireEnvelope) -> HandlerResult {
         let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId") else {
-            return HandlerResult::Success;
+            return HandlerResult::FatalError("missing segmentBookingId".into());
         };
         let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
             return HandlerResult::FatalError("missing segmentRef".into());
@@ -76,7 +76,7 @@ impl CapacityService {
 
     fn handle_segment_reservation_confirmed(&self, envelope: &WireEnvelope) -> HandlerResult {
         let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
-            return HandlerResult::Success;
+            return HandlerResult::FatalError("missing capacityHoldId".into());
         };
         let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
         match self.confirm_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
@@ -94,7 +94,7 @@ impl CapacityService {
         let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
             .or_else(|| string_field(&envelope.payload, "holdId"))
         else {
-            return HandlerResult::Success;
+            return HandlerResult::FatalError("missing capacityHoldId".into());
         };
         let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
         match self.release_hold(&hold_id, &idempotency_key, &envelope.correlation_id) {
@@ -110,7 +110,7 @@ impl CapacityService {
         let Some(segment_booking_ref) =
             segment_booking_ref_from_entitlement_voided(&envelope.payload)
         else {
-            return HandlerResult::Success;
+            return HandlerResult::FatalError("missing segmentBookingRef".into());
         };
         let idempotency_key = format!(
             "{}:{}:entitlement-voided-release",

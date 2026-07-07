@@ -7,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -38,10 +39,39 @@ class RedisEventSubscriberTest {
         assertThat(streams.acked).doesNotContain("1-0");
     }
 
+
+    @Test
+    void fatalHandlerResultMovesMessageToDlqWithAttributionMetadata() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        FakeRedisStreams streams = new FakeRedisStreams(List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
+        ));
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+        AtomicReference<DlqMetadata> metadata = streams.dlqMetadata;
+
+        subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> HandlerResult.FATAL_FAILURE);
+
+        for (int i = 0; i < 20 && metadata.get() == null; i++) {
+            Thread.sleep(50);
+        }
+        subscriber.close();
+        assertThat(metadata.get()).isNotNull();
+        assertThat(streams.acked).contains("1-0");
+        assertThat(streams.dlqStream).isEqualTo("events:payment");
+        assertThat(metadata.get().consumerGroup()).isEqualTo("journey-order");
+        assertThat(metadata.get().consumerName()).isEqualTo("consumer-1");
+        assertThat(metadata.get().failureReason()).isEqualTo("HandlerResult.FATAL_FAILURE");
+        assertThat(metadata.get().attempts()).isEqualTo(1);
+        assertThat(metadata.get().deadLetteredAt()).isNotBlank();
+    }
+
     private static final class FakeRedisStreams implements RedisStreamOperations {
         private final List<StreamEntry> firstBatch;
         private final List<String> acked = new ArrayList<>();
         private boolean delivered;
+        private volatile String dlqStream;
+        private final AtomicReference<DlqMetadata> dlqMetadata = new AtomicReference<>();
 
         private FakeRedisStreams(List<StreamEntry> firstBatch) {
             this.firstBatch = firstBatch;
@@ -81,7 +111,9 @@ class RedisEventSubscriberTest {
         }
 
         @Override
-        public void moveToDlq(String stream, String envelopeJson) {
+        public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {
+            this.dlqStream = stream;
+            this.dlqMetadata.set(metadata);
         }
     }
 }

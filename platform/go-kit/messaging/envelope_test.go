@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -54,5 +55,21 @@ func TestNewEventEnvelopeOmitsOptionalCausationID(t *testing.T) {
 	}
 	if len(fields) != 7 {
 		t.Fatalf("envelope without causationId must have 7 fields, got %d: %s", len(fields), body)
+	}
+}
+
+func TestDeadLetterFieldsIncludeAttributionMetadata(t *testing.T) {
+	fields := dlqFields(`{"eventId":"evt-1"}`, "go-kit", "consumer-a", truncateFailureReason(FatalHandlerError(errors.New("poison"))), 5)
+	if fields[EnvelopeField] != `{"eventId":"evt-1"}` {
+		t.Fatalf("missing envelope field: %#v", fields)
+	}
+	if fields["consumerGroup"] != "go-kit" || fields["consumerName"] != "consumer-a" {
+		t.Fatalf("missing attribution fields: %#v", fields)
+	}
+	if fields["failureReason"] != "messaging.HandlerError: poison" || fields["attempts"] != "5" {
+		t.Fatalf("missing failure details: %#v", fields)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, fields["deadLetteredAt"].(string)); err != nil {
+		t.Fatalf("deadLetteredAt must be RFC3339 UTC: %v", err)
 	}
 }
