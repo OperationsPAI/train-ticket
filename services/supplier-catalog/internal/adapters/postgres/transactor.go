@@ -27,16 +27,23 @@ func (t *Transactor) DBFor(ctx context.Context) storage.DBTX {
 	return t.pool
 }
 func (t *Transactor) Within(ctx context.Context, fn func(context.Context) error) error {
+	if _, ok := txFromContext(ctx); ok {
+		return fn(ctx)
+	}
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := fn(context.WithValue(ctx, txContextKey{}, tx)); err != nil {
+	if err := fn(contextWithTx(ctx, tx)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
+func contextWithTx(ctx context.Context, tx storage.DBTX) context.Context {
+	return context.WithValue(ctx, txContextKey{}, tx)
+}
+
 func txFromContext(ctx context.Context) (storage.DBTX, bool) {
 	tx, ok := ctx.Value(txContextKey{}).(storage.DBTX)
 	return tx, ok

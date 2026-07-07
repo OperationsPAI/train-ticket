@@ -204,8 +204,6 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 	}
 	s.mu.Lock()
 	s.scheduledServices[state.view.ScheduledServiceRef] = state
-	s.pendingEvents = append(s.pendingEvents, envelope)
-	s.removePendingEventLocked(envelope.EventID)
 	s.mu.Unlock()
 	return result, nil
 }
@@ -380,10 +378,6 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 		return CreateServiceSegmentResult{}, err
 	}
 	envelope := s.newEnvelope("ServicePlanChanged", command.CorrelationID, command.CausationID, payload)
-	s.mu.Lock()
-	s.segments[segment.SegmentRef] = segment
-	s.pendingEvents = append(s.pendingEvents, envelope)
-	s.mu.Unlock()
 
 	if err := s.within(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
@@ -392,13 +386,15 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 			}
 		}
 		if err := s.publisher.Publish(txCtx, envelope); err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrPublish, err)
 		}
-		s.removePendingEvent(envelope.EventID)
 		return nil
 	}); err != nil {
-		return CreateServiceSegmentResult{}, fmt.Errorf("%w: %v", ErrPublish, err)
+		return CreateServiceSegmentResult{}, err
 	}
+	s.mu.Lock()
+	s.segments[segment.SegmentRef] = segment
+	s.mu.Unlock()
 	return result, nil
 }
 
