@@ -57,7 +57,11 @@ Unchanged rulings that this document builds on:
   writer won; the handler retries the whole command or returns 409.
 - Read models / list endpoints may add dedicated tables or generated
   columns; JSONB expression indexes are allowed. Full table scans on hot
-  list endpoints are not.
+  list endpoints are not — "full table scan" here means fetching all rows
+  into the application and filtering/paginating in memory. Pushing
+  filters/pagination into SQL is the requirement; an index-supported
+  `SELECT count(*)` (or filtered count) to serve a contract-mandated
+  `total` field is acceptable.
 - Schema migrations: per-service ordered SQL files in
   `services/<svc>/migrations/NNN_description.sql`, applied at startup by
   the language kit's migration runner, recorded in
