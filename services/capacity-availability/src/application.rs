@@ -82,9 +82,6 @@ impl CapacityService {
         let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
             return HandlerResult::FatalError("missing segmentBookingId".into());
         };
-        let Some(_) = string_field(&envelope.payload, "providerReference") else {
-            return HandlerResult::FatalError("missing providerReference".into());
-        };
         let Some(_) = string_field(&envelope.payload, "evidence") else {
             return HandlerResult::FatalError("missing evidence".into());
         };

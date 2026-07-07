@@ -824,9 +824,6 @@ impl PostgresCapacityService {
         let Some(segment_booking_ref) = string_field(&envelope.payload, "segmentBookingId") else {
             return Err(InboundEventError::Fatal("missing segmentBookingId".into()));
         };
-        let Some(_) = string_field(&envelope.payload, "providerReference") else {
-            return Err(InboundEventError::Fatal("missing providerReference".into()));
-        };
         let Some(_) = string_field(&envelope.payload, "evidence") else {
             return Err(InboundEventError::Fatal("missing evidence".into()));
         };
