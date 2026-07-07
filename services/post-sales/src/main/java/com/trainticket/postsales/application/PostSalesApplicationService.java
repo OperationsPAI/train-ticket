@@ -15,8 +15,6 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,7 +25,6 @@ public class PostSalesApplicationService {
     private final EventPublisher eventPublisher;
     private final AdjustmentQuotePort adjustmentQuotePort;
     private final Clock clock;
-    private final ConcurrentMap<String, Integer> publishedEventCounts = new ConcurrentHashMap<>();
 
     public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
             AdjustmentQuotePort adjustmentQuotePort, Clock clock) {
@@ -176,12 +173,11 @@ public class PostSalesApplicationService {
     }
 
     private void publishNewEvents(PostSalesCase postSalesCase) {
-        List<PostSalesEvent> events = postSalesCase.domainEvents();
-        int alreadyPublished = publishedEventCounts.getOrDefault(postSalesCase.caseId(), 0);
-        for (PostSalesEvent event : events.subList(alreadyPublished, events.size())) {
+        // Every command path loads a fresh aggregate instance, so domainEvents()
+        // holds exactly the events recorded by the current command.
+        for (PostSalesEvent event : postSalesCase.domainEvents()) {
             eventPublisher.publish(PostSalesMapper.toEnvelope(event, postSalesCase));
         }
-        publishedEventCounts.put(postSalesCase.caseId(), events.size());
     }
 
     public record OpenCaseCommand(
