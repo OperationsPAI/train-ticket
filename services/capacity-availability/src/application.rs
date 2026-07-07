@@ -250,8 +250,7 @@ impl CapacityService {
         });
 
         // Find a unit that is actually free for the requested interval.
-        let interval =
-            StationInterval::new(0, 1).map_err(|e| AppError::Internal(e.to_string()))?;
+        let interval = StationInterval::new(0, 1).map_err(|e| AppError::Internal(e.to_string()))?;
         let unit_ref = pool
             .find_available_unit(&interval, now)
             .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?;
@@ -571,7 +570,7 @@ impl CapacityService {
 // Request / Response DTOs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AvailabilitySnapshotResponse {
     pub snapshot_id: String,
     pub snapshot_version: u64,
@@ -586,7 +585,7 @@ pub struct AvailabilitySnapshotResponse {
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RemainingByClass {
     pub class_ref: String,
     pub total: usize,
@@ -603,7 +602,7 @@ pub struct HoldCapacityRequest {
 }
 
 impl HoldCapacityRequest {
-    fn fingerprint(&self) -> String {
+    pub(crate) fn fingerprint(&self) -> String {
         format!(
             "hold:{}:{}:{}:{}:{}",
             self.segment_ref,

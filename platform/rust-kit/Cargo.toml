@@ -17,12 +17,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 shared-kernel = { path = "../shared-kernel-rust" }
-tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "time"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "json"] }
+tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1.0", features = ["v4", "v7", "fast-rng"] }
 
 [features]
 default = []
-redis-impl = ["redis", "tokio"]
+redis-impl = ["redis"]
 
 [dev-dependencies]
 tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
