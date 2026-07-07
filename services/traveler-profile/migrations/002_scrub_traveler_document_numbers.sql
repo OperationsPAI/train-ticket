@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 UPDATE traveler_profile_snapshots
 SET data = jsonb_set(
     data,
@@ -13,7 +15,7 @@ SET data = jsonb_set(
                         || '***'
                         || right(document->>'documentNumber', 4)
                 END,
-                'documentNumberHash', 'scrubbed:' || md5(document->>'documentNumber')
+                'documentNumberHash', encode(digest(document->>'documentNumber', 'sha256'), 'hex')
             )
         )
         FROM jsonb_array_elements(data->'documents') AS document

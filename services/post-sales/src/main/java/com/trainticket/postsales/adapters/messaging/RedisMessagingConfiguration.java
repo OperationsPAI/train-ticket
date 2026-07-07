@@ -3,13 +3,12 @@ package com.trainticket.postsales.adapters.messaging;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.messaging.LazyRedisEventPublisher;
 import com.trainticket.platformkit.messaging.LazyRedisEventSubscriber;
-import com.trainticket.platformkit.messaging.RedisReadinessProbe;
+import com.trainticket.platformkit.messaging.RedisPingReadinessProbe;
 import com.trainticket.postsales.application.EventPublisher;
 import com.trainticket.postsales.application.EventSubscriber;
 import com.trainticket.postsales.application.PostSalesEventHandler;
 import com.trainticket.postsales.application.PublishFailedException;
 import com.trainticket.postsales.application.SubscribeFailedException;
-import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -66,16 +65,13 @@ public class RedisMessagingConfiguration {
     }
 
     @Bean
-    RedisMessagingReadiness redisMessagingReadiness(
-        LazyRedisEventPublisher publisher,
-        LazyRedisEventSubscriber subscriber
-    ) {
-        return new RedisMessagingReadiness(List.of(publisher, subscriber));
+    RedisMessagingReadiness redisMessagingReadiness(RedisMessagingProperties properties) {
+        return new RedisMessagingReadiness(new RedisPingReadinessProbe(properties.redisUrl()));
     }
 
-    public record RedisMessagingReadiness(List<RedisReadinessProbe> probes) {
+    public record RedisMessagingReadiness(RedisPingReadinessProbe probe) {
         public boolean isReady() {
-            return probes.stream().allMatch(RedisReadinessProbe::isReady);
+            return probe.isReady();
         }
     }
 }

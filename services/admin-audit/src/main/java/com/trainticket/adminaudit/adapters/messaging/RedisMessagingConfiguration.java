@@ -7,8 +7,7 @@ import com.trainticket.adminaudit.application.ports.PublishFailedException;
 import com.trainticket.adminaudit.application.ports.SubscribeFailedException;
 import com.trainticket.platformkit.messaging.LazyRedisEventPublisher;
 import com.trainticket.platformkit.messaging.LazyRedisEventSubscriber;
-import com.trainticket.platformkit.messaging.RedisReadinessProbe;
-import java.util.List;
+import com.trainticket.platformkit.messaging.RedisPingReadinessProbe;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -61,16 +60,13 @@ public class RedisMessagingConfiguration {
     }
 
     @Bean
-    RedisMessagingReadiness redisMessagingReadiness(
-        LazyRedisEventPublisher publisher,
-        LazyRedisEventSubscriber subscriber
-    ) {
-        return new RedisMessagingReadiness(List.of(publisher, subscriber));
+    RedisMessagingReadiness redisMessagingReadiness(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
+        return new RedisMessagingReadiness(new RedisPingReadinessProbe(redisUrl));
     }
 
-    public record RedisMessagingReadiness(List<RedisReadinessProbe> probes) {
+    public record RedisMessagingReadiness(RedisPingReadinessProbe probe) {
         public boolean isReady() {
-            return probes.stream().allMatch(RedisReadinessProbe::isReady);
+            return probe.isReady();
         }
     }
 }
