@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from datetime import datetime, timedelta
 from hashlib import sha256
+import logging
 import threading
 from typing import Any, Protocol
 
@@ -22,6 +23,7 @@ from .runtime import health, profile
 REQUEST_ID_HEADER = "X-Request-Id"
 CORRELATION_ID_HEADER = "X-Correlation-Id"
 TraceHook = Callable[[str, Mapping[str, object]], None]
+logger = logging.getLogger(__name__)
 
 
 class RuntimeSpan(AbstractContextManager["RuntimeSpan"], Protocol):
@@ -200,34 +202,53 @@ class PlanStore:
         self.services: dict[str, dict[str, object]] = {}
         self.segments: dict[str, dict[str, object]] = {}
         self.node_place: dict[str, str] = {}
+        self.applied_event_ids: set[str] = set()
+
+    def clear(self) -> None:
+        with self._lock:
+            self.services.clear()
+            self.segments.clear()
+            self.node_place.clear()
+            self.applied_event_ids.clear()
+
+    def apply_envelope(self, envelope: Any) -> bool:
+        event_id = str(getattr(envelope, "eventId", ""))
+        with self._lock:
+            if event_id and event_id in self.applied_event_ids:
+                return False
+            self._apply_locked(str(envelope.eventType), envelope.payload)
+            if event_id:
+                self.applied_event_ids.add(event_id)
+        return True
 
     def apply(self, event_type: str, payload: Mapping[str, object]) -> None:
         with self._lock:
-            if event_type in ("ServicePlanPublished", "ScheduledServiceCreated"):
-                ref = str(payload.get("scheduledServiceRef", ""))
-                if ref:
-                    self.services[ref] = dict(payload)
-            elif event_type in ("ServicePlanChanged", "ServiceSegmentCreated"):
-                seg = str(payload.get("segmentRef", ""))
-                if seg and payload.get("originStopRef"):
-                    self.segments[seg] = dict(payload)
-            elif event_type in ("TransportNodeRegistered", "TransportNodeAdded", "TransportNodeUpdated"):
-                node = str(payload.get("nodeId", ""))
-                place = str(payload.get("placeId", ""))
-                if node and place:
-                    self.node_place[node] = place
+            self._apply_locked(event_type, payload)
+
+    def _apply_locked(self, event_type: str, payload: Mapping[str, object]) -> None:
+        if event_type in ("ServicePlanPublished", "ScheduledServiceCreated"):
+            ref = str(payload.get("scheduledServiceRef", ""))
+            if ref:
+                self.services[ref] = dict(payload)
+        elif event_type in ("ServicePlanChanged", "ServiceSegmentCreated"):
+            seg = str(payload.get("segmentRef", ""))
+            if seg and payload.get("originStopRef"):
+                self.segments[seg] = dict(payload)
+        elif event_type in ("TransportNodeRegistered", "TransportNodeAdded", "TransportNodeUpdated"):
+            node = str(payload.get("nodeId", ""))
+            place = str(payload.get("placeId", ""))
+            if node and place:
+                self.node_place[node] = place
 
     def _matches(self, stop_ref: str, requested: str) -> bool:
-        return stop_ref == requested or self.node_place.get(stop_ref) == requested
-
-    def resolve_stop_ref(self, requested: str) -> str:
-        """Map a place ref to one of its transport nodes (phase 1: first
-        registered node wins). Node refs and unknown refs pass through."""
-        with self._lock:
-            for node, place in self.node_place.items():
-                if place == requested:
-                    return node
-        return requested
+        requested_place = self.node_place.get(requested)
+        stop_place = self.node_place.get(stop_ref)
+        return (
+            stop_ref == requested
+            or stop_place == requested
+            or (requested_place is not None and stop_ref == requested_place)
+            or (requested_place is not None and stop_place == requested_place)
+        )
 
     def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[Itinerary]:
         found: list[Itinerary] = []
@@ -317,6 +338,20 @@ def _contract_candidate(origin_ref: str, destination_ref: str, departure_date: s
     )
 
 
+def _candidate_for_intent(candidate: Itinerary, origin_ref: str, destination_ref: str) -> Itinerary:
+    if candidate.origin_ref == origin_ref and candidate.destination_ref == destination_ref:
+        return candidate
+    return Itinerary(
+        legs=candidate.legs,
+        itinerary_ref=candidate.itinerary_ref,
+        price_hint=candidate.price_hint,
+        availability_hint=candidate.availability_hint,
+        planning_snapshot_refs=candidate.planning_snapshot_refs,
+        search_origin_ref=origin_ref,
+        search_destination_ref=destination_ref,
+    )
+
+
 def _itinerary_to_contract(itinerary: Itinerary) -> dict[str, object]:
     return {
         "itineraryRef": itinerary.itinerary_ref,
@@ -345,17 +380,19 @@ def _itinerary_to_contract(itinerary: Itinerary) -> dict[str, object]:
 
 def _search_contract_response(payload: Mapping[str, object]) -> tuple[dict[str, object], tuple[str, ...]]:
     origin_ref, destination_ref, departure_date, traveler_refs, channel, max_results = _validate_contract_search_payload(payload)
-    resolved_origin = _plan_store.resolve_stop_ref(origin_ref)
-    resolved_destination = _plan_store.resolve_stop_ref(destination_ref)
     intent = TripIntent(
-        origin_ref=resolved_origin,
-        destination_ref=resolved_destination,
+        origin_ref=origin_ref,
+        destination_ref=destination_ref,
         departure_window_start=f"{departure_date}T00:00:00Z",
         departure_window_end=f"{departure_date}T23:59:59Z",
         passenger_count=len(traveler_refs),
     )
-    real_candidates = _plan_store.candidates(resolved_origin, resolved_destination, departure_date)
-    candidate_pool = tuple(real_candidates) if real_candidates else (_contract_candidate(resolved_origin, resolved_destination, departure_date, channel),)
+    real_candidates = _plan_store.candidates(origin_ref, destination_ref, departure_date)
+    candidate_pool = (
+        tuple(_candidate_for_intent(candidate, origin_ref, destination_ref) for candidate in real_candidates)
+        if real_candidates
+        else (_contract_candidate(origin_ref, destination_ref, departure_date, channel),)
+    )
     result = search_itineraries(intent, candidate_pool)
     selected = result.candidates[:max_results]
     itineraries = [_itinerary_to_contract(itinerary) for itinerary, _score in selected]
@@ -374,17 +411,22 @@ def _default_publisher() -> EventPublisher:
 
 
 def _default_subscriber() -> EventSubscriber:
-    from .adapters.messaging.redis_streams import RedisEventSubscriber
+    from .adapters.messaging.redis_streams import create_redis_event_subscriber
 
-    return RedisEventSubscriber()
+    return create_redis_event_subscriber()
+
+
+def _occurred_at_text(envelope: Any) -> str:
+    occurred_at = getattr(envelope, "occurredAt", "")
+    return occurred_at.isoformat() if hasattr(occurred_at, "isoformat") else str(occurred_at)
 
 
 def _handle_upstream_event(app: FastAPI, envelope: Any) -> None:
-    _plan_store.apply(envelope.eventType, envelope.payload)
+    _plan_store.apply_envelope(envelope)
     app.state.consumed_events[envelope.eventId] = {
         "eventType": envelope.eventType,
         "producer": envelope.producer,
-        "occurredAt": envelope.occurredAt.isoformat(),
+        "occurredAt": _occurred_at_text(envelope),
     }
     app.state.upstream_event_payloads[envelope.eventId] = dict(envelope.payload)
 
@@ -393,6 +435,17 @@ def _start_subscriber(subscriber: EventSubscriber, handler: Callable[[Any], None
     from .adapters.messaging.subscriber import start_trip_planning_subscription
 
     return start_trip_planning_subscription(subscriber, handler)
+
+
+def _replay_upstream_events(subscriber: EventSubscriber, handler: Callable[[Any], None]) -> None:
+    replay = getattr(subscriber, "replay", None)
+    if not callable(replay):
+        return
+    try:
+        replay(handler)
+    except Exception:
+        logger.exception("trip-planning plan index replay failed")
+        raise
 
 
 def _stop_subscriber(subscriber: EventSubscriber | None, thread: threading.Thread | None) -> None:
@@ -421,6 +474,8 @@ def create_app(
         if active_subscriber is None and start_event_subscriber:
             active_subscriber = _default_subscriber()
         handler = lambda envelope: _handle_upstream_event(app, envelope)
+        if active_subscriber is not None and start_event_subscriber:
+            _replay_upstream_events(active_subscriber, handler)
         subscriber_thread = _start_subscriber(active_subscriber, handler) if active_subscriber is not None and start_event_subscriber else None
         app.state.event_subscriber = active_subscriber
         app.state.subscriber_thread = subscriber_thread

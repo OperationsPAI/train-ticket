@@ -346,6 +346,8 @@ class Itinerary:
     price_hint: PriceHint | None = None
     availability_hint: AvailabilityHint | None = None
     planning_snapshot_refs: tuple[str, ...] = field(default_factory=tuple)
+    search_origin_ref: str | None = None
+    search_destination_ref: str | None = None
 
     def __post_init__(self) -> None:
         legs = tuple(self.legs)
@@ -376,15 +378,17 @@ class Itinerary:
             planning_snapshot_refs=tuple(
                 data.get("planning_snapshot_refs", data.get("planningSnapshotRefs", ()))
             ),
+            search_origin_ref=data.get("search_origin_ref", data.get("searchOriginRef")),
+            search_destination_ref=data.get("search_destination_ref", data.get("searchDestinationRef")),
         )
 
     @property
     def origin_ref(self) -> str:
-        return self.legs[0].origin_stop_ref
+        return self.search_origin_ref or self.legs[0].origin_stop_ref
 
     @property
     def destination_ref(self) -> str:
-        return self.legs[-1].destination_stop_ref
+        return self.search_destination_ref or self.legs[-1].destination_stop_ref
 
     @property
     def departure_time(self) -> datetime:
