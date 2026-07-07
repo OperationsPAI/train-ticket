@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
+import os
+from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +23,7 @@ from .application import (
 )
 from train_ticket_platform.http import canonical_error_body
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
+from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
 from .runtime import health, profile
 
@@ -176,7 +179,10 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/ready")
-    def ready_endpoint() -> dict[str, str]:
+    def ready_endpoint(response: Response) -> dict[str, str]:
+        if not _storage_ready(app):
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/healthz")
@@ -184,13 +190,54 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/readyz")
-    def readyz_endpoint() -> dict[str, str]:
+    def readyz_endpoint(response: Response) -> dict[str, str]:
+        if not _storage_ready(app):
+            response.status_code = 503
+            return {"status": "not-ready"}
         return {"status": health()}
 
     @app.get("/metadata")
     def metadata_endpoint() -> dict[str, object]:
         return {"service": profile(), "observability": {"tracing": "opt-in", "default": "noop"}}
 
+
+
+def _storage_ready(app: FastAPI) -> bool:
+    gate = getattr(app.state, "readiness", None)
+    if gate is not None and not gate.ready:
+        return False
+    pool = getattr(app.state, "database_pool", None)
+    if pool is None:
+        return True
+    try:
+        with pool.connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return True
+    except Exception:
+        if gate is not None:
+            gate.mark_failed("database readiness check failed")
+        return False
+
+
+def _configure_postgres(app: FastAPI) -> tuple[InMemoryAssessmentRepository, IdempotencyStore | None, Any | None]:
+    config = DatabaseConfig.from_env()
+    if config is None:
+        return InMemoryAssessmentRepository(), None, None
+    from .adapters.storage import PostgresAssessmentRepository, TransactionalOutboxPublisher
+
+    readiness = ReadinessGate()
+    pool = DatabasePool(config)
+    app.state.database_pool = pool
+    app.state.readiness = readiness
+    env_dir = os.environ.get("MIGRATIONS_DIR")
+    migrations_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parents[2] / "migrations"
+    run_migrations(pool, migrations_dir, readiness)
+    repository = PostgresAssessmentRepository(pool)
+    publisher = TransactionalOutboxPublisher(repository)
+    relay = OutboxRelay(pool)
+    relay.start()
+    app.state.outbox_relay = relay
+    return repository, PostgresIdempotencyStore(pool), publisher
 
 def configure_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
@@ -265,7 +312,7 @@ def create_app(
     service: RiskComplianceService | None = None,
     idempotency_store: IdempotencyStore | None = None,
 ) -> FastAPI:
-    store = idempotency_store or BoundedInMemoryIdempotencyStore()
+    store = idempotency_store
     subscriber_config: dict[str, Any] | None = None
 
     @asynccontextmanager
@@ -282,9 +329,17 @@ def create_app(
         finally:
             if subscriber_config is not None:
                 app.state.subscriber.stop()
+            relay = getattr(app.state, "outbox_relay", None)
+            if relay is not None:
+                relay.stop()
+            pool = getattr(app.state, "database_pool", None)
+            if pool is not None:
+                pool.close()
 
     app = FastAPI(title="Risk & Compliance", version="0.1.0", lifespan=lifespan)
-    app.state.assessment_repository = InMemoryAssessmentRepository()
+    repository, postgres_idempotency_store, postgres_publisher = _configure_postgres(app)
+    store = store or postgres_idempotency_store or BoundedInMemoryIdempotencyStore()
+    app.state.assessment_repository = repository
     if service is None:
         from .adapters.messaging.redis_streams import (
             RISK_COMPLIANCE_CONSUMER_GROUP,
@@ -294,7 +349,7 @@ def create_app(
             risk_compliance_consumer_name,
         )
 
-        app.state.publisher = RedisEventPublisher()
+        app.state.publisher = postgres_publisher or RedisEventPublisher()
         app.state.risk_service = RiskComplianceService(
             publisher=app.state.publisher,
             repository=app.state.assessment_repository,

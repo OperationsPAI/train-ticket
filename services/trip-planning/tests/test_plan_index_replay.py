@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import trip_planning.api as api
 from trip_planning import create_app
 from trip_planning.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
+from trip_planning.api import PlanStore
 from trip_planning.events import EventEnvelope
 
 
@@ -15,23 +16,33 @@ class PlanIndexReplayTest(unittest.TestCase):
     def tearDown(self) -> None:
         api._plan_store.clear()
 
-    def test_new_process_replays_stream_before_searching_real_segment(self) -> None:
-        envelopes = _standard_api_sequence_events()
+    def test_new_process_loads_db_read_model_before_subscribing_incrementals(self) -> None:
+        plan_store = PlanStore()
+        for envelope in _standard_api_sequence_events():
+            plan_store.apply_envelope(envelope)
         publisher = FakeEventPublisher()
-        subscriber = FakeEventSubscriber(envelopes)
+        subscriber = FakeEventSubscriber()
+        original = api._active_plan_store
+        original_plan_store = api._plan_store
+        api._active_plan_store = plan_store
+        api._plan_store = plan_store
 
         app = create_app(event_publisher=publisher, event_subscriber=subscriber)
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/v1/itineraries/search",
-                json={
-                    "originRef": "plc-origin",
-                    "destinationRef": "plc-destination",
-                    "departureDate": "2026-08-01",
-                    "travelerRefs": ["tvl-1"],
-                    "channel": "WEB",
-                },
-            )
+        try:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/itineraries/search",
+                    json={
+                        "originRef": "plc-origin",
+                        "destinationRef": "plc-destination",
+                        "departureDate": "2026-08-01",
+                        "travelerRefs": ["tvl-1"],
+                        "channel": "WEB",
+                    },
+                )
+        finally:
+            api._active_plan_store = original
+            api._plan_store = original_plan_store
 
         self.assertEqual(response.status_code, 200)
         leg = response.json()["itineraries"][0]["legs"][0]
@@ -54,20 +65,31 @@ class PlanIndexReplayTest(unittest.TestCase):
                 payload={"nodeId": "node-destination-old", "placeId": "plc-destination", "displayName": "old", "servingModes": ["TRAIN"]},
             ),
         ]
-        subscriber = FakeEventSubscriber(old_nodes + _standard_api_sequence_events())
+        plan_store = PlanStore()
+        for envelope in old_nodes + _standard_api_sequence_events():
+            plan_store.apply_envelope(envelope)
+        subscriber = FakeEventSubscriber()
+        original = api._active_plan_store
+        original_plan_store = api._plan_store
+        api._active_plan_store = plan_store
+        api._plan_store = plan_store
 
         app = create_app(event_publisher=FakeEventPublisher(), event_subscriber=subscriber)
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/v1/itineraries/search",
-                json={
-                    "originRef": "plc-origin",
-                    "destinationRef": "plc-destination",
-                    "departureDate": "2026-08-01",
-                    "travelerRefs": ["tvl-1"],
-                    "channel": "WEB",
-                },
-            )
+        try:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/itineraries/search",
+                    json={
+                        "originRef": "plc-origin",
+                        "destinationRef": "plc-destination",
+                        "departureDate": "2026-08-01",
+                        "travelerRefs": ["tvl-1"],
+                        "channel": "WEB",
+                    },
+                )
+        finally:
+            api._active_plan_store = original
+            api._plan_store = original_plan_store
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["itineraries"][0]["legs"][0]["serviceSegmentRef"], "seg-real-080")

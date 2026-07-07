@@ -154,6 +154,12 @@ class InMemoryAssessmentRepository:
     def save(self, assessment: RiskAssessmentResult) -> None:
         self._assessments[assessment.assessmentId] = assessment
 
+    def try_mark_processed(self, event_id: str) -> bool:
+        if event_id in self._processed_event_ids:
+            return False
+        self._processed_event_ids.add(event_id)
+        return True
+
     def is_processed(self, event_id: str) -> bool:
         return event_id in self._processed_event_ids
 
@@ -241,6 +247,12 @@ class RiskComplianceService:
         completed = _evaluate(requested)
         result = _to_result(completed)
         envelope = _assessment_envelope(result, correlation_id, prefixed_id("cmd"))
+        transaction = getattr(self.repository, "transaction", None)
+        if callable(transaction):
+            with transaction():
+                self.repository.save(result)
+                self.publisher.publish(envelope)
+            return result, False
         self.repository.save(result)
         try:
             self.publisher.publish(envelope)
@@ -272,7 +284,20 @@ class RiskComplianceService:
     def handle_event(self, envelope: EventEnvelope) -> None:
         if envelope.eventType != "JourneyOrderCreated":
             return
-        if self.repository.is_processed(envelope.eventId):
+        transaction = getattr(self.repository, "transaction", None)
+        context = transaction() if callable(transaction) else None
+        if context is None:
+            self._handle_event_in_transaction(envelope)
+            return
+        with context:
+            self._handle_event_in_transaction(envelope)
+
+    def _handle_event_in_transaction(self, envelope: EventEnvelope) -> None:
+        try_mark_processed = getattr(self.repository, "try_mark_processed", None)
+        if callable(try_mark_processed):
+            if not try_mark_processed(envelope.eventId):
+                return
+        elif self.repository.is_processed(envelope.eventId):
             return
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
@@ -286,19 +311,31 @@ class RiskComplianceService:
         if block is not None:
             self.repository.save_block(block)
             self.publisher.publish(_block_applied_envelope(block, envelope.correlationId, assessment_envelope.eventId))
-        self.repository.record_processed(envelope.eventId)
+        if try_mark_processed is None:
+            self.repository.record_processed(envelope.eventId)
 
     def lift_block(self, *, subject_ref: str, scope: str, reason_code: str, correlation_id: str) -> RiskBlockLifted:
         previous = self.repository.active_block(subject_ref)
         if previous.scope != scope:
             raise BlockNotFoundError(subject_ref)
         lifted = _lifted_from_previous(previous, reason_code)
-        self.publisher.publish(_block_lifted_envelope(lifted, correlation_id, prefixed_id("cmd")))
-        self.repository.remove_block(subject_ref)
-        if previous.scope == BlockScope.ORDER.value:
-            account_id = self.repository.account_for_order(subject_ref)
-            if account_id is not None:
-                self.repository.record_account_lift(account_id, _coerce_datetime(lifted.allowedAt))
+        transaction = getattr(self.repository, "transaction", None)
+        context = transaction() if callable(transaction) else None
+        if context is None:
+            self.publisher.publish(_block_lifted_envelope(lifted, correlation_id, prefixed_id("cmd")))
+            self.repository.remove_block(subject_ref)
+            if previous.scope == BlockScope.ORDER.value:
+                account_id = self.repository.account_for_order(subject_ref)
+                if account_id is not None:
+                    self.repository.record_account_lift(account_id, _coerce_datetime(lifted.allowedAt))
+            return lifted
+        with context:
+            self.publisher.publish(_block_lifted_envelope(lifted, correlation_id, prefixed_id("cmd")))
+            self.repository.remove_block(subject_ref)
+            if previous.scope == BlockScope.ORDER.value:
+                account_id = self.repository.account_for_order(subject_ref)
+                if account_id is not None:
+                    self.repository.record_account_lift(account_id, _coerce_datetime(lifted.allowedAt))
         return lifted
 
     def _assess_journey_order_created(self, envelope: EventEnvelope) -> tuple[RiskAssessmentResult, RiskBlockApplied | None]:
