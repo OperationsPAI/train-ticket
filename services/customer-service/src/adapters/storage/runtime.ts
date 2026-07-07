@@ -1,0 +1,94 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  MigrationRunner,
+  OutboxAppender,
+  OutboxRelay,
+  PostgresIdempotencyStore,
+  ProcessedEventsGuard,
+  checkPostgresReadiness,
+  createPostgresPool,
+  streamForProducer,
+  withTransaction,
+  type EventEnvelope,
+} from "@trainticket/ts-kit";
+import { Redis } from "ioredis";
+import { type Pool } from "pg";
+
+import { CustomerServiceApplication } from "../../application/customer-service.js";
+import { type EventPublisher } from "../../application/messaging.js";
+import { DEFAULT_REDIS_URL } from "../messaging/stream-config.js";
+import { PostgresCustomerServiceRepository } from "./customer-service-repository.js";
+
+export type CustomerServiceStorageRuntime = Readonly<{
+  ready: () => Promise<boolean>;
+  idempotencyStore: PostgresIdempotencyStore;
+  runCommand: <T>(operation: (application: CustomerServiceApplication) => Promise<T>) => Promise<T>;
+  handleIntegrationEvent: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">;
+  stop: () => Promise<void>;
+}>;
+
+export async function startCustomerServiceStorage(): Promise<CustomerServiceStorageRuntime> {
+  const pool = createPostgresPool();
+  const migrations = new MigrationRunner(pool, migrationsDirectory());
+  try {
+    await migrations.apply();
+  } catch (error) {
+    console.error(sanitizedErrorForLog(error));
+  }
+
+  const redis = new Redis(process.env.REDIS_URL ?? DEFAULT_REDIS_URL, { lazyConnect: true });
+  await redis.connect();
+  const relay = new OutboxRelay(pool, redis as never, {
+    pollIntervalMs: 250,
+    onFailure: (error) => console.error(sanitizedErrorForLog(error)),
+  });
+  relay.start();
+
+  return {
+    ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
+    idempotencyStore: new PostgresIdempotencyStore(pool),
+    runCommand: (operation) => withCustomerServiceTransaction(pool, operation),
+    handleIntegrationEvent: (envelope, stream) => withTransaction(pool, async (client): Promise<"ack" | "retry" | "dlq"> => {
+      const guard = new ProcessedEventsGuard(client);
+      if (!await guard.tryStart(envelope.eventId, stream)) {
+        return "ack";
+      }
+      const publisher = new TransactionalOutboxPublisher(new OutboxAppender(client));
+      const application = new CustomerServiceApplication(publisher, new PostgresCustomerServiceRepository(client));
+      await application.handleIntegrationEvent(envelope as import("../../application/messaging.js").EventEnvelope);
+      return "ack";
+    }),
+    stop: async () => {
+      await relay.stop();
+      await Promise.allSettled([redis.quit(), pool.end()]);
+    },
+  };
+}
+
+async function withCustomerServiceTransaction<T>(pool: Pool, operation: (application: CustomerServiceApplication) => Promise<T>): Promise<T> {
+  return withTransaction(pool, async (client) => {
+    const publisher = new TransactionalOutboxPublisher(new OutboxAppender(client));
+    return operation(new CustomerServiceApplication(publisher, new PostgresCustomerServiceRepository(client)));
+  });
+}
+
+class TransactionalOutboxPublisher implements EventPublisher {
+  constructor(private readonly appender: OutboxAppender) {}
+
+  async publish(envelope: EventEnvelope): Promise<void> {
+    await this.appender.append(envelope, streamForProducer(envelope.producer));
+  }
+}
+
+export function migrationsDirectory(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "../../../migrations");
+}
+
+function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> {
+  if (error instanceof Error) {
+    return { name: error.name || "Error", message: error.message || "Storage failed" };
+  }
+  return { name: typeof error, message: "Storage failed" };
+}

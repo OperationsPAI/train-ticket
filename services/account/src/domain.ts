@@ -275,6 +275,10 @@ export class UserAccount {
 
   // ── Factory ──
 
+  static fromSnapshot(snapshot: UserAccountSnapshot): UserAccount {
+    return new UserAccount(deepFreeze({ ...snapshot }));
+  }
+
   static create(command: CreateAccount): { account: UserAccount; event: AccountCreated } {
     const accountId = command.accountId ?? generateAccountId();
     requireNonBlank(accountId, "accountId");
@@ -547,6 +551,10 @@ export class Preference {
   private constructor(private readonly snapshot: PreferenceSnapshot) {
     deepFreeze(this.snapshot);
     Object.freeze(this);
+  }
+
+  static fromSnapshot(snapshot: PreferenceSnapshot): Preference {
+    return new Preference(deepFreeze({ ...snapshot }));
   }
 
   static update(

@@ -527,6 +527,10 @@ export class SupportCase {
     Object.freeze(this);
   }
 
+  static fromSnapshot(snapshot: SupportCaseSnapshot): SupportCase {
+    return new SupportCase(deepFreeze(cloneForSnapshot(snapshot)));
+  }
+
   static open(command: OpenSupportCase): { case: SupportCase; event: SupportCaseOpened } {
     validateOpenCommand(command);
 
@@ -888,6 +892,10 @@ export class EvidenceRef {
     Object.freeze(this);
   }
 
+  static fromSnapshot(snapshot: EvidenceRefSnapshot): EvidenceRef {
+    return new EvidenceRef(deepFreeze(cloneForSnapshot(snapshot)));
+  }
+
   static attach(command: AttachEvidence): { evidence: EvidenceRef; event: EvidenceAttached } {
     validateAttachEvidenceCommand(command);
 
@@ -962,6 +970,10 @@ export class ManualActionRequest {
   private constructor(private readonly snapshot: ManualActionRequestSnapshot) {
     deepFreeze(this.snapshot);
     Object.freeze(this);
+  }
+
+  static fromSnapshot(snapshot: ManualActionRequestSnapshot): ManualActionRequest {
+    return new ManualActionRequest(deepFreeze(cloneForSnapshot(snapshot)));
   }
 
   static request(command: RequestManualAction): { action: ManualActionRequest; event: ManualActionRequested } {
@@ -1084,6 +1096,10 @@ export class CaseTimeline {
   private constructor(private readonly snapshot: CaseTimelineSnapshot) {
     deepFreeze(this.snapshot);
     Object.freeze(this);
+  }
+
+  static fromSnapshot(snapshot: CaseTimelineSnapshot): CaseTimeline {
+    return new CaseTimeline(deepFreeze(cloneForSnapshot(snapshot)));
   }
 
   static create(caseId: SupportCaseId): CaseTimeline {

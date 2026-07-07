@@ -55,7 +55,7 @@ type QuoteOfferResult = Readonly<{
 }>;
 
 export interface OfferRepository {
-  save(snapshot: OfferSnapshot): Promise<void>;
+  save(snapshot: OfferSnapshot, expectedVersion?: bigint): Promise<{ version: bigint }> | Promise<void>;
   findById(offerId: string): Promise<OfferSnapshot | undefined>;
   clear(): void;
 }

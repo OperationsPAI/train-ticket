@@ -1,6 +1,7 @@
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 import { InMemoryAccountRepository } from "./application.js";
 import { RedisStreamEventPublisher } from "./adapters/messaging/publisher.js";
+import { startAccountStorage } from "./adapters/storage/runtime.js";
 
 export type BootstrapOptions = Readonly<{
   host?: string;
@@ -21,14 +22,18 @@ export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): numbe
 }
 
 export async function bootstrap(options: BootstrapOptions = {}) {
-  const publisher = new RedisStreamEventPublisher();
+  const storage = process.env.DATABASE_URL ? await startAccountStorage() : undefined;
+  const publisher = storage ? undefined : new RedisStreamEventPublisher();
   const app = createApp({
     instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
     repository: new InMemoryAccountRepository(),
     publisher,
+    idempotencyStore: storage?.idempotencyStore,
+    storage,
   });
   app.addHook("onClose", async () => {
-    await publisher.close();
+    await publisher?.close();
+    await storage?.stop();
   });
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;
