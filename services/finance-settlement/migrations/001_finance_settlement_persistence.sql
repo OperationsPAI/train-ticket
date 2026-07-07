@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS revenue_recognition_snapshots (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_revenue_recognition_snapshots_order_id
-  ON revenue_recognition_snapshots ((data->>'orderId'), ((data->>'recognizedAt')::timestamptz));
+  ON revenue_recognition_snapshots ((data->>'orderId'), (data->>'recognizedAt'));
 
 CREATE TABLE IF NOT EXISTS reconciliation_case_snapshots (
   id         text PRIMARY KEY,
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS reconciliation_case_snapshots (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_reconciliation_case_snapshots_order_id
-  ON reconciliation_case_snapshots ((data->>'orderId'), ((data->>'openedAt')::timestamptz));
+  ON reconciliation_case_snapshots ((data->>'orderId'), (data->>'openedAt'));
 
 CREATE TABLE IF NOT EXISTS invoice_snapshots (
   id         text PRIMARY KEY,

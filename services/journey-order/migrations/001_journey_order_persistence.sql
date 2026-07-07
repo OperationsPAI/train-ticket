@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS journey_order_snapshots (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_journey_order_snapshots_account_created
-  ON journey_order_snapshots ((data->>'accountId'), ((data->>'createdAt')::timestamptz) DESC);
+  ON journey_order_snapshots ((data->>'accountId'), (data->>'createdAt') DESC);
 CREATE INDEX IF NOT EXISTS idx_journey_order_snapshots_status
   ON journey_order_snapshots ((data->>'status'));
 
