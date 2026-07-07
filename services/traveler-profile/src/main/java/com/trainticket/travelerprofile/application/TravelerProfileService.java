@@ -1,6 +1,7 @@
 package com.trainticket.travelerprofile.application;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import com.trainticket.platformkit.idempotency.IdempotencyStore;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,38 +27,53 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TravelerProfileService {
     private static final String PRODUCER = "traveler-profile";
 
-    private final Map<String, StoredTraveler> travelers = new ConcurrentHashMap<>();
-    private final Map<String, IdempotencyRecord> idempotencyRecords = new ConcurrentHashMap<>();
+    private final TravelerProfileStore store;
+    private final IdempotencyStore idempotencyStore;
     private final EventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
-    @Autowired
     public TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper) {
-        this(eventPublisher, objectMapper, Clock.systemUTC());
+        this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC());
     }
 
-    TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper, Clock clock) {
+    @Autowired
+    public TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper
+    ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC());
+    }
+
+    TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        Clock clock
+    ) {
+        this.store = store;
+        this.idempotencyStore = idempotencyStore;
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
+    @Transactional
     public TravelerCreatedView create(CreateTravelerCommand command, String requestFingerprint) {
         validateCreate(command);
         String key = scopedKey("POST:/api/v1/travelers", command.idempotencyKey());
-        IdempotencyRecord replay = idempotencyRecords.get(key);
-        if (replay != null) {
-            return replay.responseAs(TravelerCreatedView.class, requestFingerprint);
-        }
-
+        TravelerCreatedView replay = replayIfPresent(key, requestFingerprint, TravelerCreatedView.class);
+        if (replay != null) { return replay; }
         Instant now = now();
         String commandId = commandId();
         TravelerProfile aggregate = TravelerProfile.create(
@@ -85,7 +101,7 @@ public class TravelerProfileService {
             );
         }
         String travelerId = canonicalTravelerId(aggregate.profileId());
-        StoredTraveler stored = new StoredTraveler(
+        TravelerState stored = new TravelerState(
             aggregate,
             travelerId,
             "sv-1",
@@ -98,25 +114,24 @@ public class TravelerProfileService {
             now,
             now
         );
-        travelers.put(travelerId, stored);
+        store.save(stored);
         publishNewEvents(aggregate.domainEvents(), 0, stored);
         TravelerCreatedView response = new TravelerCreatedView(travelerId, stored.snapshotVersion(), stored.travelerType(), stored.createdAt());
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response));
+        saveIdempotentResponse(key, requestFingerprint, response);
         return response;
     }
 
     public TravelerProfileView get(String travelerId) {
-        return find(travelerId).toView();
+        return toView(find(travelerId));
     }
 
+    @Transactional
     public TravelerProfileView update(UpdateTravelerCommand command, String requestFingerprint) {
         validateUpdate(command);
         String key = scopedKey("PATCH:/api/v1/travelers/" + command.travelerId(), command.idempotencyKey());
-        IdempotencyRecord replay = idempotencyRecords.get(key);
-        if (replay != null) {
-            return replay.responseAs(TravelerProfileView.class, requestFingerprint);
-        }
-        StoredTraveler current = find(command.travelerId());
+        TravelerProfileView replay = replayIfPresent(key, requestFingerprint, TravelerProfileView.class);
+        if (replay != null) { return replay; }
+        TravelerState current = find(command.travelerId());
         TravelerProfile aggregate = current.aggregate();
         int eventOffset = aggregate.domainEvents().size();
         Instant now = now();
@@ -142,21 +157,20 @@ public class TravelerProfileService {
         }
         updateAggregatePreferences(command, current, aggregate, eventOffset, now, commandId);
 
-        StoredTraveler updated = current.updatedWith(command, nextSnapshotVersion(current.snapshotVersion()), now);
-        travelers.put(command.travelerId(), updated);
+        TravelerState updated = updatedWith(current, command, nextSnapshotVersion(current.snapshotVersion()), now);
+        store.save(updated);
         publishNewEvents(aggregate.domainEvents(), eventOffset, updated);
-        TravelerProfileView response = updated.toView();
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, response));
+        TravelerProfileView response = toView(updated);
+        saveIdempotentResponse(key, requestFingerprint, response);
         return response;
     }
 
+    @Transactional
     public EligibilityResult determineEligibility(String travelerId, String idempotencyKey, String correlationId, String requestFingerprint) {
         String key = scopedKey("POST:/api/v1/travelers/" + travelerId + "/eligibility", idempotencyKey);
-        IdempotencyRecord replay = idempotencyRecords.get(key);
-        if (replay != null) {
-            return replay.responseAs(EligibilityResult.class, requestFingerprint);
-        }
-        StoredTraveler traveler = find(travelerId);
+        EligibilityResult replay = replayIfPresent(key, requestFingerprint, EligibilityResult.class);
+        if (replay != null) { return replay; }
+        TravelerState traveler = find(travelerId);
         TravelerProfile aggregate = traveler.aggregate();
         int eventOffset = aggregate.domainEvents().size();
         Instant now = now();
@@ -182,17 +196,14 @@ public class TravelerProfileService {
         }
         String eligibilityRef = summary == null ? "elig-" + UUID.randomUUID() : canonicalEligibilityRef(summary.eligibilityId());
         EligibilityResult result = new EligibilityResult(travelerId, eligibilityRef, eligible, now, now.plus(365, ChronoUnit.DAYS));
+        store.save(traveler);
         publishNewEvents(aggregate.domainEvents(), eventOffset, traveler);
-        idempotencyRecords.put(key, IdempotencyRecord.of(requestFingerprint, result));
+        saveIdempotentResponse(key, requestFingerprint, result);
         return result;
     }
 
-    private StoredTraveler find(String travelerId) {
-        StoredTraveler traveler = travelers.get(travelerId);
-        if (traveler == null) {
-            throw new TravelerNotFoundException(travelerId);
-        }
-        return traveler;
+    private TravelerState find(String travelerId) {
+        return store.findByTravelerId(travelerId).orElseThrow(() -> new TravelerNotFoundException(travelerId));
     }
 
     private void validateCreate(CreateTravelerCommand command) {
@@ -234,7 +245,7 @@ public class TravelerProfileService {
 
     private void updateAggregatePreferences(
         UpdateTravelerCommand command,
-        StoredTraveler current,
+        TravelerState current,
         TravelerProfile aggregate,
         int eventOffset,
         Instant now,
@@ -265,13 +276,13 @@ public class TravelerProfileService {
         }
     }
 
-    private void publishNewEvents(List<TravelerProfileEvent> events, int eventOffset, StoredTraveler traveler) {
+    private void publishNewEvents(List<TravelerProfileEvent> events, int eventOffset, TravelerState traveler) {
         for (int index = eventOffset; index < events.size(); index++) {
             publish(events.get(index), traveler);
         }
     }
 
-    private void publish(TravelerProfileEvent event, StoredTraveler traveler) {
+    private void publish(TravelerProfileEvent event, TravelerState traveler) {
         eventPublisher.publish(new EventEnvelope(
             PrefixedIds.newEventId(),
             externalEventType(event),
@@ -284,7 +295,7 @@ public class TravelerProfileService {
         ));
     }
 
-    private ObjectNode payloadFor(TravelerProfileEvent event, StoredTraveler traveler) {
+    private ObjectNode payloadFor(TravelerProfileEvent event, TravelerState traveler) {
         if (event instanceof EligibilityGranted granted) {
             return objectMapper.createObjectNode()
                 .put("travelerId", traveler.travelerId())
@@ -319,8 +330,8 @@ public class TravelerProfileService {
             .put("snapshotVersion", traveler.snapshotVersion())
             .put("updatedAt", traveler.updatedAt().toString())
             .put("travelerType", traveler.travelerType().name());
-        if (traveler.maskedDocumentRef() != null) {
-            payload.put("maskedDocumentRef", traveler.maskedDocumentRef());
+        if (maskedDocumentRef(traveler) != null) {
+            payload.put("maskedDocumentRef", maskedDocumentRef(traveler));
         }
         if (event instanceof DocumentAdded added) {
             payload.put("documentType", toApiDocumentType(added.documentType()).name());
@@ -366,9 +377,6 @@ public class TravelerProfileService {
         return PrefixedIds.isCorrelationId(id) ? id : PrefixedIds.newCorrelationId();
     }
 
-    private static String scopedKey(String scope, String idempotencyKey) {
-        return scope + ":" + idempotencyKey;
-    }
 
     private static String nextSnapshotVersion(String current) {
         int value = Integer.parseInt(current.substring("sv-".length()));
@@ -401,73 +409,67 @@ public class TravelerProfileService {
         }
     }
 
-    private record IdempotencyRecord(String requestFingerprint, Object response) {
-        static IdempotencyRecord of(String requestFingerprint, Object response) {
-            return new IdempotencyRecord(requestFingerprint, response);
-        }
 
-        <T> T responseAs(Class<T> type, String candidateFingerprint) {
-            if (!requestFingerprint.equals(candidateFingerprint)) {
-                throw new IdempotencyKeyReusedException();
-            }
-            return type.cast(response);
+    private static String scopedKey(String scope, String idempotencyKey) {
+        return scope + ":" + idempotencyKey;
+    }
+
+    private <T> T replayIfPresent(String key, String requestFingerprint, Class<T> responseType) {
+        return idempotencyStore.find(key)
+            .map(stored -> responseFromStored(stored, requestFingerprint, responseType))
+            .orElse(null);
+    }
+
+    private void saveIdempotentResponse(String key, String requestFingerprint, Object response) {
+        try {
+            byte[] body = objectMapper.writeValueAsBytes(response);
+            idempotencyStore.saveIfAbsent(
+                key,
+                new IdempotencyStore.StoredResponse(requestFingerprint, 200, "application/json", Map.of(), body)
+            );
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalStateException("idempotent response could not be encoded", exception);
         }
     }
 
-    private record StoredTraveler(
-        TravelerProfile aggregate,
-        String travelerId,
-        String snapshotVersion,
-        String accountId,
-        TravelerType travelerType,
-        String givenName,
-        String familyName,
-        String contactEmail,
-        String contactPhone,
-        Instant createdAt,
-        Instant updatedAt
-    ) {
-        TravelerProfileView toView() {
-            return new TravelerProfileView(
-                travelerId,
-                snapshotVersion,
-                accountId,
-                travelerType,
-                givenName,
-                familyName,
-                documentType(),
-                maskedDocumentRef(),
-                contactEmail,
-                contactPhone,
-                createdAt,
-                updatedAt
-            );
+    private <T> T responseFromStored(IdempotencyStore.StoredResponse stored, String requestFingerprint, Class<T> responseType) {
+        if (!stored.fingerprint().equals(requestFingerprint)) {
+            throw new IdempotencyKeyReusedException();
         }
+        try {
+            return objectMapper.readValue(stored.body(), responseType);
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("idempotent response could not be decoded", exception);
+        }
+    }
 
-        StoredTraveler updatedWith(UpdateTravelerCommand command, String nextVersion, Instant now) {
-            return new StoredTraveler(
-                aggregate,
-                travelerId,
-                nextVersion,
-                command.accountId() != null ? command.accountId().trim() : accountId,
-                command.travelerType() != null ? command.travelerType() : travelerType,
-                command.givenName() != null ? command.givenName().trim() : givenName,
-                command.familyName() != null ? command.familyName().trim() : familyName,
-                command.contactEmail() != null ? command.contactEmail() : contactEmail,
-                command.contactPhone() != null ? command.contactPhone() : contactPhone,
-                createdAt,
-                now
-            );
-        }
+    private TravelerProfileView toView(TravelerState state) {
+        return new TravelerProfileView(
+            state.travelerId(), state.snapshotVersion(), state.accountId(), state.travelerType(), state.givenName(), state.familyName(),
+            documentType(state), maskedDocumentRef(state), state.contactEmail(), state.contactPhone(), state.createdAt(), state.updatedAt()
+        );
+    }
 
-        ApiDocumentType documentType() {
-            Document document = aggregate.primaryDocument();
-            return document == null ? null : toApiDocumentType(document.documentType());
-        }
+    private TravelerState updatedWith(TravelerState current, UpdateTravelerCommand command, String nextVersion, Instant now) {
+        return new TravelerState(
+            current.aggregate(), current.travelerId(), nextVersion,
+            command.accountId() != null ? command.accountId().trim() : current.accountId(),
+            command.travelerType() != null ? command.travelerType() : current.travelerType(),
+            command.givenName() != null ? command.givenName().trim() : current.givenName(),
+            command.familyName() != null ? command.familyName().trim() : current.familyName(),
+            command.contactEmail() != null ? command.contactEmail() : current.contactEmail(),
+            command.contactPhone() != null ? command.contactPhone() : current.contactPhone(),
+            current.createdAt(), now
+        );
+    }
 
-        String maskedDocumentRef() {
-            Document document = aggregate.primaryDocument();
-            return document == null ? null : document.maskedDocumentRef();
-        }
+    private ApiDocumentType documentType(TravelerState state) {
+        Document document = state.aggregate().primaryDocument();
+        return document == null ? null : toApiDocumentType(document.documentType());
+    }
+
+    private String maskedDocumentRef(TravelerState state) {
+        Document document = state.aggregate().primaryDocument();
+        return document == null ? null : document.maskedDocumentRef();
     }
 }

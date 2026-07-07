@@ -25,6 +25,13 @@ public final class PostSalesExecutionPlan {
         this.status = PostSalesStepStatus.PLANNED;
     }
 
+
+    public static PostSalesExecutionPlan rehydrate(String caseId, int version, List<PostSalesStep> steps, PostSalesStepStatus status) {
+        PostSalesExecutionPlan plan = new PostSalesExecutionPlan(caseId, version, steps);
+        plan.status = Objects.requireNonNull(status, "status is required");
+        return plan;
+    }
+
     public String caseId() { return caseId; }
     public int version() { return version; }
     public List<PostSalesStep> steps() { return Collections.unmodifiableList(steps); }

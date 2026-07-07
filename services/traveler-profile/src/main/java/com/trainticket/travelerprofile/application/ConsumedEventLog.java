@@ -19,8 +19,16 @@ public class ConsumedEventLog {
         this.clock = clock;
     }
 
+    public boolean recordIfNew(String eventId) {
+        return consumedEventIds.add(eventId);
+    }
+
     public void record(String eventId) {
-        consumedEventIds.add(eventId);
+        recordIfNew(eventId);
+    }
+
+    public void discard(String eventId) {
+        consumedEventIds.remove(eventId);
     }
 
     public boolean hasConsumed(String eventId) {

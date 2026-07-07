@@ -32,6 +32,7 @@ public final class ManualAction {
     private String rejectionReason;
     private ManualActionState state;
     private String resultSummary;
+    private long version;
     private final List<AdminAuditEvent> domainEvents;
 
     private ManualAction(
@@ -135,6 +136,35 @@ public final class ManualAction {
 
     // --- Accessors ---
 
+
+    public static ManualAction rehydrate(
+        String manualActionId,
+        String targetDomain,
+        String targetCommand,
+        String businessRef,
+        String reasonCode,
+        String description,
+        OperatorRef requestedBy,
+        boolean requiresApproval,
+        Instant requestedAt,
+        OperatorRef approvedBy,
+        Instant approvedAt,
+        String rejectionReason,
+        ManualActionState state,
+        String resultSummary,
+        List<AdminAuditEvent> domainEvents
+    ) {
+        ManualAction action = new ManualAction(manualActionId, targetDomain, targetCommand, businessRef, reasonCode, description, requestedBy, requiresApproval, requestedAt);
+        action.approvedBy = approvedBy;
+        action.approvedAt = approvedAt;
+        action.rejectionReason = rejectionReason;
+        action.state = Objects.requireNonNull(state, "state is required");
+        action.resultSummary = resultSummary;
+        action.domainEvents.clear();
+        action.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return action;
+    }
+
     public String manualActionId() { return manualActionId; }
     public String targetDomain() { return targetDomain; }
     public String targetCommand() { return targetCommand; }
@@ -149,6 +179,14 @@ public final class ManualAction {
     public String rejectionReason() { return rejectionReason; }
     public ManualActionState state() { return state; }
     public String resultSummary() { return resultSummary; }
+    public long version() { return version; }
+    public ManualAction withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
     public List<AdminAuditEvent> domainEvents() { return List.copyOf(domainEvents); }
 
     // --- Commands ---

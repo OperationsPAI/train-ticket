@@ -24,6 +24,25 @@ public final class PostSalesStep {
         this.status = PostSalesStepStatus.PLANNED;
     }
 
+
+    public static PostSalesStep rehydrate(
+        PostSalesStepType type,
+        String targetContext,
+        String idempotencyKey,
+        int maxRetries,
+        PostSalesStepStatus status,
+        String externalRef,
+        String failureReason,
+        Instant completedAt
+    ) {
+        PostSalesStep step = new PostSalesStep(type, targetContext, idempotencyKey, maxRetries);
+        step.status = Objects.requireNonNull(status, "status is required");
+        step.externalRef = externalRef;
+        step.failureReason = failureReason;
+        step.completedAt = completedAt;
+        return step;
+    }
+
     public PostSalesStepType type() { return type; }
     public String targetContext() { return targetContext; }
     public String idempotencyKey() { return idempotencyKey; }

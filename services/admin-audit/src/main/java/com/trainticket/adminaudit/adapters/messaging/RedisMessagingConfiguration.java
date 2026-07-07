@@ -5,8 +5,9 @@ import com.trainticket.adminaudit.application.ports.EventPublisher;
 import com.trainticket.adminaudit.application.ports.EventSubscriber;
 import com.trainticket.adminaudit.application.ports.PublishFailedException;
 import com.trainticket.adminaudit.application.ports.SubscribeFailedException;
-import com.trainticket.platformkit.messaging.RedisEventPublisher;
-import com.trainticket.platformkit.messaging.RedisEventSubscriber;
+import com.trainticket.platformkit.messaging.LazyRedisEventPublisher;
+import com.trainticket.platformkit.messaging.LazyRedisEventSubscriber;
+import com.trainticket.platformkit.messaging.RedisPingReadinessProbe;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -17,12 +18,15 @@ import org.springframework.context.annotation.Configuration;
 public class RedisMessagingConfiguration {
 
     @Bean(destroyMethod = "close")
-    RedisEventPublisher platformRedisEventPublisher(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
-        return RedisEventPublisher.fromUrl(redisUrl, objectMapper);
+    LazyRedisEventPublisher platformRedisEventPublisher(
+        @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl,
+        ObjectMapper objectMapper
+    ) {
+        return new LazyRedisEventPublisher(redisUrl, objectMapper);
     }
 
     @Bean
-    EventPublisher redisEventPublisher(RedisEventPublisher publisher) {
+    EventPublisher redisEventPublisher(LazyRedisEventPublisher publisher) {
         return envelope -> {
             try {
                 publisher.publish(envelope);
@@ -33,12 +37,15 @@ public class RedisMessagingConfiguration {
     }
 
     @Bean(destroyMethod = "close")
-    RedisEventSubscriber platformRedisEventSubscriber(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
-        return RedisEventSubscriber.fromUrl(redisUrl, objectMapper);
+    LazyRedisEventSubscriber platformRedisEventSubscriber(
+        @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl,
+        ObjectMapper objectMapper
+    ) {
+        return new LazyRedisEventSubscriber(redisUrl, objectMapper);
     }
 
     @Bean
-    EventSubscriber redisEventSubscriber(RedisEventSubscriber subscriber) {
+    EventSubscriber redisEventSubscriber(LazyRedisEventSubscriber subscriber) {
         return (streams, group, consumerName, handler) -> {
             try {
                 subscriber.subscribe(streams, group, consumerName, envelope -> switch (handler.handle(envelope)) {
@@ -50,5 +57,16 @@ public class RedisMessagingConfiguration {
                 throw new SubscribeFailedException(exception.getMessage(), exception);
             }
         };
+    }
+
+    @Bean
+    RedisMessagingReadiness redisMessagingReadiness(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
+        return new RedisMessagingReadiness(new RedisPingReadinessProbe(redisUrl));
+    }
+
+    public record RedisMessagingReadiness(RedisPingReadinessProbe probe) {
+        public boolean isReady() {
+            return probe.isReady();
+        }
     }
 }

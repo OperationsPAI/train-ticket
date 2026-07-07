@@ -1,0 +1,88 @@
+package com.trainticket.postsales.infrastructure.persistence;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.trainticket.platformkit.persistence.SnapshotRepository;
+import com.trainticket.postsales.application.PostSalesRepository;
+import com.trainticket.postsales.domain.*;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Currency;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import javax.sql.DataSource;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+@Repository
+@Primary
+@ConditionalOnBean(DataSource.class)
+public class PostgresPostSalesRepository implements PostSalesRepository {
+    private final ObjectMapper objectMapper;
+    private final SnapshotRepository<PostSalesSnapshot> snapshots;
+    private final JdbcTemplate jdbc;
+
+    public PostgresPostSalesRepository(DataSource dataSource, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.snapshots = new SnapshotRepository<>(dataSource, objectMapper, "post_sales_case_snapshots", PostSalesSnapshot.class);
+        this.jdbc = new JdbcTemplate(dataSource);
+    }
+
+    @Override public void save(PostSalesCase postSalesCase) {
+        long version = snapshots.save(postSalesCase.caseId(), postSalesCase.version(), snapshot(postSalesCase));
+        postSalesCase.withVersion(version);
+    }
+
+    @Override public Optional<PostSalesCase> findById(String caseId) {
+        return snapshots.get(strip(caseId)).map(s -> toCase(s.data()).withVersion(s.version()));
+    }
+
+    @Override public Optional<PostSalesCase> findByIdempotencyKey(String idempotencyKey) {
+        return jdbc.query("SELECT id FROM post_sales_case_snapshots WHERE data->>'idempotencyKey' = ? LIMIT 1", rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(), idempotencyKey);
+    }
+
+    @Override public List<PostSalesCase> findAll() {
+        return jdbc.query("SELECT version, data::text AS data FROM post_sales_case_snapshots", (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")));
+    }
+
+    private PostSalesSnapshot readSnapshot(String json) {
+        try { return PostSalesSnapshot.of((ObjectNode) objectMapper.readTree(json)); }
+        catch (com.fasterxml.jackson.core.JsonProcessingException exception) { throw new IllegalStateException("post-sales snapshot JSON could not be decoded", exception); }
+    }
+
+    private PostSalesSnapshot snapshot(PostSalesCase c) {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("caseId", c.caseId()); root.put("journeyOrderId", c.journeyOrderId()); root.put("caseType", c.caseType().name());
+        root.set("scope", objectMapper.valueToTree(c.scope())); root.put("reasonCode", c.reasonCode()); root.put("actorRef", c.actorRef()); root.put("idempotencyKey", c.idempotencyKey());
+        root.put("status", c.status().name()); if (c.terminalReason()==null) root.putNull("terminalReason"); else root.put("terminalReason", c.terminalReason());
+        if (c.decision()==null) root.putNull("decision"); else root.set("decision", decision(c.decision()));
+        ArrayNode steps = root.putArray("executionPlan"); c.executionPlan().forEach(s -> steps.add(step(s)));
+        if (c.executionPlanAggregate()==null) root.putNull("executionPlanAggregate"); else root.set("executionPlanAggregate", plan(c.executionPlanAggregate()));
+        return PostSalesSnapshot.of(root);
+    }
+
+    private PostSalesCase toCase(PostSalesSnapshot snap) {
+        ObjectNode r = snap.data();
+        return PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of());
+    }
+
+    private ObjectNode decision(PostSalesDecision d) { ObjectNode n=objectMapper.createObjectNode(); n.put("caseId",d.caseId()); n.put("version",d.version()); n.put("kind",d.kind().name()); n.put("eligible",d.eligible()); n.put("reasonCode",d.reasonCode()); n.set("ruleSnapshot", objectMapper.valueToTree(d.ruleSnapshot())); n.set("amountSnapshot", amount(d.amountSnapshot())); if(d.changeFlowSnapshot()==null)n.putNull("changeFlowSnapshot"); else n.set("changeFlowSnapshot", objectMapper.valueToTree(d.changeFlowSnapshot())); n.put("quotedAt",d.quotedAt().toString()); n.put("expiresAt",d.expiresAt().toString()); return n; }
+    private PostSalesDecision decision(JsonNode n) { return new PostSalesDecision(text(n,"caseId"), n.path("version").asInt(), DecisionKind.valueOf(text(n,"kind")), n.path("eligible").asBoolean(), text(n,"reasonCode"), objectMapper.convertValue(n.path("ruleSnapshot"), RuleEvaluationSnapshot.class), amount(n.path("amountSnapshot")), n.path("changeFlowSnapshot").isNull()?null:objectMapper.convertValue(n.path("changeFlowSnapshot"), ChangeFlowSnapshot.class), Instant.parse(text(n,"quotedAt")), Instant.parse(text(n,"expiresAt"))); }
+    private ObjectNode amount(AmountDecisionSnapshot a){ ObjectNode n=objectMapper.createObjectNode(); n.set("feeAmount", money(a.feeAmount())); n.set("refundAmount", money(a.refundAmount())); n.set("extraChargeAmount", money(a.extraChargeAmount())); n.put("explanation", a.explanation()); return n; }
+    private AmountDecisionSnapshot amount(JsonNode n){ return new AmountDecisionSnapshot(money(n.path("feeAmount")), money(n.path("refundAmount")), money(n.path("extraChargeAmount")), text(n,"explanation")); }
+    private ObjectNode money(Money m){ ObjectNode n=objectMapper.createObjectNode(); n.put("currency", m.currency().getCurrencyCode()); n.put("minorUnits", m.toMinorUnits()); return n; }
+    private Money money(JsonNode n){ return Money.fromMinorUnits(n.path("minorUnits").asLong(), text(n,"currency")); }
+    private ObjectNode step(PostSalesStep s){ ObjectNode n=objectMapper.createObjectNode(); n.put("type",s.type().name()); n.put("targetContext",s.targetContext()); n.put("idempotencyKey",s.idempotencyKey()); n.put("maxRetries",s.maxRetries()); n.put("status",s.status().name()); if(s.externalRef()==null)n.putNull("externalRef"); else n.put("externalRef",s.externalRef()); if(s.failureReason()==null)n.putNull("failureReason"); else n.put("failureReason",s.failureReason()); if(s.completedAt()==null)n.putNull("completedAt"); else n.put("completedAt",s.completedAt().toString()); return n; }
+    private PostSalesStep step(JsonNode n){ return PostSalesStep.rehydrate(PostSalesStepType.valueOf(text(n,"type")), text(n,"targetContext"), text(n,"idempotencyKey"), n.path("maxRetries").asInt(), PostSalesStepStatus.valueOf(text(n,"status")), n.path("externalRef").asText(null), n.path("failureReason").asText(null), n.path("completedAt").asText(null)==null?null:Instant.parse(n.path("completedAt").asText())); }
+    private List<PostSalesStep> steps(JsonNode n){ List<PostSalesStep> out=new ArrayList<>(); n.forEach(x -> out.add(step(x))); return out; }
+    private ObjectNode plan(PostSalesExecutionPlan p){ ObjectNode n=objectMapper.createObjectNode(); n.put("caseId",p.caseId()); n.put("version",p.version()); n.put("status",p.status().name()); ArrayNode a=n.putArray("steps"); p.steps().forEach(s -> a.add(step(s))); return n; }
+    private PostSalesExecutionPlan plan(JsonNode n){ return PostSalesExecutionPlan.rehydrate(text(n,"caseId"), n.path("version").asInt(), steps(n.path("steps")), PostSalesStepStatus.valueOf(text(n,"status"))); }
+    private static String strip(String id){ return id!=null && id.startsWith("psc-") ? id.substring(4) : id; }
+    private static String text(JsonNode n,String f){ String v=n.path(f).asText(null); if(v==null||v.isBlank()) throw new IllegalStateException(f+" missing"); return v; }
+    public record PostSalesSnapshot(@com.fasterxml.jackson.annotation.JsonValue ObjectNode data){ @com.fasterxml.jackson.annotation.JsonCreator(mode=com.fasterxml.jackson.annotation.JsonCreator.Mode.DELEGATING) public static PostSalesSnapshot of(ObjectNode data){ return new PostSalesSnapshot(data); } }
+}

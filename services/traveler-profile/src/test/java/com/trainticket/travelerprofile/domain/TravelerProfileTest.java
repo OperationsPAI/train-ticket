@@ -182,6 +182,34 @@ class TravelerProfileTest {
         assertEquals("***AB12", shortDoc.maskedDocumentRef());
     }
 
+
+    @Test
+    void travelerSnapshotSerializationDoesNotContainPlaintextDocumentNumber() {
+        TravelerProfile profile = sampleDraftProfile();
+        addSampleDocument(profile, true);
+        com.trainticket.travelerprofile.application.TravelerState state = new com.trainticket.travelerprofile.application.TravelerState(
+            profile,
+            "tvl-1",
+            "sv-1",
+            "account-1",
+            com.trainticket.travelerprofile.application.TravelerType.ADULT,
+            "Zhang",
+            "Wei",
+            null,
+            null,
+            NOW,
+            NOW
+        );
+        com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+
+        String json = com.trainticket.travelerprofile.infrastructure.persistence.TravelerJson.snapshot(state, objectMapper).data().toString();
+
+        assertFalse(json.contains("110101199001151234"));
+        assertFalse(json.contains("\"documentNumber\""));
+        assertTrue(json.contains("maskedDocumentRef"));
+        assertTrue(json.contains("documentNumberHash"));
+    }
+
     // ==============================
     // Profile Lifecycle
     // ==============================
