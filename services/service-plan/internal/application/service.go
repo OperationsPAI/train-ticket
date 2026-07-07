@@ -102,12 +102,23 @@ type scheduledServiceState struct {
 	view      ScheduledService
 }
 
+type Repository interface {
+	SaveScheduledService(context.Context, ScheduledService) error
+	FindScheduledService(context.Context, string) (ScheduledService, error)
+	ListScheduledServices(context.Context, ListScheduledServicesQuery) (PaginatedScheduledServices, error)
+	SaveServiceSegment(context.Context, ServiceSegment) error
+}
+
+type UnitOfWork func(context.Context, func(context.Context) error) error
+
 type Service struct {
 	mu                sync.Mutex
 	publishMu         sync.Mutex
 	now               func() time.Time
 	idGenerator       func(prefix string) string
 	publisher         EventPublisher
+	repository        Repository
+	uow               UnitOfWork
 	scheduledServices map[string]scheduledServiceState
 	segments          map[string]ServiceSegment
 	pendingEvents     []EventEnvelope
@@ -125,6 +136,25 @@ func NewService(publisher EventPublisher) *Service {
 		segments:          map[string]ServiceSegment{},
 		pendingEvents:     []EventEnvelope{},
 	}
+}
+
+func (s *Service) WithRepository(repository Repository) *Service {
+	if s != nil {
+		s.repository = repository
+	}
+	return s
+}
+func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
+	if s != nil {
+		s.uow = uow
+	}
+	return s
+}
+func (s *Service) within(ctx context.Context, fn func(context.Context) error) error {
+	if s.uow == nil {
+		return fn(ctx)
+	}
+	return s.uow(ctx, fn)
 }
 
 func (s *Service) CreateScheduledService(ctx context.Context, command CreateScheduledServiceCommand) (CreateScheduledServiceResult, error) {
@@ -152,16 +182,26 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 
 	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
 
-	s.mu.Lock()
-	if _, exists := s.scheduledServices[state.view.ScheduledServiceRef]; exists {
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		s.mu.Lock()
+		if _, exists := s.scheduledServices[state.view.ScheduledServiceRef]; exists {
+			s.mu.Unlock()
+			return fmt.Errorf("%w: scheduled service already exists", ErrConflict)
+		}
+		s.scheduledServices[state.view.ScheduledServiceRef] = state
+		s.pendingEvents = append(s.pendingEvents, envelope)
 		s.mu.Unlock()
-		return CreateScheduledServiceResult{}, fmt.Errorf("%w: scheduled service already exists", ErrConflict)
-	}
-	s.scheduledServices[state.view.ScheduledServiceRef] = state
-	s.pendingEvents = append(s.pendingEvents, envelope)
-	s.mu.Unlock()
-
-	if err := s.flushPendingEvents(ctx); err != nil {
+		if s.repository != nil {
+			if err := s.repository.SaveScheduledService(txCtx, state.view); err != nil {
+				return err
+			}
+		}
+		if err := s.publisher.Publish(txCtx, envelope); err != nil {
+			return err
+		}
+		s.removePendingEvent(envelope.EventID)
+		return nil
+	}); err != nil {
 		return CreateScheduledServiceResult{}, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
 	return result, nil
@@ -253,6 +293,9 @@ func (s *Service) buildScheduledService(command CreateScheduledServiceCommand) (
 
 func (s *Service) GetScheduledService(serviceRef string) (ScheduledService, error) {
 	serviceRef = strings.TrimSpace(serviceRef)
+	if s.repository != nil {
+		return s.repository.FindScheduledService(context.TODO(), serviceRef)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, exists := s.scheduledServices[serviceRef]
@@ -263,6 +306,12 @@ func (s *Service) GetScheduledService(serviceRef string) (ScheduledService, erro
 }
 
 func (s *Service) ListScheduledServices(query ListScheduledServicesQuery) PaginatedScheduledServices {
+	if s.repository != nil {
+		page, err := s.repository.ListScheduledServices(context.TODO(), query)
+		if err == nil {
+			return page
+		}
+	}
 	if query.Limit <= 0 {
 		query.Limit = 20
 	}
@@ -335,10 +384,32 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 	s.pendingEvents = append(s.pendingEvents, envelope)
 	s.mu.Unlock()
 
-	if err := s.flushPendingEvents(ctx); err != nil {
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		if s.repository != nil {
+			if err := s.repository.SaveServiceSegment(txCtx, segment); err != nil {
+				return err
+			}
+		}
+		if err := s.publisher.Publish(txCtx, envelope); err != nil {
+			return err
+		}
+		s.removePendingEvent(envelope.EventID)
+		return nil
+	}); err != nil {
 		return CreateServiceSegmentResult{}, fmt.Errorf("%w: %v", ErrPublish, err)
 	}
 	return result, nil
+}
+
+func (s *Service) removePendingEvent(eventID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, pending := range s.pendingEvents {
+		if pending.EventID == eventID {
+			s.pendingEvents = append(s.pendingEvents[:i], s.pendingEvents[i+1:]...)
+			return
+		}
+	}
 }
 
 func (s *Service) flushPendingEvents(ctx context.Context) error {

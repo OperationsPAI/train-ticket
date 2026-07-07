@@ -38,14 +38,21 @@ func RouterWithService(service *application.Service) *gin.Engine {
 		HealthStatus: domain.Health(),
 		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
-	h := Handler{service: service, idempotency: idempotency.NewMemoryStore()}
+	RegisterRoutes(router, service, idempotency.NewMemoryStore())
+	return router
+}
+
+func RegisterRoutes(router gin.IRouter, service *application.Service, store idempotency.Store) {
+	if store == nil {
+		store = idempotency.NewMemoryStore()
+	}
+	h := Handler{service: service, idempotency: store}
 	idempotent := idempotency.Middleware(h.idempotency)
 	router.POST("/api/v1/suppliers", idempotent, h.postSupplier)
 	router.GET("/api/v1/suppliers/:supplierId", h.getSupplier)
 	router.GET("/api/v1/suppliers", h.listSuppliers)
 	router.POST("/api/v1/carriers", idempotent, h.postCarrier)
 	router.POST("/api/v1/contracts", idempotent, h.postContract)
-	return router
 }
 
 type registerSupplierRequest struct {

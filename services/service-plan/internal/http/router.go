@@ -58,6 +58,14 @@ func RouterWithServiceAndIdempotency(service *application.Service, store idempot
 		HealthStatus: domain.Health(),
 		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
+	RegisterRoutes(router, service, store)
+	return router
+}
+
+func RegisterRoutes(router gin.IRouter, service *application.Service, store idempotency.Store) {
+	if store == nil {
+		store = idempotency.NewMemoryStore()
+	}
 	handler := Handler{service: service}
 	idempotent := idempotency.Middleware(store)
 	api := router.Group("/api/v1")
@@ -65,7 +73,6 @@ func RouterWithServiceAndIdempotency(service *application.Service, store idempot
 	api.GET("/scheduled-services/:serviceRef", handler.getScheduledService)
 	api.GET("/scheduled-services", handler.listScheduledServices)
 	api.POST("/service-segments", idempotent, handler.createServiceSegment)
-	return router
 }
 
 func (h Handler) createScheduledService(ctx *gin.Context) {
