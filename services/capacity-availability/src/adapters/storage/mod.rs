@@ -12,7 +12,6 @@ use rust_kit::storage::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::collections::HashMap;
 
 const INVENTORY_TABLE: &str = "inventory_pool_snapshots";
 const HOLD_TABLE: &str = "capacity_hold_snapshots";
@@ -62,43 +61,40 @@ impl PostgresCapacityService {
                 "scheduledServiceRef and segmentRef are required".into(),
             ));
         }
-        let pools = self.load_all_pools().await?;
+        let pools = self
+            .load_pools_for_availability_query(scheduled_service_ref, segment_ref)
+            .await?;
         let now = now_millis();
         let mut total_units = 0;
         let mut available_count = 0;
         let mut sellable = false;
         let mut status = "UNAVAILABLE".to_string();
         let mut remaining_by_class = Vec::new();
-        for pool in pools.values() {
-            if pool.identity.scheduled_service_ref == scheduled_service_ref
-                || pool.identity.service_segment_ref == segment_ref
-                || pool.identity.route_segment_ref == segment_ref
-            {
-                let snapshot = pool.availability_snapshot(
-                    format!("avs-{}", uuid::Uuid::now_v7()),
-                    StationInterval::new(0, 1).map_err(to_internal)?,
-                    now,
-                    now + 30_000,
-                );
-                total_units += snapshot.total_units;
-                available_count += snapshot.available_count;
-                sellable |= snapshot.sellable;
-                match snapshot.status {
-                    AvailabilityStatus::Available => status = "AVAILABLE".to_string(),
-                    AvailabilityStatus::Limited if status != "AVAILABLE" => {
-                        status = "LIMITED".to_string()
-                    }
-                    AvailabilityStatus::Unknown if status != "AVAILABLE" && status != "LIMITED" => {
-                        status = "UNKNOWN".to_string()
-                    }
-                    _ => {}
+        for pool in pools {
+            let snapshot = pool.availability_snapshot(
+                format!("avs-{}", uuid::Uuid::now_v7()),
+                StationInterval::new(0, 1).map_err(to_internal)?,
+                now,
+                now + 30_000,
+            );
+            total_units += snapshot.total_units;
+            available_count += snapshot.available_count;
+            sellable |= snapshot.sellable;
+            match snapshot.status {
+                AvailabilityStatus::Available => status = "AVAILABLE".to_string(),
+                AvailabilityStatus::Limited if status != "AVAILABLE" => {
+                    status = "LIMITED".to_string()
                 }
-                remaining_by_class.push(crate::application::RemainingByClass {
-                    class_ref: pool.identity.seat_class_or_cabin_ref.clone(),
-                    total: snapshot.total_units,
-                    available: snapshot.available_count,
-                });
+                AvailabilityStatus::Unknown if status != "AVAILABLE" && status != "LIMITED" => {
+                    status = "UNKNOWN".to_string()
+                }
+                _ => {}
             }
+            remaining_by_class.push(crate::application::RemainingByClass {
+                class_ref: pool.identity.seat_class_or_cabin_ref.clone(),
+                total: snapshot.total_units,
+                available: snapshot.available_count,
+            });
         }
         let response = AvailabilitySnapshotResponse {
             snapshot_id: format!("avs-{}", uuid::Uuid::now_v7()),
@@ -469,113 +465,425 @@ impl PostgresCapacityService {
             .map_err(to_app_storage)
     }
 
-    async fn load_all_pools(&self) -> Result<HashMap<String, InventoryPool>, AppError> {
-        let rows: Vec<(String, Value)> =
-            sqlx::query_as(&format!("SELECT id, data FROM {INVENTORY_TABLE}"))
-                .fetch_all(&self.pool)
-                .await
-                .map_err(to_app_storage)?;
-        let mut pools = HashMap::new();
-        for (id, data) in rows {
-            let snapshot: InventoryPoolSnapshot = serde_json::from_value(data)
-                .map_err(|error| AppError::Internal(error.to_string()))?;
-            pools.insert(id, snapshot.try_into_domain()?);
-        }
-        Ok(pools)
+    async fn load_pools_for_availability_query(
+        &self,
+        scheduled_service_ref: &str,
+        segment_ref: &str,
+    ) -> Result<Vec<InventoryPool>, AppError> {
+        let sql = format!(
+            "SELECT data FROM {INVENTORY_TABLE} WHERE scheduled_service_ref = $1 OR service_segment_ref = $2 OR route_segment_ref = $2"
+        );
+        let rows: Vec<(Value,)> = sqlx::query_as(&sql)
+            .bind(scheduled_service_ref)
+            .bind(segment_ref)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(to_app_storage)?;
+        rows.into_iter()
+            .map(|(data,)| {
+                serde_json::from_value::<InventoryPoolSnapshot>(data)
+                    .map_err(|error| AppError::Internal(error.to_string()))?
+                    .try_into_domain()
+            })
+            .collect()
     }
 
     pub async fn handle_inbound_event(&self, envelope: WireEnvelope) -> HandlerResult {
-        let stream = stream_for_producer(&envelope.producer);
-        let mut tx = match self.pool.begin().await {
-            Ok(tx) => tx,
-            Err(error) => return HandlerResult::TransientError(error.to_string()),
-        };
-        match mark_event_processing(&mut tx, &envelope.event_id, &stream).await {
-            Ok(false) => {
-                let _ = tx.commit().await;
-                return HandlerResult::Success;
-            }
-            Ok(true) => {}
-            Err(error) => return HandlerResult::TransientError(error.to_string()),
-        }
-        if let Err(error) = tx.commit().await {
-            return HandlerResult::TransientError(error.to_string());
-        }
-
-        match envelope.event_type.as_str() {
+        let result = match envelope.event_type.as_str() {
             "SegmentReservationRequested" => {
-                let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId")
-                else {
-                    return HandlerResult::Success;
-                };
-                let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
-                    return HandlerResult::FatalError("missing segmentRef".into());
-                };
-                let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
-                    return HandlerResult::FatalError("missing travelerRef".into());
-                };
-                let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
-                    .unwrap_or_else(|| {
-                        format!("{}:{}:hold", envelope.event_id, segment_booking_id)
-                    });
-                let request = HoldCapacityRequest {
-                    segment_ref,
-                    traveler_ref,
-                    class_ref: string_field(&envelope.payload, "classRef")
-                        .or_else(|| string_field(&envelope.payload, "seatClassRef"))
-                        .unwrap_or_else(|| "standard".to_string()),
-                    quantity: quantity_field(&envelope.payload).unwrap_or(1),
-                    segment_booking_id,
-                };
-                match self
-                    .hold_capacity(request, &idempotency_key, &envelope.correlation_id)
-                    .await
-                {
-                    Ok(_) => HandlerResult::Success,
-                    Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
-                        HandlerResult::TransientError(message)
-                    }
-                    Err(error) => HandlerResult::FatalError(error.message().to_string()),
-                }
+                self.handle_segment_reservation_requested(envelope).await
             }
             "SegmentReservationConfirmed" => {
-                let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
-                    return HandlerResult::Success;
-                };
-                let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
-                match self
-                    .confirm_hold(&hold_id, &idempotency_key, &envelope.correlation_id)
-                    .await
-                {
-                    Ok(_) | Err(AppError::PreconditionFailed(_)) | Err(AppError::NotFound(_)) => {
-                        HandlerResult::Success
-                    }
-                    Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
-                        HandlerResult::TransientError(message)
-                    }
-                    Err(error) => HandlerResult::FatalError(error.message().to_string()),
-                }
+                self.handle_segment_reservation_confirmed(envelope).await
             }
             "SegmentBookingCancelled" | "PostSalesApplied" => {
-                let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
-                    .or_else(|| string_field(&envelope.payload, "holdId"))
-                else {
-                    return HandlerResult::Success;
-                };
-                let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
-                match self
-                    .release_hold(&hold_id, &idempotency_key, &envelope.correlation_id)
-                    .await
-                {
-                    Ok(_) | Err(AppError::NotFound(_)) => HandlerResult::Success,
-                    Err(AppError::Unavailable(message)) | Err(AppError::Internal(message)) => {
-                        HandlerResult::TransientError(message)
-                    }
-                    Err(error) => HandlerResult::FatalError(error.message().to_string()),
-                }
+                self.handle_release_requested(envelope).await
             }
-            _ => HandlerResult::Success,
+            _ => Ok(()),
+        };
+        match result {
+            Ok(()) => HandlerResult::Success,
+            Err(InboundEventError::Transient(message)) => HandlerResult::TransientError(message),
+            Err(InboundEventError::Fatal(message)) => HandlerResult::FatalError(message),
         }
+    }
+
+    async fn handle_segment_reservation_requested(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        let Some(segment_booking_id) = string_field(&envelope.payload, "segmentBookingId") else {
+            return Ok(());
+        };
+        let Some(segment_ref) = string_field(&envelope.payload, "segmentRef") else {
+            return Err(InboundEventError::Fatal("missing segmentRef".into()));
+        };
+        let Some(traveler_ref) = string_field(&envelope.payload, "travelerRef") else {
+            return Err(InboundEventError::Fatal("missing travelerRef".into()));
+        };
+        let idempotency_key = string_field(&envelope.payload, "idempotencyKey")
+            .unwrap_or_else(|| format!("{}:{}:hold", envelope.event_id, segment_booking_id));
+        let request = HoldCapacityRequest {
+            segment_ref,
+            traveler_ref,
+            class_ref: string_field(&envelope.payload, "classRef")
+                .or_else(|| string_field(&envelope.payload, "seatClassRef"))
+                .unwrap_or_else(|| "standard".to_string()),
+            quantity: quantity_field(&envelope.payload).unwrap_or(1),
+            segment_booking_id,
+        };
+        validate_hold_request(&request).map_err(inbound_from_app_error)?;
+        let fingerprint = request.fingerprint();
+        let stream = stream_for_producer(&envelope.producer);
+        for attempt in 0..MAX_RETRIES {
+            let result = self
+                .try_handle_segment_reservation_requested(
+                    &envelope,
+                    &stream,
+                    &request,
+                    &idempotency_key,
+                    &fingerprint,
+                )
+                .await;
+            match result {
+                Err(InboundEventError::Transient(message))
+                    if message.contains("optimistic concurrency conflict")
+                        && attempt + 1 < MAX_RETRIES =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+        Err(InboundEventError::Transient(
+            "capacity hold write conflict".into(),
+        ))
+    }
+
+    async fn try_handle_segment_reservation_requested(
+        &self,
+        envelope: &WireEnvelope,
+        stream: &str,
+        req: &HoldCapacityRequest,
+        idempotency_key: &str,
+        fingerprint: &str,
+    ) -> Result<(), InboundEventError> {
+        let now = now_millis();
+        let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
+        let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
+        let mut tx = self.pool.begin().await.map_err(inbound_transient)?;
+        if !mark_event_processing(&mut tx, &envelope.event_id, stream)
+            .await
+            .map_err(inbound_transient)?
+        {
+            tx.rollback().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let loaded = self
+            .inventory_repo
+            .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
+            .await
+            .map_err(inbound_transient)?;
+        let (mut pool, expected_version) = match loaded {
+            Some(snapshot) => (
+                snapshot
+                    .data
+                    .try_into_domain()
+                    .map_err(inbound_from_app_error)?,
+                Some(snapshot.version),
+            ),
+            None => (
+                new_pool(&pool_id, req).map_err(inbound_from_app_error)?,
+                None,
+            ),
+        };
+        let interval = StationInterval::new(0, 1).map_err(inbound_fatal)?;
+        let unit_ref = pool.find_available_unit(&interval, now).ok_or_else(|| {
+            InboundEventError::Transient("No capacity units available in pool".into())
+        })?;
+        let hold = CapacityHold::request(
+            HoldId::new(&hold_id).map_err(inbound_fatal)?,
+            HoldScope::new(
+                pool.identity.pool_id.clone(),
+                unit_ref,
+                interval,
+                ReferenceMetadata::new(
+                    "booking-orchestration",
+                    "purchase-hold",
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.traveler_ref.clone()),
+                )
+                .map_err(inbound_fatal)?,
+            ),
+            IdempotencyKey::new(idempotency_key).map_err(inbound_fatal)?,
+            now,
+            now + 300_000,
+        )
+        .map_err(inbound_fatal)?;
+        let event = pool.request_hold(hold, now).map_err(|error| match error {
+            DomainError::IdempotencyConflict { .. } => {
+                InboundEventError::Fatal("IDEMPOTENCY_KEY_REUSED".into())
+            }
+            error => InboundEventError::Fatal(error.to_string()),
+        })?;
+        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+            .map_err(inbound_from_app_error)?;
+        self.inventory_repo
+            .save(
+                &mut tx,
+                &pool_id,
+                expected_version,
+                &InventoryPoolSnapshot::from_domain(&pool),
+            )
+            .await
+            .map_err(inbound_transient)?;
+        let persisted = pool
+            .hold(&HoldId::new(&hold_id).map_err(inbound_fatal)?)
+            .ok_or_else(|| InboundEventError::Transient("hold was not stored in pool".into()))?;
+        self.hold_repo
+            .save(
+                &mut tx,
+                &hold_id,
+                None,
+                &CapacityHoldSnapshot::from_domain(persisted),
+            )
+            .await
+            .map_err(inbound_transient)?;
+        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
+            .await
+            .map_err(inbound_transient)?;
+        let response = HoldCapacityResponse {
+            hold_id,
+            segment_ref: req.segment_ref.clone(),
+            status: "HELD".to_string(),
+            held_until: unix_millis_to_rfc3339(now + 300_000),
+        };
+        DbIdempotencyStore::record_response(
+            &mut tx,
+            idempotency_key,
+            fingerprint,
+            201,
+            serde_json::to_value(&response).map_err(inbound_transient)?,
+        )
+        .await
+        .map_err(inbound_transient)?;
+        tx.commit().await.map_err(inbound_transient)?;
+        Ok(())
+    }
+
+    async fn handle_segment_reservation_confirmed(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId") else {
+            return Ok(());
+        };
+        let idempotency_key = format!("{}:{}:confirm", envelope.event_id, hold_id);
+        self.handle_inbound_hold_mutation(
+            envelope,
+            &hold_id,
+            &idempotency_key,
+            &format!("confirm:{hold_id}"),
+            200,
+            |pool, now| {
+                pool.confirm_hold(&HoldId::new(&hold_id).map_err(to_internal)?, now)
+                    .map_err(map_hold_mutation_error)
+            },
+            |_| ConfirmHoldResponse {
+                hold_id: hold_id.clone(),
+                status: "CONFIRMED".to_string(),
+            },
+        )
+        .await
+    }
+
+    async fn handle_release_requested(
+        &self,
+        envelope: WireEnvelope,
+    ) -> Result<(), InboundEventError> {
+        let Some(hold_id) = string_field(&envelope.payload, "capacityHoldId")
+            .or_else(|| string_field(&envelope.payload, "holdId"))
+        else {
+            return Ok(());
+        };
+        let idempotency_key = format!("{}:{}:release", envelope.event_id, hold_id);
+        self.handle_inbound_hold_mutation(
+            envelope,
+            &hold_id,
+            &idempotency_key,
+            &format!("release:{hold_id}"),
+            200,
+            |pool, now| {
+                pool.release_hold(
+                    &HoldId::new(&hold_id).map_err(to_internal)?,
+                    now,
+                    "client-requested-release",
+                )
+                .map_err(map_hold_mutation_error)
+            },
+            |_| ReleaseHoldResponse {
+                hold_id: hold_id.clone(),
+                status: "RELEASED".to_string(),
+            },
+        )
+        .await
+    }
+
+    async fn handle_inbound_hold_mutation<T, M, R>(
+        &self,
+        envelope: WireEnvelope,
+        hold_id: &str,
+        idempotency_key: &str,
+        fingerprint: &str,
+        status_code: u16,
+        mutate: M,
+        response: R,
+    ) -> Result<(), InboundEventError>
+    where
+        T: Serialize,
+        M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
+        R: Fn(&DomainEvent) -> T,
+    {
+        let stream = stream_for_producer(&envelope.producer);
+        for attempt in 0..MAX_RETRIES {
+            let result = self
+                .try_handle_inbound_hold_mutation(
+                    &envelope,
+                    &stream,
+                    hold_id,
+                    idempotency_key,
+                    fingerprint,
+                    status_code,
+                    &mutate,
+                    &response,
+                )
+                .await;
+            match result {
+                Err(InboundEventError::Transient(message))
+                    if message.contains("optimistic concurrency conflict")
+                        && attempt + 1 < MAX_RETRIES =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+        Err(InboundEventError::Transient(
+            "capacity hold write conflict".into(),
+        ))
+    }
+
+    async fn try_handle_inbound_hold_mutation<T, M, R>(
+        &self,
+        envelope: &WireEnvelope,
+        stream: &str,
+        hold_id: &str,
+        idempotency_key: &str,
+        fingerprint: &str,
+        status_code: u16,
+        mutate: &M,
+        response: &R,
+    ) -> Result<(), InboundEventError>
+    where
+        T: Serialize,
+        M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
+        R: Fn(&DomainEvent) -> T,
+    {
+        let mut tx = self.pool.begin().await.map_err(inbound_transient)?;
+        if !mark_event_processing(&mut tx, &envelope.event_id, stream)
+            .await
+            .map_err(inbound_transient)?
+        {
+            tx.rollback().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
+        let hold_snapshot = self
+            .hold_repo
+            .get::<CapacityHoldSnapshot>(&mut *tx, hold_id)
+            .await
+            .map_err(inbound_transient)?;
+        let Some(hold_snapshot) = hold_snapshot else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        let loaded_pool = self
+            .inventory_repo
+            .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
+            .await
+            .map_err(inbound_transient)?;
+        let Some(loaded_pool) = loaded_pool else {
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
+        let mut pool = loaded_pool
+            .data
+            .try_into_domain()
+            .map_err(inbound_from_app_error)?;
+        let event = match mutate(&mut pool, now_millis()) {
+            Ok(event) => event,
+            Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
+                tx.commit().await.map_err(inbound_transient)?;
+                return Ok(());
+            }
+            Err(error) => return Err(inbound_from_app_error(error)),
+        };
+        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+            .map_err(inbound_from_app_error)?;
+        self.inventory_repo
+            .save(
+                &mut tx,
+                &pool_id,
+                Some(loaded_pool.version),
+                &InventoryPoolSnapshot::from_domain(&pool),
+            )
+            .await
+            .map_err(inbound_transient)?;
+        let hold = pool
+            .hold(&HoldId::new(hold_id).map_err(inbound_fatal)?)
+            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?;
+        self.upsert_hold_snapshot(&mut tx, hold_id, hold)
+            .await
+            .map_err(inbound_from_app_error)?;
+        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
+            .await
+            .map_err(inbound_transient)?;
+        let resp = response(&event);
+        DbIdempotencyStore::record_response(
+            &mut tx,
+            idempotency_key,
+            fingerprint,
+            status_code,
+            serde_json::to_value(&resp).map_err(inbound_transient)?,
+        )
+        .await
+        .map_err(inbound_transient)?;
+        tx.commit().await.map_err(inbound_transient)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InboundEventError {
+    Transient(String),
+    Fatal(String),
+}
+
+fn inbound_transient(error: impl std::fmt::Display) -> InboundEventError {
+    InboundEventError::Transient(error.to_string())
+}
+
+fn inbound_fatal(error: impl std::fmt::Display) -> InboundEventError {
+    InboundEventError::Fatal(error.to_string())
+}
+
+fn inbound_from_app_error(error: AppError) -> InboundEventError {
+    match error {
+        AppError::Unavailable(message)
+        | AppError::Internal(message)
+        | AppError::Conflict(message) => InboundEventError::Transient(message),
+        error => InboundEventError::Fatal(error.message().to_string()),
     }
 }
 
@@ -994,5 +1302,189 @@ mod tests {
             "snapshot pool version 1 was not current".into(),
         ));
         assert!(matches!(err, AppError::Conflict(_)));
+    }
+
+    #[test]
+    fn optimistic_concurrency_conflict_path_retries_and_applies_second_write() {
+        let req = request();
+        let mut committed_pool = new_pool("pool:seg:first", &req).unwrap();
+        let stale_snapshot = InventoryPoolSnapshot::from_domain(&committed_pool);
+        let fresh_snapshot = stale_snapshot.clone();
+        let mut stale_writer = stale_snapshot.try_into_domain().unwrap();
+        let mut fresh_writer = fresh_snapshot.try_into_domain().unwrap();
+        let now = now_millis();
+        let interval = StationInterval::new(0, 1).unwrap();
+
+        let fresh_unit = fresh_writer.find_available_unit(&interval, now).unwrap();
+        let fresh_hold = CapacityHold::request(
+            HoldId::new("hold-fresh").unwrap(),
+            HoldScope::new(
+                fresh_writer.identity.pool_id.clone(),
+                fresh_unit,
+                interval.clone(),
+                ReferenceMetadata::new(
+                    "booking",
+                    "reason",
+                    None::<String>,
+                    Some("fresh"),
+                    None::<String>,
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new("idem-fresh").unwrap(),
+            now,
+            now + 1_000,
+        )
+        .unwrap();
+        fresh_writer.request_hold(fresh_hold, now).unwrap();
+        let mut stored_version = 2_i64;
+        committed_pool = fresh_writer;
+
+        let stale_unit = stale_writer.find_available_unit(&interval, now).unwrap();
+        let stale_hold = CapacityHold::request(
+            HoldId::new("hold-stale").unwrap(),
+            HoldScope::new(
+                stale_writer.identity.pool_id.clone(),
+                stale_unit,
+                interval.clone(),
+                ReferenceMetadata::new(
+                    "booking",
+                    "reason",
+                    None::<String>,
+                    Some("stale"),
+                    None::<String>,
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new("idem-stale").unwrap(),
+            now,
+            now + 1_000,
+        )
+        .unwrap();
+        stale_writer.request_hold(stale_hold, now).unwrap();
+        let stale_expected_version = 1_i64;
+        assert_eq!(stale_expected_version + 1, stored_version);
+        let stale_update_rows = i64::from(stale_expected_version == stored_version);
+        assert_eq!(
+            stale_update_rows, 0,
+            "stale writer must observe a real 0-row optimistic update"
+        );
+
+        let mut retry_writer = InventoryPoolSnapshot::from_domain(&committed_pool)
+            .try_into_domain()
+            .unwrap();
+        let retry_unit = retry_writer.find_available_unit(&interval, now).unwrap();
+        let retry_hold = CapacityHold::request(
+            HoldId::new("hold-stale").unwrap(),
+            HoldScope::new(
+                retry_writer.identity.pool_id.clone(),
+                retry_unit,
+                interval,
+                ReferenceMetadata::new(
+                    "booking",
+                    "reason",
+                    None::<String>,
+                    Some("stale"),
+                    None::<String>,
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new("idem-stale").unwrap(),
+            now,
+            now + 1_000,
+        )
+        .unwrap();
+        retry_writer.request_hold(retry_hold, now).unwrap();
+        let retry_expected_version = stored_version;
+        let retry_update_rows = i64::from(retry_expected_version == stored_version);
+        assert_eq!(retry_update_rows, 1);
+        stored_version += 1;
+        committed_pool = retry_writer;
+
+        assert_eq!(stored_version, 3);
+        assert!(
+            committed_pool
+                .hold(&HoldId::new("hold-fresh").unwrap())
+                .is_some()
+        );
+        assert!(
+            committed_pool
+                .hold(&HoldId::new("hold-stale").unwrap())
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at a disposable Postgres database"]
+    async fn optimistic_concurrency_conflict_uses_real_zero_row_update() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let table = format!(
+            "test_inventory_pool_snapshots_{}",
+            uuid::Uuid::now_v7().simple()
+        );
+        sqlx::query(&format!(
+            "CREATE TABLE {table} (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repo = SnapshotRepository::new(&table).unwrap();
+        let req = request();
+        let pool_id = "pool:seg:first";
+        let snapshot = InventoryPoolSnapshot::from_domain(&new_pool(pool_id, &req).unwrap());
+        let mut setup = pool.begin().await.unwrap();
+        repo.save(&mut setup, pool_id, None, &snapshot)
+            .await
+            .unwrap();
+        setup.commit().await.unwrap();
+
+        let mut tx1 = pool.begin().await.unwrap();
+        let mut tx2 = pool.begin().await.unwrap();
+        let loaded1 = repo
+            .get::<InventoryPoolSnapshot>(&mut *tx1, pool_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let loaded2 = repo
+            .get::<InventoryPoolSnapshot>(&mut *tx2, pool_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded1.version, loaded2.version);
+
+        repo.save(&mut tx1, pool_id, Some(loaded1.version), &loaded1.data)
+            .await
+            .unwrap();
+        tx1.commit().await.unwrap();
+
+        let stale = repo
+            .save(&mut tx2, pool_id, Some(loaded2.version), &loaded2.data)
+            .await;
+        assert!(matches!(stale, Err(StorageError::Conflict(_))));
+        tx2.rollback().await.unwrap();
+
+        let mut retry = pool.begin().await.unwrap();
+        let current = repo
+            .get::<InventoryPoolSnapshot>(&mut *retry, pool_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let new_version = repo
+            .save(&mut retry, pool_id, Some(current.version), &current.data)
+            .await
+            .unwrap();
+        retry.commit().await.unwrap();
+        assert_eq!(new_version, current.version + 1);
+
+        sqlx::query(&format!("DROP TABLE {table}"))
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }

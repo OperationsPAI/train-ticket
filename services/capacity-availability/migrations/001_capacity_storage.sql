@@ -2,8 +2,20 @@ CREATE TABLE IF NOT EXISTS inventory_pool_snapshots (
   id         text PRIMARY KEY,
   version    bigint NOT NULL,
   data       jsonb NOT NULL,
+  scheduled_service_ref text GENERATED ALWAYS AS (data #>> '{identity,scheduledServiceRef}') STORED,
+  service_segment_ref text GENERATED ALWAYS AS (data #>> '{identity,serviceSegmentRef}') STORED,
+  route_segment_ref text GENERATED ALWAYS AS (data #>> '{identity,routeSegmentRef}') STORED,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_inventory_pool_availability_query
+  ON inventory_pool_snapshots (scheduled_service_ref, service_segment_ref, route_segment_ref);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_pool_service_segment_ref
+  ON inventory_pool_snapshots (service_segment_ref);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_pool_route_segment_ref
+  ON inventory_pool_snapshots (route_segment_ref);
 
 CREATE TABLE IF NOT EXISTS availability_snapshot_snapshots (
   id         text PRIMARY KEY,

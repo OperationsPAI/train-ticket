@@ -20,6 +20,7 @@ pub enum StorageError {
     Database(String),
     Serialization(String),
     Conflict(String),
+    IdempotencyKeyReused,
 }
 
 impl fmt::Display for StorageError {
@@ -32,6 +33,7 @@ impl fmt::Display for StorageError {
             StorageError::Conflict(message) => {
                 write!(f, "optimistic concurrency conflict: {message}")
             }
+            StorageError::IdempotencyKeyReused => write!(f, "IDEMPOTENCY_KEY_REUSED"),
         }
     }
 }
@@ -417,16 +419,29 @@ impl DbIdempotencyStore {
         key: String,
         record: IdempotencyRecord,
     ) -> Result<(), StorageError> {
-        sqlx::query(
-            "INSERT INTO idempotency_records (key, request_hash, status_code, response_body) VALUES ($1, $2, $3, $4) ON CONFLICT (key) DO UPDATE SET request_hash = EXCLUDED.request_hash, status_code = EXCLUDED.status_code, response_body = EXCLUDED.response_body",
+        let result = sqlx::query(
+            "INSERT INTO idempotency_records (key, request_hash, status_code, response_body) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
         )
-        .bind(key)
-        .bind(record.fingerprint)
+        .bind(&key)
+        .bind(&record.fingerprint)
         .bind(i32::from(record.status_code))
-        .bind(record.body)
+        .bind(&record.body)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+
+        let Some(existing) = self.get_async(&key).await? else {
+            return Err(StorageError::Database(
+                "idempotency insert conflicted but existing record was not found".into(),
+            ));
+        };
+        if existing.fingerprint == record.fingerprint {
+            Ok(())
+        } else {
+            Err(StorageError::IdempotencyKeyReused)
+        }
     }
 
     pub async fn record_response(
