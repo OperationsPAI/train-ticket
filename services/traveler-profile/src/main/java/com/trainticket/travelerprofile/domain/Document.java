@@ -43,6 +43,29 @@ public final class Document {
         }
     }
 
+
+    public static Document rehydrate(
+        String documentId,
+        DocumentType documentType,
+        String documentNumber,
+        String issuingCountry,
+        Instant issuedAt,
+        Instant expiresAt,
+        String displayName,
+        boolean primaryDocument,
+        DocumentStatus status,
+        String statusReason,
+        Instant verifiedAt,
+        String verifier
+    ) {
+        Document document = new Document(documentId, documentType, documentNumber, issuingCountry, issuedAt, expiresAt, displayName, primaryDocument);
+        document.status = Objects.requireNonNull(status, "status is required");
+        document.statusReason = statusReason;
+        document.verifiedAt = verifiedAt;
+        document.verifier = verifier;
+        return document;
+    }
+
     public String documentId() { return documentId; }
     public DocumentType documentType() { return documentType; }
     public String documentNumber() { return documentNumber; }

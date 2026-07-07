@@ -23,6 +23,7 @@ public final class OperatorIdentity {
     private final Set<PermissionScope> scopes;
     private final boolean active;
     private final Instant registeredAt;
+    private long version;
     private final List<AdminAuditEvent> domainEvents;
 
     private OperatorIdentity(
@@ -64,12 +65,36 @@ public final class OperatorIdentity {
         return identity;
     }
 
+
+    public static OperatorIdentity rehydrate(
+        String operatorId,
+        String email,
+        OperatorRole role,
+        Set<PermissionScope> scopes,
+        boolean active,
+        Instant registeredAt,
+        List<AdminAuditEvent> domainEvents
+    ) {
+        OperatorIdentity identity = new OperatorIdentity(operatorId, email, role, scopes, active, registeredAt);
+        identity.domainEvents.clear();
+        identity.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return identity;
+    }
+
     public String operatorId() { return operatorId; }
     public String email() { return email; }
     public OperatorRole role() { return role; }
     public Set<PermissionScope> scopes() { return scopes; }
     public boolean active() { return active; }
     public Instant registeredAt() { return registeredAt; }
+    public long version() { return version; }
+    public OperatorIdentity withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
     public List<AdminAuditEvent> domainEvents() { return List.copyOf(domainEvents); }
 
     public void assertActive() {

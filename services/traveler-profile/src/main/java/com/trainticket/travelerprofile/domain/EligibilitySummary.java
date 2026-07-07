@@ -33,6 +33,23 @@ public final class EligibilitySummary {
         }
     }
 
+
+    public static EligibilitySummary rehydrate(
+        String eligibilityId,
+        String eligibilityType,
+        String eligibilitySource,
+        String evidenceHash,
+        Instant validFrom,
+        Instant validUntil,
+        boolean revoked,
+        String revocationReason
+    ) {
+        EligibilitySummary summary = new EligibilitySummary(eligibilityId, eligibilityType, eligibilitySource, evidenceHash, validFrom, validUntil);
+        summary.revoked = revoked;
+        summary.revocationReason = revocationReason;
+        return summary;
+    }
+
     public String eligibilityId() { return eligibilityId; }
     public String eligibilityType() { return eligibilityType; }
     public String eligibilitySource() { return eligibilitySource; }
