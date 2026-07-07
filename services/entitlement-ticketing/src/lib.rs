@@ -60,22 +60,26 @@ pub fn runtime_config() -> RuntimeConfig {
         .with_observer(OpenTelemetryObserver::from_env(profile().service_id))
 }
 
-pub fn router() -> Router {
-    let publisher = Arc::new(
-        adapters::messaging::RedisEventPublisher::from_env()
-            .expect("REDIS_URL must be a valid Redis connection URL"),
+pub async fn router() -> Router {
+    let service = Arc::new(
+        adapters::storage::PostgresEntitlementService::from_env()
+            .await
+            .expect("failed to initialize Postgres entitlement storage"),
     );
-    router_with_state(Arc::new(InMemoryEntitlementService::new(publisher)))
+    router_with_postgres_state(service)
 }
 
-pub fn build_runtime() -> Result<(Router, JoinHandle<()>), application::SubscribeFailed> {
+pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), application::SubscribeFailed> {
     use crate::application::EventSubscriber;
 
-    let publisher = Arc::new(
-        adapters::messaging::RedisEventPublisher::from_env()
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+    let service = Arc::new(
+        adapters::storage::PostgresEntitlementService::from_env()
+            .await
             .map_err(|error| application::SubscribeFailed(error.to_string()))?,
     );
-    let service = Arc::new(InMemoryEntitlementService::new(publisher));
+    rust_kit::storage::spawn_outbox_relay(service.pool().clone(), redis_url);
     let subscriber = adapters::messaging::RedisEventSubscriber::from_env()?;
     let streams = adapters::messaging::RedisEventSubscriber::entitlement_streams();
     let group = adapters::messaging::RedisEventSubscriber::entitlement_group().to_string();
@@ -98,7 +102,7 @@ pub fn build_runtime() -> Result<(Router, JoinHandle<()>), application::Subscrib
             .await
             .expect("entitlement-ticketing Redis subscriber stopped");
     });
-    Ok((router_with_state(service), subscriber_handle))
+    Ok((router_with_postgres_state(service), subscriber_handle))
 }
 
 pub fn router_with_state<S>(service: Arc<S>) -> Router
@@ -121,6 +125,74 @@ where
         )
         .with_state(app_state);
     apply_service_runtime(router_with_config(runtime_config()).merge(routes))
+}
+
+pub fn router_with_postgres_state(
+    service: Arc<adapters::storage::PostgresEntitlementService>,
+) -> Router {
+    let app_state = ApiState {
+        service: service.clone(),
+    };
+    let routes = Router::new()
+        .route(
+            "/api/v1/entitlements",
+            post(issue_entitlement::<adapters::storage::PostgresEntitlementService>)
+                .get(list_entitlements::<adapters::storage::PostgresEntitlementService>),
+        )
+        .route(
+            "/api/v1/entitlements/{entitlement_id}",
+            get(get_entitlement::<adapters::storage::PostgresEntitlementService>),
+        )
+        .route(
+            "/api/v1/entitlements/{entitlement_id}/void",
+            post(void_entitlement::<adapters::storage::PostgresEntitlementService>),
+        )
+        .with_state(app_state);
+    let metadata = serde_json::to_value(metadata()).unwrap_or_else(|_| serde_json::json!({}));
+    let standard_router = Router::new()
+        .route("/health", get(health_handler))
+        .route("/healthz", get(health_handler))
+        .route("/live", get(live_handler))
+        .route("/livez", get(live_handler))
+        .route("/ready", get(postgres_ready_handler))
+        .route("/readyz", get(postgres_ready_handler))
+        .route(
+            "/metadata",
+            get(move || {
+                let metadata = metadata.clone();
+                async move { Json(metadata) }
+            }),
+        )
+        .layer(Extension(service));
+    apply_service_runtime(Router::new().merge(standard_router).merge(routes))
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeResponse {
+    status: &'static str,
+}
+
+async fn health_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: health() })
+}
+
+async fn live_handler() -> Json<ProbeResponse> {
+    Json(ProbeResponse { status: "alive" })
+}
+
+async fn postgres_ready_handler(
+    Extension(service): Extension<Arc<adapters::storage::PostgresEntitlementService>>,
+) -> (StatusCode, Json<ProbeResponse>) {
+    if service.is_ready().await {
+        (StatusCode::OK, Json(ProbeResponse { status: "ready" }))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ProbeResponse {
+                status: "not_ready",
+            }),
+        )
+    }
 }
 
 pub fn apply_service_runtime(router: Router) -> Router {
@@ -598,19 +670,19 @@ impl FulfillmentUseState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entitlement {
-    id: EntitlementId,
-    journey_order_ref: JourneyOrderRef,
-    segment_booking_ref: SegmentBookingRef,
-    traveler_ref: TravelerRef,
-    segment_ref: SegmentRef,
-    purpose: IssuePurpose,
-    idempotency_key: IssueIdempotencyKey,
-    validity_window: ValidityWindow,
-    status: EntitlementStatus,
-    credential_ref: Option<CredentialRef>,
-    fulfillment_use_state: FulfillmentUseState,
-    audit_trail: Vec<EntitlementLifecycleAudit>,
-    processed_command_ids: HashSet<CommandId>,
+    pub(crate) id: EntitlementId,
+    pub(crate) journey_order_ref: JourneyOrderRef,
+    pub(crate) segment_booking_ref: SegmentBookingRef,
+    pub(crate) traveler_ref: TravelerRef,
+    pub(crate) segment_ref: SegmentRef,
+    pub(crate) purpose: IssuePurpose,
+    pub(crate) idempotency_key: IssueIdempotencyKey,
+    pub(crate) validity_window: ValidityWindow,
+    pub(crate) status: EntitlementStatus,
+    pub(crate) credential_ref: Option<CredentialRef>,
+    pub(crate) fulfillment_use_state: FulfillmentUseState,
+    pub(crate) audit_trail: Vec<EntitlementLifecycleAudit>,
+    pub(crate) processed_command_ids: HashSet<CommandId>,
 }
 
 impl Entitlement {
@@ -2006,7 +2078,7 @@ pub enum EntitlementStatusDto {
 }
 
 impl IssuePurposeDto {
-    fn to_contract(&self) -> &'static str {
+    pub(crate) fn to_contract(&self) -> &'static str {
         match self {
             Self::Initial => "INITIAL",
             Self::Replacement => "REPLACEMENT",
@@ -2018,7 +2090,7 @@ impl IssuePurposeDto {
 }
 
 impl VoidReasonDto {
-    fn to_contract(&self) -> &'static str {
+    pub(crate) fn to_contract(&self) -> &'static str {
         match self {
             Self::Refund => "REFUND",
             Self::Change => "CHANGE",
@@ -2030,7 +2102,7 @@ impl VoidReasonDto {
 }
 
 impl VoidPolicyDto {
-    fn to_contract(&self) -> &'static str {
+    pub(crate) fn to_contract(&self) -> &'static str {
         match self {
             Self::Normal => "NORMAL",
             Self::ExceptionalRule => "EXCEPTIONAL_RULE",
@@ -2039,7 +2111,7 @@ impl VoidPolicyDto {
 }
 
 impl CredentialTypeDto {
-    fn to_contract(&self) -> &'static str {
+    pub(crate) fn to_contract(&self) -> &'static str {
         match self {
             Self::ETicket => "E_TICKET",
             Self::PaperTicket => "PAPER_TICKET",
@@ -2213,6 +2285,7 @@ impl Default for InMemoryEntitlementService {
     }
 }
 
+#[allow(dead_code)]
 impl InMemoryEntitlementService {
     pub fn new(publisher: Arc<dyn application::EventPublisher>) -> Self {
         Self {
@@ -2600,6 +2673,7 @@ struct InMemoryState {
     credential_registry: CredentialRegistry,
     idempotency: HashMap<String, IdempotentRecord>,
     pending_publications: HashMap<String, PendingPublication>,
+    #[allow(dead_code)]
     pending_events: HashMap<PendingEventKey, PendingBusPublication>,
     sequence: u64,
 }
@@ -2624,6 +2698,7 @@ struct PendingEventKey {
     event_type: &'static str,
 }
 
+#[allow(dead_code)]
 impl PendingEventKey {
     fn new(aggregate_id: &str, event_type: &'static str) -> Self {
         Self {
@@ -2634,6 +2709,7 @@ impl PendingEventKey {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PendingBusPublication {
     event_type: &'static str,
     payload: Value,
@@ -3043,7 +3119,7 @@ fn parse_void_reason(value: &str) -> VoidReason {
     }
 }
 
-fn reason_to_contract(value: &VoidReason) -> &'static str {
+pub(crate) fn reason_to_contract(value: &VoidReason) -> &'static str {
     match value {
         VoidReason::Refund => "REFUND",
         VoidReason::Change => "CHANGE",
@@ -3060,7 +3136,7 @@ fn parse_void_policy(value: &str) -> VoidPolicy {
     }
 }
 
-fn policy_to_contract(value: &VoidPolicy) -> &'static str {
+pub(crate) fn policy_to_contract(value: &VoidPolicy) -> &'static str {
     match value {
         VoidPolicy::Normal => "NORMAL",
         VoidPolicy::ExceptionalRule => "EXCEPTIONAL_RULE",
@@ -3090,15 +3166,15 @@ fn validate_prefixed_uuid(value: &str, field: &'static str, prefix: &'static str
     Ok(())
 }
 
-fn current_rfc3339() -> String {
+pub(crate) fn current_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn current_unix_millis() -> u64 {
+pub(crate) fn current_unix_millis() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
-fn audit_builder(
+pub(crate) fn audit_builder(
     correlation_id: &str,
     reason: &'static str,
 ) -> Result<AuditBuilder, EntitlementError> {
@@ -3109,7 +3185,7 @@ fn audit_builder(
     ))
 }
 
-fn default_preconditions() -> Result<IssuePreconditions, EntitlementError> {
+pub(crate) fn default_preconditions() -> Result<IssuePreconditions, EntitlementError> {
     let now = UnixMillis::new(current_unix_millis());
     Ok(IssuePreconditions::accepted(
         AcceptedFact::new(
@@ -3140,7 +3216,7 @@ fn default_preconditions() -> Result<IssuePreconditions, EntitlementError> {
     ))
 }
 
-fn credential_ref(credential_no: &str) -> Result<CredentialRef, EntitlementError> {
+pub(crate) fn credential_ref(credential_no: &str) -> Result<CredentialRef, EntitlementError> {
     CredentialRef::new(
         CredentialId::new(format!("cred-{}", uuid::Uuid::now_v7()))?,
         CredentialType::ETicket,
