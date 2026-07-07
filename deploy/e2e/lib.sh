@@ -10,9 +10,17 @@ REDIS_POD=""
 k() { kubectl --context "$KCTX" -n "$NS" "$@"; }
 
 ensure_curl_pod() {
-  k get pod e2e-curl >/dev/null 2>&1 || {
-    k run e2e-curl --image=curlimages/curl:8.10.1 --restart=Never --command -- sleep 86400 >/dev/null
-  }
+  # A finite sleep or an eviction leaves the pod in Completed/Failed, where
+  # `k wait` can only time out — recreate unless it is actually alive.
+  local phase
+  phase=$(k get pod e2e-curl -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  case "$phase" in
+    Running|Pending) ;;
+    *)
+      k delete pod e2e-curl --ignore-not-found --wait=true >/dev/null 2>&1
+      k run e2e-curl --image=curlimages/curl:8.10.1 --restart=Never --command -- sleep infinity >/dev/null
+      ;;
+  esac
   k wait --for=condition=Ready pod/e2e-curl --timeout=60s >/dev/null
 }
 
