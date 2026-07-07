@@ -70,6 +70,16 @@ def rand_name(rng: random.Random) -> tuple[str, str]:
     return given, f"{family}-{''.join(rng.choices(string.ascii_lowercase, k=4))}"
 
 
+def _bookable(itin: dict) -> bool:
+    """Real plan segments are seg-<uuid>; trip-planning falls back to
+    synthetic refs (seg-web-<date>-<hash>) that downstream services reject."""
+    legs = itin.get("legs") or []
+    if not legs:
+        return False
+    ref = str(legs[0].get("serviceSegmentRef", ""))
+    return ref.startswith("seg-") and len(ref) == 40 and ref.count("-") == 5
+
+
 class Abandoned(Exception):
     """Customer walked away on purpose — an outcome, not an error."""
 
@@ -441,9 +451,9 @@ class CustomerSim:
             {"originRef": route["origin_place"], "destinationRef": route["dest_place"],
              "departureDate": route["date"], "travelerRefs": travelers, "channel": channel},
             ok=(200,), step="search")
-        itins = data.get("itineraries") or []
+        itins = [i for i in (data.get("itineraries") or []) if _bookable(i)]
         if not itins:
-            raise StepFailed("search", f"no itineraries for {route['date']}")
+            raise StepFailed("search", f"no bookable itinerary for {route['date']}")
         itin = self.rng.choice(itins)
         return {"itinerary": itin["itineraryRef"], "segment": itin["legs"][0]["serviceSegmentRef"]}
 
@@ -642,7 +652,11 @@ class CustomerSim:
     async def journey_legacy(self) -> str:
         entry = await self.login_or_register()
         tvl = await self.obtain_traveler(entry)
-        route = await self.pick_route()
+        async with self.reg.lock:
+            legacy_routes = [r for r in self.reg.routes if r.get("service_number")]
+        if not legacy_routes:
+            return "no_legacy_route"
+        route = self.rng.choice(legacy_routes)
         headers = {"X-Legacy-Operator": "loadgen-legacy", "X-Legacy-Reason": "LOAD_TEST"}
 
         async def legacy(op: str, path: str, body: dict) -> dict:
@@ -729,7 +743,67 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
             reg.routes.append({"origin_place": places[a], "dest_place": places[b],
                                "date": date, "service_number": number})
             known.add(key)
-    print(f"[bootstrap] routes known: {len(reg.routes)}")
+
+    # keep only routes the search API can actually sell (real seg-<uuid>
+    # refs); synthetic fallbacks poison downstream ticketing
+    probe_tvl = None
+    verified = []
+    for route in reg.routes:
+        ok_route = False
+        for _ in range(3):
+            try:
+                if probe_tvl is None:
+                    _, t = await api.request(
+                        "POST", "traveler-profile", "/api/v1/travelers",
+                        {"accountId": f"acc-{uuid7()}", "travelerType": "ADULT",
+                         "givenName": "Boot", "familyName": "Strap"},
+                        step="bootstrap-traveler")
+                    probe_tvl = t["travelerId"]
+                _, res = await api.request(
+                    "POST", "trip-planning", "/api/v1/itineraries/search",
+                    {"originRef": route["origin_place"], "destinationRef": route["dest_place"],
+                     "departureDate": route["date"], "travelerRefs": [probe_tvl],
+                     "channel": "WEB"}, ok=(200,), step="bootstrap-verify")
+                if any(_bookable(i) for i in res.get("itineraries") or []):
+                    ok_route = True
+                    break
+            except StepFailed:
+                pass
+            await asyncio.sleep(5)
+        if ok_route:
+            verified.append(route)
+        else:
+            print(f"[bootstrap] dropping unbookable route {route['service_number']} "
+                  f"{route['origin_place'][:16]}->{route['dest_place'][:16]} {route['date']}")
+    reg.routes[:] = verified
+
+    # discovery sweep: existing place pairs (e.g. the e2e-seeded route) that
+    # already sell real segments; capped to a handful of probes per date
+    if len(reg.routes) < int(bs.get("min_routes", 2)):
+        all_places = [p.get("placeId") for p in listing.get("items", []) if p.get("placeId")]
+        seen = {(r["origin_place"], r["dest_place"], r["date"]) for r in reg.routes}
+        for date in bs.get("departure_dates", []):
+            probes = 0
+            for a_place in all_places:
+                for b_place in all_places:
+                    if a_place == b_place or probes >= 12:
+                        continue
+                    if (a_place, b_place, date) in seen:
+                        continue
+                    probes += 1
+                    try:
+                        _, res = await api.request(
+                            "POST", "trip-planning", "/api/v1/itineraries/search",
+                            {"originRef": a_place, "destinationRef": b_place,
+                             "departureDate": date, "travelerRefs": [probe_tvl],
+                             "channel": "WEB"}, ok=(200,), step="bootstrap-discover")
+                    except StepFailed:
+                        continue
+                    if any(_bookable(i) for i in res.get("itineraries") or []):
+                        reg.routes.append({"origin_place": a_place, "dest_place": b_place,
+                                           "date": date, "service_number": None})
+                        seen.add((a_place, b_place, date))
+    print(f"[bootstrap] routes known (bookable): {len(reg.routes)}")
 
 
 # ---------------------------------------------------------------------------
