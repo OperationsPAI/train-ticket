@@ -16,6 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -37,10 +39,27 @@ class ApplicationTest {
         );
 
         assertEquals("live", controller.live().get("status"));
-        assertEquals("ready", controller.ready().get("status"));
+        ResponseEntity<Map<String, Object>> ready = controller.ready();
+        assertEquals(HttpStatus.OK, ready.getStatusCode());
+        assertEquals("ready", ready.getBody().get("status"));
         Map<String, Object> metadata = controller.metadata();
         assertEquals("2026-01-01T00:00:00Z", metadata.get("generatedAt"));
         assertEquals("payment", assertInstanceOf(ServiceProfile.class, metadata.get("service")).serviceId());
+    }
+
+    @Test
+    void readinessReturns503WhenPersistenceIsNotReady() {
+        HealthController controller = new HealthController(new com.trainticket.payment.infrastructure.persistence.PaymentReadiness(java.util.Optional.empty()) {
+            @Override
+            public boolean isReady() {
+                return false;
+            }
+        });
+
+        ResponseEntity<Map<String, Object>> response = controller.ready();
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals("not_ready", response.getBody().get("status"));
     }
 
     @Test

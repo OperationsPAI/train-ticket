@@ -24,6 +24,7 @@ public final class PaymentIntent {
     private Money authorizedAmount;
     private Money capturedAmount;
     private Money refundedAmount;
+    private long version;
 
     private PaymentIntent(
         String paymentIntentId,
@@ -50,6 +51,40 @@ public final class PaymentIntent {
         this.authorizedAmount = Money.zero(amount.currency());
         this.capturedAmount = Money.zero(amount.currency());
         this.refundedAmount = Money.zero(amount.currency());
+    }
+
+
+    public static PaymentIntent rehydrate(
+        String paymentIntentId,
+        String businessRef,
+        String purpose,
+        Money amount,
+        String payerRef,
+        Instant expiresAt,
+        String idempotencyKey,
+        PaymentIntentStatus status,
+        Money authorizedAmount,
+        Money capturedAmount,
+        Money refundedAmount,
+        Set<String> channelTransactionRefs,
+        List<PaymentEvent> domainEvents
+    ) {
+        PaymentIntent intent = new PaymentIntent(paymentIntentId, businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey);
+        intent.status = Objects.requireNonNull(status, "status is required");
+        intent.authorizedAmount = Objects.requireNonNull(authorizedAmount, "authorizedAmount is required");
+        intent.capturedAmount = Objects.requireNonNull(capturedAmount, "capturedAmount is required");
+        intent.refundedAmount = Objects.requireNonNull(refundedAmount, "refundedAmount is required");
+        intent.channelTransactionRefs.addAll(Objects.requireNonNull(channelTransactionRefs, "channelTransactionRefs are required"));
+        intent.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return intent;
+    }
+
+    public PaymentIntent withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
     }
 
     public static PaymentIntent create(
@@ -85,6 +120,7 @@ public final class PaymentIntent {
     public Money authorizedAmount() { return authorizedAmount; }
     public Money capturedAmount() { return capturedAmount; }
     public Money refundedAmount() { return refundedAmount; }
+    public long version() { return version; }
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
     public Set<String> channelTransactionRefs() { return Set.copyOf(channelTransactionRefs); }
 

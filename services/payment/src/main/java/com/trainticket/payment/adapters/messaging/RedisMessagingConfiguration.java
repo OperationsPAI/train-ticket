@@ -9,16 +9,19 @@ import com.trainticket.platformkit.messaging.RedisEventPublisher;
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class RedisMessagingConfiguration {
     @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(EventPublisher.class)
     RedisEventPublisher platformRedisEventPublisher(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
         return RedisEventPublisher.fromUrl(redisUrl, objectMapper);
     }
 
     @Bean
+    @ConditionalOnMissingBean(EventPublisher.class)
     EventPublisher redisEventPublisher(RedisEventPublisher publisher) {
         return envelope -> {
             try {

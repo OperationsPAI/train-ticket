@@ -1,6 +1,7 @@
 package com.trainticket.platformkit.http;
 
 import com.trainticket.platformkit.idempotency.IdempotencyKeyReusedException;
+import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -22,6 +23,11 @@ public class PlatformKitExceptionHandler {
     @ExceptionHandler(IdempotencyKeyReusedException.class)
     public ResponseEntity<ApiError> handleIdempotencyReuse(IdempotencyKeyReusedException exception, HttpServletRequest request) {
         return error(ApiErrorCode.IDEMPOTENCY_KEY_REUSED, exception.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(OptimisticConcurrencyException.class)
+    public ResponseEntity<ApiError> handleOptimisticConcurrency(OptimisticConcurrencyException exception, HttpServletRequest request) {
+        return error(ApiErrorCode.CONFLICT, exception.getMessage(), request, Map.of());
     }
 
     @ExceptionHandler({IllegalArgumentException.class, MissingRequestHeaderException.class})

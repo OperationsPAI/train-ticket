@@ -6,6 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.payment.domain.Money;
+import com.trainticket.payment.infrastructure.persistence.InMemoryPaymentIntentRepository;
+import com.trainticket.payment.infrastructure.persistence.InMemoryRefundRepository;
+import com.trainticket.payment.infrastructure.persistence.InMemoryReservationPaymentRequestRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -17,7 +20,7 @@ class PaymentMessagingApplicationTest {
     @Test
     void publisherWrapsDomainEventsInContractEnvelope() {
         FakeEventPublisher publisher = new FakeEventPublisher();
-        PaymentCommandService service = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
+        PaymentCommandService service = testPaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
 
         service.createIntent("ord-123", "purchase", Money.fromMinorUnits(35000, "CNY"), "acct-1", "0194f2e0-7b3e-7610-8284-5c26e8b0c555", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444");
 
@@ -37,7 +40,7 @@ class PaymentMessagingApplicationTest {
         FakeEventPublisher publisher = new FakeEventPublisher();
         PaymentInboundEventHandler handler = new PaymentInboundEventHandler(
             new ConsumedEventDeduplicator(),
-            new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher)
+            testPaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher)
         );
         FakeEventSubscriber subscriber = new FakeEventSubscriber();
         subscriber.subscribe(List.of("ignored"), "payment", "payment-test", handler);
@@ -51,7 +54,7 @@ class PaymentMessagingApplicationTest {
     @Test
     void segmentReservationRequestedRecordsConformantRequestWithoutInventingMoney() {
         FakeEventPublisher publisher = new FakeEventPublisher();
-        PaymentCommandService commands = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
+        PaymentCommandService commands = testPaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
         PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
 
         assertEquals(HandlerResult.SUCCESS, handler.handle(segmentReservationRequested("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c002", "idem-segment")));
@@ -68,7 +71,7 @@ class PaymentMessagingApplicationTest {
     @Test
     void postSalesApprovedRequestsRefundThroughDomain() {
         FakeEventPublisher publisher = new FakeEventPublisher();
-        PaymentCommandService commands = new PaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
+        PaymentCommandService commands = testPaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
         String paymentIntentId = commands.createIntent("ord-refund", "purchase", Money.fromMinorUnits(1000, "CNY"), "trav-1", "idem-create", "corr-create").paymentIntentId();
         commands.captureIntent(paymentIntentId, "idem-capture", "corr-create");
         PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
@@ -118,6 +121,16 @@ class PaymentMessagingApplicationTest {
                 "reason", "ACCOUNT_CLOSED"
             ),
             envelope.payload()
+        );
+    }
+
+    private static PaymentCommandService testPaymentCommandService(Clock clock, EventPublisher publisher) {
+        return new PaymentCommandService(
+            clock,
+            publisher,
+            new InMemoryPaymentIntentRepository(),
+            new InMemoryRefundRepository(),
+            new InMemoryReservationPaymentRequestRepository()
         );
     }
 

@@ -1,1 +1,2 @@
 com.trainticket.platformkit.PlatformKitConfiguration
+com.trainticket.platformkit.persistence.PlatformPersistenceConfiguration
