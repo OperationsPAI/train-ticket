@@ -1,6 +1,7 @@
 package idempotency
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -9,13 +10,13 @@ func TestMemoryStoreReplayDetectsKeyReuse(t *testing.T) {
 	store := NewMemoryStore()
 	key := "0194f2e0-7b3e-7610-0284-5c26e8b0c123"
 	fingerprint := Fingerprint("POST", "/api/v1/resources", []byte(`{"name":"one"}`))
-	if err := store.Put(key, Record{Fingerprint: fingerprint, Status: 201, Body: []byte(`{"ok":true}`)}); err != nil {
+	if err := store.Put(context.Background(), key, Record{Fingerprint: fingerprint, Status: 201, Body: []byte(`{"ok":true}`)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := Replay(store, key, fingerprint); err != nil || !ok {
+	if _, ok, err := Replay(context.Background(), store, key, fingerprint); err != nil || !ok {
 		t.Fatalf("expected replay, ok=%v err=%v", ok, err)
 	}
-	_, ok, err := Replay(store, key, Fingerprint("POST", "/api/v1/resources", []byte(`{"name":"two"}`)))
+	_, ok, err := Replay(context.Background(), store, key, Fingerprint("POST", "/api/v1/resources", []byte(`{"name":"two"}`)))
 	if !ok || !errors.Is(err, ErrKeyReused) {
 		t.Fatalf("expected key reuse, ok=%v err=%v", ok, err)
 	}

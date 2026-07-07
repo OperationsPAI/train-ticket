@@ -2,6 +2,7 @@ package idempotency
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -53,7 +54,7 @@ func Middleware(store Store) gin.HandlerFunc {
 		}
 		ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
 		fingerprint := Fingerprint(ctx.Request.Method, ctx.Request.URL.Path, body)
-		record, ok, err := Replay(store, key, fingerprint)
+		record, ok, err := replay(ctx.Request.Context(), store, key, fingerprint)
 		if err != nil {
 			httpkit.WriteIdempotencyReused(ctx)
 			ctx.Abort()
@@ -69,7 +70,7 @@ func Middleware(store Store) gin.HandlerFunc {
 		ctx.Set(ContextKey, ContextValue{Key: key, Fingerprint: fingerprint})
 		ctx.Next()
 		if !ctx.IsAborted() && capture.Status() < http.StatusBadRequest && capture.body.Len() > 0 {
-			_ = store.Put(key, Record{Fingerprint: fingerprint, Status: capture.Status(), Body: append([]byte(nil), capture.body.Bytes()...)})
+			_ = put(ctx.Request.Context(), store, key, Record{Fingerprint: fingerprint, Status: capture.Status(), Body: append([]byte(nil), capture.body.Bytes()...)})
 		}
 	}
 }
@@ -90,15 +91,23 @@ func FromContext(ctx *gin.Context) (ContextValue, bool) {
 	return metadata, ok
 }
 
-func StoreJSON(store Store, key, fingerprint string, status int, body any) ([]byte, error) {
+func StoreJSON(ctx context.Context, store Store, key, fingerprint string, status int, body any) ([]byte, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	if store != nil {
-		if err := store.Put(strings.TrimSpace(key), Record{Fingerprint: fingerprint, Status: status, Body: append([]byte(nil), encoded...), Response: body}); err != nil {
+		if err := store.Put(ctx, strings.TrimSpace(key), Record{Fingerprint: fingerprint, Status: status, Body: append([]byte(nil), encoded...), Response: body}); err != nil {
 			return nil, err
 		}
 	}
 	return encoded, nil
+}
+
+func replay(ctx context.Context, store Store, key, fingerprint string) (Record, bool, error) {
+	return Replay(ctx, store, key, fingerprint)
+}
+
+func put(ctx context.Context, store Store, key string, record Record) error {
+	return store.Put(ctx, strings.TrimSpace(key), record)
 }

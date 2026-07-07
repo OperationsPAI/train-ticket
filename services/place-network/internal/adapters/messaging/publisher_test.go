@@ -31,7 +31,7 @@ func TestRedisPublisherWrapsEnvelopeAsSingleStreamField(t *testing.T) {
 	publisher := NewPublisher(stream)
 	envelope := domain.NewEventEnvelope("PlaceUpdated", time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC), "corr-1", "cmd-1", domain.ProducerPlaceNetwork, domain.PlaceUpdatedEvent{PlaceID: "plc-test"})
 
-	if err := publisher.Publish(envelope); err != nil {
+	if err := publisher.Publish(context.Background(), envelope); err != nil {
 		t.Fatalf("publish failed: %v", err)
 	}
 	if len(stream.entries) != 1 {

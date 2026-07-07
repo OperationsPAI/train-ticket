@@ -14,7 +14,8 @@ FROM alpine:3.22
 RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/place-network /usr/local/bin/place-network
+COPY --from=builder /src/services/place-network/migrations /app/migrations
 USER app
-ENV PORT=8080 REDIS_URL=redis://localhost:6379
+ENV PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/place-network"]

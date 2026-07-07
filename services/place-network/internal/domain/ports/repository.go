@@ -1,15 +1,30 @@
 package ports
 
-import "github.com/trainticket/greenfield/services/place-network/internal/domain"
+import (
+	"context"
+
+	"github.com/trainticket/greenfield/services/place-network/internal/domain"
+)
 
 type PlaceRepository interface {
-	Save(place domain.Place) error
-	FindByID(id domain.PlaceID) (*domain.Place, error)
-	FindAll() ([]domain.Place, error)
+	Save(ctx context.Context, place domain.Place) error
+	FindByID(ctx context.Context, id domain.PlaceID) (*domain.Place, error)
+	FindPage(ctx context.Context, filter PlaceListFilter) (PlacePage, error)
 }
 
 type TransportNodeRepository interface {
-	Save(node domain.TransportNode) error
-	FindByID(id domain.TransportNodeID) (*domain.TransportNode, error)
-	FindByPlaceID(placeID domain.PlaceID) ([]domain.TransportNode, error)
+	Save(ctx context.Context, node domain.TransportNode) error
+	FindByID(ctx context.Context, id domain.TransportNodeID) (*domain.TransportNode, error)
+	FindByPlaceID(ctx context.Context, placeID domain.PlaceID) ([]domain.TransportNode, error)
+}
+
+type PlaceListFilter struct {
+	Limit  int
+	Offset int
+	Status string
+}
+
+type PlacePage struct {
+	Items []domain.Place
+	Total int
 }

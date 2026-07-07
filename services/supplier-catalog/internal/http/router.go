@@ -159,7 +159,7 @@ func (h Handler) withIdempotency(c *gin.Context, run func([]byte) (int, interfac
 		return
 	}
 	metadata, _ := idempotency.FromContext(c)
-	encoded, err := idempotency.StoreJSON(h.idempotency, metadata.Key, metadata.Fingerprint, status, response)
+	encoded, err := idempotency.StoreJSON(c.Request.Context(), h.idempotency, metadata.Key, metadata.Fingerprint, status, response)
 	if err != nil {
 		h.writeError(c, err)
 		return

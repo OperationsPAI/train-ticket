@@ -1,13 +1,14 @@
 package application
 
 import (
+	"context"
 	"sync"
 
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
 )
 
 type EventPublisher interface {
-	Publish(envelope domain.EventEnvelope) error
+	Publish(ctx context.Context, envelope domain.EventEnvelope) error
 }
 
 type HandlerResult int
@@ -55,4 +56,4 @@ type NoopPublisher struct{}
 
 func NewNoopPublisher() *NoopPublisher { return &NoopPublisher{} }
 
-func (p *NoopPublisher) Publish(envelope domain.EventEnvelope) error { return nil }
+func (p *NoopPublisher) Publish(ctx context.Context, envelope domain.EventEnvelope) error { return nil }
