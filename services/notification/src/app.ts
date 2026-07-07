@@ -17,7 +17,7 @@ export type HealthStatus = Readonly<{
 }>;
 
 export type ProbeStatus = Readonly<{
-  status: "ok";
+  status: "ok" | "not_ready";
   probe: "live" | "ready";
 }>;
 
@@ -107,7 +107,11 @@ export function metadata(): ServiceMetadata {
   };
 }
 
-export function createApp(instrumentation: InstrumentationHooks = {}): FastifyInstance {
+export type AppStorage = Readonly<{
+  ready: () => boolean | Promise<boolean>;
+}>;
+
+export function createApp(instrumentation: InstrumentationHooks = {}, storage?: AppStorage): FastifyInstance {
   const app: FastifyInstance = Fastify({ logger: false });
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
@@ -135,8 +139,9 @@ export function createApp(instrumentation: InstrumentationHooks = {}): FastifyIn
 
   app.get("/live", async () => probeBody("live"));
   app.get("/livez", async () => probeBody("live"));
-  app.get("/ready", async () => probeBody("ready"));
-  app.get("/readyz", async () => probeBody("ready"));
+  app.get("/ready", async (_request, reply) => readyBody(reply, storage));
+  app.get("/readyz", async (_request, reply) => readyBody(reply, storage));
+
 
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
@@ -159,6 +164,14 @@ function healthBody(): HealthStatus {
 
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
+}
+
+async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
+  if (storage && !await storage.ready()) {
+    reply.status(503);
+    return { status: "not_ready", probe: "ready" };
+  }
+  return probeBody("ready");
 }
 
 function traceContext(request: AppRequest, context: RequestContext = requestContext(request)): RequestTraceContext {

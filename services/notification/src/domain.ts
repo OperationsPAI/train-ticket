@@ -97,6 +97,7 @@ export type ScheduleNotification = Readonly<{
   transactionRequired: boolean;
   variables: Readonly<Record<string, string>>;
   scheduledAt: Date;
+  triggerBusinessRef?: string;
 }>;
 
 export type DispatchNotification = Readonly<{
@@ -230,6 +231,7 @@ export type NotificationTaskSnapshot = Readonly<{
   transactionRequired: boolean;
   variables: Readonly<Record<string, string>>;
   scheduledAt: Date;
+  triggerBusinessRef?: string;
   dispatchedAt?: Date;
   cancelledAt?: Date;
   cancelReason?: string;
@@ -261,6 +263,7 @@ export class NotificationTask {
       transactionRequired: command.transactionRequired,
       variables: Object.freeze({ ...command.variables }),
       scheduledAt: new Date(command.scheduledAt),
+      ...(command.triggerBusinessRef ? { triggerBusinessRef: command.triggerBusinessRef } : {}),
       receipts: Object.freeze([]),
     });
 

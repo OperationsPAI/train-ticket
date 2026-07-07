@@ -74,7 +74,15 @@ export async function handleIdempotency(options) {
         return;
     }
     const result = await options.operation();
-    await options.store.set(options.key, { fingerprint: options.fingerprint, statusCode: result.statusCode, body: result.body });
+    const visible = await options.store.set(options.key, { fingerprint: options.fingerprint, statusCode: result.statusCode, body: result.body });
+    if (visible) {
+        if (visible.fingerprint !== options.fingerprint) {
+            options.reply.status(422).send(errorBody("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request body", options.context));
+            return;
+        }
+        options.reply.status(visible.statusCode).send(visible.body);
+        return;
+    }
     options.reply.status(result.statusCode).send(result.body);
 }
 export async function handleIdempotentPost(request, reply, store, handler) {

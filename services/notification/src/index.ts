@@ -7,6 +7,7 @@ export {
   handleIdempotentPost,
   type ErrorEnvelope,
   type HealthStatus,
+  type AppStorage,
   type InstrumentationHooks,
   type ProbeStatus,
   type RequestContext,
@@ -76,7 +77,7 @@ export {
   type EventPublisher,
   type EventSubscriber,
 } from "./application/messaging.js";
-export { NonConformantNotificationTrigger, NotificationApplicationService, type DeliveryResult, type ExternalTriggerResult, type NotificationChannelGateway, type UserPreference, type UserPreferenceRepository } from "./application/notification-service.js";
+export { NonConformantNotificationTrigger, NotificationApplicationService, type DeliveryResult, type ExternalTriggerResult, type NotificationChannelGateway, type NotificationTaskStore, type UserPreference, type UserPreferenceRepository } from "./application/notification-service.js";
 export {
   NOTIFICATION_CONSUMER_GROUP,
   NOTIFICATION_PRODUCER,
@@ -87,3 +88,5 @@ export {
 export { RedisStreamEventPublisher } from "./adapters/messaging/publisher.js";
 export { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 export { startNotificationMessaging, type NotificationMessagingRuntime } from "./adapters/messaging/runtime.js";
+export { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository } from "./adapters/storage/notification-repository.js";
+export { startNotificationStorage, type NotificationStorageRuntime } from "./adapters/storage/runtime.js";

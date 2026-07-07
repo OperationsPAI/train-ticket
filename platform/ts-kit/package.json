@@ -16,8 +16,10 @@
     "test": "rm -rf test-output && tsc -p tsconfig.test.json && node --test test-output/**/*.test.js"
   },
   "dependencies": {
-    "ioredis": "^5.11.1",
     "@types/node": "^26.0.1",
+    "@types/pg": "^8.20.0",
+    "ioredis": "^5.11.1",
+    "pg": "^8.22.0",
     "typescript": "6.0.3"
   }
 }

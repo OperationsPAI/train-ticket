@@ -255,6 +255,8 @@ export class RedisEventSubscriber {
                     await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
                 }
                 if (!isRecoverableRedisReadError(error)) {
+                    // Unknown errors are reported, never fatal: an unlisted driver
+                    // message must not silently kill the subscriber loop.
                     this.onLoopFailure(error);
                 }
                 await sleep(1_000);

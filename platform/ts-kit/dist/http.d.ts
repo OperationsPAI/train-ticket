@@ -15,7 +15,7 @@ export type IdempotencyRecord = Readonly<{
 }>;
 export interface IdempotencyStore {
     get(key: string): IdempotencyRecord | undefined | Promise<IdempotencyRecord | undefined>;
-    set(key: string, record: IdempotencyRecord): void | Promise<void>;
+    set(key: string, record: IdempotencyRecord): IdempotencyRecord | void | Promise<IdempotencyRecord | void>;
 }
 export declare class InMemoryIdempotencyStore implements IdempotencyStore {
     private readonly records;
