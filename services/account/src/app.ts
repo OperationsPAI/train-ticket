@@ -31,7 +31,7 @@ export type HealthStatus = Readonly<{
 }>;
 
 export type ProbeStatus = Readonly<{
-  status: "ok";
+  status: "ok" | "not_ready";
   probe: "live" | "ready";
 }>;
 
@@ -70,6 +70,12 @@ export type AppOptions = Readonly<{
   repository?: AccountRepository;
   publisher?: EventPublisher;
   idempotencyStore?: IdempotencyStore;
+  storage?: AppStorage;
+}>;
+
+export type AppStorage = Readonly<{
+  ready: () => boolean | Promise<boolean>;
+  runCommand?: <T>(operation: (application: AccountApplicationService) => Promise<T>) => Promise<T>;
 }>;
 
 type OTelSpan = Readonly<{
@@ -133,6 +139,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   const publisher = appOptions.publisher ?? new InMemoryEventPublisher();
   const idempotencyStore = appOptions.idempotencyStore ?? new InMemoryIdempotencyStore();
   const accountService = new AccountApplicationService(repository, publisher);
+  const runWithService = appOptions.storage?.runCommand ?? (<T>(operation: (application: AccountApplicationService) => Promise<T>) => operation(accountService));
   const app: FastifyInstance = Fastify({ logger: false });
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
@@ -161,20 +168,20 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
 
   app.get("/live", async () => probeBody("live"));
   app.get("/livez", async () => probeBody("live"));
-  app.get("/ready", async () => probeBody("ready"));
-  app.get("/readyz", async () => probeBody("ready"));
+  app.get("/ready", async (_request, reply) => readyBody(reply, appOptions.storage));
+  app.get("/readyz", async (_request, reply) => readyBody(reply, appOptions.storage));
 
   app.post("/api/v1/accounts", async (request, reply) => {
     await runIdempotentOperation(request, reply, idempotencyStore, 201, async (context, causationId) => {
       const body = objectBody(request.body);
       assertOptionalString(body.accountId, "accountId");
-      return accountService.createAccount({ accountId: body.accountId as string | undefined, correlationId: context.correlationId, causationId });
+      return runWithService((service) => service.createAccount({ accountId: body.accountId as string | undefined, correlationId: context.correlationId, causationId }));
     });
   });
 
   app.get("/api/v1/accounts/:accountId", async (request, reply) => {
     try {
-      return await accountService.getAccount(accountIdParam(request));
+      return await runWithService((service) => service.getAccount(accountIdParam(request)));
     } catch (error) {
       sendApplicationError(reply, mapError(error), requestContext(request));
     }
@@ -186,7 +193,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
       const reason = requiredString(body.reason, "reason");
       const operator = requiredString(body.operator, "operator");
       assertOptionalString(body.caseRef, "caseRef");
-      return accountService.freezeAccount({ accountId: accountIdParam(request), reason, operator, caseRef: body.caseRef as string | undefined, correlationId: context.correlationId, causationId });
+      return runWithService((service) => service.freezeAccount({ accountId: accountIdParam(request), reason, operator, caseRef: body.caseRef as string | undefined, correlationId: context.correlationId, causationId }));
     });
   });
 
@@ -194,7 +201,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
     await runIdempotentOperation(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) => {
       const body = objectBody(request.body);
       const reason = requiredString(body.reason, "reason");
-      return accountService.unfreezeAccount({ accountId: accountIdParam(request), reason, correlationId: context.correlationId, causationId });
+      return runWithService((service) => service.unfreezeAccount({ accountId: accountIdParam(request), reason, correlationId: context.correlationId, causationId }));
     });
   });
 
@@ -203,13 +210,13 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
       const body = objectBody(request.body);
       const preferenceKey = requiredString(body.preferenceKey, "preferenceKey");
       const value = requiredString(body.value, "value");
-      return accountService.updatePreference({ accountId: accountIdParam(request), preferenceKey, value, correlationId: context.correlationId, causationId });
+      return runWithService((service) => service.updatePreference({ accountId: accountIdParam(request), preferenceKey, value, correlationId: context.correlationId, causationId }));
     });
   });
 
   app.post("/api/v1/accounts/:accountId/start-closure", async (request, reply) => {
     await runIdempotentOperation(request, reply, idempotencyStore, 200, { preconditionDomainCodes: "all" }, async (context, causationId) =>
-      accountService.startClosure({ accountId: accountIdParam(request), correlationId: context.correlationId, causationId }),
+      runWithService((service) => service.startClosure({ accountId: accountIdParam(request), correlationId: context.correlationId, causationId })),
     );
   });
 
@@ -255,7 +262,7 @@ async function runIdempotentOperation(
 }
 
 function normalizeOptions(options: AppOptions | InstrumentationHooks): AppOptions {
-  if ("repository" in options || "publisher" in options || "idempotencyStore" in options || "instrumentation" in options) {
+  if ("repository" in options || "publisher" in options || "idempotencyStore" in options || "instrumentation" in options || "storage" in options) {
     return options as AppOptions;
   }
   return { instrumentation: options as InstrumentationHooks };
@@ -267,6 +274,14 @@ function healthBody(): HealthStatus {
 
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
+}
+
+async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
+  if (storage && !await storage.ready()) {
+    reply.status(503);
+    return { status: "not_ready", probe: "ready" };
+  }
+  return probeBody("ready");
 }
 
 function traceContext(request: AppRequest, context: RequestContext = requestContext(request)): RequestTraceContext {

@@ -14,7 +14,8 @@ import {
   type TimelineEntrySnapshot,
 } from "../domain.js";
 import { newCommandId, toEventEnvelope, type EventEnvelope, type EventPublisher } from "./messaging.js";
-import { uuidV7 } from "@trainticket/ts-kit";
+import { OptimisticConcurrencyConflict, uuidV7 } from "@trainticket/ts-kit";
+import { type CustomerServiceRepository } from "./ports/customer-service-repository.js";
 
 export type SupportCaseDetails = SupportCaseSnapshot &
   Readonly<{
@@ -69,7 +70,10 @@ export class CustomerServiceApplication {
   private readonly manualActions = new Map<string, ManualActionRequest>();
   private readonly consumedIntegrationEvents = new Map<string, Readonly<{ source: string; eventType: string; consumedAt: Date; payload: Readonly<Record<string, unknown>> }>>();
 
-  constructor(private readonly publisher: EventPublisher) {}
+  constructor(
+    private readonly publisher: EventPublisher,
+    private readonly repository?: CustomerServiceRepository,
+  ) {}
 
   async openSupportCase(request: OpenSupportCaseRequest, correlationId: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const openedAt = new Date();
@@ -85,14 +89,27 @@ export class CustomerServiceApplication {
       causationId,
       openedAt,
     });
+    try {
+      await this.repository?.saveNewCase(supportCase.toSnapshot());
+    } catch (error) {
+      if ((error instanceof OptimisticConcurrencyConflict || isUniqueViolation(error)) && this.repository) {
+        const duplicate = await this.repository.findDuplicateOpenCase(supportCase.toSnapshot());
+        if (duplicate) {
+          return duplicate;
+        }
+      }
+      throw error;
+    }
+    const timeline = CaseTimeline.create(supportCase.id);
+    await this.repository?.saveNewTimeline(timeline.toSnapshot());
     this.cases.set(supportCase.id, supportCase);
-    this.timelines.set(supportCase.id, CaseTimeline.create(supportCase.id));
+    this.timelines.set(supportCase.id, timeline);
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return supportCase.toSnapshot();
   }
 
   getSupportCase(caseId: string): SupportCaseDetails {
-    const supportCase = this.requireCase(caseId);
+    const supportCase = this.requireCaseSync(caseId);
     return {
       ...supportCase.toSnapshot(),
       evidence: Object.freeze((this.evidenceByCase.get(caseId) ?? []).map((evidence) => evidence.toSnapshot())),
@@ -100,8 +117,21 @@ export class CustomerServiceApplication {
     };
   }
 
+
+  async getSupportCaseDetails(caseId: string): Promise<SupportCaseDetails> {
+    if (!this.repository) {
+      return this.getSupportCase(caseId);
+    }
+    const supportCase = await this.requireCase(caseId);
+    return {
+      ...supportCase.toSnapshot(),
+      evidence: Object.freeze(await this.repository.evidenceForCase(caseId)),
+      timeline: Object.freeze(((await this.findTimeline(caseId)) ?? CaseTimeline.create(caseId)).entries.map((entry) => ({ ...entry }))),
+    };
+  }
+
   async attachEvidence(caseId: string, request: AttachEvidenceRequest, correlationId: string, causationId = newCommandId()) {
-    this.requireCase(caseId);
+    await this.requireCase(caseId);
     const { evidence, event } = EvidenceRef.attach({
       evidenceId: newEvidenceId(),
       caseId,
@@ -117,12 +147,13 @@ export class CustomerServiceApplication {
     const evidenceRefs = this.evidenceByCase.get(caseId) ?? [];
     evidenceRefs.push(evidence);
     this.evidenceByCase.set(caseId, evidenceRefs);
+    await this.repository?.saveEvidence(evidence.toSnapshot());
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return evidence.toSnapshot();
   }
 
   async classifySupportCase(caseId: string, request: ClassifySupportCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
-    const current = this.requireCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const { case: updated, event } = current.classify({
       caseId,
       classification: request.classification,
@@ -133,12 +164,15 @@ export class CustomerServiceApplication {
       classifiedAt: new Date(),
     });
     this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return updated.toSnapshot();
   }
 
   async assignSupportCase(caseId: string, request: AssignSupportCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
-    const current = this.requireCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const { case: updated, event } = current.assign({
       caseId,
       ownerQueue: request.ownerQueue,
@@ -149,12 +183,15 @@ export class CustomerServiceApplication {
       assignedAt: new Date(),
     });
     this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return updated.toSnapshot();
   }
 
   async escalateCase(caseId: string, request: EscalateCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
-    const current = this.requireCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const { case: updated, event } = current.escalate({
       caseId,
       targetQueue: request.targetQueue,
@@ -165,12 +202,15 @@ export class CustomerServiceApplication {
       escalatedAt: new Date(),
     });
     this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return updated.toSnapshot();
   }
 
   async resolveCase(caseId: string, request: ResolveCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
-    const current = this.requireCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const { case: updated, event } = current.resolve({
       caseId,
       summary: request.summary,
@@ -181,12 +221,15 @@ export class CustomerServiceApplication {
       resolvedAt: new Date(),
     });
     this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return updated.toSnapshot();
   }
 
   async closeCase(caseId: string, request: CloseCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
-    const current = this.requireCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const { case: updated, event } = current.close({
       caseId,
       reason: request.reason,
@@ -196,12 +239,15 @@ export class CustomerServiceApplication {
       closedAt: new Date(),
     });
     this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return updated.toSnapshot();
   }
 
   async reopenCase(caseId: string, request: ReopenCaseRequest, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
-    const current = this.requireCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const { case: updated, event } = current.reopen({
       caseId,
       reason: request.reason,
@@ -211,12 +257,15 @@ export class CustomerServiceApplication {
       reopenedAt: new Date(),
     });
     this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return updated.toSnapshot();
   }
 
   async requestManualAction(caseId: string, request: RequestManualActionRequest, correlationId: string, causationId = newCommandId()) {
-    this.requireCase(caseId);
+    await this.requireCase(caseId);
     const { action, event } = ManualActionRequest.request({
       manualActionId: newManualActionId(),
       caseId,
@@ -232,6 +281,7 @@ export class CustomerServiceApplication {
       requestedAt: new Date(),
     });
     this.manualActions.set(action.id, action);
+    await this.repository?.saveNewManualAction(action.toSnapshot());
     await this.appendTimelineEntry(caseId, "ManualActionRequested", toEventEnvelope(event, causationId).payload, "INTERNAL_ONLY", event.occurredAt, event.correlationId, event.causationId);
     await this.publisher.publish(toEventEnvelope(event, causationId));
     return action.toSnapshot();
@@ -245,7 +295,7 @@ export class CustomerServiceApplication {
     if (envelope.producer === "admin-audit" && (envelope.eventType === "ManualActionExecuted" || envelope.eventType === "ManualActionRejected")) {
       await this.recordAdminAuditManualActionOutcome(envelope);
     } else {
-      for (const supportCase of this.cases.values()) {
+      for (const supportCase of await this.findCasesReferencingEnvelope(envelope)) {
         if (caseReferencesEnvelope(supportCase.toSnapshot(), envelope)) {
           await this.appendTimelineEntry(
             supportCase.id,
@@ -274,7 +324,8 @@ export class CustomerServiceApplication {
 
   private async recordAdminAuditManualActionOutcome(envelope: EventEnvelope): Promise<void> {
     const manualActionId = requiredPayloadString(envelope.payload, "manualActionId");
-    const action = this.manualActions.get(manualActionId);
+    const versionedAction = await this.findManualAction(manualActionId);
+    const action = versionedAction?.aggregate;
     if (!action) {
       return;
     }
@@ -291,6 +342,9 @@ export class CustomerServiceApplication {
       causationId: envelope.eventId,
     });
     this.manualActions.set(manualActionId, updated);
+    if (this.repository && versionedAction) {
+      await this.repository.saveManualAction(updated.toSnapshot(), versionedAction.version ?? 0n);
+    }
     const eventEnvelope = toEventEnvelope(event, envelope.eventId);
     await this.publisher.publish(eventEnvelope);
     await this.appendTimelineEntry(
@@ -305,7 +359,8 @@ export class CustomerServiceApplication {
   }
 
   private async appendTimelineEntry(caseId: string, eventType: string, payload: Readonly<Record<string, unknown>>, visibility: "CUSTOMER_VISIBLE" | "INTERNAL_ONLY", occurredAt: Date, correlationId: string, causationId?: string): Promise<void> {
-    const current = this.timelines.get(caseId) ?? CaseTimeline.create(caseId);
+    const versionedTimeline = await this.findVersionedTimeline(caseId);
+    const current = versionedTimeline?.aggregate ?? CaseTimeline.create(caseId);
     const { timeline, event } = current.append({
       entryId: newTimelineEntryId(),
       caseId,
@@ -317,20 +372,71 @@ export class CustomerServiceApplication {
       causationId,
     });
     this.timelines.set(caseId, timeline);
+    if (this.repository) {
+      if (versionedTimeline) {
+        await this.repository.saveTimeline(timeline.toSnapshot(), versionedTimeline.version);
+      } else {
+        await this.repository.saveNewTimeline(timeline.toSnapshot());
+      }
+    }
     await this.publisher.publish(toEventEnvelope(event, event.causationId ?? newCommandId()));
   }
 
-  private requireCase(caseId: string): SupportCase {
+  private requireCaseSync(caseId: string): SupportCase {
     const supportCase = this.cases.get(caseId);
     if (!supportCase) {
       throw new NotFoundError(`Support case ${caseId} was not found`);
     }
     return supportCase;
   }
+
+  private async requireCase(caseId: string): Promise<SupportCase> {
+    return (await this.requireVersionedCase(caseId)).aggregate;
+  }
+
+  private async requireVersionedCase(caseId: string): Promise<Readonly<{ aggregate: SupportCase; version: bigint | undefined }>> {
+    const persisted = await this.repository?.findCase(caseId);
+    if (persisted) {
+      return persisted;
+    }
+    const supportCase = this.cases.get(caseId);
+    if (!supportCase) {
+      throw new NotFoundError(`Support case ${caseId} was not found`);
+    }
+    return { aggregate: supportCase, version: undefined };
+  }
+
+  private async findTimeline(caseId: string): Promise<CaseTimeline | undefined> {
+    return (await this.findVersionedTimeline(caseId))?.aggregate;
+  }
+
+  private async findVersionedTimeline(caseId: string): Promise<Readonly<{ aggregate: CaseTimeline; version: bigint }> | undefined> {
+    return await this.repository?.findTimeline(caseId) ?? (this.timelines.has(caseId) ? { aggregate: this.timelines.get(caseId)!, version: 0n } : undefined);
+  }
+
+  private async findManualAction(manualActionId: string): Promise<Readonly<{ aggregate: ManualActionRequest; version: bigint | undefined }> | undefined> {
+    const persisted = await this.repository?.findManualAction(manualActionId);
+    if (persisted) {
+      return persisted;
+    }
+    const action = this.manualActions.get(manualActionId);
+    return action ? { aggregate: action, version: undefined } : undefined;
+  }
+
+  private async findCasesReferencingEnvelope(envelope: EventEnvelope): Promise<SupportCase[]> {
+    if (!this.repository) {
+      return [...this.cases.values()];
+    }
+    return (await this.repository.listCases()).filter((supportCase) => caseReferencesEnvelope(supportCase.toSnapshot(), envelope));
+  }
 }
 
 export function isDomainError(error: unknown): error is DomainError {
   return error instanceof DomainError;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
 }
 
 function requiredPayloadString(payload: Record<string, unknown>, field: string): string {

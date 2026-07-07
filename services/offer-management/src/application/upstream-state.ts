@@ -18,7 +18,7 @@ export type QuoteOfferRequest = Readonly<{
 
 type MoneyLike = Readonly<{ currency: string; minorUnits: number }>;
 
-type StoredItinerary = Readonly<{
+export type StoredItinerary = Readonly<{
   itineraryRef: string;
   itineraryVersion: string;
   segmentRefs: readonly string[];
@@ -27,7 +27,7 @@ type StoredItinerary = Readonly<{
   inputHash?: string;
 }>;
 
-type StoredAvailability = Readonly<{
+export type StoredAvailability = Readonly<{
   snapshotId: string;
   snapshotVersion: string;
   capturedAt: Date;
@@ -37,7 +37,7 @@ type StoredAvailability = Readonly<{
   confidence: AvailabilityConfidence;
 }>;
 
-type StoredFareQuote = Readonly<{
+export type StoredFareQuote = Readonly<{
   quoteId: string;
   inputHash: string;
   channelId: string;
@@ -54,7 +54,7 @@ type StoredFareQuote = Readonly<{
   guaranteeLevel: PriceGuaranteeLevel;
 }>;
 
-type StoredTraveler = Readonly<{
+export type StoredTraveler = Readonly<{
   travelerId: string;
   travelerType: TravelerType;
   maskedDocumentRef?: string;
@@ -386,11 +386,15 @@ function availabilitySnapshots(itinerary: Record<string, unknown>, segmentRefs: 
   return bySegment;
 }
 
-function fareQuoteKey(inputHash: string, channelId: string, travelerRefs: readonly string[]): string {
+export function fareQuoteStorageKey(inputHash: string, channelId: string, travelerRefs: readonly string[]): string {
   return `${inputHash}:${channelId}:${travelerSetHash(travelerRefs)}`;
 }
 
-function travelerSetHash(travelerRefs: readonly string[]): string {
+function fareQuoteKey(inputHash: string, channelId: string, travelerRefs: readonly string[]): string {
+  return fareQuoteStorageKey(inputHash, channelId, travelerRefs);
+}
+
+export function travelerSetHash(travelerRefs: readonly string[]): string {
   return [...travelerRefs].sort().join(",");
 }
 

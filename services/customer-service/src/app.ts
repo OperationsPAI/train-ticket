@@ -36,7 +36,7 @@ export type HealthStatus = Readonly<{
 }>;
 
 export type ProbeStatus = Readonly<{
-  status: "ok";
+  status: "ok" | "not_ready";
   probe: "live" | "ready";
 }>;
 
@@ -75,6 +75,12 @@ export type AppOptions = Readonly<{
   publisher?: EventPublisher;
   application?: CustomerServiceApplication;
   idempotencyStore?: IdempotencyStore;
+  storage?: AppStorage;
+}>;
+
+export type AppStorage = Readonly<{
+  ready: () => boolean | Promise<boolean>;
+  runCommand?: <T>(operation: (application: CustomerServiceApplication) => Promise<T>) => Promise<T>;
 }>;
 
 type OTelSpan = Readonly<{
@@ -143,6 +149,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
   const appOptions = normalizeOptions(options);
   const publisher = appOptions.publisher ?? new InMemoryEventPublisher();
   const application = appOptions.application ?? new CustomerServiceApplication(publisher);
+  const runWithApplication = appOptions.storage?.runCommand ?? (<T>(operation: (service: CustomerServiceApplication) => Promise<T>) => operation(application));
   const idempotencyStore = appOptions.idempotencyStore ?? new InMemoryIdempotencyStore();
   const instrumentation = appOptions.instrumentation ?? {};
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
@@ -170,13 +177,13 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
   app.get("/metadata", async () => metadata());
   app.get("/live", async () => probeBody("live"));
   app.get("/livez", async () => probeBody("live"));
-  app.get("/ready", async () => probeBody("ready"));
-  app.get("/readyz", async () => probeBody("ready"));
+  app.get("/ready", async (_request, reply) => readyBody(reply, appOptions.storage));
+  app.get("/readyz", async (_request, reply) => readyBody(reply, appOptions.storage));
 
   app.post("/api/v1/support-cases", async (request, reply) => {
     const response = await withIdempotency(request, idempotencyStore, request.body ?? null, async () => {
       const body = validateOpenSupportCase(request.body);
-      const created = await application.openSupportCase(body, requestContext(request).correlationId, newCommandId());
+      const created = await runWithApplication((service) => service.openSupportCase(body, requestContext(request).correlationId, newCommandId()));
       return { statusCode: 201, body: openSupportCaseResponse(created) };
     });
     return reply.status(response!.statusCode).send(response!.body);
@@ -184,14 +191,14 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
 
   app.get("/api/v1/support-cases/:caseId", async (request) => {
     const { caseId } = request.params as { caseId: string };
-    return supportCaseResponse(application.getSupportCase(caseId));
+    return supportCaseResponse(await runWithApplication((service) => service.getSupportCaseDetails(caseId)));
   });
 
   app.post("/api/v1/support-cases/:caseId/evidence", async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
     const response = await withIdempotency(request, idempotencyStore, { caseId, body: request.body ?? null }, async () => {
       const body = validateAttachEvidence(request.body);
-      const evidence = await application.attachEvidence(caseId, body, requestContext(request).correlationId, newCommandId());
+      const evidence = await runWithApplication((service) => service.attachEvidence(caseId, body, requestContext(request).correlationId, newCommandId()));
       return { statusCode: 201, body: { evidenceId: evidence.evidenceId, caseId: evidence.caseId, evidenceType: evidence.evidenceType } };
     });
     return reply.status(response!.statusCode).send(response!.body);
@@ -201,7 +208,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
       const body = validateClassify(request.body);
-      return application.classifySupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+      return runWithApplication((service) => service.classifySupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
     });
   });
 
@@ -209,7 +216,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
       const body = validateAssign(request.body);
-      return application.assignSupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+      return runWithApplication((service) => service.assignSupportCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
     });
   });
 
@@ -217,7 +224,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
       const body = validateEscalate(request.body);
-      return application.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+      return runWithApplication((service) => service.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
     });
   });
 
@@ -225,7 +232,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
       const body = validateResolve(request.body);
-      return application.resolveCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+      return runWithApplication((service) => service.resolveCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
     });
   });
 
@@ -233,7 +240,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
       const body = validateClose(request.body);
-      return application.closeCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId());
+      return runWithApplication((service) => service.closeCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
     });
   });
 
@@ -241,7 +248,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
       const body = validateReopen(request.body);
-      return application.reopenCase(caseId, body, requestContext(request).correlationId, newCommandId());
+      return runWithApplication((service) => service.reopenCase(caseId, body, requestContext(request).correlationId, newCommandId()));
     });
   });
 
@@ -249,7 +256,7 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     const { caseId } = request.params as { caseId: string };
     const response = await withIdempotency(request, idempotencyStore, { caseId, body: request.body ?? null }, async () => {
       const body = validateRequestManualAction(request.body);
-      const action = await application.requestManualAction(caseId, body, requestContext(request).correlationId, newCommandId());
+      const action = await runWithApplication((service) => service.requestManualAction(caseId, body, requestContext(request).correlationId, newCommandId()));
       return { statusCode: 202, body: { manualActionId: action.manualActionId, status: "REQUESTED" } };
     });
     return reply.status(response!.statusCode).send(response!.body);
@@ -569,6 +576,14 @@ function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
 }
 
+async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
+  if (storage && !await storage.ready()) {
+    reply.status(503);
+    return { status: "not_ready", probe: "ready" };
+  }
+  return probeBody("ready");
+}
+
 function traceContext(request: AppRequest, context: RequestContext = requestContext(request)): RequestTraceContext {
   return {
     ...context,
@@ -594,7 +609,7 @@ const requestContexts = new WeakMap<AppRequest, RequestContext>();
 
 function normalizeOptions(options: InstrumentationHooks | AppOptions): AppOptions {
   const candidate = options as AppOptions;
-  if (candidate.instrumentation !== undefined || candidate.publisher !== undefined || candidate.application !== undefined || candidate.idempotencyStore !== undefined) {
+  if (candidate.instrumentation !== undefined || candidate.publisher !== undefined || candidate.application !== undefined || candidate.idempotencyStore !== undefined || candidate.storage !== undefined) {
     return candidate;
   }
   return { instrumentation: options as InstrumentationHooks };

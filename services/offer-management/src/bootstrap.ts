@@ -2,6 +2,7 @@ import { createRedisMessagingAdapters } from "./adapters/messaging/redis.js";
 import { CONSUMER_GROUP, SUBSCRIBED_STREAMS, consumerName } from "./adapters/messaging/stream-config.js";
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 import { createUpstreamEventHandler, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
+import { startOfferStorage } from "./adapters/storage/runtime.js";
 
 export type BootstrapOptions = Readonly<{
   host?: string;
@@ -33,10 +34,13 @@ export function runtimeRedisUrl(options: Pick<BootstrapOptions, "redisUrl"> = {}
 
 export async function bootstrap(options: BootstrapOptions = {}) {
   const messaging = await createRedisMessagingAdapters(runtimeRedisUrl(options));
+  const storage = process.env.DATABASE_URL ? await startOfferStorage(runtimeRedisUrl(options)) : undefined;
   const upstreamRepository = new InMemoryUpstreamStateRepository();
   const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv(), {
     publisher: messaging.publisher,
     upstreamRepository,
+    idempotencyStore: storage?.idempotencyStore,
+    storage,
   });
 
   const abortController = new AbortController();
@@ -44,7 +48,12 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     SUBSCRIBED_STREAMS,
     CONSUMER_GROUP,
     consumerName(options.instanceId ?? process.env.HOSTNAME),
-    createUpstreamEventHandler(upstreamRepository),
+    async (envelope) => {
+      if (storage) {
+        return storage.handleUpstreamEvent(envelope);
+      }
+      return createUpstreamEventHandler(upstreamRepository)(envelope);
+    },
     abortController.signal,
   );
   const subscriptionFailed = new Promise<never>((_, reject) => {
@@ -67,6 +76,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     abortController.abort();
     messaging.subscriber.stop();
     await messaging.close();
+    await storage?.stop();
   });
 
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
