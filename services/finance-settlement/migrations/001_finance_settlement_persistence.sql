@@ -37,6 +37,23 @@ CREATE TABLE IF NOT EXISTS segment_booking_order_refs (
   created_at         timestamptz NOT NULL DEFAULT now()
 );
 
+
+CREATE TABLE IF NOT EXISTS captures_by_order_id (
+  order_id          text PRIMARY KEY,
+  payment_intent_id text NOT NULL,
+  currency          text NOT NULL,
+  amount            numeric(19, 4) NOT NULL,
+  source_event_id   text NOT NULL,
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS approved_refunds_by_case_id (
+  case_id    text PRIMARY KEY,
+  currency   text NOT NULL,
+  amount     numeric(19, 4) NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS outbox (
   seq          bigserial PRIMARY KEY,
   event_id     text NOT NULL UNIQUE,

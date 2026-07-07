@@ -22,10 +22,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 @Service
 public class BookingOrchestrationService {
@@ -35,25 +36,33 @@ public class BookingOrchestrationService {
 
     private final Clock clock;
     private final EventPublisher eventPublisher;
-    private final ConcurrentHashMap<String, BookingSaga> sagas = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, SegmentBooking> segmentBookings = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> segmentBookingToSaga = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> segmentIdempotencyToBookingId = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> holdIdToSegmentBookingId = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> paymentIntentIdToSaga = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> correlationIdToSaga = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> consumedEventIds = new ConcurrentHashMap<>();
+    private final BookingSagaRepository sagas;
+    private final SegmentBookingRepository segmentBookings;
+    private final PaymentIntentSagaReferenceRepository paymentIntentRefs;
+    private final ConsumedEventRepository consumedEvents;
+
 
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher) {
+        this(clock, eventPublisher, new InMemoryBookingSagaRepository(), new InMemorySegmentBookingRepository(),
+            new InMemoryPaymentIntentSagaReferenceRepository(), new InMemoryConsumedEventRepository());
+    }
+
+    public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher, BookingSagaRepository sagas,
+                                       SegmentBookingRepository segmentBookings,
+                                       PaymentIntentSagaReferenceRepository paymentIntentRefs,
+                                       ConsumedEventRepository consumedEvents) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
+        this.sagas = Objects.requireNonNull(sagas, "sagas repository is required");
+        this.segmentBookings = Objects.requireNonNull(segmentBookings, "segmentBookings repository is required");
+        this.paymentIntentRefs = Objects.requireNonNull(paymentIntentRefs, "paymentIntentRefs repository is required");
+        this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents repository is required");
     }
 
     public StartSagaResult startSaga(StartSagaCommand command, String idempotencyKey, String correlationId) {
         String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, command.journeyOrderId(), command.segmentRefs());
-        sagas.put(sagaId, saga);
-        indexSagaCorrelation(correlationId, sagaId);
+        sagas.save(saga, correlationId);
         publishEvents(saga.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         StartSagaResult result = new StartSagaResult(sagaId, command.journeyOrderId(), mapSagaStatus(saga.status()), clock.instant());
@@ -61,22 +70,18 @@ public class BookingOrchestrationService {
     }
 
     public Optional<SagaDetail> getSaga(String sagaId) {
-        return Optional.ofNullable(sagas.get(sagaId)).map(this::buildSagaDetail);
+        return sagas.findById(sagaId).map(this::buildSagaDetail);
     }
 
     public RequestReservationResult requestReservation(String sagaId, RequestReservationCommand command,
                                                        String idempotencyKey, String correlationId) {
-        BookingSaga saga = sagas.get(sagaId);
-        if (saga == null) {
-            throw new NotFoundException("Booking saga not found: " + sagaId);
-        }
+        BookingSaga saga = sagas.findById(sagaId)
+            .orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
 
         SegmentBooking booking = SegmentBooking.requestReservation(
             command.segmentBookingId(), saga.journeyOrderId(), command.segmentRef(), command.segmentRef(),
             command.travelerRef(), "purchase", clock);
-        segmentBookings.put(command.segmentBookingId(), booking);
-        segmentBookingToSaga.put(command.segmentBookingId(), sagaId);
-        segmentIdempotencyToBookingId.put(booking.idempotencyKey(), command.segmentBookingId());
+        segmentBookings.save(booking, sagaId);
         publishEvents(booking.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         RequestReservationResult result = new RequestReservationResult(command.segmentBookingId(), "REQUESTED");
@@ -85,41 +90,49 @@ public class BookingOrchestrationService {
 
     public MarkTicketedResult markTicketed(String sagaId, MarkTicketedCommand command,
                                            String idempotencyKey, String correlationId) {
-        if (!sagas.containsKey(sagaId)) {
-            throw new NotFoundException("Booking saga not found: " + sagaId);
-        }
+        sagas.findById(sagaId).orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
 
-        SegmentBooking booking = segmentBookings.get(command.segmentBookingId());
-        if (booking == null || !sagaId.equals(segmentBookingToSaga.get(command.segmentBookingId()))) {
-            throw new NotFoundException("Segment booking not found: " + command.segmentBookingId());
-        }
+        SegmentBookingRepository.SegmentBookingRecord bookingRecord = segmentBookings.findById(command.segmentBookingId())
+            .filter(record -> sagaId.equals(record.sagaId()))
+            .orElseThrow(() -> new NotFoundException("Segment booking not found: " + command.segmentBookingId()));
+        SegmentBooking booking = bookingRecord.booking();
         try {
             booking.markTicketed(command.entitlementId());
         } catch (IllegalStateException ex) {
             throw new PreconditionFailedException(ex.getMessage(), ex);
         }
+        segmentBookings.save(booking, sagaId);
         publishEvents(booking.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         MarkTicketedResult result = new MarkTicketedResult(command.segmentBookingId(), "TICKETED");
         return result;
     }
 
+    @Transactional
     public HandlerResult handleUpstreamEvent(EventEnvelope envelope) {
         if (envelope == null || envelope.eventId() == null || envelope.eventId().isBlank()) {
             return new HandlerResult.FatalError("missing event envelope or eventId");
         }
-        if (consumedEventIds.putIfAbsent(envelope.eventId(), Boolean.TRUE) != null) {
+        if (!consumedEvents.recordIfNew(envelope.eventId(), envelope.producer())) {
             return new HandlerResult.Success();
         }
         try {
             dispatchUpstreamEvent(envelope);
             return new HandlerResult.Success();
         } catch (IllegalArgumentException | IllegalStateException | NotFoundException | PreconditionFailedException ex) {
-            consumedEventIds.remove(envelope.eventId());
+            rollbackCurrentTransactionIfActive();
             return new HandlerResult.FatalError(ex.getMessage());
         } catch (RuntimeException ex) {
-            consumedEventIds.remove(envelope.eventId());
+            rollbackCurrentTransactionIfActive();
             return new HandlerResult.TransientError(ex.getMessage());
+        }
+    }
+
+    private static void rollbackCurrentTransactionIfActive() {
+        try {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+        } catch (RuntimeException ignored) {
+            // Unit tests may run without a Spring-managed transaction.
         }
     }
 
@@ -149,7 +162,7 @@ public class BookingOrchestrationService {
         if (journeyOrderId == null) {
             throw new IllegalArgumentException("JourneyOrderCreated payload requires orderId");
         }
-        if (sagas.values().stream().anyMatch(saga -> saga.journeyOrderId().equals(journeyOrderId))) {
+        if (sagas.findByJourneyOrderId(journeyOrderId).isPresent()) {
             return;
         }
         List<String> segmentRefs = listOfText(payload.get("segmentRefs"));
@@ -168,8 +181,7 @@ public class BookingOrchestrationService {
         }
         String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, journeyOrderId, segmentRefs);
-        sagas.put(sagaId, saga);
-        indexSagaCorrelation(correlationId, sagaId);
+        sagas.save(saga, correlationId);
         publishEvents(saga.pullEvents(), correlationId, causationId);
     }
 
@@ -178,8 +190,8 @@ public class BookingOrchestrationService {
         String idempotencyKey = text(payload.get("idempotencyKey"));
         SegmentBooking booking = null;
         if (idempotencyKey != null) {
-            booking = Optional.ofNullable(segmentIdempotencyToBookingId.get(idempotencyKey))
-                .map(segmentBookings::get)
+            booking = segmentBookings.findByIdempotencyKey(idempotencyKey)
+                .map(SegmentBookingRepository.SegmentBookingRecord::booking)
                 .orElse(null);
         }
         if (booking == null && holdId != null) {
@@ -192,7 +204,7 @@ public class BookingOrchestrationService {
             throw new IllegalArgumentException("CapacityHeld/CapacityHoldConfirmed payload requires holdId and a known segment booking reference");
         }
         booking.markCapacityHolding(holdId);
-        holdIdToSegmentBookingId.putIfAbsent(holdId, booking.segmentBookingId());
+        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
         publishEvents(booking.pullEvents(), correlationId, causationId);
         markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
     }
@@ -201,8 +213,8 @@ public class BookingOrchestrationService {
         String idempotencyKey = text(payload.get("idempotencyKey"));
         SegmentBooking booking = null;
         if (idempotencyKey != null) {
-            booking = Optional.ofNullable(segmentIdempotencyToBookingId.get(idempotencyKey))
-                .map(segmentBookings::get)
+            booking = segmentBookings.findByIdempotencyKey(idempotencyKey)
+                .map(SegmentBookingRepository.SegmentBookingRecord::booking)
                 .orElse(null);
         }
         if (booking == null) {
@@ -214,11 +226,15 @@ public class BookingOrchestrationService {
         }
         String reason = firstText(payload, "reason", "failureMessage", "failureCode");
         booking.failReservation(reason == null ? "capacity hold failed" : reason);
+        String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElse(null);
+        if (sagaId != null) {
+            segmentBookings.save(booking, sagaId);
+        }
         publishEvents(booking.pullEvents(), correlationId, causationId);
-        String sagaId = segmentBookingToSaga.get(booking.segmentBookingId());
-        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        BookingSaga saga = sagaId == null ? null : sagas.findById(sagaId).orElse(null);
         if (saga != null && saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
             saga.fail(reason == null ? "capacity hold failed" : reason);
+            sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -232,9 +248,7 @@ public class BookingOrchestrationService {
         if (booking != null) {
             String reason = firstText(payload, "releaseReason", "reason");
             booking.markCancelled(reason == null ? "capacity hold released" : reason);
-            if (holdId != null) {
-                holdIdToSegmentBookingId.remove(holdId);
-            }
+            segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
             publishEvents(booking.pullEvents(), correlationId, causationId);
         }
     }
@@ -254,9 +268,10 @@ public class BookingOrchestrationService {
             throw new IllegalArgumentException("PaymentCaptured payload requires paymentIntentId");
         }
         String sagaId = sagaIdForPaymentIntent(paymentIntentId, payload);
-        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        BookingSaga saga = sagaId == null ? null : sagas.findById(sagaId).orElse(null);
         if (saga != null) {
             safeAdvance(saga, BookingSagaStatus.TICKETING);
+            sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -267,10 +282,11 @@ public class BookingOrchestrationService {
             throw new IllegalArgumentException("payment failure payload requires paymentIntentId");
         }
         String sagaId = sagaIdForPaymentIntent(paymentIntentId, payload);
-        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        BookingSaga saga = sagaId == null ? null : sagas.findById(sagaId).orElse(null);
         if (saga != null && saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
             String reason = firstText(payload, "reason", "reasonCode");
             saga.fail(reason == null ? "payment failed" : reason);
+            sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -284,6 +300,7 @@ public class BookingOrchestrationService {
         String evidence = firstText(payload, "normalizedEvidence", "evidence");
         booking.confirmFromProvider(new ProviderReservationConfirmed(
             booking.segmentBookingId(), reference, evidence == null ? "provider-confirmed" : evidence, Map.of()));
+        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
         publishEvents(booking.pullEvents(), correlationId, causationId);
         markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
     }
@@ -295,6 +312,7 @@ public class BookingOrchestrationService {
         }
         String reason = firstText(payload, "errorMessage", "reason", "errorType");
         booking.failReservation(reason == null ? "provider reservation failed" : reason);
+        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
         publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
@@ -304,15 +322,14 @@ public class BookingOrchestrationService {
         if (segmentBookingId == null || entitlementId == null) {
             throw new IllegalArgumentException("EntitlementIssued payload requires segmentBookingId and entitlementId");
         }
-        String sagaId = segmentBookingToSaga.get(segmentBookingId);
-        if (sagaId == null) {
-            throw new IllegalArgumentException("EntitlementIssued references an unknown segment booking");
-        }
+        String sagaId = sagaIdForSegmentBooking(segmentBookingId)
+            .orElseThrow(() -> new IllegalArgumentException("EntitlementIssued references an unknown segment booking"));
         markTicketed(sagaId, new MarkTicketedCommand(segmentBookingId, entitlementId),
             "event:" + causationId + ":" + segmentBookingId, correlationId);
-        BookingSaga saga = sagas.get(sagaId);
+        BookingSaga saga = sagas.findById(sagaId).orElse(null);
         if (saga != null && saga.steps().stream().allMatch(step -> step.status().name().equals("SUCCEEDED"))) {
             saga.complete();
+            sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -330,6 +347,7 @@ public class BookingOrchestrationService {
         }
         if (saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
             saga.fail(failureReason);
+            sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -345,6 +363,7 @@ public class BookingOrchestrationService {
         // emit SegmentBookingCancelled so capacity releases the hold.
         booking.requestCancellation(cancellationReason);
         booking.markCancelled(cancellationReason);
+        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
         publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
@@ -355,9 +374,11 @@ public class BookingOrchestrationService {
         }
         try {
             booking.failReservation(reason);
+            segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
             publishEvents(booking.pullEvents(), correlationId, causationId);
         } catch (IllegalStateException ex) {
             booking.requestCancellation(reason);
+            segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
             publishEvents(booking.pullEvents(), correlationId, causationId);
         }
     }
@@ -372,9 +393,10 @@ public class BookingOrchestrationService {
     }
 
     private void markSagaStepSucceeded(String segmentBookingId, String correlationId, String causationId) {
-        SegmentBooking booking = segmentBookings.get(segmentBookingId);
-        String sagaId = segmentBookingToSaga.get(segmentBookingId);
-        BookingSaga saga = sagaId == null ? null : sagas.get(sagaId);
+        SegmentBookingRepository.SegmentBookingRecord record = segmentBookings.findById(segmentBookingId).orElse(null);
+        SegmentBooking booking = record == null ? null : record.booking();
+        String sagaId = record == null ? null : record.sagaId();
+        BookingSaga saga = sagaId == null ? null : sagas.findById(sagaId).orElse(null);
         if (booking == null || saga == null) {
             return;
         }
@@ -384,6 +406,7 @@ public class BookingOrchestrationService {
             if (saga.steps().stream().allMatch(step -> step.status().name().equals("SUCCEEDED"))) {
                 saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
             }
+            sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } catch (IllegalArgumentException ignored) {
             // The saga plan may have been started from upstream order data with a different step layout.
@@ -460,7 +483,7 @@ public class BookingOrchestrationService {
     }
 
     private String journeyOrderIdForSaga(String sagaId) {
-        BookingSaga saga = sagas.get(sagaId);
+        BookingSaga saga = sagas.findById(sagaId).orElse(null);
         if (saga == null) {
             throw new IllegalStateException("cannot publish saga event for unknown saga: " + sagaId);
         }
@@ -469,45 +492,34 @@ public class BookingOrchestrationService {
 
     private SegmentBooking bySegmentBookingId(Map<String, Object> payload) {
         String segmentBookingId = text(payload.get("segmentBookingId"));
-        return segmentBookingId == null ? null : segmentBookings.get(segmentBookingId);
-    }
-
-    private void indexSagaCorrelation(String correlationId, String sagaId) {
-        if (correlationId != null && !correlationId.isBlank()) {
-            correlationIdToSaga.putIfAbsent(correlationId, sagaId);
-        }
+        return segmentBookingId == null ? null : segmentBookings.findById(segmentBookingId).map(SegmentBookingRepository.SegmentBookingRecord::booking).orElse(null);
     }
 
     private BookingSaga sagaByCorrelationId(String correlationId) {
         if (correlationId == null || correlationId.isBlank()) {
             return null;
         }
-        return Optional.ofNullable(correlationIdToSaga.get(correlationId))
-            .map(sagas::get)
-            .orElse(null);
+        return sagas.findByCorrelationId(correlationId).orElse(null);
     }
 
     private List<SegmentBooking> segmentBookingsForSaga(String sagaId) {
-        List<SegmentBooking> bookings = new ArrayList<>();
-        for (Map.Entry<String, String> entry : segmentBookingToSaga.entrySet()) {
-            if (sagaId.equals(entry.getValue())) {
-                SegmentBooking booking = segmentBookings.get(entry.getKey());
-                if (booking != null) {
-                    bookings.add(booking);
-                }
-            }
-        }
-        return bookings;
+        return segmentBookings.findBySagaId(sagaId).stream()
+            .map(SegmentBookingRepository.SegmentBookingRecord::booking)
+            .toList();
     }
 
     private SegmentBooking byHoldId(String holdId) {
-        return Optional.ofNullable(holdIdToSegmentBookingId.get(holdId))
-            .map(segmentBookings::get)
+        return segmentBookings.findByCapacityHoldId(holdId)
+            .map(SegmentBookingRepository.SegmentBookingRecord::booking)
             .orElse(null);
     }
 
+    private Optional<String> sagaIdForSegmentBooking(String segmentBookingId) {
+        return segmentBookings.findById(segmentBookingId).map(SegmentBookingRepository.SegmentBookingRecord::sagaId);
+    }
+
     private String sagaIdForPaymentIntent(String paymentIntentId, Map<String, Object> payload) {
-        String sagaId = paymentIntentIdToSaga.get(paymentIntentId);
+        String sagaId = paymentIntentRefs.findSagaId(paymentIntentId).orElse(null);
         if (sagaId != null) {
             return sagaId;
         }
@@ -518,21 +530,18 @@ public class BookingOrchestrationService {
     private Optional<String> mapPaymentIntent(String paymentIntentId, String businessRef) {
         BookingSaga saga = sagaByBusinessRef(businessRef);
         if (saga != null) {
-            paymentIntentIdToSaga.putIfAbsent(paymentIntentId, saga.sagaId());
+            paymentIntentRefs.saveIfAbsent(paymentIntentId, saga.sagaId());
             return Optional.of(saga.sagaId());
         }
         return Optional.empty();
     }
 
     private BookingSaga sagaByBusinessRef(String businessRef) {
-        BookingSaga bySagaId = sagas.get(businessRef);
+        BookingSaga bySagaId = sagas.findById(businessRef).orElse(null);
         if (bySagaId != null) {
             return bySagaId;
         }
-        return sagas.values().stream()
-            .filter(saga -> saga.journeyOrderId().equals(businessRef))
-            .findFirst()
-            .orElse(null);
+        return sagas.findByJourneyOrderId(businessRef).orElse(null);
     }
 
     private ProviderReference providerReference(Object raw) {
@@ -634,8 +643,9 @@ public class BookingOrchestrationService {
     public record SegmentBookingCancelledPayload(String segmentBookingId, String reason, String capacityHoldId) {}
 
     private String holdIdForSegmentBooking(String segmentBookingId) {
-        SegmentBooking booking = segmentBookings.get(segmentBookingId);
-        return booking == null ? null : booking.capacityHoldId().orElse(null);
+        return segmentBookings.findById(segmentBookingId)
+            .flatMap(record -> record.booking().capacityHoldId())
+            .orElse(null);
     }
     public record SegmentTicketedPayload(String segmentBookingId, String entitlementId) {}
     public record BookingSagaCompletedPayload(String sagaId, String journeyOrderId) {}

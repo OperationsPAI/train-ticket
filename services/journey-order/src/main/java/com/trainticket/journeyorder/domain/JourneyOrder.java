@@ -1,5 +1,7 @@
 package com.trainticket.journeyorder.domain;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
@@ -26,8 +28,10 @@ public final class JourneyOrder {
     private OrderLifecycleState state;
     private MonetarySummary monetarySummary;
     private ConfirmationConditions confirmationConditions;
+    private long version;
 
-    private JourneyOrder(
+    @JsonCreator
+    public JourneyOrder(
         String orderId,
         String accountId,
         String channelRef,
@@ -90,6 +94,36 @@ public final class JourneyOrder {
         return order;
     }
 
+    public static JourneyOrder rehydrate(
+        String orderId,
+        String accountId,
+        String channelRef,
+        String idempotencyKey,
+        OfferSnapshotRef offerSnapshot,
+        List<TravelerRef> travelers,
+        List<SegmentOrderSnapshot> segments,
+        List<OrderItem> orderItems,
+        OrderLifecycleState state,
+        ConfirmationConditions confirmationConditions,
+        List<TimelineFact> timeline
+    ) {
+        JourneyOrder order = new JourneyOrder(orderId, accountId, channelRef, idempotencyKey, offerSnapshot, travelers, segments, orderItems);
+        order.state = Objects.requireNonNull(state, "state is required");
+        order.confirmationConditions = Objects.requireNonNull(confirmationConditions, "confirmationConditions are required");
+        order.monetarySummary = MonetarySummary.fromItems(order.orderItems);
+        order.timeline.clear();
+        order.timeline.addAll(Objects.requireNonNull(timeline, "timeline is required"));
+        return order;
+    }
+
+    public JourneyOrder withVersion(long version) {
+        if (version < 0) {
+            throw new DomainRuleViolation("version must not be negative");
+        }
+        this.version = version;
+        return this;
+    }
+
     public String orderId() { return orderId; }
     public String accountId() { return accountId; }
     public String channelRef() { return channelRef; }
@@ -102,6 +136,8 @@ public final class JourneyOrder {
     public OrderLifecycleState state() { return state; }
     public MonetarySummary monetarySummary() { return monetarySummary; }
     public ConfirmationConditions confirmationConditions() { return confirmationConditions; }
+    public long version() { return version; }
+    @JsonIgnore
     public List<JourneyOrderEvent> domainEvents() { return List.copyOf(domainEvents); }
 
     public void markBookingAndCapacityAccepted(Instant occurredAt, String sourceCommandId, String correlationId) {

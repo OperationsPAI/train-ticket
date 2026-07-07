@@ -18,6 +18,7 @@ public class HealthController {
         this(Clock.systemUTC(), new BookingOrchestrationReadiness(java.util.Optional.empty()));
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
     public HealthController(BookingOrchestrationReadiness readiness) {
         this(Clock.systemUTC(), readiness);
     }

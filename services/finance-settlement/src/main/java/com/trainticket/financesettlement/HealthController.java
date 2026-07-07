@@ -18,6 +18,7 @@ public class HealthController {
         this(Clock.systemUTC(), new FinanceSettlementReadiness(java.util.Optional.empty()));
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
     public HealthController(FinanceSettlementReadiness readiness) {
         this(Clock.systemUTC(), readiness);
     }

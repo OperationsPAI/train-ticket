@@ -17,6 +17,7 @@ public class OutboxRelay implements AutoCloseable {
     private final JdbcOperations jdbc;
     private final RedisStreamOperations streams;
     private final Duration pollInterval;
+    private volatile boolean dependencyReady = true;
     private final ScheduledExecutorService executor;
     private final AtomicBoolean running = new AtomicBoolean();
 
@@ -51,6 +52,7 @@ public class OutboxRelay implements AutoCloseable {
         );
         for (OutboxRow row : rows) {
             streams.publish(row.stream(), row.envelope());
+            dependencyReady = true;
             jdbc.update("UPDATE outbox SET published_at = now() WHERE seq = ? AND published_at IS NULL", row.seq());
         }
         return rows.size();
@@ -60,8 +62,13 @@ public class OutboxRelay implements AutoCloseable {
         try {
             pollOnce();
         } catch (RuntimeException ignored) {
-            // Readiness captures DB availability; relay retries on the next tick for at-least-once delivery.
+            dependencyReady = false;
+            // Readiness captures dependencies; relay retries on the next tick for at-least-once delivery.
         }
+    }
+
+    public boolean isDependencyReady() {
+        return dependencyReady;
     }
 
     @Override

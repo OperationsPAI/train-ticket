@@ -13,8 +13,6 @@ FROM eclipse-temurin:25-jre
 RUN useradd --system --create-home --home-dir /home/app app
 WORKDIR /app
 COPY --from=builder /src/services/admin-audit/target/*.jar /app/service.jar
-# MigrationRunner reads ./migrations relative to WORKDIR /app at startup.
-COPY services/admin-audit/migrations /app/migrations
 USER app
 ENV PORT=8080 SERVER_PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080

@@ -1,34 +1,21 @@
 package com.trainticket.travelerprofile;
 
 import java.time.Clock;
-import com.trainticket.travelerprofile.infrastructure.persistence.TravelerProfileReadiness;
 import java.time.Instant;
 import java.util.Map;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class HealthController {
     private final Clock clock;
-    private final TravelerProfileReadiness readiness;
 
     public HealthController() {
-        this(Clock.systemUTC(), new TravelerProfileReadiness(java.util.Optional.empty()));
-    }
-
-    public HealthController(TravelerProfileReadiness readiness) {
-        this(Clock.systemUTC(), readiness);
+        this(Clock.systemUTC());
     }
 
     HealthController(Clock clock) {
-        this(clock, new TravelerProfileReadiness(java.util.Optional.empty()));
-    }
-
-    HealthController(Clock clock, TravelerProfileReadiness readiness) {
         this.clock = clock;
-        this.readiness = readiness;
     }
 
     @GetMapping({"/health", "/healthz"})
@@ -42,10 +29,8 @@ public class HealthController {
     }
 
     @GetMapping({"/ready", "/readyz"})
-    public ResponseEntity<Map<String, Object>> ready() {
-        boolean ready = readiness.isReady();
-        Map<String, Object> body = Map.of("status", ready ? "ready" : "not_ready", "serviceId", Application.profile().serviceId());
-        return ResponseEntity.status(ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE).body(body);
+    public Map<String, Object> ready() {
+        return Map.of("status", "ready", "serviceId", Application.profile().serviceId());
     }
 
     @GetMapping("/metadata")

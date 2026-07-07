@@ -31,6 +31,7 @@ public final class SegmentBooking {
     private String entitlementId;
     private String failureReason;
     private String cancellationReason;
+    private long version;
 
     private SegmentBooking(String segmentBookingId, String journeyOrderId, String offerItemRef, String segmentRef,
                            String travelerRef, String bookingPurpose, Clock clock) {
@@ -53,6 +54,30 @@ public final class SegmentBooking {
         booking.record(new SegmentReservationRequested(booking.nextEventId(), booking.segmentBookingId, booking.now(),
             booking.journeyOrderId, booking.segmentRef, booking.travelerRef, booking.idempotencyKey));
         return booking;
+    }
+
+    public static SegmentBooking rehydrate(String segmentBookingId, String journeyOrderId, String offerItemRef,
+                                           String segmentRef, String travelerRef, String bookingPurpose,
+                                           SegmentBookingStatus status, String capacityHoldId,
+                                           ProviderReference providerReference, String entitlementId,
+                                           String failureReason, String cancellationReason, Clock clock) {
+        SegmentBooking booking = new SegmentBooking(segmentBookingId, journeyOrderId, offerItemRef, segmentRef,
+            travelerRef, bookingPurpose, clock);
+        booking.status = java.util.Objects.requireNonNull(status, "status is required");
+        booking.capacityHoldId = capacityHoldId;
+        booking.providerReference = providerReference;
+        booking.entitlementId = entitlementId;
+        booking.failureReason = failureReason;
+        booking.cancellationReason = cancellationReason;
+        return booking;
+    }
+
+    public SegmentBooking withVersion(long version) {
+        if (version < 0) {
+            throw new IllegalArgumentException("version must not be negative");
+        }
+        this.version = version;
+        return this;
     }
 
     public String segmentBookingId() {
@@ -85,6 +110,10 @@ public final class SegmentBooking {
 
     public SegmentBookingStatus status() {
         return status;
+    }
+
+    public long version() {
+        return version;
     }
 
     public Optional<String> capacityHoldId() {

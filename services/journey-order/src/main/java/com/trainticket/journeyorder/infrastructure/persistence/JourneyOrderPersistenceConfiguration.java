@@ -3,15 +3,11 @@ package com.trainticket.journeyorder.infrastructure.persistence;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.platformkit.idempotency.IdempotencyStore;
-import com.trainticket.platformkit.messaging.LettuceRedisStreamOperations;
 import com.trainticket.platformkit.persistence.DataSources;
 import com.trainticket.platformkit.persistence.DbIdempotencyStore;
 import com.trainticket.platformkit.persistence.MigrationRunner;
 import com.trainticket.platformkit.persistence.OutboxAppender;
-import com.trainticket.platformkit.persistence.OutboxRelay;
-import io.lettuce.core.RedisClient;
-import io.lettuce.core.api.StatefulRedisConnection;
-import jakarta.annotation.PostConstruct;
+import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
 import java.nio.file.Path;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
@@ -62,29 +58,7 @@ public class JourneyOrderPersistenceConfiguration {
     }
 
     @Bean(destroyMethod = "close")
-    JourneyOrderOutboxRelayLifecycle journeyorderOutboxRelayLifecycle(DataSource dataSource, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
-        return new JourneyOrderOutboxRelayLifecycle(dataSource, redisUrl);
-    }
-
-    static final class JourneyOrderOutboxRelayLifecycle implements AutoCloseable {
-        private final RedisClient client;
-        private final StatefulRedisConnection<String, String> connection;
-        private final OutboxRelay relay;
-
-        JourneyOrderOutboxRelayLifecycle(DataSource dataSource, String redisUrl) {
-            this.client = RedisClient.create(redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl);
-            this.connection = client.connect();
-            this.relay = new OutboxRelay(dataSource, new LettuceRedisStreamOperations(connection));
-        }
-
-        @PostConstruct
-        void start() { relay.start(); }
-
-        @Override
-        public void close() {
-            relay.close();
-            connection.close();
-            client.shutdown();
-        }
+    LazyRedisOutboxRelayLifecycle outboxRelayLifecycle(DataSource dataSource, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
+        return new LazyRedisOutboxRelayLifecycle(dataSource, redisUrl);
     }
 }

@@ -45,7 +45,7 @@ class ApplicationTest {
         );
 
         assertEquals("live", controller.live().get("status"));
-        assertEquals("ready", controller.ready().getBody().get("status"));
+        assertEquals("ready", controller.ready().get("status"));
         Map<String, Object> metadata = controller.metadata();
         assertEquals("2026-01-01T00:00:00Z", metadata.get("generatedAt"));
         assertEquals("admin-audit", assertInstanceOf(ServiceProfile.class, metadata.get("service")).serviceId());

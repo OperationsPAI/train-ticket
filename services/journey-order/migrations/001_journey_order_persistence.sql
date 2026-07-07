@@ -37,8 +37,11 @@ CREATE TABLE IF NOT EXISTS processed_events (
 
 CREATE TABLE IF NOT EXISTS idempotency_records (
   key           text PRIMARY KEY,
+  kind          text NOT NULL DEFAULT 'HTTP',
   request_hash  text NOT NULL,
-  status_code   int NOT NULL,
-  response_body jsonb,
+  status_code   int NOT NULL DEFAULT 200,
+  response_body jsonb NOT NULL,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_idempotency_records_kind
+  ON idempotency_records (kind);

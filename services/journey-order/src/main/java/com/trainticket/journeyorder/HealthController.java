@@ -18,6 +18,7 @@ public class HealthController {
         this(Clock.systemUTC(), new JourneyOrderReadiness(java.util.Optional.empty()));
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
     public HealthController(JourneyOrderReadiness readiness) {
         this(Clock.systemUTC(), readiness);
     }

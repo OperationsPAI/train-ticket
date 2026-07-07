@@ -35,32 +35,36 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 @Service
 public class OrderManagementService implements JourneyOrderService, JourneyOrderEventHandler {
 
-    private final Map<String, StoredOrder> orderStore = new LinkedHashMap<>();
-    private final Map<String, IdempotencyEntry<JourneyOrderResult>> createIdempotencyStore = new LinkedHashMap<>();
-    private final Map<String, IdempotencyEntry<CancelJourneyOrderResult>> cancelIdempotencyStore = new LinkedHashMap<>();
-    private final Map<String, AccountOrderState> accountStateProjection = new LinkedHashMap<>();
+    private final JourneyOrderStateRepository stateRepository;
     private final EventPublisher eventPublisher;
-    private final Set<String> consumedEventIds = new HashSet<>();
     private final Clock clock;
 
     @Autowired
-    public OrderManagementService(EventPublisher eventPublisher, Clock clock) {
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;
+        this.stateRepository = stateRepository;
+    }
+
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock) {
+        this(eventPublisher, clock, new InMemoryJourneyOrderStateRepository());
     }
 
     public OrderManagementService(EventPublisher eventPublisher) {
-        this(eventPublisher, Clock.systemUTC());
+        this(eventPublisher, Clock.systemUTC(), new InMemoryJourneyOrderStateRepository());
     }
 
     @Override
+    @Transactional
     public JourneyOrderResult createOrder(JourneyOrderRequest request, String idempotencyKey, String correlationId) {
         String fingerprint = createFingerprint(request);
-        IdempotencyEntry<JourneyOrderResult> existing = createIdempotencyStore.get(idempotencyKey);
+        IdempotencyEntry<JourneyOrderResult> existing = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
         if (existing != null) {
             if (!existing.requestFingerprint().equals(fingerprint)) {
                 throw new IdempotencyKeyReused("Idempotency-Key was reused with a different create order request");
@@ -68,7 +72,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             return existing.result();
         }
 
-        AccountOrderGate.assertCanCreateOrder(request.accountId(), Optional.ofNullable(accountStateProjection.get(request.accountId())));
+        AccountOrderGate.assertCanCreateOrder(request.accountId(), stateRepository.findAccountState(request.accountId()));
 
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
@@ -107,10 +111,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             sourceCommandId, correlationId
         );
 
-        StoredOrder stored = new StoredOrder(order, idempotencyKey);
-        orderStore.put(order.orderId(), stored);
+        stateRepository.saveOrder(order, idempotencyKey);
         JourneyOrderResult result = toResult(order);
-        createIdempotencyStore.put(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+        stateRepository.saveCreateIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
         publishEvents(order.domainEvents());
 
         return result;
@@ -118,38 +121,29 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     @Override
     public Optional<JourneyOrderResult> getOrder(String orderId) {
-        StoredOrder stored = orderStore.get(orderId);
-        if (stored == null) {
-            return Optional.empty();
-        }
-        return Optional.of(toResult(stored.order));
+        return stateRepository.findOrder(orderId).map(StoredOrder::order).map(OrderManagementService::toResult);
     }
 
     @Override
     public OrderListResult listOrders(String accountId, String status, int limit, int offset) {
-        List<JourneyOrderResult> all = orderStore.values().stream()
-            .map(s -> toResult(s.order))
-            .filter(r -> accountId == null || accountId.isBlank() || r.accountId().equals(accountId))
-            .filter(r -> status == null || status.isBlank() || r.status().equals(status))
+        List<JourneyOrderResult> items = stateRepository.listOrders(accountId, status, Math.min(limit, 100), offset).stream()
+            .map(StoredOrder::order)
+            .map(OrderManagementService::toResult)
             .toList();
-
-        int total = all.size();
-        int from = Math.min(offset, total);
-        int to = Math.min(from + Math.min(limit, 100), total);
-        List<JourneyOrderResult> items = all.subList(from, to);
-
+        int total = (int) stateRepository.countOrders(accountId, status);
         return new OrderListResult(items, total, limit, offset);
     }
 
     @Override
+    @Transactional
     public CancelJourneyOrderResult cancelOrder(CancelJourneyOrderRequest request, String idempotencyKey, String correlationId) {
-        StoredOrder stored = orderStore.get(request.orderId());
+        StoredOrder stored = stateRepository.findOrder(request.orderId()).orElse(null);
         if (stored == null) {
             throw new NotFoundException("Order not found: " + request.orderId());
         }
 
         String fingerprint = cancelFingerprint(request);
-        IdempotencyEntry<CancelJourneyOrderResult> existing = cancelIdempotencyStore.get(idempotencyKey);
+        IdempotencyEntry<CancelJourneyOrderResult> existing = stateRepository.findCancelIdempotency(idempotencyKey).orElse(null);
         if (existing != null) {
             if (!existing.requestFingerprint().equals(fingerprint)) {
                 throw new IdempotencyKeyReused("Idempotency-Key was reused with a different cancel order request");
@@ -166,7 +160,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
         List<JourneyOrderEvent> newEvents = order.domainEvents().subList(eventCount, order.domainEvents().size());
         CancelJourneyOrderResult result = new CancelJourneyOrderResult(order.orderId(), "CANCELLED", now);
-        cancelIdempotencyStore.put(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        stateRepository.saveCancelIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
         publishEvents(newEvents);
         return result;
     }
@@ -286,7 +281,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return Objects.requireNonNull(request.orderId()) + "|" + Objects.requireNonNull(request.reason());
     }
 
-    private static String toApiStatus(JourneyOrder order) {
+    public static String toApiStatus(JourneyOrder order) {
         return switch (order.state()) {
             case PENDING_CONFIRMATION -> "CREATED";
             case PENDING_PAYMENT -> "PENDING_PAYMENT";
@@ -320,8 +315,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     @Override
+    @Transactional
     public synchronized EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
-        if (!consumedEventIds.add(envelope.eventId())) {
+        if (!stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer())) {
             return new EventSubscriber.Success();
         }
         try {
@@ -344,8 +340,16 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 default -> new EventSubscriber.Success();
             };
         } catch (RuntimeException ex) {
-            consumedEventIds.remove(envelope.eventId());
+            rollbackCurrentTransactionIfActive();
             return new EventSubscriber.TransientError(ex.getMessage());
+        }
+    }
+
+    private static void rollbackCurrentTransactionIfActive() {
+        try {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+        } catch (RuntimeException ignored) {
+            // Unit tests may run without a Spring-managed transaction.
         }
     }
 
@@ -357,29 +361,36 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             order.markPendingPayment("initial-ticket-purchase", envelope.occurredAt(), "cmd-consume-payment", envelope.correlationId());
         }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
-            order.recordPaymentCaptured(textPayload(envelope, "paymentIntentId", "payment-intent-unknown"), envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+            order.recordPaymentCaptured(
+                textPayload(envelope, "paymentIntentId", "payment-intent-unknown"),
+                envelope.occurredAt(),
+                "cmd-consume-payment",
+                envelope.eventId(),
+                envelope.correlationId()
+            );
         }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("payment-captured", envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
         }
+        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountCreated(EventEnvelope envelope) {
         String accountId = accountIdFromPayload(envelope);
-        accountStateProjection.putIfAbsent(accountId, AccountOrderState.ACTIVE);
+        stateRepository.saveAccountState(accountId, AccountOrderState.ACTIVE);
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountFrozen(EventEnvelope envelope) {
-        accountStateProjection.put(accountIdFromPayload(envelope), AccountOrderState.FROZEN);
+        stateRepository.saveAccountState(accountIdFromPayload(envelope), AccountOrderState.FROZEN);
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountUnfrozen(EventEnvelope envelope) {
-        accountStateProjection.put(accountIdFromPayload(envelope), AccountOrderState.ACTIVE);
+        stateRepository.saveAccountState(accountIdFromPayload(envelope), AccountOrderState.ACTIVE);
         return new EventSubscriber.Success();
     }
 
@@ -389,7 +400,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private EventSubscriber.HandlerResult handleAccountClosed(EventEnvelope envelope) {
-        accountStateProjection.put(accountIdFromPayload(envelope), AccountOrderState.CLOSED);
+        stateRepository.saveAccountState(accountIdFromPayload(envelope), AccountOrderState.CLOSED);
         return new EventSubscriber.Success();
     }
 
@@ -401,15 +412,24 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             && order.confirmationConditions().canConfirm()) {
             order.confirm("entitlement-issued", envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
         }
+        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handlePaymentExpired(EventEnvelope envelope) {
-        JourneyOrder order = orderFromPayload(envelope);
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
             int eventCount = order.domainEvents().size();
-            order.expirePayment(textPayload(envelope, "paymentIntentId", "payment-intent-unknown"), envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+            order.expirePayment(
+                textPayload(envelope, "paymentIntentId", "payment-intent-unknown"),
+                envelope.occurredAt(),
+                "cmd-consume-payment",
+                envelope.eventId(),
+                envelope.correlationId()
+            );
+            stateRepository.saveOrder(order, stored.idempotencyKey());
             publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         }
         return new EventSubscriber.Success();
@@ -427,6 +447,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             envelope.eventId(),
             envelope.correlationId()
         );
+        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
@@ -442,6 +463,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             && order.confirmationConditions().canConfirm()) {
             order.confirm("risk-assessment-allowed", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
         }
+        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
@@ -451,6 +473,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         int eventCount = order.domainEvents().size();
         String reason = textPayload(envelope, "reasonCode", textPayload(envelope, "reason", "risk block applied"));
         order.cancel(reason, envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
@@ -466,6 +489,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             && order.confirmationConditions().canConfirm()) {
             order.confirm("risk-block-lifted", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
         }
+        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
@@ -492,11 +516,30 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (orderId == null) {
             throw new IllegalArgumentException("event payload missing orderId/businessRef");
         }
-        StoredOrder stored = orderStore.get(orderId);
-        if (stored == null) {
-            throw new NotFoundException("Order not found for consumed event: " + orderId);
+        String resolvedOrderId = orderId;
+        return storedOrderFromId(resolvedOrderId).order();
+    }
+
+    private StoredOrder storedOrderFromPayload(EventEnvelope envelope) {
+        String orderId = textPayload(envelope, "orderId", null);
+        if (orderId == null) {
+            orderId = textPayload(envelope, "subjectRef", null);
         }
-        return stored.order();
+        if (orderId == null) {
+            orderId = textPayload(envelope, "businessRef", null);
+        }
+        if (orderId == null) {
+            orderId = textPayload(envelope, "journeyOrderId", null);
+        }
+        if (orderId == null) {
+            throw new IllegalArgumentException("event payload missing orderId/businessRef");
+        }
+        return storedOrderFromId(orderId);
+    }
+
+    private StoredOrder storedOrderFromId(String orderId) {
+        return stateRepository.findOrder(orderId)
+            .orElseThrow(() -> new NotFoundException("Order not found for consumed event: " + orderId));
     }
 
     private static String textPayload(EventEnvelope envelope, String field, String fallback) {
@@ -507,9 +550,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return value == null ? fallback : String.valueOf(value);
     }
 
-    private record StoredOrder(JourneyOrder order, String idempotencyKey) {}
+    public record StoredOrder(JourneyOrder order, String idempotencyKey) {}
 
-    private record IdempotencyEntry<T>(String requestFingerprint, T result) {}
+    public record IdempotencyEntry<T>(String requestFingerprint, T result) {}
 
     public static final class IdempotencyKeyReused extends ApiException {
         public IdempotencyKeyReused(String message) {
