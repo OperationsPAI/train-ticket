@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from train_ticket_platform.observability import init_opentelemetry
 from .application import search_itineraries, search_itineraries_from_payload
 from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIntent, TripPlanningValidationError
 from .application_ports import EventPublisher, EventSubscriber
@@ -538,6 +539,7 @@ def create_app(
                 pool.close()
 
     app = FastAPI(title="Trip Planning", version="0.1.0", lifespan=lifespan)
+    init_opentelemetry(profile()["service_id"], app=app)
     postgres_plan_store, postgres_publisher, postgres_idempotency_store = _configure_postgres(app)
     _active_plan_store = postgres_plan_store or _plan_store
     if publisher is None:

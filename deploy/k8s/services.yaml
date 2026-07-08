@@ -265,6 +265,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: fare-pricing
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -344,6 +354,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: trip-planning
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -423,6 +443,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: offer-management
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -1055,6 +1085,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: notification
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -1215,6 +1255,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: risk-compliance
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -1294,6 +1344,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: account
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -1452,6 +1512,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: customer-service
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -1610,6 +1680,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: reporting
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: SERVER_PORT
@@ -1768,6 +1848,16 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: legacy-acl
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: PORT
               value: "8080"
             - name: REDIS_URL

@@ -13,6 +13,7 @@ import time
 from typing import Any, Protocol
 
 from .events import EventEnvelope
+from .observability import otel_tracing_enabled
 
 MAXLEN = 100000
 MAX_RETRIES = 3
@@ -283,7 +284,7 @@ class RedisEventSubscriber(EventSubscriber):
             self._xack(stream, group, msg_id_str)
             return
         try:
-            result = handler(envelope)
+            result = _call_handler_with_span(handler, envelope, stream, group)
         except TransientHandlerError as exc:
             LOGGER.warning(
                 "service=%s stream=%s eventId=%s deliveries=%s handler transient failure; message stays pending for retry: %s: %s",
@@ -438,6 +439,36 @@ class RedisEventSubscriber(EventSubscriber):
         self._process_message(stream, group, actual_consumer_name, entry_id, fields, handler)
 
 
+def _call_handler_with_span(handler: Callable[[EventEnvelope], Any], envelope: EventEnvelope, stream: str, group: str) -> Any:
+    if not otel_tracing_enabled():
+        return handler(envelope)
+    from opentelemetry import trace
+    from opentelemetry.trace import SpanKind, Status, StatusCode
+
+    attributes = {
+        "messaging.system": "redis",
+        "messaging.operation": "process",
+        "messaging.destination.name": stream,
+        "messaging.consumer.group.name": group,
+        "messaging.train_ticket.stream": stream,
+        "messaging.train_ticket.consumerGroup": group,
+        "messaging.train_ticket.eventId": envelope.eventId,
+        "messaging.train_ticket.eventType": envelope.eventType,
+        "messaging.train_ticket.correlationId": envelope.correlationId,
+    }
+    span_name = f"{group} process {envelope.eventType}"
+    with trace.get_tracer(__name__).start_as_current_span(span_name, kind=SpanKind.CONSUMER, attributes=attributes) as span:
+        try:
+            result = handler(envelope)
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, exc.__class__.__name__))
+            raise
+        if isinstance(result, HandlerResult) and result.status is not HandlerStatus.SUCCESS:
+            span.set_status(Status(StatusCode.ERROR, result.message or result.status.value))
+        return result
+
+
 class InMemoryEventPublisher(EventPublisher):
     def __init__(self) -> None:
         self.envelopes: list[EventEnvelope] = []
@@ -463,7 +494,7 @@ class InMemoryEventSubscriber(EventSubscriber):
         for envelope in self.envelopes:
             if envelope.eventId in self.seen_event_ids:
                 continue
-            result = handler(envelope)
+            result = _call_handler_with_span(handler, envelope, "in-memory", "in-memory")
             if not isinstance(result, HandlerResult) or result.status is HandlerStatus.SUCCESS:
                 self.seen_event_ids.add(envelope.eventId)
 

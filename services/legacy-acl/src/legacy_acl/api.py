@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
 from train_ticket_platform.ids import is_uuid7
 
+from train_ticket_platform.observability import init_opentelemetry
 from .application import LegacyAclService, LegacyContext
 from .downstream import DownstreamClient
 
@@ -195,6 +196,7 @@ def create_app(
     idempotency_store: IdempotencyStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Legacy ACL", version="0.1.0")
+    init_opentelemetry(profile()["service_id"], app=app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     configure_idempotency_middleware(
         app,

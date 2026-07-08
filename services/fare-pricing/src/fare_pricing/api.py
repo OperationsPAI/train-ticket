@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Request, Response
 
+from train_ticket_platform.observability import init_opentelemetry
 from .ids import prefixed_uuid7, uuid7
 from .runtime import health, profile
 from .application import DomainEventService
@@ -282,6 +283,7 @@ def create_app(
     event_publisher: EventPublisher | None = None,
 ) -> FastAPI:
     app = FastAPI(title='Fare & Pricing', version="0.1.0")
+    init_opentelemetry(profile()["service_id"], app=app)
     if store is None:
         store, default_idempotency_store = _postgres_store_from_env(app)
         idempotency_store = idempotency_store or default_idempotency_store
