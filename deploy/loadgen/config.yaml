@@ -110,6 +110,8 @@ ops:
   interval_seconds: { min: 180, max: 420 }
   dashboard_id: dash-revenue
   p_supplier_catalog_write: 0.25
+  p_wallet_manual_issue: 0.20
+  wallet_manual_issue_minor_units: 100
 
 # ---------------------------------------------------------------------------
 # Bootstrap — ops-side inventory guarantees (NOT customer actions). Runs once
@@ -134,6 +136,10 @@ bootstrap:
 polling:
   attempts: 8
   interval_seconds: 4
+
+wallet_promotion:
+  p_purchase_reserve_redeem: 0.02
+  purchase_benefit_minor_units: 100
 
 waitlist:
   poll_attempts: 8

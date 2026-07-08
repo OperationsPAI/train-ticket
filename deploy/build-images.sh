@@ -31,6 +31,7 @@ services=(
   supplier-catalog
   legacy-acl
   waitlist
+  wallet-promotion
 )
 
 for service in "${services[@]}"; do
