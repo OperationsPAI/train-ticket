@@ -14,11 +14,14 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 public class FinanceSettlementEventHandler implements EventSubscriber.EventHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(FinanceSettlementEventHandler.class);
+    private static final int ZERO_REFUND_WARNING_SAMPLE_RATE = 100;
+    private static final AtomicInteger ZERO_REFUND_WARNING_SEQUENCE = new AtomicInteger();
     private final ConsumedEventLogRepository consumedEvents;
     private final PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
     private final SegmentBookingOrderReferenceRepository segmentBookingOrderReferences;
@@ -104,13 +107,13 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             }
             return HandlerResult.SUCCESS;
         } catch (PublishFailedException | OutOfOrderEventException ex) {
-            LOGGER.warn("service=finance-settlement eventId={} eventType={} transient handling failure",
-                envelope.eventId(), envelope.eventType(), ex);
+            LOGGER.warn("service=finance-settlement eventId={} eventType={} exceptionClass={} exceptionMessage={} transient handling failure",
+                envelope.eventId(), envelope.eventType(), ex.getClass().getName(), ex.getMessage(), ex);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.TRANSIENT_FAILURE;
         } catch (DomainRuleViolation | IllegalArgumentException ex) {
-            LOGGER.warn("service=finance-settlement eventId={} eventType={} fatal handling failure",
-                envelope.eventId(), envelope.eventType(), ex);
+            LOGGER.warn("service=finance-settlement eventId={} eventType={} exceptionClass={} exceptionMessage={} fatal handling failure",
+                envelope.eventId(), envelope.eventType(), ex.getClass().getName(), ex.getMessage(), ex);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.FATAL_FAILURE;
         }
@@ -253,7 +256,9 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         }
         Object approvedActions = payload.get("approvedActions");
         if (approvedActions instanceof Map<?, ?> actions && actions.get("refund") instanceof Map<?, ?> refund) {
-            projections.saveApprovedRefund(caseId, money(((Map<?, ?>) refund).get("amount"), "approvedActions.refund.amount"));
+            Money refundAmount = money(((Map<?, ?>) refund).get("amount"), "approvedActions.refund.amount");
+            projections.saveApprovedRefund(caseId, refundAmount);
+            optionalText(payload, "orderId").ifPresent(orderId -> projections.saveApprovedRefund(orderId, refundAmount));
         }
     }
 
@@ -263,14 +268,23 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Money refund = projections.findApprovedRefund(caseId)
             .or(() -> projections.findApprovedRefund(orderId))
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
+        if (refund.isZero()) {
+            if (shouldLogZeroRefundWarning()) {
+                LOGGER.warn("service=finance-settlement eventId={} eventType={} orderId={} caseId={} zero refund amount; skipping revenue reversal",
+                    envelope.eventId(), envelope.eventType(), orderId, caseId);
+            }
+            return;
+        }
+        PaymentCaptureFact capture = projections.findCapture(orderId).orElse(null);
         Optional<RevenueRecognition> matchingRecognition = serviceRevenue(orderId).stream()
             .filter(recognition -> !recognition.reversed())
+            .filter(recognition -> sameCurrency(recognition.amount(), refund))
             .filter(recognition -> sameMoney(recognition.amount(), refund) || recognition.amount().compareTo(refund) >= 0)
             .findFirst();
         if (matchingRecognition.isEmpty()) {
             ReconciliationCase open = ReconciliationCase.open(
                 orderId,
-                "",
+                capture == null ? "" : capture.paymentIntentId(),
                 "refund-lag",
                 refund.negate(),
                 Money.zero(refund.currency()),
@@ -294,7 +308,6 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             envelope.correlationId()
         );
         service.saveAndPublish(originalRecognition, firstUnpublishedEventIndex);
-        PaymentCaptureFact capture = projections.findCapture(orderId).orElse(null);
         Money expected = capture == null ? refund.negate() : capture.amount().minus(refund);
         service.publishReconciliationCompleted(
             orderId,
@@ -319,7 +332,16 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private static boolean sameMoney(Money left, Money right) {
-        return left.currency().equals(right.currency()) && left.compareTo(right) == 0;
+        return sameCurrency(left, right) && left.compareTo(right) == 0;
+    }
+
+    private static boolean shouldLogZeroRefundWarning() {
+        int sequence = ZERO_REFUND_WARNING_SEQUENCE.incrementAndGet();
+        return sequence == 1 || sequence % ZERO_REFUND_WARNING_SAMPLE_RATE == 0;
+    }
+
+    private static boolean sameCurrency(Money left, Money right) {
+        return left.currency().equals(right.currency());
     }
 
     private static String orderItemReference(Map<String, Object> payload, String orderId) {
