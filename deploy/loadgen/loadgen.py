@@ -695,9 +695,14 @@ class CustomerSim:
         minutes = float(self.b.get("waitlist_deadline_minutes", 30))
         deadline = datetime.now(timezone.utc) + timedelta(minutes=minutes)
         intent_fingerprint = f"{traveler}:{segment}"
+        itinerary_ref = refs.get("itinerary")
+        if not itinerary_ref:
+            self.stats.errors["waitlist:missing-itinerary-ref"] += 1
+            return "no_available_capacity"
         code, waitlist = await self.api.request(
             "POST", "waitlist", "/api/v1/waitlist-requests",
             {"accountId": account, "travelerRef": traveler, "segmentRef": segment,
+             "itineraryRef": itinerary_ref,
              "paymentGuaranteeRef": payment_intent,
              "intentFingerprint": intent_fingerprint,
              "deadline": deadline.strftime("%Y-%m-%dT%H:%M:%SZ")},

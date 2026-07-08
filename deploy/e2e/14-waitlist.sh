@@ -176,7 +176,8 @@ req POST payment /api/v1/payment-intents "{\"businessRef\":\"waitlist-a-$(uuid7)
 check_code 201 "payment guarantee for create"
 PI_A=$(jget "['paymentIntentId']")
 KEY_A=$(uuid7); DEADLINE_A=$(future_deadline 1800); FP_A="$TVL_A:$SEG_A"
-BODY_A="{\"accountId\":\"$ACCT_A\",\"travelerRef\":\"$TVL_A\",\"segmentRef\":\"$SEG_A\",\"paymentGuaranteeRef\":\"$PI_A\",\"intentFingerprint\":\"$FP_A\",\"deadline\":\"$DEADLINE_A\"}"
+find_itinerary_for_segment "$TVL_A" "$SEG_A"; ITIN_A=$FOUND_ITIN
+BODY_A="{\"accountId\":\"$ACCT_A\",\"travelerRef\":\"$TVL_A\",\"segmentRef\":\"$SEG_A\",\"itineraryRef\":\"$ITIN_A\",\"paymentGuaranteeRef\":\"$PI_A\",\"intentFingerprint\":\"$FP_A\",\"deadline\":\"$DEADLINE_A\"}"
 waitlist_req_fixed_key "$KEY_A" "$BODY_A"; check_code 201 "create waitlist"
 WLR_A=$(jget "['waitlistRequestId']"); ST_A=$(jget "['status']")
 [ "$ST_A" = QUEUED ] && ok "created request QUEUED" || bad "created request status $ST_A"
@@ -203,7 +204,8 @@ req POST payment /api/v1/payment-intents "{\"businessRef\":\"waitlist-fulfill-$(
 check_code 201 "payment guarantee for fulfillment waitlist"
 PI_F=$(jget "['paymentIntentId']")
 DEADLINE_F=$(future_deadline 1800); FP_F="$TVL_C:$SEG_F"
-req POST waitlist /api/v1/waitlist-requests "{\"accountId\":\"$ACCT_C\",\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"paymentGuaranteeRef\":\"$PI_F\",\"intentFingerprint\":\"$FP_F\",\"deadline\":\"$DEADLINE_F\"}"
+find_itinerary_for_segment "$TVL_C" "$SEG_F"; ITIN_F=$FOUND_ITIN
+req POST waitlist /api/v1/waitlist-requests "{\"accountId\":\"$ACCT_C\",\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"itineraryRef\":\"$ITIN_F\",\"paymentGuaranteeRef\":\"$PI_F\",\"intentFingerprint\":\"$FP_F\",\"deadline\":\"$DEADLINE_F\"}"
 check_code 201 "create fulfillment waitlist"
 WLR_F=$(jget "['waitlistRequestId']")
 [ "$(jget "['status']")" = QUEUED ] && ok "fulfillment waitlist queued" || bad "fulfillment waitlist not queued"
@@ -236,7 +238,8 @@ req POST payment /api/v1/payment-intents "{\"businessRef\":\"waitlist-expire-$(u
 check_code 201 "payment guarantee for expiry"
 PI_E=$(jget "['paymentIntentId']")
 DEADLINE_E=$(future_deadline 5); FP_E="$TVL_E:$SEG_E"
-req POST waitlist /api/v1/waitlist-requests "{\"accountId\":\"$ACCT_E\",\"travelerRef\":\"$TVL_E\",\"segmentRef\":\"$SEG_E\",\"paymentGuaranteeRef\":\"$PI_E\",\"intentFingerprint\":\"$FP_E\",\"deadline\":\"$DEADLINE_E\"}"
+find_itinerary_for_segment "$TVL_E" "$SEG_E"; ITIN_E=$FOUND_ITIN
+req POST waitlist /api/v1/waitlist-requests "{\"accountId\":\"$ACCT_E\",\"travelerRef\":\"$TVL_E\",\"segmentRef\":\"$SEG_E\",\"itineraryRef\":\"$ITIN_E\",\"paymentGuaranteeRef\":\"$PI_E\",\"intentFingerprint\":\"$FP_E\",\"deadline\":\"$DEADLINE_E\"}"
 check_code 201 "create expiring waitlist"
 WLR_E=$(jget "['waitlistRequestId']")
 ST_E=$(poll_waitlist_status "$WLR_E" EXPIRED 20 2)
