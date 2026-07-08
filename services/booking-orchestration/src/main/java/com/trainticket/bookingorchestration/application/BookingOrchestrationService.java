@@ -130,6 +130,13 @@ public class BookingOrchestrationService {
         }
     }
 
+    /** Deliberately outside the FATAL classification: maps to TransientError. */
+    private static final class RetryLaterException extends RuntimeException {
+        RetryLaterException(String message) {
+            super(message);
+        }
+    }
+
     private static void rollbackCurrentTransactionIfActive() {
         try {
             TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
@@ -142,8 +149,8 @@ public class BookingOrchestrationService {
         Map<String, Object> payload = payloadMap(envelope.payload());
         switch (envelope.eventType()) {
             case "JourneyOrderCreated" -> handleJourneyOrderCreated(payload, envelope.correlationId(), envelope.eventId());
-            case "CapacityHeld", "CapacityHoldConfirmed" -> handleCapacityHeld(payload, envelope.correlationId(), envelope.eventId());
-            case "CapacityReleased", "CapacityHoldExpired" -> handleCapacityReleased(payload, envelope.correlationId(), envelope.eventId());
+            case "CapacityHeld", "CapacityHoldConfirmed" -> handleCapacityHeld(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
+            case "CapacityReleased", "CapacityHoldExpired" -> handleCapacityReleased(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
             case "CapacityHoldFailed" -> handleCapacityHoldFailed(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentCreated" -> handlePaymentIntentCreated(payload);
             case "PaymentCaptured" -> handlePaymentCaptured(payload, envelope.correlationId(), envelope.eventId());
@@ -187,7 +194,8 @@ public class BookingOrchestrationService {
         publishEvents(saga.pullEvents(), correlationId, causationId);
     }
 
-    private void handleCapacityHeld(Map<String, Object> payload, String correlationId, String causationId) {
+    private void handleCapacityHeld(String eventType, Map<String, Object> payload, String correlationId, String causationId) {
+        validateCapacityHeldContract(eventType, payload);
         String holdId = firstText(payload, "holdId", "capacityHoldId");
         String idempotencyKey = text(payload.get("idempotencyKey"));
         SegmentBooking booking = null;
@@ -196,19 +204,20 @@ public class BookingOrchestrationService {
                 .map(SegmentBookingRepository.SegmentBookingRecord::booking)
                 .orElse(null);
         }
-        if (booking == null && holdId != null) {
+        if (booking == null) {
             booking = byHoldId(holdId);
         }
         if (booking == null) {
             booking = bySegmentBookingId(payload);
         }
-        if (booking == null || holdId == null) {
-            throw new IllegalArgumentException("CapacityHeld/CapacityHoldConfirmed payload requires holdId and a known segment booking reference");
+        if (booking == null) {
+            warnCapacityAckSkip(eventType, "unknown segment booking reference");
+            return;
         }
         booking.markCapacityHolding(holdId);
         segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
         publishEvents(booking.pullEvents(), correlationId, causationId);
-        markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
+        markSagaStepSucceeded(eventType, booking.segmentBookingId(), correlationId, causationId);
     }
 
     private void handleCapacityHoldFailed(Map<String, Object> payload, String correlationId, String causationId) {
@@ -227,7 +236,18 @@ public class BookingOrchestrationService {
             return;
         }
         String reason = firstText(payload, "reason", "failureMessage", "failureCode");
-        booking.failReservation(reason == null ? "capacity hold failed" : reason);
+        if (booking.status().name().equals("FAILED") || booking.status().name().equals("CANCELLED")) {
+            warnCapacityAckSkip("CapacityHoldFailed", "segment booking already terminal");
+            return;
+        }
+        try {
+            booking.failReservation(reason == null ? "capacity hold failed" : reason);
+        } catch (IllegalStateException ex) {
+            // Redelivered or late hold failure racing a booking that already
+            // advanced; the event is conformant, so skip instead of poisoning.
+            warnCapacityAckSkip("CapacityHoldFailed", "segment booking state already advanced");
+            return;
+        }
         String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElse(null);
         if (sagaId != null) {
             segmentBookings.save(booking, sagaId);
@@ -241,18 +261,25 @@ public class BookingOrchestrationService {
         }
     }
 
-    private void handleCapacityReleased(Map<String, Object> payload, String correlationId, String causationId) {
+    private void handleCapacityReleased(String eventType, Map<String, Object> payload, String correlationId, String causationId) {
+        validateCapacityReleasedContract(eventType, payload);
         String holdId = firstText(payload, "holdId", "capacityHoldId");
-        SegmentBooking booking = holdId == null ? null : byHoldId(holdId);
+        SegmentBooking booking = byHoldId(holdId);
         if (booking == null) {
             booking = bySegmentBookingId(payload);
         }
-        if (booking != null) {
-            String reason = firstText(payload, "releaseReason", "reason");
-            booking.markCancelled(reason == null ? "capacity hold released" : reason);
-            segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
-            publishEvents(booking.pullEvents(), correlationId, causationId);
+        if (booking == null) {
+            warnCapacityAckSkip(eventType, "unknown segment booking reference");
+            return;
         }
+        if (!canApplyCapacityRelease(booking)) {
+            warnCapacityAckSkip(eventType, "segment booking already processed or status advanced");
+            return;
+        }
+        String reason = firstText(payload, "releaseReason", "reason");
+        booking.markCancelled(reason == null ? "capacity hold released" : reason);
+        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
+        publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
     private void handlePaymentIntentCreated(Map<String, Object> payload) {
@@ -304,7 +331,7 @@ public class BookingOrchestrationService {
             booking.segmentBookingId(), reference, evidence == null ? "provider-confirmed" : evidence, Map.of()));
         segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
         publishEvents(booking.pullEvents(), correlationId, causationId);
-        markSagaStepSucceeded(booking.segmentBookingId(), correlationId, causationId);
+        markSagaStepSucceeded("ProviderReservationConfirmed", booking.segmentBookingId(), correlationId, causationId);
     }
 
     private void handleProviderReservationFailed(Map<String, Object> payload, String correlationId, String causationId) {
@@ -324,8 +351,37 @@ public class BookingOrchestrationService {
         if (segmentBookingId == null || entitlementId == null) {
             throw new IllegalArgumentException("EntitlementIssued payload requires segmentBookingId and entitlementId");
         }
-        String sagaId = sagaIdForSegmentBooking(segmentBookingId)
-            .orElseThrow(() -> new IllegalArgumentException("EntitlementIssued references an unknown segment booking"));
+        String sagaId = sagaIdForSegmentBooking(segmentBookingId).orElse(null);
+        if (sagaId == null) {
+            // Post-sales CHANGE issues replacement entitlements against segment
+            // bookings this saga never orchestrated. The event is conformant;
+            // an unknown local ref is an ack-skip, not a poison pill.
+            LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: unknown segment booking {}", segmentBookingId);
+            return;
+        }
+        SegmentBooking existing = segmentBookings.findById(segmentBookingId)
+            .map(SegmentBookingRepository.SegmentBookingRecord::booking).orElse(null);
+        if (existing != null) {
+            String bookingStatus = existing.status().name();
+            if (bookingStatus.equals("FAILED") || bookingStatus.equals("CANCELLED")) {
+                // e.g. capacity sold out failed the booking but the legacy
+                // facade still drove ticket issuance; nothing to mark here.
+                LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: segment booking already terminal");
+                return;
+            }
+            if (bookingStatus.equals("TICKETED")
+                && !existing.entitlementId().map(entitlementId::equals).orElse(false)) {
+                // Change flow reissued a replacement entitlement for a booking
+                // this saga already ticketed; entitlement context owns the truth.
+                LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: booking already ticketed with a different entitlement");
+                return;
+            }
+            if (bookingStatus.equals("REQUESTED") || bookingStatus.equals("HOLDING")) {
+                // Entitlement can outrun the provider confirmation; this is a
+                // genuine ordering race, so retry rather than skip or poison.
+                throw new RetryLaterException("EntitlementIssued arrived before reservation confirmation");
+            }
+        }
         markTicketed(sagaId, new MarkTicketedCommand(segmentBookingId, entitlementId),
             "event:" + causationId + ":" + segmentBookingId, correlationId);
         BookingSaga saga = sagas.findById(sagaId).orElse(null);
@@ -361,11 +417,25 @@ public class BookingOrchestrationService {
         }
         String reason = firstText(payload, "reason", "failureMessage", "failureCode");
         String cancellationReason = reason == null ? "entitlement voided" : reason;
+        if (booking.status().name().equals("FAILED") || booking.status().name().equals("CANCELLED")) {
+            LOGGER.warn("Ack-skipping EntitlementVoided from entitlement-ticketing: segment booking already terminal");
+            return;
+        }
+        String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElse(null);
+        if (sagaId == null) {
+            LOGGER.warn("Ack-skipping EntitlementVoided from entitlement-ticketing: unknown saga for segment booking");
+            return;
+        }
         // A voided entitlement after ticketing is a cancellation (refund flow):
         // emit SegmentBookingCancelled so capacity releases the hold.
-        booking.requestCancellation(cancellationReason);
-        booking.markCancelled(cancellationReason);
-        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
+        try {
+            booking.requestCancellation(cancellationReason);
+            booking.markCancelled(cancellationReason);
+        } catch (IllegalStateException ex) {
+            LOGGER.warn("Ack-skipping EntitlementVoided from entitlement-ticketing: booking state already advanced");
+            return;
+        }
+        segmentBookings.save(booking, sagaId);
         publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
@@ -394,12 +464,18 @@ public class BookingOrchestrationService {
         return BookingSaga.start(sagaId, journeyOrderId, "1", "purchase", plan, clock);
     }
 
-    private void markSagaStepSucceeded(String segmentBookingId, String correlationId, String causationId) {
+    private void markSagaStepSucceeded(String eventType, String segmentBookingId, String correlationId, String causationId) {
         SegmentBookingRepository.SegmentBookingRecord record = segmentBookings.findById(segmentBookingId).orElse(null);
         SegmentBooking booking = record == null ? null : record.booking();
         String sagaId = record == null ? null : record.sagaId();
         BookingSaga saga = sagaId == null ? null : sagas.findById(sagaId).orElse(null);
         if (booking == null || saga == null) {
+            return;
+        }
+        if (saga.status() != BookingSagaStatus.RESERVING) {
+            if (eventType.startsWith("Capacity")) {
+                warnCapacityAckSkip(eventType, "saga already processed capacity step");
+            }
             return;
         }
         String stepKey = sagaId + ":" + booking.segmentRef();
@@ -493,8 +569,69 @@ public class BookingOrchestrationService {
     }
 
     private SegmentBooking bySegmentBookingId(Map<String, Object> payload) {
-        String segmentBookingId = text(payload.get("segmentBookingId"));
+        String segmentBookingId = segmentBookingReference(payload);
         return segmentBookingId == null ? null : segmentBookings.findById(segmentBookingId).map(SegmentBookingRepository.SegmentBookingRecord::booking).orElse(null);
+    }
+
+    private String segmentBookingReference(Map<String, Object> payload) {
+        String direct = firstText(payload, "segmentBookingId", "segmentBookingRef");
+        if (direct != null) {
+            return direct;
+        }
+        if (payload.get("references") instanceof Map<?, ?> references) {
+            return firstText(references, "segmentBookingRef", "segmentBookingId");
+        }
+        return null;
+    }
+
+    private void validateCapacityHeldContract(String eventType, Map<String, Object> payload) {
+        if ("CapacityHoldConfirmed".equals(eventType)) {
+            requirePayloadText(eventType, payload, "holdId", "inventoryPoolId", "capacityUnitRef", "confirmedAt");
+        } else {
+            requirePayloadText(eventType, payload, "holdId", "inventoryPoolId", "capacityUnitRef", "idempotencyKey", "expiresAt");
+            requirePayloadBoolean(eventType, payload, "idempotentReplay");
+        }
+        requirePayloadObject(eventType, payload, "interval");
+    }
+
+    private void validateCapacityReleasedContract(String eventType, Map<String, Object> payload) {
+        if ("CapacityHoldExpired".equals(eventType)) {
+            requirePayloadText(eventType, payload, "holdId", "inventoryPoolId", "capacityUnitRef", "expiredAt");
+        } else {
+            requirePayloadText(eventType, payload, "holdId", "inventoryPoolId", "capacityUnitRef", "releasedAt", "releaseReason");
+        }
+        requirePayloadObject(eventType, payload, "interval");
+    }
+
+    private void requirePayloadText(String eventType, Map<String, Object> payload, String... fields) {
+        for (String field : fields) {
+            if (text(payload.get(field)) == null) {
+                throw new IllegalArgumentException(eventType + " payload requires " + field);
+            }
+        }
+    }
+
+    private void requirePayloadBoolean(String eventType, Map<String, Object> payload, String field) {
+        if (!(payload.get(field) instanceof Boolean)) {
+            throw new IllegalArgumentException(eventType + " payload requires " + field);
+        }
+    }
+
+    private void requirePayloadObject(String eventType, Map<String, Object> payload, String field) {
+        if (!(payload.get(field) instanceof Map<?, ?>)) {
+            throw new IllegalArgumentException(eventType + " payload requires " + field);
+        }
+    }
+
+    private boolean canApplyCapacityRelease(SegmentBooking booking) {
+        return switch (booking.status()) {
+            case REQUESTED, HOLDING, CANCEL_REQUESTED -> true;
+            case CONFIRMED, TICKETED, IN_FULFILLMENT, COMPLETED, CANCELLED, CHANGE_REQUESTED, CHANGED, FAILED -> false;
+        };
+    }
+
+    private void warnCapacityAckSkip(String eventType, String reason) {
+        LOGGER.warn("Ack-skipping {} from capacity-availability: {}", eventType, reason);
     }
 
     private BookingSaga sagaByCorrelationId(String correlationId) {

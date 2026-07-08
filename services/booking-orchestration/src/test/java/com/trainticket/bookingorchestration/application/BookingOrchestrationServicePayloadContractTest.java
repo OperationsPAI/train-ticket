@@ -22,7 +22,11 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.junit.jupiter.api.extension.ExtendWith;
 
+@ExtendWith(OutputCaptureExtension.class)
 class BookingOrchestrationServicePayloadContractTest {
 
     private BookingOrchestrationService service;
@@ -239,6 +243,80 @@ class BookingOrchestrationServicePayloadContractTest {
 
         assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("SegmentBookingCancelled")));
     }
+
+    @Test
+    void duplicateCapacityHeldAfterSagaAdvancedIsAcknowledgedWithoutPublishing() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-capacity-duplicate", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-capacity-duplicate", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0c701"),
+            "idem-reservation-capacity-duplicate", "corr-start");
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c702", "CapacityHeld", Instant.parse("2026-07-05T10:03:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c707", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c703", "capacity-availability", 1, Map.of(
+            "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0c704",
+            "inventoryPoolId", "pool-123",
+            "capacityUnitRef", "cu-123",
+            "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+            "idempotencyKey", "ord-capacity-duplicate:seg-001:tvl-123:purchase",
+            "expiresAt", "2026-07-05T10:08:00Z",
+            "idempotentReplay", false))));
+        published.clear();
+
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c705", "CapacityHeld", Instant.parse("2026-07-05T10:04:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c707", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c706", "capacity-availability", 1, Map.of(
+            "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0c704",
+            "inventoryPoolId", "pool-123",
+            "capacityUnitRef", "cu-123",
+            "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+            "idempotencyKey", "ord-capacity-duplicate:seg-001:tvl-123:purchase",
+            "expiresAt", "2026-07-05T10:09:00Z",
+            "idempotentReplay", true))));
+
+        assertTrue(published.getPublished().isEmpty());
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
+    }
+
+    @Test
+    void unknownSegmentBookingRefCapacityReleasedIsAcknowledgedAndWarns(CapturedOutput output) {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+
+        var result = service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c801", "CapacityReleased", Instant.parse("2026-07-05T10:04:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c804", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c802", "capacity-availability", 1, Map.of(
+            "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0c803",
+            "inventoryPoolId", "pool-123",
+            "capacityUnitRef", "cu-123",
+            "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+            "releasedAt", "2026-07-05T10:04:00Z",
+            "releaseReason", "entitlement-voided",
+            "references", Map.of("segmentBookingRef", "sb-unknown", "orderRef", "ord-unknown", "travelerRef", "tvl-123"))));
+
+        assertInstanceOf(HandlerResult.Success.class, result);
+        assertTrue(published.getPublished().isEmpty());
+        assertTrue(output.getOut().contains("Ack-skipping CapacityReleased") || output.getErr().contains("Ack-skipping CapacityReleased"));
+    }
+
+    @Test
+    void malformedCapacityHeldMissingRequiredFieldIsFatal() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+
+        var result = service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c901", "CapacityHeld", Instant.parse("2026-07-05T10:03:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c904", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c902", "capacity-availability", 1, Map.of(
+            "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0c903",
+            "inventoryPoolId", "pool-123",
+            "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+            "idempotencyKey", "ord-capacity-malformed:seg-001:tvl-123:purchase",
+            "expiresAt", "2026-07-05T10:08:00Z",
+            "idempotentReplay", false)));
+
+        assertInstanceOf(HandlerResult.FatalError.class, result);
+        assertTrue(published.getPublished().isEmpty());
+    }
+
 
     @Test
     void failurePathsPropagateConsumedEnvelopeCorrelationId() {
