@@ -5,7 +5,7 @@ import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { FastifyInstrumentation } from "@opentelemetry/instrumentation-fastify";
 import { Resource } from "@opentelemetry/resources";
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { BasicTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 let sdk;
 export function otelTracingEnabled() {
@@ -19,19 +19,15 @@ export function initOpenTelemetry(options = {}) {
     if (sdk) {
         return sdk;
     }
-    if (options.spanExporter) {
-        const testProvider = new BasicTracerProvider({
-            resource: new Resource({ [ATTR_SERVICE_NAME]: options.serviceName ?? process.env.OTEL_SERVICE_NAME ?? "train-ticket-service" }),
-            spanProcessors: [new SimpleSpanProcessor(options.spanExporter)],
-        });
-        trace.setGlobalTracerProvider(testProvider);
-        return undefined;
-    }
     const serviceName = options.serviceName ?? process.env.OTEL_SERVICE_NAME ?? "train-ticket-service";
-    const traceExporter = options.spanExporter ?? new OTLPTraceExporter();
+    // A custom exporter (tests) and the default OTLP exporter share one code
+    // path: instrumentations must register either way, or HTTP spans exist
+    // only in production and the in-memory assertion proves nothing.
     sdk = new NodeSDK({
         resource: new Resource({ [ATTR_SERVICE_NAME]: serviceName }),
-        traceExporter,
+        ...(options.spanExporter
+            ? { spanProcessors: [new SimpleSpanProcessor(options.spanExporter)] }
+            : { traceExporter: new OTLPTraceExporter() }),
         instrumentations: [
             new HttpInstrumentation(),
             new FastifyInstrumentation(),

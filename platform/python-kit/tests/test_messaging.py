@@ -136,3 +136,31 @@ def test_otel_enabled_creates_event_consumer_span(monkeypatch) -> None:
     assert span.attributes["messaging.train_ticket.eventType"] == envelope.eventType
     assert span.attributes["messaging.train_ticket.correlationId"] == envelope.correlationId
     trace.get_tracer_provider().shutdown()
+
+
+def test_otel_enabled_creates_http_server_span(monkeypatch) -> None:
+    pytest = __import__("pytest")
+    otel_trace = pytest.importorskip("opentelemetry.trace")
+    exporter_mod = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from train_ticket_platform.observability import init_opentelemetry
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "python-kit-test")
+    exporter = exporter_mod.InMemorySpanExporter()
+    app = fastapi.FastAPI()
+
+    @app.get("/health")
+    def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    init_opentelemetry("python-kit-test", app=app, span_exporter=exporter)
+    client = testclient.TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    server_spans = [span for span in spans if span.kind == otel_trace.SpanKind.SERVER]
+    assert server_spans, f"expected an HTTP server span, got: {[span.name for span in spans]}"
+    route_attr = server_spans[0].attributes.get("http.route") or server_spans[0].attributes.get("http.target")
+    assert route_attr == "/health"
