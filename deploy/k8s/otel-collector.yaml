@@ -158,5 +158,8 @@ spec:
     - name: health
       port: 13133
       targetPort: health
+    - name: zpages
+      port: 55679
+      targetPort: zpages
   selector:
     app.kubernetes.io/name: otel-collector
