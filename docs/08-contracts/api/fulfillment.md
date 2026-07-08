@@ -76,7 +76,7 @@ timestamps, and Money.
 
 **Idempotency:** REQUIRED
 
-Records arrival/provider/admin completion after a previously boarded segment has completed.
+Records arrival/provider/admin/system completion after a previously boarded segment has completed.
 
 **Request:**
 

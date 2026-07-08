@@ -109,7 +109,7 @@ None found.
 | finance-settlement | POST | `/api/v1/invoices` | yes | yes | consistent |
 | fulfillment | GET | `/api/v1/fulfillment-records/{fulfillmentRecordId}` | yes | yes | consistent |
 | fulfillment | POST | `/api/v1/fulfillment-records/boarding` | yes | yes | consistent |
-| fulfillment | POST | `/api/v1/fulfillment-records/completions` | yes | no | implementation-only |
+| fulfillment | POST | `/api/v1/fulfillment-records/completions` | yes | no | implementation-only (pre-remediation state; documented in api/fulfillment.md by this same change) |
 | fulfillment | POST | `/api/v1/fulfillment-records/no-show` | yes | yes | consistent |
 | journey-order | GET | `/api/v1/journey-orders` | yes | yes | consistent |
 | journey-order | GET | `/api/v1/journey-orders/{orderId}` | yes | yes | consistent |
@@ -162,3 +162,7 @@ None found.
 | traveler-profile | POST | `/api/v1/travelers/{travelerId}/eligibility` | yes | yes | consistent |
 | trip-planning | GET | `/api/v1/itineraries/{itineraryRef}` | yes | yes | consistent |
 | trip-planning | POST | `/api/v1/itineraries/search` | yes | yes | consistent |
+
+> Post-audit note (2026-07-08): REQ-105 subsequently REMOVED the two
+> provider-integration internal HTTP command endpoints (dead API ruling);
+> the provider-integration rows above describe the pre-removal state.
