@@ -2,7 +2,7 @@ import json
 import logging
 
 from train_ticket_platform.events import EventEnvelope
-from train_ticket_platform.messaging import FatalHandlerError, HandlerResult, RedisEventSubscriber, TransientHandlerError, dlq_for_stream
+from train_ticket_platform.messaging import FatalHandlerError, HandlerResult, InMemoryEventSubscriber, RedisEventSubscriber, TransientHandlerError, dlq_for_stream
 
 
 class FakeRedis:
@@ -104,3 +104,63 @@ def test_ack_skip_duplicate_logs_ack_path(caplog) -> None:
     assert subscriber._client.acks == [("events:tester", "tester", "1-0")]
     assert "duplicate event already processed" in caplog.text
     assert envelope.eventId in caplog.text
+
+
+def test_otel_absent_does_not_create_event_consumer_span(monkeypatch) -> None:
+    monkeypatch.delenv("OTEL_TRACES_EXPORTER", raising=False)
+    subscriber = InMemoryEventSubscriber([EventEnvelope(eventType="SomethingHappened", producer="tester", payload={})])
+    subscriber.subscribe(["events:tester"], "tester", "tester-consumer", lambda _: HandlerResult.success())
+    assert len(subscriber.seen_event_ids) == 1
+
+
+def test_otel_enabled_creates_event_consumer_span(monkeypatch) -> None:
+    pytest = __import__("pytest")
+    trace = pytest.importorskip("opentelemetry.trace")
+    exporter_mod = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+    from train_ticket_platform.observability import init_opentelemetry
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "python-kit-test")
+    exporter = exporter_mod.InMemorySpanExporter()
+    init_opentelemetry("python-kit-test", span_exporter=exporter)
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={})
+    subscriber = InMemoryEventSubscriber([envelope])
+    subscriber.subscribe(["events:tester"], "tester", "tester-consumer", lambda _: HandlerResult.success())
+
+    spans = exporter.get_finished_spans()
+    assert any(span.name == "in-memory process SomethingHappened" for span in spans)
+    span = next(span for span in spans if span.name == "in-memory process SomethingHappened")
+    assert span.attributes["messaging.train_ticket.stream"] == "in-memory"
+    assert span.attributes["messaging.train_ticket.consumerGroup"] == "in-memory"
+    assert span.attributes["messaging.train_ticket.eventId"] == envelope.eventId
+    assert span.attributes["messaging.train_ticket.eventType"] == envelope.eventType
+    assert span.attributes["messaging.train_ticket.correlationId"] == envelope.correlationId
+    trace.get_tracer_provider().shutdown()
+
+
+def test_otel_enabled_creates_http_server_span(monkeypatch) -> None:
+    pytest = __import__("pytest")
+    otel_trace = pytest.importorskip("opentelemetry.trace")
+    exporter_mod = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from train_ticket_platform.observability import init_opentelemetry
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "python-kit-test")
+    exporter = exporter_mod.InMemorySpanExporter()
+    app = fastapi.FastAPI()
+
+    @app.get("/health")
+    def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    init_opentelemetry("python-kit-test", app=app, span_exporter=exporter)
+    client = testclient.TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    server_spans = [span for span in spans if span.kind == otel_trace.SpanKind.SERVER]
+    assert server_spans, f"expected an HTTP server span, got: {[span.name for span in spans]}"
+    route_attr = server_spans[0].attributes.get("http.route") or server_spans[0].attributes.get("http.target")
+    assert route_attr == "/health"
