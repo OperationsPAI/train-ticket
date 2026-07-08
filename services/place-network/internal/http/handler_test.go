@@ -187,6 +187,13 @@ func TestPublisherWrapsEventsInEnvelope(t *testing.T) {
 	if !ok || payload.PlaceID == "" || payload.UpdatedAt != "2026-07-05T10:30:00Z" {
 		t.Fatalf("unexpected payload: %#v", envelope.Payload)
 	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"traceparent"`) {
+		t.Fatalf("traceparent must be omitted without span context: %s", body)
+	}
 }
 
 func TestSubscriberHandlerDeduplicatesDuplicateEventID(t *testing.T) {

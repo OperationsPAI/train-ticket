@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
 
@@ -88,6 +90,39 @@ func TestPublisherWrapsDomainEventInCanonicalEnvelope(t *testing.T) {
 	}
 	if payload.FulfillmentRecordID == "" || payload.EntitlementID != "ent-abc123" || payload.SourceEventID != "gate-scan-1" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"traceparent"`) {
+		t.Fatalf("traceparent must be omitted without span context: %s", body)
+	}
+}
+
+func TestPublisherEnvelopeIncludesTraceparentFromContext(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), func(prefix string) string {
+		return prefix + "-00000000-0000-4000-8000-000000000001"
+	}, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
+
+	seedTicket(t, service, "ent-trace", "sb-trace", "ord-trace", "tvl-trace", "seg-trace")
+	ctx := trace.ContextWithSpanContext(context.Background(), mustSpanContext(t))
+	_, err := service.VerifyBoarding(ctx, VerifyBoardingCommand{
+		EntitlementID:    "ent-trace",
+		SegmentBookingID: "sb-trace",
+		JourneyOrderID:   "ord-trace",
+		TravelerID:       "tvl-trace",
+		SegmentRef:       "seg-trace",
+		Source:           domain.FulfillmentSourceGate,
+		SourceEventID:    "gate-scan-trace",
+		OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
+	}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := publisher.envelopes[0].Traceparent; got != wantTraceparent {
+		t.Fatalf("traceparent mismatch: %q", got)
 	}
 }
 
@@ -248,4 +283,23 @@ func TestFulfillmentCompletedPublishesContractEvent(t *testing.T) {
 	if _, ok := payload["segmentRef"]; ok {
 		t.Fatalf("FulfillmentCompleted payload must match contract exactly, got segmentRef")
 	}
+}
+
+const wantTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+func mustSpanContext(t *testing.T) trace.SpanContext {
+	t.Helper()
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled})
+	if !spanContext.IsValid() {
+		t.Fatal("invalid span context")
+	}
+	return spanContext
 }

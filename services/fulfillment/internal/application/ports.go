@@ -476,7 +476,7 @@ func (s *Service) saveAndPublishPending(ctx context.Context, record *domain.Fulf
 
 func (s *Service) publishEvents(ctx context.Context, events []domain.DomainEvent, meta CommandMetadata) error {
 	for _, event := range events {
-		envelope, err := s.WrapDomainEvent(event, meta)
+		envelope, err := s.WrapDomainEvent(ctx, event, meta)
 		if err != nil {
 			return err
 		}
@@ -487,12 +487,12 @@ func (s *Service) publishEvents(ctx context.Context, events []domain.DomainEvent
 	return nil
 }
 
-func (s *Service) WrapDomainEvent(event domain.DomainEvent, meta CommandMetadata) (EventEnvelope, error) {
+func (s *Service) WrapDomainEvent(ctx context.Context, event domain.DomainEvent, meta CommandMetadata) (EventEnvelope, error) {
 	payload, err := MarshalDomainEventPayload(event)
 	if err != nil {
 		return EventEnvelope{}, err
 	}
-	options := []kitmsg.EnvelopeOptions{{Now: event.OccurredAt().UTC()}}
+	options := []kitmsg.EnvelopeOptions{{Now: event.OccurredAt().UTC(), Context: ctx}}
 	if strings.TrimSpace(meta.CausationID) != "" {
 		options[0].CausationID = meta.CausationID
 	}
