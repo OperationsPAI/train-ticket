@@ -157,7 +157,7 @@ func (s *InMemoryReservationService) publish(ctx context.Context, eventType, cor
 	if s.publisher == nil {
 		return nil
 	}
-	envelope, err := NewEventEnvelope(eventType, correlationID, causationID, payload)
+	envelope, err := NewEventEnvelope(ctx, eventType, correlationID, causationID, payload)
 	if err != nil {
 		return err
 	}
