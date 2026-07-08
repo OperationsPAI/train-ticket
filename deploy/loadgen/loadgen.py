@@ -195,6 +195,7 @@ class Purchase:
 @dataclass
 class WaitlistRef:
     waitlist_request_id: str
+    account: str
     traveler: str
     seg: str
     payment_intent: str
@@ -224,7 +225,11 @@ class Registry:
                 raw = json.load(open(path))
                 reg.accounts = raw.get("accounts", [])
                 reg.purchases = [Purchase(**p) for p in raw.get("purchases", [])]
-                reg.waitlists = [WaitlistRef(**w) for w in raw.get("waitlists", [])]
+                reg.waitlists = []
+                for w in raw.get("waitlists", []):
+                    if "account" not in w:
+                        w["account"] = ""
+                    reg.waitlists.append(WaitlistRef(**w))
                 reg.routes = raw.get("routes", [])
                 reg.ops_entities = raw.get("ops_entities", reg.ops_entities)
             except Exception as exc:
@@ -641,7 +646,7 @@ class CustomerSim:
         await self.maybe_read_probe(common_refs)
         if resv.get("no_capacity"):
             return await self.handle_no_capacity_waitlist(
-                travelers[0], found["segment"], intent["paymentIntentId"], common_refs)
+                entry["account_id"], travelers[0], found["segment"], intent["paymentIntentId"], common_refs)
         if self.chance("p_abandon_before_payment"):
             if self.chance("p_cancel_payment_intent_on_abandon"):
                 await self.api.request(
@@ -683,7 +688,7 @@ class CustomerSim:
         })
         return "purchased"
 
-    async def handle_no_capacity_waitlist(self, traveler: str, segment: str, payment_intent: str,
+    async def handle_no_capacity_waitlist(self, account: str, traveler: str, segment: str, payment_intent: str,
                                           refs: dict[str, str | None]) -> str:
         if not self.optional_chance("p_waitlist_on_no_capacity", 0.30):
             return "no_available_capacity"
@@ -692,7 +697,7 @@ class CustomerSim:
         intent_fingerprint = f"{traveler}:{segment}"
         code, waitlist = await self.api.request(
             "POST", "waitlist", "/api/v1/waitlist-requests",
-            {"travelerRef": traveler, "segmentRef": segment,
+            {"accountId": account, "travelerRef": traveler, "segmentRef": segment,
              "paymentGuaranteeRef": payment_intent,
              "intentFingerprint": intent_fingerprint,
              "deadline": deadline.strftime("%Y-%m-%dT%H:%M:%SZ")},
@@ -702,7 +707,7 @@ class CustomerSim:
             return "waitlist_conflict"
         waitlist_id = waitlist["waitlistRequestId"]
         status = waitlist.get("status", "QUEUED")
-        await self.reg.add_waitlist(WaitlistRef(waitlist_id, traveler, segment, payment_intent,
+        await self.reg.add_waitlist(WaitlistRef(waitlist_id, account, traveler, segment, payment_intent,
                                                 intent_fingerprint, status))
         if status == "QUEUED":
             self.stats.journeys["waitlist:queued"] += 1

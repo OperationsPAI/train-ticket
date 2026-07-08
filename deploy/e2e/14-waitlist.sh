@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Waitlist end-to-end: idempotent create, mutual exclusion, cancellation,
-# fulfillment from released capacity, expiry, waitlist events, and restart
-# persistence baseline (runs the existing 12-restart suite from here).
+# fulfillment from released capacity, expiry, and waitlist events.
 cd "$(dirname "$0")" && . ./lib.sh
 ensure_curl_pod
 
@@ -133,9 +132,12 @@ PYEX
 }
 
 exhaust_remaining_capacity() { # traveler segment -> holds every still-free unit until sold out
-  local tvl=$1 seg=$2 held=0
+  local tvl=$1 seg=$2 held=0 body sb
   for attempt in $(seq 1 20); do
-    req POST capacity-availability /api/v1/capacity-holds "{"segmentRef":"$seg","travelerRef":"$tvl","classRef":"standard","quantity":1,"segmentBookingId":"sb-$(uuid7)"}"
+    sb="sb-$(uuid7)"
+    body=$(SEG="$seg" TVL="$tvl" SB="$sb" python3 -c 'import json, os; print(json.dumps({"segmentRef": os.environ["SEG"], "travelerRef": os.environ["TVL"], "classRef": "standard", "quantity": 1, "segmentBookingId": os.environ["SB"]}))')
+    printf '%s' "$body" | python3 -c 'import json, sys; json.load(sys.stdin)'
+    req POST capacity-availability /api/v1/capacity-holds "$body"
     if [ "$LAST_CODE" = 201 ]; then
       held=$((held + 1))
       continue
@@ -174,7 +176,7 @@ req POST payment /api/v1/payment-intents "{\"businessRef\":\"waitlist-a-$(uuid7)
 check_code 201 "payment guarantee for create"
 PI_A=$(jget "['paymentIntentId']")
 KEY_A=$(uuid7); DEADLINE_A=$(future_deadline 1800); FP_A="$TVL_A:$SEG_A"
-BODY_A="{\"travelerRef\":\"$TVL_A\",\"segmentRef\":\"$SEG_A\",\"paymentGuaranteeRef\":\"$PI_A\",\"intentFingerprint\":\"$FP_A\",\"deadline\":\"$DEADLINE_A\"}"
+BODY_A="{\"accountId\":\"$ACCT_A\",\"travelerRef\":\"$TVL_A\",\"segmentRef\":\"$SEG_A\",\"paymentGuaranteeRef\":\"$PI_A\",\"intentFingerprint\":\"$FP_A\",\"deadline\":\"$DEADLINE_A\"}"
 waitlist_req_fixed_key "$KEY_A" "$BODY_A"; check_code 201 "create waitlist"
 WLR_A=$(jget "['waitlistRequestId']"); ST_A=$(jget "['status']")
 [ "$ST_A" = QUEUED ] && ok "created request QUEUED" || bad "created request status $ST_A"
@@ -201,7 +203,7 @@ req POST payment /api/v1/payment-intents "{\"businessRef\":\"waitlist-fulfill-$(
 check_code 201 "payment guarantee for fulfillment waitlist"
 PI_F=$(jget "['paymentIntentId']")
 DEADLINE_F=$(future_deadline 1800); FP_F="$TVL_C:$SEG_F"
-req POST waitlist /api/v1/waitlist-requests "{\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"paymentGuaranteeRef\":\"$PI_F\",\"intentFingerprint\":\"$FP_F\",\"deadline\":\"$DEADLINE_F\"}"
+req POST waitlist /api/v1/waitlist-requests "{\"accountId\":\"$ACCT_C\",\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"paymentGuaranteeRef\":\"$PI_F\",\"intentFingerprint\":\"$FP_F\",\"deadline\":\"$DEADLINE_F\"}"
 check_code 201 "create fulfillment waitlist"
 WLR_F=$(jget "['waitlistRequestId']")
 [ "$(jget "['status']")" = QUEUED ] && ok "fulfillment waitlist queued" || bad "fulfillment waitlist not queued"
@@ -234,7 +236,7 @@ req POST payment /api/v1/payment-intents "{\"businessRef\":\"waitlist-expire-$(u
 check_code 201 "payment guarantee for expiry"
 PI_E=$(jget "['paymentIntentId']")
 DEADLINE_E=$(future_deadline 5); FP_E="$TVL_E:$SEG_E"
-req POST waitlist /api/v1/waitlist-requests "{\"travelerRef\":\"$TVL_E\",\"segmentRef\":\"$SEG_E\",\"paymentGuaranteeRef\":\"$PI_E\",\"intentFingerprint\":\"$FP_E\",\"deadline\":\"$DEADLINE_E\"}"
+req POST waitlist /api/v1/waitlist-requests "{\"accountId\":\"$ACCT_E\",\"travelerRef\":\"$TVL_E\",\"segmentRef\":\"$SEG_E\",\"paymentGuaranteeRef\":\"$PI_E\",\"intentFingerprint\":\"$FP_E\",\"deadline\":\"$DEADLINE_E\"}"
 check_code 201 "create expiring waitlist"
 WLR_E=$(jget "['waitlistRequestId']")
 ST_E=$(poll_waitlist_status "$WLR_E" EXPIRED 20 2)
@@ -245,19 +247,6 @@ last_events events:waitlist 8
 [ "$(stream_mentions events:waitlist WaitlistQueued "$WLR_A")" = yes ] && ok "WaitlistQueued event exists" || bad "missing WaitlistQueued event"
 [ "$(stream_mentions events:waitlist WaitlistFulfilled "$WLR_F")" = yes ] && ok "WaitlistFulfilled event exists" || bad "missing WaitlistFulfilled event"
 [ "$(stream_mentions events:waitlist WaitlistExpired "$WLR_E")" = yes ] && ok "WaitlistExpired event exists" || bad "missing WaitlistExpired event"
-
-echo "== restart persistence baseline via 12-restart"
-out=$(bash ./12-restart.sh 2>&1)
-line=$(echo "$out" | grep '== RESULT' | tail -1)
-if [ -n "$line" ]; then
-  p=$(echo "$line" | sed 's/.*pass=\([0-9]*\).*/\1/')
-  f=$(echo "$line" | sed 's/.*fail=\([0-9]*\).*/\1/')
-  PASS=$((PASS + p)); FAIL=$((FAIL + f))
-  echo "  12-restart pass=$p fail=$f"
-  [ "$f" -gt 0 ] && echo "$out" | grep '✗' | sed 's/^/    /'
-else
-  FAIL=$((FAIL + 1)); echo "$out" | tail -10 | sed 's/^/    /'; bad "12-restart produced no RESULT"
-fi
 
 resume_loadgen
 trap - EXIT
