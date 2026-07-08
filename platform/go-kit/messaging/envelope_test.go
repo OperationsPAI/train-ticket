@@ -142,3 +142,90 @@ func TestRedisSubscriptionFatalHandlerMovesMessageToDLQWithMetadataAndWarnLog(t 
 		t.Fatalf("missing WARN DLQ log: %s", logText)
 	}
 }
+
+func TestRedisSubscriptionTransientHandlerLogsRetryPath(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	bus := NewRedisEventBusWithClient(client, RedisConfig{ReadBlock: 10 * time.Millisecond, RecoveryEvery: time.Hour})
+	defer bus.Close()
+
+	envelope, err := NewEventEnvelope("RetryEvent", "payment", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"id": "1"}, EnvelopeOptions{Now: time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logBuffer bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logBuffer)
+	defer log.SetOutput(originalWriter)
+
+	stream := StreamName("payment")
+	if err := bus.Subscribe(ctx, Subscription{Streams: []string{"payment"}, Group: "journey-order", ConsumerName: "consumer-1"}, func(context.Context, EventEnvelope) error {
+		return TransientHandlerError(errors.New("redis temporarily unavailable"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.client.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{EnvelopeField: string(body)}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logBuffer.String(), "handler transient failure") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	logText := logBuffer.String()
+	if !strings.Contains(logText, "handler transient failure") || !strings.Contains(logText, envelope.EventID) || !strings.Contains(logText, "redis temporarily unavailable") {
+		t.Fatalf("missing transient retry log: %s", logText)
+	}
+	if dlq, err := bus.client.XRange(ctx, stream+DeadLetterSuffix, "-", "+").Result(); err != nil || len(dlq) != 0 {
+		t.Fatalf("transient retry should not DLQ: messages=%#v err=%v", dlq, err)
+	}
+}
+
+func TestRedisSubscriptionDuplicateAckSkipLogs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	bus := NewRedisEventBusWithClient(client, RedisConfig{ReadBlock: 10 * time.Millisecond, RecoveryEvery: time.Hour})
+	defer bus.Close()
+
+	envelope, err := NewEventEnvelope("DuplicateEvent", "payment", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"id": "1"}, EnvelopeOptions{Now: time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logBuffer bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logBuffer)
+	defer log.SetOutput(originalWriter)
+
+	stream := StreamName("payment")
+	if err := bus.Subscribe(ctx, Subscription{Streams: []string{"payment"}, Group: "journey-order", ConsumerName: "consumer-1"}, func(context.Context, EventEnvelope) error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := bus.client.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{EnvelopeField: string(body)}}).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logBuffer.String(), "duplicate event already processed") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	logText := logBuffer.String()
+	if !strings.Contains(logText, "duplicate event already processed") || !strings.Contains(logText, envelope.EventID) {
+		t.Fatalf("missing duplicate ack-skip log: %s", logText)
+	}
+}
