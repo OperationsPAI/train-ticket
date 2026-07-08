@@ -83,7 +83,9 @@ export class NotificationApplicationService {
   async handleExternalTrigger(envelope: EventEnvelope): Promise<ExternalTriggerResult> {
     const command = scheduleCommandFromEnvelope(envelope);
     if (command === undefined) {
-      console.info(`Ignoring unsupported notification trigger ${envelope.eventType} (${envelope.eventId})`);
+      if (mappingFor(envelope.eventType) === undefined) {
+        console.info(`Ignoring unsupported notification trigger ${envelope.eventType} (${envelope.eventId})`);
+      }
       return "ignored";
     }
 
@@ -150,12 +152,13 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope): ScheduleNotificat
     return undefined;
   }
 
+  validateTriggerContract(envelope);
+
   const payload = envelope.payload;
   const recipientRef = mapping.recipient(payload);
   if (recipientRef === undefined) {
-    throw new NonConformantNotificationTrigger(
-      `Notification trigger ${envelope.eventType} (${envelope.eventId}) does not contain a resolvable recipientRef`,
-    );
+    console.debug(`Skipping notification trigger ${envelope.eventType} (${envelope.eventId}): no resolvable recipientRef`);
+    return undefined;
   }
 
   return {
@@ -187,6 +190,187 @@ function triggerBusinessRef(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.postSalesCaseId)
     ?? stringValue(payload.businessRef);
   return businessRef ? `${envelope.eventType}:${businessRef}` : undefined;
+}
+
+type FieldType = "array" | "boolean" | "money" | "object" | "string";
+
+type RequiredField = Readonly<{
+  name: string;
+  type: FieldType;
+}>;
+
+const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]>> = Object.freeze({
+  JourneyOrderCreated: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "offerId", type: "string" },
+    { name: "monetarySummary", type: "object" },
+    { name: "travelerRefs", type: "array" },
+    { name: "segmentRefs", type: "array" },
+    { name: "createdAt", type: "string" },
+  ],
+  JourneyOrderPendingPayment: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "paymentPurpose", type: "string" },
+    { name: "monetarySummary", type: "object" },
+  ],
+  JourneyOrderPaymentRecorded: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "paymentIntentId", type: "string" },
+  ],
+  JourneyOrderConfirmed: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "monetarySummary", type: "object" },
+    { name: "confirmedAt", type: "string" },
+  ],
+  JourneyOrderCancelled: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "reason", type: "string" },
+  ],
+  JourneyOrderPostSalesAdjusted: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "postSalesCaseId", type: "string" },
+    { name: "monetarySummary", type: "object" },
+  ],
+  JourneyOrderAdjusted: [
+    { name: "orderId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "postSalesCaseId", type: "string" },
+    { name: "monetarySummary", type: "object" },
+  ],
+  PaymentCaptured: [
+    { name: "paymentIntentId", type: "string" },
+    { name: "businessRef", type: "string" },
+    { name: "capturedAmount", type: "money" },
+    { name: "channel", type: "string" },
+    { name: "channelTransactionId", type: "string" },
+  ],
+  PaymentFailed: [
+    { name: "paymentIntentId", type: "string" },
+    { name: "reasonCode", type: "string" },
+    { name: "retryable", type: "boolean" },
+  ],
+  PaymentIntentFailed: [
+    { name: "paymentIntentId", type: "string" },
+    { name: "reasonCode", type: "string" },
+    { name: "retryable", type: "boolean" },
+  ],
+  PaymentIntentExpired: [
+    { name: "paymentIntentId", type: "string" },
+  ],
+  PaymentExpired: [
+    { name: "paymentIntentId", type: "string" },
+  ],
+  RefundSettled: [
+    { name: "refundId", type: "string" },
+    { name: "paymentIntentId", type: "string" },
+    { name: "amount", type: "money" },
+  ],
+  EntitlementIssued: [
+    { name: "entitlementId", type: "string" },
+    { name: "segmentBookingId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "segmentRef", type: "string" },
+    { name: "issuePurpose", type: "string" },
+    { name: "credentialNo", type: "string" },
+    { name: "credentialType", type: "string" },
+    { name: "issuedAt", type: "string" },
+  ],
+  PostSalesEligibilityEvaluated: [
+    { name: "caseId", type: "string" },
+    { name: "eligible", type: "boolean" },
+    { name: "reasonCode", type: "string" },
+  ],
+  PostSalesDecisionQuoted: [
+    { name: "caseId", type: "string" },
+    { name: "decisionKind", type: "string" },
+    { name: "eligible", type: "boolean" },
+    { name: "ruleSnapshotRef", type: "string" },
+  ],
+  PostSalesExecutionStarted: [
+    { name: "caseId", type: "string" },
+    { name: "orderedSteps", type: "array" },
+    { name: "approvalRef", type: "string" },
+  ],
+  PostSalesApplied: [
+    { name: "caseId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "resultSummary", type: "object" },
+  ],
+  PostSalesFailed: [
+    { name: "caseId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "reason", type: "string" },
+  ],
+  ChangeApplied: [
+    { name: "caseId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "oldEntitlementRef", type: "string" },
+    { name: "newEntitlementRef", type: "string" },
+    { name: "changeOfferRef", type: "string" },
+  ],
+});
+
+function validateTriggerContract(envelope: EventEnvelope): void {
+  const envelopeViolations = envelopeContractViolations(envelope);
+  const payload = recordValue(envelope.payload);
+  const requiredFields = CONTRACT_FIELDS_BY_EVENT[envelope.eventType] ?? [];
+  const payloadViolations = payload === undefined
+    ? ["payload must be an object"]
+    : requiredFields.flatMap((field) => fieldViolation(payload, field));
+  const violations = [...envelopeViolations, ...payloadViolations];
+
+  if (violations.length > 0) {
+    throw new NonConformantNotificationTrigger(
+      `Notification trigger ${envelope.eventType} (${envelope.eventId}) violates its event contract: ${violations.join(", ")}`,
+    );
+  }
+}
+
+function envelopeContractViolations(envelope: EventEnvelope): string[] {
+  const violations: string[] = [];
+  for (const field of ["eventId", "eventType", "producer", "correlationId", "occurredAt"] as const) {
+    if (stringValue(envelope[field]) === undefined) {
+      violations.push(`${field} must be a non-empty string`);
+    }
+  }
+  if (typeof envelope.schemaVersion !== "number" || !Number.isInteger(envelope.schemaVersion) || envelope.schemaVersion < 1) {
+    violations.push("schemaVersion must be a positive integer");
+  }
+  return violations;
+}
+
+function fieldViolation(payload: Record<string, unknown>, field: RequiredField): string[] {
+  const value = payload[field.name];
+  if (value === undefined || value === null) {
+    return [`payload.${field.name} is required`];
+  }
+  switch (field.type) {
+    case "array":
+      return Array.isArray(value) ? [] : [`payload.${field.name} must be an array`];
+    case "boolean":
+      return typeof value === "boolean" ? [] : [`payload.${field.name} must be a boolean`];
+    case "money":
+      return isMoney(value) ? [] : [`payload.${field.name} must be Money`];
+    case "object":
+      return recordValue(value) === undefined ? [`payload.${field.name} must be an object`] : [];
+    case "string":
+      return stringValue(value) === undefined ? [`payload.${field.name} must be a non-empty string`] : [];
+  }
+}
+
+function isMoney(value: unknown): boolean {
+  const record = recordValue(value);
+  return record !== undefined
+    && stringValue(record.currency) !== undefined
+    && typeof record.minorUnits === "number"
+    && Number.isInteger(record.minorUnits);
 }
 
 function mappingFor(eventType: string): TriggerMapping | undefined {
@@ -324,6 +508,10 @@ function pickStringVariables(payload: Record<string, unknown>, keys: readonly st
     }
   }
   return variables;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

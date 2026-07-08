@@ -66,7 +66,14 @@ describe("notification PostgreSQL pilot seams", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001" },
+      payload: {
+        recipientRef: "usr-test-001",
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+      },
     };
 
     assert.equal(await service.handleExternalTrigger(upstream), "delivered");
@@ -86,7 +93,14 @@ describe("notification PostgreSQL pilot seams", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001" },
+      payload: {
+        recipientRef: "usr-test-001",
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+      },
     };
     const duplicate = { ...first, eventId: "evt-0194f2e0-7b3f-7c10-8284-5c26e8b0c333" };
 
@@ -105,7 +119,14 @@ describe("notification PostgreSQL pilot seams", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001" },
+      payload: {
+        recipientRef: "usr-test-001",
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+      },
     };
     const duplicate = { ...first, eventId: "evt-0194f2e0-7b3f-7c10-8284-5c26e8b0c333" };
     const publisher = new InMemoryEventPublisher();
