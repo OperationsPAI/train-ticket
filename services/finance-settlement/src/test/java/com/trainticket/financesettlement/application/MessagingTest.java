@@ -37,7 +37,9 @@ class MessagingTest {
         assertEquals("corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101", envelope.correlationId());
         assertEquals("cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e201", envelope.causationId());
         assertEquals(1, envelope.schemaVersion());
-        assertEquals(8, EventEnvelope.class.getRecordComponents().length);
+        // 8 core fields plus the optional W3C traceparent/tracestate pair
+        // added by the trace-context ruling (docs/08-contracts/messaging.md).
+        assertEquals(10, EventEnvelope.class.getRecordComponents().length);
         assertEquals(1000L, ((Map<?, ?>) ((Map<?, ?>) envelope.payload()).get("amount")).get("minorUnits"));
     }
 
