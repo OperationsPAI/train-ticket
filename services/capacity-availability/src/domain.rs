@@ -549,6 +549,7 @@ pub enum HoldFailureReason {
     UnknownCapacityUnit,
     IdempotencyConflict { existing_hold_id: HoldId },
     OverlappingHold { conflicting_hold_id: HoldId },
+    NoAvailableUnits,
 }
 
 impl HoldFailureReason {
@@ -557,6 +558,7 @@ impl HoldFailureReason {
             HoldFailureReason::UnknownCapacityUnit => "UNKNOWN_CAPACITY_UNIT",
             HoldFailureReason::IdempotencyConflict { .. } => "IDEMPOTENCY_CONFLICT",
             HoldFailureReason::OverlappingHold { .. } => "OVERLAPPING_HOLD",
+            HoldFailureReason::NoAvailableUnits => "NO_AVAILABLE_CAPACITY",
         }
     }
 
@@ -566,7 +568,8 @@ impl HoldFailureReason {
                 conflicting_hold_id,
             } => Some(conflicting_hold_id),
             HoldFailureReason::UnknownCapacityUnit
-            | HoldFailureReason::IdempotencyConflict { .. } => None,
+            | HoldFailureReason::IdempotencyConflict { .. }
+            | HoldFailureReason::NoAvailableUnits => None,
         }
     }
 }
