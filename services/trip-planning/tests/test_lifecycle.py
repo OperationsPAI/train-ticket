@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from fastapi.testclient import TestClient
@@ -5,6 +6,14 @@ from fastapi.testclient import TestClient
 from trip_planning import create_app
 from trip_planning.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
 from trip_planning.events import EventEnvelope
+
+
+def wait_for_handlers(subscriber: FakeEventSubscriber, expected_count: int = 1, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if len(subscriber.handlers) >= expected_count:
+            return
+        time.sleep(0.01)
 
 
 class ProductionMessagingWiringTest(unittest.TestCase):
@@ -31,6 +40,7 @@ class ProductionMessagingWiringTest(unittest.TestCase):
         subscriber = FakeEventSubscriber()
         app = create_app(event_publisher=publisher, event_subscriber=subscriber)
         with TestClient(app):
+            wait_for_handlers(subscriber)
             self.assertEqual(len(subscriber.handlers), 1)
             streams, group, consumer_name, _handler = subscriber.handlers[0]
             self.assertEqual(streams, ["events:place-network", "events:service-plan", "events:capacity-availability"])
@@ -54,6 +64,7 @@ class ProductionMessagingWiringTest(unittest.TestCase):
             api._default_subscriber = lambda: subscriber  # type: ignore[assignment]
             app = create_app(event_publisher=publisher)
             with TestClient(app):
+                wait_for_handlers(subscriber)
                 self.assertEqual(len(subscriber.handlers), 1)
         finally:
             api._default_subscriber = original  # type: ignore[assignment]
