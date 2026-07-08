@@ -803,7 +803,8 @@ class CustomerSim:
         if refs.get("node"):
             await self.assert_get("place-network", f"/api/v1/transport-nodes/{quote(refs['node'])}", "nodeId", refs["node"], "tail-get-transport-node")
         if refs.get("service"):
-            await self.assert_get("service-plan", "/api/v1/scheduled-services?limit=20&offset=0", None, None, "tail-list-scheduled-services")
+            page = await self.assert_get("service-plan", "/api/v1/scheduled-services?limit=100&offset=0", None, None, "tail-list-scheduled-services")
+            self.assert_list_contains(page, "scheduledServiceRef", refs["service"], "tail-list-scheduled-services")
             await self.assert_get("service-plan", f"/api/v1/scheduled-services/{quote(refs['service'])}", "scheduledServiceRef", refs["service"], "tail-get-scheduled-service")
         if refs.get("itinerary"):
             await self.assert_get("trip-planning", f"/api/v1/itineraries/{quote(refs['itinerary'])}", "itineraryRef", refs["itinerary"], "tail-get-itinerary")
@@ -905,6 +906,7 @@ class OpsSim:
                 print(f"[ops] failed — {exc}")
             except Exception as exc:
                 self.stats.journeys["ops:crashed"] += 1
+                self.stats.errors[f"ops:crashed:{type(exc).__name__}"] += 1
                 print(f"[ops] crashed — {type(exc).__name__}: {str(exc)[:180]}")
 
     async def sweep_once(self) -> None:
