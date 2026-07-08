@@ -579,6 +579,7 @@ pub struct ReqwestFulfillmentClient {
     fare_pricing_base_url: String,
     offer_management_base_url: String,
     journey_order_base_url: String,
+    payment_base_url: String,
     channel: String,
     product_code: String,
     client: reqwest::Client,
@@ -592,6 +593,8 @@ impl ReqwestFulfillmentClient {
                 .unwrap_or_else(|_| "http://offer-management:8080".into()),
             journey_order_base_url: std::env::var("JOURNEY_ORDER_BASE_URL")
                 .unwrap_or_else(|_| "http://journey-order:8080".into()),
+            payment_base_url: std::env::var("PAYMENT_BASE_URL")
+                .unwrap_or_else(|_| "http://payment:8080".into()),
             channel: std::env::var("WAITLIST_CHANNEL").unwrap_or_else(|_| "WEB".into()),
             product_code: std::env::var("WAITLIST_PRODUCT_CODE")
                 .unwrap_or_else(|_| "rail-standard".into()),
@@ -628,8 +631,8 @@ impl FulfillmentClient for ReqwestFulfillmentClient {
                 "fare-pricing",
             )
             .await?;
-        let offer_id = self
-            .post_for_string(
+        let offer_body = self
+            .post_for_json(
                 &self.offer_management_base_url,
                 "/api/v1/offers",
                 &keys.offer,
@@ -640,37 +643,81 @@ impl FulfillmentClient for ReqwestFulfillmentClient {
                     "travelerRefs": [request.traveler_ref.clone()],
                     "quoteRequestId": quote_id,
                 }),
-                "offerId",
                 "offer-management",
             )
             .await?;
-        self.post_for_string(
-            &self.journey_order_base_url,
-            "/api/v1/journey-orders",
-            key,
-            json!({
-                "accountId": request.account_id,
-                "offerId": offer_id,
-                "offerVersion": 1,
-                "travelerRefs": [request.traveler_ref.clone()],
-                "segmentRefs": [request.segment_ref.clone()],
-            }),
-            "orderId",
-            "journey-order",
+        let offer_id = string_at(&offer_body, &["offerId"]).ok_or_else(|| {
+            FulfillmentClientError::Transient("offer-management response missing offerId".into())
+        })?;
+        let order_id = self
+            .post_for_string(
+                &self.journey_order_base_url,
+                "/api/v1/journey-orders",
+                key,
+                json!({
+                    "accountId": request.account_id,
+                    "offerId": offer_id,
+                    "offerVersion": 1,
+                    "travelerRefs": [request.traveler_ref.clone()],
+                    "segmentRefs": [request.segment_ref.clone()],
+                }),
+                "orderId",
+                "journey-order",
+            )
+            .await?;
+
+        // The normal chain confirms only after payment: capture against the
+        // waitlist payment guarantee on the customer's behalf.
+        let payment_key = keys.payment.as_deref().ok_or_else(|| {
+            FulfillmentClientError::Transient("missing persisted payment idempotency key".into())
+        })?;
+        let capture_key = keys.capture.as_deref().ok_or_else(|| {
+            FulfillmentClientError::Transient("missing persisted capture idempotency key".into())
+        })?;
+        let amount = offer_body
+            .get("total")
+            .cloned()
+            .filter(|value| value.get("minorUnits").is_some())
+            .ok_or_else(|| {
+                FulfillmentClientError::Transient(
+                    "offer-management response missing total money".into(),
+                )
+            })?;
+        let intent_id = self
+            .post_for_string(
+                &self.payment_base_url,
+                "/api/v1/payment-intents",
+                payment_key,
+                json!({
+                    "businessRef": order_id,
+                    "purpose": "purchase",
+                    "amount": amount,
+                    "payerRef": request.account_id,
+                }),
+                "paymentIntentId",
+                "payment",
+            )
+            .await?;
+        self.post_for_json(
+            &self.payment_base_url,
+            &format!("/api/v1/payment-intents/{intent_id}/capture"),
+            capture_key,
+            json!({}),
+            "payment",
         )
-        .await
+        .await?;
+        Ok(order_id)
     }
 }
 impl ReqwestFulfillmentClient {
-    async fn post_for_string(
+    async fn post_for_json(
         &self,
         base_url: &str,
         path: &str,
         idempotency_key: &str,
         body: Value,
-        response_field: &str,
         service_name: &str,
-    ) -> Result<String, FulfillmentClientError> {
+    ) -> Result<Value, FulfillmentClientError> {
         let mut builder = self
             .client
             .post(format!("{}{}", base_url.trim_end_matches('/'), path))
@@ -721,16 +768,35 @@ impl ReqwestFulfillmentClient {
             .json()
             .await
             .map_err(|error| FulfillmentClientError::Transient(error.to_string()))?;
-        response_body
-            .get(response_field)
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                FulfillmentClientError::Transient(format!(
-                    "{service_name} response missing {response_field}"
-                ))
-            })
+        Ok(response_body)
     }
+
+    async fn post_for_string(
+        &self,
+        base_url: &str,
+        path: &str,
+        idempotency_key: &str,
+        body: Value,
+        response_field: &str,
+        service_name: &str,
+    ) -> Result<String, FulfillmentClientError> {
+        let response_body = self
+            .post_for_json(base_url, path, idempotency_key, body, service_name)
+            .await?;
+        string_at(&response_body, &[response_field]).ok_or_else(|| {
+            FulfillmentClientError::Transient(format!(
+                "{service_name} response missing {response_field}"
+            ))
+        })
+    }
+}
+
+fn string_at(value: &Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(key)?;
+    }
+    current.as_str().map(str::to_string)
 }
 #[derive(Default)]
 struct HeaderInjector(HashMap<String, String>);

@@ -242,6 +242,12 @@ pub struct FulfillmentIdempotencyKeys {
     pub quote: String,
     pub offer: String,
     pub order: String,
+    /// Optional for snapshot compatibility: aggregates persisted before the
+    /// payment step gained keys are backfilled on the next matching resume.
+    #[serde(default)]
+    pub payment: Option<String>,
+    #[serde(default)]
+    pub capture: Option<String>,
 }
 impl FulfillmentIdempotencyKeys {
     pub fn new() -> Self {
@@ -249,7 +255,22 @@ impl FulfillmentIdempotencyKeys {
             quote: uuid::Uuid::now_v7().to_string(),
             offer: uuid::Uuid::now_v7().to_string(),
             order: uuid::Uuid::now_v7().to_string(),
+            payment: Some(uuid::Uuid::now_v7().to_string()),
+            capture: Some(uuid::Uuid::now_v7().to_string()),
         }
+    }
+    /// Backfills missing payment-step keys; true when the snapshot changed.
+    pub fn ensure_payment_keys(&mut self) -> bool {
+        let mut changed = false;
+        if self.payment.is_none() {
+            self.payment = Some(uuid::Uuid::now_v7().to_string());
+            changed = true;
+        }
+        if self.capture.is_none() {
+            self.capture = Some(uuid::Uuid::now_v7().to_string());
+            changed = true;
+        }
+        changed
     }
 }
 

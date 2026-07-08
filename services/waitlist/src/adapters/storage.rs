@@ -198,6 +198,12 @@ impl PostgresWaitlistService {
                 Some(envelope.event_id.clone()),
             )
             .await?;
+        } else if let Some(keys) = request.fulfillment_idempotency_keys.as_mut() {
+            // Resume path: snapshots persisted before the payment step gained
+            // keys are backfilled durably before the chain runs.
+            if keys.ensure_payment_keys() {
+                Self::save_request(&mut tx, &request).await?;
+            }
         }
         tx.commit().await.map_err(db_error)?;
 
