@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-08
 
-## Status: Phase 1 complete; Phase 2 persistence rollout complete
+## Status: Phase 1 complete; Phase 2 hardening complete (persistence, channels, DLQ audit)
 
 The greenfield DDD rewrite is a working, end-to-end-verified system. All
 Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
@@ -42,8 +42,10 @@ them as placeholders until a roadmap decision activates them.
 `deploy/e2e/01..12` — 12 self-contained, rerunnable scripts, 159+ assertions:
 
 seed(6) purchase(15) refund(15) change(8) fulfillment(11) risk(7)
-fare-rules(29) notify-support(9) manual-action(7) account-gate(19)
-legacy-acl(33), plus `12-restart.sh` for whole-cluster restart certification.
+fare-rules(29) notify-support(10) manual-action(7) account-gate(19)
+legacy-acl(33), plus `12-restart.sh` for whole-cluster restart certification
+(first full run: 191/0 — 42 snapshot tables, 117k rows identical across
+deleting every pod in the namespace).
 
 The legacy-acl script walks a complete order lifecycle exclusively through the
 strangler facade's legacy-shaped endpoints. `deploy/e2e/12-restart.sh` pauses
@@ -66,11 +68,24 @@ certification script before the snapshot comparison.
   on every mutating endpoint; camelCase payload fields, SCREAMING_SNAKE enums,
   RFC3339 UTC timestamps.
 
+Wave 12 delivered the SMTP notification channel (in-cluster mailpit,
+TICKET_ISSUED intents deliver real email to synthetic per-traveler mailboxes;
+IN_APP remains the default for all other intents) and the repo tidy pass.
+
+The DLQ audit wave hardened event-handler failure taxonomy across consumers
+(REQ-088..091 plus hotfixes): FATAL is reserved for events violating their own
+contract; conformant events hitting unknown/advanced local state are
+ack-skipped with a WARN; true transients retry. Every DLQ entry now carries
+consumerGroup / failureReason / deadLetteredAt / attempts for attribution.
+
 ## Current backlog
 
-1. Notification real channel adapters (SMTP via in-cluster mailpit) while
-   retaining IN_APP as the default channel.
-2. Repo tidy and docs hygiene for future-scope skeletons and obsolete notes.
+1. Observability: OTel collector deployment in the integration cluster and
+   OTLP traces from all 23 services via the language kits (REQ-095..098).
+2. Provider/settlement follow-ups from live DLQ attribution: late
+   ProviderReservationConfirmed on capacity-failed bookings, and the
+   finance-settlement refund-lag reconciliation path (REQ-092/093).
+3. Kit logging-quality audit for the remaining three kits (REQ-094).
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
 boundary; legacy-acl rebook books the first leg only (caller follows up) — both

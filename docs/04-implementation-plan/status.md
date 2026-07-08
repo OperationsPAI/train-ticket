@@ -42,11 +42,35 @@ It pauses `deploy/loadgen` when present, verifies aggregate snapshot row counts
 across workload restarts, runs a smoke flow after recovery, and resumes loadgen.
 The e2e suite now has 12 scripts and 159+ assertions.
 
-### Wave 12 — channels & tidy (IN PROGRESS)
+### Wave 12 — channels & tidy (DONE)
 
-- Notification: SMTP adapter + in-cluster mailpit; channel selection per
-  contract (IN_APP remains default).
-- Repo tidy: future-scope skeleton READMEs, docs sweep, dead-code pass.
+- Notification: SMTP adapter + in-cluster mailpit; TICKET_ISSUED delivers
+  email to synthetic traveler mailboxes, asserted by e2e 08 (IN_APP remains
+  default elsewhere).
+- Repo tidy: future-scope skeleton READMEs, docs sweep, dead-code pass
+  (removed the unwired DLQ writers that produced bare-envelope entries).
+- `deploy/e2e/12-restart.sh` whole-cluster restart certification: first full
+  run 191/0.
+
+### DLQ audit wave (DONE)
+
+Live-cluster DLQ attribution under continuous load drove a taxonomy hardening
+pass across consumers (REQ-088..091 + payment/legacy-acl hotfixes): notification
+trigger contract validation, capacity sold-out fast-fail via
+`CapacityHoldFailed(NO_AVAILABLE_CAPACITY)`, booking-orchestration terminal-state
+triage, journey-order catch-all classification, payment zero-refund no-op, and
+kit-level fixes so no failure path is silently swallowed (java-kit, rust-kit).
+Certification: all monitored DLQ streams frozen for 16 minutes under loadgen;
+battery 73/0.
+
+### Wave 13 — observability & follow-ups (IN PROGRESS)
+
+- REQ-092/093: second-order DLQ findings (late provider confirmation on
+  capacity-failed bookings; finance-settlement refund-lag reconciliation path).
+- REQ-094: silent-swallow / log-quality audit for python-kit, ts-kit, go-kit.
+- REQ-095..098: OTel collector in the kind cluster plus OTLP traces from all
+  23 services through the five language kits (env-driven, zero-overhead when
+  unconfigured).
 
 ## Historical planning material
 
