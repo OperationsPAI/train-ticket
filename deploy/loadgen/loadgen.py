@@ -416,9 +416,12 @@ class CustomerSim:
                                ok=(200, 201), step="register-account")
         return await self.reg.add_account(account_id)
 
-    async def obtain_traveler(self, entry: dict) -> str:
-        if entry["travelers"] and not self.chance("p_new_traveler"):
-            tvl = self.rng.choice(entry["travelers"])
+    async def obtain_traveler(self, entry: dict, exclude: tuple = ()) -> str:
+        # journey-order rejects duplicate travelerRefs within one order, so
+        # multi-traveler journeys exclude already-picked travelers from reuse.
+        pool = [t for t in entry["travelers"] if t not in exclude]
+        if pool and not self.chance("p_new_traveler"):
+            tvl = self.rng.choice(pool)
             code, _ = await self.api.request("GET", "traveler-profile", f"/api/v1/travelers/{tvl}",
                                              ok=(), step="get-traveler")
             if code == 200:
@@ -476,7 +479,7 @@ class CustomerSim:
         entry = await self.login_or_register()
         travelers = [await self.obtain_traveler(entry)]
         if self.chance("p_second_traveler"):
-            travelers.append(await self.obtain_traveler(entry))
+            travelers.append(await self.obtain_traveler(entry, exclude=tuple(travelers)))
         channel = weighted_choice(self.rng, self.b["channels"])
         route = await self.pick_route()
 
