@@ -70,6 +70,7 @@ context.
 | 21 | `reporting` | `events:reporting` | MetricDefined, MetricVersionPublished, ReadModelRebuilt |
 | 21b | `legacy-acl` | `events:legacy-acl` | LegacyCommandMapped |
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped |
+| 23 | `waitlist` | `events:waitlist` | WaitlistRequestCreated, WaitlistPaymentAuthorizationRequested, WaitlistQueued, WaitlistMatchStarted, WaitlistHoldAuthorized, WaitlistFulfilled, WaitlistCancelled, WaitlistExpired |
 
 ### Dead-Letter Streams
 
@@ -269,6 +270,10 @@ plus notification/finance/reporting fan-in.
 | 46 | `events:admin-audit` | `customer-service` | RULING (2026-07-06): ManualActionExecuted/ManualActionRejected outcomes recorded on the support case timeline (ManualActionResultRecorded) |
 | 47 | `events:account` | `journey-order` | RULING (2026-07-06): AccountFrozen/AccountUnfrozen/AccountClosed gate order creation — frozen or closed accounts cannot place orders |
 | 48 | `events:legacy-acl` | `admin-audit` | RULING (2026-07-07): LegacyCommandMapped recorded as audit entries (DR-014 audit reference) |
+| 49 | `events:capacity-availability` | `waitlist` | CapacityReleased starts head-of-queue matching for candidate waitlist requests |
+| 50 | `events:journey-order` | `waitlist` | JourneyOrderConfirmed/JourneyOrderCancelled advance a matching request to FULFILLED or return it to QUEUED |
+| 51 | `events:waitlist` | `notification` | Waitlist success, failure/requeue, expiry, and cancellation user touchpoints |
+| 52 | `events:waitlist` | `reporting` | Waitlist lifecycle metrics and read models |
 
 ### Cross-Cutting Consumers
 
@@ -279,7 +284,7 @@ analytics, and cross-cutting concerns:
 |---|---|---|
 | `reporting` | All `events:*` streams | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales` | User-facing notification triggers |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers |
 
 ---
 
