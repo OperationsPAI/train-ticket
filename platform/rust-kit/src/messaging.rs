@@ -6,6 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
+#[cfg(feature = "redis-impl")]
+use opentelemetry::trace::{Span as OTelSpanTrait, Tracer};
+#[cfg(feature = "redis-impl")]
+use opentelemetry::{KeyValue, global};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -883,12 +887,21 @@ pub mod redis_runtime {
             if self.state.has_seen(&envelope.event_id) {
                 return ops.ack(&message.stream, group, &message.id).await;
             }
+            let tracer = global::tracer("rust-kit.messaging");
+            let mut span = tracer
+                .span_builder(envelope.event_type.clone())
+                .with_kind(opentelemetry::trace::SpanKind::Consumer)
+                .with_attributes(messaging_span_attributes(&message.stream, group, &envelope))
+                .start(&tracer);
             match handler(envelope.clone()).await {
                 Ok(()) => {
+                    span.end();
                     self.state.mark_consumed(&envelope.event_id);
                     ops.ack(&message.stream, group, &message.id).await
                 }
                 Err(HandlerError::Transient(reason)) => {
+                    span.set_status(opentelemetry::trace::Status::error(reason.clone()));
+                    span.end();
                     // Formerly a silent swallow (same class of bug java-kit had):
                     // without this line a retried-to-death message reaches the
                     // DLQ with no trace of what actually failed.
@@ -903,6 +916,8 @@ pub mod redis_runtime {
                     Ok(())
                 }
                 Err(HandlerError::Fatal(reason)) => {
+                    span.set_status(opentelemetry::trace::Status::error(reason.clone()));
+                    span.end();
                     self.state.mark_consumed(&envelope.event_id);
                     move_to_dlq(
                         ops,
@@ -987,6 +1002,20 @@ pub mod redis_runtime {
             self.subscribe_with_ops(&mut ops, streams, group, consumer_name, handler, false)
                 .await
         }
+    }
+
+    fn messaging_span_attributes(
+        stream: &str,
+        consumer_group: &str,
+        envelope: &EventEnvelope,
+    ) -> Vec<KeyValue> {
+        vec![
+            KeyValue::new("stream", stream.to_string()),
+            KeyValue::new("consumerGroup", consumer_group.to_string()),
+            KeyValue::new("eventId", envelope.event_id.clone()),
+            KeyValue::new("eventType", envelope.event_type.clone()),
+            KeyValue::new("correlationId", envelope.correlation_id.clone()),
+        ]
     }
 
     #[derive(Debug, Clone)]
@@ -1280,6 +1309,9 @@ pub mod redis_runtime {
         #[tokio::test]
         async fn subscription_processing_fatal_handler_writes_dlq_metadata_warn_log_and_acks() {
             let mut logger = logtest::Logger::start();
+            let exporter = opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build();
+            let exported = exporter.clone();
+            let otel_guard = crate::otel::init_with_exporter("rust-kit-test", exporter);
             let subscriber = RedisEventSubscriber {
                 client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
                 state: Arc::new(SubscriberState::new()),
@@ -1349,8 +1381,41 @@ pub mod redis_runtime {
                 )]
             );
             assert!(subscriber.state.has_seen(&envelope.event_id));
-            let log = logger.pop().expect("expected WARN DLQ log");
-            assert_eq!(log.level(), log::Level::Warn);
+            otel_guard.force_flush().expect("flush messaging span");
+            let spans = exported.get_finished_spans().expect("finished spans");
+            let span = spans
+                .iter()
+                .find(|span| span.name == "PoisonEvent")
+                .expect("messaging span");
+            let attributes: std::collections::HashMap<_, _> = span
+                .attributes
+                .iter()
+                .map(|attribute| (attribute.key.as_str(), attribute.value.to_string()))
+                .collect();
+            assert_eq!(
+                attributes.get("stream"),
+                Some(&"events:payment".to_string())
+            );
+            assert_eq!(
+                attributes.get("consumerGroup"),
+                Some(&"journey-order".to_string())
+            );
+            assert_eq!(attributes.get("eventId"), Some(&envelope.event_id));
+            assert_eq!(attributes.get("eventType"), Some(&envelope.event_type));
+            assert_eq!(
+                attributes.get("correlationId"),
+                Some(&envelope.correlation_id)
+            );
+            assert!(matches!(
+                span.status,
+                opentelemetry::trace::Status::Error { .. }
+            ));
+            let log = loop {
+                let log = logger.pop().expect("expected WARN DLQ log");
+                if log.level() == log::Level::Warn {
+                    break log;
+                }
+            };
             assert!(log.args().contains("events:payment"));
             assert!(log.args().contains(&envelope.event_id));
             assert!(log.args().contains("poison root cause"));
