@@ -221,7 +221,11 @@ impl PostgresWaitlistService {
 
         // Tx2: record the outcome and claim the event. Transient errors
         // return before any of this, leaving the event unclaimed for retry.
-        if let Err(FulfillmentClientError::Transient(message)) = outcome {
+        if let Err(
+            FulfillmentClientError::Transient(message)
+            | FulfillmentClientError::ProjectionLag(message),
+        ) = outcome
+        {
             return Err(WaitlistError::Unavailable(message));
         }
         let mut tx = self.pool().begin().await.map_err(db_error)?;
@@ -252,7 +256,9 @@ impl PostgresWaitlistService {
                 )
                 .await?;
             }
-            Err(FulfillmentClientError::Transient(_)) => unreachable!("handled above"),
+            Err(
+                FulfillmentClientError::Transient(_) | FulfillmentClientError::ProjectionLag(_),
+            ) => unreachable!("handled above"),
         }
         rust_kit::storage::mark_event_processing(
             &mut tx,

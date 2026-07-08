@@ -58,7 +58,7 @@ seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
 
 find_itinerary_for_segment() { # traveler segment -> sets FOUND_ITIN
   local tvl=$1 seg=$2 itin=""
-  for attempt in $(seq 1 10); do
+  for attempt in $(seq 1 20); do
     req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"2026-08-02\",\"travelerRefs\":[\"$tvl\"],\"channel\":\"WEB\"}"
     if [ "$LAST_CODE" = 200 ]; then
       itin=$(printf '%s' "$RESP" | SEG_REF="$seg" python3 -c '
@@ -214,7 +214,7 @@ check_code 201 "open refund to release capacity"
 CASE_F=$(jget "['caseId']")
 req POST post-sales "/api/v1/post-sales-cases/$CASE_F/evaluate" '{}'; check_code 200 "evaluate refund"
 req POST post-sales "/api/v1/post-sales-cases/$CASE_F/approve" '{}'; check_code 200 "approve refund"
-ST_F=$(poll_waitlist_status "$WLR_F" FULFILLED 30 5)
+ST_F=$(poll_waitlist_status "$WLR_F" FULFILLED 36 5)
 [ "$ST_F" = FULFILLED ] && ok "waitlist fulfilled after capacity release" || bad "waitlist did not fulfill ($ST_F)"
 req GET waitlist "/api/v1/waitlist-requests/$WLR_F"
 WL_ORDER=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('journeyOrderRef') or d.get('journeyOrderId') or '')" 2>/dev/null)

@@ -113,7 +113,10 @@ impl InMemoryWaitlistService {
                 }
                 Ok(())
             }
-            Err(FulfillmentClientError::Transient(message)) => {
+            Err(
+                FulfillmentClientError::Transient(message)
+                | FulfillmentClientError::ProjectionLag(message),
+            ) => {
                 Err(WaitlistError::Unavailable(message))
             }
             Err(FulfillmentClientError::Rejected(message)) => {
@@ -559,6 +562,9 @@ pub trait FulfillmentClient: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FulfillmentClientError {
     Transient(String),
+    /// A downstream 4xx caused by an un-consumed upstream snapshot; retried
+    /// in-process with bounded backoff before escalating to Transient.
+    ProjectionLag(String),
     Rejected(String),
 }
 #[derive(Default)]
@@ -710,7 +716,40 @@ impl FulfillmentClient for ReqwestFulfillmentClient {
     }
 }
 impl ReqwestFulfillmentClient {
+    /// Bounded in-process retries for projection lag (same ruling as
+    /// legacy-acl): redelivery-based retry costs a pending-claim cycle per
+    /// attempt, far slower than the snapshot propagation it waits for.
     async fn post_for_json(
+        &self,
+        base_url: &str,
+        path: &str,
+        idempotency_key: &str,
+        body: Value,
+        service_name: &str,
+    ) -> Result<Value, FulfillmentClientError> {
+        const PROJECTION_RETRY_DELAYS_MS: [u64; 5] = [500, 1000, 2000, 4000, 8000];
+        let mut attempt = 0usize;
+        loop {
+            match self
+                .post_for_json_once(base_url, path, idempotency_key, body.clone(), service_name)
+                .await
+            {
+                Err(FulfillmentClientError::ProjectionLag(message)) => {
+                    if attempt >= PROJECTION_RETRY_DELAYS_MS.len() {
+                        return Err(FulfillmentClientError::Transient(message));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        PROJECTION_RETRY_DELAYS_MS[attempt],
+                    ))
+                    .await;
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn post_for_json_once(
         &self,
         base_url: &str,
         path: &str,
@@ -756,7 +795,7 @@ impl ReqwestFulfillmentClient {
                 "MISSING_TRAVELER_SNAPSHOT",
             ];
             if PROJECTION_LAG_CODES.contains(&domain_code.as_str()) {
-                return Err(FulfillmentClientError::Transient(format!(
+                return Err(FulfillmentClientError::ProjectionLag(format!(
                     "{service_name} projection lag: {domain_code}"
                 )));
             }
