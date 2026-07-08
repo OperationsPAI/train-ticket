@@ -51,6 +51,7 @@ public final class DomainEventEnvelopeMapper {
         payload.put("amount", moneyPayload(event.amount()));
         payload.put("recognitionPolicyVersion", event.recognitionPolicyVersion());
         payload.put("sourceEventId", event.sourceEventId());
+        payload.put("metadata", metadataPayload(event));
         return payload;
     }
 
@@ -63,6 +64,7 @@ public final class DomainEventEnvelopeMapper {
         payload.put("amount", moneyPayload(event.amount()));
         payload.put("reversalReason", event.reversalReason());
         payload.put("sourceEventId", event.sourceEventId());
+        payload.put("metadata", metadataPayload(event));
         return payload;
     }
 
@@ -75,6 +77,7 @@ public final class DomainEventEnvelopeMapper {
         payload.put("expectedAmount", moneyPayload(event.expectedAmount()));
         payload.put("actualAmount", moneyPayload(event.actualAmount()));
         payload.put("description", event.description());
+        payload.put("metadata", metadataPayload(event));
         return payload;
     }
 
@@ -83,6 +86,7 @@ public final class DomainEventEnvelopeMapper {
         payload.put("reconciliationCaseId", event.reconciliationCaseId());
         payload.put("resolution", event.resolution());
         payload.put("resolutionNote", event.resolutionNote());
+        payload.put("metadata", metadataPayload(event));
         return payload;
     }
 
@@ -96,6 +100,7 @@ public final class DomainEventEnvelopeMapper {
         payload.put("actualAmount", moneyPayload(event.actualAmount()));
         payload.put("matchedRevenueRecognitionIds", event.matchedRevenueRecognitionIds());
         payload.put("sourceEventIds", event.sourceEventIds());
+        payload.put("metadata", metadataPayload(event));
         return payload;
     }
 
@@ -107,6 +112,7 @@ public final class DomainEventEnvelopeMapper {
         payload.put("totalAmount", moneyPayload(event.totalAmount()));
         payload.put("revenueRecognitionIds", event.revenueRecognitionIds());
         payload.put("generatedAt", event.generatedAt().toString());
+        payload.put("metadata", metadataPayload(event));
         return payload;
     }
 
@@ -115,7 +121,20 @@ public final class DomainEventEnvelopeMapper {
         payload.put("settlementViewId", event.settlementViewId());
         payload.put("viewType", event.viewType());
         payload.put("eventCount", event.eventCount());
+        payload.put("metadata", metadataPayload(event));
         return payload;
+    }
+
+    private static Map<String, Object> metadataPayload(FinanceSettlementEvent event) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("eventId", event.eventId());
+        metadata.put("occurredAt", event.occurredAt().toString());
+        metadata.put("sourceCommandId", event.sourceCommandId());
+        metadata.put("causationId", event.causationId());
+        metadata.put("correlationId", event.correlationId());
+        metadata.put("schemaVersion", event.schemaVersion());
+        metadata.put("attributes", event.attributes());
+        return metadata;
     }
 
     public static Map<String, Object> moneyPayload(Money money) {
