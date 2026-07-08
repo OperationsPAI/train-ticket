@@ -1,62 +1,36 @@
 # Provider Integration — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-07-08
 
 ## Overview
 
 Provider Integration manages external provider (supplier) communication. It
 translates internal commands to provider-specific protocols, handles
-idempotency, and normalizes responses. Endpoints in this section are
-**internal** — called by Booking Orchestration, not end-user clients.
+idempotency, and normalizes responses. Commands arrive on the event bus —
+there are no HTTP command endpoints (see Command Surface below).
 
 
 Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
 timestamps, and Money.
-## Internal Endpoints
+## Command Surface (ruling 2026-07-08, REQ-105)
 
-### Request Provider Reservation
+Provider Integration has **no HTTP command endpoints**. Its command surface
+is event-driven only:
 
-**POST** `/api/v1/internal/provider-reservations`
+- Reserve: consumes `SegmentReservationRequested` from
+  `events:booking-orchestration`.
+- Cancel: consumes `SegmentBookingCancelled` from
+  `events:booking-orchestration` (no-op ack when no provider reservation
+  exists for the segment booking).
 
-**Idempotency:** REQUIRED
+The former internal HTTP endpoints (`POST /api/v1/internal/
+provider-reservations` and `.../{segmentBookingId}/cancel`) were removed:
+the audit in `docs/08-contracts/provider-integration-http-endpoint-audit.md`
+found no callers anywhere, and a second HTTP write path would bypass the
+saga's event-driven bookkeeping. Manual intervention goes through
+admin-audit manual actions, not direct provider commands.
 
-**Request:**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `segmentBookingId` | string | yes | Platform segment booking ID (`sb-<uuid>`). |
-| `providerConfigRef` | string | yes | Provider configuration reference. |
-| `reservationPayload` | object | yes | Provider-specific reservation payload. |
-
-> Idempotency uses the standard `Idempotency-Key` header per
-> README.md — it is NOT a request-body field. (The `idempotencyKey`
-> field in events/provider-integration.md applies only to bus-
-> delivered commands, which have no HTTP headers.)
-
-**Response (202):**
-
-| Field | Type | Description |
-|---|---|---|
-| `segmentBookingId` | string | Segment booking ID. |
-| `status` | enum | `PENDING`, `CONFIRMED`, `FAILED`, `TIMED_OUT` |
-| `providerReference` | string | Provider's confirmation reference (if confirmed). |
-
-**Error codes:** `VALIDATION_FAILED`, `UNAVAILABLE`
-
-### Cancel Provider Reservation
-
-**POST** `/api/v1/internal/provider-reservations/{segmentBookingId}/cancel`
-
-**Idempotency:** REQUIRED
-
-**Response (200):**
-
-| Field | Type | Description |
-|---|---|---|
-| `segmentBookingId` | string | Segment booking ID. |
-| `cancellationStatus` | enum | `CANCELLED`, `PENDING`, `FAILED` |
-
-**Error codes:** `NOT_FOUND`, `UNAVAILABLE`
+The HTTP surface is runtime-only: health, readiness, and metadata.
 
 ## Bus-only commands
 

@@ -15,7 +15,6 @@ import (
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/config"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/domain"
-	apphttp "github.com/trainticket/greenfield/services/provider-integration/internal/http"
 )
 
 func main() {
@@ -69,7 +68,6 @@ func main() {
 	}
 	profile := domain.Profile()
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
-	apphttp.NewHandler(service, storage.NewIdempotencyStore(pool)).Register(router)
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + cfg.HTTPPort, Handler: router})
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
