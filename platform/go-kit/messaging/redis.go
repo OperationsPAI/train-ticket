@@ -212,7 +212,13 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 	start := "0-0"
 	for {
 		messages, next, err := b.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{Stream: stream, Group: group, Consumer: consumer, MinIdle: b.cfg.RecoveryMinIdle, Start: start, Count: 100}).Result()
-		if err != nil || len(messages) == 0 {
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("WARN service=%s stream=%s eventId=%s deliveries=%d recovery failed: %T: %v", group, stream, "unknown", int64(0), err, err)
+			}
+			return
+		}
+		if len(messages) == 0 {
 			return
 		}
 		for _, m := range messages {
@@ -237,12 +243,15 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 		return
 	}
 	if b.dedup != nil && b.dedup.Seen(envelope.EventID) {
+		log.Printf("WARN service=%s stream=%s eventId=%s deliveries=%d duplicate event already processed; acking without handler", group, stream, envelope.EventID, attempts)
 		_ = b.client.XAck(ctx, stream, group, message.ID).Err()
 		return
 	}
 	if err := handler(ctx, envelope); err != nil {
 		if IsFatalHandlerError(err) || attempts >= MaxDeliveryAttempts {
 			b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, err, attempts)
+		} else {
+			log.Printf("WARN service=%s stream=%s eventId=%s deliveries=%d handler transient failure; message stays pending for retry: %T: %v", group, stream, envelope.EventID, attempts, err, err)
 		}
 		return
 	}
@@ -260,24 +269,30 @@ func (b *RedisEventBus) deliveryAttempts(ctx context.Context, stream, group, id 
 }
 func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, consumer, id, raw string, reason any, attempts int64) {
 	failureReason := truncateFailureReason(reason)
-	log.Printf("WARN service=%s stream=%s eventId=%s failureReason=%s moving message to DLQ", group, stream, eventIDForLog(raw), failureReason)
+	safeAttempts := maxInt64(1, attempts)
+	deadLetteredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	log.Printf("WARN service=%s stream=%s eventId=%s deliveries=%d consumerGroup=%s failureReason=%s attempts=%d deadLetteredAt=%s moving message to DLQ", group, stream, eventIDForLog(raw), safeAttempts, group, failureReason, safeAttempts, deadLetteredAt)
 	_ = b.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream + DeadLetterSuffix,
 		MaxLen: MaxLen,
 		Approx: true,
-		Values: dlqFields(raw, group, consumer, failureReason, attempts),
+		Values: dlqFieldsWithTimestamp(raw, group, consumer, failureReason, safeAttempts, deadLetteredAt),
 	}).Err()
 	_ = b.client.XAck(ctx, stream, group, id).Err()
 }
 
 func dlqFields(raw, group, consumer, failureReason string, attempts int64) map[string]any {
+	return dlqFieldsWithTimestamp(raw, group, consumer, failureReason, attempts, time.Now().UTC().Format(time.RFC3339Nano))
+}
+
+func dlqFieldsWithTimestamp(raw, group, consumer, failureReason string, attempts int64, deadLetteredAt string) map[string]any {
 	return map[string]any{
 		EnvelopeField:    raw,
 		"consumerGroup":  group,
 		"consumerName":   consumer,
 		"failureReason":  failureReason,
 		"attempts":       fmt.Sprintf("%d", maxInt64(1, attempts)),
-		"deadLetteredAt": time.Now().UTC().Format(time.RFC3339Nano),
+		"deadLetteredAt": deadLetteredAt,
 	}
 }
 

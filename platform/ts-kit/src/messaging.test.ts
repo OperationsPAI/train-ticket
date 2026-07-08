@@ -133,8 +133,64 @@ describe("RedisEventSubscriber DLQ observability", () => {
       service: "ts-kit",
       stream: "events:ts-kit-test",
       eventId: envelope.eventId,
+      deliveries: 1,
+      consumerGroup: "ts-kit",
       failureReason: "HandlerError: bad payload",
+      attempts: 1,
+      deadLetteredAt: args[16],
       message: "moving message to DLQ",
     });
+  });
+});
+
+describe("RedisEventSubscriber retry and ack-skip observability", () => {
+  it("warns when transient handler errors stay pending for retry", async () => {
+    const redis = {
+      xack: async () => { throw new Error("transient retry should not ack"); },
+      xadd: async () => { throw new Error("transient retry should not DLQ"); },
+    };
+    const subscriber = new RedisEventSubscriber(redis as never);
+    const envelope = createEventEnvelope({ eventType: "Retryable", producer: "ts-kit-test", payload: {} });
+    const entry: [string, string[]] = ["1-0", ["envelope", JSON.stringify(envelope)]];
+    const warnings: unknown[] = [];
+    const originalWarn = console.warn;
+    console.warn = (value?: unknown) => { warnings.push(value); };
+    try {
+      await (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+        .processEntry("events:ts-kit-test", "ts-kit", "consumer-a", entry, () => { throw new HandlerError("transient", "redis unavailable"); });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.equal((warnings[0] as { message?: string }).message, "handler transient failure; message stays pending for retry");
+    assert.equal((warnings[0] as { eventId?: string }).eventId, envelope.eventId);
+  });
+
+  it("warns when duplicate events are acked without invoking the handler", async () => {
+    const xacks: unknown[][] = [];
+    const redis = {
+      xack: async (...args: unknown[]) => { xacks.push(args); return 1; },
+      xadd: async () => { throw new Error("duplicate ack skip should not DLQ"); },
+    };
+    const subscriber = new RedisEventSubscriber(redis as never);
+    const envelope = createEventEnvelope({ eventType: "Duplicate", producer: "ts-kit-test", payload: {} });
+    const entry: [string, string[]] = ["1-0", ["envelope", JSON.stringify(envelope)]];
+    const warnings: unknown[] = [];
+    const originalWarn = console.warn;
+    console.warn = (value?: unknown) => { warnings.push(value); };
+    try {
+      await (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+        .processEntry("events:ts-kit-test", "ts-kit", "consumer-a", entry, () => undefined);
+      await (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+        .processEntry("events:ts-kit-test", "ts-kit", "consumer-a", entry, () => { throw new Error("handler must be skipped"); });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(xacks.length, 2);
+    assert.equal(warnings.length, 1);
+    assert.equal((warnings[0] as { message?: string }).message, "duplicate event already processed; acking without handler");
+    assert.equal((warnings[0] as { eventId?: string }).eventId, envelope.eventId);
   });
 });
