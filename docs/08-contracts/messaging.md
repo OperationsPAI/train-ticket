@@ -71,6 +71,7 @@ context.
 | 21b | `legacy-acl` | `events:legacy-acl` | LegacyCommandMapped |
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped |
 | 23 | `waitlist` | `events:waitlist` | WaitlistRequestCreated, WaitlistPaymentAuthorizationRequested, WaitlistQueued, WaitlistMatchStarted, WaitlistHoldAuthorized, WaitlistFulfilled, WaitlistCancelled, WaitlistExpired |
+| 24 | `dispatch` | `events:dispatch` | DispatchRequested, DriverAssigned, DriverEtaUpdated, DriverArrived, RideStarted, RideEnded, DriverCancelled, DispatchUserCancelled, DispatchNoShowRecorded |
 
 ### Dead-Letter Streams
 
@@ -282,9 +283,19 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All `events:*` streams | Business metrics, funnel analysis, operational dashboards |
+| `reporting` | All active `events:*` streams except `events:dispatch` until Dispatch's deferred-consumer activation wave | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation |
 | `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers |
+
+### Deferred Dispatch Subscriptions
+
+`events:dispatch` is registered as a produced stream in this contract, but has no
+required consumer groups in this activation wave. Immediate driver/vehicle/ETA
+supply is simulated through internal Dispatch ops HTTP commands, so
+`provider-integration` does not subscribe or publish Dispatch provider events.
+Fulfillment handoff consumption of `DriverArrived`, `RideStarted`, and
+`RideEnded` is deferred; Post Sales, Notification, and Reporting subscriptions to
+Dispatch lifecycle events are likewise deferred until their implementation waves.
 
 ---
 

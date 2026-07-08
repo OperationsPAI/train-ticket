@@ -149,6 +149,8 @@ correlation IDs.
 | 20 | `customer-service.md` | Customer Service | typescript |
 | 21 | `finance-settlement.md` | Finance & Settlement | java |
 | 22 | `reporting.md` | Reporting | python |
+| 23 | `waitlist.md` | Waitlist | deferred |
+| 24 | `dispatch.md` | Dispatch | deferred |
 
 ## Open Issues
 
