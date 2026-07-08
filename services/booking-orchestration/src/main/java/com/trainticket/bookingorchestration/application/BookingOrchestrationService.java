@@ -130,6 +130,13 @@ public class BookingOrchestrationService {
         }
     }
 
+    /** Deliberately outside the FATAL classification: maps to TransientError. */
+    private static final class RetryLaterException extends RuntimeException {
+        RetryLaterException(String message) {
+            super(message);
+        }
+    }
+
     private static void rollbackCurrentTransactionIfActive() {
         try {
             TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
@@ -351,6 +358,29 @@ public class BookingOrchestrationService {
             // an unknown local ref is an ack-skip, not a poison pill.
             LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: unknown segment booking {}", segmentBookingId);
             return;
+        }
+        SegmentBooking existing = segmentBookings.findById(segmentBookingId)
+            .map(SegmentBookingRepository.SegmentBookingRecord::booking).orElse(null);
+        if (existing != null) {
+            String bookingStatus = existing.status().name();
+            if (bookingStatus.equals("FAILED") || bookingStatus.equals("CANCELLED")) {
+                // e.g. capacity sold out failed the booking but the legacy
+                // facade still drove ticket issuance; nothing to mark here.
+                LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: segment booking already terminal");
+                return;
+            }
+            if (bookingStatus.equals("TICKETED")
+                && !existing.entitlementId().map(entitlementId::equals).orElse(false)) {
+                // Change flow reissued a replacement entitlement for a booking
+                // this saga already ticketed; entitlement context owns the truth.
+                LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: booking already ticketed with a different entitlement");
+                return;
+            }
+            if (bookingStatus.equals("REQUESTED") || bookingStatus.equals("HOLDING")) {
+                // Entitlement can outrun the provider confirmation; this is a
+                // genuine ordering race, so retry rather than skip or poison.
+                throw new RetryLaterException("EntitlementIssued arrived before reservation confirmation");
+            }
         }
         markTicketed(sagaId, new MarkTicketedCommand(segmentBookingId, entitlementId),
             "event:" + causationId + ":" + segmentBookingId, correlationId);
