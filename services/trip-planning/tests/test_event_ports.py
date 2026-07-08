@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from trip_planning import create_app
 from trip_planning.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
 from trip_planning.events import EventEnvelope, PublishFailed
+from train_ticket_platform.storage import OptimisticConcurrencyError
 
 
 CAPTURED = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
@@ -98,6 +99,53 @@ class EventPublisherTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(store.saved_inside_transaction)
         self.assertTrue(publisher.published_inside_transaction)
+
+    def test_search_returns_success_when_snapshot_write_loses_occ_race(self) -> None:
+        class ConflictingStore:
+            def transaction(self):
+                class Context:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc, traceback):
+                        return False
+
+                return Context()
+
+            def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[object]:
+                return []
+
+            def save_itinerary(self, itinerary: dict[str, object]) -> None:
+                raise OptimisticConcurrencyError("concurrent update detected for itin_4616aaaf830a1f7d")
+
+            def load(self) -> None:
+                return None
+
+        import trip_planning.api as api
+
+        store = ConflictingStore()
+        publisher = FakeEventPublisher()
+        original = api._active_plan_store
+        api._active_plan_store = store
+        try:
+            client = TestClient(create_app(event_publisher=publisher, start_event_subscriber=False))
+            api._active_plan_store = store
+            response = client.post(
+                "/api/v1/itineraries/search",
+                json={
+                    "originRef": "station:A",
+                    "destinationRef": "station:B",
+                    "departureDate": "2026-08-01",
+                    "travelerRefs": ["tvl-1"],
+                    "channel": "WEB",
+                },
+            )
+        finally:
+            api._active_plan_store = original
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["itineraries"]), 1)
+        self.assertEqual(len(publisher.published), 1)
 
     def test_fake_publisher_records_events(self) -> None:
         publisher = FakeEventPublisher()

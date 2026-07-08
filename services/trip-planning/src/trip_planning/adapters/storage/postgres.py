@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
-from train_ticket_platform.storage import OutboxAppender, SnapshotRepository
+from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
 from trip_planning.domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint
 from trip_planning.events import EventEnvelope
 
@@ -163,10 +163,24 @@ class PostgresPlanStore:
 
     def save_itinerary(self, itinerary: Mapping[str, object]) -> None:
         ref = str(itinerary["itineraryRef"])
+        payload = dict(itinerary)
 
         def write(conn: Any) -> None:
-            snap = self._itineraries.get(conn, ref)
-            self._itineraries.save(conn, ref, dict(itinerary), None if snap is None else int(snap[0]))
+            for _attempt in range(3):
+                snap = self._itineraries.get(conn, ref)
+                if snap is not None and dict(snap[1]) == payload:
+                    return
+                try:
+                    self._itineraries.save(conn, ref, payload, None if snap is None else int(snap[0]))
+                    return
+                except OptimisticConcurrencyError:
+                    # Search writes are durable read-model snapshots keyed by a
+                    # deterministic itinerary id. Concurrent searches can legitimately
+                    # race to persist the same candidate; retry with the winning version
+                    # and fall back to the already-readable snapshot below.
+                    continue
+            if self._itineraries.get(conn, ref) is None:
+                raise OptimisticConcurrencyError(f"concurrent update detected for {ref}")
 
         self.with_connection(write)
 
