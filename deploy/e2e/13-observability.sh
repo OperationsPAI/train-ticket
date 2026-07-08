@@ -20,21 +20,9 @@ api_req() {
   RESP=$(echo "$out" | sed '$d')
 }
 
-tracez_contains_span_signal() {
-  printf '%s' "$RESP" | python3 -c '
-import re
-import sys
-body = sys.stdin.read()
-if "POST /api/v1/itineraries/search" in body or "/api/v1/itineraries/search" in body:
-    sys.exit(0)
-for match in re.finditer(r"(?:Spans|Span Count|Total Spans|Error Spans)</td>\s*<td[^>]*>\s*([0-9]+)", body, re.IGNORECASE):
-    if int(match.group(1)) > 0:
-        sys.exit(0)
-for match in re.finditer(r">([1-9][0-9]*)</td>", body):
-    if int(match.group(1)) > 0:
-        sys.exit(0)
-sys.exit(1)
-'
+accepted_spans_total() {
+  # Sum of otelcol_receiver_accepted_spans across transports; empty on error.
+  printf '%s' "$RESP" | awk '/^otelcol_receiver_accepted_spans/ { sum += $NF } END { if (NR > 0) printf "%.0f", sum }'
 }
 
 echo "== 1. otel collector health"
@@ -46,19 +34,24 @@ curl_raw http://otel-collector:55679/debug/tracez
 if [ "$LAST_CODE" = "200" ]; then ok "zpages tracez HTTP 200"; else bad "zpages tracez HTTP got $LAST_CODE"; fi
 if [ -n "$RESP" ]; then ok "zpages tracez body non-empty"; else bad "zpages tracez body is empty"; fi
 
-echo "== 3. trigger trip-planning request"
+echo "== 3. span flow: receiver counter must grow after real traffic"
+curl_raw http://otel-collector:8888/metrics
+BEFORE=$(accepted_spans_total)
+if [ "$LAST_CODE" = "200" ] && [ -n "$BEFORE" ]; then ok "collector metrics endpoint reports accepted spans ($BEFORE)"; else bad "collector metrics endpoint unavailable (HTTP $LAST_CODE)"; BEFORE=0; fi
+
 api_req POST trip-planning /api/v1/itineraries/search '{"originRef":"obs-origin","destinationRef":"obs-destination","departureDate":"2026-08-01","travelerRefs":["obs-traveler"],"channel":"WEB"}'
 check_code 200 "search itineraries for trace smoke"
 
 SPAN_FOUND=0
-for attempt in 1 2 3 4 5 6; do
+for attempt in 1 2 3 4 5 6 7 8; do
   sleep 2
-  curl_raw http://otel-collector:55679/debug/tracez
-  if [ "$LAST_CODE" = "200" ] && [ -n "$RESP" ] && tracez_contains_span_signal; then
+  curl_raw http://otel-collector:8888/metrics
+  AFTER=$(accepted_spans_total)
+  if [ "$LAST_CODE" = "200" ] && [ -n "$AFTER" ] && [ "$AFTER" -gt "$BEFORE" ] 2>/dev/null; then
     SPAN_FOUND=1
     break
   fi
 done
-if [ "$SPAN_FOUND" = "1" ]; then ok "zpages tracez shows span activity"; else bad "zpages tracez did not show span activity after search"; fi
+if [ "$SPAN_FOUND" = "1" ]; then ok "accepted-span counter grew after search ($BEFORE -> $AFTER)"; else bad "accepted-span counter did not grow after search (before=$BEFORE after=${AFTER:-n/a})"; fi
 
 summary

@@ -106,6 +106,8 @@ spec:
               containerPort: 13133
             - name: zpages
               containerPort: 55679
+            - name: metrics
+              containerPort: 8888
           resources:
             requests:
               cpu: 50m
@@ -158,6 +160,9 @@ spec:
     - name: health
       port: 13133
       targetPort: health
+    - name: metrics
+      port: 8888
+      targetPort: metrics
     - name: zpages
       port: 55679
       targetPort: zpages
