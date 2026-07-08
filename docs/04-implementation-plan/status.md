@@ -79,3 +79,18 @@ battery 73/0.
 Earlier revisions of this file tracked the pre-implementation WP-01 brief cycle
 (rejections/blockers). That content is obsolete — the merged PR trail on
 `refactor/greenfield-ddd` is the historical record.
+
+### Wave 14 — distributed tracing & coverage tail (DONE)
+
+- Contract ruling: optional traceparent/tracestate on the wire envelope
+  (additive, observability-only). All five kits inject at envelope creation
+  and parent consumer spans from it (REQ-099/100/101/101B). Certified live:
+  single trace spanning 11 services; Go-bridged trace spanning 9.
+- REQ-102: trip-planning lifecycle flake fix + 13-observability.sh smoke.
+- REQ-103: repo-wide HTTP endpoint drift audit; the fulfillment completions
+  endpoint was the only drift, now documented.
+- REQ-105: provider-integration internal HTTP command endpoints removed by
+  ruling (dead API; command surface is event-only).
+- REQ-104: loadgen long-tail prober — real-ID read probes, payment-cancel /
+  order-cancel / support lifecycle branches, low-frequency ops actor
+  (reporting, finance reads, supplier-catalog).

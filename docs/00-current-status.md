@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-08
 
-## Status: Phase 1 complete; Phase 2 hardening complete (persistence, channels, DLQ audit, observability)
+## Status: Phase 1 complete; Phase 2 hardening complete (persistence, channels, DLQ audit, observability, tracing, coverage)
 
 The greenfield DDD rewrite is a working, end-to-end-verified system. All
 Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
@@ -89,12 +89,22 @@ refund-lag reconciliation) and the cross-kit silent-swallow audit landed in
 the same wave. DLQ streams are trimmed to zero — the monitoring baseline is
 zero-growth-from-zero.
 
+Wave 14 completed distributed tracing end-to-end: optional W3C
+traceparent/tracestate on the wire envelope (messaging.md ruling), injected
+by all five language kits at envelope creation (outbox-safe) and used as the
+remote parent of consumer spans — a single business trace now spans both the
+HTTP hop and every event hop. Follow-up work closed the coverage tail: a
+repo-wide HTTP contract-drift audit (one drift found and documented), removal
+of provider-integration's dead internal HTTP command endpoints (its command
+surface is event-only by ruling), a long-tail loadgen prober (real-ID read
+probes, lifecycle branches, low-frequency ops actor), and an observability
+e2e smoke (13-observability.sh, receiver-counter based).
+
 ## Current backlog
 
-1. Trace context propagation through event envelopes (traceparent in
-   envelope metadata) — deferred pending a contract ruling.
-2. Replace the collector debug exporter with a queryable backend when the
-   need arises (contract stays OTLP).
+Nothing queued. Discretionary next steps when needed: activate a
+future-scope skeleton domain; replace the collector debug exporter with a
+queryable backend (service-side contract stays OTLP).
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
 boundary; legacy-acl rebook books the first leg only (caller follows up) — both
