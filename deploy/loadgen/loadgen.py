@@ -492,6 +492,7 @@ class CustomerSim:
         self.poll_interval = float(cfg["polling"]["interval_seconds"])
         self.staff_wait = float(cfg["behavior"].get("staff_wait_seconds", 90))
         self.long_tail = cfg.get("long_tail", {})
+        self.wallet_cfg = cfg.get("wallet_promotion", {})
         self.redis = aioredis.from_url(cfg["target"]["redis_url"], decode_responses=True)
 
     async def think(self) -> None:
@@ -679,12 +680,13 @@ class CustomerSim:
             entitlement=ent, total_minor=total_minor, offer=offer.get("offerId", ""),
             payment_intent=intent.get("paymentIntentId", ""), itinerary=found.get("itinerary", ""),
             quote=quote.get("quoteId", "")))
+        wallet_refs = await self.maybe_wallet_purchase_benefit(entry["account_id"])
         await self.maybe_read_probe({
             "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
             "payment_intent": intent.get("paymentIntentId"), "entitlement": ent,
             "itinerary": found.get("itinerary"), "quote": quote.get("quoteId"),
             "service": found.get("service"), "place": route.get("origin_place"),
-            "node": found.get("origin_node"),
+            "node": found.get("origin_node"), **wallet_refs,
         })
         return "purchased"
 
@@ -931,6 +933,45 @@ class CustomerSim:
             page = await self.assert_get("waitlist", f"/api/v1/waitlist-requests?travelerRef={quote(refs['waitlist_traveler'])}&limit=20&offset=0", None, None, "tail-list-waitlist")
             self.assert_list_contains(page, "waitlistRequestId", refs["waitlist"], "tail-list-waitlist")
             await self.assert_get("waitlist", f"/api/v1/waitlist-requests/{quote(refs['waitlist'])}", "waitlistRequestId", refs["waitlist"], "tail-get-waitlist")
+        if refs.get("benefit"):
+            await self.assert_get("wallet-promotion", f"/api/v1/benefits/{quote(refs['benefit'])}", "benefitId", refs["benefit"], "tail-get-benefit")
+        if refs.get("wallet_account"):
+            await self.assert_get("wallet-promotion", f"/api/v1/wallet-accounts/{quote(refs['wallet_account'])}", "accountId", refs["wallet_account"], "tail-get-wallet-account")
+            page = await self.assert_get("wallet-promotion", f"/api/v1/benefits?byAccountId={quote(refs['wallet_account'])}&limit=20&offset=0", None, None, "tail-list-benefits")
+            if refs.get("benefit"):
+                self.assert_list_contains(page, "benefitId", refs["benefit"], "tail-list-benefits")
+
+
+    async def maybe_wallet_purchase_benefit(self, account_id: str) -> dict[str, str]:
+        if self.rng.random() >= float(self.wallet_cfg.get("p_purchase_reserve_redeem", 0.02)):
+            return {}
+        issued = await self.issue_wallet_benefit(account_id, int(self.wallet_cfg.get("purchase_benefit_minor_units", 100)))
+        benefit_id = issued["benefitId"]
+        ref = f"ord-{uuid7()}"
+        amount = issued.get("availableAmount", {}).get("minorUnits", int(self.wallet_cfg.get("purchase_benefit_minor_units", 100)))
+        await self.api.request("POST", "wallet-promotion", f"/api/v1/benefits/{quote(benefit_id)}/reserve",
+                               {"amount": {"currency": "CNY", "minorUnits": amount}, "reservationRef": ref,
+                                "reservationExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "businessReason": {"reasonType": "ORDER_PURCHASE", "reasonCode": "LOADGEN_BENEFIT_RESERVE", "referenceType": "ORDER", "referenceId": ref}},
+                               ok=(200,), step="wallet-reserve")
+        await self.api.request("POST", "wallet-promotion", f"/api/v1/benefits/{quote(benefit_id)}/redeem",
+                               {"amount": {"currency": "CNY", "minorUnits": amount}, "redemptionRef": ref, "reservationRef": ref,
+                                "businessReason": {"reasonType": "ORDER_PURCHASE", "reasonCode": "LOADGEN_BENEFIT_USE", "referenceType": "ORDER", "referenceId": ref}},
+                               ok=(200,), step="wallet-redeem")
+        self.stats.journeys["wallet:reserve_redeem"] += 1
+        return {"benefit": benefit_id, "wallet_account": account_id}
+
+    async def issue_wallet_benefit(self, account_id: str, amount: int) -> dict:
+        until = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
+                "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+                "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+                "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
+                "validFrom": now_iso(), "validUntil": until,
+                "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}}
+        _, data = await self.api.request("POST", "wallet-promotion", "/api/v1/benefits", body, ok=(201,), step="wallet-issue")
+        self.stats.journeys["wallet:issued"] += 1
+        return data
 
     async def find_refund_id(self, case_id: str) -> str | None:
         for _ in range(self.poll_attempts):
@@ -1031,6 +1072,7 @@ class OpsSim:
     async def sweep_once(self) -> None:
         await self.reporting_reads()
         await self.finance_reads()
+        await self.wallet_promotion_sweep()
         await self.supplier_catalog_sweep()
 
     async def reporting_reads(self) -> None:
@@ -1052,6 +1094,28 @@ class OpsSim:
             path = "/api/v1/reconciliation-cases?limit=20&offset=0"
         await self.api.request("GET", "finance-settlement", path, ok=(200,), step="ops-finance-reconciliation-list")
         self.stats.journeys["ops:finance:reconciliation_cases"] += 1
+
+    async def wallet_promotion_sweep(self) -> None:
+        if self.rng.random() >= float(self.cfg.get("p_wallet_manual_issue", 0.20)):
+            return
+        async with self.reg.lock:
+            accounts = list(self.reg.accounts)
+        if not accounts:
+            return
+        account_id = self.rng.choice(accounts)["account_id"]
+        amount = int(self.cfg.get("wallet_manual_issue_minor_units", 100))
+        until = (datetime.now(timezone.utc) + timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _, benefit = await self.api.request("POST", "wallet-promotion", "/api/v1/benefits",
+            {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
+             "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+             "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+             "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
+             "validFrom": now_iso(), "validUntil": until,
+             "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}},
+            ok=(201,), step="ops-wallet-issue")
+        self.stats.journeys["ops:wallet:issued"] += 1
+        await self.api.request("GET", "wallet-promotion", f"/api/v1/benefits/{quote(benefit['benefitId'])}", ok=(200,), step="ops-wallet-get-benefit")
+        await self.api.request("GET", "wallet-promotion", f"/api/v1/wallet-accounts/{quote(account_id)}", ok=(200,), step="ops-wallet-get-account")
 
     async def supplier_catalog_sweep(self) -> None:
         _, suppliers = await self.api.request("GET", "supplier-catalog", "/api/v1/suppliers?limit=20&offset=0", ok=(200,), step="ops-supplier-list")

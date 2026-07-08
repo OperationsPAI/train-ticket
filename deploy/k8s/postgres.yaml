@@ -69,6 +69,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'trip_planning')\gexec
     SELECT 'CREATE DATABASE waitlist'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'waitlist')\gexec
+    SELECT 'CREATE DATABASE wallet_promotion'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'wallet_promotion')\gexec
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
