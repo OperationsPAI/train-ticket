@@ -1,6 +1,6 @@
 import { Redis } from "ioredis";
 
-import { endSpan, endSpanWithError, markSpanError, startConsumerSpan } from "./observability.js";
+import { activeTraceContext, endSpan, endSpanWithError, markSpanError, remoteTraceContext, startConsumerSpan } from "./observability.js";
 import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 
 export type EventEnvelope<TPayload extends Record<string, unknown> = Record<string, unknown>> = Readonly<{
@@ -12,6 +12,8 @@ export type EventEnvelope<TPayload extends Record<string, unknown> = Record<stri
   correlationId: string;
   occurredAt: string;
   payload: TPayload;
+  traceparent?: string;
+  tracestate?: string;
 }>;
 
 export class PublishFailed extends Error {
@@ -75,6 +77,7 @@ export type EnvelopeInput<TPayload extends Record<string, unknown>> = Readonly<{
 }>;
 
 export function createEventEnvelope<TPayload extends Record<string, unknown>>(input: EnvelopeInput<TPayload>): EventEnvelope<TPayload> {
+  const traceContext = activeTraceContext();
   return Object.freeze({
     eventId: input.eventId ? canonicalEventId(input.eventId) : newEventId(),
     eventType: input.eventType,
@@ -84,6 +87,7 @@ export function createEventEnvelope<TPayload extends Record<string, unknown>>(in
     correlationId: input.correlationId ? canonicalCorrelationId(input.correlationId) : newCorrelationId(),
     occurredAt: occurredAt(input.occurredAt),
     payload: Object.freeze(omitUndefined(input.payload)) as TPayload,
+    ...traceContext,
   });
 }
 
@@ -424,7 +428,7 @@ export class RedisEventSubscriber implements EventSubscriber {
 
     let envelope: EventEnvelope;
     try {
-      envelope = JSON.parse(envelopeJson) as EventEnvelope;
+      envelope = deserializeEventEnvelope(envelopeJson);
     } catch (error) {
       await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
       return;
@@ -605,6 +609,7 @@ async function handleWithConsumerSpan(handler: EventHandler, envelope: EventEnve
     eventId: envelope.eventId,
     eventType: envelope.eventType,
     correlationId: envelope.correlationId,
+    parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
   });
   try {
     const result = await handler(envelope) as EventHandlerResult | StringHandlerResult | undefined;
@@ -618,6 +623,11 @@ async function handleWithConsumerSpan(handler: EventHandler, envelope: EventEnve
     endSpanWithError(span, error);
     throw error;
   }
+}
+
+function deserializeEventEnvelope(envelopeJson: string): EventEnvelope {
+  const raw = JSON.parse(envelopeJson) as EventEnvelope;
+  return Object.freeze({ ...raw, payload: Object.freeze(raw.payload ?? {}) });
 }
 
 function truncateFailureReason(reason: unknown): string {

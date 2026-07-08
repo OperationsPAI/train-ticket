@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from .events import EventEnvelope
 from .observability import otel_tracing_enabled
 
+
 MAXLEN = 100000
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = (0.1, 0.3, 0.9)
@@ -442,7 +443,7 @@ class RedisEventSubscriber(EventSubscriber):
 def _call_handler_with_span(handler: Callable[[EventEnvelope], Any], envelope: EventEnvelope, stream: str, group: str) -> Any:
     if not otel_tracing_enabled():
         return handler(envelope)
-    from opentelemetry import trace
+    from opentelemetry import context, trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
 
     attributes = {
@@ -457,7 +458,8 @@ def _call_handler_with_span(handler: Callable[[EventEnvelope], Any], envelope: E
         "messaging.train_ticket.correlationId": envelope.correlationId,
     }
     span_name = f"{group} process {envelope.eventType}"
-    with trace.get_tracer(__name__).start_as_current_span(span_name, kind=SpanKind.CONSUMER, attributes=attributes) as span:
+    parent_context = _remote_parent_context(envelope)
+    with trace.get_tracer(__name__).start_as_current_span(span_name, context=parent_context or context.get_current(), kind=SpanKind.CONSUMER, attributes=attributes) as span:
         try:
             result = handler(envelope)
         except Exception as exc:
@@ -467,6 +469,45 @@ def _call_handler_with_span(handler: Callable[[EventEnvelope], Any], envelope: E
         if isinstance(result, HandlerResult) and result.status is not HandlerStatus.SUCCESS:
             span.set_status(Status(StatusCode.ERROR, result.message or result.status.value))
         return result
+
+
+def _remote_parent_context(envelope: EventEnvelope) -> Any | None:
+    traceparent = getattr(envelope, "traceparent", None)
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.split("-")
+    if len(parts) != 4:
+        return None
+    version, trace_id, span_id, flags = parts
+    if version != "00" or len(trace_id) != 32 or len(span_id) != 16 or len(flags) != 2:
+        return None
+    try:
+        trace_id_int = int(trace_id, 16)
+        span_id_int = int(span_id, 16)
+        trace_flags = int(flags, 16)
+    except ValueError:
+        return None
+    if trace_id_int == 0 or span_id_int == 0:
+        return None
+    try:
+        from opentelemetry import context
+        from opentelemetry.trace import SpanContext, TraceFlags, TraceState, set_span_in_context
+        from opentelemetry.trace.span import NonRecordingSpan
+
+        tracestate_value = getattr(envelope, "tracestate", None)
+        trace_state = TraceState.from_header([tracestate_value]) if isinstance(tracestate_value, str) and tracestate_value else TraceState()
+        span_context = SpanContext(
+            trace_id=trace_id_int,
+            span_id=span_id_int,
+            is_remote=True,
+            trace_flags=TraceFlags(trace_flags),
+            trace_state=trace_state,
+        )
+        if not span_context.is_valid:
+            return None
+        return set_span_in_context(NonRecordingSpan(span_context), context.get_current())
+    except Exception:
+        return None
 
 
 class InMemoryEventPublisher(EventPublisher):

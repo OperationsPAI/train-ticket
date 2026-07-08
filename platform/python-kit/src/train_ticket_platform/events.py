@@ -37,6 +37,8 @@ class EventEnvelope:
     producer: str = ""
     schemaVersion: int = 1
     payload: Mapping[str, Any] = field(default_factory=dict)
+    traceparent: str | None = None
+    tracestate: str | None = None
 
     def __init__(
         self,
@@ -54,6 +56,8 @@ class EventEnvelope:
         correlation_id: str | None = None,
         causation_id: str | None = None,
         schema_version: int | None = None,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
     ) -> None:
         object.__setattr__(self, "eventId", eventId or event_id or new_prefixed_uuid7("evt"))
         object.__setattr__(self, "eventType", eventType or event_type or "")
@@ -63,6 +67,12 @@ class EventEnvelope:
         object.__setattr__(self, "producer", producer)
         object.__setattr__(self, "schemaVersion", schemaVersion if schema_version is None else schema_version)
         object.__setattr__(self, "payload", payload or {})
+        context_traceparent = traceparent
+        context_tracestate = tracestate
+        if context_traceparent is None:
+            context_traceparent, context_tracestate = _active_trace_context()
+        object.__setattr__(self, "traceparent", context_traceparent)
+        object.__setattr__(self, "tracestate", context_tracestate if context_traceparent else None)
 
     @property
     def event_id(self) -> str:
@@ -109,6 +119,10 @@ class EventEnvelope:
         }
         if self.causationId:
             data["causationId"] = self.causationId
+        if self.traceparent:
+            data["traceparent"] = self.traceparent
+            if self.tracestate:
+                data["tracestate"] = self.tracestate
         return data
 
     def as_dict(self) -> dict[str, Any]:
@@ -121,10 +135,6 @@ class EventEnvelope:
     def from_json_dict(cls, data: Mapping[str, Any]) -> "EventEnvelope":
         if not isinstance(data, Mapping):
             raise MalformedEnvelopeError("event envelope must be a JSON object")
-        allowed = REQUIRED_ENVELOPE_FIELDS
-        unknown = set(data) - allowed
-        if unknown:
-            raise MalformedEnvelopeError(f"event envelope contains unknown fields: {sorted(unknown)}")
         required_without_cause = REQUIRED_ENVELOPE_FIELDS - {"causationId"}
         missing = [field_name for field_name in required_without_cause if field_name not in data]
         if missing:
@@ -160,11 +170,33 @@ class EventEnvelope:
             producer=required_text("producer"),
             schemaVersion=schema_version,
             payload=payload,
+            traceparent=data.get("traceparent") if isinstance(data.get("traceparent"), str) else "",
+            tracestate=data.get("tracestate") if isinstance(data.get("tracestate"), str) else None,
         )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "EventEnvelope":
         return cls.from_json_dict(data)
+
+
+def _active_trace_context() -> tuple[str | None, str | None]:
+    try:
+        from .observability import otel_tracing_enabled
+
+        if not otel_tracing_enabled():
+            return None, None
+        from opentelemetry import trace
+        from opentelemetry.trace import format_trace_id, format_span_id
+
+        span_context = trace.get_current_span().get_span_context()
+    except Exception:
+        return None, None
+    if not getattr(span_context, "is_valid", False):
+        return None, None
+    flags = int(getattr(span_context, "trace_flags", 0)) & 0xFF
+    traceparent = f"00-{format_trace_id(span_context.trace_id)}-{format_span_id(span_context.span_id)}-{flags:02x}"
+    tracestate = str(getattr(span_context, "trace_state", "") or "")
+    return traceparent, tracestate or None
 
 
 def canonical_correlation_id(value: str | None) -> str:

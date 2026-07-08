@@ -802,17 +802,17 @@ class FarePricingMessagingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             EventEnvelope.from_json_dict({})
 
-        with self.assertRaises(ValueError):
-            EventEnvelope.from_json_dict({
-                "eventId": "evt-test-extra",
-                "eventType": "FareRuleSetPublished",
-                "occurredAt": "2026-07-03T12:00:00.000Z",
-                "correlationId": "corr-test",
-                "producer": "fare-pricing",
-                "schemaVersion": 1,
-                "payload": {},
-                "legacyCommandId": "cmd-legacy",
-            })
+        restored = EventEnvelope.from_json_dict({
+            "eventId": "evt-test-extra",
+            "eventType": "FareRuleSetPublished",
+            "occurredAt": "2026-07-03T12:00:00.000Z",
+            "correlationId": "corr-test",
+            "producer": "fare-pricing",
+            "schemaVersion": 1,
+            "payload": {},
+            "legacyCommandId": "cmd-legacy",
+        })
+        self.assertEqual(restored.event_id, "evt-test-extra")
 
         restored = EventEnvelope.from_json_dict({
             "eventId": "evt-test-minimal",
