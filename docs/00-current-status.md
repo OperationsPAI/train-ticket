@@ -13,8 +13,11 @@ Wave 11 completed the persistence baseline from
 `docs/08-contracts/persistence.md`: all 23 deployed business services use
 PostgreSQL aggregate snapshot rows with optimistic concurrency, transactional
 outbox publishing, and durable `processed_events` consumer dedup/idempotency.
-Redis Streams remain the event bus, with Redis AOF enabled for stream and
-consumer-group durability; Redis is not a system of record.
+Redis Streams remain the event bus; Redis is transport only, not a system of
+record. It runs without a persistent volume — a Redis pod deletion wipes
+streams and consumer groups by design, and services recover from PostgreSQL
+(the transactional outbox re-publishes anything unpublished; consumer groups
+are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 
 ## What runs today
 
@@ -44,9 +47,10 @@ legacy-acl(33), plus `12-restart.sh` for whole-cluster restart certification.
 
 The legacy-acl script walks a complete order lifecycle exclusively through the
 strangler facade's legacy-shaped endpoints. `deploy/e2e/12-restart.sh` pauses
-the resident load generator if present, captures PostgreSQL aggregate snapshot
-row counts, restarts every cluster workload, verifies snapshot rows survive, and
-then runs a smoke flow.
+the resident load generator if present, drains all transactional outboxes,
+captures every PostgreSQL aggregate snapshot row count, deletes every pod in
+the namespace, verifies the row counts survive unchanged, and then re-runs the
+full 01–11 suite against the restarted cluster.
 
 `deploy/loadgen/` contains the resident load generator. It can stay deployed in
 the integration namespace for continuous traffic and is paused by the restart
