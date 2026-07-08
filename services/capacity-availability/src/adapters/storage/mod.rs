@@ -759,9 +759,45 @@ impl PostgresCapacityService {
             ),
         };
         let interval = StationInterval::new(0, 1).map_err(inbound_fatal)?;
-        let unit_ref = pool.find_available_unit(&interval, now).ok_or_else(|| {
-            InboundEventError::Transient("No capacity units available in pool".into())
-        })?;
+        let Some(unit_ref) = pool.find_available_unit(&interval, now) else {
+            // Sold out is a business outcome, not an infrastructure failure:
+            // retrying can never conjure a seat. Emit CapacityHoldFailed so the
+            // saga compensates, and ack the message. capacityUnitRef carries the
+            // documented sentinel NONE (contract: NO_AVAILABLE_CAPACITY).
+            let failed = CapacityHoldFailed {
+                envelope: EventEnvelope::new(
+                    "CapacityHoldFailed",
+                    now,
+                    envelope.correlation_id.as_str(),
+                    Some(envelope.event_id.as_str()),
+                    "capacity-availability",
+                ),
+                requested_hold_id: HoldId::new(&hold_id).map_err(inbound_fatal)?,
+                inventory_pool_id: pool.identity.pool_id.clone(),
+                capacity_unit_ref: CapacityUnitRef::new("NONE").map_err(inbound_fatal)?,
+                interval,
+                idempotency_key: IdempotencyKey::new(idempotency_key).map_err(inbound_fatal)?,
+                reason: HoldFailureReason::NoAvailableUnits,
+                references: ReferenceMetadata::new(
+                    "booking-orchestration",
+                    "purchase-hold",
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.traveler_ref.clone()),
+                )
+                .map_err(inbound_fatal)?,
+            };
+            let outbound = domain_event_to_wire(
+                &DomainEvent::CapacityHoldFailed(failed),
+                &envelope.correlation_id,
+            )
+            .map_err(inbound_from_app_error)?;
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
+                .await
+                .map_err(inbound_transient)?;
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
         let hold = CapacityHold::request(
             HoldId::new(&hold_id).map_err(inbound_fatal)?,
             HoldScope::new(
