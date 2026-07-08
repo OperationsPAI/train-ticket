@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
@@ -57,7 +59,8 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 	tx := adapterpg.NewTransactor(pool)
-	service := application.NewService(application.ServiceConfig{Rides: adapterpg.NewRideRequestRepositoryWithProvider(tx), Publisher: adapterpg.NewOutboxPublisherWithProvider(tx), Clock: domain.RealClock{}, UnitOfWork: tx.Within})
+	service := application.NewService(application.ServiceConfig{Rides: adapterpg.NewRideRequestRepositoryWithProvider(tx), Publisher: adapterpg.NewOutboxPublisherWithProvider(tx), Clock: domain.RealClock{}, UnitOfWork: tx.Within, RequestTimeout: durationFromEnv("DISPATCH_REQUEST_TIMEOUT", 10*time.Minute), MatchingTimeout: durationFromEnv("DISPATCH_MATCHING_TIMEOUT", 10*time.Minute)})
+	go runTimeoutScanner(ctx, service, durationFromEnv("DISPATCH_TIMEOUT_SCAN_INTERVAL", time.Minute), intFromEnv("DISPATCH_TIMEOUT_SCAN_LIMIT", 100))
 	profile := domain.Profile()
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
 	apphttp.NewHandler(service, storage.NewIdempotencyStore(pool)).RegisterRoutes(router)
@@ -65,6 +68,55 @@ func main() {
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runTimeoutScanner(ctx context.Context, service *application.Service, interval time.Duration, limit int) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			processed, err := service.ScanTimedOut(ctx, limit)
+			if err != nil {
+				log.Printf("dispatch timeout scan failed: %v", err)
+				continue
+			}
+			if processed > 0 {
+				log.Printf("dispatch timeout scan failed %d ride requests", processed)
+			}
+		}
+	}
+}
+
+func durationFromEnv(name string, def time.Duration) time.Duration {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("invalid %s duration, using default: %v", name, err)
+		return def
+	}
+	return value
+}
+
+func intFromEnv(name string, def int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("invalid %s integer, using default: %v", name, err)
+		return def
+	}
+	return value
 }
 
 var _ idempotency.Store

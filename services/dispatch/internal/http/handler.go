@@ -143,7 +143,10 @@ func (h *Handler) Complete(c *gin.Context) {
 	var req struct {
 		FinalFareRef string `json:"finalFareRef"`
 	}
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpkit.WriteValidation(c, "invalid request body: "+err.Error())
+		return
+	}
 	resp, err := h.svc.Complete(c.Request.Context(), application.CompleteRequest{RideRequestID: c.Param("rideRequestId"), FinalFareRef: req.FinalFareRef, CorrelationID: correlationID(c), CausationID: causationID(c)})
 	if err != nil {
 		h.writeError(c, err)
@@ -158,7 +161,10 @@ func (h *Handler) reason(c *gin.Context, fn func(context.Context, application.Re
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpkit.WriteValidation(c, "invalid request body: "+err.Error())
+		return
+	}
 	resp, err := fn(c.Request.Context(), application.ReasonRequest{RideRequestID: c.Param("rideRequestId"), Reason: req.Reason, CorrelationID: correlationID(c), CausationID: causationID(c)})
 	if err != nil {
 		h.writeError(c, err)

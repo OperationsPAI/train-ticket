@@ -26,6 +26,7 @@ const (
 	StatusUserCancelled   RideStatus = "USER_CANCELLED"
 	StatusNoShow          RideStatus = "NO_SHOW"
 	StatusCompleted       RideStatus = "COMPLETED"
+	StatusFailed          RideStatus = "FAILED"
 )
 
 type TimeWindow struct{ StartAt, EndAt time.Time }
@@ -198,6 +199,15 @@ func (r *RideRequest) RecordNoShow(reason string, now time.Time) error {
 	r.touch(now)
 	return nil
 }
+func (r *RideRequest) MarkFailed(now time.Time) error {
+	if r.Status != StatusRequested && r.Status != StatusMatching {
+		return fmt.Errorf("only requested or matching dispatches can fail by timeout")
+	}
+	r.Assignment = nil
+	r.Status = StatusFailed
+	r.touch(now)
+	return nil
+}
 func (r RideRequest) Active() bool {
 	switch r.Status {
 	case StatusRequested, StatusMatching, StatusAssigned, StatusDriverArriving, StatusDriverArrived, StatusPickedUp, StatusDriverCancelled:
@@ -229,7 +239,7 @@ func (r RideRequest) Validate() error {
 func (r *RideRequest) touch(now time.Time) { r.UpdatedAt = now.UTC() }
 func validStatus(s RideStatus) bool {
 	switch s {
-	case StatusRequested, StatusMatching, StatusAssigned, StatusDriverArriving, StatusDriverArrived, StatusPickedUp, StatusDriverCancelled, StatusUserCancelled, StatusNoShow, StatusCompleted:
+	case StatusRequested, StatusMatching, StatusAssigned, StatusDriverArriving, StatusDriverArrived, StatusPickedUp, StatusDriverCancelled, StatusUserCancelled, StatusNoShow, StatusCompleted, StatusFailed:
 		return true
 	default:
 		return false

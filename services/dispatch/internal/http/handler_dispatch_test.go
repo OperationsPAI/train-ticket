@@ -71,6 +71,42 @@ func TestDriverCancelReturnsToMatching(t *testing.T) {
 	}
 }
 
+func TestMalformedJSONReturnsValidationFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := Router()
+	create := dispatchJSON(router, http.MethodPost, "/api/v1/ride-requests", rideBody("malformed"), "0194f2e0-7b3e-7610-8284-5c26e8b0c001")
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status %d body %s", create.Code, create.Body.String())
+	}
+	rideID := field(t, create, "rideRequestId")
+	assign := dispatchJSON(router, http.MethodPost, "/api/v1/ride-requests/"+rideID+"/assign", `{"driverRef":"drv-1","vehicleRef":"veh-1","etaSeconds":60}`, "0194f2e0-7b3e-7610-8284-5c26e8b0c002")
+	if assign.Code != http.StatusOK {
+		t.Fatalf("assign failed: %d %s", assign.Code, assign.Body.String())
+	}
+
+	tests := []struct {
+		name string
+		path string
+		key  string
+	}{
+		{name: "complete", path: "/api/v1/ride-requests/" + rideID + "/complete", key: "0194f2e0-7b3e-7610-8284-5c26e8b0c003"},
+		{name: "driver cancel", path: "/api/v1/ride-requests/" + rideID + "/driver-cancel", key: "0194f2e0-7b3e-7610-8284-5c26e8b0c004"},
+		{name: "user cancel", path: "/api/v1/ride-requests/" + rideID + "/user-cancel", key: "0194f2e0-7b3e-7610-8284-5c26e8b0c005"},
+		{name: "no show", path: "/api/v1/ride-requests/" + rideID + "/no-show", key: "0194f2e0-7b3e-7610-8284-5c26e8b0c006"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := dispatchJSON(router, http.MethodPost, tc.path, `{"reason":`, tc.key)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+			}
+			if got := field(t, rec, "code"); got != "VALIDATION_FAILED" {
+				t.Fatalf("code = %s, want VALIDATION_FAILED", got)
+			}
+		})
+	}
+}
+
 func dispatchJSON(router http.Handler, method, path, body, key string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))

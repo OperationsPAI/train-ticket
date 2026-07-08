@@ -139,3 +139,16 @@ type DispatchNoShowRecordedEvent struct {
 	Reason           string           `json:"reason,omitempty"`
 	Status           RideStatus       `json:"status"`
 }
+
+type DispatchFailedEvent struct {
+	RideRequestID     RideRequestID `json:"rideRequestId"`
+	RiderAccountID    string        `json:"riderAccountId"`
+	TravelerRef       string        `json:"travelerRef"`
+	PickupRef         string        `json:"pickupRef"`
+	DropoffRef        string        `json:"dropoffRef"`
+	IntentFingerprint string        `json:"intentFingerprint"`
+	FailedAt          string        `json:"failedAt"`
+	Reason            string        `json:"reason"`
+	PreviousStatus    RideStatus    `json:"previousStatus"`
+	Status            RideStatus    `json:"status"`
+}

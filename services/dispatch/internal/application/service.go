@@ -242,6 +242,49 @@ func (s *Service) NoShow(ctx context.Context, req ReasonRequest) (*RideRequestDT
 	})
 }
 
+func (s *Service) ScanTimedOut(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	now := s.clock.Now()
+	timedOut, err := s.rides.FindTimedOut(ctx, now, s.requestTimeout, s.matchingTimeout, limit)
+	if err != nil {
+		return 0, err
+	}
+	processed := 0
+	for _, timedOutRide := range timedOut {
+		err := s.unitOfWork(ctx, func(tx context.Context) error {
+			var previousStatus domain.RideStatus
+			var reason string
+			r, err := s.rides.FindByID(tx, timedOutRide.ID)
+			if err != nil {
+				return err
+			}
+			if r == nil || !isTimedOut(*r, now, s.requestTimeout, s.matchingTimeout) {
+				return nil
+			}
+			previousStatus = r.Status
+			reason = timeoutReason(previousStatus)
+			if err := r.MarkFailed(now); err != nil {
+				return nil
+			}
+			if err := s.rides.Update(tx, *r); err != nil {
+				return err
+			}
+			payload := failedPayload(*r, previousStatus, reason, now)
+			if err := s.publisher.Publish(tx, domain.NewEventEnvelope("DispatchFailed", now, "", "timeout-scan", r.ID, r.Version+1, payload)); err != nil {
+				return NewError("UNAVAILABLE", "event publisher unavailable")
+			}
+			processed++
+			return nil
+		})
+		if err != nil {
+			return processed, err
+		}
+	}
+	return processed, nil
+}
+
 func (s *Service) change(ctx context.Context, id, corr, caus string, fn func(*domain.RideRequest, time.Time) (string, any, error)) (*RideRequestDTO, error) {
 	now := s.clock.Now()
 	var out domain.RideRequest
@@ -270,6 +313,28 @@ func (s *Service) change(ctx context.Context, id, corr, caus string, fn func(*do
 		return nil, err
 	}
 	return toDTO(out), nil
+}
+
+func isTimedOut(r domain.RideRequest, now time.Time, requestTimeout, matchingTimeout time.Duration) bool {
+	switch r.Status {
+	case domain.StatusRequested:
+		return now.Sub(r.UpdatedAt) > requestTimeout
+	case domain.StatusMatching:
+		return now.Sub(r.UpdatedAt) > matchingTimeout
+	default:
+		return false
+	}
+}
+
+func timeoutReason(status domain.RideStatus) string {
+	switch status {
+	case domain.StatusRequested:
+		return "REQUEST_TIMEOUT"
+	case domain.StatusMatching:
+		return "MATCHING_TIMEOUT"
+	default:
+		return "TIMEOUT"
+	}
 }
 
 func parseWindow(dto TimeWindowDTO) (domain.TimeWindow, error) {
@@ -326,4 +391,8 @@ func endedPayload(r domain.RideRequest) domain.RideEndedEvent {
 func noShowPayload(r domain.RideRequest, reason string, now time.Time) domain.DispatchNoShowRecordedEvent {
 	a := r.Assignment
 	return domain.DispatchNoShowRecordedEvent{RideRequestID: r.ID, RideAssignmentID: a.ID, RiderAccountID: r.RiderAccountID, TravelerRef: r.TravelerRef, PickupRef: r.PickupRef, DropoffRef: r.DropoffRef, DriverRef: a.DriverRef, VehicleRef: a.VehicleRef, RecordedAt: domain.FormatTimestamp(now), Reason: reason, Status: r.Status}
+}
+
+func failedPayload(r domain.RideRequest, previousStatus domain.RideStatus, reason string, now time.Time) domain.DispatchFailedEvent {
+	return domain.DispatchFailedEvent{RideRequestID: r.ID, RiderAccountID: r.RiderAccountID, TravelerRef: r.TravelerRef, PickupRef: r.PickupRef, DropoffRef: r.DropoffRef, IntentFingerprint: r.IntentFingerprint, FailedAt: domain.FormatTimestamp(now), Reason: reason, PreviousStatus: previousStatus, Status: r.Status}
 }
