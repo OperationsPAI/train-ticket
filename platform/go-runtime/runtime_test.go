@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestStandardEndpoints(t *testing.T) {
@@ -112,4 +115,68 @@ func TestObserverSeamIsOptIn(t *testing.T) {
 	if !observer.ended {
 		t.Fatalf("expected span to end")
 	}
+}
+
+func TestInitOTelSDKFromEnvNoopWhenTracingDisabled(t *testing.T) {
+	ResetOTelForTest()
+	t.Setenv("OTEL_TRACES_EXPORTER", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_SERVICE_NAME", "")
+
+	shutdown, err := InitOTelSDKFromEnv(context.Background(), "runtime-test")
+	if err != nil {
+		t.Fatalf("unexpected init error: %v", err)
+	}
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatalf("unexpected shutdown error: %v", err)
+	}
+
+	ctx, span := ObserverFromEnv("runtime-test").Start(context.Background(), "/noop")
+	span.End(nil)
+	if got := trace.SpanFromContext(ctx).SpanContext(); got.IsValid() {
+		t.Fatalf("expected disabled tracing to leave a non-recording span, got %s", got.TraceID())
+	}
+}
+
+func TestInitOTelSDKWithInMemoryExporterProducesHTTPSpan(t *testing.T) {
+	ResetOTelForTest()
+	exporter := tracetest.NewInMemoryExporter()
+	shutdown, err := InitOTelSDK(OTelSDKConfig{ServiceName: "runtime-test", Exporter: exporter})
+	if err != nil {
+		t.Fatalf("init sdk: %v", err)
+	}
+	defer func() {
+		_ = shutdown(context.Background())
+		ResetOTelForTest()
+	}()
+
+	observer := NewOTelObserver(OTelObserverConfig{ServiceName: "runtime-test"})
+	ctx, span := observer.Start(ContextWithRequestIDs(context.Background(), "req-1", "corr-1"), "/health")
+	SetSpanHTTPAttributes(ctx, http.MethodGet, "/health", http.StatusOK)
+	span.End(nil)
+	if flusher, ok := span.(interface{ ForceFlush(context.Context) error }); ok {
+		if err := flusher.ForceFlush(context.Background()); err != nil {
+			t.Fatalf("flush sdk: %v", err)
+		}
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected one span, got %d", len(spans))
+	}
+	if spans[0].Name != "/health" {
+		t.Fatalf("unexpected span name: %q", spans[0].Name)
+	}
+	attrs := spanAttributes(spans[0].Attributes)
+	if attrs["http.route"] != "/health" || attrs["http.request_id"] != "req-1" || attrs["http.correlation_id"] != "corr-1" {
+		t.Fatalf("missing HTTP attrs: %#v", attrs)
+	}
+}
+
+func spanAttributes(attrs []attribute.KeyValue) map[string]string {
+	values := map[string]string{}
+	for _, attr := range attrs {
+		values[string(attr.Key)] = attr.Value.AsString()
+	}
+	return values
 }
