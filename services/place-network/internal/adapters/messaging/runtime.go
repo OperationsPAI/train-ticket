@@ -8,9 +8,8 @@ import (
 )
 
 type RedisRuntime struct {
-	client     *redis.Client
-	publisher  *RedisPublisher
-	subscriber *RedisSubscriber
+	client    *redis.Client
+	publisher *RedisPublisher
 }
 
 func NewRedisRuntimeFromEnv(ctx context.Context) (*RedisRuntime, error) {
@@ -23,14 +22,11 @@ func NewRedisRuntimeFromEnv(ctx context.Context) (*RedisRuntime, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("redis connection failed: %w", err)
 	}
-	return &RedisRuntime{client: client, publisher: NewRedisPublisher(client), subscriber: NewRedisSubscriber(client)}, nil
+	return &RedisRuntime{client: client, publisher: NewRedisPublisher(client)}, nil
 }
 
 func (r *RedisRuntime) Publisher() *RedisPublisher { return r.publisher }
 
-func (r *RedisRuntime) Subscriber() *RedisSubscriber { return r.subscriber }
-
 func (r *RedisRuntime) Close() error {
-	r.subscriber.Stop()
 	return r.client.Close()
 }
