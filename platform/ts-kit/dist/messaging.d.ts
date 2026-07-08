@@ -8,6 +8,8 @@ export type EventEnvelope<TPayload extends Record<string, unknown> = Record<stri
     correlationId: string;
     occurredAt: string;
     payload: TPayload;
+    traceparent?: string;
+    tracestate?: string;
 }>;
 export declare class PublishFailed extends Error {
     constructor(message: string, options?: ErrorOptions);
@@ -65,6 +67,8 @@ export declare class InMemoryEventPublisher implements EventPublisher {
         correlationId: string;
         occurredAt: string;
         payload: Record<string, unknown>;
+        traceparent?: string;
+        tracestate?: string;
     }>[];
     failNext: boolean;
     publish(envelope: EventEnvelope): Promise<void>;

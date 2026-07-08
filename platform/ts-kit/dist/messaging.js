@@ -1,5 +1,5 @@
 import { Redis } from "ioredis";
-import { endSpan, endSpanWithError, markSpanError, startConsumerSpan } from "./observability.js";
+import { activeTraceContext, endSpan, endSpanWithError, markSpanError, remoteTraceContext, startConsumerSpan } from "./observability.js";
 import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 export class PublishFailed extends Error {
     constructor(message, options) {
@@ -22,6 +22,7 @@ export class HandlerError extends Error {
     }
 }
 export function createEventEnvelope(input) {
+    const traceContext = activeTraceContext();
     return Object.freeze({
         eventId: input.eventId ? canonicalEventId(input.eventId) : newEventId(),
         eventType: input.eventType,
@@ -31,6 +32,7 @@ export function createEventEnvelope(input) {
         correlationId: input.correlationId ? canonicalCorrelationId(input.correlationId) : newCorrelationId(),
         occurredAt: occurredAt(input.occurredAt),
         payload: Object.freeze(omitUndefined(input.payload)),
+        ...traceContext,
     });
 }
 export async function publishAfterCommit(transaction, publisher, envelopes) {
@@ -314,7 +316,7 @@ export class RedisEventSubscriber {
         }
         let envelope;
         try {
-            envelope = JSON.parse(envelopeJson);
+            envelope = deserializeEventEnvelope(envelopeJson);
         }
         catch (error) {
             await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
@@ -460,6 +462,7 @@ async function handleWithConsumerSpan(handler, envelope, stream, consumerGroup) 
         eventId: envelope.eventId,
         eventType: envelope.eventType,
         correlationId: envelope.correlationId,
+        parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
     });
     try {
         const result = await handler(envelope);
@@ -474,6 +477,10 @@ async function handleWithConsumerSpan(handler, envelope, stream, consumerGroup) 
         endSpanWithError(span, error);
         throw error;
     }
+}
+function deserializeEventEnvelope(envelopeJson) {
+    const raw = JSON.parse(envelopeJson);
+    return Object.freeze({ ...raw, payload: Object.freeze(raw.payload ?? {}) });
 }
 function truncateFailureReason(reason) {
     const text = reason instanceof Error

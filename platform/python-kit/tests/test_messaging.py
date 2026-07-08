@@ -1,8 +1,10 @@
 import json
 import logging
+from datetime import UTC, datetime
 
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.messaging import FatalHandlerError, HandlerResult, InMemoryEventSubscriber, RedisEventSubscriber, TransientHandlerError, dlq_for_stream
+from train_ticket_platform.observability import init_opentelemetry
 
 
 class FakeRedis:
@@ -164,3 +166,87 @@ def test_otel_enabled_creates_http_server_span(monkeypatch) -> None:
     assert server_spans, f"expected an HTTP server span, got: {[span.name for span in spans]}"
     route_attr = server_spans[0].attributes.get("http.route") or server_spans[0].attributes.get("http.target")
     assert route_attr == "/health"
+
+
+def test_envelope_omits_trace_context_when_otel_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("OTEL_TRACES_EXPORTER", raising=False)
+    envelope = EventEnvelope(
+        eventId="evt-test",
+        eventType="SomethingHappened",
+        occurredAt=datetime(2026, 7, 8, tzinfo=UTC),
+        correlationId="corr-test",
+        causationId="cmd-test",
+        producer="tester",
+        payload={"x": 1},
+    )
+
+    assert envelope.to_json_dict() == {
+        "eventId": "evt-test",
+        "eventType": "SomethingHappened",
+        "occurredAt": "2026-07-08T00:00:00.000Z",
+        "correlationId": "corr-test",
+        "producer": "tester",
+        "schemaVersion": 1,
+        "payload": {"x": 1},
+        "causationId": "cmd-test",
+    }
+
+
+def test_envelope_deserialization_ignores_unknown_fields_and_preserves_trace_context(monkeypatch) -> None:
+    monkeypatch.delenv("OTEL_TRACES_EXPORTER", raising=False)
+    restored = EventEnvelope.from_json_dict({
+        "eventId": "evt-test",
+        "eventType": "SomethingHappened",
+        "occurredAt": "2026-07-08T00:00:00.000Z",
+        "correlationId": "corr-test",
+        "producer": "tester",
+        "schemaVersion": 1,
+        "payload": {},
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "tracestate": "vendor=value",
+        "futureField": "ignored",
+    })
+
+    assert restored.traceparent == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    assert restored.tracestate == "vendor=value"
+    assert restored.to_json_dict()["traceparent"] == restored.traceparent
+
+
+def test_otel_enabled_injects_trace_context_and_consumer_uses_remote_parent(monkeypatch) -> None:
+    pytest = __import__("pytest")
+    trace = pytest.importorskip("opentelemetry.trace")
+    exporter_mod = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "python-kit-trace-test")
+    exporter = exporter_mod.InMemorySpanExporter()
+    provider = init_opentelemetry("python-kit-trace-test", span_exporter=exporter)
+    producer_span = None
+    with trace.get_tracer("python-kit-trace-test").start_as_current_span("producer") as span:
+        producer_span = span
+        envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={})
+    subscriber = InMemoryEventSubscriber([envelope])
+    subscriber.subscribe(["events:tester"], "tester", "tester-consumer", lambda _: HandlerResult.success())
+
+    consumer = next(span for span in exporter.get_finished_spans() if span.name == "in-memory process SomethingHappened")
+    assert envelope.traceparent is not None
+    assert consumer.context.trace_id == producer_span.get_span_context().trace_id
+    assert consumer.parent.span_id == producer_span.get_span_context().span_id
+    provider.shutdown()
+
+
+def test_malformed_traceparent_is_ignored_for_consumer_parent(monkeypatch) -> None:
+    pytest = __import__("pytest")
+    trace = pytest.importorskip("opentelemetry.trace")
+    exporter_mod = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+    exporter = exporter_mod.InMemorySpanExporter()
+    provider = init_opentelemetry("python-kit-trace-test", span_exporter=exporter)
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={}, traceparent="not-valid")
+    subscriber = InMemoryEventSubscriber([envelope])
+    subscriber.subscribe(["events:tester"], "tester", "tester-consumer", lambda _: HandlerResult.success())
+
+    consumer = next(span for span in exporter.get_finished_spans() if span.name == "in-memory process SomethingHappened")
+    assert not consumer.parent or not consumer.parent.is_valid
+    provider.shutdown()

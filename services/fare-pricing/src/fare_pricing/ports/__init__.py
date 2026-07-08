@@ -28,6 +28,8 @@ class EventEnvelope(_PlatformEventEnvelope):
             producer=producer,
             schemaVersion=schema_version,
             payload=payload or kwargs.pop("payload", {}),
+            traceparent=kwargs.pop("traceparent", None),
+            tracestate=kwargs.pop("tracestate", None),
         )
 
     @classmethod
@@ -41,6 +43,8 @@ class EventEnvelope(_PlatformEventEnvelope):
             causation_id=restored.causationId or "",
             producer=restored.producer,
             schema_version=restored.schemaVersion,
+            traceparent=restored.traceparent or "",
+            tracestate=restored.tracestate,
             payload=restored.payload,
         )
 
