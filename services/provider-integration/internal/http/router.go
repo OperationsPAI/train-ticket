@@ -24,6 +24,5 @@ func RouterWithDependencies(service application.ProviderReservationService, stor
 		HealthStatus: domain.Health(),
 		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
 	})
-	NewHandler(service, store).Register(router)
 	return router
 }
