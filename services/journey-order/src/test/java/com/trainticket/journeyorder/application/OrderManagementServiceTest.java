@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -193,6 +194,76 @@ class OrderManagementServiceTest {
     }
 
     @Test
+    void entitlementIssuedOnCancelledOrderAckSkipsWithoutStateChange() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
+        JourneyOrderResult created = orderService.createOrder(
+            new JourneyOrderRequest("account-entitlement", "offer-entitlement", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-entitlement-cancelled",
+            "corr-1"
+        );
+        orderService.cancelOrder(
+            new CancelJourneyOrderRequest(created.orderId(), "customer cancellation"),
+            "idem-entitlement-cancelled-cancel",
+            "corr-1"
+        );
+        int publishedBefore = published.size();
+
+        EventSubscriber.HandlerResult result = orderService.handle(entitlementIssuedEvent(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ce01",
+            created.orderId()
+        ));
+
+        assertEquals(new EventSubscriber.Success(), result);
+        assertEquals("CANCELLED", orderService.getOrder(created.orderId()).orElseThrow().status());
+        assertEquals(publishedBefore, published.size());
+    }
+
+    @Test
+    void missingOrderEventAckSkips() {
+        EventSubscriber.HandlerResult result = service.handle(entitlementIssuedEvent(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ce02",
+            "ord-0194f2e0-7b3e-7610-8284-5c26e8b0ce03"
+        ));
+
+        assertEquals(new EventSubscriber.Success(), result);
+    }
+
+    @Test
+    void dataAccessExceptionReturnsTransientError() {
+        JourneyOrderStateRepositoryAdapter failingRepository = new JourneyOrderStateRepositoryAdapter() {
+            @Override
+            public boolean recordProcessedEvent(String eventId, String stream) {
+                throw new TransientDataAccessResourceException("database unavailable");
+            }
+        };
+        OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, failingRepository);
+
+        EventSubscriber.HandlerResult result = orderService.handle(entitlementIssuedEvent(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ce04",
+            "ord-0194f2e0-7b3e-7610-8284-5c26e8b0ce05"
+        ));
+
+        assertTrue(result instanceof EventSubscriber.TransientError);
+    }
+
+    @Test
+    void missingRequiredPayloadFieldReturnsFatalError() {
+        EventSubscriber.HandlerResult result = service.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0ce06",
+            "EntitlementIssued",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0ce07",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0ce08",
+            "entitlement-ticketing",
+            1,
+            Map.of("journeyOrderId", "ord-0194f2e0-7b3e-7610-8284-5c26e8b0ce09")
+        ));
+
+        assertTrue(result instanceof EventSubscriber.FatalError);
+    }
+
+    @Test
     void getOrderReturnsEmptyForMissing() {
         Optional<JourneyOrderResult> result = service.getOrder("nonexistent");
         assertTrue(result.isEmpty());
@@ -262,7 +333,17 @@ class OrderManagementServiceTest {
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c503",
             "risk-compliance",
             1,
-            Map.of("subjectRef", created.orderId(), "decision", "ALLOW")
+            Map.of(
+                "assessmentId", "asmt-0194f2e0-7b3e-7610-8284-5c26e8b0c510",
+                "subjectRef", created.orderId(),
+                "scenario", "order_risk",
+                "decision", "ALLOW",
+                "policyVersion", "risk-policy-v1",
+                "evidenceRef", "evid-0194f2e0-7b3e-7610-8284-5c26e8b0c511",
+                "reasonCode", "LOW_RISK",
+                "assessmentSnapshotHash", "hash-risk",
+                "assessedAt", "2026-07-05T10:01:00Z"
+            )
         );
 
         service.handle(envelope);
@@ -287,7 +368,15 @@ class OrderManagementServiceTest {
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c603",
             "risk-compliance",
             1,
-            Map.of("subjectRef", created.orderId(), "reasonCode", "HIGH_RISK_SIGNAL")
+            Map.of(
+                "blockId", "blk-0194f2e0-7b3e-7610-8284-5c26e8b0c610",
+                "subjectRef", created.orderId(),
+                "scope", "ORDER",
+                "reasonCode", "HIGH_RISK_SIGNAL",
+                "policyVersion", "risk-policy-v1",
+                "evidenceRef", "evid-0194f2e0-7b3e-7610-8284-5c26e8b0c611",
+                "blockedAt", "2026-07-05T10:01:00Z"
+            )
         );
         EventEnvelope lifted = new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c604",
@@ -297,7 +386,15 @@ class OrderManagementServiceTest {
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c601",
             "risk-compliance",
             1,
-            Map.of("subjectRef", created.orderId(), "reasonCode", "MANUAL_REVIEW_CLEARED")
+            Map.of(
+                "allowId", "alw-0194f2e0-7b3e-7610-8284-5c26e8b0c620",
+                "subjectRef", created.orderId(),
+                "scope", "ORDER",
+                "reasonCode", "MANUAL_REVIEW_CLEARED",
+                "policyVersion", "risk-policy-v1",
+                "evidenceRef", "evid-0194f2e0-7b3e-7610-8284-5c26e8b0c621",
+                "allowedAt", "2026-07-05T10:02:00Z"
+            )
         );
 
         service.handle(block);
@@ -379,6 +476,32 @@ class OrderManagementServiceTest {
     }
 
 
+    private static EventEnvelope entitlementIssuedEvent(String eventId, String orderId) {
+        return new EventEnvelope(
+            eventId,
+            "EntitlementIssued",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0ce99",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0ce98",
+            "entitlement-ticketing",
+            1,
+            Map.of(
+                "entitlementId", "ent-0194f2e0-7b3e-7610-8284-5c26e8b0ce10",
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0ce11",
+                "journeyOrderId", orderId,
+                "travelerRef", "tvl-1",
+                "segmentRef", "seg-1",
+                "issuePurpose", "INITIAL",
+                "credentialNo", "ticket-1",
+                "credentialType", "E_TICKET",
+                "issuedAt", "2026-07-05T10:01:00Z"
+            )
+        );
+    }
+
+    private static class JourneyOrderStateRepositoryAdapter extends InMemoryJourneyOrderStateRepository {
+    }
+
     private static EventEnvelope accountEvent(String eventId, String eventType, String accountId) {
         return new EventEnvelope(
             eventId,
@@ -388,7 +511,14 @@ class OrderManagementServiceTest {
             "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0ca98",
             "account",
             1,
-            Map.of("accountId", accountId, "occurredAt", "2026-07-05T10:01:00Z")
+            Map.of(
+                "accountId", accountId,
+                "reason", "test reason",
+                "operator", "system",
+                "closureRequestId", "clr_0194f2e0_7b3e_7610_8284_5c26e8b0ca97",
+                "final", true,
+                "occurredAt", "2026-07-05T10:01:00Z"
+            )
         );
     }
 
