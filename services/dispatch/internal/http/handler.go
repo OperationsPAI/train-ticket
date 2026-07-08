@@ -1,8 +1,11 @@
 package http
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -123,7 +126,31 @@ func (h *Handler) ETA(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, resp)
 }
+
+// requireEmptyOrJSONObject enforces the `{}` contract bodies: empty is fine,
+// malformed JSON is a validation error rather than being silently accepted.
+func requireEmptyOrJSONObject(c *gin.Context) bool {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		httpkit.WriteValidation(c, "invalid request body")
+		return false
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return true
+	}
+	var v map[string]any
+	if json.Unmarshal(trimmed, &v) != nil {
+		httpkit.WriteValidation(c, "invalid request body")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) DriverArrived(c *gin.Context) {
+	if !requireEmptyOrJSONObject(c) {
+		return
+	}
 	resp, err := h.svc.MarkDriverArrived(c.Request.Context(), c.Param("rideRequestId"), correlationID(c), causationID(c))
 	if err != nil {
 		h.writeError(c, err)
@@ -132,6 +159,9 @@ func (h *Handler) DriverArrived(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 func (h *Handler) Start(c *gin.Context) {
+	if !requireEmptyOrJSONObject(c) {
+		return
+	}
 	resp, err := h.svc.StartRide(c.Request.Context(), c.Param("rideRequestId"), correlationID(c), causationID(c))
 	if err != nil {
 		h.writeError(c, err)

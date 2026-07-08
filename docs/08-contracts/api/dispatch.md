@@ -37,24 +37,25 @@ values are SCREAMING_SNAKE_CASE.
 
 ## Status enum
 
-The wire status enum is the 10-state machine from the Dispatch domain document:
+The wire status enum is the domain state machine plus the `FAILED` timeout closure (activation-wave increment 2026-07-09):
 
 | Status | Meaning | Allowed next statuses |
 |---|---|---|
-| `REQUESTED` | Dispatch request was accepted. | `MATCHING`, `USER_CANCELLED`, failure closure |
-| `MATCHING` | Dispatch is matching driver supply. | `ASSIGNED`, `USER_CANCELLED`, failure closure |
+| `REQUESTED` | Dispatch request was accepted. | `MATCHING`, `USER_CANCELLED`, `FAILED` |
+| `MATCHING` | Dispatch is matching driver supply. | `ASSIGNED`, `USER_CANCELLED`, `FAILED` |
 | `ASSIGNED` | Driver and vehicle have been assigned. | `DRIVER_ARRIVING`, `DRIVER_CANCELLED`, `USER_CANCELLED` |
 | `DRIVER_ARRIVING` | Driver is en route to the pickup point. | `DRIVER_ARRIVED`, `DRIVER_CANCELLED`, `USER_CANCELLED` |
 | `DRIVER_ARRIVED` | Driver has arrived and is waiting for the rider. | `PICKED_UP`, `NO_SHOW`, `USER_CANCELLED` |
 | `PICKED_UP` | Rider is on board and the ride has started. | `COMPLETED` |
-| `DRIVER_CANCELLED` | Driver cancelled the active assignment. | `MATCHING`, failure closure |
+| `DRIVER_CANCELLED` | Driver cancelled the active assignment. | `MATCHING`, `FAILED` |
 | `USER_CANCELLED` | Rider/user cancelled the dispatch. | Terminal for this API wave |
 | `NO_SHOW` | Rider did not appear at pickup. | Terminal for this API wave |
 | `COMPLETED` | Dispatch lifecycle completed after ride end. | Terminal for this API wave |
+| `FAILED` | Request/matching window timed out (timeout scan) or re-dispatch was closed by failure policy. | Terminal for this API wave |
 
 `DRIVER_CANCELLED` is an observable transition fact only briefly. The Dispatch
 application MUST automatically return the request to `MATCHING` for re-dispatch
-unless the request is closed by an explicit failure policy outside this wave.
+unless the timeout scan (or a future failure policy) closes it as `FAILED`.
 
 ## Resource representation
 
@@ -154,7 +155,7 @@ part of this activation-wave API.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `riderAccountId` | string | yes | Account that owns the dispatch requests. |
-| `status` | enum | no | Optional status filter using the 10-state enum above. |
+| `status` | enum | no | Optional status filter using the status enum above. |
 | `limit` | integer | no | Pagination limit, default 20, max 100. |
 | `offset` | integer | no | Pagination offset, default 0. |
 
