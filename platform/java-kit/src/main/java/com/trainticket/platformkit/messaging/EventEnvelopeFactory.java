@@ -1,5 +1,6 @@
 package com.trainticket.platformkit.messaging;
 
+import com.trainticket.platformkit.observability.EventTraceContext;
 import java.time.Clock;
 import java.util.Objects;
 
@@ -25,6 +26,7 @@ public class EventEnvelopeFactory {
         if (causationId != null) {
             PrefixedIds.requireCausationId(causationId);
         }
+        EventTraceContext traceContext = EventTraceContext.current();
         return new EventEnvelope(
             PrefixedIds.newEventId(),
             eventType,
@@ -33,7 +35,9 @@ public class EventEnvelopeFactory {
             causationId,
             producer,
             1,
-            payload
+            payload,
+            traceContext.traceparent(),
+            traceContext.tracestate()
         );
     }
 

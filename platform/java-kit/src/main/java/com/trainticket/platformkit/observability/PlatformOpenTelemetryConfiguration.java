@@ -70,8 +70,8 @@ public class PlatformOpenTelemetryConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    EventConsumerTracer eventConsumerTracer(Tracer tracer) {
-        return new OtelEventConsumerTracer(tracer);
+    EventConsumerTracer eventConsumerTracer(OpenTelemetry openTelemetry, Tracer tracer) {
+        return new OtelEventConsumerTracer(openTelemetry, tracer);
     }
 
     @Bean
