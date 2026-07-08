@@ -72,6 +72,7 @@ context.
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped |
 | 23 | `waitlist` | `events:waitlist` | WaitlistRequestCreated, WaitlistPaymentAuthorizationRequested, WaitlistQueued, WaitlistMatchStarted, WaitlistHoldAuthorized, WaitlistFulfilled, WaitlistCancelled, WaitlistExpired |
 | 24 | `dispatch` | `events:dispatch` | DispatchRequested, DriverAssigned, DriverEtaUpdated, DriverArrived, RideStarted, RideEnded, DriverCancelled, DispatchUserCancelled, DispatchNoShowRecorded |
+| 25 | `wallet-promotion` | `events:wallet-promotion` | BenefitIssued, BenefitReserved, BenefitRedeemed, BenefitReservationReleased, BenefitExpired, BenefitRevoked, BenefitRedemptionReversed |
 
 ### Dead-Letter Streams
 
@@ -275,6 +276,9 @@ plus notification/finance/reporting fan-in.
 | 50 | `events:journey-order` | `waitlist` | JourneyOrderConfirmed/JourneyOrderCancelled advance a matching request to FULFILLED or return it to QUEUED |
 | 51 | `events:waitlist` | `notification` | Waitlist success, failure/requeue, expiry, and cancellation user touchpoints |
 | 52 | `events:waitlist` | `reporting` | Waitlist lifecycle metrics and read models |
+| 53 | `events:wallet-promotion` | `finance-settlement` | Benefit issuance, reservation, redemption, release, expiry, revocation, and reversal facts for future cost attribution and settlement read models; concrete consumption deferred to a later wave |
+| 54 | `events:wallet-promotion` | `notification` | Benefit arrival, expiry, redemption, revocation, and reversal user touchpoints; concrete consumption deferred to a later wave |
+| 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
 
 ### Cross-Cutting Consumers
 
@@ -283,9 +287,9 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch` until Dispatch's deferred-consumer activation wave | Business metrics, funnel analysis, operational dashboards |
-| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers |
+| `reporting` | All active `events:*` streams except `events:dispatch` and `events:wallet-promotion` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
+| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation. Wallet / Promotion benefit-cost events are a documented deferred consumer (events/wallet-promotion.md). |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers. Wallet / Promotion benefit touchpoints are a documented deferred consumer. |
 
 ### Deferred Dispatch Subscriptions
 

@@ -36,6 +36,7 @@ docs/08-contracts/
     ├── place-network.md
     ├── waitlist.md
     ├── dispatch.md
+    ├── wallet-promotion.md
     └── finance-settlement-events.md
 ```
 
