@@ -30,6 +30,7 @@ services=(
   reporting
   supplier-catalog
   legacy-acl
+  waitlist
 )
 
 for service in "${services[@]}"; do
