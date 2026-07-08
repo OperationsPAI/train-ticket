@@ -60,6 +60,22 @@ for attempt in 1 2 3 4 5; do
 done
 [ "$FOUND" = "yes" ] && ok "NotificationDelivered published after purchase recipient $TVL" || bad "no NotificationDelivered observed for recipient $TVL"
 
+echo "== 1b. ticket_issued email landed in mailpit"
+mailpit_has_ticket_email() { # TVL_REF -> yes/empty
+  k exec -i e2e-curl -- curl -s "http://mailpit:8025/api/v1/search?query=to:%22$1@passengers.train-ticket.local%22" 2>/dev/null \
+    | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+msgs = d.get("messages") or []
+print("yes" if any("ticket_issued" in (m.get("Subject") or "") for m in msgs) else "")' 2>/dev/null
+}
+MAIL_FOUND=""
+for attempt in 1 2 3 4 5; do
+  MAIL_FOUND=$(mailpit_has_ticket_email "$TVL")
+  [ "$MAIL_FOUND" = "yes" ] && break
+  sleep 3
+done
+[ "$MAIL_FOUND" = "yes" ] && ok "mailpit holds ticket_issued email for $TVL" || bad "no ticket_issued email in mailpit for $TVL"
+
 echo "== 2. open support case referencing order $ORDER"
 req POST customer-service /api/v1/support-cases "{\"requesterRef\":\"$TVL\",\"channel\":\"APP\",\"classification\":\"POST_SALES_HELP\",\"priority\":\"NORMAL\",\"description\":\"Help me with my order\",\"businessReferences\":{\"journeyOrderId\":\"$ORDER\"}}"
 check_code 201 "open support case"

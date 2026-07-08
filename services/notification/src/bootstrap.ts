@@ -1,4 +1,5 @@
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
+import { notificationChannelGatewayFromEnv } from "./adapters/channel-gateways.js";
 import { startNotificationMessaging } from "./adapters/messaging/runtime.js";
 import { startNotificationStorage } from "./adapters/storage/runtime.js";
 
@@ -22,9 +23,10 @@ export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): numbe
 }
 
 export async function bootstrap(options: BootstrapOptions = {}) {
-  const storage = process.env.DATABASE_URL ? await startNotificationStorage() : undefined;
+  const channelGateway = notificationChannelGatewayFromEnv();
+  const storage = process.env.DATABASE_URL ? await startNotificationStorage(channelGateway) : undefined;
   const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv(), storage);
-  const messaging = options.messaging === "disabled" ? undefined : await startNotificationMessaging(storage);
+  const messaging = options.messaging === "disabled" ? undefined : await startNotificationMessaging(storage, channelGateway);
   app.addHook("onClose", async () => {
     await messaging?.stop();
     if (!messaging) {

@@ -49,18 +49,18 @@ export class NonConformantNotificationTrigger extends Error {
   }
 }
 
-class AllowAllPreferences implements UserPreferenceRepository {
-  isEnabled(): boolean {
-    return true;
-  }
-}
-
-class DirectSuccessGateway implements NotificationChannelGateway {
+export class DirectSuccessGateway implements NotificationChannelGateway {
   async send(task: ReturnType<NotificationTask["toSnapshot"]>): Promise<DeliveryResult> {
     if (task.channel === "IN_APP") {
       return { ok: true };
     }
     return { ok: true, providerMessageId: `${task.channel.toLowerCase()}-${task.notificationTaskId}` };
+  }
+}
+
+class AllowAllPreferences implements UserPreferenceRepository {
+  isEnabled(): boolean {
+    return true;
   }
 }
 
@@ -267,7 +267,9 @@ function ticketIssuedMapping(): TriggerMapping {
   return {
     templateCode: "ticket_issued",
     intent: "TICKET_ISSUED",
-    channel: "IN_APP",
+    // The one real EMAIL intent: ticket issuance is the canonical
+    // customer email; every other intent stays IN_APP.
+    channel: "EMAIL",
     recipient: (payload) => recipientFromDirectFields(payload) ?? stringValue(payload.travelerRef),
     variables: (payload) => pickStringVariables(payload, ["entitlementId", "journeyOrderId", "orderId", "orderItemId", "segmentBookingId", "segmentRef", "credentialNo", "credentialType"]),
   };
