@@ -1,13 +1,13 @@
-use crate::domain::api_error_response;
 use crate::*;
 use async_trait::async_trait;
 use axum::{
     Json,
-    extract::{Extension, Path, RawQuery, State, rejection::JsonRejection},
+    extract::{Extension, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use rust_kit::{http as kit_http, idempotency as kit_idempotency};
+use serde::Deserialize;
 use serde_json::json;
 use shared_kernel::RequestContext;
 use std::sync::Arc;
@@ -102,13 +102,12 @@ pub(crate) async fn cancel_waitlist<S: WaitlistApi + 'static>(
 pub(crate) async fn list_waitlist<S: WaitlistApi + 'static>(
     State(st): State<ApiState<S>>,
     Extension(ctx): Extension<RequestContext>,
-    RawQuery(raw): RawQuery,
+    Query(q): Query<ListQuery>,
 ) -> Response {
     let corr = ctx.correlation_id().to_string();
-    let q = match parse_list_query(raw.as_deref()) {
-        Ok(q) => q,
-        Err(m) => return validation_error(corr, m),
-    };
+    if q.traveler_ref.trim().is_empty() {
+        return validation_error(corr, "travelerRef query parameter is required");
+    }
     match st
         .service
         .list(
@@ -149,44 +148,34 @@ fn idempotency_error_response(e: kit_idempotency::IdempotencyError, corr: String
 fn idempotency_key(headers: &HeaderMap) -> Result<String, kit_idempotency::IdempotencyError> {
     kit_idempotency::require_idempotency_key(headers)
 }
-struct ListQuery {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListQuery {
     traveler_ref: String,
     status: Option<WaitlistStatus>,
     limit: Option<usize>,
     offset: Option<usize>,
 }
-fn parse_list_query(raw: Option<&str>) -> Result<ListQuery, String> {
-    let raw = raw.ok_or_else(|| "travelerRef query parameter is required".to_string())?;
-    let (mut traveler, mut status, mut limit, mut offset) = (None, None, None, None);
-    for pair in raw.split('&').filter(|p| !p.is_empty()) {
-        let (n, v) = pair.split_once('=').unwrap_or((pair, ""));
-        match n {
-            "travelerRef" => traveler = Some(v.to_string()),
-            "status" => {
-                status = Some(
-                    v.parse()
-                        .map_err(|_| "status query parameter is invalid".to_string())?,
-                )
-            }
-            "limit" => {
-                limit = Some(v.parse().map_err(|_| {
-                    "limit query parameter must be a non-negative integer".to_string()
-                })?)
-            }
-            "offset" => {
-                offset = Some(v.parse().map_err(|_| {
-                    "offset query parameter must be a non-negative integer".to_string()
-                })?)
-            }
-            _ => {}
-        }
+
+pub(crate) fn api_error_response(e: WaitlistError, corr: String) -> Response {
+    kit_http::error_response(
+        error_status(&e),
+        e.code(),
+        e.message().to_string(),
+        corr,
+        Some(json!({"domainCode":e.code()})),
+    )
+}
+
+fn error_status(error: &WaitlistError) -> StatusCode {
+    match error {
+        WaitlistError::ValidationFailed(_) => StatusCode::BAD_REQUEST,
+        WaitlistError::NotFound(_) => StatusCode::NOT_FOUND,
+        WaitlistError::Conflict(_) => StatusCode::CONFLICT,
+        WaitlistError::IdempotencyKeyReused(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        WaitlistError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
+        WaitlistError::DomainRuleViolation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        WaitlistError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        WaitlistError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
-    Ok(ListQuery {
-        traveler_ref: traveler
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| "travelerRef query parameter is required".to_string())?,
-        status,
-        limit,
-        offset,
-    })
 }

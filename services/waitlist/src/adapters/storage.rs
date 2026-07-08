@@ -13,10 +13,21 @@ impl PostgresWaitlistService {
         let storage = rust_kit::storage::Storage::from_env()
             .await
             .map_err(storage_error)?;
-        storage
-            .migrate_dir("services/waitlist/migrations")
-            .await
-            .map_err(storage_error)?;
+        let migrations_dir =
+            std::env::var("MIGRATIONS_DIR").unwrap_or_else(|_| "/app/migrations".into());
+        match storage.migrate_dir(&migrations_dir).await {
+            Ok(()) => {}
+            Err(primary_error) => {
+                if migrations_dir == "/app/migrations" {
+                    storage
+                        .migrate_dir("services/waitlist/migrations")
+                        .await
+                        .map_err(storage_error)?;
+                } else {
+                    return Err(storage_error(primary_error));
+                }
+            }
+        }
         Ok(Self {
             storage,
             fulfillment_client: Arc::new(ReqwestFulfillmentClient::from_env()),
@@ -158,7 +169,12 @@ impl PostgresWaitlistService {
         let event =
             request.start_matching(envelope.event_id.clone(), envelope.occurred_at.clone())?;
 
-        let key = journey_order_idempotency_key(&request.waitlist_request_id);
+        let key = request
+            .fulfillment_idempotency_keys
+            .as_ref()
+            .expect("matching creates fulfillment idempotency keys")
+            .order
+            .clone();
         match self
             .fulfillment_client
             .fulfill(&request, &key, &envelope.correlation_id)

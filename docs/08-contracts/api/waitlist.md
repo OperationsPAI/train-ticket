@@ -14,9 +14,10 @@ Activation-wave rulings:
   `CapacityReleased` event for the head of the queue, it prices at current fare
   and creates a commercial offer before creating the order:
   `POST /api/v1/fare-quotes` with idempotency key
-  `wl-quote:{waitlistRequestId}`, then `POST /api/v1/offers` with key
-  `wl-offer:{waitlistRequestId}`, then `POST /api/v1/journey-orders` with key
-  `wl-fulfill:{waitlistRequestId}` and the real `offerId`. The existing
+  a persisted UUID-v7 idempotency key, then `POST /api/v1/offers` with a
+  persisted UUID-v7 key and the candidate Trip Planning `itineraryRef`, then
+  `POST /api/v1/journey-orders` with a persisted UUID-v7 key and the real
+  `offerId`. The existing
   journey-order saga owns booking, capacity hold, payment capture, and
   ticketing. Waitlist then consumes `JourneyOrderConfirmed` and
   `JourneyOrderCancelled` to move the request to `FULFILLED` or back to
@@ -68,8 +69,10 @@ back to `QUEUED` when the associated journey order is cancelled.
 | `travelClass` | string | no | Requested travel class/seat class when specified by the candidate plan. |
 | `deadline` | RFC3339 UTC | yes | Latest time the request may be fulfilled. |
 | `paymentGuaranteeRef` | string | yes | Payment guarantee reference; MUST start with `pay-auth-` or be an existing `paymentIntentId` (`pi-<uuid>`). |
+| `itineraryRef` | string | yes | Candidate Trip Planning itinerary reference captured at waitlist creation; used to create the fulfillment offer at current price. |
 | `intentFingerprint` | string | yes | Stable fingerprint of the mutually exclusive travel intent. Used with `travelerRef` to enforce the active-request invariant. |
 | `status` | enum | yes | One of `DRAFT`, `QUEUED`, `MATCHING`, `FULFILLED`, `EXPIRED`, `CANCELLED`, `SUSPENDED`, `CLOSED`. |
+| `journeyOrderRef` | string | no | Fulfilled journey order reference after Journey Order confirms the order. |
 
 ## Endpoints
 
@@ -95,6 +98,7 @@ only; it does not call Payment to create or close a real pre-authorization.
 | `travelClass` | string | no | Requested travel class/seat class. |
 | `deadline` | RFC3339 UTC | yes | Latest fulfillment time; must be in the future at creation. |
 | `paymentGuaranteeRef` | string | yes | Required guarantee reference; MUST start with `pay-auth-` or be an existing `paymentIntentId` (`pi-<uuid>`). |
+| `itineraryRef` | string | yes | Candidate Trip Planning itinerary reference to use when creating the fulfillment offer. |
 | `intentFingerprint` | string | yes | Stable mutual-exclusion key for the requested travel intent. |
 
 **Response (201):** `WaitlistRequest` resource.

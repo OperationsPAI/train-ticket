@@ -24,6 +24,7 @@ mod tests {
             travel_class: Some("SECOND".into()),
             deadline: "2099-01-01T00:00:00.000Z".into(),
             payment_guarantee_ref: "pay-auth-test".into(),
+            itinerary_ref: "itn-test".into(),
             intent_fingerprint: "intent-a".into(),
         }
     }
@@ -155,10 +156,14 @@ mod tests {
     impl FulfillmentClient for FakeOrder {
         async fn fulfill(
             &self,
-            _: &WaitlistRequest,
-            _: &str,
+            request: &WaitlistRequest,
+            idempotency_key: &str,
             _: &str,
         ) -> Result<String, FulfillmentClientError> {
+            assert_eq!(
+                request.fulfillment_idempotency_keys.as_ref().unwrap().order,
+                idempotency_key
+            );
             self.result
                 .lock()
                 .unwrap()

@@ -12,9 +12,8 @@ Activation-wave rulings:
 - Fulfillment reuses the normal journey-order chain. Waitlist consumes
   `CapacityReleased` for a matching head-of-queue request, calls the normal
   quote→offer→order chain (`POST /api/v1/fare-quotes` with
-  `wl-quote:{waitlistRequestId}`, `POST /api/v1/offers` with
-  `wl-offer:{waitlistRequestId}`, and `POST /api/v1/journey-orders` with
-  `wl-fulfill:{waitlistRequestId}`), and then consumes `JourneyOrderConfirmed`
+  persisted UUID-v7 idempotency keys for each downstream POST and the captured
+  candidate Trip Planning `itineraryRef` when creating the offer), and then consumes `JourneyOrderConfirmed`
   or `JourneyOrderCancelled` to advance to `FULFILLED` or return to `QUEUED`.
   Fulfillment is at the current quoted fare at match time.
 - `AuthorizeWaitlistHold` and `WaitlistHoldAuthorized` are documented because
@@ -75,6 +74,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
 | `deadline` | RFC3339 UTC | yes | Latest fulfillment time. |
 | `paymentGuaranteeRef` | string | yes | Required guarantee reference (`pay-auth-*` or `pi-<uuid>`). |
+| `itineraryRef` | string | yes | Candidate Trip Planning itinerary reference used for fulfillment offer creation. |
 | `intentFingerprint` | string | yes | Stable mutual-exclusion key for the travel intent. |
 | `status` | enum | yes | `DRAFT`. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
@@ -115,6 +115,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Segment whose queue partition contains the request. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
+| `itineraryRef` | string | yes | Candidate Trip Planning itinerary reference used for fulfillment offer creation. |
 | `intentFingerprint` | string | yes | Mutual-exclusion key. |
 | `queuedAt` | RFC3339 UTC | yes | Time the request entered or re-entered the queue. |
 | `status` | enum | yes | `QUEUED`. |
@@ -139,7 +140,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | `segmentRef` | string | yes | Segment being matched. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
 | `matchedCapacityReleaseRef` | string | yes | Envelope `eventId` of the consumed `CapacityReleased` fact that triggered matching. |
-| `journeyOrderIdempotencyKey` | string | yes | Deterministic idempotency key used when Waitlist posts to `POST /api/v1/journey-orders`. |
+| `journeyOrderIdempotencyKey` | string | yes | Persisted UUID-v7 idempotency key used when Waitlist posts to `POST /api/v1/journey-orders`. |
 | `startedAt` | RFC3339 UTC | yes | Matching start timestamp. |
 | `status` | enum | yes | `MATCHING`. |
 

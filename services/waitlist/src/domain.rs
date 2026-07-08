@@ -1,7 +1,5 @@
 use crate::utils::*;
 use crate::*;
-use axum::response::Response;
-use rust_kit::http as kit_http;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -92,6 +90,7 @@ pub struct WaitlistRequest {
     pub travel_class: Option<String>,
     pub deadline: String,
     pub payment_guarantee_ref: String,
+    pub itinerary_ref: String,
     pub intent_fingerprint: String,
     pub status: WaitlistStatus,
     pub created_at: String,
@@ -99,6 +98,8 @@ pub struct WaitlistRequest {
     pub queued_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order_ref: Option<String>,
+    #[serde(default)]
+    pub fulfillment_idempotency_keys: Option<FulfillmentIdempotencyKeys>,
     #[serde(default)]
     pub version: i64,
 }
@@ -111,6 +112,7 @@ impl WaitlistRequest {
         validate_prefixed_uuid(&command.traveler_ref, "travelerRef", "tvl-")?;
         validate_non_empty(&command.segment_ref, "segmentRef")?;
         validate_non_empty(&command.intent_fingerprint, "intentFingerprint")?;
+        validate_non_empty(&command.itinerary_ref, "itineraryRef")?;
         validate_payment_guarantee(&command.payment_guarantee_ref)?;
         if !deadline_after(&command.deadline, &now) {
             return Err(WaitlistError::DomainRuleViolation(
@@ -125,11 +127,13 @@ impl WaitlistRequest {
             travel_class: command.travel_class,
             deadline: command.deadline,
             payment_guarantee_ref: command.payment_guarantee_ref,
+            itinerary_ref: command.itinerary_ref,
             intent_fingerprint: command.intent_fingerprint,
             status: WaitlistStatus::Draft,
             created_at: now.clone(),
             queued_at: None,
             order_ref: None,
+            fulfillment_idempotency_keys: None,
             version: 1,
         };
         let created = WaitlistEvent::created(&r, now.clone());
@@ -157,12 +161,12 @@ impl WaitlistRequest {
         now: String,
     ) -> Result<WaitlistEvent, WaitlistError> {
         self.transition(WaitlistStatus::Matching)?;
-        Ok(WaitlistEvent::match_started(
-            self,
-            release,
-            journey_order_idempotency_key(&self.waitlist_request_id),
-            now,
-        ))
+        let order_key = self
+            .fulfillment_idempotency_keys
+            .get_or_insert_with(FulfillmentIdempotencyKeys::new)
+            .order
+            .clone();
+        Ok(WaitlistEvent::match_started(self, release, order_key, now))
     }
     pub fn record_order_ref(&mut self, order: String) {
         self.order_ref = Some(order);
@@ -233,7 +237,22 @@ impl WaitlistRequest {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FulfillmentIdempotencyKeys {
+    pub quote: String,
+    pub offer: String,
+    pub order: String,
+}
+impl FulfillmentIdempotencyKeys {
+    pub fn new() -> Self {
+        Self {
+            quote: uuid::Uuid::now_v7().to_string(),
+            offer: uuid::Uuid::now_v7().to_string(),
+            order: uuid::Uuid::now_v7().to_string(),
+        }
+    }
+}
+
 pub struct WaitlistQueue {
     partitions: HashMap<String, VecDeque<String>>,
 }
@@ -319,7 +338,7 @@ impl WaitlistEvent {
     }
     fn created(r: &WaitlistRequest, t: String) -> Self {
         Self::Created(
-            json!({"waitlistRequestId":r.waitlist_request_id,"accountId":r.account_id,"travelerRef":r.traveler_ref,"segmentRef":r.segment_ref,"travelClass":r.travel_class,"deadline":r.deadline,"paymentGuaranteeRef":r.payment_guarantee_ref,"intentFingerprint":r.intent_fingerprint,"status":"DRAFT","createdAt":t}),
+            json!({"waitlistRequestId":r.waitlist_request_id,"accountId":r.account_id,"travelerRef":r.traveler_ref,"segmentRef":r.segment_ref,"travelClass":r.travel_class,"deadline":r.deadline,"paymentGuaranteeRef":r.payment_guarantee_ref,"itineraryRef":r.itinerary_ref,"intentFingerprint":r.intent_fingerprint,"status":"DRAFT","createdAt":t}),
         )
     }
     fn payment(r: &WaitlistRequest, t: String) -> Self {
@@ -333,7 +352,7 @@ impl WaitlistEvent {
         order: Option<String>,
         requeue_reason: Option<String>,
     ) -> Self {
-        let mut v = json!({"waitlistRequestId":r.waitlist_request_id,"accountId":r.account_id,"travelerRef":r.traveler_ref,"segmentRef":r.segment_ref,"travelClass":r.travel_class,"intentFingerprint":r.intent_fingerprint,"queuedAt":t,"status":"QUEUED"});
+        let mut v = json!({"waitlistRequestId":r.waitlist_request_id,"accountId":r.account_id,"travelerRef":r.traveler_ref,"segmentRef":r.segment_ref,"travelClass":r.travel_class,"itineraryRef":r.itinerary_ref,"intentFingerprint":r.intent_fingerprint,"queuedAt":t,"status":"QUEUED"});
         if let Some(o) = order {
             v["journeyOrderRef"] = json!(o)
         }
@@ -373,6 +392,7 @@ pub struct CreateWaitlistCommand {
     pub travel_class: Option<String>,
     pub deadline: String,
     pub payment_guarantee_ref: String,
+    pub itinerary_ref: String,
     pub intent_fingerprint: String,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -391,8 +411,11 @@ pub struct WaitlistResource {
     pub travel_class: Option<String>,
     pub deadline: String,
     pub payment_guarantee_ref: String,
+    pub itinerary_ref: String,
     pub intent_fingerprint: String,
     pub status: WaitlistStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journey_order_ref: Option<String>,
 }
 impl From<&WaitlistRequest> for WaitlistResource {
     fn from(r: &WaitlistRequest) -> Self {
@@ -404,8 +427,10 @@ impl From<&WaitlistRequest> for WaitlistResource {
             travel_class: r.travel_class.clone(),
             deadline: r.deadline.clone(),
             payment_guarantee_ref: r.payment_guarantee_ref.clone(),
+            itinerary_ref: r.itinerary_ref.clone(),
             intent_fingerprint: r.intent_fingerprint.clone(),
             status: r.status,
+            journey_order_ref: r.order_ref.clone(),
         }
     }
 }
@@ -437,19 +462,7 @@ pub enum WaitlistError {
     Internal(String),
 }
 impl WaitlistError {
-    fn status(&self) -> StatusCode {
-        match self {
-            Self::ValidationFailed(_) => StatusCode::BAD_REQUEST,
-            Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::Conflict(_) => StatusCode::CONFLICT,
-            Self::IdempotencyKeyReused(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
-            Self::DomainRuleViolation(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-    fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::ValidationFailed(_) => "VALIDATION_FAILED",
             Self::NotFound(_) => "NOT_FOUND",
@@ -460,7 +473,7 @@ impl WaitlistError {
             Self::Unavailable(_) | Self::Internal(_) => "UNAVAILABLE",
         }
     }
-    fn message(&self) -> &str {
+    pub(crate) fn message(&self) -> &str {
         match self {
             Self::ValidationFailed(m)
             | Self::NotFound(m)
@@ -479,12 +492,3 @@ impl fmt::Display for WaitlistError {
     }
 }
 impl std::error::Error for WaitlistError {}
-pub(crate) fn api_error_response(e: WaitlistError, corr: String) -> Response {
-    kit_http::error_response(
-        e.status(),
-        e.code(),
-        e.message().to_string(),
-        corr,
-        Some(json!({"domainCode":e.code()})),
-    )
-}

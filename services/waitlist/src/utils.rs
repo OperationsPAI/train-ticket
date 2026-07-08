@@ -94,15 +94,6 @@ pub(crate) fn deterministic_event_id(event_type: &str, id: &str, version: i64) -
     let seed = format!("waitlist:{event_type}:{id}:{version}");
     format!("evt-wl-{:x}", Sha256::digest(seed.as_bytes()))
 }
-pub(crate) fn journey_order_idempotency_key(id: &str) -> String {
-    format!("wl-fulfill:{id}")
-}
-pub(crate) fn fare_quote_idempotency_key(id: &str) -> String {
-    format!("wl-quote:{id}")
-}
-pub(crate) fn offer_idempotency_key(id: &str) -> String {
-    format!("wl-offer:{id}")
-}
 pub(crate) fn string_field(payload: &Value, field: &str) -> Option<String> {
     payload
         .get(field)

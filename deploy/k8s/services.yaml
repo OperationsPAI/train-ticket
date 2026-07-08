@@ -2092,6 +2092,8 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/waitlist
+            - name: MIGRATIONS_DIR
+              value: /app/migrations
             - name: FARE_PRICING_BASE_URL
               value: http://fare-pricing:8080
             - name: OFFER_MANAGEMENT_BASE_URL

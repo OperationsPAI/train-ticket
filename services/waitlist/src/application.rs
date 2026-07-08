@@ -77,7 +77,12 @@ impl InMemoryWaitlistService {
             let request = state.requests.get_mut(&id).expect("queue head exists");
             let event =
                 request.start_matching(envelope.event_id.clone(), envelope.occurred_at.clone())?;
-            let key = journey_order_idempotency_key(&request.waitlist_request_id);
+            let key = request
+                .fulfillment_idempotency_keys
+                .as_ref()
+                .expect("matching creates fulfillment idempotency keys")
+                .order
+                .clone();
             (request.clone(), event, key)
         };
         publish_events(
@@ -602,11 +607,17 @@ impl FulfillmentClient for ReqwestFulfillmentClient {
         key: &str,
         _: &str,
     ) -> Result<String, FulfillmentClientError> {
+        let keys = request
+            .fulfillment_idempotency_keys
+            .as_ref()
+            .ok_or_else(|| {
+                FulfillmentClientError::Transient("missing fulfillment idempotency keys".into())
+            })?;
         let quote_id = self
             .post_for_string(
                 &self.fare_pricing_base_url,
                 "/api/v1/fare-quotes",
-                &fare_quote_idempotency_key(&request.waitlist_request_id),
+                &keys.quote,
                 json!({
                     "travelerRefs": [request.traveler_ref.clone()],
                     "channel": self.channel,
@@ -621,14 +632,13 @@ impl FulfillmentClient for ReqwestFulfillmentClient {
             .post_for_string(
                 &self.offer_management_base_url,
                 "/api/v1/offers",
-                &offer_idempotency_key(&request.waitlist_request_id),
+                &keys.offer,
                 json!({
                     "accountId": request.account_id,
                     "channelId": self.channel,
-                    "itineraryRef": quote_id,
+                    "itineraryRef": request.itinerary_ref,
                     "travelerRefs": [request.traveler_ref.clone()],
-                    "quoteRequestId": request.waitlist_request_id,
-                    "quoteId": quote_id,
+                    "quoteRequestId": quote_id,
                 }),
                 "offerId",
                 "offer-management",
