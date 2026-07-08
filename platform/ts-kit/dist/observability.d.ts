@@ -1,4 +1,4 @@
-import { type Span, type Tracer } from "@opentelemetry/api";
+import { type Context, type Span, type Tracer } from "@opentelemetry/api";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { type SpanExporter } from "@opentelemetry/sdk-trace-base";
 export type InitOpenTelemetryOptions = Readonly<{
@@ -8,6 +8,11 @@ export type InitOpenTelemetryOptions = Readonly<{
 export declare function otelTracingEnabled(): boolean;
 export declare function initOpenTelemetry(options?: InitOpenTelemetryOptions): NodeSDK | undefined;
 export declare function getOpenTelemetryTracer(serviceName?: string): Tracer | undefined;
+export declare function activeTraceContext(): Readonly<{
+    traceparent: string;
+    tracestate?: string;
+}> | undefined;
+export declare function remoteTraceContext(traceparent: string | undefined, tracestate?: string): Context | undefined;
 export declare function startConsumerSpan(attributes: MessagingConsumerSpanAttributes): Span | undefined;
 export type MessagingConsumerSpanAttributes = Readonly<{
     stream: string;
@@ -15,6 +20,7 @@ export type MessagingConsumerSpanAttributes = Readonly<{
     eventId: string;
     eventType: string;
     correlationId: string;
+    parentContext?: Context;
 }>;
 export declare function endSpanWithError(span: Span | undefined, error: unknown): void;
 export declare function endSpan(span: Span | undefined): void;

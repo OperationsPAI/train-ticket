@@ -44,6 +44,8 @@ class EventEnvelope(_PlatformEventEnvelope):
             occurredAt=restored.occurredAt,
             payload=restored.payload,
             schemaVersion=restored.schemaVersion,
+            traceparent=restored.traceparent or "",
+            tracestate=restored.tracestate,
         )
 
 
