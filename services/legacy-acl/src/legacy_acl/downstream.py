@@ -8,7 +8,9 @@ from urllib import parse, request, error
 
 
 class DownstreamError(RuntimeError):
-    pass
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _env_name(service: str) -> str:
@@ -87,25 +89,31 @@ class DownstreamClient:
                 return parsed_body
         except error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            raise DownstreamError(_downstream_message(service, raw, exc.reason)) from exc
+            message, code = _downstream_failure(service, raw, exc.reason)
+            raise DownstreamError(message, code=code) from exc
         except error.URLError as exc:
             raise DownstreamError(f"{service} unavailable: {exc.reason}") from exc
         except JSONDecodeError as exc:
             raise DownstreamError(f"{service} returned invalid JSON") from exc
 
 
-def _downstream_message(service: str, raw: str, fallback: str) -> str:
+def _downstream_failure(service: str, raw: str, fallback: str) -> tuple[str, str | None]:
     import json
 
     try:
         parsed = json.loads(raw)
     except JSONDecodeError:
         parsed = None
+    message = f"{service} request failed: {fallback}"
+    code = None
     if isinstance(parsed, dict):
-        message = parsed.get("message") or parsed.get("msg") or parsed.get("error")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-    return f"{service} request failed: {fallback}"
+        parsed_message = parsed.get("message") or parsed.get("msg") or parsed.get("error")
+        if isinstance(parsed_message, str) and parsed_message.strip():
+            message = parsed_message.strip()
+        parsed_code = parsed.get("code")
+        if isinstance(parsed_code, str) and parsed_code.strip():
+            code = parsed_code.strip()
+    return message, code
 
 
 def quote(value: str) -> str:
