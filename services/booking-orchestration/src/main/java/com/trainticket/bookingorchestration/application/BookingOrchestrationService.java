@@ -229,7 +229,18 @@ public class BookingOrchestrationService {
             return;
         }
         String reason = firstText(payload, "reason", "failureMessage", "failureCode");
-        booking.failReservation(reason == null ? "capacity hold failed" : reason);
+        if (booking.status().name().equals("FAILED") || booking.status().name().equals("CANCELLED")) {
+            warnCapacityAckSkip("CapacityHoldFailed", "segment booking already terminal");
+            return;
+        }
+        try {
+            booking.failReservation(reason == null ? "capacity hold failed" : reason);
+        } catch (IllegalStateException ex) {
+            // Redelivered or late hold failure racing a booking that already
+            // advanced; the event is conformant, so skip instead of poisoning.
+            warnCapacityAckSkip("CapacityHoldFailed", "segment booking state already advanced");
+            return;
+        }
         String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElse(null);
         if (sagaId != null) {
             segmentBookings.save(booking, sagaId);
@@ -376,11 +387,25 @@ public class BookingOrchestrationService {
         }
         String reason = firstText(payload, "reason", "failureMessage", "failureCode");
         String cancellationReason = reason == null ? "entitlement voided" : reason;
+        if (booking.status().name().equals("FAILED") || booking.status().name().equals("CANCELLED")) {
+            LOGGER.warn("Ack-skipping EntitlementVoided from entitlement-ticketing: segment booking already terminal");
+            return;
+        }
+        String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElse(null);
+        if (sagaId == null) {
+            LOGGER.warn("Ack-skipping EntitlementVoided from entitlement-ticketing: unknown saga for segment booking");
+            return;
+        }
         // A voided entitlement after ticketing is a cancellation (refund flow):
         // emit SegmentBookingCancelled so capacity releases the hold.
-        booking.requestCancellation(cancellationReason);
-        booking.markCancelled(cancellationReason);
-        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
+        try {
+            booking.requestCancellation(cancellationReason);
+            booking.markCancelled(cancellationReason);
+        } catch (IllegalStateException ex) {
+            LOGGER.warn("Ack-skipping EntitlementVoided from entitlement-ticketing: booking state already advanced");
+            return;
+        }
+        segmentBookings.save(booking, sagaId);
         publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
