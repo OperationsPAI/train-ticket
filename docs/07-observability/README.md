@@ -14,10 +14,12 @@ depend on external infrastructure.
 - health extension on `13133`.
 - zPages extension on `55679`.
 - debug exporters for traces, metrics, and logs.
+- Jaeger OTLP exporter for traces, targeting `jaeger:4317`.
 
-The debug exporters are intentional for the greenfield baseline. They make local
-signal flow visible without requiring Jaeger, Prometheus, Loki, ClickHouse, or a
-vendor backend. Production deployment can replace or extend the exporters while
+The debug exporters are retained for local smoke checks and low-level signal
+flow visibility. Traces are also exported to Jaeger all-in-one so local compose
+and kind users can query captured spans without changing the service-side OTLP
+contract. Production deployment can replace or extend the exporters while
 preserving the same service-side OTLP contract.
 
 ## Local Runtime
@@ -46,7 +48,8 @@ Stop the local collector:
 make observability-down
 ```
 
-The compose file lives at `platform/observability/docker-compose.yaml`.
+The compose file lives at `platform/observability/docker-compose.yaml` and starts
+both the OpenTelemetry Collector and Jaeger all-in-one.
 
 ## kind Cluster Deployment
 
@@ -88,6 +91,33 @@ kubectl -n train-ticket logs deploy/otel-collector -f
 Seeing no spans immediately after this infrastructure change is expected: the
 collector and service-side environment contract are present, but service SDK
 exporters are not installed by this task.
+
+## Jaeger Trace Querying
+
+Jaeger all-in-one is included for local, queryable trace storage. It accepts
+collector-exported OTLP/gRPC traces on the in-cluster `jaeger:4317` service port
+and serves the Jaeger UI on port `16686`. The service-side contract does not
+change: services still send OTLP to the collector through the standard `OTEL_*`
+environment variables.
+
+Access the UI from a kind cluster with port-forwarding:
+
+```bash
+kubectl -n train-ticket port-forward svc/jaeger 16686:16686
+```
+
+Open <http://127.0.0.1:16686>, select `journey-order` in the Service field, and
+run a search after generating a purchase flow. The same query can be checked via
+the Jaeger API:
+
+```bash
+curl -fsS 'http://127.0.0.1:16686/api/traces?service=journey-order&limit=5'
+```
+
+A successful purchase-chain sample returns at least one trace in the `data`
+array. Jaeger is configured with in-memory storage and `--memory.max-traces=20000`;
+traces are intentionally non-persistent and disappear when the Jaeger pod or
+compose container is restarted.
 
 ## Service Contract
 

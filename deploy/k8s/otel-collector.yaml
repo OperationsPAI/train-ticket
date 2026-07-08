@@ -32,6 +32,10 @@ data:
     exporters:
       debug:
         verbosity: basic
+      otlp/jaeger:
+        endpoint: jaeger:4317
+        tls:
+          insecure: true
 
     extensions:
       health_check:
@@ -55,6 +59,7 @@ data:
             - batch
           exporters:
             - debug
+            - otlp/jaeger
         metrics:
           receivers:
             - otlp
