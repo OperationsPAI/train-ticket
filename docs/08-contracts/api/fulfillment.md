@@ -1,6 +1,6 @@
 # Fulfillment — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-07-08
 
 ## Overview
 
@@ -69,6 +69,36 @@ timestamps, and Money.
 | `assessedAt` | timestamp | When no-show was assessed. |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`
+
+### Record Fulfillment Completion
+
+**POST** `/api/v1/fulfillment-records/completions`
+
+**Idempotency:** REQUIRED
+
+Records arrival/provider/admin completion after a previously boarded segment has completed.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `entitlementId` | string | yes | Reference to the entitlement (`ent-<uuid>`). |
+| `segmentBookingId` | string | yes | Segment booking reference (`sb-<uuid>`). |
+| `journeyOrderId` | string | yes | Order reference (`ord-<uuid>`). |
+| `travelerId` | string | yes | Traveler reference (`tvl-<uuid>`). |
+| `segmentRef` | string | yes | Segment reference (`seg-<uuid>`). |
+| `completionSource` | string | yes | Completion source: `ARRIVAL`, `PROVIDER`, `ADMIN`, `SYSTEM`. |
+| `completedAt` | timestamp | yes | When fulfillment completed; RFC3339 UTC. |
+
+**Response (201):**
+
+| Field | Type | Description |
+|---|---|---|
+| `fulfillmentRecordId` | string | Fulfillment record ID (`fr-<uuid>`). |
+| `status` | enum | `COMPLETED` |
+| `completedAt` | timestamp | Completion timestamp accepted by the service. |
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
 
 ### Get Fulfillment Record
 
