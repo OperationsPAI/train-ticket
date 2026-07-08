@@ -2,13 +2,18 @@ package com.trainticket.payment.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.DomainRuleViolation;
+import com.trainticket.payment.domain.Money;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 @Component
 public class PaymentInboundEventHandler implements EventSubscriber.EventHandler {
+    private static final Logger LOGGER = LoggerFactory.getLogger(PaymentInboundEventHandler.class);
+
     private final ConsumedEventDeduplicator deduplicator;
     private final PaymentCommandService paymentCommands;
 
@@ -27,8 +32,14 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             dispatch(envelope);
             return HandlerResult.SUCCESS;
         } catch (DomainRuleViolation | IllegalArgumentException exception) {
+            // The nested command transaction may already be rollback-only, so a
+            // clean commit of SUCCESS is impossible here anyway; classify FATAL
+            // and roll everything back together.
+            LOGGER.warn("eventType={} eventId={} rejected as non-processable", envelope.eventType(), envelope.eventId(), exception);
+            rollbackCurrentTransactionIfActive();
             return HandlerResult.FATAL_FAILURE;
         } catch (RuntimeException exception) {
+            LOGGER.warn("eventType={} eventId={} failed; will retry", envelope.eventType(), envelope.eventId(), exception);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.TRANSIENT_FAILURE;
         }
@@ -77,9 +88,15 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             // Approval does not reference any payment this context knows about.
             return;
         }
+        Money amount = payload.moneyFromApprovedActions();
+        if (amount == null || amount.isZero()) {
+            // CHANGE decisions routinely approve with a zero refund amount:
+            // nothing to refund, so this event is a no-op for payment.
+            return;
+        }
         paymentCommands.requestRefund(
             intentId,
-            payload.moneyFromApprovedActions(),
+            amount,
             reason == null ? "post-sales-approved" : reason,
             caseId,
             caseId,
