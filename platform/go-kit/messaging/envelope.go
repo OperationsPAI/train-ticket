@@ -46,8 +46,9 @@ func NewEventEnvelope(eventType, producer, correlationID string, payload any, op
 	}
 	envelope := EventEnvelope{EventID: ids.NewEventID(), EventType: strings.TrimSpace(eventType), OccurredAt: now, CorrelationID: ids.CanonicalCorrelationID(correlationID), Producer: strings.TrimSpace(producer), SchemaVersion: SchemaVersion, Payload: body}
 	if len(options) > 0 {
-		if traceparent := traceparentFromContext(options[0].Context); traceparent != "" {
+		if traceparent, tracestate := traceContextFromContext(options[0].Context); traceparent != "" {
 			envelope.Traceparent = traceparent
+			envelope.Tracestate = tracestate
 		}
 	}
 	if strings.TrimSpace(causationID) != "" {
@@ -60,8 +61,9 @@ func (e *EventEnvelope) injectTraceContext(ctx context.Context) {
 	if strings.TrimSpace(e.Traceparent) != "" {
 		return
 	}
-	if traceparent := traceparentFromContext(ctx); traceparent != "" {
+	if traceparent, tracestate := traceContextFromContext(ctx); traceparent != "" {
 		e.Traceparent = traceparent
+		e.Tracestate = tracestate
 	}
 }
 

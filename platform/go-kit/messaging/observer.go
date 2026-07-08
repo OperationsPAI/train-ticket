@@ -84,10 +84,10 @@ func SetSpanMessagingAttributes(ctx context.Context, stream, consumerGroup strin
 	)
 }
 
-func traceparentFromContext(ctx context.Context) string {
+func traceContextFromContext(ctx context.Context) (string, string) {
 	carrier := propagation.MapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, carrier)
-	return strings.TrimSpace(carrier.Get("traceparent"))
+	return strings.TrimSpace(carrier.Get("traceparent")), strings.TrimSpace(carrier.Get("tracestate"))
 }
 
 func remoteSpanContextFromEnvelope(envelope EventEnvelope) (trace.SpanContext, bool) {

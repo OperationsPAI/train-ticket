@@ -328,3 +328,22 @@ func mustSpanContext(t *testing.T, traceIDHex, spanIDHex string, sampled bool) t
 	}
 	return spanContext
 }
+
+func TestNewEventEnvelopeCopiesTracestateAlongsideTraceparent(t *testing.T) {
+	traceState, err := trace.ParseTraceState("vendor=value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanContext := mustSpanContext(t, "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", true).WithTraceState(traceState)
+	ctx := trace.ContextWithSpanContext(context.Background(), spanContext)
+	envelope, err := NewEventEnvelope("ThingHappened", "test-producer", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"thingId": "thing-1"}, EnvelopeOptions{Context: ctx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Traceparent == "" {
+		t.Fatal("traceparent must be injected for an active span context")
+	}
+	if envelope.Tracestate != "vendor=value" {
+		t.Fatalf("tracestate must ride along with traceparent, got %q", envelope.Tracestate)
+	}
+}
