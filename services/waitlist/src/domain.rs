@@ -203,8 +203,8 @@ impl WaitlistRequest {
     ) -> Result<Vec<WaitlistEvent>, WaitlistError> {
         self.order_ref = Some(order.clone());
         self.transition(WaitlistStatus::Fulfilled)?;
+        // FULFILLED rests observable; CLOSED is a future archival sweep.
         let ev = WaitlistEvent::fulfilled(self, order, now);
-        self.transition(WaitlistStatus::Closed)?;
         Ok(vec![ev])
     }
     pub fn cancel(&mut self, reason: String, now: String) -> Result<WaitlistEvent, WaitlistError> {
@@ -231,8 +231,8 @@ impl WaitlistRequest {
             }
         };
         self.transition(WaitlistStatus::Expired)?;
+        // EXPIRED rests observable; CLOSED is a future archival sweep.
         let ev = WaitlistEvent::expired(self, now);
-        self.transition(WaitlistStatus::Closed)?;
         Ok(vec![ev])
     }
 }

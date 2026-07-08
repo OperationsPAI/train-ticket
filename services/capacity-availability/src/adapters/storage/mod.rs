@@ -1794,6 +1794,7 @@ fn domain_event_to_wire(
                 "holdId": e.hold_id.to_string(),
                 "inventoryPoolId": e.inventory_pool_id.to_string(),
                 "capacityUnitRef": e.capacity_unit_ref.to_string(),
+                "segmentRef": e.service_segment_ref,
                 "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                 "releasedAt": unix_millis_to_rfc3339(e.released_at),
                 "releaseReason": e.release_reason,

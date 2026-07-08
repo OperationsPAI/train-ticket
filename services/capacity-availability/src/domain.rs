@@ -515,6 +515,9 @@ pub struct CapacityReleased {
     pub hold_id: HoldId,
     pub inventory_pool_id: InventoryPoolId,
     pub capacity_unit_ref: CapacityUnitRef,
+    /// Service Plan segment this pool sells; lets downstream consumers
+    /// (waitlist) match released capacity without a pool lookup.
+    pub service_segment_ref: String,
     pub interval: StationInterval,
     pub released_at: u64,
     pub release_reason: String,
@@ -753,6 +756,7 @@ impl InventoryPool {
                 hold_id: hold.hold_id.clone(),
                 inventory_pool_id: hold.scope.inventory_pool_id.clone(),
                 capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
+                service_segment_ref: self.identity.service_segment_ref.clone(),
                 interval: hold.scope.station_interval.clone(),
                 released_at: now,
                 release_reason,

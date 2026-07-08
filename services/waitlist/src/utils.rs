@@ -102,9 +102,7 @@ pub(crate) fn string_field(payload: &Value, field: &str) -> Option<String> {
         .map(str::to_string)
 }
 pub(crate) fn segment_from_payload(payload: &Value) -> Option<String> {
-    string_field(payload, "segmentRef")
-        .or_else(|| string_field(payload, "serviceSegmentRef"))
-        .or_else(|| string_field(payload, "capacityUnitRef"))
+    string_field(payload, "segmentRef").or_else(|| string_field(payload, "serviceSegmentRef"))
 }
 pub(crate) fn order_ref_from_payload(payload: &Value) -> Option<String> {
     string_field(payload, "orderRef")

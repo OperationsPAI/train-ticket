@@ -274,7 +274,7 @@ mod tests {
                 .get(&created.waitlist_request_id)
                 .unwrap()
                 .status,
-            WaitlistStatus::Closed
+            WaitlistStatus::Fulfilled
         );
     }
     #[tokio::test]
@@ -306,7 +306,7 @@ mod tests {
                 .get(&id)
                 .unwrap()
                 .status,
-            WaitlistStatus::Closed
+            WaitlistStatus::Expired
         );
     }
     #[tokio::test]
