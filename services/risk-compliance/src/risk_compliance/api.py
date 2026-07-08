@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from train_ticket_platform.observability import init_opentelemetry
 from .application import (
     AssessmentNotFoundError,
     BlockNotFoundError,
@@ -337,6 +338,7 @@ def create_app(
                 pool.close()
 
     app = FastAPI(title="Risk & Compliance", version="0.1.0", lifespan=lifespan)
+    init_opentelemetry(profile()["service_id"], app=app)
     repository, postgres_idempotency_store, postgres_publisher = _configure_postgres(app)
     store = store or postgres_idempotency_store or BoundedInMemoryIdempotencyStore()
     app.state.assessment_repository = repository

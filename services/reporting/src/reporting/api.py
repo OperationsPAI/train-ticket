@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from train_ticket_platform.observability import init_opentelemetry
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
 from .domain import DashboardReadModel, MetricCategory, MetricDefinition, ReportingError
 from train_ticket_platform.idempotency import configure_idempotency_middleware
@@ -373,6 +374,7 @@ def create_app(
                 pool.close()
 
     app = FastAPI(title="Reporting", version="0.1.0", lifespan=lifespan)
+    init_opentelemetry(profile()["service_id"], app=app)
     if app_service is None:
         app_service, default_idempotency_store = _postgres_service_from_env(app)
     if enable_messaging:

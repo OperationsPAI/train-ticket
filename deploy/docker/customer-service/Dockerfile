@@ -20,4 +20,4 @@ COPY --from=builder --chown=app:app /src/services/customer-service/migrations ./
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080
-CMD ["node", "-e", "import('./dist/bootstrap.js').then((m) => m.bootstrap()).catch((err) => { console.error(err); process.exit(1); })"]
+CMD ["node", "./dist/main.js"]

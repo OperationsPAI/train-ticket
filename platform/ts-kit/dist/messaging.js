@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import { endSpan, endSpanWithError, markSpanError, startConsumerSpan } from "./observability.js";
 import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 export class PublishFailed extends Error {
     constructor(message, options) {
@@ -118,7 +119,7 @@ export class InMemoryEventSubscriber {
             this.processedEventIds.add(envelope.eventId);
             return "ack";
         }
-        const rawResult = await this.handler(envelope);
+        const rawResult = await handleWithConsumerSpan(this.handler, envelope, "in-memory", "in-memory");
         const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
         if (result === "ack") {
             this.processedEventIds.add(envelope.eventId);
@@ -132,7 +133,7 @@ export class InMemoryEventSubscriber {
         if (this.processedEventIds.has(envelope.eventId)) {
             return false;
         }
-        const rawResult = await this.handler(envelope);
+        const rawResult = await handleWithConsumerSpan(this.handler, envelope, "in-memory", "in-memory");
         const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
         if (result === "ack") {
             this.processedEventIds.add(envelope.eventId);
@@ -333,7 +334,7 @@ export class RedisEventSubscriber {
         let result;
         let failureReason = "HandlerResult.dlq";
         try {
-            const rawResult = await handler(envelope);
+            const rawResult = await handleWithConsumerSpan(handler, envelope, stream, group);
             result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
             failureReason = failureReasonFromHandlerResult(rawResult);
         }
@@ -451,6 +452,28 @@ export function dlqStreamKey(context) {
 }
 export function redisUrl() {
     return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+async function handleWithConsumerSpan(handler, envelope, stream, consumerGroup) {
+    const span = startConsumerSpan({
+        stream,
+        consumerGroup,
+        eventId: envelope.eventId,
+        eventType: envelope.eventType,
+        correlationId: envelope.correlationId,
+    });
+    try {
+        const result = await handler(envelope);
+        const normalized = result === undefined ? "ack" : normalizeHandlerResult(result);
+        if (normalized !== "ack") {
+            markSpanError(span, String(failureReasonFromHandlerResult(result)));
+        }
+        endSpan(span);
+        return result;
+    }
+    catch (error) {
+        endSpanWithError(span, error);
+        throw error;
+    }
 }
 function truncateFailureReason(reason) {
     const text = reason instanceof Error
