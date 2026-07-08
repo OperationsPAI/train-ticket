@@ -180,7 +180,7 @@ func (s *Service) CreateScheduledService(ctx context.Context, command CreateSche
 		return CreateScheduledServiceResult{}, err
 	}
 
-	envelope := s.newEnvelope("ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
+	envelope := s.newEnvelope(ctx, "ServicePlanPublished", command.CorrelationID, command.CausationID, payload)
 
 	if err := s.within(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
@@ -377,7 +377,7 @@ func (s *Service) CreateServiceSegment(ctx context.Context, command CreateServic
 	if err != nil {
 		return CreateServiceSegmentResult{}, err
 	}
-	envelope := s.newEnvelope("ServicePlanChanged", command.CorrelationID, command.CausationID, payload)
+	envelope := s.newEnvelope(ctx, "ServicePlanChanged", command.CorrelationID, command.CausationID, payload)
 
 	if err := s.within(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
@@ -491,8 +491,8 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 	}
 }
 
-func (s *Service) newEnvelope(eventType, correlationID, causationID string, payload []byte) EventEnvelope {
-	options := []kitmsg.EnvelopeOptions{{Now: s.now().UTC()}}
+func (s *Service) newEnvelope(ctx context.Context, eventType, correlationID, causationID string, payload []byte) EventEnvelope {
+	options := []kitmsg.EnvelopeOptions{{Now: s.now().UTC(), Context: ctx}}
 	if strings.TrimSpace(causationID) != "" {
 		options[0].CausationID = causationID
 	}

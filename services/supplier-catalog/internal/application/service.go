@@ -170,7 +170,7 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 		s.mu.Unlock()
 	}
 
-	envelopes := wrapDomainEvents(events, cmd.CorrelationID, cmd.CausationID)
+	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
 			return s.repository.SaveSupplier(txCtx, supplier)
@@ -279,7 +279,7 @@ func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierComman
 		s.mu.Unlock()
 	}
 
-	envelopes := wrapDomainEvents(events, cmd.CorrelationID, cmd.CausationID)
+	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
 			return s.repository.SaveCarrier(txCtx, carrier)
@@ -361,7 +361,7 @@ func (s *Service) ActivateContract(ctx context.Context, cmd ActivateContractComm
 		s.mu.Unlock()
 	}
 
-	envelopes := wrapDomainEvents(events, cmd.CorrelationID, cmd.CausationID)
+	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
 			return s.repository.SaveContract(txCtx, contract)
@@ -441,10 +441,10 @@ func (s *Service) flushPendingEvents(ctx context.Context) error {
 	}
 }
 
-func wrapDomainEvents(events []interface{}, correlationID, causationID string) []EventEnvelope {
+func wrapDomainEvents(ctx context.Context, events []interface{}, correlationID, causationID string) []EventEnvelope {
 	envelopes := make([]EventEnvelope, 0, len(events))
 	for _, event := range events {
-		envelope, err := WrapDomainEvent(event, correlationID, causationID)
+		envelope, err := WrapDomainEvent(ctx, event, correlationID, causationID)
 		if err == nil {
 			envelopes = append(envelopes, envelope)
 		}
@@ -452,12 +452,12 @@ func wrapDomainEvents(events []interface{}, correlationID, causationID string) [
 	return envelopes
 }
 
-func WrapDomainEvent(event interface{}, correlationID, causationID string) (EventEnvelope, error) {
-	options := []kitmsg.EnvelopeOptions{}
+func WrapDomainEvent(ctx context.Context, event interface{}, correlationID, causationID string) (EventEnvelope, error) {
+	option := kitmsg.EnvelopeOptions{Context: ctx}
 	if strings.TrimSpace(causationID) != "" {
-		options = append(options, kitmsg.EnvelopeOptions{CausationID: causationID})
+		option.CausationID = causationID
 	}
-	return kitmsg.NewEventEnvelope(eventType(event), producerName, correlationID, event, options...)
+	return kitmsg.NewEventEnvelope(eventType(event), producerName, correlationID, event, option)
 }
 
 func newUUIDString() string                      { return ids.NewUUIDv7() }

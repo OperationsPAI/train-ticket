@@ -63,7 +63,7 @@ func (s *ReservationService) RequestReservation(ctx context.Context, cmd applica
 		if s.publisher == nil {
 			return nil
 		}
-		envelope, err := application.NewEventEnvelope("ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
+		envelope, err := application.NewEventEnvelope(txCtx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
 			"segmentBookingId":   created.SegmentBookingID,
 			"providerReference":  created.ProviderReference,
 			"normalizedEvidence": created.NormalizedEvidence,

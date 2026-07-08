@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/trainticket/greenfield/services/supplier-catalog/internal/domain"
 )
 
@@ -48,7 +50,7 @@ func (r failingRepository) FindContractByRef(context.Context, string) (domain.Co
 }
 
 func TestWrapDomainEventProducesContractEnvelope(t *testing.T) {
-	envelope, err := WrapDomainEvent(domain.SupplierRegisteredEvent{SupplierID: "sup-1", LegalName: "Legal", BrandName: "Brand", Status: domain.SupplierStatusDraft}, "0194f2e0-7b3e-7610-0284-5c26e8b0c444", "0194f2e0-7b3e-7610-0284-5c26e8b0c555")
+	envelope, err := WrapDomainEvent(context.Background(), domain.SupplierRegisteredEvent{SupplierID: "sup-1", LegalName: "Legal", BrandName: "Brand", Status: domain.SupplierStatusDraft}, "0194f2e0-7b3e-7610-0284-5c26e8b0c444", "0194f2e0-7b3e-7610-0284-5c26e8b0c555")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +68,20 @@ func TestWrapDomainEventProducesContractEnvelope(t *testing.T) {
 	}
 	if len(envelope.Payload) == 0 {
 		t.Fatalf("missing payload")
+	}
+	if envelope.Traceparent != "" {
+		t.Fatalf("traceparent must be absent without span context: %q", envelope.Traceparent)
+	}
+}
+
+func TestWrapDomainEventIncludesTraceparentFromContext(t *testing.T) {
+	ctx := trace.ContextWithSpanContext(context.Background(), mustSpanContext(t))
+	envelope, err := WrapDomainEvent(ctx, domain.SupplierRegisteredEvent{SupplierID: "sup-1", LegalName: "Legal", BrandName: "Brand", Status: domain.SupplierStatusDraft}, "0194f2e0-7b3e-7610-0284-5c26e8b0c444", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Traceparent != wantTraceparent {
+		t.Fatalf("traceparent mismatch: %q", envelope.Traceparent)
 	}
 }
 
@@ -103,4 +119,23 @@ func TestListSuppliersPropagatesRepositoryError(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected repository error, got %v", err)
 	}
+}
+
+const wantTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+func mustSpanContext(t *testing.T) trace.SpanContext {
+	t.Helper()
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled})
+	if !spanContext.IsValid() {
+		t.Fatal("invalid span context")
+	}
+	return spanContext
 }

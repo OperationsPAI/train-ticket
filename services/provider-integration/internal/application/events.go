@@ -41,12 +41,12 @@ type EventSubscriber interface {
 func TransientHandlerError(err error) error { return kitmsg.TransientHandlerError(err) }
 func FatalHandlerError(err error) error     { return kitmsg.FatalHandlerError(err) }
 
-func NewEventEnvelope(eventType, correlationID, causationID string, payload any) (EventEnvelope, error) {
-	options := []kitmsg.EnvelopeOptions{}
+func NewEventEnvelope(ctx context.Context, eventType, correlationID, causationID string, payload any) (EventEnvelope, error) {
+	option := kitmsg.EnvelopeOptions{Context: ctx}
 	if strings.TrimSpace(causationID) != "" {
-		options = append(options, kitmsg.EnvelopeOptions{CausationID: causationID})
+		option.CausationID = causationID
 	}
-	return kitmsg.NewEventEnvelope(eventType, ProducerName, correlationID, payload, options...)
+	return kitmsg.NewEventEnvelope(eventType, ProducerName, correlationID, payload, option)
 }
 
 func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }

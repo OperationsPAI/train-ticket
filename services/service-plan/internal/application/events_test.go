@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 )
@@ -99,12 +102,40 @@ func TestPublisherReceivesCorrectServicePlanEnvelope(t *testing.T) {
 	if envelope.OccurredAt.IsZero() {
 		t.Fatalf("missing occurredAt: %#v", envelope)
 	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"traceparent"`) {
+		t.Fatalf("traceparent must be omitted without span context: %s", body)
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		t.Fatalf("payload is not json: %v", err)
 	}
 	if payload["serviceNumber"] != "G1234" || payload["status"] != "ACTIVE" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestPublisherEnvelopeIncludesTraceparentFromContext(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(publisher)
+	ctx := trace.ContextWithSpanContext(context.Background(), mustSpanContext(t))
+	_, err := service.CreateScheduledService(ctx, CreateScheduledServiceCommand{
+		CarrierID:         "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001",
+		ServiceNumber:     "G1234",
+		DepartureTime:     time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:       time.Date(2026, 7, 5, 12, 30, 0, 0, time.UTC),
+		OriginNodeID:      "node-a",
+		DestinationNodeID: "node-b",
+		CorrelationID:     "corr-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+	})
+	if err != nil {
+		t.Fatalf("create scheduled service: %v", err)
+	}
+	if got := publisher.envelopes[0].Traceparent; got != wantTraceparent {
+		t.Fatalf("traceparent mismatch: %q", got)
 	}
 }
 
@@ -256,4 +287,23 @@ func TestCreateServiceSegmentAfterRestartUsesPersistedService(t *testing.T) {
 	if result.ScheduledServiceRef != "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c801" || result.SegmentRef == "" {
 		t.Fatalf("unexpected segment result: %#v", result)
 	}
+}
+
+const wantTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+func mustSpanContext(t *testing.T) trace.SpanContext {
+	t.Helper()
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled})
+	if !spanContext.IsValid() {
+		t.Fatal("invalid span context")
+	}
+	return spanContext
 }
