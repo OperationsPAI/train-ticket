@@ -57,6 +57,12 @@ behavior:
   # legacy facade
   p_legacy_cancel: 0.30       # cancel after ticket_issue instead of boarding
 
+  # waitlist fallback for purchase journeys that hit NO_AVAILABLE_CAPACITY.
+  # Conservative defaults: convert only some sold-out traffic and cancel rarely.
+  p_waitlist_on_no_capacity: 0.30
+  p_waitlist_cancel: 0.05
+  waitlist_deadline_minutes: 30
+
   # sales channel weights. NOTE: fare rule sets are published per channel;
   # out of the box only WEB has published rules, so other channels will get
   # quote failures unless you publish rule sets for them first.
@@ -128,3 +134,7 @@ bootstrap:
 polling:
   attempts: 8
   interval_seconds: 4
+
+waitlist:
+  poll_attempts: 8
+  poll_interval_seconds: 4

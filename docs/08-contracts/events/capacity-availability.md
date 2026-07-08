@@ -93,7 +93,7 @@ Last updated: 2026-07-04
 | Field | Description |
 |---|---|
 | **Producer** | capacity-availability |
-| **Consumers** | booking-orchestration |
+| **Consumers** | booking-orchestration, waitlist |
 | **Trigger** | `ReleaseHold` command processed (cancellation, refund, or compensation). |
 
 **Payload:**
@@ -103,6 +103,7 @@ Last updated: 2026-07-04
 | `holdId` | `HoldId` | yes | Hold ID. |
 | `inventoryPoolId` | `InventoryPoolId` | yes | Pool ID. |
 | `capacityUnitRef` | `CapacityUnitRef` | yes | Unit released. |
+| `segmentRef` | string | yes | Service Plan segment the pool sells (added 2026-07-09 for waitlist matching; additive). |
 | `interval` | `StationInterval` | yes | Station interval. |
 | `releasedAt` | RFC3339 UTC | yes | Release timestamp. |
 | `releaseReason` | string | yes | Reason (e.g. `post-sales-void`, `payment-expired`). |

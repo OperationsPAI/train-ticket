@@ -15,9 +15,10 @@ simulated actor pools:
 
 Everything probabilistic is a hyperparameter in `config.yaml`:
 `journey_mix` (what customers do), `behavior.*` (new-vs-existing identity,
-funnel abandonment, channels, seat types), `staff.*` (agent concurrency,
-reaction time, approval rates), `run.*` (customer concurrency, think
-times, duration, RNG seed), `bootstrap.*` (inventory guarantees).
+funnel abandonment, sold-out waitlist fallback, channels, seat types),
+`staff.*` (agent concurrency, reaction time, approval rates), `run.*`
+(customer concurrency, think times, duration, RNG seed), `bootstrap.*`
+(inventory guarantees).
 
 ## Run
 
@@ -41,8 +42,11 @@ Edit `config.yaml`, rerun `run.sh` to apply new hyperparameters.
 - Bootstrap is ops-side and idempotent; it guarantees searchable inventory
   (cities/services per date) and records route tuples the customers then
   rediscover through the public search API.
-- Sold-out inventory shows up as `purchase:failed` with reservation step
-  errors — that is a legitimate load outcome, not a generator bug. Add
-  more `services_per_date`/dates for more capacity.
+- Sold-out inventory (`NO_AVAILABLE_CAPACITY`) is a business outcome. A
+  conservative fraction is converted into waitlist traffic via
+  `behavior.p_waitlist_on_no_capacity`; stats expose `waitlist:queued`,
+  `waitlist:fulfilled`, `waitlist:expired`, and `waitlist:cancelled`. Add
+  more `services_per_date`/dates for more capacity if you want fewer sold-out
+  journeys.
 - Don't run global-state-mutating e2e scripts (07-fare-rules) while the
   generator is running if you care about clean assertions there.
