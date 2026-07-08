@@ -31,6 +31,7 @@ import uuid
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import redis.asyncio as aioredis
@@ -182,6 +183,12 @@ class Purchase:
     entitlement: str
     total_minor: int
     status: str = "confirmed"
+    offer: str = ""
+    payment_intent: str = ""
+    itinerary: str = ""
+    quote: str = ""
+    post_sales_case: str = ""
+    fulfillment_record: str = ""
 
 
 @dataclass
@@ -189,6 +196,7 @@ class Registry:
     accounts: list[dict] = field(default_factory=list)
     purchases: list[Purchase] = field(default_factory=list)
     routes: list[dict] = field(default_factory=list)
+    ops_entities: dict[str, list[str]] = field(default_factory=lambda: {"suppliers": [], "carriers": [], "contracts": []})
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # staff work queues (runtime only, never persisted)
     q_reservation: deque = field(default_factory=deque, repr=False)
@@ -205,6 +213,7 @@ class Registry:
                 reg.accounts = raw.get("accounts", [])
                 reg.purchases = [Purchase(**p) for p in raw.get("purchases", [])]
                 reg.routes = raw.get("routes", [])
+                reg.ops_entities = raw.get("ops_entities", reg.ops_entities)
             except Exception as exc:
                 print(f"[registry] ignoring unreadable state file: {exc}")
         return reg
@@ -216,7 +225,8 @@ class Registry:
         with open(tmp, "w") as fh:
             json.dump({"accounts": self.accounts,
                        "purchases": [vars(p) for p in self.purchases],
-                       "routes": self.routes}, fh)
+                       "routes": self.routes,
+                       "ops_entities": self.ops_entities}, fh)
         os.replace(tmp, path)
 
     async def pick_account(self, rng: random.Random) -> dict | None:
@@ -249,6 +259,13 @@ class Registry:
     async def release_purchase(self, p: Purchase, status: str) -> None:
         async with self.lock:
             p.status = status
+
+    async def remember_ops_entity(self, kind: str, entity_id: str) -> None:
+        async with self.lock:
+            bucket = self.ops_entities.setdefault(kind, [])
+            bucket.append(entity_id)
+            if len(bucket) > 200:
+                bucket.pop(0)
 
 
 async def wait_for(item: dict, key: str, timeout: float, poll: float = 1.0) -> Any:
@@ -357,7 +374,13 @@ class StaffSim:
 
     async def do_support(self, item: dict) -> None:
         case_id = item["case"]
-        if self.rng.random() < float(self.cfg["p_support_assign"]):
+        requester = item.get("requester", "tvl-loadgen")
+        branch = weighted_choice(self.rng, {
+            "assign_resolve": float(self.cfg.get("p_support_assign_resolve_branch", 0.70)),
+            "classify_escalate": float(self.cfg.get("p_support_classify_escalate_branch", 0.15)),
+            "classify_close": float(self.cfg.get("p_support_classify_close_branch", 0.15)),
+        })
+        if branch == "assign_resolve" and self.rng.random() < float(self.cfg["p_support_assign"]):
             await self.api.request(
                 "POST", "customer-service", f"/api/v1/support-cases/{case_id}/assign",
                 {"ownerQueue": "tier1"}, ok=(200, 201), step="staff-support-assign")
@@ -370,6 +393,37 @@ class StaffSim:
                     ok=(200, 201), step="staff-support-resolve")
                 item["support"] = "resolved"
         else:
+            await self.api.request(
+                "POST", "customer-service", f"/api/v1/support-cases/{case_id}/classify",
+                {"classification": "POST_SALES_HELP", "priority": "NORMAL"},
+                ok=(200, 201), step="staff-support-classify")
+            await self.think()
+            if branch == "classify_escalate":
+                await self.api.request(
+                    "POST", "customer-service", f"/api/v1/support-cases/{case_id}/assign",
+                    {"ownerQueue": "tier1"}, ok=(200, 201), step="staff-support-assign-before-escalate")
+                await self.api.request(
+                    "POST", "customer-service", f"/api/v1/support-cases/{case_id}/escalate",
+                    {"targetQueue": "tier2", "reason": "loadgen long-tail escalation"},
+                    ok=(200, 201), step="staff-support-escalate")
+                item["support"] = "escalated"
+            else:
+                await self.api.request(
+                    "POST", "customer-service", f"/api/v1/support-cases/{case_id}/close",
+                    {"reason": "NO_FURTHER_ACTION"}, ok=(200, 201), step="staff-support-close")
+                item["support"] = "closed"
+                if self.rng.random() < float(self.cfg.get("p_support_reopen_after_close", 0.10)):
+                    await self.think()
+                    await self.api.request(
+                        "POST", "customer-service", f"/api/v1/support-cases/{case_id}/reopen",
+                        {"reason": "customer supplied more context", "requesterRef": requester},
+                        ok=(200, 201), step="staff-support-reopen")
+                    await self.think()
+                    await self.api.request(
+                        "POST", "customer-service", f"/api/v1/support-cases/{case_id}/close",
+                        {"reason": "NO_FURTHER_ACTION"}, ok=(200, 201), step="staff-support-close-again")
+                    item["support"] = "reopened_closed"
+        if "support" not in item:
             item["support"] = "queued"
 
     async def close(self) -> None:
@@ -392,6 +446,8 @@ class CustomerSim:
         self.poll_attempts = int(cfg["polling"]["attempts"])
         self.poll_interval = float(cfg["polling"]["interval_seconds"])
         self.staff_wait = float(cfg["behavior"].get("staff_wait_seconds", 90))
+        self.long_tail = cfg.get("long_tail", {})
+        self.redis = aioredis.from_url(cfg["target"]["redis_url"], decode_responses=True)
 
     async def think(self) -> None:
         t = self.cfg["run"]["think_time_seconds"]
@@ -458,7 +514,11 @@ class CustomerSim:
         if not itins:
             raise StepFailed("search", f"no bookable itinerary for {route['date']}")
         itin = self.rng.choice(itins)
-        return {"itinerary": itin["itineraryRef"], "segment": itin["legs"][0]["serviceSegmentRef"]}
+        leg = itin["legs"][0]
+        return {"itinerary": itin["itineraryRef"], "segment": leg["serviceSegmentRef"],
+                "service": leg.get("servicePlanRef") or route.get("scheduled_service"),
+                "origin_node": leg.get("originStopRef") or route.get("origin_node"),
+                "dest_node": leg.get("destinationStopRef") or route.get("dest_node")}
 
     # -- journeys ----------------------------------------------------------
 
@@ -470,9 +530,10 @@ class CustomerSim:
         await self.think()
         if self.chance("p_abandon_after_search"):
             return "browsed"
-        await self.api.request("POST", "fare-pricing", "/api/v1/fare-quotes",
-                               {"travelerRefs": [tvl], "channel": channel,
-                                "segmentRefs": [found["segment"]]}, step="quote")
+        _, quote = await self.api.request("POST", "fare-pricing", "/api/v1/fare-quotes",
+                                          {"travelerRefs": [tvl], "channel": channel,
+                                           "segmentRefs": [found["segment"]]}, step="quote")
+        await self.maybe_read_probe({"quote": quote.get("quoteId"), "itinerary": found.get("itinerary")})
         return "browsed_with_quote"
 
     async def journey_purchase(self) -> str:
@@ -488,9 +549,9 @@ class CustomerSim:
         if self.chance("p_abandon_after_search"):
             raise Abandoned()
 
-        await self.api.request("POST", "fare-pricing", "/api/v1/fare-quotes",
-                               {"travelerRefs": travelers, "channel": channel,
-                                "segmentRefs": [found["segment"]]}, step="quote")
+        _, quote = await self.api.request("POST", "fare-pricing", "/api/v1/fare-quotes",
+                                          {"travelerRefs": travelers, "channel": channel,
+                                           "segmentRefs": [found["segment"]]}, step="quote")
         await self.think()
         if self.chance("p_abandon_after_quote"):
             raise Abandoned()
@@ -522,15 +583,31 @@ class CustomerSim:
         sb = await wait_for(resv, "sb", self.staff_wait)
 
         await self.think()
-        if self.chance("p_abandon_before_payment"):
-            return "abandoned_before_payment"
-
         total_minor = int(offer["total"]["minorUnits"])
         _, intent = await self.api.request(
             "POST", "payment", "/api/v1/payment-intents",
             {"businessRef": order_id, "purpose": "purchase",
              "amount": {"currency": "CNY", "minorUnits": total_minor},
              "payerRef": entry["account_id"]}, step="payment-intent")
+        await self.maybe_read_probe({
+            "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
+            "payment_intent": intent.get("paymentIntentId"), "itinerary": found.get("itinerary"),
+            "quote": quote.get("quoteId"), "service": found.get("service"),
+            "place": route.get("origin_place"), "node": found.get("origin_node"),
+        })
+        if self.chance("p_abandon_before_payment"):
+            if self.chance("p_cancel_payment_intent_on_abandon"):
+                await self.api.request(
+                    "POST", "payment", f"/api/v1/payment-intents/{intent['paymentIntentId']}/cancel",
+                    {"reason": "CUSTOMER_ABANDONED_CHECKOUT"}, ok=(200,), step="payment-cancel")
+                return "cancelled_payment_intent"
+            if self.chance("p_cancel_order_before_payment"):
+                await self.api.request(
+                    "POST", "journey-order", f"/api/v1/journey-orders/{order_id}/cancel",
+                    {"reason": "CUSTOMER_CANCELLED_BEFORE_PAYMENT"}, ok=(200,), step="order-cancel-before-payment")
+                return "cancelled_before_payment"
+            return "abandoned_before_payment"
+
         await self.api.request("POST", "payment",
                                f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
                                {}, ok=(200, 201), step="payment-capture")
@@ -547,7 +624,16 @@ class CustomerSim:
         await self.reg.add_purchase(Purchase(
             order=order_id, saga=resv.get("saga", ""), sb=sb, seg=found["segment"],
             traveler=travelers[0], account=entry["account_id"],
-            entitlement=ent, total_minor=total_minor))
+            entitlement=ent, total_minor=total_minor, offer=offer.get("offerId", ""),
+            payment_intent=intent.get("paymentIntentId", ""), itinerary=found.get("itinerary", ""),
+            quote=quote.get("quoteId", "")))
+        await self.maybe_read_probe({
+            "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
+            "payment_intent": intent.get("paymentIntentId"), "entitlement": ent,
+            "itinerary": found.get("itinerary"), "quote": quote.get("quoteId"),
+            "service": found.get("service"), "place": route.get("origin_place"),
+            "node": found.get("origin_node"),
+        })
         return "purchased"
 
     async def poll_order(self, order_id: str, want: set[str], give_up_on_block: bool = False) -> str | None:
@@ -578,6 +664,8 @@ class CustomerSim:
                                {}, ok=(200, 201), step="case-evaluate")
         await self.api.request("POST", "post-sales", f"/api/v1/post-sales-cases/{case_id}/approve",
                                {}, ok=(200, 201), step="case-approve")
+        p.post_sales_case = case_id
+        await self.maybe_read_probe({"post_sales_case": case_id, "order": p.order})
         return case_id
 
     async def journey_refund(self) -> str:
@@ -585,7 +673,11 @@ class CustomerSim:
         if p is None:
             return "no_purchase_to_refund"
         try:
-            await self._post_sales_case(p, "REFUND", "CUSTOMER_REQUEST")
+            case_id = await self._post_sales_case(p, "REFUND", "CUSTOMER_REQUEST")
+            if self.chance("p_refund_get_after_completion"):
+                refund_id = await self.find_refund_id(case_id)
+                if refund_id:
+                    await self.assert_get("payment", f"/api/v1/refunds/{refund_id}", "refundId", refund_id, "tail-get-refund")
         except Exception:
             await self.reg.release_purchase(p, "confirmed")
             raise
@@ -610,19 +702,21 @@ class CustomerSim:
             return "no_purchase_to_fulfill"
         try:
             if self.chance("p_no_show"):
-                await self.api.request(
+                _, record = await self.api.request(
                     "POST", "fulfillment", "/api/v1/fulfillment-records/no-show",
                     {"entitlementId": p.entitlement, "segmentBookingId": p.sb,
                      "journeyOrderId": p.order, "travelerId": p.traveler,
                      "segmentRef": p.seg, "reason": "BOARDING_WINDOW_EXPIRED"}, step="no-show")
+                p.fulfillment_record = record.get("fulfillmentRecordId", "")
                 outcome = "no_show"
             else:
-                await self.api.request(
+                _, record = await self.api.request(
                     "POST", "fulfillment", "/api/v1/fulfillment-records/boarding",
                     {"entitlementId": p.entitlement, "segmentBookingId": p.sb,
                      "journeyOrderId": p.order, "travelerId": p.traveler, "segmentRef": p.seg,
                      "source": "GATE", "sourceEventId": f"gate-{uuid7()}",
                      "occurredAt": now_iso()}, step="boarding")
+                p.fulfillment_record = record.get("fulfillmentRecordId", "")
                 await self.think()
                 await self.api.request(
                     "POST", "fulfillment", "/api/v1/fulfillment-records/completions",
@@ -634,6 +728,7 @@ class CustomerSim:
             await self.reg.release_purchase(p, "confirmed")
             raise
         await self.reg.release_purchase(p, "fulfilled")
+        await self.maybe_read_probe({"fulfillment_record": p.fulfillment_record, "entitlement": p.entitlement, "order": p.order})
         return outcome
 
     async def journey_support(self) -> str:
@@ -649,8 +744,101 @@ class CustomerSim:
              "businessReferences": {"journeyOrderId": p.order}}, step="support-case")
         case_id = case.get("supportCaseId") or case.get("caseId")
         if case_id:
-            self.reg.q_support.append({"kind": "support", "case": case_id})
+            self.reg.q_support.append({"kind": "support", "case": case_id, "requester": p.traveler})
+            await self.maybe_read_probe({"support_case": case_id})
         return "support_case"
+
+
+    # -- long-tail read probes ----------------------------------------------
+
+    def long_tail_enabled(self, key: str = "enabled") -> bool:
+        return bool(self.long_tail.get("enabled", True)) and bool(self.long_tail.get(key, True))
+
+    def long_tail_chance(self, key: str, default: float) -> bool:
+        if not self.long_tail_enabled():
+            return False
+        return self.rng.random() < float(self.long_tail.get(key, default))
+
+    async def assert_get(self, service: str, path: str, id_field: str | None, expected: str | None, step: str) -> dict:
+        _, data = await self.api.request("GET", service, path, ok=(200,), step=step)
+        self.stats.journeys[f"long_tail:{step}"] += 1
+        if id_field and expected and data.get(id_field) != expected:
+            self.stats.errors[f"long_tail:{step}:id_mismatch"] += 1
+            raise StepFailed(step, f"{id_field}={data.get(id_field)} expected {expected}")
+        return data
+
+    def assert_list_contains(self, page: dict, id_field: str, expected: str, step: str) -> None:
+        items = page.get("items") or []
+        if expected not in {item.get(id_field) for item in items if isinstance(item, dict)}:
+            self.stats.errors[f"long_tail:{step}:missing_item"] += 1
+            raise StepFailed(step, f"{id_field} {expected} not present in list response")
+
+    async def maybe_read_probe(self, refs: dict[str, str | None]) -> None:
+        if not self.long_tail_chance("p_read_probe_after_journey", 0.05):
+            return
+        order_id = refs.get("order")
+        account_id = refs.get("account")
+        if order_id and account_id:
+            page = await self.assert_get("journey-order", f"/api/v1/journey-orders?accountId={quote(account_id)}&limit=20&offset=0", None, None, "tail-list-orders")
+            self.assert_list_contains(page, "orderId", order_id, "tail-list-orders")
+            await self.assert_get("journey-order", f"/api/v1/journey-orders/{quote(order_id)}", "orderId", order_id, "tail-get-order")
+        if refs.get("offer"):
+            data = await self.assert_get("offer-management", f"/api/v1/offers/{quote(refs['offer'])}", None, None, "tail-get-offer")
+            got = data.get("offerId") or data.get("id")
+            if got != refs["offer"]:
+                self.stats.errors["long_tail:tail-get-offer:id_mismatch"] += 1
+                raise StepFailed("tail-get-offer", f"offer id {got} expected {refs['offer']}")
+        if refs.get("payment_intent"):
+            await self.assert_get("payment", f"/api/v1/payment-intents/{quote(refs['payment_intent'])}", "paymentIntentId", refs["payment_intent"], "tail-get-payment-intent")
+        if order_id and refs.get("entitlement"):
+            page = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0", None, None, "tail-list-entitlements")
+            self.assert_list_contains(page, "entitlementId", refs["entitlement"], "tail-list-entitlements")
+            await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements/{quote(refs['entitlement'])}", "entitlementId", refs["entitlement"], "tail-get-entitlement")
+        if refs.get("fulfillment_record"):
+            await self.assert_get("fulfillment", f"/api/v1/fulfillment-records/{quote(refs['fulfillment_record'])}", "fulfillmentRecordId", refs["fulfillment_record"], "tail-get-fulfillment")
+        if refs.get("post_sales_case"):
+            await self.assert_get("post-sales", f"/api/v1/post-sales-cases/{quote(refs['post_sales_case'])}", "caseId", refs["post_sales_case"], "tail-get-post-sales")
+        if refs.get("place"):
+            await self.assert_get("place-network", f"/api/v1/places/{quote(refs['place'])}", "placeId", refs["place"], "tail-get-place")
+        if refs.get("node"):
+            await self.assert_get("place-network", f"/api/v1/transport-nodes/{quote(refs['node'])}", "nodeId", refs["node"], "tail-get-transport-node")
+        if refs.get("service"):
+            page = await self.assert_get("service-plan", "/api/v1/scheduled-services?limit=100&offset=0", None, None, "tail-list-scheduled-services")
+            try:
+                self.assert_list_contains(page, "scheduledServiceRef", refs["service"], "tail-list-scheduled-services")
+            except StepFailed:
+                # One retry: a service observed via a fresh itinerary may not
+                # be visible to the list projection for a beat.
+                await asyncio.sleep(2)
+                page = await self.assert_get("service-plan", "/api/v1/scheduled-services?limit=100&offset=0", None, None, "tail-list-scheduled-services")
+                self.assert_list_contains(page, "scheduledServiceRef", refs["service"], "tail-list-scheduled-services")
+            await self.assert_get("service-plan", f"/api/v1/scheduled-services/{quote(refs['service'])}", "scheduledServiceRef", refs["service"], "tail-get-scheduled-service")
+        if refs.get("itinerary"):
+            await self.assert_get("trip-planning", f"/api/v1/itineraries/{quote(refs['itinerary'])}", "itineraryRef", refs["itinerary"], "tail-get-itinerary")
+        if refs.get("support_case"):
+            await self.assert_get("customer-service", f"/api/v1/support-cases/{quote(refs['support_case'])}", "caseId", refs["support_case"], "tail-get-support-case")
+        if refs.get("quote"):
+            await self.assert_get("fare-pricing", f"/api/v1/fare-quotes/{quote(refs['quote'])}", "quoteId", refs["quote"], "tail-get-fare-quote")
+
+    async def find_refund_id(self, case_id: str) -> str | None:
+        for _ in range(self.poll_attempts):
+            entries = await self.redis.xrevrange("events:payment", count=200)
+            for _id, fields in entries:
+                raw = fields.get("envelope")
+                if not raw:
+                    continue
+                try:
+                    env = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                payload = env.get("payload", {})
+                if env.get("eventType") == "RefundRequested" and payload.get("businessCaseRef") == case_id:
+                    return payload.get("refundId")
+            await asyncio.sleep(self.poll_interval)
+        return None
+
+    async def close(self) -> None:
+        await self.redis.aclose()
 
     async def journey_legacy(self) -> str:
         entry = await self.login_or_register()
@@ -688,6 +876,116 @@ class CustomerSim:
         await legacy("execute", "/api/v1/legacy/execute", {"orderId": order_id})
         return "legacy_completed"
 
+
+
+# ---------------------------------------------------------------------------
+# low-frequency operations simulator — read-heavy backoffice coverage
+# ---------------------------------------------------------------------------
+
+
+class OpsSim:
+    def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats, rng: random.Random):
+        self.cfg = cfg.get("ops", {})
+        self.api = api
+        self.reg = reg
+        self.stats = stats
+        self.rng = rng
+
+    def enabled(self) -> bool:
+        return bool(self.cfg.get("enabled", True))
+
+    async def worker(self, stop: asyncio.Event) -> None:
+        if not self.enabled():
+            return
+        interval = self.cfg.get("interval_seconds", {"min": 180, "max": 420})
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self.rng.uniform(float(interval["min"]), float(interval["max"])))
+                continue
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await self.sweep_once()
+                self.stats.journeys["ops:sweep"] += 1
+            except StepFailed as exc:
+                self.stats.journeys["ops:failed"] += 1
+                self.stats.errors[f"ops:{exc.step}"] += 1
+                print(f"[ops] failed — {exc}")
+            except Exception as exc:
+                self.stats.journeys["ops:crashed"] += 1
+                self.stats.errors[f"ops:crashed:{type(exc).__name__}"] += 1
+                print(f"[ops] crashed — {type(exc).__name__}: {str(exc)[:180]}")
+
+    async def sweep_once(self) -> None:
+        await self.reporting_reads()
+        await self.finance_reads()
+        await self.supplier_catalog_sweep()
+
+    async def reporting_reads(self) -> None:
+        await self.api.request("GET", "reporting", "/api/v1/metrics?category=operational&limit=20&offset=0", ok=(200,), step="ops-reporting-metrics")
+        self.stats.journeys["ops:reporting:metrics"] += 1
+        dashboard = self.cfg.get("dashboard_id", "dash-revenue")
+        await self.api.request("GET", "reporting", f"/api/v1/dashboards/{quote(dashboard)}", ok=(200,), step="ops-reporting-dashboard")
+        self.stats.journeys["ops:reporting:dashboard"] += 1
+        await self.api.request("GET", "reporting", f"/api/v1/dashboards/{quote(dashboard)}/rebuilds?limit=20&offset=0", ok=(200,), step="ops-reporting-rebuilds")
+        self.stats.journeys["ops:reporting:rebuilds"] += 1
+
+    async def finance_reads(self) -> None:
+        async with self.reg.lock:
+            purchases = list(self.reg.purchases)
+        if purchases:
+            order_id = self.rng.choice(purchases).order
+            path = f"/api/v1/reconciliation-cases?orderId={quote(order_id)}&limit=20&offset=0"
+        else:
+            path = "/api/v1/reconciliation-cases?limit=20&offset=0"
+        await self.api.request("GET", "finance-settlement", path, ok=(200,), step="ops-finance-reconciliation-list")
+        self.stats.journeys["ops:finance:reconciliation_cases"] += 1
+
+    async def supplier_catalog_sweep(self) -> None:
+        _, suppliers = await self.api.request("GET", "supplier-catalog", "/api/v1/suppliers?limit=20&offset=0", ok=(200,), step="ops-supplier-list")
+        self.stats.journeys["ops:supplier:list"] += 1
+        for supplier in suppliers.get("items") or []:
+            supplier_id = supplier.get("supplierId")
+            if supplier_id:
+                await self.reg.remember_ops_entity("suppliers", supplier_id)
+                break
+        async with self.reg.lock:
+            known_suppliers = list(self.reg.ops_entities.get("suppliers", []))
+        if known_suppliers:
+            supplier_id = self.rng.choice(known_suppliers)
+            await self.api.request("GET", "supplier-catalog", f"/api/v1/suppliers/{quote(supplier_id)}", ok=(200,), step="ops-supplier-get")
+            self.stats.journeys["ops:supplier:get"] += 1
+        if self.rng.random() >= float(self.cfg.get("p_supplier_catalog_write", 0.25)):
+            return
+        suffix = uuid7().split("-")[-1][:8].upper()
+        _, supplier = await self.api.request(
+            "POST", "supplier-catalog", "/api/v1/suppliers",
+            {"legalName": f"Loadgen Rail Supplier {suffix} Ltd", "brandName": f"LG Rail {suffix}",
+             "supplierCode": f"LG{suffix}"}, ok=(201,), step="ops-supplier-create")
+        supplier_id = supplier["supplierId"]
+        await self.reg.remember_ops_entity("suppliers", supplier_id)
+        self.stats.journeys["ops:supplier:create"] += 1
+        _, carrier = await self.api.request(
+            "POST", "supplier-catalog", "/api/v1/carriers",
+            {"supplierId": supplier_id, "name": f"Loadgen Carrier {suffix}",
+             "code": f"LGC{suffix[:5]}", "transportMode": "RAIL"}, ok=(201,), step="ops-carrier-create")
+        carrier_id = carrier["carrierId"]
+        await self.reg.remember_ops_entity("carriers", carrier_id)
+        self.stats.journeys["ops:carrier:create"] += 1
+        _, contract = await self.api.request(
+            "POST", "supplier-catalog", "/api/v1/contracts",
+            {"supplierId": supplier_id, "carrierId": carrier_id, "contractRef": f"LG-CONTRACT-{suffix}",
+             "effectiveFrom": now_iso()}, ok=(201,), step="ops-contract-create")
+        contract_id = contract.get("contractId")
+        if contract_id:
+            await self.reg.remember_ops_entity("contracts", contract_id)
+        self.stats.journeys["ops:contract:create"] += 1
+        # The API contract defines GET only for suppliers; carrier/contract reads
+        # are therefore intentionally represented by persisted IDs plus supplier
+        # list/get checks rather than undocumented endpoints.
+        if supplier_id:
+            await self.api.request("GET", "supplier-catalog", f"/api/v1/suppliers/{quote(supplier_id)}", ok=(200,), step="ops-supplier-get-created")
+            self.stats.journeys["ops:supplier:get_created"] += 1
 
 # ---------------------------------------------------------------------------
 # bootstrap (ops-side, idempotent) — guarantees searchable inventory
@@ -767,7 +1065,12 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
                     {"originRef": route["origin_place"], "destinationRef": route["dest_place"],
                      "departureDate": route["date"], "travelerRefs": [probe_tvl],
                      "channel": "WEB"}, ok=(200,), step="bootstrap-verify")
-                if any(_bookable(i) for i in res.get("itineraries") or []):
+                bookable = next((i for i in res.get("itineraries") or [] if _bookable(i)), None)
+                if bookable:
+                    leg = bookable["legs"][0]
+                    route["scheduled_service"] = leg.get("servicePlanRef")
+                    route["origin_node"] = leg.get("originStopRef")
+                    route["dest_node"] = leg.get("destinationStopRef")
                     ok_route = True
                     break
             except StepFailed:
@@ -802,9 +1105,14 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
                              "channel": "WEB"}, ok=(200,), step="bootstrap-discover")
                     except StepFailed:
                         continue
-                    if any(_bookable(i) for i in res.get("itineraries") or []):
+                    bookable = next((i for i in res.get("itineraries") or [] if _bookable(i)), None)
+                    if bookable:
+                        leg = bookable["legs"][0]
                         reg.routes.append({"origin_place": a_place, "dest_place": b_place,
-                                           "date": date, "service_number": None})
+                                           "date": date, "service_number": None,
+                                           "scheduled_service": leg.get("servicePlanRef"),
+                                           "origin_node": leg.get("originStopRef"),
+                                           "dest_node": leg.get("destinationStopRef")})
                         seen.add((a_place, b_place, date))
     print(f"[bootstrap] routes known (bookable): {len(reg.routes)}")
 
@@ -871,6 +1179,7 @@ async def main() -> None:
     reg = Registry.load(cfg["run"].get("state_file") or "")
     staff = StaffSim(cfg, api, reg, stats, rng)
     sim = CustomerSim(cfg, api, reg, stats, rng)
+    ops = OpsSim(cfg, api, reg, stats, rng)
 
     try:
         await bootstrap(cfg, api, reg, rng)
@@ -891,6 +1200,8 @@ async def main() -> None:
              for i in range(int(cfg["run"]["workers"]))]
     tasks += [asyncio.create_task(staff.worker(i, stop))
               for i in range(int(cfg["staff"]["workers"]))]
+    if ops.enabled():
+        tasks.append(asyncio.create_task(ops.worker(stop)))
     tasks.append(asyncio.create_task(reporter(cfg, stats, reg, stop)))
 
     await stop.wait()
@@ -898,6 +1209,7 @@ async def main() -> None:
     reg.save(cfg["run"].get("state_file") or "")
     print("[final] " + json.dumps(stats.snapshot(), sort_keys=True), flush=True)
     await staff.close()
+    await sim.close()
     await api.close()
 
 
