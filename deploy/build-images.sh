@@ -31,6 +31,7 @@ services=(
   supplier-catalog
   legacy-acl
   waitlist
+  dispatch
 )
 
 for service in "${services[@]}"; do

@@ -10,19 +10,9 @@ type ServiceProfile struct {
 }
 
 func Profile() ServiceProfile {
-	return ServiceProfile{
-		ServiceID:    "dispatch",
-		Domain:       "Dispatch",
-		Language:     "golang",
-		Phase:        "future-scope",
-		WorkPackages: []string{},
-		Owns:         []string{"RideRequest", "RideAssignment", "DriverLifecycle", "Eta"},
-	}
+	return ServiceProfile{ServiceID: "dispatch", Domain: "Dispatch", Language: "golang", Phase: "phase-1-core", WorkPackages: []string{"REQ-114"}, Owns: []string{"RideRequest", "RideAssignment", "DriverLifecycle", "Eta"}}
 }
+func Health() string { return "ok" }
 
-func Health() string {
-	return "ok"
-}
-
-const WorkPackageSummary = "future"
+const WorkPackageSummary = "REQ-114"
 const OwnershipSummary = "RideRequest, RideAssignment, DriverLifecycle, Eta"
