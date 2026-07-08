@@ -232,6 +232,100 @@ class MessagingTest {
         assertFalse(publisher.published.stream().anyMatch(e -> "RevenueRecognitionReversed".equals(e.eventType())));
     }
 
+
+    @Test
+    void postSalesAppliedCurrencyMismatchOpensRefundLagCaseInsteadOfFatal() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e113", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e113", null, "payment", 1, Map.of(
+                "paymentIntentId", "pi-currency-mismatch",
+                "businessRef", "ord-currency-mismatch",
+                "capturedAmount", Map.of("currency", "USD", "minorUnits", 10750),
+                "channel", "card",
+                "channelTransactionId", "card-currency-mismatch")));
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e114", "PostSalesApproved", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e113", null, "post-sales", 1, Map.of(
+                "caseId", "psc-currency-mismatch",
+                "orderId", "ord-currency-mismatch",
+                "approvedActions", Map.of(
+                    "decisionKind", "REFUND",
+                    "approvalRef", "approval-currency-mismatch",
+                    "refund", Map.of("orderId", "ord-currency-mismatch", "amount", Map.of("currency", "CNY", "minorUnits", 8750)),
+                    "steps", List.of()))));
+
+        HandlerResult applied = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e115", "PostSalesApplied", Instant.parse("2026-07-03T10:32:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e113", null, "post-sales", 1, Map.of(
+                "caseId", "psc-currency-mismatch",
+                "orderId", "ord-currency-mismatch",
+                "resultSummary", Map.of("description", "applied"))));
+
+        assertEquals(HandlerResult.SUCCESS, applied);
+        EventEnvelope opened = publisher.published.stream().filter(e -> "ReconciliationCaseOpened".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals("refund-lag", ((Map<?, ?>) opened.payload()).get("differenceType"));
+        assertEquals("pi-currency-mismatch", ((Map<?, ?>) opened.payload()).get("paymentIntentId"));
+        assertEquals(-8750L, ((Map<?, ?>) ((Map<?, ?>) opened.payload()).get("expectedAmount")).get("minorUnits"));
+    }
+
+    @Test
+    void postSalesAppliedDlqSampleZeroRefundChangeIsNoOpAndConsumesEvent() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e120", "PaymentCaptured", Instant.parse("2026-07-03T10:30:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e120", null, "payment", 1, Map.of(
+                "paymentIntentId", "pi-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                "businessRef", "ord-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 10750),
+                "channel", "wechat_pay",
+                "channelTransactionId", "wx-019f4186-340a-7f86-a2f0-4a10c63c1bc8")));
+        publisher.published.clear();
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e121", "PostSalesApproved", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e120", null, "post-sales", 1, Map.of(
+                "caseId", "psc-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                "orderId", "ord-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                "approvedActions", Map.of(
+                    "decisionKind", "CHANGE",
+                    "approvalRef", "approval-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                    "refund", Map.of(
+                        "orderId", "ord-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                        "amount", Map.of("currency", "CNY", "minorUnits", 0)),
+                    "steps", List.of()))));
+
+        HandlerResult applied = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e109", "PostSalesApplied", Instant.parse("2026-07-03T10:32:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e120", null, "post-sales", 1, Map.of(
+                "caseId", "psc-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                "orderId", "ord-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                "resultSummary", Map.of(
+                    "description", "change applied",
+                    "caseId", "psc-019f4186-340a-7f86-a2f0-4a10c63c1bc8",
+                    "orderId", "ord-019f4186-340a-7f86-a2f0-4a10c63c1bc8"))));
+
+        assertEquals(HandlerResult.SUCCESS, applied);
+        assertEquals(3, consumedEvents.saveCount);
+        assertFalse(publisher.published.stream().anyMatch(e -> "RevenueRecognitionReversed".equals(e.eventType())));
+        assertFalse(publisher.published.stream().anyMatch(e -> "ReconciliationCaseOpened".equals(e.eventType())));
+        assertFalse(publisher.published.stream().anyMatch(e -> "ReconciliationCompleted".equals(e.eventType())));
+    }
+
     @Test
     void operationalFactUsesSegmentReservationRequestedIndexForOrderReference() {
         InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
