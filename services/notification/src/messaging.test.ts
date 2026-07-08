@@ -89,7 +89,14 @@ describe("notification messaging integration surface", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001" },
+      payload: {
+        recipientRef: "usr-test-001",
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+      },
     };
 
     await service.handleExternalTrigger(upstream);
@@ -120,7 +127,15 @@ describe("notification messaging integration surface", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001", transactionRequired: false },
+      payload: {
+        recipientRef: "usr-test-001",
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+        transactionRequired: false,
+      },
     };
 
     assert.equal(await service.handleExternalTrigger(upstream), "cancelled");
@@ -142,14 +157,22 @@ describe("notification messaging integration surface", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001", transactionRequired: true },
+      payload: {
+        recipientRef: "usr-test-001",
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+        transactionRequired: true,
+      },
     };
 
     assert.equal(await service.handleExternalTrigger(upstream), "delivered");
     assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationDispatched", "NotificationDelivered"]);
   });
 
-  it("rejects conformant trigger events that do not identify a recipient", async () => {
+  it("ack-skips conformant trigger events that do not identify a recipient", async () => {
     const publisher = new InMemoryEventPublisher();
     const service = new NotificationApplicationService(publisher);
     const upstream: EventEnvelope = {
@@ -160,7 +183,54 @@ describe("notification messaging integration surface", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { paymentIntentId: "pi-test-001" },
+      payload: {
+        paymentIntentId: "pi-test-001",
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+      },
+    };
+
+    assert.equal(await service.handleExternalTrigger(upstream), "ignored");
+    assert.equal(publisher.envelopes.length, 0);
+  });
+
+  it("ack-skips mapped post-sales triggers when no recipient can be derived", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c224",
+      eventType: "PostSalesExecutionStarted",
+      schemaVersion: 1,
+      producer: "post-sales",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: { caseId: "psc-test-001" },
+    };
+
+    assert.equal(await service.handleExternalTrigger(upstream), "ignored");
+    assert.equal(publisher.envelopes.length, 0);
+  });
+
+  it("rejects trigger events that violate their own event contract", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      eventType: "PaymentCaptured",
+      schemaVersion: 1,
+      producer: "payment",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        businessRef: "ord-test-001",
+        capturedAmount: { currency: "CNY", minorUnits: 35000 },
+        channel: "wechat_pay",
+        channelTransactionId: "wx-test-001",
+      },
     };
 
     await assert.rejects(
