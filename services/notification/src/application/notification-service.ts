@@ -267,7 +267,9 @@ function ticketIssuedMapping(): TriggerMapping {
   return {
     templateCode: "ticket_issued",
     intent: "TICKET_ISSUED",
-    channel: "IN_APP",
+    // The one real EMAIL intent: ticket issuance is the canonical
+    // customer email; every other intent stays IN_APP.
+    channel: "EMAIL",
     recipient: (payload) => recipientFromDirectFields(payload) ?? stringValue(payload.travelerRef),
     variables: (payload) => pickStringVariables(payload, ["entitlementId", "journeyOrderId", "orderId", "orderItemId", "segmentBookingId", "segmentRef", "credentialNo", "credentialType"]),
   };

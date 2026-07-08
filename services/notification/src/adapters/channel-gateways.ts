@@ -7,6 +7,14 @@ export { DirectSuccessGateway };
 
 const SMTP_TIMEOUT_MS = 5_000;
 const EMAIL_FROM = "no-reply@train-ticket.local";
+// The domain stores no contact email (recipientRef is a traveler/account
+// ref), so the demo cluster derives a synthetic mailbox from the ref. This
+// keeps mailpit messages searchable by recipient ref.
+const SYNTHETIC_RECIPIENT_DOMAIN = "passengers.train-ticket.local";
+
+export function recipientEmailAddress(recipientRef: string): string {
+  return recipientRef.includes("@") ? recipientRef : `${recipientRef}@${SYNTHETIC_RECIPIENT_DOMAIN}`;
+}
 
 export type SmtpTransporter = Pick<Transporter, "sendMail">;
 
@@ -24,7 +32,7 @@ export class SmtpChannelGateway implements NotificationChannelGateway {
     try {
       const result = await withSmtpTimeout(this.transporter.sendMail({
         from: EMAIL_FROM,
-        to: task.recipientRef,
+        to: recipientEmailAddress(task.recipientRef),
         subject: `[train-ticket] ${task.templateCode}`,
         text: renderTextBody(task.variables),
         headers: {

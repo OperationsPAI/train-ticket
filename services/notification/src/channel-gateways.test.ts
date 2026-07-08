@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { DirectSuccessGateway, SmtpChannelGateway, notificationChannelGatewayFromEnv, type SmtpTransporter } from "./adapters/channel-gateways.js";
+import { DirectSuccessGateway, SmtpChannelGateway, notificationChannelGatewayFromEnv, recipientEmailAddress, type SmtpTransporter } from "./adapters/channel-gateways.js";
 import type { DeliveryResult, NotificationChannelGateway } from "./application/notification-service.js";
 import type { NotificationTaskSnapshot } from "./domain.js";
 
@@ -25,6 +25,16 @@ function notificationTask(overrides: Partial<NotificationTaskSnapshot> = {}): No
     ...overrides,
   };
 }
+
+describe("recipientEmailAddress", () => {
+  it("keeps literal email addresses and derives a synthetic mailbox from domain refs", () => {
+    assert.equal(recipientEmailAddress("alice@example.test"), "alice@example.test");
+    assert.equal(
+      recipientEmailAddress("tvl-0194f2e0-7b3e-7610-8284-5c26e8b0c222"),
+      "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0c222@passengers.train-ticket.local",
+    );
+  });
+});
 
 describe("notification channel gateways", () => {
   it("maps accepted EMAIL SMTP sends to a successful delivery result", async () => {
