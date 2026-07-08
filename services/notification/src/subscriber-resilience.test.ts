@@ -53,7 +53,14 @@ function envelope(eventId: string): EventEnvelope {
     causationId: "cmd-test",
     correlationId: "corr-test",
     occurredAt: "2026-07-05T10:00:00.000Z",
-    payload: { recipientRef: "usr-test-001", paymentIntentId: "pi-test-001" },
+    payload: {
+      recipientRef: "usr-test-001",
+      paymentIntentId: "pi-test-001",
+      businessRef: "ord-test-001",
+      capturedAmount: { currency: "CNY", minorUnits: 35000 },
+      channel: "wechat_pay",
+      channelTransactionId: "wx-test-001",
+    },
   };
 }
 
