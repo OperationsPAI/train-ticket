@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS waitlist_requests (
     waitlist_request_id text PRIMARY KEY,
+    account_id text NOT NULL DEFAULT 'unknown',
     traveler_ref text NOT NULL,
     intent_fingerprint text NOT NULL,
     segment_ref text NOT NULL,

@@ -10,10 +10,13 @@ This contract enumerates exactly the Waitlist events listed in
 Activation-wave rulings:
 
 - Fulfillment reuses the normal journey-order chain. Waitlist consumes
-  `CapacityReleased` for a matching head-of-queue request, calls the existing
-  `POST /api/v1/journey-orders` API with a deterministic idempotency key, and
-  then consumes `JourneyOrderConfirmed` or `JourneyOrderCancelled` to advance to
-  `FULFILLED` or return to `QUEUED`.
+  `CapacityReleased` for a matching head-of-queue request, calls the normal
+  quote→offer→order chain (`POST /api/v1/fare-quotes` with
+  `wl-quote:{waitlistRequestId}`, `POST /api/v1/offers` with
+  `wl-offer:{waitlistRequestId}`, and `POST /api/v1/journey-orders` with
+  `wl-fulfill:{waitlistRequestId}`), and then consumes `JourneyOrderConfirmed`
+  or `JourneyOrderCancelled` to advance to `FULFILLED` or return to `QUEUED`.
+  Fulfillment is at the current quoted fare at match time.
 - `AuthorizeWaitlistHold` and `WaitlistHoldAuthorized` are documented because
   they are in the domain command/event table, but direct Capacity & Availability
   hold authorization is future-scope for this activation wave. Capacity &
@@ -66,6 +69,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Canonical waitlist request ID (`wlr-<uuid>`). |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Requested segment reference. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
@@ -88,6 +92,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `paymentGuaranteeRef` | string | yes | Guarantee reference (`pay-auth-*` or `pi-<uuid>`). |
 | `requestedAt` | RFC3339 UTC | yes | Time the guarantee reference was recorded for the request. |
@@ -106,6 +111,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Segment whose queue partition contains the request. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
@@ -113,6 +119,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | `queuedAt` | RFC3339 UTC | yes | Time the request entered or re-entered the queue. |
 | `status` | enum | yes | `QUEUED`. |
 | `journeyOrderRef` | string | no | Associated `ord-<uuid>` when re-queueing after `JourneyOrderCancelled`. |
+| `requeueReason` | string | no | Reason when re-queueing after a fulfillment-chain domain rejection before an order exists. |
 
 ### WaitlistMatchStarted
 
@@ -127,6 +134,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Segment being matched. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
@@ -148,6 +156,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Segment for which a waitlist hold was authorized. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
@@ -167,6 +176,7 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Fulfilled segment reference. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
@@ -189,6 +199,7 @@ Notification consumes this event for the waitlist-success user touchpoint.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Cancelled segment reference. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |
@@ -211,6 +222,7 @@ Notification consumes this event for the waitlist-cancelled user touchpoint.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Waitlist request ID. |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference. |
 | `segmentRef` | string | yes | Expired segment reference. |
 | `travelClass` | string | no | Requested travel class/seat class when specified. |

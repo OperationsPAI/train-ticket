@@ -11,10 +11,13 @@ future-scope Waitlist domain and is bounded by `docs/02-domains/waitlist.md`.
 Activation-wave rulings:
 
 - Fulfillment reuses the normal booking chain. When Waitlist consumes a matching
-  `CapacityReleased` event for the head of the queue, it acts as a client of the
-  existing `POST /api/v1/journey-orders` contract with a deterministic
-  idempotency key derived from the waitlist request and triggering release. The
-  existing journey-order saga owns booking, capacity hold, payment capture, and
+  `CapacityReleased` event for the head of the queue, it prices at current fare
+  and creates a commercial offer before creating the order:
+  `POST /api/v1/fare-quotes` with idempotency key
+  `wl-quote:{waitlistRequestId}`, then `POST /api/v1/offers` with key
+  `wl-offer:{waitlistRequestId}`, then `POST /api/v1/journey-orders` with key
+  `wl-fulfill:{waitlistRequestId}` and the real `offerId`. The existing
+  journey-order saga owns booking, capacity hold, payment capture, and
   ticketing. Waitlist then consumes `JourneyOrderConfirmed` and
   `JourneyOrderCancelled` to move the request to `FULFILLED` or back to
   `QUEUED`.
@@ -59,6 +62,7 @@ back to `QUEUED` when the associated journey order is cancelled.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `waitlistRequestId` | string | yes | Canonical waitlist request ID (`wlr-<uuid>`). |
+| `accountId` | string | yes | Account that owns fulfillment/order creation. |
 | `travelerRef` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Requested service segment reference. |
 | `travelClass` | string | no | Requested travel class/seat class when specified by the candidate plan. |
@@ -85,6 +89,7 @@ only; it does not call Payment to create or close a real pre-authorization.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `accountId` | string | yes | Account that will own the fulfilled journey order. |
 | `travelerRef` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Requested segment reference. |
 | `travelClass` | string | no | Requested travel class/seat class. |
