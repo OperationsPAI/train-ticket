@@ -34,6 +34,8 @@ docs/08-contracts/
     ├── notification.md
     ├── traveler-profile.md
     ├── place-network.md
+    ├── waitlist.md
+    ├── dispatch.md
     └── finance-settlement-events.md
 ```
 
