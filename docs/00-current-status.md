@@ -30,12 +30,19 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 | Python (FastAPI) | fare-pricing, legacy-acl, reporting, risk-compliance, trip-planning |
 | Node (TS) | account, customer-service, notification, offer-management |
 | Go | fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
-| Rust | capacity-availability, entitlement-ticketing |
+| Rust | capacity-availability, entitlement-ticketing, waitlist |
 
-`services/` also contains six future-scope skeletons that are not deployed and
-not part of the current 23-service set: ancillary-service, dispatch,
-disruption-recovery, transfer-management, waitlist, wallet-promotion. Treat
-them as placeholders until a roadmap decision activates them.
+Wave 15 activated **waitlist** (ADR-0002): sold-out demand now queues with
+deadline, payment guarantee and fairness invariants, matches released
+capacity (CapacityReleased gained an additive `segmentRef`), and fulfills by
+running the normal quote→offer→order→payment chain on the customer's behalf
+under persisted idempotency keys — staff reservation/ticketing steps stay
+staff-driven. `deploy/e2e/14-waitlist.sh` covers the full lifecycle and is
+part of the restart certification (latest run: 250/0 across 24 services).
+
+`services/` still contains five future-scope skeletons pending activation per
+ADR-0002: ancillary-service, dispatch, disruption-recovery,
+transfer-management, wallet-promotion.
 
 ## Verification baseline
 
@@ -102,9 +109,9 @@ e2e smoke (13-observability.sh, receiver-counter based).
 
 ## Current backlog
 
-Nothing queued. Discretionary next steps when needed: activate a
-future-scope skeleton domain; replace the collector debug exporter with a
-queryable backend (service-side contract stays OTLP).
+Queued: REQ-110 (trip-planning optimistic-concurrency retry under corridor
+contention — live finding from the waitlist gate). Next activations per
+ADR-0002: wallet-promotion + dispatch.
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
 boundary; legacy-acl rebook books the first leg only (caller follows up) — both
