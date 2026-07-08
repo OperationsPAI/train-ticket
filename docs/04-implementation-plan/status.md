@@ -1,46 +1,55 @@
 # Implementation Plan Status
 
-Last updated: 2026-07-07. Authoritative snapshot: `docs/00-current-status.md`.
+Last updated: 2026-07-08. Authoritative snapshot: `docs/00-current-status.md`.
 
 ## Phase 1 — DONE (certified 2026-07-07)
 
-WP-01..WP-23 delivered via AgentM WorkGraph (REQ-003..REQ-071, all merged
-to `refactor/greenfield-ddd`). Certification: 11 e2e scripts / 159
-asserts green on the live kind cluster, 24/24 pods healthy. Six
-future-scope domains excluded by roadmap ruling: waitlist,
-wallet-promotion, dispatch, ancillary, transfer, disruption-recovery.
+WP-01..WP-23 delivered via AgentM WorkGraph (REQ-003..REQ-071, all merged to
+`refactor/greenfield-ddd`). Certification: the original 11 e2e scripts / 159
+assertions green on the live kind cluster. Six future-scope domains are excluded
+by roadmap ruling: waitlist, wallet-promotion, dispatch, ancillary-service,
+transfer-management, and disruption-recovery.
 
-## Phase 2 — engineering hardening (IN PROGRESS)
+## Phase 2 — engineering hardening
 
 Architecture ruling: `docs/08-contracts/persistence.md`.
 
-### Wave 10 — persistence foundation
+### Wave 10 — persistence foundation (DONE)
+
 | Task | Scope |
 |---|---|
-| REQ-072 | PostgreSQL deployment (PVC, per-service DBs, secrets), DATABASE_URL wiring for all services, redis AOF |
+| REQ-072 | PostgreSQL deployment (PVC, per-service DBs, secret), `DATABASE_URL` wiring for all services, Redis AOF |
 | REQ-073 | java-kit `persistence` module + pilot migration: payment |
-| REQ-074 | python-kit `storage.py` + pilot migration: fare-pricing (also retires the rollback+503 ruling section) |
+| REQ-074 | python-kit `storage.py` + pilot migration: fare-pricing |
 | REQ-075 | ts-kit `storage.ts` + pilot migration: notification |
 | REQ-076 | go-kit `storage/` + pilot migration: place-network |
 | REQ-077 | rust-kit `storage.rs` + pilot migration: capacity-availability |
 
-REQ-073..077 depend on REQ-072. Live gate per pilot: full e2e regression
-plus a restart-survival check (`kubectl delete pod` mid-flow, state
-intact afterwards).
+Each kit provides migration running, aggregate snapshot persistence with
+optimistic concurrency, transactional outbox relay, durable `processed_events`
+dedup, and DB-backed idempotency behind the existing ports.
 
-### Wave 11 — persistence rollout
-Remaining stateful services migrate in per-language batches using the
-proven kit modules (17 services; legacy-acl is stateless and exempt).
-A new `deploy/e2e/12-restart.sh` certifies cross-service restart
-survival once the rollout completes.
+### Wave 11 — persistence rollout (DONE)
 
-### Wave 12 — channels & tidy
+All 23 deployed business services now use the persistence baseline: PostgreSQL
+aggregate snapshot rows, transactional outbox publishing, durable consumer
+dedup, and DB-backed idempotency where the service exposes mutating HTTP
+endpoints. Redis Streams remain the event bus; Redis AOF preserves stream and
+consumer-group state across Redis restarts.
+
+`deploy/e2e/12-restart.sh` is the whole-cluster restart certification script.
+It pauses `deploy/loadgen` when present, verifies aggregate snapshot row counts
+across workload restarts, runs a smoke flow after recovery, and resumes loadgen.
+The e2e suite now has 12 scripts and 159+ assertions.
+
+### Wave 12 — channels & tidy (IN PROGRESS)
+
 - Notification: SMTP adapter + in-cluster mailpit; channel selection per
   contract (IN_APP remains default).
 - Repo tidy: future-scope skeleton READMEs, docs sweep, dead-code pass.
 
 ## Historical planning material
 
-Earlier revisions of this file tracked the pre-implementation WP-01
-brief cycle (rejections/blockers). That content is obsolete — the merged
-PR trail on `refactor/greenfield-ddd` is the historical record.
+Earlier revisions of this file tracked the pre-implementation WP-01 brief cycle
+(rejections/blockers). That content is obsolete — the merged PR trail on
+`refactor/greenfield-ddd` is the historical record.
