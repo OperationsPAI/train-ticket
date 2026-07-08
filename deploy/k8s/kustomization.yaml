@@ -6,4 +6,5 @@ resources:
   - redis.yaml
   - mailpit.yaml
   - otel-collector.yaml
+  - jaeger.yaml
   - services.yaml
