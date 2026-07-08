@@ -331,7 +331,7 @@ class BookingOrchestrationServicePayloadContractTest {
             "idem-reservation-provider-failure", "corr-start");
         published.clear();
 
-        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c402", "ProviderReservationFailed", Instant.parse("2026-07-05T10:05:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c404", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c403", "provider-integration", 1, Map.of("segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0c401", "reason", "provider-unavailable"))));
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c402", "ProviderReservationFailed", Instant.parse("2026-07-05T10:05:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c404", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c403", "provider-integration", 1, Map.of("segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0c401", "errorType", "NON_RETRYABLE_TECHNICAL_ERROR", "errorMessage", "provider-unavailable"))));
 
         assertTrue(published.getPublished().stream().anyMatch(envelope ->
             envelope.eventType().equals("SegmentReservationFailed")
@@ -383,6 +383,144 @@ class BookingOrchestrationServicePayloadContractTest {
                 "failureMessage", "provider timeout",
                 "failedAt", "2026-07-05T10:07:00Z"))));
 
+        assertTrue(published.getPublished().isEmpty());
+    }
+
+    @Test
+    void failedBookingProviderConfirmationIsAckSkippedAndRequestsProviderCancellationOnce(CapturedOutput output) {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-provider-late-confirmed", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-provider-late-confirmed", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d101"),
+            "idem-reservation-provider-late-confirmed", "corr-start");
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d102", "CapacityHoldFailed",
+            Instant.parse("2026-07-05T10:01:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d501", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d502",
+            "capacity-availability", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d101",
+                "failureCode", "NO_AVAILABLE_CAPACITY"))));
+        published.clear();
+
+        var firstResult = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d103", "ProviderReservationConfirmed",
+            Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d503", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d504",
+            "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d101",
+                "providerReference", Map.of("providerId", "provider-1", "reservationId", "res-1", "displayReference", "PNR1"),
+                "normalizedEvidence", "provider confirmed")));
+        var secondResult = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d104", "ProviderReservationConfirmed",
+            Instant.parse("2026-07-05T10:03:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d503", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d504",
+            "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d101",
+                "providerReference", Map.of("providerId", "provider-1", "reservationId", "res-1", "displayReference", "PNR1"),
+                "normalizedEvidence", "provider confirmed")));
+
+        assertInstanceOf(HandlerResult.Success.class, firstResult);
+        assertInstanceOf(HandlerResult.Success.class, secondResult);
+        assertEquals(1, published.getPublished().stream()
+            .filter(envelope -> envelope.eventType().equals("SegmentBookingCancelled"))
+            .count());
+        String log = output.getOut() + output.getErr();
+        assertTrue(log.contains("Ack-skipping ProviderReservationConfirmed"));
+        assertTrue(log.contains("segmentBookingId=sb-0194f2e0-7b3e-7610-8284-5c26e8b0d101"));
+        assertTrue(log.contains("status=FAILED"));
+        assertTrue(log.contains("failureReason=NO_AVAILABLE_CAPACITY"));
+    }
+
+    @Test
+    void cancelledBookingProviderFailureIsAckSkipped(CapturedOutput output) {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-provider-late-failed", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-provider-late-failed", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d201"),
+            "idem-reservation-provider-late-failed", "corr-start");
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d202", "CapacityHeld",
+            Instant.parse("2026-07-05T10:01:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d505", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d506",
+            "capacity-availability", 1, Map.of(
+                "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0d203",
+                "inventoryPoolId", "pool-123",
+                "capacityUnitRef", "cu-123",
+                "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+                "idempotencyKey", "ord-provider-late-failed:seg-001:tvl-123:purchase",
+                "expiresAt", "2026-07-05T10:08:00Z",
+                "idempotentReplay", false))));
+        assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d204", "CapacityReleased",
+            Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d507", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d508",
+            "capacity-availability", 1, Map.of(
+                "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0d203",
+                "inventoryPoolId", "pool-123",
+                "capacityUnitRef", "cu-123",
+                "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+                "releasedAt", "2026-07-05T10:02:00Z",
+                "releaseReason", "customer-cancelled"))));
+        published.clear();
+
+        var result = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d205", "ProviderReservationFailed",
+            Instant.parse("2026-07-05T10:03:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d509", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d510",
+            "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d201",
+                "errorType", "BUSINESS_REJECTED",
+                "errorMessage", "provider rejected")));
+
+        assertInstanceOf(HandlerResult.Success.class, result);
+        assertTrue(published.getPublished().isEmpty());
+        assertTrue((output.getOut() + output.getErr()).contains("Ack-skipping ProviderReservationFailed"));
+    }
+
+    @Test
+    void requestedBookingProviderConfirmationFollowsMainPath() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-provider-confirmed", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-provider-confirmed", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d301"),
+            "idem-reservation-provider-confirmed", "corr-start");
+        published.clear();
+
+        var result = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d302", "ProviderReservationConfirmed",
+            Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d503", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d504",
+            "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d301",
+                "providerReference", Map.of("providerId", "provider-1", "reservationId", "res-1", "displayReference", "PNR1"),
+                "normalizedEvidence", "provider confirmed")));
+
+        assertInstanceOf(HandlerResult.Success.class, result);
+        assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("SegmentReservationConfirmed")));
+        assertTrue(published.getPublished().stream().noneMatch(envelope -> envelope.eventType().equals("SegmentReservationFailed")));
+        assertTrue(published.getPublished().stream().noneMatch(envelope -> envelope.eventType().equals("SegmentBookingCancelled")));
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
+    }
+
+    @Test
+    void malformedProviderReservationConfirmedMissingEvidenceIsFatal() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+
+        var result = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d401", "ProviderReservationConfirmed",
+            Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d503", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d504",
+            "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d402",
+                "providerReference", Map.of("providerId", "provider-1", "reservationId", "res-1", "displayReference", "PNR1"))));
+
+        assertInstanceOf(HandlerResult.FatalError.class, result);
         assertTrue(published.getPublished().isEmpty());
     }
 

@@ -3,11 +3,15 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
 
-const segmentReservationRequested = "SegmentReservationRequested"
+const (
+	segmentReservationRequested = "SegmentReservationRequested"
+	segmentBookingCancelled     = "SegmentBookingCancelled"
+)
 
 type SegmentReservationRequestedPayload struct {
 	SegmentBookingID string `json:"segmentBookingId"`
@@ -22,6 +26,8 @@ func NewInboundEventHandler(reservations ProviderReservationService) EventHandle
 		switch envelope.EventType {
 		case segmentReservationRequested:
 			return handleSegmentReservationRequested(ctx, reservations, envelope)
+		case segmentBookingCancelled:
+			return handleSegmentBookingCancelled(ctx, reservations, envelope)
 		default:
 			return nil
 		}
@@ -55,6 +61,47 @@ func handleSegmentReservationRequested(ctx context.Context, reservations Provide
 		return TransientHandlerError(err)
 	}
 	return nil
+}
+
+type SegmentBookingCancelledPayload struct {
+	SegmentBookingID string `json:"segmentBookingId"`
+	Reason           string `json:"reason"`
+}
+
+func handleSegmentBookingCancelled(ctx context.Context, reservations ProviderReservationService, envelope EventEnvelope) error {
+	if reservations == nil {
+		return TransientHandlerError(fmt.Errorf("reservation service is not configured"))
+	}
+	var payload SegmentBookingCancelledPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return FatalHandlerError(fmt.Errorf("invalid SegmentBookingCancelled payload: %w", err))
+	}
+	if err := validateSegmentBookingCancelledPayload(payload); err != nil {
+		return FatalHandlerError(err)
+	}
+	cmd := CancelProviderReservationCommand{
+		SegmentBookingID: strings.TrimSpace(payload.SegmentBookingID),
+		CorrelationID:    envelope.CorrelationID,
+		CausationID:      envelope.EventID,
+		IdempotencyKey:   envelope.EventID,
+	}
+	if _, err := reservations.CancelReservation(ctx, cmd); err != nil {
+		// Most segment bookings are cancelled before any provider
+		// reservation exists (e.g. capacity failed first); nothing to
+		// compensate, so the event is consumed as a no-op.
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return TransientHandlerError(err)
+	}
+	return nil
+}
+
+func validateSegmentBookingCancelledPayload(payload SegmentBookingCancelledPayload) error {
+	if err := ValidateSegmentBookingID(payload.SegmentBookingID); err != nil {
+		return fmt.Errorf("invalid SegmentBookingCancelled segmentBookingId: %w", err)
+	}
+	return validateRequiredToken("reason", payload.Reason)
 }
 
 func validateSegmentReservationRequestedPayload(payload SegmentReservationRequestedPayload) error {
