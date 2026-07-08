@@ -19,6 +19,7 @@ type fakeSub struct {
 
 func NewInMemoryEventBus() *InMemoryEventBus { return &InMemoryEventBus{} }
 func (b *InMemoryEventBus) Publish(ctx context.Context, envelope EventEnvelope) error {
+	envelope.injectTraceContext(ctx)
 	b.mu.Lock()
 	b.published = append(b.published, envelope)
 	subs := append([]fakeSub(nil), b.subs...)

@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestObservedHandlerNoopWithoutOTelEnv(t *testing.T) {
@@ -32,6 +33,81 @@ func TestObservedHandlerNoopWithoutOTelEnv(t *testing.T) {
 	}
 	if !handled {
 		t.Fatalf("handler was not called")
+	}
+}
+
+func TestObservedHandlerUsesValidTraceparentAsRemoteParent(t *testing.T) {
+	goruntime.ResetOTelForTest()
+	exporter := tracetest.NewInMemoryExporter()
+	shutdown, err := goruntime.InitOTelSDK(goruntime.OTelSDKConfig{ServiceName: "go-kit-test", Exporter: exporter})
+	if err != nil {
+		t.Fatalf("init sdk: %v", err)
+	}
+	defer func() {
+		_ = shutdown(context.Background())
+		goruntime.ResetOTelForTest()
+	}()
+	envelope := testEnvelopeForObserver(t)
+	envelope.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	err = ObservedHandler(goruntime.NewOTelObserver(goruntime.OTelObserverConfig{ServiceName: "go-kit-test", TracerName: "go-kit-test"}), "events:test", "group-a", func(ctx context.Context, _ EventEnvelope) error {
+		parent := trace.SpanFromContext(ctx).(interface{ Parent() trace.SpanContext }).Parent()
+		if got := parent.SpanID().String(); got != "00f067aa0ba902b7" {
+			t.Fatalf("handler parent span id mismatch: %s", got)
+		}
+		if !parent.IsRemote() {
+			t.Fatalf("handler parent should be remote")
+		}
+		return nil
+	})(context.Background(), envelope)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected one span, got %d", len(spans))
+	}
+	if got := spans[0].SpanContext.TraceID().String(); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("trace id mismatch: %s", got)
+	}
+	if got := spans[0].Parent.SpanID().String(); got != "00f067aa0ba902b7" {
+		t.Fatalf("parent span id mismatch: %s", got)
+	}
+	if !spans[0].Parent.IsRemote() {
+		t.Fatalf("parent should be remote")
+	}
+}
+
+func TestObservedHandlerIgnoresMalformedTraceparent(t *testing.T) {
+	goruntime.ResetOTelForTest()
+	exporter := tracetest.NewInMemoryExporter()
+	shutdown, err := goruntime.InitOTelSDK(goruntime.OTelSDKConfig{ServiceName: "go-kit-test", Exporter: exporter})
+	if err != nil {
+		t.Fatalf("init sdk: %v", err)
+	}
+	defer func() {
+		_ = shutdown(context.Background())
+		goruntime.ResetOTelForTest()
+	}()
+	envelope := testEnvelopeForObserver(t)
+	envelope.Traceparent = "malformed"
+
+	err = ObservedHandler(goruntime.NewOTelObserver(goruntime.OTelObserverConfig{ServiceName: "go-kit-test", TracerName: "go-kit-test"}), "events:test", "group-a", func(ctx context.Context, _ EventEnvelope) error {
+		parent := trace.SpanFromContext(ctx).(interface{ Parent() trace.SpanContext }).Parent()
+		if parent.IsValid() {
+			t.Fatalf("malformed traceparent should not create handler parent: %s", parent.TraceID())
+		}
+		return nil
+	})(context.Background(), envelope)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected one span, got %d", len(spans))
+	}
+	if spans[0].Parent.IsValid() {
+		t.Fatalf("malformed traceparent should not create a parent: %s", spans[0].Parent.TraceID())
 	}
 }
 

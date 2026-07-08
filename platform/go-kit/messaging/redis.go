@@ -106,6 +106,7 @@ func (b *RedisEventBus) Close() error {
 }
 
 func (b *RedisEventBus) Publish(ctx context.Context, envelope EventEnvelope) error {
+	envelope.injectTraceContext(ctx)
 	if err := envelope.Validate(); err != nil {
 		return fmt.Errorf("invalid envelope: %w", err)
 	}

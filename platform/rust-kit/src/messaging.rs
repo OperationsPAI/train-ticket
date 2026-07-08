@@ -1,3 +1,5 @@
+#[cfg(feature = "redis-impl")]
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
@@ -6,10 +8,22 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
+use opentelemetry::Context as OTelContext;
 #[cfg(feature = "redis-impl")]
-use opentelemetry::trace::{Span as OTelSpanTrait, Tracer};
+use opentelemetry::KeyValue;
+#[cfg(any(test, feature = "redis-impl"))]
+use opentelemetry::global;
 #[cfg(feature = "redis-impl")]
-use opentelemetry::{KeyValue, global};
+use opentelemetry::propagation::Extractor;
+use opentelemetry::propagation::{Injector, TextMapPropagator};
+#[cfg(feature = "redis-impl")]
+use opentelemetry::trace::Span as OTelSpanTrait;
+#[cfg(feature = "redis-impl")]
+use opentelemetry::trace::SpanContext;
+use opentelemetry::trace::TraceContextExt;
+#[cfg(any(test, feature = "redis-impl"))]
+use opentelemetry::trace::Tracer;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -26,6 +40,10 @@ pub struct EventEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
     pub correlation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracestate: Option<String>,
     pub occurred_at: String,
     pub payload: Value,
 }
@@ -39,6 +57,7 @@ impl EventEnvelope {
         producer: impl Into<String>,
         payload: Value,
     ) -> Result<Self, EnvelopeIdError> {
+        let trace_context = active_trace_context();
         Ok(Self {
             event_id: event_id(),
             event_type: event_type.into(),
@@ -46,6 +65,10 @@ impl EventEnvelope {
             producer: producer.into(),
             causation_id: validate_optional_causation_id(causation_id.map(Into::into))?,
             correlation_id: canonical_correlation_id(correlation_id.into())?,
+            traceparent: trace_context
+                .as_ref()
+                .and_then(|carrier| carrier.traceparent.clone()),
+            tracestate: trace_context.and_then(|carrier| carrier.tracestate),
             occurred_at: occurred_at.into(),
             payload,
         })
@@ -181,6 +204,82 @@ fn validate_optional_causation_id(
 }
 pub fn now_rfc3339_utc() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[derive(Debug, Default)]
+struct TraceContextCarrier {
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+}
+
+impl Injector for TraceContextCarrier {
+    fn set(&mut self, key: &str, value: String) {
+        match key.to_ascii_lowercase().as_str() {
+            "traceparent" => self.traceparent = Some(value),
+            "tracestate" => {
+                if !value.trim().is_empty() {
+                    self.tracestate = Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "redis-impl")]
+#[derive(Debug, Default)]
+struct EnvelopeTraceContextExtractor {
+    fields: HashMap<String, String>,
+}
+
+#[cfg(feature = "redis-impl")]
+impl EnvelopeTraceContextExtractor {
+    fn new(envelope: &EventEnvelope) -> Self {
+        let mut fields = HashMap::new();
+        if let Some(traceparent) = envelope.traceparent.as_deref() {
+            fields.insert("traceparent".to_string(), traceparent.trim().to_string());
+        }
+        if let Some(tracestate) = envelope.tracestate.as_deref() {
+            fields.insert("tracestate".to_string(), tracestate.trim().to_string());
+        }
+        Self { fields }
+    }
+}
+
+#[cfg(feature = "redis-impl")]
+impl Extractor for EnvelopeTraceContextExtractor {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.fields
+            .get(&key.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.fields.keys().map(String::as_str).collect()
+    }
+}
+
+fn active_trace_context() -> Option<TraceContextCarrier> {
+    let context = OTelContext::current();
+    if !context.span().span_context().is_valid() {
+        return None;
+    }
+    let mut carrier = TraceContextCarrier::default();
+    TraceContextPropagator::new().inject_context(&context, &mut carrier);
+    carrier.traceparent.as_ref()?;
+    Some(carrier)
+}
+
+#[cfg(feature = "redis-impl")]
+fn remote_parent_context(envelope: &EventEnvelope) -> Option<OTelContext> {
+    let extractor = EnvelopeTraceContextExtractor::new(envelope);
+    let context = TraceContextPropagator::new().extract(&extractor);
+    let span_context: SpanContext = context.span().span_context().clone();
+    if span_context.is_valid() && span_context.is_remote() {
+        Some(context)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -888,11 +987,15 @@ pub mod redis_runtime {
                 return ops.ack(&message.stream, group, &message.id).await;
             }
             let tracer = global::tracer("rust-kit.messaging");
-            let mut span = tracer
+            let span_builder = tracer
                 .span_builder(envelope.event_type.clone())
                 .with_kind(opentelemetry::trace::SpanKind::Consumer)
-                .with_attributes(messaging_span_attributes(&message.stream, group, &envelope))
-                .start(&tracer);
+                .with_attributes(messaging_span_attributes(&message.stream, group, &envelope));
+            let mut span = if let Some(parent_context) = remote_parent_context(&envelope) {
+                span_builder.start_with_context(&tracer, &parent_context)
+            } else {
+                span_builder.start(&tracer)
+            };
             match handler(envelope.clone()).await {
                 Ok(()) => {
                     span.end();
@@ -1423,6 +1526,115 @@ pub mod redis_runtime {
         }
 
         #[tokio::test]
+        async fn subscription_processing_uses_valid_traceparent_as_remote_parent() {
+            let _serial = crate::otel::test_serial();
+            let exporter = opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build();
+            let exported = exporter.clone();
+            let otel_guard = crate::otel::init_with_exporter("rust-kit-test", exporter);
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let mut envelope = EventEnvelope::canonical(
+                "ParentedEvent",
+                correlation_id(),
+                Some(command_id()),
+                "payment",
+                serde_json::json!({"id":"1"}),
+            );
+            envelope.traceparent =
+                Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string());
+            let raw = serde_json::to_string(&envelope).unwrap();
+            let mut ops = FakeStreamOps {
+                read_messages: vec![StreamMessage {
+                    stream: "events:payment".to_string(),
+                    id: "1-0".to_string(),
+                    raw_envelope: raw,
+                    delivery_count: 1,
+                }],
+                ..Default::default()
+            };
+
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:payment".to_string()],
+                    "journey-order".to_string(),
+                    "consumer-1".to_string(),
+                    Box::new(|_| Box::pin(async { Ok(()) })),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            otel_guard.force_flush().expect("flush messaging span");
+            let spans = exported.get_finished_spans().expect("finished spans");
+            let span = spans
+                .iter()
+                .find(|span| span.name == "ParentedEvent")
+                .expect("messaging span");
+            assert_eq!(
+                span.span_context.trace_id().to_string(),
+                "4bf92f3577b34da6a3ce929d0e0e4736"
+            );
+            assert_eq!(span.parent_span_id.to_string(), "00f067aa0ba902b7");
+            assert!(span.parent_span_is_remote);
+        }
+
+        #[tokio::test]
+        async fn subscription_processing_ignores_malformed_traceparent() {
+            let _serial = crate::otel::test_serial();
+            let exporter = opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build();
+            let exported = exporter.clone();
+            let otel_guard = crate::otel::init_with_exporter("rust-kit-test", exporter);
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let mut envelope = EventEnvelope::canonical(
+                "MalformedParentEvent",
+                correlation_id(),
+                Some(command_id()),
+                "payment",
+                serde_json::json!({"id":"1"}),
+            );
+            envelope.traceparent = Some("malformed".to_string());
+            let raw = serde_json::to_string(&envelope).unwrap();
+            let mut ops = FakeStreamOps {
+                read_messages: vec![StreamMessage {
+                    stream: "events:payment".to_string(),
+                    id: "1-0".to_string(),
+                    raw_envelope: raw,
+                    delivery_count: 1,
+                }],
+                ..Default::default()
+            };
+
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:payment".to_string()],
+                    "journey-order".to_string(),
+                    "consumer-1".to_string(),
+                    Box::new(|_| Box::pin(async { Ok(()) })),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            otel_guard.force_flush().expect("flush messaging span");
+            let spans = exported.get_finished_spans().expect("finished spans");
+            let span = spans
+                .iter()
+                .find(|span| span.name == "MalformedParentEvent")
+                .expect("messaging span");
+            assert_eq!(span.parent_span_id, opentelemetry::trace::SpanId::INVALID);
+            assert!(!span.parent_span_is_remote);
+        }
+
+        #[tokio::test]
         async fn queued_publisher_parks_failed_events_and_drains_after_recovery() {
             let pending = Arc::new(Mutex::new(std::collections::VecDeque::new()));
             let envelope = EventEnvelope::canonical(
@@ -1481,6 +1693,66 @@ mod tests {
         assert!(envelope.event_id.starts_with("evt-"));
         assert!(envelope.correlation_id.starts_with("corr-"));
         assert!(envelope.occurred_at.ends_with('Z'));
+    }
+
+    #[test]
+    fn envelope_serialization_omits_trace_context_without_active_span() {
+        let envelope = EventEnvelope::canonical(
+            "EntitlementIssued",
+            correlation_id(),
+            Some(command_id()),
+            "entitlement-ticketing",
+            serde_json::json!({"a":1}),
+        );
+        let value = serde_json::to_value(&envelope).unwrap();
+        let object = value.as_object().unwrap();
+        assert!(!object.contains_key("traceparent"));
+        assert!(!object.contains_key("tracestate"));
+        assert_eq!(object.len(), 8);
+    }
+
+    #[test]
+    fn envelope_deserialization_ignores_unknown_fields() {
+        let mut value = serde_json::to_value(EventEnvelope::canonical(
+            "EntitlementIssued",
+            correlation_id(),
+            Some(command_id()),
+            "entitlement-ticketing",
+            serde_json::json!({"a":1}),
+        ))
+        .unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("futureField".to_string(), serde_json::json!({"ok": true}));
+        let decoded: EventEnvelope = serde_json::from_value(value).unwrap();
+        let encoded = serde_json::to_value(decoded).unwrap();
+        assert!(!encoded.as_object().unwrap().contains_key("futureField"));
+    }
+
+    #[test]
+    fn envelope_creation_injects_active_traceparent() {
+        let _serial = crate::otel::test_serial();
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build();
+        let otel_guard = crate::otel::init_with_exporter("rust-kit-test", exporter);
+        let tracer = global::tracer("rust-kit-test");
+        let span = tracer.start("producer");
+        let _attached = OTelContext::current_with_span(span).attach();
+
+        let envelope = EventEnvelope::canonical(
+            "EntitlementIssued",
+            correlation_id(),
+            Some(command_id()),
+            "entitlement-ticketing",
+            serde_json::json!({"a":1}),
+        );
+
+        let traceparent = envelope.traceparent.expect("traceparent");
+        assert!(traceparent.starts_with("00-"), "{traceparent}");
+        assert_eq!(traceparent.len(), 55);
+        assert!(envelope.tracestate.is_none());
+        drop(_attached);
+        otel_guard.shutdown().expect("shutdown otel");
     }
 
     #[test]

@@ -6,6 +6,7 @@ import (
 
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -44,14 +45,18 @@ func ConsumerGroupFromContext(ctx context.Context) string {
 	return value
 }
 
-// ObservedHandler wraps event handling in a consumer span. It does not mutate
-// the event envelope; traceparent propagation is intentionally out-of-band.
+// ObservedHandler wraps event handling in a consumer span. A valid envelope
+// traceparent becomes the remote parent; malformed trace context is ignored so
+// ack/retry/DLQ behavior is unchanged.
 func ObservedHandler(observer Observer, stream, consumerGroup string, next Handler) Handler {
 	if observer == nil {
 		observer = NoopObserver()
 	}
 	return func(ctx context.Context, envelope EventEnvelope) error {
 		ctx = MessageContext(ctx, stream, consumerGroup)
+		if parent, ok := remoteSpanContextFromEnvelope(envelope); ok {
+			ctx = trace.ContextWithRemoteSpanContext(ctx, parent)
+		}
 		operation := strings.TrimSpace(envelope.EventType)
 		if operation == "" {
 			operation = "messaging.consume"
@@ -77,4 +82,25 @@ func SetSpanMessagingAttributes(ctx context.Context, stream, consumerGroup strin
 		attribute.String("eventType", strings.TrimSpace(envelope.EventType)),
 		attribute.String("correlationId", strings.TrimSpace(envelope.CorrelationID)),
 	)
+}
+
+func traceparentFromContext(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return strings.TrimSpace(carrier.Get("traceparent"))
+}
+
+func remoteSpanContextFromEnvelope(envelope EventEnvelope) (trace.SpanContext, bool) {
+	carrier := propagation.MapCarrier{}
+	if traceparent := strings.TrimSpace(envelope.Traceparent); traceparent != "" {
+		carrier.Set("traceparent", traceparent)
+	}
+	if tracestate := strings.TrimSpace(envelope.Tracestate); tracestate != "" {
+		carrier.Set("tracestate", tracestate)
+	}
+	spanContext := trace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), carrier))
+	if !spanContext.IsValid() || !spanContext.IsRemote() {
+		return trace.SpanContext{}, false
+	}
+	return spanContext, true
 }
