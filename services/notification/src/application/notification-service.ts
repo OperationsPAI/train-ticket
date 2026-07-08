@@ -284,21 +284,36 @@ const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]
   ],
   PostSalesEligibilityEvaluated: [
     { name: "caseId", type: "string" },
+    { name: "eligible", type: "boolean" },
+    { name: "reasonCode", type: "string" },
   ],
   PostSalesDecisionQuoted: [
     { name: "caseId", type: "string" },
+    { name: "decisionKind", type: "string" },
+    { name: "eligible", type: "boolean" },
+    { name: "ruleSnapshotRef", type: "string" },
   ],
   PostSalesExecutionStarted: [
     { name: "caseId", type: "string" },
+    { name: "orderedSteps", type: "array" },
+    { name: "approvalRef", type: "string" },
   ],
   PostSalesApplied: [
     { name: "caseId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "resultSummary", type: "object" },
   ],
   PostSalesFailed: [
     { name: "caseId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "reason", type: "string" },
   ],
   ChangeApplied: [
     { name: "caseId", type: "string" },
+    { name: "orderId", type: "string" },
+    { name: "oldEntitlementRef", type: "string" },
+    { name: "newEntitlementRef", type: "string" },
+    { name: "changeOfferRef", type: "string" },
   ],
 });
 

@@ -6,6 +6,7 @@ import com.trainticket.postsales.domain.AmountDecisionSnapshot;
 import com.trainticket.postsales.domain.DecisionKind;
 import com.trainticket.postsales.domain.EventMetadata;
 import com.trainticket.postsales.domain.Money;
+import com.trainticket.postsales.domain.ChangeApplied;
 import com.trainticket.postsales.domain.PostSalesApplied;
 import com.trainticket.postsales.domain.PostSalesApproved;
 import com.trainticket.postsales.domain.PostSalesCase;
@@ -16,6 +17,8 @@ import com.trainticket.postsales.domain.PostSalesDecision;
 import com.trainticket.postsales.domain.PostSalesDecisionQuoted;
 import com.trainticket.postsales.domain.PostSalesEligibilityEvaluated;
 import com.trainticket.postsales.domain.PostSalesEvent;
+import com.trainticket.postsales.domain.PostSalesExecutionStarted;
+import com.trainticket.postsales.domain.PostSalesFailed;
 import com.trainticket.postsales.domain.PostSalesRejected;
 import com.trainticket.postsales.domain.PostSalesRequested;
 import java.util.LinkedHashMap;
@@ -152,6 +155,20 @@ public final class PostSalesMapper {
         } else if (event instanceof PostSalesApplied applied) {
             payload.put("orderId", applied.journeyOrderId());
             payload.put("resultSummary", resultSummary(applied));
+        } else if (event instanceof PostSalesExecutionStarted executionStarted) {
+            payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
+            payload.put("approvalRef", executionStarted.approvalRef());
+        } else if (event instanceof PostSalesFailed failed) {
+            payload.put("orderId", failed.journeyOrderId());
+            payload.put("reason", failed.reason());
+            if (failed.failedStepRef() != null) {
+                payload.put("failedStepRef", failed.failedStepRef());
+            }
+        } else if (event instanceof ChangeApplied changeApplied) {
+            payload.put("orderId", changeApplied.journeyOrderId());
+            payload.put("oldEntitlementRef", changeApplied.oldEntitlementRef());
+            payload.put("newEntitlementRef", changeApplied.newEntitlementRef());
+            payload.put("changeOfferRef", changeApplied.changeOfferRef());
         }
         return payload;
     }

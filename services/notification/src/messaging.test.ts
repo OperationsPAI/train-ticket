@@ -207,11 +207,32 @@ describe("notification messaging integration surface", () => {
       correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
       occurredAt: "2026-07-05T10:00:00.000Z",
-      payload: { caseId: "psc-test-001" },
+      payload: { caseId: "psc-test-001", orderedSteps: ["EXECUTE_REFUND"], approvalRef: "apr-test-001" },
     };
 
     assert.equal(await service.handleExternalTrigger(upstream), "ignored");
     assert.equal(publisher.envelopes.length, 0);
+  });
+
+  it("rejects post-sales triggers that violate their own event contract", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c225",
+      eventType: "PostSalesExecutionStarted",
+      schemaVersion: 1,
+      producer: "post-sales",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      // Missing contract-required orderedSteps + approvalRef.
+      payload: { caseId: "psc-test-001" },
+    };
+
+    await assert.rejects(
+      async () => service.handleExternalTrigger(upstream),
+      (error: Error) => error.name === "NonConformantNotificationTrigger",
+    );
   });
 
   it("rejects trigger events that violate their own event contract", async () => {
