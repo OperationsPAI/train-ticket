@@ -132,6 +132,32 @@ The JSON value (formatted for readability) is:
 }
 ```
 
+### Trace Context Propagation (ruling 2026-07-08)
+
+The wire envelope MAY carry two additional OPTIONAL top-level fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `traceparent` | string | W3C Trace Context `traceparent` of the span active when the envelope was created (i.e. inside the producing transaction, before the outbox relay). |
+| `tracestate` | string | W3C Trace Context `tracestate`, only ever present alongside `traceparent`. |
+
+Rules:
+
+- **Additive and optional.** `schemaVersion` stays 1. Absence of these fields
+  is never an error; consumers MUST NOT validate their presence or shape as
+  part of event-contract conformance (a malformed `traceparent` is ignored,
+  never FATAL).
+- **Producers** SHOULD populate `traceparent` when OTel tracing is enabled and
+  a span context is active at envelope-creation time. The outbox relay
+  publishes the stored envelope unchanged, so the trace context is the
+  originating request's, not the relay's.
+- **Consumers** SHOULD, when tracing is enabled and the field parses, use it
+  as the remote parent (or a span link) of the event-consumer span. Handler
+  behavior MUST NOT otherwise depend on it.
+- `correlationId` remains the business-level end-to-end identifier and is
+  unaffected; `traceparent` is observability-only and carries no business
+  meaning.
+
 ### XADD Command Template
 
 ```
