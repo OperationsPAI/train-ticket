@@ -161,3 +161,68 @@ def test_operator_header_is_required() -> None:
     assert response.status_code == 400
     assert response.json()["status"] == 0
     assert publisher.envelopes == []
+
+
+def test_preserve_retries_offer_while_projections_lag(monkeypatch) -> None:
+    import legacy_acl.application as application_module
+
+    monkeypatch.setattr(application_module.time, "sleep", lambda _delay: None)
+
+    fake = FakeDownstream()
+    lag_failures = {"remaining": 2}
+    original_post = fake.post
+
+    def flaky_post(service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        if service == "offer-management" and lag_failures["remaining"] > 0:
+            lag_failures["remaining"] -= 1
+            fake.calls.append(("POST", service, path, dict(body), dict(headers or {})))
+            raise DownstreamError(
+                "No consumed Fare Pricing quote matches itinerary/fare input, channelId, and travelerRefs",
+                code="MISSING_FARE_QUOTE",
+            )
+        return original_post(service, path, body, headers)
+
+    fake.post = flaky_post
+
+    response = client(fake, InMemoryEventPublisher()).post(
+        "/api/v1/legacy/preserve",
+        headers=HEADERS,
+        json={"accountId": "acc-1", "contactsId": "tvl-1", "tripId": "G100",
+              "seatType": "SECOND", "date": "2026-08-01", "from": "pl-a", "to": "pl-b"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == 1
+    offer_calls = [c for c in fake.calls if c[1] == "offer-management"]
+    assert len(offer_calls) == 3
+    # deterministic Idempotency-Key must be identical across retries
+    assert len({c[4]["Idempotency-Key"] for c in offer_calls}) == 1
+
+
+def test_preserve_does_not_retry_non_projection_errors(monkeypatch) -> None:
+    import legacy_acl.application as application_module
+
+    monkeypatch.setattr(application_module.time, "sleep", lambda _delay: None)
+
+    fake = FakeDownstream()
+    original_post = fake.post
+
+    def rejecting_post(service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        if service == "offer-management":
+            fake.calls.append(("POST", service, path, dict(body), dict(headers or {})))
+            raise DownstreamError("offer rejected", code="OFFER_REJECTED")
+        return original_post(service, path, body, headers)
+
+    fake.post = rejecting_post
+
+    response = client(fake, InMemoryEventPublisher()).post(
+        "/api/v1/legacy/preserve",
+        headers=HEADERS,
+        json={"accountId": "acc-1", "contactsId": "tvl-1", "tripId": "G100",
+              "seatType": "SECOND", "date": "2026-08-01", "from": "pl-a", "to": "pl-b"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == 0
+    assert len([c for c in fake.calls if c[1] == "offer-management"]) == 1

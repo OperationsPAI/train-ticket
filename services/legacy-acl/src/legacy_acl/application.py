@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +43,18 @@ class LegacyResult:
     data: Mapping[str, Any]
 
 
+# offer-management resolves offers against upstream projections it consumes
+# asynchronously (itinerary, fare quote, traveler snapshot). The legacy facade
+# is synchronous, so it owns the wait: retry these codes with bounded backoff
+# until the projections catch up.
+_PROJECTION_LAG_CODES = frozenset({
+    "MISSING_ITINERARY_SNAPSHOT",
+    "MISSING_FARE_QUOTE",
+    "MISSING_TRAVELER_SNAPSHOT",
+})
+_PROJECTION_RETRY_DELAYS_SECONDS = (0.2, 0.4, 0.8, 1.6, 3.2)
+
+
 class LegacyAclService:
     def __init__(self, client: DownstreamClient | None = None, publisher: EventPublisher | None = None) -> None:
         self.client = client or DownstreamClient()
@@ -78,7 +91,7 @@ class LegacyAclService:
             )
             commands.append("CreateFareQuote")
 
-            offer = self.client.post(
+            offer = self._post_awaiting_projections(
                 "offer-management",
                 "/api/v1/offers",
                 {
@@ -306,6 +319,23 @@ class LegacyAclService:
         message = str(exc) or exc.__class__.__name__
         self._publish(operation, Outcome.FAILED, ctx, commands, {}, message)
         return LegacyResult(0, message, {})
+
+    def _post_awaiting_projections(
+        self,
+        service: str,
+        path: str,
+        body: Mapping[str, Any],
+        headers: Mapping[str, str],
+    ) -> dict[str, Any]:
+        # Idempotency-Key in headers is deterministic, so retries are safe.
+        for delay in _PROJECTION_RETRY_DELAYS_SECONDS:
+            try:
+                return self.client.post(service, path, body, headers)
+            except DownstreamError as exc:
+                if exc.code not in _PROJECTION_LAG_CODES:
+                    raise
+                time.sleep(delay)
+        return self.client.post(service, path, body, headers)
 
     def _publish(
         self,
