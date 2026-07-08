@@ -358,6 +358,14 @@ export class RedisEventSubscriber implements EventSubscriber {
         await this.processMessages(messages, group, consumerName, handler);
       } catch (error) {
         // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
+        console.warn({
+          service: group,
+          stream: streams.join(","),
+          eventId: "unknown",
+          deliveries: 0,
+          error: sanitizedErrorForLog(error),
+          message: "poll read failed; recreating group if missing and backing off",
+        });
         if (String(error).includes("NOGROUP")) {
           await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
         }
@@ -378,7 +386,20 @@ export class RedisEventSubscriber implements EventSubscriber {
         return;
       }
       for (const stream of streams) {
-        await this.claimAndProcess(stream, group, consumerName, handler);
+        try {
+          await this.claimAndProcess(stream, group, consumerName, handler);
+        } catch (error) {
+          // One stream's XAUTOCLAIM failure must not kill the whole
+          // recovery loop; log with context and keep recovering.
+          console.warn({
+            service: group,
+            stream,
+            eventId: "unknown",
+            deliveries: 0,
+            error: sanitizedErrorForLog(error),
+            message: "pending-entry recovery failed; will retry next cycle",
+          });
+        }
       }
     }
   }

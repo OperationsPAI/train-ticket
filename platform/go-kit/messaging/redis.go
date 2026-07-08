@@ -189,6 +189,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			// A non-persistent Redis loses consumer groups on restart:
 			// NOGROUP means "recreate and carry on". Every other error
 			// backs off so a dead connection never hot-spins this loop.
+			log.Printf("WARN service=%s stream=%s eventId=unknown deliveries=0 read failed; recreating group if missing and backing off: %T: %v", group, strings.Join(streams, ","), err, err)
 			if strings.Contains(strings.ToUpper(err.Error()), "NOGROUP") {
 				for _, s := range streams {
 					_ = b.ensureGroup(ctx, s, group)
