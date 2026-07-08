@@ -15,6 +15,7 @@ import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
 import com.trainticket.journeyorder.domain.AccountOrderGate;
 import com.trainticket.journeyorder.domain.AccountOrderState;
+import com.trainticket.journeyorder.domain.DomainRuleViolation;
 import com.trainticket.journeyorder.domain.JourneyOrder;
 import com.trainticket.journeyorder.domain.JourneyOrderEvent;
 import com.trainticket.journeyorder.domain.Money;
@@ -34,12 +35,17 @@ import java.util.Optional;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 @Service
 public class OrderManagementService implements JourneyOrderService, JourneyOrderEventHandler {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(OrderManagementService.class);
 
     private final JourneyOrderStateRepository stateRepository;
     private final EventPublisher eventPublisher;
@@ -317,10 +323,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     @Override
     @Transactional
     public synchronized EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
-        if (!stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer())) {
-            return new EventSubscriber.Success();
-        }
         try {
+            if (!stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer())) {
+                return new EventSubscriber.Success();
+            }
             return switch (envelope.eventType()) {
                 case "PaymentCaptured" -> handlePaymentCaptured(envelope);
                 case "PaymentExpired" -> handlePaymentExpired(envelope);
@@ -339,6 +345,13 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                     "SessionOpened", "SessionRevoked", "PreferenceUpdated" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.Success();
             };
+        } catch (InvalidEventPayload ex) {
+            return new EventSubscriber.FatalError(ex.getMessage());
+        } catch (NotFoundException ex) {
+            return ackSkipMissingOrder(envelope);
+        } catch (DataAccessException ex) {
+            rollbackCurrentTransactionIfActive();
+            return new EventSubscriber.TransientError(ex.getMessage());
         } catch (RuntimeException ex) {
             rollbackCurrentTransactionIfActive();
             return new EventSubscriber.TransientError(ex.getMessage());
@@ -354,15 +367,20 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private EventSubscriber.HandlerResult handlePaymentCaptured(EventEnvelope envelope) {
-        JourneyOrder order = orderFromPayload(envelope);
+        requirePayloadFields(envelope, "paymentIntentId", "businessRef", "capturedAmount", "channel", "channelTransactionId");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
+        if (!isPaymentCaptureApplicable(order)) {
+            return ackSkipStateRace(envelope, order);
+        }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_CONFIRMATION) {
             order.markBookingAndCapacityAccepted(envelope.occurredAt(), "cmd-consume-payment", envelope.correlationId());
             order.markPendingPayment("initial-ticket-purchase", envelope.occurredAt(), "cmd-consume-payment", envelope.correlationId());
         }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
             order.recordPaymentCaptured(
-                textPayload(envelope, "paymentIntentId", "payment-intent-unknown"),
+                requiredTextPayload(envelope, "paymentIntentId"),
                 envelope.occurredAt(),
                 "cmd-consume-payment",
                 envelope.eventId(),
@@ -373,151 +391,162 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             && order.confirmationConditions().canConfirm()) {
             order.confirm("payment-captured", envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
         }
-        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
+        stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountCreated(EventEnvelope envelope) {
-        String accountId = accountIdFromPayload(envelope);
-        stateRepository.saveAccountState(accountId, AccountOrderState.ACTIVE);
+        requirePayloadFields(envelope, "accountId", "occurredAt");
+        stateRepository.saveAccountState(requiredTextPayload(envelope, "accountId"), AccountOrderState.ACTIVE);
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountFrozen(EventEnvelope envelope) {
-        stateRepository.saveAccountState(accountIdFromPayload(envelope), AccountOrderState.FROZEN);
+        requirePayloadFields(envelope, "accountId", "reason", "operator", "occurredAt");
+        stateRepository.saveAccountState(requiredTextPayload(envelope, "accountId"), AccountOrderState.FROZEN);
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountUnfrozen(EventEnvelope envelope) {
-        stateRepository.saveAccountState(accountIdFromPayload(envelope), AccountOrderState.ACTIVE);
+        requirePayloadFields(envelope, "accountId", "reason", "occurredAt");
+        stateRepository.saveAccountState(requiredTextPayload(envelope, "accountId"), AccountOrderState.ACTIVE);
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountClosureStarted(EventEnvelope envelope) {
-        accountIdFromPayload(envelope);
+        requirePayloadFields(envelope, "accountId", "closureRequestId", "occurredAt");
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleAccountClosed(EventEnvelope envelope) {
-        stateRepository.saveAccountState(accountIdFromPayload(envelope), AccountOrderState.CLOSED);
+        requirePayloadFields(envelope, "accountId", "closureRequestId", "final", "occurredAt");
+        stateRepository.saveAccountState(requiredTextPayload(envelope, "accountId"), AccountOrderState.CLOSED);
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleEntitlementIssued(EventEnvelope envelope) {
-        JourneyOrder order = orderFromPayload(envelope);
+        requirePayloadFields(envelope, "entitlementId", "journeyOrderId", "segmentBookingId", "travelerRef", "segmentRef", "issuePurpose", "credentialNo", "credentialType", "issuedAt");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
-        order.recordEntitlementSummaryAccepted(envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
+        if (isTerminal(order)) {
+            return ackSkipStateRace(envelope, order);
+        }
+        try {
+            order.recordEntitlementSummaryAccepted(envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("entitlement-issued", envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
         }
-        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
+        stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handlePaymentExpired(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "paymentIntentId");
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
-        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
-            int eventCount = order.domainEvents().size();
-            order.expirePayment(
-                textPayload(envelope, "paymentIntentId", "payment-intent-unknown"),
-                envelope.occurredAt(),
-                "cmd-consume-payment",
-                envelope.eventId(),
-                envelope.correlationId()
-            );
-            stateRepository.saveOrder(order, stored.idempotencyKey());
-            publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        if (order.state() != com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
+            return ackSkipStateRace(envelope, order);
         }
+        int eventCount = order.domainEvents().size();
+        order.expirePayment(
+            requiredTextPayload(envelope, "paymentIntentId"),
+            envelope.occurredAt(),
+            "cmd-consume-payment",
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handlePostSalesApplied(EventEnvelope envelope) {
-        JourneyOrder order = orderFromPayload(envelope);
+        requirePayloadFields(envelope, "caseId", "orderId", "resultSummary");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
-        order.applyPostSalesItemCancellation(
-            textPayload(envelope, "orderItemId", order.orderItems().getFirst().orderItemId()),
-            textPayload(envelope, "postSalesCaseId", "post-sales-unknown"),
-            textPayload(envelope, "reason", "post-sales applied"),
-            envelope.occurredAt(),
-            "cmd-consume-post-sales",
-            envelope.eventId(),
-            envelope.correlationId()
-        );
-        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
+        try {
+            order.applyPostSalesItemCancellation(
+                textPayload(envelope, "orderItemId", order.orderItems().getFirst().orderItemId()),
+                requiredTextPayload(envelope, "caseId"),
+                textPayload(envelope, "reason", "post-sales applied"),
+                envelope.occurredAt(),
+                "cmd-consume-post-sales",
+                envelope.eventId(),
+                envelope.correlationId()
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleRiskAssessmentResult(EventEnvelope envelope) {
-        if (!"ALLOW".equals(textPayload(envelope, "decision", ""))) {
+        requirePayloadFields(envelope, "assessmentId", "subjectRef", "scenario", "decision", "policyVersion", "evidenceRef", "reasonCode", "assessmentSnapshotHash", "assessedAt");
+        if (!"ALLOW".equals(requiredTextPayload(envelope, "decision"))) {
             return new EventSubscriber.Success();
         }
-        JourneyOrder order = orderFromPayload(envelope);
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
-        order.recordRiskAssessmentAllowed(envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        try {
+            order.recordRiskAssessmentAllowed(envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("risk-assessment-allowed", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
         }
-        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
+        stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleRiskBlockApplied(EventEnvelope envelope) {
-        JourneyOrder order = orderFromPayload(envelope);
+        requirePayloadFields(envelope, "blockId", "subjectRef", "scope", "reasonCode", "policyVersion", "evidenceRef", "blockedAt");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
-        String reason = textPayload(envelope, "reasonCode", textPayload(envelope, "reason", "risk block applied"));
-        order.cancel(reason, envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
-        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
+        try {
+            order.cancel(requiredTextPayload(envelope, "reasonCode"), envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleRiskBlockLifted(EventEnvelope envelope) {
-        JourneyOrder order = orderFromPayload(envelope);
+        requirePayloadFields(envelope, "allowId", "subjectRef", "scope", "reasonCode", "policyVersion", "evidenceRef", "allowedAt");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CANCELLED) {
-            return new EventSubscriber.Success();
+            return ackSkipStateRace(envelope, order);
         }
         int eventCount = order.domainEvents().size();
-        order.recordRiskBlockLifted(envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        try {
+            order.recordRiskBlockLifted(envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("risk-block-lifted", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
         }
-        stateRepository.saveOrder(order, stateRepository.findOrder(order.orderId()).map(StoredOrder::idempotencyKey).orElse(order.idempotencyKey()));
+        stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
-    }
-
-    private static String accountIdFromPayload(EventEnvelope envelope) {
-        String accountId = textPayload(envelope, "accountId", null);
-        if (accountId == null || accountId.isBlank()) {
-            throw new IllegalArgumentException("event payload missing accountId");
-        }
-        return accountId;
-    }
-
-    private JourneyOrder orderFromPayload(EventEnvelope envelope) {
-        String orderId = textPayload(envelope, "orderId", null);
-        if (orderId == null) {
-            orderId = textPayload(envelope, "subjectRef", null);
-        }
-        if (orderId == null) {
-            orderId = textPayload(envelope, "businessRef", null);
-        }
-        if (orderId == null) {
-            orderId = textPayload(envelope, "journeyOrderId", null);
-        }
-        if (orderId == null) {
-            throw new IllegalArgumentException("event payload missing orderId/businessRef");
-        }
-        String resolvedOrderId = orderId;
-        return storedOrderFromId(resolvedOrderId).order();
     }
 
     private StoredOrder storedOrderFromPayload(EventEnvelope envelope) {
@@ -531,8 +560,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (orderId == null) {
             orderId = textPayload(envelope, "journeyOrderId", null);
         }
-        if (orderId == null) {
-            throw new IllegalArgumentException("event payload missing orderId/businessRef");
+        if (orderId == null || orderId.isBlank()) {
+            throw new InvalidEventPayload("event payload missing orderId/businessRef");
         }
         return storedOrderFromId(orderId);
     }
@@ -540,6 +569,61 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private StoredOrder storedOrderFromId(String orderId) {
         return stateRepository.findOrder(orderId)
             .orElseThrow(() -> new NotFoundException("Order not found for consumed event: " + orderId));
+    }
+
+
+    private EventSubscriber.HandlerResult ackSkipMissingOrder(EventEnvelope envelope) {
+        LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} reason=ORDER_NOT_FOUND",
+            envelope.eventType(), envelope.eventId(), orderIdForLog(envelope));
+        return new EventSubscriber.Success();
+    }
+
+    private static EventSubscriber.HandlerResult ackSkipStateRace(EventEnvelope envelope, JourneyOrder order) {
+        LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} currentStatus={} reason=STATE_RACE_OR_RULE_NOOP",
+            envelope.eventType(), envelope.eventId(), order.orderId(), order.state());
+        return new EventSubscriber.Success();
+    }
+
+    private static boolean isTerminal(JourneyOrder order) {
+        return switch (order.state()) {
+            case CANCELLED, COMPLETED, DISRUPTED, FAILED -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isPaymentCaptureApplicable(JourneyOrder order) {
+        return switch (order.state()) {
+            case PENDING_CONFIRMATION, PENDING_PAYMENT, CONFIRMING -> true;
+            default -> false;
+        };
+    }
+
+    private static void requirePayloadFields(EventEnvelope envelope, String... fields) {
+        for (String field : fields) {
+            requiredTextPayload(envelope, field);
+        }
+    }
+
+    private static String requiredTextPayload(EventEnvelope envelope, String field) {
+        String value = textPayload(envelope, field, null);
+        if (value == null || value.isBlank()) {
+            throw new InvalidEventPayload("event payload missing " + field);
+        }
+        return value;
+    }
+
+    private static String orderIdForLog(EventEnvelope envelope) {
+        String orderId = textPayload(envelope, "orderId", null);
+        if (orderId == null) {
+            orderId = textPayload(envelope, "subjectRef", null);
+        }
+        if (orderId == null) {
+            orderId = textPayload(envelope, "businessRef", null);
+        }
+        if (orderId == null) {
+            orderId = textPayload(envelope, "journeyOrderId", null);
+        }
+        return orderId == null ? "unknown" : orderId;
     }
 
     private static String textPayload(EventEnvelope envelope, String field, String fallback) {
@@ -563,6 +647,12 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     public static final class NotFoundException extends ApiException {
         public NotFoundException(String message) {
             super(ApiErrorCode.NOT_FOUND, message);
+        }
+    }
+
+    private static final class InvalidEventPayload extends RuntimeException {
+        private InvalidEventPayload(String message) {
+            super(message);
         }
     }
 }
