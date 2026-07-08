@@ -2,7 +2,8 @@ package com.trainticket.platformkit.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.lettuce.core.RedisClient;
+import com.trainticket.platformkit.observability.EventConsumerTracer;
+import com.trainticket.platformkit.observability.GlobalEventConsumerTracer;
 import io.lettuce.core.api.StatefulRedisConnection;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -28,6 +29,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final AtomicBoolean running = new AtomicBoolean();
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
+    private final EventConsumerTracer eventConsumerTracer;
     private final Map<FailureKey, RuntimeException> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<FailureKey, RuntimeException> eldest) {
@@ -40,8 +42,12 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     public static RedisEventSubscriber fromUrl(String redisUrl, ObjectMapper objectMapper) {
+        return fromUrl(redisUrl, objectMapper, defaultEventConsumerTracer());
+    }
+
+    public static RedisEventSubscriber fromUrl(String redisUrl, ObjectMapper objectMapper, EventConsumerTracer eventConsumerTracer) {
         LazyLettuceRedisStreamOperations streams = new LazyLettuceRedisStreamOperations(redisUrl);
-        return new RedisEventSubscriber(streams, objectMapper, streams);
+        return new RedisEventSubscriber(streams, objectMapper, streams, new InMemoryConsumedEventStore(), eventConsumerTracer);
     }
 
     RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable) {
@@ -49,10 +55,15 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable, ConsumedEventStore consumedEvents) {
+        this(streams, objectMapper, closeable, consumedEvents, defaultEventConsumerTracer());
+    }
+
+    RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable, ConsumedEventStore consumedEvents, EventConsumerTracer eventConsumerTracer) {
         this.streams = Objects.requireNonNull(streams, "streams are required");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
         this.closeable = closeable;
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents is required");
+        this.eventConsumerTracer = Objects.requireNonNull(eventConsumerTracer, "eventConsumerTracer is required");
         this.executor = Executors.newSingleThreadExecutor();
     }
 
@@ -127,24 +138,34 @@ public class RedisEventSubscriber implements EventSubscriber {
             return;
         }
         HandlerResult result;
-        try {
-            result = handler.handle(envelope);
-        } catch (RuntimeException exception) {
-            LOGGER.warn(
-                "service={} stream={} eventId={} attempt={} handler threw; message stays pending for retry",
-                group, stream, envelope.eventId(), deliveryAttempts, exception);
-            rememberLastFailure(stream, message.id(), exception);
-            return;
+        try (EventConsumerTracer.SpanScope span = eventConsumerTracer.start(stream, group, envelope)) {
+            try {
+                result = handler.handle(envelope);
+            } catch (RuntimeException exception) {
+                span.recordException(exception);
+                LOGGER.warn(
+                    "service={} stream={} eventId={} attempt={} handler threw; message stays pending for retry",
+                    group, stream, envelope.eventId(), deliveryAttempts, exception);
+                rememberLastFailure(stream, message.id(), exception);
+                return;
+            }
+            if (result == HandlerResult.SUCCESS) {
+                consumedEvents.recordConsumed(group, envelope.eventId());
+                streams.ack(stream, group, message.id());
+                removeLastFailure(stream, message.id());
+            } else if (result == HandlerResult.FATAL_FAILURE) {
+                span.markError("HandlerResult.FATAL_FAILURE");
+                removeLastFailure(stream, message.id());
+                moveToDlq(stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", deliveryAttempts);
+                streams.ack(stream, group, message.id());
+            } else if (result == HandlerResult.TRANSIENT_FAILURE) {
+                span.markError("HandlerResult.TRANSIENT_FAILURE");
+            }
         }
-        if (result == HandlerResult.SUCCESS) {
-            consumedEvents.recordConsumed(group, envelope.eventId());
-            streams.ack(stream, group, message.id());
-            removeLastFailure(stream, message.id());
-        } else if (result == HandlerResult.FATAL_FAILURE) {
-            removeLastFailure(stream, message.id());
-            moveToDlq(stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", deliveryAttempts);
-            streams.ack(stream, group, message.id());
-        }
+    }
+
+    private static EventConsumerTracer defaultEventConsumerTracer() {
+        return new GlobalEventConsumerTracer(RedisEventSubscriber.class.getName());
     }
 
     private void rememberLastFailure(String stream, String messageId, RuntimeException exception) {

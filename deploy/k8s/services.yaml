@@ -510,6 +510,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/journey_order
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: journey-order
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -589,6 +599,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/booking_orchestration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: booking-orchestration
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -668,6 +688,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/payment
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: payment
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -984,6 +1014,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/post_sales
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: post-sales
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -1144,6 +1184,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/traveler_profile
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: traveler-profile
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -1381,6 +1431,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/admin_audit
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: admin-audit
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -1539,6 +1599,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/finance_settlement
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: finance-settlement
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
