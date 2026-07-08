@@ -43,6 +43,9 @@ behavior:
   p_abandon_after_search: 0.20
   p_abandon_after_quote: 0.15
   p_abandon_before_payment: 0.10
+  p_cancel_payment_intent_on_abandon: 0.20  # subset explicitly POSTs payment-intents/{id}/cancel
+  p_cancel_order_before_payment: 0.10       # subset explicitly POSTs journey-orders/{id}/cancel
+  p_refund_get_after_completion: 0.50       # after refund approval, poll payment events and GET refunds/{id}
 
   # how long a customer waits for a staff-handled step (reservation,
   # ticketing, risk review) before giving up
@@ -77,6 +80,30 @@ staff:
   p_risk_approve: 0.50        # manual review lifts the block, else rejected
   p_support_assign: 0.80
   p_support_resolve: 0.60
+  p_support_assign_resolve_branch: 0.70     # existing assign/resolve path
+  p_support_classify_escalate_branch: 0.15  # classify -> assign -> escalate lifecycle coverage
+  p_support_classify_close_branch: 0.15     # classify -> close, optionally reopen -> close
+  p_support_reopen_after_close: 0.10        # only after the classify/close branch
+
+# ---------------------------------------------------------------------------
+# Long-tail probes — conservative low-frequency coverage for read endpoints.
+# Reads are attached to real entities just produced by normal journeys; ID
+# mismatches are counted in errors. Disable with enabled: false.
+# ---------------------------------------------------------------------------
+long_tail:
+  enabled: true
+  p_read_probe_after_journey: 0.05
+
+# ---------------------------------------------------------------------------
+# Operations-side actor — runs every few minutes and drives read-only reporting
+# and finance queries plus very low-frequency supplier-catalog master-data writes.
+# Idempotency keys are generated per command by the API client (UUIDv7).
+# ---------------------------------------------------------------------------
+ops:
+  enabled: true
+  interval_seconds: { min: 180, max: 420 }
+  dashboard_id: dash-revenue
+  p_supplier_catalog_write: 0.25
 
 # ---------------------------------------------------------------------------
 # Bootstrap — ops-side inventory guarantees (NOT customer actions). Runs once
