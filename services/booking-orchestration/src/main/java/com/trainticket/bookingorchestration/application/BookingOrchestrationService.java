@@ -156,7 +156,7 @@ public class BookingOrchestrationService {
             case "PaymentCaptured" -> handlePaymentCaptured(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentFailed", "PaymentFailed", "PaymentExpired", "PaymentIntentExpired" -> handlePaymentFailure(payload, envelope.correlationId(), envelope.eventId());
             case "ProviderReservationConfirmed" -> handleProviderReservationConfirmed(payload, envelope.correlationId(), envelope.eventId());
-            case "ProviderReservationFailed", "ProviderReservationTimedOut" -> handleProviderReservationFailed(payload, envelope.correlationId(), envelope.eventId());
+            case "ProviderReservationFailed", "ProviderReservationTimedOut" -> handleProviderReservationFailed(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
             case "EntitlementIssued" -> handleEntitlementIssued(payload, envelope.correlationId(), envelope.eventId());
             case "EntitlementIssueFailed" -> handleEntitlementIssueFailed(payload, envelope.correlationId(), envelope.eventId());
             case "EntitlementVoided" -> handleEntitlementVoided(payload, envelope.correlationId(), envelope.eventId());
@@ -321,28 +321,40 @@ public class BookingOrchestrationService {
     }
 
     private void handleProviderReservationConfirmed(Map<String, Object> payload, String correlationId, String causationId) {
-        SegmentBooking booking = bySegmentBookingId(payload);
+        validateProviderReservationConfirmedContract(payload);
+        String segmentBookingId = segmentBookingReference(payload);
+        SegmentBooking booking = bySegmentBookingId(segmentBookingId);
         if (booking == null) {
             throw new IllegalArgumentException("ProviderReservationConfirmed payload references an unknown segment booking");
         }
         ProviderReference reference = providerReference(payload.get("providerReference"));
         String evidence = firstText(payload, "normalizedEvidence", "evidence");
+        if (isTerminal(booking)) {
+            booking.registerLateProviderConfirmation(reference);
+            saveAndPublish(booking, correlationId, causationId);
+            warnProviderAckSkip("ProviderReservationConfirmed", booking);
+            return;
+        }
         booking.confirmFromProvider(new ProviderReservationConfirmed(
-            booking.segmentBookingId(), reference, evidence == null ? "provider-confirmed" : evidence, Map.of()));
-        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
-        publishEvents(booking.pullEvents(), correlationId, causationId);
+            booking.segmentBookingId(), reference, evidence, Map.of()));
+        saveAndPublish(booking, correlationId, causationId);
         markSagaStepSucceeded("ProviderReservationConfirmed", booking.segmentBookingId(), correlationId, causationId);
     }
 
-    private void handleProviderReservationFailed(Map<String, Object> payload, String correlationId, String causationId) {
-        SegmentBooking booking = bySegmentBookingId(payload);
+    private void handleProviderReservationFailed(String eventType, Map<String, Object> payload, String correlationId, String causationId) {
+        validateProviderReservationFailedContract(eventType, payload);
+        String segmentBookingId = segmentBookingReference(payload);
+        SegmentBooking booking = bySegmentBookingId(segmentBookingId);
         if (booking == null) {
             throw new IllegalArgumentException("provider failure payload references an unknown segment booking");
         }
+        if (isTerminal(booking)) {
+            warnProviderAckSkip("ProviderReservationFailed", booking);
+            return;
+        }
         String reason = firstText(payload, "errorMessage", "reason", "errorType");
         booking.failReservation(reason == null ? "provider reservation failed" : reason);
-        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
-        publishEvents(booking.pullEvents(), correlationId, causationId);
+        saveAndPublish(booking, correlationId, causationId);
     }
 
     private void handleEntitlementIssued(Map<String, Object> payload, String correlationId, String causationId) {
@@ -556,7 +568,10 @@ public class BookingOrchestrationService {
             case SegmentBookingEvent.ProviderReservationTimedOut ignored -> Optional.empty();
             case SegmentBookingEvent.SegmentBookingCancelRequested ignored -> Optional.empty();
             case SegmentBookingEvent.ProviderConfirmationReceivedAfterCancellation ignored -> Optional.empty();
-            case SegmentBookingEvent.ProviderCancellationRequired ignored -> Optional.empty();
+            case SegmentBookingEvent.ProviderCancellationRequired cancellation -> Optional.of(new ContractEvent(
+                "SegmentBookingCancelled",
+                new SegmentBookingCancelledPayload(cancellation.aggregateId(), cancellation.reason(),
+                    holdIdForSegmentBooking(cancellation.aggregateId()))));
         };
     }
 
@@ -569,8 +584,14 @@ public class BookingOrchestrationService {
     }
 
     private SegmentBooking bySegmentBookingId(Map<String, Object> payload) {
-        String segmentBookingId = segmentBookingReference(payload);
-        return segmentBookingId == null ? null : segmentBookings.findById(segmentBookingId).map(SegmentBookingRepository.SegmentBookingRecord::booking).orElse(null);
+        return bySegmentBookingId(segmentBookingReference(payload));
+    }
+
+    private SegmentBooking bySegmentBookingId(String segmentBookingId) {
+        return segmentBookingId == null ? null
+            : segmentBookings.findById(segmentBookingId)
+                .map(SegmentBookingRepository.SegmentBookingRecord::booking)
+                .orElse(null);
     }
 
     private String segmentBookingReference(Map<String, Object> payload) {
@@ -603,7 +624,26 @@ public class BookingOrchestrationService {
         requirePayloadObject(eventType, payload, "interval");
     }
 
-    private void requirePayloadText(String eventType, Map<String, Object> payload, String... fields) {
+    private void validateProviderReservationConfirmedContract(Map<String, Object> payload) {
+        requirePayloadText("ProviderReservationConfirmed", payload, "segmentBookingId", "normalizedEvidence");
+        if (payload.get("providerReference") instanceof Map<?, ?> providerReference) {
+            requirePayloadText("ProviderReservationConfirmed.providerReference", providerReference,
+                "providerId", "reservationId", "displayReference");
+            return;
+        }
+        requirePayloadText("ProviderReservationConfirmed", payload, "providerReference");
+    }
+
+    private void validateProviderReservationFailedContract(String eventType, Map<String, Object> payload) {
+        requirePayloadText(eventType, payload, "segmentBookingId");
+        if ("ProviderReservationTimedOut".equals(eventType)) {
+            requirePayloadText(eventType, payload, "reason");
+        } else {
+            requirePayloadText(eventType, payload, "errorType");
+        }
+    }
+
+    private void requirePayloadText(String eventType, Map<?, ?> payload, String... fields) {
         for (String field : fields) {
             if (text(payload.get(field)) == null) {
                 throw new IllegalArgumentException(eventType + " payload requires " + field);
@@ -628,6 +668,29 @@ public class BookingOrchestrationService {
             case REQUESTED, HOLDING, CANCEL_REQUESTED -> true;
             case CONFIRMED, TICKETED, IN_FULFILLMENT, COMPLETED, CANCELLED, CHANGE_REQUESTED, CHANGED, FAILED -> false;
         };
+    }
+
+    private boolean isTerminal(SegmentBooking booking) {
+        return switch (booking.status()) {
+            case FAILED, CANCELLED -> true;
+            case REQUESTED, HOLDING, CONFIRMED, TICKETED, IN_FULFILLMENT, COMPLETED, CANCEL_REQUESTED,
+                 CHANGE_REQUESTED, CHANGED -> false;
+        };
+    }
+
+    private void saveAndPublish(SegmentBooking booking, String correlationId, String causationId) {
+        String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow();
+        segmentBookings.save(booking, sagaId);
+        publishEvents(booking.pullEvents(), correlationId, causationId);
+    }
+
+    private void warnProviderAckSkip(String eventType, SegmentBooking booking) {
+        LOGGER.warn(
+            "Ack-skipping {} from provider-integration: segmentBookingId={}, status={}, failureReason={}",
+            eventType,
+            booking.segmentBookingId(),
+            booking.status(),
+            booking.failureReason().orElse(null));
     }
 
     private void warnCapacityAckSkip(String eventType, String reason) {

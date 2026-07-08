@@ -448,3 +448,99 @@ func post(router http.Handler, path, body, idempotencyKey string) *httptest.Resp
 	router.ServeHTTP(recorder, request)
 	return recorder
 }
+
+func TestInboundSegmentBookingCancelledCancelsExistingReservation(t *testing.T) {
+	publisher := &fakePublisher{}
+	service := application.NewInMemoryReservationService(publisher)
+	handler := application.NewInboundEventHandler(service)
+	requested := validSegmentReservationRequestedPayload()
+	requestedBytes, err := json.Marshal(requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler(context.Background(), application.EventEnvelope{
+		EventID:       "evt-" + testUUIDv7(80),
+		EventType:     "SegmentReservationRequested",
+		OccurredAt:    time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC),
+		CorrelationID: "corr-" + testUUIDv7(81),
+		CausationID:   "cmd-" + testUUIDv7(82),
+		Producer:      "booking-orchestration",
+		SchemaVersion: 1,
+		Payload:       requestedBytes,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := json.Marshal(map[string]any{
+		"segmentBookingId": requested["segmentBookingId"],
+		"reason":           "cancel late provider confirmation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := application.EventEnvelope{
+		EventID:       "evt-" + testUUIDv7(83),
+		EventType:     "SegmentBookingCancelled",
+		OccurredAt:    time.Date(2026, 7, 8, 0, 1, 0, 0, time.UTC),
+		CorrelationID: "corr-" + testUUIDv7(81),
+		CausationID:   "evt-" + testUUIDv7(80),
+		Producer:      "booking-orchestration",
+		SchemaVersion: 1,
+		Payload:       cancelled,
+	}
+	if err := handler(context.Background(), envelope); err != nil {
+		t.Fatalf("expected cancellation of existing reservation to ack, got %v", err)
+	}
+	if err := handler(context.Background(), envelope); err != nil {
+		t.Fatalf("expected duplicate cancellation to stay idempotent, got %v", err)
+	}
+}
+
+func TestInboundSegmentBookingCancelledWithoutReservationAcksAsNoOp(t *testing.T) {
+	publisher := &fakePublisher{}
+	service := application.NewInMemoryReservationService(publisher)
+	handler := application.NewInboundEventHandler(service)
+	payloadBytes, err := json.Marshal(map[string]any{
+		"segmentBookingId": "sb-" + testUUIDv7(84),
+		"reason":           "capacity failed before provider reservation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler(context.Background(), application.EventEnvelope{
+		EventID:       "evt-" + testUUIDv7(85),
+		EventType:     "SegmentBookingCancelled",
+		OccurredAt:    time.Date(2026, 7, 8, 0, 2, 0, 0, time.UTC),
+		CorrelationID: "corr-" + testUUIDv7(86),
+		CausationID:   "evt-" + testUUIDv7(87),
+		Producer:      "booking-orchestration",
+		SchemaVersion: 1,
+		Payload:       payloadBytes,
+	}); err != nil {
+		t.Fatalf("expected no-reservation cancellation to ack as no-op, got %v", err)
+	}
+}
+
+func TestInboundSegmentBookingCancelledMissingReasonIsFatal(t *testing.T) {
+	publisher := &fakePublisher{}
+	service := application.NewInMemoryReservationService(publisher)
+	handler := application.NewInboundEventHandler(service)
+	payloadBytes, err := json.Marshal(map[string]any{
+		"segmentBookingId": "sb-" + testUUIDv7(88),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = handler(context.Background(), application.EventEnvelope{
+		EventID:       "evt-" + testUUIDv7(89),
+		EventType:     "SegmentBookingCancelled",
+		OccurredAt:    time.Date(2026, 7, 8, 0, 3, 0, 0, time.UTC),
+		CorrelationID: "corr-" + testUUIDv7(90),
+		CausationID:   "evt-" + testUUIDv7(91),
+		Producer:      "booking-orchestration",
+		SchemaVersion: 1,
+		Payload:       payloadBytes,
+	})
+	if err == nil {
+		t.Fatal("expected missing reason to be fatal")
+	}
+}

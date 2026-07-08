@@ -151,12 +151,8 @@ public final class SegmentBooking {
         if (!segmentBookingId.equals(confirmation.segmentBookingId())) {
             throw new IllegalArgumentException("provider confirmation belongs to a different segment booking");
         }
-        if (status == SegmentBookingStatus.CANCEL_REQUESTED || status == SegmentBookingStatus.CANCELLED) {
-            attachSameProviderReferenceOrThrow(confirmation.providerReference());
-            record(new ProviderConfirmationReceivedAfterCancellation(nextEventId(), segmentBookingId, now(),
-                confirmation.providerReference(), "provider confirmed after cancellation"));
-            record(new ProviderCancellationRequired(nextEventId(), segmentBookingId, now(),
-                confirmation.providerReference(), "cancel late provider confirmation"));
+        if (isTerminalOrCancelling()) {
+            registerLateProviderConfirmation(confirmation.providerReference());
             return;
         }
         confirmReservation(Optional.of(confirmation.providerReference()), confirmation.normalizedEvidence());
@@ -169,6 +165,20 @@ public final class SegmentBooking {
     public void markProviderReservationTimeout(String reason) {
         requireStatus(SegmentBookingStatus.REQUESTED, SegmentBookingStatus.HOLDING);
         record(new ProviderReservationTimedOut(nextEventId(), segmentBookingId, now(), requireText(reason, "reason")));
+    }
+
+    public void registerLateProviderConfirmation(ProviderReference requestedProviderReference) {
+        if (providerReference != null) {
+            return;
+        }
+        attachSameProviderReferenceOrThrow(requestedProviderReference);
+        if (hasProviderCancellationRequiredEvent()) {
+            return;
+        }
+        record(new ProviderConfirmationReceivedAfterCancellation(nextEventId(), segmentBookingId, now(),
+            requestedProviderReference, "provider confirmed after booking terminal"));
+        record(new ProviderCancellationRequired(nextEventId(), segmentBookingId, now(),
+            requestedProviderReference, "cancel late provider confirmation"));
     }
 
     public void failReservation(String reason) {
@@ -221,6 +231,17 @@ public final class SegmentBooking {
 
     public List<DomainEvent> peekEvents() {
         return eventRecorder.peekEvents();
+    }
+
+    private boolean isTerminalOrCancelling() {
+        return status == SegmentBookingStatus.CANCEL_REQUESTED
+            || status == SegmentBookingStatus.CANCELLED
+            || status == SegmentBookingStatus.FAILED;
+    }
+
+    private boolean hasProviderCancellationRequiredEvent() {
+        return eventRecorder.peekEvents().stream()
+            .anyMatch(ProviderCancellationRequired.class::isInstance);
     }
 
     private void confirmReservation(Optional<ProviderReference> maybeProviderReference, String evidence) {
