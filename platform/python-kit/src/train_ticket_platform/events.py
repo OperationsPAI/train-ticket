@@ -24,7 +24,8 @@ class MalformedEnvelopeError(ValueError):
 class EventEnvelope:
     """Contract EventEnvelope with camelCase attribute aliases.
 
-    Wire JSON uses exactly the eight fields from docs/08-contracts/messaging.md.
+    Wire JSON uses the fields from docs/08-contracts/messaging.md: eight core
+    fields plus the optional ``traceparent``/``tracestate`` trace context.
     ``causationId`` is omitted from JSON only when absent because existing
     service contracts allow no causation for externally triggered facts.
     """

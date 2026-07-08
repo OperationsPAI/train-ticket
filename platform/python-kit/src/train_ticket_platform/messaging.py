@@ -481,6 +481,10 @@ def _remote_parent_context(envelope: EventEnvelope) -> Any | None:
     version, trace_id, span_id, flags = parts
     if version != "00" or len(trace_id) != 32 or len(span_id) != 16 or len(flags) != 2:
         return None
+    # W3C trace context is lowercase hex; reject uppercase for parity with
+    # the ts-kit parser so malformed values are ignored identically everywhere.
+    if trace_id != trace_id.lower() or span_id != span_id.lower() or flags != flags.lower():
+        return None
     try:
         trace_id_int = int(trace_id, 16)
         span_id_int = int(span_id, 16)
