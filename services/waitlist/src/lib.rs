@@ -175,3 +175,22 @@ pub use utils::SubscribeFailed;
 use utils::current_rfc3339;
 
 include!("tests.rs");
+
+pub fn init_logging() {
+    use std::io::Write;
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    builder
+        .target(env_logger::Target::Stdout)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} {} {} - {}",
+                rust_kit::messaging::now_rfc3339_utc(),
+                record.level(),
+                record.target(),
+                record.args()
+            )
+        });
+    let _ = builder.try_init();
+}

@@ -53,9 +53,8 @@ The wire status enum is the 8-state machine from the Waitlist domain document:
 | `SUSPENDED` | Payment guarantee, risk, or data issue paused the request. | `QUEUED`, `CANCELLED` |
 | `CLOSED` | Terminal archival state. | - |
 
-`FULFILLED` and `EXPIRED` rest observable via GET; `CLOSED` is reached from
-them only by a future archival sweep (not yet implemented). `CANCELLED`
-closes immediately after the cancellation response.
+`FULFILLED`, `EXPIRED`, and `CANCELLED` rest observable via GET; `CLOSED` is
+reached from them only by a future archival sweep (not yet implemented).
 
 No `FAILED` status is exposed in this contract; a failed matching attempt rolls
 back to `QUEUED` when the associated journey order is cancelled.

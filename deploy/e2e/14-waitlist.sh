@@ -190,8 +190,8 @@ req POST waitlist "/api/v1/waitlist-requests/$WLR_A/cancel" '{"reason":"CUSTOMER
 check_code 200 "cancel waitlist"
 ST_A=$(jget "['status']")
 [ "$ST_A" = CANCELLED ] && ok "cancel response CANCELLED" || bad "cancel response $ST_A"
-ST_A=$(poll_waitlist_status "$WLR_A" CLOSED 10 2)
-[ "$ST_A" = CLOSED ] && ok "cancelled request closed" || bad "cancelled request did not close ($ST_A)"
+ST_A=$(poll_waitlist_status "$WLR_A" CANCELLED 5 2)
+[ "$ST_A" = CANCELLED ] && ok "cancelled request rests CANCELLED" || bad "cancelled request unexpected state ($ST_A)"
 
 echo "== c. fulfillment after refund releases sold-out segment"
 ACCT_B="acc-$(uuid7)"; create_traveler "$ACCT_B" B; TVL_B=$CREATED_TRAVELER

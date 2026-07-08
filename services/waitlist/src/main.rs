@@ -1,5 +1,6 @@
 #[tokio::main]
 async fn main() {
+    waitlist::init_logging();
     let (router, subscriber) = waitlist::build_runtime().await.expect("waitlist runtime");
     let port = std::env::var("PORT")
         .or_else(|_| std::env::var("SERVER_PORT"))

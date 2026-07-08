@@ -12,6 +12,7 @@ name = "waitlist"
 path = "src/main.rs"
 
 [dependencies]
+env_logger = "0.11"
 opentelemetry = "0.32.0"
 opentelemetry_sdk = "0.32.0"
 axum = "0.8.9"

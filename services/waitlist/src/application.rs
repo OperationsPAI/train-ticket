@@ -690,8 +690,31 @@ impl ReqwestFulfillmentClient {
             )));
         }
         if status.is_client_error() {
+            // Error envelope convention: the specific code rides in
+            // details.domainCode. Projection-lag rejections (downstream has
+            // not consumed the just-published snapshot yet) are transient —
+            // the redelivery retries with the same persisted keys. Same
+            // ruling as legacy-acl's projection retry.
+            let detail: Value = response.json().await.unwrap_or(Value::Null);
+            let domain_code = detail
+                .get("details")
+                .and_then(|d| d.get("domainCode"))
+                .and_then(Value::as_str)
+                .or_else(|| detail.get("code").and_then(Value::as_str))
+                .unwrap_or("")
+                .to_string();
+            const PROJECTION_LAG_CODES: [&str; 3] = [
+                "MISSING_ITINERARY_SNAPSHOT",
+                "MISSING_FARE_QUOTE",
+                "MISSING_TRAVELER_SNAPSHOT",
+            ];
+            if PROJECTION_LAG_CODES.contains(&domain_code.as_str()) {
+                return Err(FulfillmentClientError::Transient(format!(
+                    "{service_name} projection lag: {domain_code}"
+                )));
+            }
             return Err(FulfillmentClientError::Rejected(format!(
-                "{service_name} returned {status}"
+                "{service_name} returned {status} ({domain_code})"
             )));
         }
         let response_body: Value = response
