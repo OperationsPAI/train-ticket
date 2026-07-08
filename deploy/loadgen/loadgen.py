@@ -804,7 +804,14 @@ class CustomerSim:
             await self.assert_get("place-network", f"/api/v1/transport-nodes/{quote(refs['node'])}", "nodeId", refs["node"], "tail-get-transport-node")
         if refs.get("service"):
             page = await self.assert_get("service-plan", "/api/v1/scheduled-services?limit=100&offset=0", None, None, "tail-list-scheduled-services")
-            self.assert_list_contains(page, "scheduledServiceRef", refs["service"], "tail-list-scheduled-services")
+            try:
+                self.assert_list_contains(page, "scheduledServiceRef", refs["service"], "tail-list-scheduled-services")
+            except StepFailed:
+                # One retry: a service observed via a fresh itinerary may not
+                # be visible to the list projection for a beat.
+                await asyncio.sleep(2)
+                page = await self.assert_get("service-plan", "/api/v1/scheduled-services?limit=100&offset=0", None, None, "tail-list-scheduled-services")
+                self.assert_list_contains(page, "scheduledServiceRef", refs["service"], "tail-list-scheduled-services")
             await self.assert_get("service-plan", f"/api/v1/scheduled-services/{quote(refs['service'])}", "scheduledServiceRef", refs["service"], "tail-get-scheduled-service")
         if refs.get("itinerary"):
             await self.assert_get("trip-planning", f"/api/v1/itineraries/{quote(refs['itinerary'])}", "itineraryRef", refs["itinerary"], "tail-get-itinerary")
