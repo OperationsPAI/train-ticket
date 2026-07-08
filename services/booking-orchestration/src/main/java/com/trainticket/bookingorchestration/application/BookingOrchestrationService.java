@@ -333,8 +333,14 @@ public class BookingOrchestrationService {
         if (segmentBookingId == null || entitlementId == null) {
             throw new IllegalArgumentException("EntitlementIssued payload requires segmentBookingId and entitlementId");
         }
-        String sagaId = sagaIdForSegmentBooking(segmentBookingId)
-            .orElseThrow(() -> new IllegalArgumentException("EntitlementIssued references an unknown segment booking"));
+        String sagaId = sagaIdForSegmentBooking(segmentBookingId).orElse(null);
+        if (sagaId == null) {
+            // Post-sales CHANGE issues replacement entitlements against segment
+            // bookings this saga never orchestrated. The event is conformant;
+            // an unknown local ref is an ack-skip, not a poison pill.
+            LOGGER.warn("Ack-skipping EntitlementIssued from entitlement-ticketing: unknown segment booking {}", segmentBookingId);
+            return;
+        }
         markTicketed(sagaId, new MarkTicketedCommand(segmentBookingId, entitlementId),
             "event:" + causationId + ":" + segmentBookingId, correlationId);
         BookingSaga saga = sagas.findById(sagaId).orElse(null);
