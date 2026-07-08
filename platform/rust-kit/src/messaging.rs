@@ -888,7 +888,20 @@ pub mod redis_runtime {
                     self.state.mark_consumed(&envelope.event_id);
                     ops.ack(&message.stream, group, &message.id).await
                 }
-                Err(HandlerError::Transient(_)) => Ok(()),
+                Err(HandlerError::Transient(reason)) => {
+                    // Formerly a silent swallow (same class of bug java-kit had):
+                    // without this line a retried-to-death message reaches the
+                    // DLQ with no trace of what actually failed.
+                    log::warn!(
+                        "service={} stream={} eventId={} deliveries={} handler transient failure; message stays pending for retry: {}",
+                        group,
+                        message.stream,
+                        envelope.event_id,
+                        message.delivery_count,
+                        reason
+                    );
+                    Ok(())
+                }
                 Err(HandlerError::Fatal(reason)) => {
                     self.state.mark_consumed(&envelope.event_id);
                     move_to_dlq(

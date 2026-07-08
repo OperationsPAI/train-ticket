@@ -926,6 +926,13 @@ async fn postgres_capacity_inbound_event_contract_classification_pre_db_matrix()
     }
 }
 
+#[test]
+fn capacity_logging_defaults_to_stdout_info() {
+    capacity_availability::init_logging();
+    log::info!("capacity-availability logging smoke test");
+    log::warn!("capacity-availability logging smoke test warn");
+}
+
 #[tokio::test]
 async fn api_responses_include_runtime_correlation_and_request_headers() {
     let app = test_router();

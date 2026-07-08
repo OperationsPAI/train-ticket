@@ -131,7 +131,7 @@ Last updated: 2026-07-04
 |---|---|
 | **Producer** | capacity-availability |
 | **Consumers** | booking-orchestration |
-| **Trigger** | Hold could not be granted (conflict, unknown unit, idempotency conflict). |
+| **Trigger** | Hold could not be granted (conflict, unknown unit, idempotency conflict, or pool sold out). |
 
 **Payload:**
 
@@ -139,10 +139,10 @@ Last updated: 2026-07-04
 |---|---|---|---|
 | `requestedHoldId` | `HoldId` | yes | The hold ID that was requested. |
 | `inventoryPoolId` | `InventoryPoolId` | yes | Pool ID. |
-| `capacityUnitRef` | `CapacityUnitRef` | yes | Unit that caused the conflict. |
+| `capacityUnitRef` | `CapacityUnitRef` | yes | Unit that caused the conflict; the sentinel `NONE` when reason is `NO_AVAILABLE_CAPACITY` (no specific unit is implicated). |
 | `interval` | `StationInterval` | yes | Requested interval. |
 | `idempotencyKey` | string | yes | Request idempotency key. |
-| `reason` | enum | yes | `UNKNOWN_CAPACITY_UNIT`, `IDEMPOTENCY_CONFLICT`, or `OVERLAPPING_HOLD`. |
+| `reason` | enum | yes | `UNKNOWN_CAPACITY_UNIT`, `IDEMPOTENCY_CONFLICT`, `OVERLAPPING_HOLD`, or `NO_AVAILABLE_CAPACITY`. |
 | `conflictingHoldId` | `HoldId` | no | Conflicting hold ID if reason is `OVERLAPPING_HOLD`. |
 
 ## Accepted Commands

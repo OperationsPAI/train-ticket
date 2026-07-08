@@ -715,6 +715,22 @@ impl PostgresCapacityService {
             tx.rollback().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        if let Some(replay) = self
+            .find_replayable_hold_by_idempotency(&mut tx, idempotency_key, req)
+            .await?
+        {
+            self.record_segment_reservation_replay(
+                &mut tx,
+                &stream_for_producer(PRODUCER),
+                &replay,
+                idempotency_key,
+                fingerprint,
+                &envelope.correlation_id,
+            )
+            .await?;
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        }
         if self
             .claim_idempotency::<HoldCapacityResponse>(&mut tx, idempotency_key, fingerprint)
             .await
@@ -743,9 +759,45 @@ impl PostgresCapacityService {
             ),
         };
         let interval = StationInterval::new(0, 1).map_err(inbound_fatal)?;
-        let unit_ref = pool.find_available_unit(&interval, now).ok_or_else(|| {
-            InboundEventError::Transient("No capacity units available in pool".into())
-        })?;
+        let Some(unit_ref) = pool.find_available_unit(&interval, now) else {
+            // Sold out is a business outcome, not an infrastructure failure:
+            // retrying can never conjure a seat. Emit CapacityHoldFailed so the
+            // saga compensates, and ack the message. capacityUnitRef carries the
+            // documented sentinel NONE (contract: NO_AVAILABLE_CAPACITY).
+            let failed = CapacityHoldFailed {
+                envelope: EventEnvelope::new(
+                    "CapacityHoldFailed",
+                    now,
+                    envelope.correlation_id.as_str(),
+                    Some(envelope.event_id.as_str()),
+                    "capacity-availability",
+                ),
+                requested_hold_id: HoldId::new(&hold_id).map_err(inbound_fatal)?,
+                inventory_pool_id: pool.identity.pool_id.clone(),
+                capacity_unit_ref: CapacityUnitRef::new("NONE").map_err(inbound_fatal)?,
+                interval,
+                idempotency_key: IdempotencyKey::new(idempotency_key).map_err(inbound_fatal)?,
+                reason: HoldFailureReason::NoAvailableUnits,
+                references: ReferenceMetadata::new(
+                    "booking-orchestration",
+                    "purchase-hold",
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.traveler_ref.clone()),
+                )
+                .map_err(inbound_fatal)?,
+            };
+            let outbound = domain_event_to_wire(
+                &DomainEvent::CapacityHoldFailed(failed),
+                &envelope.correlation_id,
+            )
+            .map_err(inbound_from_app_error)?;
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
+                .await
+                .map_err(inbound_transient)?;
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
+        };
         let hold = CapacityHold::request(
             HoldId::new(&hold_id).map_err(inbound_fatal)?,
             HoldScope::new(
@@ -815,6 +867,66 @@ impl PostgresCapacityService {
         .map_err(inbound_from_app_error)?;
         tx.commit().await.map_err(inbound_transient)?;
         Ok(())
+    }
+
+    async fn find_replayable_hold_by_idempotency(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        idempotency_key: &str,
+        req: &HoldCapacityRequest,
+    ) -> Result<Option<CapacityHoldSnapshot>, InboundEventError> {
+        let sql = format!(
+            "SELECT data FROM {HOLD_TABLE} WHERE data ->> 'idempotencyKey' = $1 AND data ->> 'state' IN ('Held', 'Confirmed') ORDER BY updated_at DESC LIMIT 1"
+        );
+        let row: Option<(Value,)> = sqlx::query_as(&sql)
+            .bind(idempotency_key)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(inbound_transient)?;
+        let Some((data,)) = row else {
+            return Ok(None);
+        };
+        let snapshot: CapacityHoldSnapshot =
+            serde_json::from_value(data).map_err(inbound_transient)?;
+        if snapshot.matches_segment_reservation(req, idempotency_key) {
+            Ok(Some(snapshot))
+        } else {
+            Err(InboundEventError::Fatal("IDEMPOTENCY_KEY_REUSED".into()))
+        }
+    }
+
+    async fn record_segment_reservation_replay(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        outbox_stream: &str,
+        hold: &CapacityHoldSnapshot,
+        idempotency_key: &str,
+        fingerprint: &str,
+        correlation_id: &str,
+    ) -> Result<(), InboundEventError> {
+        let outbound = replay_capacity_held_envelope(hold, idempotency_key, correlation_id)?;
+        OutboxAppender::append(tx, outbox_stream, &outbound)
+            .await
+            .map_err(inbound_transient)?;
+        let response = HoldCapacityResponse {
+            hold_id: hold.hold_id.clone(),
+            segment_ref: hold.segment_ref(),
+            status: "HELD".to_string(),
+            held_until: unix_millis_to_rfc3339(hold.expires_at),
+        };
+        match self
+            .finish_idempotency(
+                tx,
+                idempotency_key,
+                fingerprint,
+                201,
+                serde_json::to_value(&response).map_err(inbound_transient)?,
+            )
+            .await
+        {
+            Ok(()) | Err(AppError::IdempotencyKeyReused(_)) => Ok(()),
+            Err(error) => Err(inbound_from_app_error(error)),
+        }
     }
 
     async fn handle_segment_reservation_confirmed(
@@ -1506,6 +1618,27 @@ impl CapacityHoldSnapshot {
         }
     }
 
+    fn matches_segment_reservation(
+        &self,
+        req: &HoldCapacityRequest,
+        idempotency_key: &str,
+    ) -> bool {
+        self.idempotency_key == idempotency_key
+            && self.inventory_pool_id == pool_id_for(&req.segment_ref, &req.class_ref)
+            && self.segment_ref() == req.segment_ref
+            && self.references.traveler_ref.as_deref() == Some(req.traveler_ref.as_str())
+            && self.references.segment_booking_ref.as_deref()
+                == Some(req.segment_booking_id.as_str())
+    }
+
+    fn segment_ref(&self) -> String {
+        self.inventory_pool_id
+            .strip_prefix("pool:")
+            .and_then(|tail| tail.rsplit_once(':').map(|(segment_ref, _)| segment_ref))
+            .unwrap_or(&self.inventory_pool_id)
+            .to_string()
+    }
+
     fn try_into_domain(self) -> Result<CapacityHold, AppError> {
         let mut hold = CapacityHold::request(
             HoldId::new(self.hold_id).map_err(to_internal)?,
@@ -1602,6 +1735,30 @@ fn validate_hold_request(req: &HoldCapacityRequest) -> Result<(), AppError> {
 
 fn pool_id_for(segment_ref: &str, class_ref: &str) -> String {
     format!("pool:{}:{}", segment_ref, class_ref)
+}
+
+fn replay_capacity_held_envelope(
+    hold: &CapacityHoldSnapshot,
+    idempotency_key: &str,
+    correlation_id: &str,
+) -> Result<WireEnvelope, InboundEventError> {
+    WireEnvelope::try_new(
+        "CapacityHeld",
+        unix_millis_to_rfc3339(now_millis()),
+        rust_kit::messaging::valid_or_generated_correlation_id(correlation_id),
+        None::<String>,
+        PRODUCER,
+        json!({
+            "holdId": hold.hold_id,
+            "inventoryPoolId": hold.inventory_pool_id,
+            "capacityUnitRef": hold.capacity_unit_ref,
+            "interval": { "fromSeq": hold.from_seq, "toSeq": hold.to_seq },
+            "idempotencyKey": idempotency_key,
+            "expiresAt": unix_millis_to_rfc3339(hold.expires_at),
+            "idempotentReplay": true,
+        }),
+    )
+    .map_err(inbound_fatal)
 }
 
 fn domain_event_to_wire(
@@ -1791,6 +1948,35 @@ mod tests {
         }
     }
 
+    fn replay_snapshot(
+        req: &HoldCapacityRequest,
+        hold_id: &str,
+        idempotency_key: &str,
+    ) -> CapacityHoldSnapshot {
+        let now = now_millis();
+        let hold = CapacityHold::request(
+            HoldId::new(hold_id).unwrap(),
+            HoldScope::new(
+                InventoryPoolId::new("pool:seg:first").unwrap(),
+                CapacityUnitRef::new("unit-1").unwrap(),
+                StationInterval::new(0, 1).unwrap(),
+                ReferenceMetadata::new(
+                    "booking-orchestration",
+                    "purchase-hold",
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.segment_booking_id.clone()),
+                    Some(req.traveler_ref.clone()),
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new(idempotency_key).unwrap(),
+            now,
+            now + 300_000,
+        )
+        .unwrap();
+        CapacityHoldSnapshot::from_domain(&hold)
+    }
+
     #[test]
     fn pool_snapshot_round_trips_holds() {
         let req = request();
@@ -1862,6 +2048,34 @@ mod tests {
             segment_booking_ref_from_entitlement_voided(&payload),
             Some("sb-legacy".to_string())
         );
+    }
+
+    #[test]
+    fn replay_snapshot_matches_original_segment_reservation() {
+        let req = request();
+        let snapshot = replay_snapshot(&req, "hold-replay", "idem-replay");
+
+        assert!(snapshot.matches_segment_reservation(&req, "idem-replay"));
+        assert_eq!(snapshot.segment_ref(), req.segment_ref);
+        assert!(!snapshot.matches_segment_reservation(&req, "different-key"));
+    }
+
+    #[test]
+    fn replay_capacity_held_envelope_marks_idempotent_replay() {
+        let req = request();
+        let snapshot = replay_snapshot(&req, "hold-replay-envelope", "idem-replay-envelope");
+        let envelope = replay_capacity_held_envelope(
+            &snapshot,
+            "idem-replay-envelope",
+            "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa44",
+        )
+        .unwrap();
+
+        assert_eq!(envelope.event_type, "CapacityHeld");
+        assert_eq!(envelope.producer, PRODUCER);
+        assert_eq!(envelope.payload["holdId"], "hold-replay-envelope");
+        assert_eq!(envelope.payload["idempotencyKey"], "idem-replay-envelope");
+        assert_eq!(envelope.payload["idempotentReplay"], true);
     }
 
     #[test]

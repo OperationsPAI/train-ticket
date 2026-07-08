@@ -107,6 +107,14 @@ pub mod redis_subscriber {
             deleted_ids,
         })
     }
+    pub fn default_subscription_streams() -> Vec<String> {
+        vec![
+            "events:booking-orchestration".to_string(),
+            "events:entitlement-ticketing".to_string(),
+            "events:post-sales".to_string(),
+        ]
+    }
+
     #[derive(Clone)]
     pub struct RedisEventSubscriber {
         inner: rust_kit::messaging::redis_runtime::RedisEventSubscriber,
@@ -137,11 +145,7 @@ pub mod redis_subscriber {
             >,
         ) -> Result<(), rust_kit::messaging::SubscribeFailed> {
             let selected_streams = if streams.is_empty() {
-                vec![
-                    "events:booking-orchestration".to_string(),
-                    "events:entitlement-ticketing".to_string(),
-                    "events:post-sales".to_string(),
-                ]
+                default_subscription_streams()
             } else {
                 streams.to_vec()
             };

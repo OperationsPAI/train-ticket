@@ -9,6 +9,7 @@ use axum::Router;
 use axum::{Json, http::StatusCode, routing::get};
 use serde::Serialize;
 use shared_kernel::{OpenTelemetryObserver, RuntimeConfig, apply_runtime, router_with_config};
+use std::io::Write;
 
 #[cfg(feature = "redis-impl")]
 pub use adapters::storage::PostgresCapacityService;
@@ -75,20 +76,27 @@ pub async fn build_runtime() -> Router {
     use crate::ports::EventSubscriber;
 
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.to_string());
+    log::info!("capacity-availability initializing Redis subscriber");
     let subscriber = adapters::messaging::redis_subscriber::RedisEventSubscriber::new(&redis_url)
         .await
         .expect("failed to initialize Redis event subscriber");
 
+    log::info!("capacity-availability initializing Postgres storage");
     let service = std::sync::Arc::new(
         adapters::storage::PostgresCapacityService::from_env()
             .await
             .expect("failed to initialize Postgres capacity storage"),
     );
     rust_kit::storage::spawn_outbox_relay(service.pool().clone(), redis_url.clone());
+    let selected_streams = adapters::messaging::redis_subscriber::default_subscription_streams();
+    log::info!(
+        "capacity-availability starting Redis subscriber group={CONSUMER_GROUP} streams={}",
+        selected_streams.join(",")
+    );
     let handler_service = service.clone();
     subscriber
         .subscribe(
-            &[],
+            &selected_streams,
             CONSUMER_GROUP,
             &consumer_name(),
             Box::new(move |envelope| {
@@ -100,6 +108,7 @@ pub async fn build_runtime() -> Router {
             }),
         )
         .expect("failed to start Redis event subscriber");
+    log::info!("capacity-availability Redis subscriber started");
 
     router_with_postgres_service(service)
 }
@@ -184,6 +193,24 @@ fn consumer_name() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("CONSUMER_NAME"))
         .unwrap_or_else(|_| format!("capacity-availability-{}", std::process::id()))
+}
+
+pub fn init_logging() {
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    builder
+        .target(env_logger::Target::Stdout)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} {} {} - {}",
+                rust_kit::messaging::now_rfc3339_utc(),
+                record.level(),
+                record.target(),
+                record.args()
+            )
+        });
+    let _ = builder.try_init();
 }
 
 pub fn apply_service_runtime(router: Router) -> Router {

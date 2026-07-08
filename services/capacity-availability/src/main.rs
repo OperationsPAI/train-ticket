@@ -1,6 +1,8 @@
 #[cfg(feature = "redis-impl")]
 #[tokio::main]
 async fn main() {
+    capacity_availability::init_logging();
+    log::info!("capacity-availability runtime starting");
     let app = capacity_availability::build_runtime().await;
     let port = std::env::var("PORT")
         .ok()
@@ -9,6 +11,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("failed to bind HTTP listener");
+    log::info!("capacity-availability HTTP server listening on 0.0.0.0:{port}");
     axum::serve(listener, app)
         .await
         .expect("capacity-availability HTTP server failed");
@@ -16,7 +19,8 @@ async fn main() {
 
 #[cfg(not(feature = "redis-impl"))]
 fn main() {
-    eprintln!(
+    capacity_availability::init_logging();
+    log::error!(
         "capacity-availability binary requires the redis-impl feature for production startup"
     );
 }
