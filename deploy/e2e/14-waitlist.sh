@@ -246,24 +246,30 @@ for attempt in $(seq 1 30); do
 done
 [ -n "$WL_ORDER" ] && ok "fulfillment chain produced order $WL_ORDER" || bad "no journey-order reference appeared on the waitlist request"
 if [ -n "$WL_ORDER" ]; then
-  WL_SB=""
+  # Staff plays the same two steps as in buy_one: request the segment
+  # reservation on the saga, then issue the entitlement.
+  WL_SAGA=""
   for attempt in $(seq 1 10); do
-    k exec "$(redis_pod)" -- redis-cli XREVRANGE events:booking-orchestration + - COUNT 60 > /tmp/waitlist-booking-wl.txt
-    WL_SB=$(ORDER_REF="$WL_ORDER" python3 - <<'PYEX'
+    k exec "$(redis_pod)" -- redis-cli XREVRANGE events:booking-orchestration + - COUNT 80 > /tmp/waitlist-booking-wl.txt
+    WL_SAGA=$(ORDER_REF="$WL_ORDER" python3 - <<'PYEX'
 import re, os, json
 for m in re.finditer(r'\{.*\}', open('/tmp/waitlist-booking-wl.txt').read()):
     try:
         e = json.loads(m.group(0).encode().decode('unicode_escape'))
-        if e.get('eventType') == 'SegmentReservationRequested' and e.get('payload', {}).get('journeyOrderId') == os.environ['ORDER_REF']:
-            print(e['payload']['segmentBookingId']); break
+        if e.get('eventType') == 'BookingSagaStarted' and e.get('payload', {}).get('journeyOrderId') == os.environ['ORDER_REF']:
+            print(e['payload']['sagaId']); break
     except Exception:
         pass
 PYEX
 )
-    [ -n "$WL_SB" ] && break
+    [ -n "$WL_SAGA" ] && break
     sleep 3
   done
-  [ -n "$WL_SB" ] && ok "found segment booking $WL_SB for waitlist order" || bad "no segment booking for waitlist order"
+  [ -n "$WL_SAGA" ] && ok "saga started for waitlist order" || bad "no saga for waitlist order"
+  WL_SB="sb-$(uuid7)"
+  req POST booking-orchestration "/api/v1/internal/booking-sagas/$WL_SAGA/request-reservation" "{\"segmentRef\":\"$SEG_F\",\"travelerRef\":\"$TVL_C\",\"segmentBookingId\":\"$WL_SB\"}"
+  check_code 200 "staff requests reservation for waitlist order"
+  sleep 5
   req POST entitlement-ticketing /api/v1/entitlements "{\"segmentBookingId\":\"$WL_SB\",\"journeyOrderId\":\"$WL_ORDER\",\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"issuePurpose\":\"INITIAL\"}"
   check_code 201 "staff issues entitlement for waitlist order"
 fi
