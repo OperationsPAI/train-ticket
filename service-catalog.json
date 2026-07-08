@@ -708,10 +708,10 @@
       "domain": "Dispatch",
       "language": "golang",
       "runtime": "go",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
-      "priority": "P1",
-      "workPackages": [],
+      "phase": "phase-1-core",
+      "status": "integration-ready",
+      "priority": "P0",
+      "workPackages": ["REQ-114"],
       "docs": [
         "docs/02-domains/dispatch.md"
       ],

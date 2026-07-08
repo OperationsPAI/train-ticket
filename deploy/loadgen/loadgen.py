@@ -216,6 +216,7 @@ class Registry:
     q_ticketing: deque = field(default_factory=deque, repr=False)
     q_risk: deque = field(default_factory=deque, repr=False)
     q_support: deque = field(default_factory=deque, repr=False)
+    q_dispatch: deque = field(default_factory=deque, repr=False)
 
     @classmethod
     def load(cls, path: str) -> "Registry":
@@ -328,7 +329,7 @@ class StaffSim:
     async def worker(self, idx: int, stop: asyncio.Event) -> None:
         while not stop.is_set():
             item = None
-            for q in (self.reg.q_reservation, self.reg.q_ticketing, self.reg.q_risk, self.reg.q_support):
+            for q in (self.reg.q_reservation, self.reg.q_ticketing, self.reg.q_risk, self.reg.q_support, self.reg.q_dispatch):
                 if q:
                     item = q.popleft()
                     break
@@ -416,6 +417,34 @@ class StaffSim:
             item["risk"] = "lifted"
         else:
             item["risk"] = "rejected"
+
+
+    async def do_dispatch(self, item: dict) -> None:
+        ride = item["ride"]
+        branch = item.get("branch", "complete")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/assign",
+                               {"driverRef": f"drv-{uuid7()}", "vehicleRef": f"veh-{uuid7()}", "etaSeconds": self.rng.randint(30, 300)},
+                               ok=(200,), step="staff-dispatch-assign")
+        if branch == "driver_cancel_reassign":
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/driver-cancel",
+                                   {"reason": "DRIVER_UNAVAILABLE"}, ok=(200,), step="staff-dispatch-driver-cancel")
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/assign",
+                                   {"driverRef": f"drv-{uuid7()}", "vehicleRef": f"veh-{uuid7()}", "etaSeconds": self.rng.randint(30, 300)},
+                                   ok=(200,), step="staff-dispatch-reassign")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/eta",
+                               {"etaSeconds": self.rng.randint(10, 120)}, ok=(200,), step="staff-dispatch-eta")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/driver-arrived",
+                               {}, ok=(200,), step="staff-dispatch-arrived")
+        if branch == "no_show":
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/no-show",
+                                   {"reason": "RIDER_ABSENT"}, ok=(200,), step="staff-dispatch-no-show")
+            item["dispatch"] = "no_show"
+            return
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/start",
+                               {}, ok=(200,), step="staff-dispatch-start")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/complete",
+                               {"finalFareRef": f"fare-final-{uuid7()}"}, ok=(200,), step="staff-dispatch-complete")
+        item["dispatch"] = "driver_cancel_reassigned_completed" if branch == "driver_cancel_reassign" else "completed"
 
     async def do_support(self, item: dict) -> None:
         case_id = item["case"]
@@ -841,6 +870,34 @@ class CustomerSim:
         await self.maybe_read_probe({"fulfillment_record": p.fulfillment_record, "entitlement": p.entitlement, "order": p.order})
         return outcome
 
+
+    async def journey_ride(self) -> str:
+        entry = await self.login_or_register()
+        traveler = await self.obtain_traveler(entry)
+        window_start = datetime.now(timezone.utc) + timedelta(minutes=2)
+        window_end = window_start + timedelta(minutes=30)
+        suffix = uuid7()
+        body = {
+            "pickupRef": f"plc-ride-pick-{suffix}", "dropoffRef": f"plc-ride-drop-{suffix}",
+            "timeWindow": {"startAt": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           "endAt": window_end.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            "riderAccountId": entry["account_id"], "travelerRef": traveler,
+            "estimatedFareRef": f"fare-est-{suffix}", "intentFingerprint": f"ride:{traveler}:{suffix}",
+        }
+        _, ride = await self.api.request("POST", "dispatch", "/api/v1/ride-requests", body, step="ride-create")
+        ride_id = ride["rideRequestId"]
+        branch = weighted_choice(self.rng, self.b.get("ride_branches", {"complete": 0.75, "driver_cancel_reassign": 0.10, "user_cancel": 0.10, "no_show": 0.05}))
+        if branch == "user_cancel":
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride_id)}/user-cancel",
+                                   {"reason": "CUSTOMER_CHANGED_PLANS"}, ok=(200,), step="ride-user-cancel")
+            await self.maybe_read_probe({"ride_request": ride_id, "ride_rider": entry["account_id"]})
+            return "user_cancelled"
+        work = {"kind": "dispatch", "ride": ride_id, "branch": branch}
+        self.reg.q_dispatch.append(work)
+        outcome = await wait_for(work, "dispatch", self.staff_wait)
+        await self.maybe_read_probe({"ride_request": ride_id, "ride_rider": entry["account_id"]})
+        return outcome
+
     async def journey_support(self) -> str:
         async with self.reg.lock:
             pool = [p for p in self.reg.purchases if p.status != "consumed"]
@@ -929,6 +986,11 @@ class CustomerSim:
             await self.assert_get("customer-service", f"/api/v1/support-cases/{quote(refs['support_case'])}", "caseId", refs["support_case"], "tail-get-support-case")
         if refs.get("quote"):
             await self.assert_get("fare-pricing", f"/api/v1/fare-quotes/{quote(refs['quote'])}", "quoteId", refs["quote"], "tail-get-fare-quote")
+        if refs.get("ride_request"):
+            await self.assert_get("dispatch", f"/api/v1/ride-requests/{quote(refs['ride_request'])}", "rideRequestId", refs["ride_request"], "tail-get-ride-request")
+        if refs.get("ride_rider") and refs.get("ride_request"):
+            page = await self.assert_get("dispatch", f"/api/v1/ride-requests?riderAccountId={quote(refs['ride_rider'])}&limit=20&offset=0", None, None, "tail-list-ride-requests")
+            self.assert_list_contains(page, "rideRequestId", refs["ride_request"], "tail-list-ride-requests")
         if refs.get("waitlist") and refs.get("waitlist_traveler"):
             page = await self.assert_get("waitlist", f"/api/v1/waitlist-requests?travelerRef={quote(refs['waitlist_traveler'])}&limit=20&offset=0", None, None, "tail-list-waitlist")
             self.assert_list_contains(page, "waitlistRequestId", refs["waitlist"], "tail-list-waitlist")
@@ -1307,6 +1369,7 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "fulfillment": sim.journey_fulfillment,
         "support": sim.journey_support,
         "legacy": sim.journey_legacy,
+        "ride": sim.journey_ride,
     }
     pause = cfg["run"]["session_pause_seconds"]
     while not stop.is_set():
