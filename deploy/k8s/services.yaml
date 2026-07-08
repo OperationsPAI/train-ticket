@@ -1063,6 +1063,8 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/notification
+            - name: SMTP_URL
+              value: smtp://mailpit:1025
           resources:
             requests:
               cpu: 50m

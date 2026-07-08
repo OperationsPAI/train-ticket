@@ -1,5 +1,5 @@
 import { DeduplicatingEventHandler, fatalHandling, successfulHandling } from "../../application/messaging.js";
-import { NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
+import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
 import { startNotificationStorage, type NotificationStorageRuntime } from "../storage/runtime.js";
 import { RedisStreamEventPublisher } from "./publisher.js";
 import { RedisStreamEventSubscriber } from "./subscriber.js";
@@ -16,11 +16,14 @@ export type NotificationMessagingRuntime = Readonly<{
   stop: () => Promise<void>;
 }>;
 
-export async function startNotificationMessaging(existingStorage?: NotificationStorageRuntime): Promise<NotificationMessagingRuntime> {
-  const storage = existingStorage ?? await optionalStorageRuntime();
+export async function startNotificationMessaging(
+  existingStorage?: NotificationStorageRuntime,
+  channelGateway: NotificationChannelGateway = new DirectSuccessGateway(),
+): Promise<NotificationMessagingRuntime> {
+  const storage = existingStorage ?? await optionalStorageRuntime(channelGateway);
   const publisher = storage ? undefined : new RedisStreamEventPublisher();
   const subscriber = new RedisStreamEventSubscriber();
-  const application = publisher ? new NotificationApplicationService(publisher) : undefined;
+  const application = publisher ? new NotificationApplicationService(publisher, undefined, channelGateway) : undefined;
   const handler = new DeduplicatingEventHandler(async (envelope) => {
     try {
       if (storage) {
@@ -59,9 +62,9 @@ export async function startNotificationMessaging(existingStorage?: NotificationS
   };
 }
 
-async function optionalStorageRuntime(): Promise<NotificationStorageRuntime | undefined> {
+async function optionalStorageRuntime(channelGateway: NotificationChannelGateway): Promise<NotificationStorageRuntime | undefined> {
   if (!process.env.DATABASE_URL) {
     return undefined;
   }
-  return startNotificationStorage();
+  return startNotificationStorage(channelGateway);
 }

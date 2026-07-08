@@ -4,4 +4,5 @@ resources:
   - namespace.yaml
   - postgres.yaml
   - redis.yaml
+  - mailpit.yaml
   - services.yaml
