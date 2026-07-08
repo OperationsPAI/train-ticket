@@ -30,6 +30,7 @@ import time
 import uuid
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -192,9 +193,20 @@ class Purchase:
 
 
 @dataclass
+class WaitlistRef:
+    waitlist_request_id: str
+    traveler: str
+    seg: str
+    payment_intent: str
+    intent_fingerprint: str
+    status: str = "QUEUED"
+
+
+@dataclass
 class Registry:
     accounts: list[dict] = field(default_factory=list)
     purchases: list[Purchase] = field(default_factory=list)
+    waitlists: list[WaitlistRef] = field(default_factory=list)
     routes: list[dict] = field(default_factory=list)
     ops_entities: dict[str, list[str]] = field(default_factory=lambda: {"suppliers": [], "carriers": [], "contracts": []})
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -212,6 +224,7 @@ class Registry:
                 raw = json.load(open(path))
                 reg.accounts = raw.get("accounts", [])
                 reg.purchases = [Purchase(**p) for p in raw.get("purchases", [])]
+                reg.waitlists = [WaitlistRef(**w) for w in raw.get("waitlists", [])]
                 reg.routes = raw.get("routes", [])
                 reg.ops_entities = raw.get("ops_entities", reg.ops_entities)
             except Exception as exc:
@@ -225,6 +238,7 @@ class Registry:
         with open(tmp, "w") as fh:
             json.dump({"accounts": self.accounts,
                        "purchases": [vars(p) for p in self.purchases],
+                       "waitlists": [vars(w) for w in self.waitlists],
                        "routes": self.routes,
                        "ops_entities": self.ops_entities}, fh)
         os.replace(tmp, path)
@@ -259,6 +273,12 @@ class Registry:
     async def release_purchase(self, p: Purchase, status: str) -> None:
         async with self.lock:
             p.status = status
+
+    async def add_waitlist(self, w: WaitlistRef) -> None:
+        async with self.lock:
+            self.waitlists.append(w)
+            if len(self.waitlists) > 500:
+                self.waitlists.pop(0)
 
     async def remember_ops_entity(self, kind: str, entity_id: str) -> None:
         async with self.lock:
@@ -351,7 +371,27 @@ class StaffSim:
             {"segmentRef": item["seg"], "travelerRef": item["traveler"], "segmentBookingId": sb},
             ok=(200,), step="staff-reservation")
         item["saga"] = saga
+        if await self.saga_failed_no_capacity(saga):
+            item["no_capacity"] = True
         item["sb"] = sb
+
+    async def saga_failed_no_capacity(self, saga: str) -> bool:
+        for _ in range(self.poll_attempts):
+            code, data = await self.api.request(
+                "GET", "booking-orchestration", f"/api/v1/internal/booking-sagas/{saga}",
+                ok=(), step="staff-poll-reservation")
+            if code == 200:
+                text = json.dumps({
+                    "status": data.get("status"),
+                    "terminalReason": data.get("terminalReason"),
+                    "steps": data.get("steps", []),
+                })
+                if "NO_AVAILABLE_CAPACITY" in text:
+                    return True
+                if data.get("status") in {"WAITING_PAYMENT", "HELD", "TICKETING", "COMPLETED"}:
+                    return False
+            await asyncio.sleep(self.poll_interval)
+        return False
 
     async def do_ticketing(self, item: dict) -> None:
         _, data = await self.api.request(
@@ -455,6 +495,9 @@ class CustomerSim:
 
     def chance(self, key: str) -> bool:
         return self.rng.random() < float(self.b[key])
+
+    def optional_chance(self, key: str, default: float = 0.0) -> bool:
+        return self.rng.random() < float(self.b.get(key, default))
 
     # -- identity ------------------------------------------------------------
 
@@ -589,12 +632,16 @@ class CustomerSim:
             {"businessRef": order_id, "purpose": "purchase",
              "amount": {"currency": "CNY", "minorUnits": total_minor},
              "payerRef": entry["account_id"]}, step="payment-intent")
-        await self.maybe_read_probe({
+        common_refs = {
             "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
             "payment_intent": intent.get("paymentIntentId"), "itinerary": found.get("itinerary"),
             "quote": quote.get("quoteId"), "service": found.get("service"),
             "place": route.get("origin_place"), "node": found.get("origin_node"),
-        })
+        }
+        await self.maybe_read_probe(common_refs)
+        if resv.get("no_capacity"):
+            return await self.handle_no_capacity_waitlist(
+                travelers[0], found["segment"], intent["paymentIntentId"], common_refs)
         if self.chance("p_abandon_before_payment"):
             if self.chance("p_cancel_payment_intent_on_abandon"):
                 await self.api.request(
@@ -635,6 +682,57 @@ class CustomerSim:
             "node": found.get("origin_node"),
         })
         return "purchased"
+
+    async def handle_no_capacity_waitlist(self, traveler: str, segment: str, payment_intent: str,
+                                          refs: dict[str, str | None]) -> str:
+        if not self.optional_chance("p_waitlist_on_no_capacity", 0.30):
+            return "no_available_capacity"
+        minutes = float(self.b.get("waitlist_deadline_minutes", 30))
+        deadline = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        intent_fingerprint = f"{traveler}:{segment}"
+        code, waitlist = await self.api.request(
+            "POST", "waitlist", "/api/v1/waitlist-requests",
+            {"travelerRef": traveler, "segmentRef": segment,
+             "paymentGuaranteeRef": payment_intent,
+             "intentFingerprint": intent_fingerprint,
+             "deadline": deadline.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            ok=(200, 201, 409), step="waitlist-create")
+        if code == 409:
+            self.stats.journeys["waitlist:conflict"] += 1
+            return "waitlist_conflict"
+        waitlist_id = waitlist["waitlistRequestId"]
+        status = waitlist.get("status", "QUEUED")
+        await self.reg.add_waitlist(WaitlistRef(waitlist_id, traveler, segment, payment_intent,
+                                                intent_fingerprint, status))
+        if status == "QUEUED":
+            self.stats.journeys["waitlist:queued"] += 1
+        await self.maybe_read_probe({**refs, "waitlist": waitlist_id, "waitlist_traveler": traveler})
+        if status in {"QUEUED", "MATCHING", "SUSPENDED"} and self.optional_chance("p_waitlist_cancel", 0.05):
+            code, cancelled = await self.api.request(
+                "POST", "waitlist", f"/api/v1/waitlist-requests/{quote(waitlist_id)}/cancel",
+                {"reason": "CUSTOMER_CHANGED_PLANS"}, ok=(200, 409, 412), step="waitlist-cancel")
+            if code == 200 and cancelled.get("status") == "CANCELLED":
+                self.stats.journeys["waitlist:cancelled"] += 1
+                return "waitlist_cancelled"
+        terminal = await self.poll_waitlist(waitlist_id)
+        if terminal in {"FULFILLED", "EXPIRED", "CANCELLED"}:
+            self.stats.journeys[f"waitlist:{terminal.lower()}"] += 1
+        if terminal in {"QUEUED", "MATCHING"}:
+            return f"waitlist_{terminal.lower()}"
+        return f"waitlist_{terminal.lower()}" if terminal else "waitlist_observed"
+
+    async def poll_waitlist(self, waitlist_id: str) -> str | None:
+        status = None
+        for _ in range(int(self.cfg.get("waitlist", {}).get("poll_attempts", self.poll_attempts))):
+            code, data = await self.api.request("GET", "waitlist",
+                                                f"/api/v1/waitlist-requests/{quote(waitlist_id)}",
+                                                ok=(), step="waitlist-poll")
+            if code == 200:
+                status = data.get("status")
+                if status in {"FULFILLED", "EXPIRED", "CANCELLED", "CLOSED"}:
+                    return status
+            await asyncio.sleep(float(self.cfg.get("waitlist", {}).get("poll_interval_seconds", self.poll_interval)))
+        return status
 
     async def poll_order(self, order_id: str, want: set[str], give_up_on_block: bool = False) -> str | None:
         status = None
@@ -819,6 +917,10 @@ class CustomerSim:
             await self.assert_get("customer-service", f"/api/v1/support-cases/{quote(refs['support_case'])}", "caseId", refs["support_case"], "tail-get-support-case")
         if refs.get("quote"):
             await self.assert_get("fare-pricing", f"/api/v1/fare-quotes/{quote(refs['quote'])}", "quoteId", refs["quote"], "tail-get-fare-quote")
+        if refs.get("waitlist") and refs.get("waitlist_traveler"):
+            page = await self.assert_get("waitlist", f"/api/v1/waitlist-requests?travelerRef={quote(refs['waitlist_traveler'])}&limit=20&offset=0", None, None, "tail-list-waitlist")
+            self.assert_list_contains(page, "waitlistRequestId", refs["waitlist"], "tail-list-waitlist")
+            await self.assert_get("waitlist", f"/api/v1/waitlist-requests/{quote(refs['waitlist'])}", "waitlistRequestId", refs["waitlist"], "tail-get-waitlist")
 
     async def find_refund_id(self, case_id: str) -> str | None:
         for _ in range(self.poll_attempts):
