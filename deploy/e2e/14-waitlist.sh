@@ -214,10 +214,42 @@ check_code 201 "open refund to release capacity"
 CASE_F=$(jget "['caseId']")
 req POST post-sales "/api/v1/post-sales-cases/$CASE_F/evaluate" '{}'; check_code 200 "evaluate refund"
 req POST post-sales "/api/v1/post-sales-cases/$CASE_F/approve" '{}'; check_code 200 "approve refund"
-ST_F=$(poll_waitlist_status "$WLR_F" FULFILLED 36 5)
+# The fulfillment chain runs quote->offer->order->payment on the customer's
+# behalf; entitlement issuance stays a staff action (loadgen's staff pool is
+# paused during e2e), so this script plays the staff ticketing role once the
+# chain has produced the order.
+WL_ORDER=""
+for attempt in $(seq 1 30); do
+  req GET waitlist "/api/v1/waitlist-requests/$WLR_F"
+  WL_ORDER=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('journeyOrderRef') or d.get('journeyOrderId') or '')" 2>/dev/null)
+  [ -n "$WL_ORDER" ] && break
+  sleep 5
+done
+[ -n "$WL_ORDER" ] && ok "fulfillment chain produced order $WL_ORDER" || bad "no journey-order reference appeared on the waitlist request"
+if [ -n "$WL_ORDER" ]; then
+  WL_SB=""
+  for attempt in $(seq 1 10); do
+    k exec "$(redis_pod)" -- redis-cli XREVRANGE events:booking-orchestration + - COUNT 60 > /tmp/waitlist-booking-wl.txt
+    WL_SB=$(ORDER_REF="$WL_ORDER" python3 - <<'PYEX'
+import re, os, json
+for m in re.finditer(r'\{.*\}', open('/tmp/waitlist-booking-wl.txt').read()):
+    try:
+        e = json.loads(m.group(0).encode().decode('unicode_escape'))
+        if e.get('eventType') == 'SegmentReservationRequested' and e.get('payload', {}).get('journeyOrderId') == os.environ['ORDER_REF']:
+            print(e['payload']['segmentBookingId']); break
+    except Exception:
+        pass
+PYEX
+)
+    [ -n "$WL_SB" ] && break
+    sleep 3
+  done
+  [ -n "$WL_SB" ] && ok "found segment booking $WL_SB for waitlist order" || bad "no segment booking for waitlist order"
+  req POST entitlement-ticketing /api/v1/entitlements "{\"segmentBookingId\":\"$WL_SB\",\"journeyOrderId\":\"$WL_ORDER\",\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"issuePurpose\":\"INITIAL\"}"
+  check_code 201 "staff issues entitlement for waitlist order"
+fi
+ST_F=$(poll_waitlist_status "$WLR_F" FULFILLED 24 5)
 [ "$ST_F" = FULFILLED ] && ok "waitlist fulfilled after capacity release" || bad "waitlist did not fulfill ($ST_F)"
-req GET waitlist "/api/v1/waitlist-requests/$WLR_F"
-WL_ORDER=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('journeyOrderRef') or d.get('journeyOrderId') or '')" 2>/dev/null)
 if [ -n "$WL_ORDER" ]; then
   OST=""
   for attempt in $(seq 1 10); do
