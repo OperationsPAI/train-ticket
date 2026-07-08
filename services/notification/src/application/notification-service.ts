@@ -49,18 +49,18 @@ export class NonConformantNotificationTrigger extends Error {
   }
 }
 
-class AllowAllPreferences implements UserPreferenceRepository {
-  isEnabled(): boolean {
-    return true;
-  }
-}
-
-class DirectSuccessGateway implements NotificationChannelGateway {
+export class DirectSuccessGateway implements NotificationChannelGateway {
   async send(task: ReturnType<NotificationTask["toSnapshot"]>): Promise<DeliveryResult> {
     if (task.channel === "IN_APP") {
       return { ok: true };
     }
     return { ok: true, providerMessageId: `${task.channel.toLowerCase()}-${task.notificationTaskId}` };
+  }
+}
+
+class AllowAllPreferences implements UserPreferenceRepository {
+  isEnabled(): boolean {
+    return true;
   }
 }
 

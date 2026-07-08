@@ -16,7 +16,7 @@ import {
   type EventEnvelope,
 } from "@trainticket/ts-kit";
 
-import { NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
+import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
 import { type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
 import { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
@@ -28,7 +28,7 @@ export type NotificationStorageRuntime = Readonly<{
   stop: () => Promise<void>;
 }>;
 
-export async function startNotificationStorage(): Promise<NotificationStorageRuntime> {
+export async function startNotificationStorage(channelGateway: NotificationChannelGateway = new DirectSuccessGateway()): Promise<NotificationStorageRuntime> {
   const pool = createPostgresPool();
   const migrations = new MigrationRunner(pool, migrationsDirectory());
   try {
@@ -59,7 +59,7 @@ export async function startNotificationStorage(): Promise<NotificationStorageRun
       const application = new NotificationApplicationService(
         publisher,
         new PostgresUserPreferenceRepository(client),
-        undefined,
+        channelGateway,
         new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
       );
 
