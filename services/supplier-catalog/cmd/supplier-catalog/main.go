@@ -18,6 +18,11 @@ import (
 )
 
 func main() {
+	shutdownOTel, err := goruntime.InitOTelSDKFromEnv(context.Background(), "supplier-catalog")
+	if err != nil {
+		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
+	}
+	defer func() { _ = shutdownOTel(context.Background()) }()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

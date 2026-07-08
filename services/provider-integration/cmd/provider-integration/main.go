@@ -19,6 +19,11 @@ import (
 )
 
 func main() {
+	shutdownOTel, err := goruntime.InitOTelSDKFromEnv(context.Background(), "provider-integration")
+	if err != nil {
+		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
+	}
+	defer func() { _ = shutdownOTel(context.Background()) }()
 	cfg := config.FromEnv()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

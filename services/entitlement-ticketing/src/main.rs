@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let otel = rust_kit::otel::init_from_env(entitlement_ticketing::profile().service_id)?;
+    let _otel_guard = otel;
     let (app, subscriber_handle) = entitlement_ticketing::build_runtime().await?;
     let port = std::env::var("PORT")
         .ok()

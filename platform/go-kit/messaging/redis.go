@@ -30,12 +30,13 @@ type RedisConfig struct {
 }
 
 type RedisEventBus struct {
-	client *redis.Client
-	cfg    RedisConfig
-	wg     sync.WaitGroup
-	dedup  *InMemoryDedupStore
-	mu     sync.Mutex
-	cancel []context.CancelFunc
+	client   *redis.Client
+	cfg      RedisConfig
+	wg       sync.WaitGroup
+	dedup    *InMemoryDedupStore
+	observer Observer
+	mu       sync.Mutex
+	cancel   []context.CancelFunc
 }
 
 func NewRedisClient(redisURL string) (*redis.Client, error) {
@@ -70,7 +71,16 @@ func NewRedisEventBusWithClient(client *redis.Client, cfg RedisConfig) *RedisEve
 	if cfg.RecoveryMinIdle == 0 {
 		cfg.RecoveryMinIdle = 60 * time.Second
 	}
-	return &RedisEventBus{client: client, cfg: cfg, dedup: NewInMemoryDedupStore()}
+	return &RedisEventBus{client: client, cfg: cfg, dedup: NewInMemoryDedupStore(), observer: ObserverFromEnv("")}
+}
+
+// WithObserver overrides the event consumer observer. Nil resets to no-op.
+func (b *RedisEventBus) WithObserver(observer Observer) *RedisEventBus {
+	if observer == nil {
+		observer = NoopObserver()
+	}
+	b.observer = observer
+	return b
 }
 
 func (b *RedisEventBus) Ping(ctx context.Context) error {
@@ -232,6 +242,7 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 	}
 }
 func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) {
+	ctx = MessageContext(ctx, stream, group)
 	raw, ok := message.Values[EnvelopeField].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
 		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "MissingEnvelope", 1)
@@ -248,7 +259,8 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 		_ = b.client.XAck(ctx, stream, group, message.ID).Err()
 		return
 	}
-	if err := handler(ctx, envelope); err != nil {
+	observedHandler := ObservedHandler(b.observer, stream, group, handler)
+	if err := observedHandler(ctx, envelope); err != nil {
 		if IsFatalHandlerError(err) || attempts >= MaxDeliveryAttempts {
 			b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, err, attempts)
 		} else {
