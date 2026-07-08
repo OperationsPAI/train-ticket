@@ -20,7 +20,7 @@ from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIn
 from .application_ports import EventPublisher, EventSubscriber
 from .events import PublishFailed, build_itinerary_proposed_event, new_uuid7
 from train_ticket_platform.idempotency import configure_idempotency_middleware
-from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
+from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OptimisticConcurrencyError, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
 from .runtime import health, profile
 
@@ -581,7 +581,13 @@ def create_app(
                         app.state.itineraries[itinerary["itineraryRef"]] = itinerary
                         save_itinerary = getattr(_active_plan_store, "save_itinerary", None)
                         if callable(save_itinerary):
-                            save_itinerary(itinerary)
+                            try:
+                                save_itinerary(itinerary)
+                            except OptimisticConcurrencyError:
+                                logger.info(
+                                    "itinerary snapshot write lost deterministic-id race",
+                                    extra={"itinerary_ref": itinerary["itineraryRef"]},
+                                )
                 publisher.publish(event)
         except PublishFailed:
             return _canonical_error(503, "UNAVAILABLE", "Event bus is unavailable", correlation_id)
