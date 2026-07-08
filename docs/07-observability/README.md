@@ -48,23 +48,82 @@ make observability-down
 
 The compose file lives at `platform/observability/docker-compose.yaml`.
 
+## kind Cluster Deployment
+
+The kind overlay in `deploy/k8s/` includes an `otel-collector` Deployment,
+ClusterIP Service, and ConfigMap in the `train-ticket` namespace. The ConfigMap
+is copied from `platform/observability/otel-collector.yaml`, which remains the
+canonical collector configuration for both compose and kind. The kind manifest
+pins a collector-contrib image tag so cluster rollouts are reproducible; update
+that tag deliberately when advancing the local baseline.
+
+Apply the stack from the repository root:
+
+```bash
+kubectl apply -k deploy/k8s
+kubectl -n train-ticket rollout status deploy/otel-collector
+```
+
+The collector listens on the same ports as the local baseline:
+
+- OTLP gRPC: `otel-collector:4317` inside the cluster.
+- OTLP HTTP: `otel-collector:4318` inside the cluster.
+- Health check: `otel-collector:13133`.
+- zPages: container port `55679` for direct pod access or port-forwarding.
+
+Verify the health extension from a local shell with port-forwarding:
+
+```bash
+kubectl -n train-ticket port-forward svc/otel-collector 13133:13133
+curl -fsS http://127.0.0.1:13133/
+```
+
+To confirm spans arrive after a service SDK/exporter is wired in by a later
+REQ-096/097/098 task, watch the debug exporter output:
+
+```bash
+kubectl -n train-ticket logs deploy/otel-collector -f
+```
+
+Seeing no spans immediately after this infrastructure change is expected: the
+collector and service-side environment contract are present, but service SDK
+exporters are not installed by this task.
+
 ## Service Contract
 
 Every service should use the same baseline environment shape when real
-OpenTelemetry SDK instrumentation is enabled:
+OpenTelemetry SDK instrumentation is enabled. The initial rollout enables only
+trace export; metrics and logs stay disabled until a follow-up task installs and
+configures those SDK pipelines.
 
 ```bash
 OTEL_SERVICE_NAME=<service-id>
 OTEL_RESOURCE_ATTRIBUTES=service.namespace=train-ticket,deployment.environment=local
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 OTEL_TRACES_EXPORTER=otlp
-OTEL_METRICS_EXPORTER=otlp
-OTEL_LOGS_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=none
+OTEL_LOGS_EXPORTER=none
 ```
 
-Inside a compose network, use `http://otel-collector:4318` for
-`OTEL_EXPORTER_OTLP_ENDPOINT`.
+Inside the kind cluster, all 23 business services receive the same standard
+OpenTelemetry variables from `deploy/k8s/services.yaml`:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+OTEL_SERVICE_NAME=<service-name>
+OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=none
+OTEL_LOGS_EXPORTER=none
+```
+
+When these environment variables are missing, services must run directly with
+zero telemetry overhead. Unit tests, local binaries, and development scenarios
+without a collector must continue to use no-op OpenTelemetry APIs and must not
+attempt network export.
+
+For OTLP/HTTP local experiments, target `http://localhost:4318` and set the
+runtime-specific standard protocol option (for example
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`) only in that local environment.
 
 ## Runtime Adapters
 

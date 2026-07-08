@@ -5,4 +5,5 @@ resources:
   - postgres.yaml
   - redis.yaml
   - mailpit.yaml
+  - otel-collector.yaml
   - services.yaml
