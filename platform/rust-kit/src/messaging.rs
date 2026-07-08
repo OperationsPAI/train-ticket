@@ -1308,6 +1308,7 @@ pub mod redis_runtime {
 
         #[tokio::test]
         async fn subscription_processing_fatal_handler_writes_dlq_metadata_warn_log_and_acks() {
+            let _serial = crate::otel::test_serial();
             let mut logger = logtest::Logger::start();
             let exporter = opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build();
             let exported = exporter.clone();

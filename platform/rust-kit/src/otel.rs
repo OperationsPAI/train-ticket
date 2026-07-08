@@ -45,10 +45,19 @@ pub fn init_from_env(
         return Ok(OtelGuard::noop());
     }
     let mut builder = opentelemetry_otlp::SpanExporter::builder().with_tonic();
-    if let Ok(endpoint) = env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-        if !endpoint.trim().is_empty() {
-            builder = builder.with_endpoint(endpoint);
-        }
+    // The traces-specific endpoint takes precedence over the generic one,
+    // matching the OTel SDK env-var specification; gating accepts either,
+    // so the exporter must honor either too.
+    let endpoint = env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+    if let Some(endpoint) = endpoint {
+        builder = builder.with_endpoint(endpoint);
     }
     let exporter = builder.build()?;
     Ok(init_with_exporter(service_name, exporter))
@@ -95,6 +104,15 @@ fn otlp_endpoint_configured() -> bool {
             .is_some()
 }
 
+/// Serializes tests that touch the process-global tracer provider or
+/// OTEL_* environment; parallel test threads otherwise race and spans land
+/// in another test's exporter.
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +121,7 @@ mod tests {
 
     #[test]
     fn init_from_env_is_noop_without_otel_traces_exporter() {
+        let _serial = super::test_serial();
         unsafe {
             env::remove_var("OTEL_TRACES_EXPORTER");
             env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
@@ -115,6 +134,7 @@ mod tests {
 
     #[test]
     fn in_memory_exporter_receives_span() {
+        let _serial = super::test_serial();
         unsafe {
             env::set_var("OTEL_SERVICE_NAME", "rust-kit-test");
         }
