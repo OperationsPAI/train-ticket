@@ -8,6 +8,8 @@ import com.trainticket.platformkit.idempotency.IdempotencyStore;
 import com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore;
 import com.trainticket.platformkit.messaging.RedisEventPublisher;
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
+import com.trainticket.platformkit.observability.EventConsumerTracer;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -59,7 +61,14 @@ public class PlatformKitConfiguration {
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "platform.java-kit.redis", name = "enabled", havingValue = "true")
-    RedisEventSubscriber redisEventSubscriber(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
-        return RedisEventSubscriber.fromUrl(redisUrl, objectMapper);
+    RedisEventSubscriber redisEventSubscriber(
+        @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl,
+        ObjectMapper objectMapper,
+        ObjectProvider<EventConsumerTracer> eventConsumerTracer
+    ) {
+        EventConsumerTracer tracer = eventConsumerTracer.getIfAvailable();
+        return tracer == null
+            ? RedisEventSubscriber.fromUrl(redisUrl, objectMapper)
+            : RedisEventSubscriber.fromUrl(redisUrl, objectMapper, tracer);
     }
 }

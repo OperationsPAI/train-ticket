@@ -21,13 +21,16 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
 
     private final RestClient restClient;
 
-    public FarePricingAdjustmentQuoteClient(@Value("${post-sales.fare-pricing.base-url}") String baseUrl) {
+    public FarePricingAdjustmentQuoteClient(@Value("${post-sales.fare-pricing.base-url}") String baseUrl,
+                                            RestClient.Builder restClientBuilder) {
         // Plain HTTP/1.1 factory: the JDK client's default h2c upgrade is
         // rejected by fare-pricing's uvicorn/h11 with "Invalid HTTP request".
+        // The builder must come from the container: java-kit installs the
+        // trace-propagation interceptor on RestClient.Builder beans only.
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Duration.ofSeconds(3));
         requestFactory.setReadTimeout(Duration.ofSeconds(10));
-        this.restClient = RestClient.builder().requestFactory(requestFactory).baseUrl(baseUrl).build();
+        this.restClient = restClientBuilder.requestFactory(requestFactory).baseUrl(baseUrl).build();
     }
 
     @Override

@@ -1,6 +1,7 @@
 package com.trainticket.platformkit.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.trainticket.platformkit.observability.EventConsumerTracer;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -19,6 +20,7 @@ public final class LazyRedisEventSubscriber implements EventSubscriber, AutoClos
 
     private final String redisUrl;
     private final ObjectMapper objectMapper;
+    private final EventConsumerTracer eventConsumerTracer;
     private final ScheduledExecutorService connector;
     private final AtomicBoolean subscribed = new AtomicBoolean();
 
@@ -29,8 +31,13 @@ public final class LazyRedisEventSubscriber implements EventSubscriber, AutoClos
     private volatile Duration reconnectBackoff = INITIAL_BACKOFF;
 
     public LazyRedisEventSubscriber(String redisUrl, ObjectMapper objectMapper) {
+        this(redisUrl, objectMapper, null);
+    }
+
+    public LazyRedisEventSubscriber(String redisUrl, ObjectMapper objectMapper, EventConsumerTracer eventConsumerTracer) {
         this.redisUrl = redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl;
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
+        this.eventConsumerTracer = eventConsumerTracer;
         this.connector = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "redis-subscriber-lifecycle");
             thread.setDaemon(true);
@@ -62,7 +69,9 @@ public final class LazyRedisEventSubscriber implements EventSubscriber, AutoClos
             return;
         }
         try {
-            RedisEventSubscriber newDelegate = RedisEventSubscriber.fromUrl(redisUrl, objectMapper);
+            RedisEventSubscriber newDelegate = eventConsumerTracer == null
+                ? RedisEventSubscriber.fromUrl(redisUrl, objectMapper)
+                : RedisEventSubscriber.fromUrl(redisUrl, objectMapper, eventConsumerTracer);
             newDelegate.subscribe(
                 currentSubscription.streamNames(),
                 currentSubscription.group(),
