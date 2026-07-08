@@ -12,7 +12,7 @@ public final class GlobalEventConsumerTracer implements EventConsumerTracer {
 
     @Override
     public SpanScope start(String stream, String consumerGroup, EventEnvelope envelope) {
-        return new OtelEventConsumerTracer(GlobalOpenTelemetry.getTracer(instrumentationName))
+        return new OtelEventConsumerTracer(GlobalOpenTelemetry.get(), GlobalOpenTelemetry.getTracer(instrumentationName))
             .start(stream, consumerGroup, envelope);
     }
 }

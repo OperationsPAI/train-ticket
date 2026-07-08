@@ -1,5 +1,6 @@
 package com.trainticket.platformkit;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.http.CanonicalErrorWriter;
 import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
@@ -22,7 +23,9 @@ public class PlatformKitConfiguration {
     @Bean
     @ConditionalOnMissingBean
     ObjectMapper objectMapper() {
-        return new ObjectMapper().findAndRegisterModules();
+        return new ObjectMapper()
+            .findAndRegisterModules()
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
     @Bean
