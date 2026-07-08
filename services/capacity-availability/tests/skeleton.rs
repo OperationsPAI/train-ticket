@@ -307,6 +307,8 @@ async fn api_publisher_envelope_is_properly_formatted() {
         causation_id: None,
         correlation_id: "corr-test".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({"holdId": "hold-test"}),
     };
     publisher.publish(&envelope).unwrap();
@@ -335,6 +337,8 @@ fn subscriber_deduplicates_duplicate_event_id() {
         causation_id: None,
         correlation_id: "corr-test".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({"test": true}),
     };
 
@@ -474,6 +478,8 @@ fn subscriber_decision_logic_retries_dlqs_and_dedups() {
         causation_id: None,
         correlation_id: "0194f2e0-7b3e-7610-0284-5c26e8b0cd02".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({"segmentBookingId": "sb-1"}),
     };
     let transient = ReceivedEvent {
@@ -541,6 +547,8 @@ fn in_memory_segment_reservation_requested_missing_idempotency_key_is_fatal() {
         causation_id: None,
         correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa12".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({
             "segmentBookingId": "sb-1",
             "journeyOrderId": "ord-1",
@@ -571,6 +579,8 @@ fn in_memory_post_sales_applied_without_hold_pointer_is_acked() {
         causation_id: None,
         correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa22".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({
             "caseId": "psc-1",
             "orderId": "ord-1",
@@ -604,6 +614,8 @@ async fn postgres_inbound_classifies_known_event_schema_errors_as_fatal() {
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa02".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            traceparent: None,
+            tracestate: None,
             payload: json!({"segmentBookingId": "sb-1", "journeyOrderId": "ord-1", "segmentRef": "seg-1", "travelerRef": "traveler-1"}),
         })
         .await;
@@ -636,6 +648,8 @@ async fn postgres_post_sales_applied_without_hold_pointer_is_acked() {
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa32".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            traceparent: None,
+            tracestate: None,
             payload: json!({
                 "caseId": "psc-1",
                 "orderId": "ord-1",
@@ -664,6 +678,8 @@ fn in_memory_segment_reservation_confirmed_without_capacity_hold_id_is_acked() {
         causation_id: None,
         correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa42".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({
             "segmentBookingId": "sb-1",
             "providerReference": "prov-1",
@@ -691,6 +707,8 @@ fn in_memory_segment_reservation_confirmed_missing_segment_booking_id_is_fatal()
         causation_id: None,
         correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa44".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({"evidence": "confirmed"}),
     });
 
@@ -722,6 +740,8 @@ async fn postgres_segment_reservation_confirmed_missing_segment_booking_id_is_fa
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fa48".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            traceparent: None,
+            tracestate: None,
             payload: json!({"evidence": "confirmed"}),
         })
         .await;
@@ -748,6 +768,8 @@ fn in_memory_capacity_inbound_event_contract_classification_matrix() {
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fb01".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            traceparent: None,
+            tracestate: None,
             payload,
         }
     }
@@ -857,6 +879,8 @@ async fn postgres_capacity_inbound_event_contract_classification_pre_db_matrix()
             causation_id: None,
             correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0fb02".to_string(),
             occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+            traceparent: None,
+            tracestate: None,
             payload,
         }
     }
@@ -1136,6 +1160,8 @@ fn subscriber_dlqs_after_fifth_delivery_attempt_from_broker_counter() {
         causation_id: Some("cmd-0194f2e0-7b3e-7610-0284-5c26e8b0cf32".to_string()),
         correlation_id: "corr-0194f2e0-7b3e-7610-0284-5c26e8b0cf33".to_string(),
         occurred_at: "2026-07-03T10:30:00.000Z".to_string(),
+        traceparent: None,
+        tracestate: None,
         payload: json!({"segmentBookingId": "sb-1"}),
     };
     let received = ReceivedEvent {

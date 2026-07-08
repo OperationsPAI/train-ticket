@@ -20,12 +20,15 @@ type EventEnvelope struct {
 	CausationID   string          `json:"causationId,omitempty"`
 	Producer      string          `json:"producer"`
 	SchemaVersion int             `json:"schemaVersion"`
+	Traceparent   string          `json:"traceparent,omitempty"`
+	Tracestate    string          `json:"tracestate,omitempty"`
 	Payload       json.RawMessage `json:"payload"`
 }
 
 type EnvelopeOptions struct {
 	Now         time.Time
 	CausationID string
+	Context     context.Context
 }
 
 func NewEventEnvelope(eventType, producer, correlationID string, payload any, options ...EnvelopeOptions) (EventEnvelope, error) {
@@ -42,10 +45,26 @@ func NewEventEnvelope(eventType, producer, correlationID string, payload any, op
 		causationID = options[0].CausationID
 	}
 	envelope := EventEnvelope{EventID: ids.NewEventID(), EventType: strings.TrimSpace(eventType), OccurredAt: now, CorrelationID: ids.CanonicalCorrelationID(correlationID), Producer: strings.TrimSpace(producer), SchemaVersion: SchemaVersion, Payload: body}
+	if len(options) > 0 {
+		if traceparent, tracestate := traceContextFromContext(options[0].Context); traceparent != "" {
+			envelope.Traceparent = traceparent
+			envelope.Tracestate = tracestate
+		}
+	}
 	if strings.TrimSpace(causationID) != "" {
 		envelope.CausationID = ids.CanonicalCausationID(causationID)
 	}
 	return envelope, envelope.Validate()
+}
+
+func (e *EventEnvelope) injectTraceContext(ctx context.Context) {
+	if strings.TrimSpace(e.Traceparent) != "" {
+		return
+	}
+	if traceparent, tracestate := traceContextFromContext(ctx); traceparent != "" {
+		e.Traceparent = traceparent
+		e.Tracestate = tracestate
+	}
 }
 
 func (e EventEnvelope) Validate() error {

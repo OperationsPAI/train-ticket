@@ -12,6 +12,7 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestNewEventEnvelopeCanonicalShape(t *testing.T) {
@@ -61,6 +62,83 @@ func TestNewEventEnvelopeOmitsOptionalCausationID(t *testing.T) {
 	}
 	if len(fields) != 7 {
 		t.Fatalf("envelope without causationId must have 7 fields, got %d: %s", len(fields), body)
+	}
+}
+
+func TestNewEventEnvelopeInjectsTraceparentFromActiveSpanContext(t *testing.T) {
+	spanContext := mustSpanContext(t, "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", true)
+	ctx := trace.ContextWithSpanContext(context.Background(), spanContext)
+	envelope, err := NewEventEnvelope("ThingHappened", "test-producer", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"thingId": "thing-1"}, EnvelopeOptions{Context: ctx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Traceparent != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" {
+		t.Fatalf("traceparent mismatch: %q", envelope.Traceparent)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"traceparent"`) {
+		t.Fatalf("traceparent missing from JSON: %s", body)
+	}
+}
+
+func TestEventEnvelopeUnknownFieldsAreBidirectionallyCompatible(t *testing.T) {
+	envelope, err := NewEventEnvelope("ThingHappened", "test-producer", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"thingId": "thing-1"}, EnvelopeOptions{Now: time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["futureField"] = json.RawMessage(`{"nested":true}`)
+	withUnknown, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded EventEnvelope
+	if err := json.Unmarshal(withUnknown, &decoded); err != nil {
+		t.Fatalf("decode with unknown field: %v", err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("validate decoded envelope: %v", err)
+	}
+	decodedBody, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(decodedBody), "futureField") {
+		t.Fatalf("unknown field should not be re-emitted by Go struct: %s", decodedBody)
+	}
+}
+
+func TestPublishInjectsTraceparentFromPublishContextWhenEnvelopeWasCreatedOutsideSpan(t *testing.T) {
+	spanContext := mustSpanContext(t, "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", true)
+	ctx := trace.ContextWithSpanContext(context.Background(), spanContext)
+	envelope, err := NewEventEnvelope("ThingHappened", "test-producer", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"thingId": "thing-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Traceparent != "" {
+		t.Fatalf("envelope should start without traceparent, got %q", envelope.Traceparent)
+	}
+
+	bus := NewInMemoryEventBus()
+	if err := bus.Publish(ctx, envelope); err != nil {
+		t.Fatal(err)
+	}
+	published := bus.Published()
+	if len(published) != 1 {
+		t.Fatalf("expected one published envelope, got %d", len(published))
+	}
+	if published[0].Traceparent != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" {
+		t.Fatalf("traceparent mismatch: %q", published[0].Traceparent)
 	}
 }
 
@@ -227,5 +305,45 @@ func TestRedisSubscriptionDuplicateAckSkipLogs(t *testing.T) {
 	logText := logBuffer.String()
 	if !strings.Contains(logText, "duplicate event already processed") || !strings.Contains(logText, envelope.EventID) {
 		t.Fatalf("missing duplicate ack-skip log: %s", logText)
+	}
+}
+
+func mustSpanContext(t *testing.T, traceIDHex, spanIDHex string, sampled bool) trace.SpanContext {
+	t.Helper()
+	traceID, err := trace.TraceIDFromHex(traceIDHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanID, err := trace.SpanIDFromHex(spanIDHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := trace.TraceFlags(0)
+	if sampled {
+		flags = trace.FlagsSampled
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID, TraceFlags: flags})
+	if !spanContext.IsValid() {
+		t.Fatalf("invalid span context")
+	}
+	return spanContext
+}
+
+func TestNewEventEnvelopeCopiesTracestateAlongsideTraceparent(t *testing.T) {
+	traceState, err := trace.ParseTraceState("vendor=value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanContext := mustSpanContext(t, "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", true).WithTraceState(traceState)
+	ctx := trace.ContextWithSpanContext(context.Background(), spanContext)
+	envelope, err := NewEventEnvelope("ThingHappened", "test-producer", "0194f2e0-7b3e-7610-0284-5c26e8b0c123", map[string]string{"thingId": "thing-1"}, EnvelopeOptions{Context: ctx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Traceparent == "" {
+		t.Fatal("traceparent must be injected for an active span context")
+	}
+	if envelope.Tracestate != "vendor=value" {
+		t.Fatalf("tracestate must ride along with traceparent, got %q", envelope.Tracestate)
 	}
 }

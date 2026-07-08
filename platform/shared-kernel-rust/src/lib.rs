@@ -498,6 +498,7 @@ pub struct EventEnvelope {
     occurred_at: UnixMillis,
     correlation_id: CorrelationId,
     causation_id: Option<CausationId>,
+    traceparent: Option<String>,
 }
 
 impl EventEnvelope {
@@ -523,6 +524,7 @@ impl EventEnvelope {
             occurred_at,
             correlation_id,
             causation_id,
+            traceparent: None,
         })
     }
 
@@ -548,6 +550,10 @@ impl EventEnvelope {
 
     pub fn causation_id(&self) -> Option<&CausationId> {
         self.causation_id.as_ref()
+    }
+
+    pub fn traceparent(&self) -> Option<&str> {
+        self.traceparent.as_deref()
     }
 }
 
