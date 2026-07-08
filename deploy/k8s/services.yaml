@@ -86,6 +86,7 @@ spec:
       targetPort: http
   selector:
     app.kubernetes.io/name: dispatch
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
