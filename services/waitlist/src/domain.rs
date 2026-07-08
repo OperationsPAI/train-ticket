@@ -492,3 +492,49 @@ impl fmt::Display for WaitlistError {
     }
 }
 impl std::error::Error for WaitlistError {}
+
+#[cfg(test)]
+mod idempotency_key_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn fulfillment_keys_survive_snapshot_roundtrip() {
+        let (mut request, _events) = WaitlistRequest::create(
+            CreateWaitlistCommand {
+                account_id: "acc-018f0000-0000-7000-8000-000000000001".into(),
+                traveler_ref: "tvl-018f0000-0000-7000-8000-000000000002".into(),
+                segment_ref: "seg-018f0000-0000-7000-8000-000000000003".into(),
+                travel_class: None,
+                deadline: "2027-01-01T00:00:00Z".into(),
+                payment_guarantee_ref: "pay-auth-018f0000-0000-7000-8000-000000000004".into(),
+                itinerary_ref: "itn-018f0000-0000-7000-8000-000000000005".into(),
+                intent_fingerprint: "tvl-x:seg-y".into(),
+            },
+            "2026-07-09T00:00:00Z".into(),
+        )
+        .expect("create");
+        while request.status != WaitlistStatus::Queued {
+            request
+                .transition(WaitlistStatus::Queued)
+                .expect("reach QUEUED");
+        }
+        request
+            .start_matching("evt-release-1".into(), "2026-07-09T00:00:02Z".into())
+            .expect("matching");
+        let keys = request
+            .fulfillment_idempotency_keys
+            .clone()
+            .expect("keys generated on matching");
+
+        // The exact round-3 blocker: keys must live in the persisted
+        // snapshot so a redelivered release resumes with the SAME keys.
+        let snapshot = serde_json::to_value(&request).expect("serialize");
+        let restored: WaitlistRequest = serde_json::from_value(snapshot).expect("deserialize");
+        let restored_keys = restored
+            .fulfillment_idempotency_keys
+            .expect("keys survive snapshot roundtrip");
+        assert_eq!(restored_keys.quote, keys.quote);
+        assert_eq!(restored_keys.offer, keys.offer);
+        assert_eq!(restored_keys.order, keys.order);
+    }
+}

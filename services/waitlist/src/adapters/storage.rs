@@ -145,8 +145,16 @@ impl PostgresWaitlistService {
         let segment = segment_from_payload(&envelope.payload).ok_or_else(|| {
             WaitlistError::ValidationFailed("CapacityReleased missing segmentRef".into())
         })?;
+
+        // Tx1: durably enter MATCHING — persisting the fulfillment
+        // idempotency keys — BEFORE any outbound call. The dedup claim
+        // happens only in the final transaction: a transient outbound
+        // failure must leave the event unclaimed so redelivery resumes the
+        // same in-flight request with the same persisted keys instead of
+        // minting new ones (and duplicating downstream quotes/offers/orders
+        // after a partial success).
         let mut tx = self.pool().begin().await.map_err(db_error)?;
-        if !rust_kit::storage::mark_event_processing(
+        if rust_kit::storage::event_already_processed(
             &mut tx,
             &envelope.event_id,
             &crate::adapters::messaging::capacity_availability_stream(),
@@ -157,68 +165,98 @@ impl PostgresWaitlistService {
             tx.commit().await.map_err(db_error)?;
             return Ok(());
         }
-        let row: Option<(String,)> = sqlx::query_as("SELECT waitlist_request_id FROM waitlist_requests WHERE segment_ref=$1 AND status='QUEUED' ORDER BY queued_at ASC NULLS LAST, created_at ASC, waitlist_request_id ASC LIMIT 1 FOR UPDATE SKIP LOCKED").bind(&segment).fetch_optional(&mut *tx).await.map_err(db_error)?;
+        // Resume an in-flight MATCHING request for this segment first; only
+        // then start a fresh QUEUED one. Without the resume branch a
+        // redelivered release would find no QUEUED row and ack, stranding
+        // the MATCHING request forever.
+        let row: Option<(String,)> = sqlx::query_as("SELECT waitlist_request_id FROM waitlist_requests WHERE segment_ref=$1 AND status IN ('MATCHING','QUEUED') ORDER BY (status='MATCHING') DESC, queued_at ASC NULLS LAST, created_at ASC, waitlist_request_id ASC LIMIT 1 FOR UPDATE SKIP LOCKED").bind(&segment).fetch_optional(&mut *tx).await.map_err(db_error)?;
         let Some((id,)) = row else {
+            rust_kit::storage::mark_event_processing(
+                &mut tx,
+                &envelope.event_id,
+                &crate::adapters::messaging::capacity_availability_stream(),
+            )
+            .await
+            .map_err(storage_error)?;
             tx.commit().await.map_err(db_error)?;
             return Ok(());
         };
         let mut request = Self::load_request_for_update(&mut tx, &id)
             .await?
             .ok_or_else(|| WaitlistError::NotFound("waitlist request not found".into()))?;
-        let version = request.version;
-        let event =
-            request.start_matching(envelope.event_id.clone(), envelope.occurred_at.clone())?;
+        if request.status == crate::domain::WaitlistStatus::Queued {
+            let version = request.version;
+            let event =
+                request.start_matching(envelope.event_id.clone(), envelope.occurred_at.clone())?;
+            Self::save_request(&mut tx, &request).await?;
+            Self::append_events(
+                &mut tx,
+                &request.waitlist_request_id,
+                version + 1,
+                vec![event],
+                envelope.correlation_id.clone(),
+                Some(envelope.event_id.clone()),
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(db_error)?;
 
+        // Outbound chain, outside any transaction, with the persisted keys.
         let key = request
             .fulfillment_idempotency_keys
             .as_ref()
-            .expect("matching creates fulfillment idempotency keys")
+            .expect("matching persists fulfillment idempotency keys")
             .order
             .clone();
-        match self
+        let outcome = self
             .fulfillment_client
             .fulfill(&request, &key, &envelope.correlation_id)
-            .await
-        {
+            .await;
+
+        // Tx2: record the outcome and claim the event. Transient errors
+        // return before any of this, leaving the event unclaimed for retry.
+        if let Err(FulfillmentClientError::Transient(message)) = outcome {
+            return Err(WaitlistError::Unavailable(message));
+        }
+        let mut tx = self.pool().begin().await.map_err(db_error)?;
+        let mut request = Self::load_request_for_update(&mut tx, &id)
+            .await?
+            .ok_or_else(|| WaitlistError::NotFound("waitlist request not found".into()))?;
+        match outcome {
             Ok(order) => {
                 request.record_order_ref(order);
                 Self::save_request(&mut tx, &request).await?;
-                Self::append_events(
-                    &mut tx,
-                    &request.waitlist_request_id,
-                    version + 1,
-                    vec![event],
-                    envelope.correlation_id.clone(),
-                    Some(envelope.event_id.clone()),
-                )
-                .await?;
-                tx.commit().await.map_err(db_error)?;
-                Ok(())
-            }
-            Err(FulfillmentClientError::Transient(message)) => {
-                Err(WaitlistError::Unavailable(message))
             }
             Err(FulfillmentClientError::Rejected(message)) => {
                 log::warn!(
                     "waitlist fulfillment chain rejected requestId={}: {message}",
                     request.waitlist_request_id
                 );
+                let version = request.version;
                 let queued =
                     request.requeue_after_fulfillment_rejected(message, current_rfc3339())?;
                 Self::save_request(&mut tx, &request).await?;
                 Self::append_events(
                     &mut tx,
                     &request.waitlist_request_id,
-                    version + 2,
+                    version + 1,
                     vec![queued],
-                    envelope.correlation_id,
-                    Some(envelope.event_id),
+                    envelope.correlation_id.clone(),
+                    Some(envelope.event_id.clone()),
                 )
                 .await?;
-                tx.commit().await.map_err(db_error)?;
-                Ok(())
             }
+            Err(FulfillmentClientError::Transient(_)) => unreachable!("handled above"),
         }
+        rust_kit::storage::mark_event_processing(
+            &mut tx,
+            &envelope.event_id,
+            &crate::adapters::messaging::capacity_availability_stream(),
+        )
+        .await
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
     }
     async fn handle_order_terminal(
         &self,

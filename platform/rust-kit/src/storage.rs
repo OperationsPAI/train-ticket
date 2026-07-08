@@ -396,6 +396,25 @@ pub async fn relay_once(
     Ok(published)
 }
 
+/// Check-only sibling of [`mark_event_processing`]: true when the event was
+/// already claimed. Lets multi-transaction handlers keep durable side effects
+/// (e.g. persisted idempotency keys) in an early transaction while deferring
+/// the dedup claim to the final ack transaction.
+pub async fn event_already_processed(
+    tx: &mut PgTransaction<'_>,
+    event_id: &str,
+    stream: &str,
+) -> Result<bool, StorageError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM processed_events WHERE event_id = $1 AND stream = $2",
+    )
+    .bind(event_id)
+    .bind(stream)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn mark_event_processing(
     tx: &mut PgTransaction<'_>,
     event_id: &str,
