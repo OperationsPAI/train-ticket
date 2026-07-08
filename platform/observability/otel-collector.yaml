@@ -1,3 +1,6 @@
+# Canonical collector config for local compose and the kind deployment.
+# Keep deploy/k8s/otel-collector.yaml ConfigMap data synchronized with this file
+# until the k8s overlay can consume this file directly as its single source.
 receivers:
   otlp:
     protocols:
@@ -9,7 +12,7 @@ receivers:
 processors:
   memory_limiter:
     check_interval: 5s
-    limit_mib: 256
+    limit_mib: 96
   batch:
     timeout: 2s
     send_batch_size: 1024
