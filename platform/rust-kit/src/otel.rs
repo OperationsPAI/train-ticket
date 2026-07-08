@@ -60,25 +60,42 @@ pub fn init_from_env(
         builder = builder.with_endpoint(endpoint);
     }
     let exporter = builder.build()?;
-    Ok(init_with_exporter(service_name, exporter))
+    // Batch export runs on a dedicated background thread. A simple
+    // (synchronous) exporter performs one blocking gRPC export per span end
+    // on the ending thread, which stalls the tokio runtime under event load
+    // until liveness probes kill the pod (observed live 2026-07-08).
+    let provider = sdktrace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(service_resource(service_name))
+        .build();
+    Ok(install_provider(provider))
 }
 
+/// Test-oriented init: the simple (synchronous) processor makes spans visible
+/// to in-memory exporters immediately. Production init goes through
+/// [`init_from_env`], which batches.
 pub fn init_with_exporter<E>(service_name: &str, exporter: E) -> OtelGuard
 where
     E: sdktrace::SpanExporter + 'static,
 {
+    let provider = sdktrace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter)
+        .with_resource(service_resource(service_name))
+        .build();
+    install_provider(provider)
+}
+
+fn service_resource(service_name: &str) -> Resource {
     let service_name = env::var("OTEL_SERVICE_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| service_name.to_string());
-    let provider = sdktrace::SdkTracerProvider::builder()
-        .with_simple_exporter(exporter)
-        .with_resource(
-            Resource::builder_empty()
-                .with_attribute(KeyValue::new("service.name", service_name))
-                .build(),
-        )
-        .build();
+    Resource::builder_empty()
+        .with_attribute(KeyValue::new("service.name", service_name))
+        .build()
+}
+
+fn install_provider(provider: sdktrace::SdkTracerProvider) -> OtelGuard {
     global::set_tracer_provider(provider.clone());
     OtelGuard {
         provider: Some(Arc::new(provider)),
