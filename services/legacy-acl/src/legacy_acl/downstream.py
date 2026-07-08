@@ -110,7 +110,12 @@ def _downstream_failure(service: str, raw: str, fallback: str) -> tuple[str, str
         parsed_message = parsed.get("message") or parsed.get("msg") or parsed.get("error")
         if isinstance(parsed_message, str) and parsed_message.strip():
             message = parsed_message.strip()
-        parsed_code = parsed.get("code")
+        # Services wrap the specific domain code in details.domainCode under a
+        # generic top-level code (e.g. DOMAIN_RULE_VIOLATION); prefer the
+        # specific one.
+        details = parsed.get("details")
+        domain_code = details.get("domainCode") if isinstance(details, dict) else None
+        parsed_code = domain_code or parsed.get("code")
         if isinstance(parsed_code, str) and parsed_code.strip():
             code = parsed_code.strip()
     return message, code
