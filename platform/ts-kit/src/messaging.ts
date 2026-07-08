@@ -358,6 +358,14 @@ export class RedisEventSubscriber implements EventSubscriber {
         await this.processMessages(messages, group, consumerName, handler);
       } catch (error) {
         // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
+        console.warn({
+          service: group,
+          stream: streams.join(","),
+          eventId: "unknown",
+          deliveries: 0,
+          error: sanitizedErrorForLog(error),
+          message: "poll read failed; recreating group if missing and backing off",
+        });
         if (String(error).includes("NOGROUP")) {
           await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
         }
@@ -378,7 +386,20 @@ export class RedisEventSubscriber implements EventSubscriber {
         return;
       }
       for (const stream of streams) {
-        await this.claimAndProcess(stream, group, consumerName, handler);
+        try {
+          await this.claimAndProcess(stream, group, consumerName, handler);
+        } catch (error) {
+          // One stream's XAUTOCLAIM failure must not kill the whole
+          // recovery loop; log with context and keep recovering.
+          console.warn({
+            service: group,
+            stream,
+            eventId: "unknown",
+            deliveries: 0,
+            error: sanitizedErrorForLog(error),
+            message: "pending-entry recovery failed; will retry next cycle",
+          });
+        }
       }
     }
   }
@@ -409,6 +430,13 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
 
     if (this.consumedEventIds.has(envelope.eventId)) {
+      console.warn({
+        service: group,
+        stream,
+        eventId: envelope.eventId,
+        deliveries: attempts,
+        message: "duplicate event already processed; acking without handler",
+      });
       await this.redis.xack(stream, group, entryId);
       return;
     }
@@ -424,6 +452,9 @@ export class RedisEventSubscriber implements EventSubscriber {
         ? (error.kind === "fatal" ? "dlq" : "retry")
         : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
       failureReason = error;
+      if (result === "dlq") {
+        console.error(sanitizedErrorForLog(error));
+      }
     }
 
     if (result === "ack") {
@@ -433,7 +464,16 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
     if (result === "dlq") {
       await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
+      return;
     }
+    console.warn({
+      service: group,
+      stream,
+      eventId: envelope.eventId,
+      deliveries: attempts,
+      reason: failureReasonForLog(failureReason),
+      message: "handler transient failure; message stays pending for retry",
+    });
   }
 
   private async claimAndProcess(stream: string, group: string, consumerName: string, handler: EventHandler): Promise<void> {
@@ -465,11 +505,17 @@ export class RedisEventSubscriber implements EventSubscriber {
   private async deadLetterAndAck(stream: string, group: string, consumerName: string, entry: StreamEntry, reason: unknown, attempts: number): Promise<void> {
     const envelopeJson = fieldValue(entry[1], "envelope") ?? JSON.stringify({});
     const failureReason = truncateFailureReason(reason);
+    const safeAttempts = Math.max(1, attempts);
+    const deadLetteredAt = new Date().toISOString();
     console.warn({
       service: group,
       stream,
       eventId: eventIdForLog(envelopeJson),
+      deliveries: safeAttempts,
+      consumerGroup: group,
       failureReason,
+      attempts: safeAttempts,
+      deadLetteredAt,
       message: "moving message to DLQ",
     });
     await this.redis.xadd(
@@ -487,9 +533,9 @@ export class RedisEventSubscriber implements EventSubscriber {
       "failureReason",
       failureReason,
       "attempts",
-      String(Math.max(1, attempts)),
+      String(safeAttempts),
       "deadLetteredAt",
-      new Date().toISOString(),
+      deadLetteredAt,
     );
     await this.redis.xack(stream, group, entry[0]);
   }
@@ -572,11 +618,18 @@ function isRecoverableRedisReadError(error: unknown): boolean {
   return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
 }
 
-function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> {
+function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string; stack?: string }> {
   if (error instanceof Error) {
-    return { name: error.name || "Error", message: error.message || "Handler failed" };
+    return { name: error.name || "Error", message: error.message || "Handler failed", stack: error.stack };
   }
-  return { name: typeof error, message: "Handler failed" };
+  return { name: typeof error, message: String(error || "Handler failed") };
+}
+
+function failureReasonForLog(reason: unknown): Readonly<{ name: string; message: string; stack?: string }> {
+  if (reason instanceof Error) {
+    return sanitizedErrorForLog(reason);
+  }
+  return { name: typeof reason, message: String(reason || "HandlerResult.retry") };
 }
 
 function normalizeHandlerResult(result: EventHandlerResult | StringHandlerResult): "ack" | "retry" | "dlq" {

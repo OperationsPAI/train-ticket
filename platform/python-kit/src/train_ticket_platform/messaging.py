@@ -170,6 +170,16 @@ class RedisEventSubscriber(EventSubscriber):
                     break
                 if isinstance(exc, (TransientHandlerError, FatalHandlerError)):
                     raise
+                LOGGER.warning(
+                    "service=%s stream=%s eventId=%s deliveries=%s subscriber poll/recovery failed: %s: %s",
+                    group,
+                    ",".join(streams_tuple),
+                    "unknown",
+                    0,
+                    exc.__class__.__name__,
+                    exc,
+                    exc_info=True,
+                )
                 # Redis is non-persistent here: a restart drops consumer groups,
                 # so recreate them on NOGROUP instead of spinning on the error.
                 if "NOGROUP" in str(exc):
@@ -259,6 +269,13 @@ class RedisEventSubscriber(EventSubscriber):
             self._xack(stream, group, msg_id_str)
             return
         if self._already_seen(envelope.eventId):
+            LOGGER.warning(
+                "service=%s stream=%s eventId=%s deliveries=%s duplicate event already processed; acking without handler",
+                group,
+                stream,
+                envelope.eventId,
+                self._delivery_count(stream, group, msg_id_str) or 1,
+            )
             self._xack(stream, group, msg_id_str)
             return
         if self._delivery_count(stream, group, msg_id_str) >= MAX_DELIVERY_ATTEMPTS:
@@ -267,19 +284,49 @@ class RedisEventSubscriber(EventSubscriber):
             return
         try:
             result = handler(envelope)
-        except TransientHandlerError:
+        except TransientHandlerError as exc:
+            LOGGER.warning(
+                "service=%s stream=%s eventId=%s deliveries=%s handler transient failure; message stays pending for retry: %s: %s",
+                group,
+                stream,
+                envelope.eventId,
+                self._delivery_count(stream, group, msg_id_str) or 1,
+                exc.__class__.__name__,
+                exc,
+                exc_info=True,
+            )
             return
         except FatalHandlerError as exc:
             self._move_to_dlq(stream, group, consumer_name, envelope_json, exc, self._delivery_count(stream, group, msg_id_str))
             self._xack(stream, group, msg_id_str)
             return
         except Exception as exc:
-            if self._delivery_count(stream, group, msg_id_str) >= MAX_DELIVERY_ATTEMPTS:
-                self._move_to_dlq(stream, group, consumer_name, envelope_json, exc, self._delivery_count(stream, group, msg_id_str))
+            deliveries = self._delivery_count(stream, group, msg_id_str) or 1
+            if deliveries >= MAX_DELIVERY_ATTEMPTS:
+                self._move_to_dlq(stream, group, consumer_name, envelope_json, exc, deliveries)
                 self._xack(stream, group, msg_id_str)
+            else:
+                LOGGER.warning(
+                    "service=%s stream=%s eventId=%s deliveries=%s handler unexpected failure; message stays pending for retry: %s: %s",
+                    group,
+                    stream,
+                    envelope.eventId,
+                    deliveries,
+                    exc.__class__.__name__,
+                    exc,
+                    exc_info=True,
+                )
             return
         if isinstance(result, HandlerResult):
             if result.status is HandlerStatus.TRANSIENT_ERROR:
+                LOGGER.warning(
+                    "service=%s stream=%s eventId=%s deliveries=%s handler transient result; message stays pending for retry: %s",
+                    group,
+                    stream,
+                    envelope.eventId,
+                    self._delivery_count(stream, group, msg_id_str) or 1,
+                    result.message or "HandlerResult.TRANSIENT_ERROR",
+                )
                 return
             if result.status is HandlerStatus.FATAL_ERROR:
                 self._move_to_dlq(stream, group, consumer_name, envelope_json, result.message or "HandlerResult.FATAL_ERROR", self._delivery_count(stream, group, msg_id_str))
@@ -338,12 +385,18 @@ class RedisEventSubscriber(EventSubscriber):
     def _move_to_dlq(self, stream: str, group: str, consumer_name: str, envelope_json: str, reason: object, attempts: int) -> None:
         failure_reason = _truncate_failure_reason(reason)
         event_id = _event_id_for_log(envelope_json)
+        safe_attempts = max(1, attempts)
+        dead_lettered_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         LOGGER.warning(
-            "service=%s stream=%s eventId=%s failureReason=%s moving message to DLQ",
+            "service=%s stream=%s eventId=%s deliveries=%s consumerGroup=%s failureReason=%s attempts=%s deadLetteredAt=%s moving message to DLQ",
             group,
             stream,
             event_id,
+            safe_attempts,
+            group,
             failure_reason,
+            safe_attempts,
+            dead_lettered_at,
         )
         self._client.xadd(
             dlq_for_stream(stream),
@@ -352,8 +405,8 @@ class RedisEventSubscriber(EventSubscriber):
                 "consumerGroup": group,
                 "consumerName": consumer_name,
                 "failureReason": failure_reason,
-                "attempts": str(max(1, attempts)),
-                "deadLetteredAt": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "attempts": str(safe_attempts),
+                "deadLetteredAt": dead_lettered_at,
             },
             maxlen=MAXLEN,
             approximate=True,

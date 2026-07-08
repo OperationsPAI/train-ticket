@@ -2,7 +2,7 @@ import json
 import logging
 
 from train_ticket_platform.events import EventEnvelope
-from train_ticket_platform.messaging import FatalHandlerError, RedisEventSubscriber, dlq_for_stream
+from train_ticket_platform.messaging import FatalHandlerError, HandlerResult, RedisEventSubscriber, TransientHandlerError, dlq_for_stream
 
 
 class FakeRedis:
@@ -66,3 +66,41 @@ def test_process_entry_uses_supplied_consumer_name_for_max_delivery_dlq() -> Non
 
     dlq_fields = subscriber._client.dlq_entries[0][1]
     assert dlq_fields["consumerName"] == "tester-consumer"
+
+
+def test_transient_handler_exception_logs_retry_path(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._client = FakeRedis()
+    subscriber._dedup = set()
+    subscriber._dedup_lock = None
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={"x": 1})
+    fields = {"envelope": json.dumps(envelope.to_json_dict())}
+
+    def handler(_: EventEnvelope) -> None:
+        raise TransientHandlerError("redis unavailable")
+
+    subscriber._process_message("events:tester", "tester", "tester-consumer", "1-0", fields, handler)
+
+    assert subscriber._client.acks == []
+    assert subscriber._client.dlq_entries == []
+    assert "handler transient failure" in caplog.text
+    assert "TransientHandlerError" in caplog.text
+    assert envelope.eventId in caplog.text
+
+
+def test_ack_skip_duplicate_logs_ack_path(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._client = FakeRedis()
+    subscriber._dedup = set()
+    subscriber._dedup_lock = None
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={"x": 1})
+    subscriber._record_seen(envelope.eventId)
+    fields = {"envelope": json.dumps(envelope.to_json_dict())}
+
+    subscriber._process_message("events:tester", "tester", "tester-consumer", "1-0", fields, lambda _: HandlerResult.success())
+
+    assert subscriber._client.acks == [("events:tester", "tester", "1-0")]
+    assert "duplicate event already processed" in caplog.text
+    assert envelope.eventId in caplog.text

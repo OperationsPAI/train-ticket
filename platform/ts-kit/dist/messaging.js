@@ -247,10 +247,18 @@ export class RedisEventSubscriber {
             }
             try {
                 const messages = await read("XREADGROUP", "GROUP", group, consumerName, "BLOCK", READ_BLOCK_MS, "COUNT", READ_COUNT, "STREAMS", ...streams, ...streams.map(() => ">"));
-                await this.processMessages(messages, group, handler);
+                await this.processMessages(messages, group, consumerName, handler);
             }
             catch (error) {
                 // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
+                console.warn({
+                    service: group,
+                    stream: streams.join(","),
+                    eventId: "unknown",
+                    deliveries: 0,
+                    error: sanitizedErrorForLog(error),
+                    message: "poll read failed; recreating group if missing and backing off",
+                });
                 if (String(error).includes("NOGROUP")) {
                     await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
                 }
@@ -270,46 +278,73 @@ export class RedisEventSubscriber {
                 return;
             }
             for (const stream of streams) {
-                await this.claimAndProcess(stream, group, consumerName, handler);
+                try {
+                    await this.claimAndProcess(stream, group, consumerName, handler);
+                }
+                catch (error) {
+                    // One stream's XAUTOCLAIM failure must not kill the whole
+                    // recovery loop; log with context and keep recovering.
+                    console.warn({
+                        service: group,
+                        stream,
+                        eventId: "unknown",
+                        deliveries: 0,
+                        error: sanitizedErrorForLog(error),
+                        message: "pending-entry recovery failed; will retry next cycle",
+                    });
+                }
             }
         }
     }
-    async processMessages(messages, group, handler) {
+    async processMessages(messages, group, consumerName, handler) {
         for (const [stream, entries] of messages ?? []) {
             for (const entry of entries) {
-                await this.processEntry(stream, group, entry, handler);
+                await this.processEntry(stream, group, consumerName, entry, handler);
             }
         }
     }
-    async processEntry(stream, group, entry, handler) {
+    async processEntry(stream, group, consumerName, entry, handler, deliveryAttempts = 1) {
         const [entryId, fields] = entry;
+        const attempts = Math.max(1, deliveryAttempts);
         const envelopeJson = fieldValue(fields, "envelope");
         if (!envelopeJson) {
-            await this.deadLetterAndAck(stream, group, entry);
+            await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
             return;
         }
         let envelope;
         try {
             envelope = JSON.parse(envelopeJson);
         }
-        catch {
-            await this.deadLetterAndAck(stream, group, entry);
+        catch (error) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
             return;
         }
         if (this.consumedEventIds.has(envelope.eventId)) {
+            console.warn({
+                service: group,
+                stream,
+                eventId: envelope.eventId,
+                deliveries: attempts,
+                message: "duplicate event already processed; acking without handler",
+            });
             await this.redis.xack(stream, group, entryId);
             return;
         }
         let result;
+        let failureReason = "HandlerResult.dlq";
         try {
             const rawResult = await handler(envelope);
             result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+            failureReason = failureReasonFromHandlerResult(rawResult);
         }
         catch (error) {
-            console.error(sanitizedErrorForLog(error));
             result = error instanceof HandlerError
                 ? (error.kind === "fatal" ? "dlq" : "retry")
                 : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+            failureReason = error;
+            if (result === "dlq") {
+                console.error(sanitizedErrorForLog(error));
+            }
         }
         if (result === "ack") {
             this.consumedEventIds.add(envelope.eventId);
@@ -317,8 +352,17 @@ export class RedisEventSubscriber {
             return;
         }
         if (result === "dlq") {
-            await this.deadLetterAndAck(stream, group, entry);
+            await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
+            return;
         }
+        console.warn({
+            service: group,
+            stream,
+            eventId: envelope.eventId,
+            deliveries: attempts,
+            reason: failureReasonForLog(failureReason),
+            message: "handler transient failure; message stays pending for retry",
+        });
     }
     async claimAndProcess(stream, group, consumerName, handler) {
         const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, "0", "COUNT", 100);
@@ -326,10 +370,10 @@ export class RedisEventSubscriber {
         const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
         for (const entry of entries) {
             if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
-                await this.deadLetterAndAck(stream, group, entry);
+                await this.deadLetterAndAck(stream, group, consumerName, entry, "MaxDeliveries", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
             }
             else {
-                await this.processEntry(stream, group, entry, handler);
+                await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
             }
         }
     }
@@ -345,9 +389,23 @@ export class RedisEventSubscriber {
         }));
         return counts;
     }
-    async deadLetterAndAck(stream, group, entry) {
+    async deadLetterAndAck(stream, group, consumerName, entry, reason, attempts) {
         const envelopeJson = fieldValue(entry[1], "envelope") ?? JSON.stringify({});
-        await this.redis.xadd(dlqForStream(stream), "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", envelopeJson);
+        const failureReason = truncateFailureReason(reason);
+        const safeAttempts = Math.max(1, attempts);
+        const deadLetteredAt = new Date().toISOString();
+        console.warn({
+            service: group,
+            stream,
+            eventId: eventIdForLog(envelopeJson),
+            deliveries: safeAttempts,
+            consumerGroup: group,
+            failureReason,
+            attempts: safeAttempts,
+            deadLetteredAt,
+            message: "moving message to DLQ",
+        });
+        await this.redis.xadd(dlqForStream(stream), "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", envelopeJson, "consumerGroup", group, "consumerName", consumerName, "failureReason", failureReason, "attempts", String(safeAttempts), "deadLetteredAt", deadLetteredAt);
         await this.redis.xack(stream, group, entry[0]);
     }
     async createGroup(stream, group) {
@@ -394,15 +452,36 @@ export function dlqStreamKey(context) {
 export function redisUrl() {
     return process.env.REDIS_URL ?? "redis://localhost:6379";
 }
+function truncateFailureReason(reason) {
+    const text = reason instanceof Error
+        ? `${reason.name || "Error"}: ${reason.message || "Handler failed"}`
+        : String(reason || "unknown");
+    return text.length > 500 ? text.slice(0, 500) : text;
+}
+function eventIdForLog(envelopeJson) {
+    try {
+        const envelope = JSON.parse(envelopeJson);
+        return typeof envelope.eventId === "string" ? envelope.eventId : "unknown";
+    }
+    catch {
+        return "unknown";
+    }
+}
 function isRecoverableRedisReadError(error) {
     const message = String(error);
     return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
 }
 function sanitizedErrorForLog(error) {
     if (error instanceof Error) {
-        return { name: error.name || "Error", message: error.message || "Handler failed" };
+        return { name: error.name || "Error", message: error.message || "Handler failed", stack: error.stack };
     }
-    return { name: typeof error, message: "Handler failed" };
+    return { name: typeof error, message: String(error || "Handler failed") };
+}
+function failureReasonForLog(reason) {
+    if (reason instanceof Error) {
+        return sanitizedErrorForLog(reason);
+    }
+    return { name: typeof reason, message: String(reason || "HandlerResult.retry") };
 }
 function normalizeHandlerResult(result) {
     if (result === "ack" || result === "retry" || result === "dlq") {
@@ -416,6 +495,18 @@ function normalizeHandlerResult(result) {
 }
 function handlerSucceeded(result) {
     return normalizeHandlerResult(result) === "ack";
+}
+function failureReasonFromHandlerResult(result) {
+    if (result === undefined || result === "ack" || result === "retry") {
+        return "HandlerResult.dlq";
+    }
+    if (result === "dlq") {
+        return "HandlerResult.dlq";
+    }
+    if (!result.ok) {
+        return result.error ?? `HandlerResult.${result.kind ?? result.errorType ?? "transient"}`;
+    }
+    return "HandlerResult.dlq";
 }
 function occurredAt(value) {
     if (value instanceof Date) {
