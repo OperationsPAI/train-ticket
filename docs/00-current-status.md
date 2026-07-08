@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-08
 
-## Status: Phase 1 complete; Phase 2 hardening complete (persistence, channels, DLQ audit)
+## Status: Phase 1 complete; Phase 2 hardening complete (persistence, channels, DLQ audit, observability)
 
 The greenfield DDD rewrite is a working, end-to-end-verified system. All
 Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
@@ -78,14 +78,23 @@ contract; conformant events hitting unknown/advanced local state are
 ack-skipped with a WARN; true transients retry. Every DLQ entry now carries
 consumerGroup / failureReason / deadLetteredAt / attempts for attribution.
 
+Wave 13 delivered the observability baseline: an OTel collector runs in
+the integration cluster and all 23 services export OTLP traces through the
+five language kits (HTTP server spans plus event-consumer spans carrying
+stream/consumerGroup/eventId/eventType/correlationId; W3C traceparent on
+outbound HTTP; env-driven and zero-overhead when OTEL_* is absent). The DLQ
+second-order fixes (late provider confirmations now compensate via
+SegmentBookingCancelled consumed by provider-integration; finance-settlement
+refund-lag reconciliation) and the cross-kit silent-swallow audit landed in
+the same wave. DLQ streams are trimmed to zero — the monitoring baseline is
+zero-growth-from-zero.
+
 ## Current backlog
 
-1. Observability: OTel collector deployment in the integration cluster and
-   OTLP traces from all 23 services via the language kits (REQ-095..098).
-2. Provider/settlement follow-ups from live DLQ attribution: late
-   ProviderReservationConfirmed on capacity-failed bookings, and the
-   finance-settlement refund-lag reconciliation path (REQ-092/093).
-3. Kit logging-quality audit for the remaining three kits (REQ-094).
+1. Trace context propagation through event envelopes (traceparent in
+   envelope metadata) — deferred pending a contract ruling.
+2. Replace the collector debug exporter with a queryable backend when the
+   need arises (contract stays OTLP).
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
 boundary; legacy-acl rebook books the first leg only (caller follows up) — both

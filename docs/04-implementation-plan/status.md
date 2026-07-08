@@ -63,14 +63,16 @@ kit-level fixes so no failure path is silently swallowed (java-kit, rust-kit).
 Certification: all monitored DLQ streams frozen for 16 minutes under loadgen;
 battery 73/0.
 
-### Wave 13 — observability & follow-ups (IN PROGRESS)
+### Wave 13 — observability & follow-ups (DONE)
 
 - REQ-092/093: second-order DLQ findings (late provider confirmation on
   capacity-failed bookings; finance-settlement refund-lag reconciliation path).
 - REQ-094: silent-swallow / log-quality audit for python-kit, ts-kit, go-kit.
 - REQ-095..098: OTel collector in the kind cluster plus OTLP traces from all
   23 services through the five language kits (env-driven, zero-overhead when
-  unconfigured).
+  unconfigured). Certified live: 23/23 services attributed by service.name in
+  collector debug logs, all DLQ streams zero-growth for 16 minutes under
+  loadgen, e2e battery 73/0.
 
 ## Historical planning material
 
