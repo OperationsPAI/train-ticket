@@ -32,6 +32,7 @@ public class PaymentCommandService {
     private final ReservationPaymentRequestRepository reservationPaymentRequestRepository;
     private final PaymentChannelClient paymentChannelClient;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public PaymentCommandService(
         Clock clock,
         EventPublisher eventPublisher,
