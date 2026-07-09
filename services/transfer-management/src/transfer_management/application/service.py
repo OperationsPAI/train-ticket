@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import UUID
 from typing import Any, NoReturn
@@ -178,6 +178,21 @@ def segment_report_source_key(report: SegmentStatusReport) -> str:
     return "\u001f".join((report.sourceSystem, report.sourceRecordId, report.segmentRef, report.reportType.value, rfc3339_utc(report.observedAt)))
 
 
+def _replacement_window_json(window: Mapping[str, Any]) -> dict[str, Any]:
+    data = {
+        "plannedArrivalAt": rfc3339_utc(parse_dt(window.get("plannedArrivalAt"), "replacementWindow.plannedArrivalAt")),
+        "nextDepartureAt": rfc3339_utc(parse_dt(window.get("nextDepartureAt"), "replacementWindow.nextDepartureAt")),
+        "source": require_text(window.get("source"), "replacementWindow.source"),
+    }
+    if data["source"] not in {"OPERATIONS", "SYSTEM"}:
+        raise DomainError("replacementWindow.source is invalid")
+    cutoff = window.get("nextCutoffAt") or window.get("nextDepartureAt")
+    data["nextCutoffAt"] = rfc3339_utc(parse_dt(cutoff, "replacementWindow.nextCutoffAt"))
+    if parse_dt(data["nextDepartureAt"], "replacementWindow.nextDepartureAt") <= parse_dt(data["plannedArrivalAt"], "replacementWindow.plannedArrivalAt"):
+        raise DomainError("replacementWindow.nextDepartureAt must be after plannedArrivalAt")
+    return data
+
+
 class TransferManagementService:
     def __init__(self, store: Any, downstream: DisruptionRecoveryClient | None = None) -> None:
         self.store = store
@@ -266,6 +281,36 @@ class TransferManagementService:
         ]
         self._append(events)
         return connection.to_json()
+
+    def reaccommodate_connection(self, connection_id: str, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
+        at = now_utc()
+        with self.transaction():
+            original = self.store.get_connection(connection_id)
+            case_id = require_text(data.get("caseId"), "caseId")
+            if original.status in {ConnectionStatus.RECOVERED, ConnectionStatus.INVALIDATED}:
+                raise PreconditionFailed("connection is not eligible for reaccommodation")
+            if original.recovery is None or case_id not in original.recovery.caseIds:
+                raise PreconditionFailed("caseId is not mapped to connection recovery")
+            replacement_window = _replacement_window_json(dict(data.get("replacementWindow") or {}))
+            window = ConnectionWindow.build(
+                parse_dt(replacement_window["plannedArrivalAt"], "replacementWindow.plannedArrivalAt"),
+                parse_dt(replacement_window["nextDepartureAt"], "replacementWindow.nextDepartureAt"),
+                parse_dt(replacement_window["nextCutoffAt"], "replacementWindow.nextCutoffAt"),
+                original.window.mctMinutes,
+            )
+            evaluation = RiskEvaluation(new_prefixed_uuid7("tre"), RiskLevel.FEASIBLE if window.bufferMinutes >= 10 else RiskLevel.TIGHT if window.bufferMinutes >= 0 else RiskLevel.AT_RISK, original.latestEvaluation.mctRuleId, original.latestEvaluation.mctRuleVersion, window.availableMinutes, original.latestEvaluation.requiredMinutes, ("REACCOMMODATION",), at)
+            replacement_connection = Connection(
+                new_prefixed_uuid7("con"), original.transferPlanId, original.itineraryRef, original.previousSegmentRef, original.nextSegmentRef, original.travelerRefs, original.fromNodeRef, original.toNodeRef, original.fromNodeType, original.toNodeType, original.transferCategory, original.contractId, original.contractType, ConnectionStatus.PLANNED, evaluation, window, at, at, original.journeyOrderId, serviceDate=original.serviceDate, scheduledServiceRef=original.scheduledServiceRef, replacementOfConnectionId=original.connectionId
+            ).transition(ConnectionStatus.FEASIBLE if evaluation.riskLevel is RiskLevel.FEASIBLE else ConnectionStatus.TIGHT if evaluation.riskLevel is RiskLevel.TIGHT else ConnectionStatus.AT_RISK, at)
+            plan = self.store.get_plan(original.transferPlanId).add_connection(replacement_connection.connectionId, at)
+            recovered = original.recover_with_replacement(replacement_connection.connectionId, at)
+            self.store.save_plan(plan)
+            self.store.save_connection(replacement_connection)
+            self.store.save_connection(recovered)
+            registered = _envelope("ConnectionRegistered", replacement_connection.connectionId, 1, replacement_connection.to_json() | {"registeredAt": rfc3339_utc(at)}, correlation_id, causation_id, at)
+            recovered_event = _envelope("ConnectionRecovered", recovered.connectionId, recovered.version + 1, {"connection": recovered.ref_json(), "previousStatus": original.status.value, "status": "RECOVERED", "riskLevel": "RECOVERED", "recoveryCaseId": case_id, "replacementConnectionId": replacement_connection.connectionId, "replacementWindow": replacement_window, "recoveredAt": rfc3339_utc(at), "reaccommodatedAt": rfc3339_utc(at), "recoverySummary": "Connection reaccommodated"}, correlation_id, causation_id, at)
+            self._append([registered, recovered_event])
+            return {"connection": recovered.to_json(), "replacementConnection": replacement_connection.to_json(), "caseId": case_id, "reaccommodatedAt": rfc3339_utc(at)}
 
     def get_connection(self, connection_id: str) -> dict[str, Any]:
         return self.store.get_connection(connection_id).to_json()
@@ -391,6 +436,8 @@ class TransferManagementService:
                 return True
             at = now_utc()
             if envelope.eventType == "RecoveryCompleted":
+                if connection.status is ConnectionStatus.RECOVERED and connection.replacementConnectionId:
+                    return True
                 previous = connection.status
                 connection = replace(connection, latestEvaluation=replace(connection.latestEvaluation, riskLevel=RiskLevel.RECOVERED, evaluatedAt=at), updatedAt=at)
                 connection = connection.transition(ConnectionStatus.RECOVERED, at) if connection.status != ConnectionStatus.RECOVERED else connection
@@ -500,7 +547,7 @@ class TransferManagementService:
         if not connection.journeyOrderId:
             self._raise_missing_journey_order()
         evidence_id = _event_id("ConnectionMissed", connection.connectionId, connection.version)
-        body = {"disruptionType": "MISSED_CONNECTION", "segmentRef": connection.nextSegmentRef, "serviceDate": connection.serviceDate or at.date().isoformat(), "evidence": {"evidenceRef": connection.connectionId, "sourceSystem": "TRANSFER_MANAGEMENT", "sourceRecordId": evidence_id, "summary": "Protected transfer connection missed", "occurredAt": rfc3339_utc(at)}, "affectedOrderIds": [connection.journeyOrderId], "reportedBy": {"actorType": "SYSTEM", "actorId": "transfer-management"}, "autoRecovery": "WAIT"}
+        body = {"disruptionType": "MISSED_CONNECTION", "segmentRef": connection.nextSegmentRef, "serviceDate": connection.serviceDate or at.date().isoformat(), "evidence": {"evidenceRef": connection.connectionId, "sourceSystem": "TRANSFER_MANAGEMENT", "sourceRecordId": evidence_id, "summary": "Protected transfer connection missed", "occurredAt": rfc3339_utc(at)}, "affectedOrderIds": [connection.journeyOrderId], "reportedBy": {"actorType": "SYSTEM", "actorId": "transfer-management"}, "connectionId": connection.connectionId, "replacementWindow": {"plannedArrivalAt": rfc3339_utc(at + timedelta(minutes=15)), "nextDepartureAt": rfc3339_utc(at + timedelta(minutes=75)), "nextCutoffAt": rfc3339_utc(at + timedelta(minutes=75)), "source": "SYSTEM"}}
         if connection.scheduledServiceRef:
             body["scheduledServiceRef"] = connection.scheduledServiceRef
         response = self.downstream.report_missed_connection(body, connection.recovery.outboundIdempotencyKey, canonical_correlation_id(correlation_id))

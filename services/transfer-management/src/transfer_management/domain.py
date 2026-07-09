@@ -339,6 +339,8 @@ class Connection:
     recovery: RecoveryCaseMapping | None = None
     serviceDate: str | None = None
     scheduledServiceRef: str | None = None
+    replacementOfConnectionId: str | None = None
+    replacementConnectionId: str | None = None
     version: int = 0
 
     def transition(self, target: ConnectionStatus, at: datetime) -> "Connection":
@@ -365,6 +367,12 @@ class Connection:
 
     def with_recovery(self, recovery: RecoveryCaseMapping, at: datetime) -> "Connection":
         return replace(self, recovery=recovery, updatedAt=at, version=self.version + 1)
+
+    def recover_with_replacement(self, replacement_connection_id: str, at: datetime) -> "Connection":
+        if self.status in {ConnectionStatus.RECOVERED, ConnectionStatus.INVALIDATED}:
+            raise PreconditionFailed("connection is not eligible for reaccommodation")
+        recovered = replace(self, replacementConnectionId=require_text(replacement_connection_id, "replacementConnectionId"), latestEvaluation=replace(self.latestEvaluation, riskLevel=RiskLevel.RECOVERED, evaluatedAt=at), updatedAt=at)
+        return recovered.transition(ConnectionStatus.RECOVERED, at) if recovered.status is not ConnectionStatus.RECOVERED else recovered
 
     def summary_json(self) -> dict[str, Any]:
         return {"connectionId": self.connectionId, "previousSegmentRef": self.previousSegmentRef, "nextSegmentRef": self.nextSegmentRef, "transferCategory": self.transferCategory.value, "status": self.status.value, "riskLevel": self.latestEvaluation.riskLevel.value}
@@ -398,6 +406,10 @@ class Connection:
         }
         if self.journeyOrderId:
             data["journeyOrderId"] = self.journeyOrderId
+        if self.replacementOfConnectionId:
+            data["replacementOfConnectionId"] = self.replacementOfConnectionId
+        if self.replacementConnectionId:
+            data["replacementConnectionId"] = self.replacementConnectionId
         if self.recovery and self.recovery.recoveryTriggerStatus is not RecoveryTriggerStatus.NOT_REQUIRED:
             data["recovery"] = self.recovery.to_json()
         return data

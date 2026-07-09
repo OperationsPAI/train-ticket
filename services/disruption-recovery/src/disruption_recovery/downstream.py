@@ -25,12 +25,13 @@ def _env_name(service: str) -> str:
 class ServiceUrls:
     post_sales: str
     wallet_promotion: str
+    transfer_management: str
 
     @classmethod
     def from_env(cls) -> "ServiceUrls":
         def base(service: str) -> str:
             return os.getenv(_env_name(service), f"http://{service}:8080").rstrip("/")
-        return cls(post_sales=base("post-sales"), wallet_promotion=base("wallet-promotion"))
+        return cls(post_sales=base("post-sales"), wallet_promotion=base("wallet-promotion"), transfer_management=base("transfer-management"))
 
 
 class DownstreamHttpClient:
@@ -43,6 +44,10 @@ class DownstreamHttpClient:
 
     def issue_compensation(self, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
         return self._post_awaiting_projections("wallet_promotion", "/api/v1/benefits", body, idempotency_key, correlation_id)
+
+    def reaccommodate_connection(self, connection_id: str, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
+        from urllib.parse import quote
+        return self._request("transfer_management", f"/api/v1/connections/{quote(connection_id, safe='')}/reaccommodate", body, idempotency_key, correlation_id)
 
     def _post_awaiting_projections(self, service: str, path: str, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
         for delay in _PROJECTION_RETRY_DELAYS_SECONDS:
