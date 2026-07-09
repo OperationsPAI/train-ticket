@@ -18,5 +18,7 @@ public interface JourneyOrderStateRepository {
     void saveCreateIdempotency(String key, OrderManagementService.IdempotencyEntry<JourneyOrderResult> entry);
     Optional<OrderManagementService.IdempotencyEntry<CancelJourneyOrderResult>> findCancelIdempotency(String key);
     void saveCancelIdempotency(String key, OrderManagementService.IdempotencyEntry<CancelJourneyOrderResult> entry);
+    Optional<String> findIdentityPreOrderCheckId(String orderId);
+    void saveIdentityPreOrderCheckId(String orderId, String preOrderCheckId);
     boolean recordProcessedEvent(String eventId, String stream);
 }

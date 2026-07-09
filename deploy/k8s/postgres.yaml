@@ -43,6 +43,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fulfillment')\gexec
     SELECT 'CREATE DATABASE journey_order'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'journey_order')\gexec
+    SELECT 'CREATE DATABASE identity_verification'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'identity_verification')\gexec
     SELECT 'CREATE DATABASE legacy_acl'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'legacy_acl')\gexec
     SELECT 'CREATE DATABASE notification'

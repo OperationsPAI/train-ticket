@@ -769,6 +769,27 @@
       ],
       "owns": [],
       "rationale": "Python/FastAPI strangler facade maps legacy entrypoints to bounded-context HTTP commands without owning state."
+    },
+    {
+      "id": "identity-verification",
+      "path": "services/identity-verification",
+      "language": "python",
+      "domain": "Identity Verification",
+      "phase": "activation",
+      "workPackages": [
+        "REQ-141"
+      ],
+      "owns": [
+        "VerificationCase",
+        "CredentialRecord",
+        "EligibilityCertificate",
+        "PurchaseLimitFact"
+      ],
+      "contracts": [
+        "docs/08-contracts/api/identity-verification.md",
+        "docs/08-contracts/events/identity-verification.md"
+      ]
     }
+
   ]
 }

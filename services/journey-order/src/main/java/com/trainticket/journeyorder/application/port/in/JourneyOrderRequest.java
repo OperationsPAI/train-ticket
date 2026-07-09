@@ -7,5 +7,11 @@ public record JourneyOrderRequest(
     String offerId,
     int offerVersion,
     List<String> travelerRefs,
-    List<String> segmentRefs
-) {}
+    List<String> segmentRefs,
+    String journeyDate,
+    String productCode
+) {
+    public JourneyOrderRequest(String accountId, String offerId, int offerVersion, List<String> travelerRefs, List<String> segmentRefs) {
+        this(accountId, offerId, offerVersion, travelerRefs, segmentRefs, null, null);
+    }
+}
