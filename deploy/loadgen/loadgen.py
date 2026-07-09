@@ -1109,7 +1109,7 @@ class CustomerSim:
 
 
     async def maybe_purchase_ancillary(self, order_id: str, traveler_ref: str, segment_ref: str) -> dict[str, str]:
-        if not self.chance_default("p_ancillary_purchase", 0.03):
+        if not self.optional_chance("p_ancillary_purchase", 0.03):
             return {}
         suffix = uuid7()
         now = datetime.now(timezone.utc)
