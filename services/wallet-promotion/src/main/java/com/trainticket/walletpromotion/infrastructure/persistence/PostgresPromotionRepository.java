@@ -112,14 +112,16 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT data::text
               FROM promotion_instrument_snapshots
              WHERE data->>'status' IN ('ISSUED', 'RESERVED', 'RELEASED')
-               AND (data->>'validUntil')::timestamptz <= ?
+               AND data->>'validUntil' <= ?
              ORDER BY data->>'validUntil'
              LIMIT ?
             """;
+        // RFC3339 UTC strings compare chronologically as text, matching the
+        // text-expression index (timestamptz casts are not IMMUTABLE there).
         return jdbc.query(
             sql,
             (rs, rowNumber) -> read(rs.getString(1), PromotionInstrument.class),
-            java.sql.Timestamp.from(now),
+            java.time.format.DateTimeFormatter.ISO_INSTANT.format(now.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)),
             limit
         );
     }

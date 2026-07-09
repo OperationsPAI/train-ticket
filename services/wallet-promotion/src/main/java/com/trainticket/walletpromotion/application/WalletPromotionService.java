@@ -29,6 +29,7 @@ public class WalletPromotionService {
     private final PromotionRepository repository;
     private final Clock clock;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public WalletPromotionService(PromotionRepository repository) {
         this(repository, Clock.systemUTC());
     }
