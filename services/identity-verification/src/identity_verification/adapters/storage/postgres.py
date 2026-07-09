@@ -198,7 +198,13 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             if product_code: where += " AND (data->'applicableProductCodes') ? %s"; params.append(product_code)
             total = int(conn.execute(f"SELECT count(*) FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric", tuple(params)).fetchone()[0])
             rows = conn.execute(f"SELECT id, version, data FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric ORDER BY data->>'createdAt' LIMIT %s OFFSET %s", tuple(params + [limit, offset])).fetchall()
-            return tuple(certificate_from_json(row[2], int(row[1])) for row in rows), total
+            certificates = []
+            for row in rows:
+                # Loaded aggregates must register their version in the unit of
+                # work, or a later save is treated as an INSERT and trips OCC.
+                self._remember("certificate", str(row[0]), int(row[1]))
+                certificates.append(certificate_from_json(row[2], int(row[1])))
+            return tuple(certificates), total
         return self._with_conn(read)
 
     def save_fact(self, fact: PurchaseLimitFact) -> None:
