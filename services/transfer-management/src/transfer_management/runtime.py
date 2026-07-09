@@ -11,7 +11,7 @@ class ServiceProfile(TypedDict):
     boundary: NotRequired[str]
 
 
-SERVICE_PROFILE: ServiceProfile = {'service_id': 'transfer-management', 'domain': 'Transfer Management', 'language': 'python', 'phase': 'future-scope', 'work_packages': [], 'owns': ['ConnectionContract', 'MctVersion', 'ProtectedConnection']}
+SERVICE_PROFILE: ServiceProfile = {"service_id": "transfer-management", "domain": "Transfer Management", "language": "python", "phase": "activation", "work_packages": ["REQ-120"], "owns": ["TransferPlan", "Connection", "ConnectionContract", "MinimumConnectionTimeRule"]}
 
 
 def health() -> str:
