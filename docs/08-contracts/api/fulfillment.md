@@ -122,3 +122,30 @@ endpoint:
 ## Open Issues
 
 - None.
+
+## POST `/api/v1/segment-status`
+
+Operational declaration command for segment-level runtime status. This endpoint is intended for SYSTEM/OPS sources and is currently the only source of fulfillment `SegmentDelayed`, `SegmentArrived`, and `SegmentCancelled` events; fulfillment does not yet derive delay/arrival/cancellation facts internally.
+
+Headers:
+
+| Header | Required | Description |
+|---|---|---|
+| `Idempotency-Key` | yes | UUID-v7. Fulfillment folds this into command id `cmd-<Idempotency-Key>`; duplicate commands do not republish events. |
+| `X-Correlation-Id` | no | Normalized to `corr-<uuid-v7>` when possible. |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `segmentRef` | `SegmentRef` | yes | Affected segment. |
+| `scheduledServiceRef` | string | yes | Scheduled service/run reference. |
+| `serviceDate` | string | yes | Operating date, `YYYY-MM-DD`. |
+| `status` | enum | yes | `DELAY`, `ARRIVAL`, or `CANCELLED`. |
+| `estimatedArrivalAt` | RFC3339 UTC | conditional | Required for `DELAY`. |
+| `arrivedAt` | RFC3339 UTC | conditional | Required for `ARRIVAL`. |
+| `cancelledAt` | RFC3339 UTC | conditional | Required for `CANCELLED`. |
+| `observedAt` | RFC3339 UTC | yes | Observation/declaration time. |
+| `sourceSystem` | enum | yes | `SYSTEM` or `OPS`. |
+
+Responses: `201 Created` with `segmentStatusRecordId`, `commandId`, `segmentRef`, `status`, `observedAt`; `400` for validation; `422` for domain-rule violations; `503` when outbox append is unavailable.
