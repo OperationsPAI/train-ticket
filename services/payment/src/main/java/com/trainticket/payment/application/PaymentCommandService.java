@@ -275,11 +275,10 @@ public class PaymentCommandService {
         if (existing != null && !existing.isBlank()) {
             return existing;
         }
-        String normalized = requireText(fallbackKey, "idempotencyKey");
-        if (com.trainticket.platformkit.idempotency.UuidV7.isValid(stripCommandPrefix(normalized))) {
-            return stripCommandPrefix(normalized);
-        }
-        return foldedUuidV7(material + ":" + normalized);
+        // The outbound channel key is ALWAYS folded from the contract
+        // material; the caller's inbound key must never leak across the
+        // context boundary (round-3 contract finding).
+        return foldedUuidV7(material);
     }
 
     private static String foldedUuidV7(String material) {
