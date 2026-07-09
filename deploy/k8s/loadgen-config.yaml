@@ -50,6 +50,7 @@ behavior:
   p_cancel_order_before_payment: 0.10       # subset explicitly POSTs journey-orders/{id}/cancel
   p_refund_get_after_completion: 0.50       # after refund approval, poll payment events and GET refunds/{id}
   p_ancillary_purchase: 0.03                  # small add-on branch in purchase journeys
+  p_invoice_after_purchase: 0.02                # small tax e-invoice branch in purchase journeys
 
   # how long a customer waits for a staff-handled step (reservation,
   # ticketing, risk review) before giving up

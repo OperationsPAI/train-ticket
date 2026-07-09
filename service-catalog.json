@@ -683,6 +683,31 @@
       "rationale": "Rust fits overlap, immutability, idempotency, and allocation-state invariants."
     },
     {
+      "id": "invoicing",
+      "path": "services/invoicing",
+      "domain": "Invoicing",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "activation-wave-A2",
+      "status": "integration-ready",
+      "priority": "P1",
+      "workPackages": [
+        "REQ-143"
+      ],
+      "docs": [
+        "docs/02-domains/invoicing.md",
+        "docs/08-contracts/api/invoicing.md",
+        "docs/08-contracts/events/invoicing.md"
+      ],
+      "owns": [
+        "InvoiceTitle",
+        "EInvoice",
+        "RedFlush",
+        "ItineraryReceipt"
+      ],
+      "rationale": "Rust fits deterministic SIM issuance, idempotency, and invoice lifecycle invariants."
+    },
+    {
       "id": "waitlist",
       "path": "services/waitlist",
       "domain": "Waitlist",
@@ -790,6 +815,5 @@
         "docs/08-contracts/events/identity-verification.md"
       ]
     }
-
   ]
 }
