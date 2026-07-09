@@ -50,12 +50,14 @@ envelope `eventId`.
 
 ## Status enum
 
-Dispatch event payloads use the same 10-state enum as the HTTP API:
+Dispatch event payloads use the same enum as the HTTP API:
 `REQUESTED`, `MATCHING`, `ASSIGNED`, `DRIVER_ARRIVING`, `DRIVER_ARRIVED`,
-`PICKED_UP`, `DRIVER_CANCELLED`, `USER_CANCELLED`, `NO_SHOW`, `COMPLETED`.
+`PICKED_UP`, `DRIVER_CANCELLED`, `USER_CANCELLED`, `NO_SHOW`, `COMPLETED`,
+`FAILED`.
 
 `DRIVER_CANCELLED` MUST be followed by automatic return to `MATCHING` for
-re-dispatch unless a future explicit failure policy closes the request.
+re-dispatch unless the timeout scan (or a future failure policy) closes the
+request as `FAILED`.
 
 ## Published Events
 
@@ -279,6 +281,29 @@ publishing this fact unless a future failure policy closes the request.
 | `recordedAt` | RFC3339 UTC | yes | No-show recording timestamp. |
 | `reason` | string | no | Operational reason or policy reference; do not include unmasked documents or other sensitive personal data. |
 | `status` | enum | yes | `NO_SHOW`. |
+
+### DispatchFailed
+
+| Field | Description |
+|---|---|
+| **Producer** | dispatch |
+| **Consumers** | deferred: post-sales, notification, reporting |
+| **Trigger** | Timeout scan closes a `REQUESTED`/`MATCHING` request whose window elapsed (activation-wave increment 2026-07-09). |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `rideRequestId` | string | yes | Ride request ID. |
+| `riderAccountId` | string | yes | Rider account. |
+| `travelerRef` | string | yes | Traveler reference. |
+| `pickupRef` | string | yes | Pickup reference. |
+| `dropoffRef` | string | yes | Dropoff reference. |
+| `intentFingerprint` | string | yes | Mutual-exclusion fingerprint. |
+| `failedAt` | RFC3339 UTC | yes | Failure timestamp. |
+| `reason` | string | yes | Failure reason (e.g. `MATCHING_TIMEOUT`). |
+| `previousStatus` | enum | yes | Status before failure. |
+| `status` | enum | yes | Always `FAILED`. |
 
 ## Accepted Commands
 

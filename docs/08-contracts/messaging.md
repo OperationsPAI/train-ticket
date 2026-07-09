@@ -71,7 +71,7 @@ context.
 | 21b | `legacy-acl` | `events:legacy-acl` | LegacyCommandMapped |
 | 22 | `supplier-catalog` | `events:supplier-catalog` | SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped |
 | 23 | `waitlist` | `events:waitlist` | WaitlistRequestCreated, WaitlistPaymentAuthorizationRequested, WaitlistQueued, WaitlistMatchStarted, WaitlistHoldAuthorized, WaitlistFulfilled, WaitlistCancelled, WaitlistExpired |
-| 24 | `dispatch` | `events:dispatch` | DispatchRequested, DriverAssigned, DriverEtaUpdated, DriverArrived, RideStarted, RideEnded, DriverCancelled, DispatchUserCancelled, DispatchNoShowRecorded |
+| 24 | `dispatch` | `events:dispatch` | DispatchRequested, DriverAssigned, DriverEtaUpdated, DriverArrived, RideStarted, RideEnded, DriverCancelled, DispatchUserCancelled, DispatchNoShowRecorded, DispatchFailed |
 | 25 | `wallet-promotion` | `events:wallet-promotion` | BenefitIssued, BenefitReserved, BenefitRedeemed, BenefitReservationReleased, BenefitExpired, BenefitRevoked, BenefitRedemptionReversed |
 
 ### Dead-Letter Streams

@@ -216,6 +216,7 @@ class Registry:
     q_ticketing: deque = field(default_factory=deque, repr=False)
     q_risk: deque = field(default_factory=deque, repr=False)
     q_support: deque = field(default_factory=deque, repr=False)
+    q_dispatch: deque = field(default_factory=deque, repr=False)
 
     @classmethod
     def load(cls, path: str) -> "Registry":
@@ -328,7 +329,7 @@ class StaffSim:
     async def worker(self, idx: int, stop: asyncio.Event) -> None:
         while not stop.is_set():
             item = None
-            for q in (self.reg.q_reservation, self.reg.q_ticketing, self.reg.q_risk, self.reg.q_support):
+            for q in (self.reg.q_reservation, self.reg.q_ticketing, self.reg.q_risk, self.reg.q_support, self.reg.q_dispatch):
                 if q:
                     item = q.popleft()
                     break
@@ -417,6 +418,34 @@ class StaffSim:
         else:
             item["risk"] = "rejected"
 
+
+    async def do_dispatch(self, item: dict) -> None:
+        ride = item["ride"]
+        branch = item.get("branch", "complete")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/assign",
+                               {"driverRef": f"drv-{uuid7()}", "vehicleRef": f"veh-{uuid7()}", "etaSeconds": self.rng.randint(30, 300)},
+                               ok=(200,), step="staff-dispatch-assign")
+        if branch == "driver_cancel_reassign":
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/driver-cancel",
+                                   {"reason": "DRIVER_UNAVAILABLE"}, ok=(200,), step="staff-dispatch-driver-cancel")
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/assign",
+                                   {"driverRef": f"drv-{uuid7()}", "vehicleRef": f"veh-{uuid7()}", "etaSeconds": self.rng.randint(30, 300)},
+                                   ok=(200,), step="staff-dispatch-reassign")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/eta",
+                               {"etaSeconds": self.rng.randint(10, 120)}, ok=(200,), step="staff-dispatch-eta")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/driver-arrived",
+                               {}, ok=(200,), step="staff-dispatch-arrived")
+        if branch == "no_show":
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/no-show",
+                                   {"reason": "RIDER_ABSENT"}, ok=(200,), step="staff-dispatch-no-show")
+            item["dispatch"] = "no_show"
+            return
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/start",
+                               {}, ok=(200,), step="staff-dispatch-start")
+        await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride)}/complete",
+                               {"finalFareRef": f"fare-final-{uuid7()}"}, ok=(200,), step="staff-dispatch-complete")
+        item["dispatch"] = "driver_cancel_reassigned_completed" if branch == "driver_cancel_reassign" else "completed"
+
     async def do_support(self, item: dict) -> None:
         case_id = item["case"]
         requester = item.get("requester", "tvl-loadgen")
@@ -492,6 +521,7 @@ class CustomerSim:
         self.poll_interval = float(cfg["polling"]["interval_seconds"])
         self.staff_wait = float(cfg["behavior"].get("staff_wait_seconds", 90))
         self.long_tail = cfg.get("long_tail", {})
+        self.wallet_cfg = cfg.get("wallet_promotion", {})
         self.redis = aioredis.from_url(cfg["target"]["redis_url"], decode_responses=True)
 
     async def think(self) -> None:
@@ -679,12 +709,13 @@ class CustomerSim:
             entitlement=ent, total_minor=total_minor, offer=offer.get("offerId", ""),
             payment_intent=intent.get("paymentIntentId", ""), itinerary=found.get("itinerary", ""),
             quote=quote.get("quoteId", "")))
+        wallet_refs = await self.maybe_wallet_purchase_benefit(entry["account_id"])
         await self.maybe_read_probe({
             "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
             "payment_intent": intent.get("paymentIntentId"), "entitlement": ent,
             "itinerary": found.get("itinerary"), "quote": quote.get("quoteId"),
             "service": found.get("service"), "place": route.get("origin_place"),
-            "node": found.get("origin_node"),
+            "node": found.get("origin_node"), **wallet_refs,
         })
         return "purchased"
 
@@ -839,6 +870,34 @@ class CustomerSim:
         await self.maybe_read_probe({"fulfillment_record": p.fulfillment_record, "entitlement": p.entitlement, "order": p.order})
         return outcome
 
+
+    async def journey_ride(self) -> str:
+        entry = await self.login_or_register()
+        traveler = await self.obtain_traveler(entry)
+        window_start = datetime.now(timezone.utc) + timedelta(minutes=2)
+        window_end = window_start + timedelta(minutes=30)
+        suffix = uuid7()
+        body = {
+            "pickupRef": f"plc-ride-pick-{suffix}", "dropoffRef": f"plc-ride-drop-{suffix}",
+            "timeWindow": {"startAt": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           "endAt": window_end.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            "riderAccountId": entry["account_id"], "travelerRef": traveler,
+            "estimatedFareRef": f"fare-est-{suffix}", "intentFingerprint": f"ride:{traveler}:{suffix}",
+        }
+        _, ride = await self.api.request("POST", "dispatch", "/api/v1/ride-requests", body, step="ride-create")
+        ride_id = ride["rideRequestId"]
+        branch = weighted_choice(self.rng, self.b.get("ride_branches", {"complete": 0.75, "driver_cancel_reassign": 0.10, "user_cancel": 0.10, "no_show": 0.05}))
+        if branch == "user_cancel":
+            await self.api.request("POST", "dispatch", f"/api/v1/ride-requests/{quote(ride_id)}/user-cancel",
+                                   {"reason": "CUSTOMER_CHANGED_PLANS"}, ok=(200,), step="ride-user-cancel")
+            await self.maybe_read_probe({"ride_request": ride_id, "ride_rider": entry["account_id"]})
+            return "user_cancelled"
+        work = {"kind": "dispatch", "ride": ride_id, "branch": branch}
+        self.reg.q_dispatch.append(work)
+        outcome = await wait_for(work, "dispatch", self.staff_wait)
+        await self.maybe_read_probe({"ride_request": ride_id, "ride_rider": entry["account_id"]})
+        return outcome
+
     async def journey_support(self) -> str:
         async with self.reg.lock:
             pool = [p for p in self.reg.purchases if p.status != "consumed"]
@@ -927,10 +986,54 @@ class CustomerSim:
             await self.assert_get("customer-service", f"/api/v1/support-cases/{quote(refs['support_case'])}", "caseId", refs["support_case"], "tail-get-support-case")
         if refs.get("quote"):
             await self.assert_get("fare-pricing", f"/api/v1/fare-quotes/{quote(refs['quote'])}", "quoteId", refs["quote"], "tail-get-fare-quote")
+        if refs.get("ride_request"):
+            await self.assert_get("dispatch", f"/api/v1/ride-requests/{quote(refs['ride_request'])}", "rideRequestId", refs["ride_request"], "tail-get-ride-request")
+        if refs.get("ride_rider") and refs.get("ride_request"):
+            page = await self.assert_get("dispatch", f"/api/v1/ride-requests?riderAccountId={quote(refs['ride_rider'])}&limit=20&offset=0", None, None, "tail-list-ride-requests")
+            self.assert_list_contains(page, "rideRequestId", refs["ride_request"], "tail-list-ride-requests")
         if refs.get("waitlist") and refs.get("waitlist_traveler"):
             page = await self.assert_get("waitlist", f"/api/v1/waitlist-requests?travelerRef={quote(refs['waitlist_traveler'])}&limit=20&offset=0", None, None, "tail-list-waitlist")
             self.assert_list_contains(page, "waitlistRequestId", refs["waitlist"], "tail-list-waitlist")
             await self.assert_get("waitlist", f"/api/v1/waitlist-requests/{quote(refs['waitlist'])}", "waitlistRequestId", refs["waitlist"], "tail-get-waitlist")
+        if refs.get("benefit"):
+            await self.assert_get("wallet-promotion", f"/api/v1/benefits/{quote(refs['benefit'])}", "benefitId", refs["benefit"], "tail-get-benefit")
+        if refs.get("wallet_account"):
+            await self.assert_get("wallet-promotion", f"/api/v1/wallet-accounts/{quote(refs['wallet_account'])}", "accountId", refs["wallet_account"], "tail-get-wallet-account")
+            page = await self.assert_get("wallet-promotion", f"/api/v1/benefits?byAccountId={quote(refs['wallet_account'])}&limit=20&offset=0", None, None, "tail-list-benefits")
+            if refs.get("benefit"):
+                self.assert_list_contains(page, "benefitId", refs["benefit"], "tail-list-benefits")
+
+
+    async def maybe_wallet_purchase_benefit(self, account_id: str) -> dict[str, str]:
+        if self.rng.random() >= float(self.wallet_cfg.get("p_purchase_reserve_redeem", 0.02)):
+            return {}
+        issued = await self.issue_wallet_benefit(account_id, int(self.wallet_cfg.get("purchase_benefit_minor_units", 100)))
+        benefit_id = issued["benefitId"]
+        ref = f"ord-{uuid7()}"
+        amount = issued.get("availableAmount", {}).get("minorUnits", int(self.wallet_cfg.get("purchase_benefit_minor_units", 100)))
+        await self.api.request("POST", "wallet-promotion", f"/api/v1/benefits/{quote(benefit_id)}/reserve",
+                               {"amount": {"currency": "CNY", "minorUnits": amount}, "reservationRef": ref,
+                                "reservationExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "businessReason": {"reasonType": "ORDER_PURCHASE", "reasonCode": "LOADGEN_BENEFIT_RESERVE", "referenceType": "ORDER", "referenceId": ref}},
+                               ok=(200,), step="wallet-reserve")
+        await self.api.request("POST", "wallet-promotion", f"/api/v1/benefits/{quote(benefit_id)}/redeem",
+                               {"amount": {"currency": "CNY", "minorUnits": amount}, "redemptionRef": ref, "reservationRef": ref,
+                                "businessReason": {"reasonType": "ORDER_PURCHASE", "reasonCode": "LOADGEN_BENEFIT_USE", "referenceType": "ORDER", "referenceId": ref}},
+                               ok=(200,), step="wallet-redeem")
+        self.stats.journeys["wallet:reserve_redeem"] += 1
+        return {"benefit": benefit_id, "wallet_account": account_id}
+
+    async def issue_wallet_benefit(self, account_id: str, amount: int) -> dict:
+        until = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
+                "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+                "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+                "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
+                "validFrom": now_iso(), "validUntil": until,
+                "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}}
+        _, data = await self.api.request("POST", "wallet-promotion", "/api/v1/benefits", body, ok=(201,), step="wallet-issue")
+        self.stats.journeys["wallet:issued"] += 1
+        return data
 
     async def find_refund_id(self, case_id: str) -> str | None:
         for _ in range(self.poll_attempts):
@@ -1031,6 +1134,7 @@ class OpsSim:
     async def sweep_once(self) -> None:
         await self.reporting_reads()
         await self.finance_reads()
+        await self.wallet_promotion_sweep()
         await self.supplier_catalog_sweep()
 
     async def reporting_reads(self) -> None:
@@ -1052,6 +1156,28 @@ class OpsSim:
             path = "/api/v1/reconciliation-cases?limit=20&offset=0"
         await self.api.request("GET", "finance-settlement", path, ok=(200,), step="ops-finance-reconciliation-list")
         self.stats.journeys["ops:finance:reconciliation_cases"] += 1
+
+    async def wallet_promotion_sweep(self) -> None:
+        if self.rng.random() >= float(self.cfg.get("p_wallet_manual_issue", 0.20)):
+            return
+        async with self.reg.lock:
+            accounts = list(self.reg.accounts)
+        if not accounts:
+            return
+        account_id = self.rng.choice(accounts)["account_id"]
+        amount = int(self.cfg.get("wallet_manual_issue_minor_units", 100))
+        until = (datetime.now(timezone.utc) + timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _, benefit = await self.api.request("POST", "wallet-promotion", "/api/v1/benefits",
+            {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
+             "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+             "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+             "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
+             "validFrom": now_iso(), "validUntil": until,
+             "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}},
+            ok=(201,), step="ops-wallet-issue")
+        self.stats.journeys["ops:wallet:issued"] += 1
+        await self.api.request("GET", "wallet-promotion", f"/api/v1/benefits/{quote(benefit['benefitId'])}", ok=(200,), step="ops-wallet-get-benefit")
+        await self.api.request("GET", "wallet-promotion", f"/api/v1/wallet-accounts/{quote(account_id)}", ok=(200,), step="ops-wallet-get-account")
 
     async def supplier_catalog_sweep(self) -> None:
         _, suppliers = await self.api.request("GET", "supplier-catalog", "/api/v1/suppliers?limit=20&offset=0", ok=(200,), step="ops-supplier-list")
@@ -1243,6 +1369,7 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "fulfillment": sim.journey_fulfillment,
         "support": sim.journey_support,
         "legacy": sim.journey_legacy,
+        "ride": sim.journey_ride,
     }
     pause = cfg["run"]["session_pause_seconds"]
     while not stop.is_set():

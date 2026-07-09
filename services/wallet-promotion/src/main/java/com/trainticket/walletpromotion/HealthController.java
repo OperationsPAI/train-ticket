@@ -18,7 +18,7 @@ public class HealthController {
         this.clock = clock;
     }
 
-    @GetMapping("/health")
+    @GetMapping({"/health", "/healthz"})
     public Map<String, Object> health() {
         return Map.of("status", "ok", "service", Application.profile());
     }

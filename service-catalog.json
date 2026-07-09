@@ -683,18 +683,22 @@
       "domain": "Wallet / Promotion",
       "language": "java",
       "runtime": "jvm",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
+      "phase": "activation-wave-2",
+      "status": "integration-ready",
       "priority": "P1",
-      "workPackages": [],
+      "workPackages": [
+        "REQ-112"
+      ],
       "docs": [
-        "docs/02-domains/wallet-promotion.md"
+        "docs/02-domains/wallet-promotion.md",
+        "docs/08-contracts/api/wallet-promotion.md",
+        "docs/08-contracts/events/wallet-promotion.md"
       ],
       "owns": [
-        "WalletBalance",
-        "PromotionGrant",
-        "Coupon",
-        "PointLedger"
+        "PromotionInstrument",
+        "WalletAccount",
+        "BenefitRedemption",
+        "Wallet ledger"
       ],
       "rationale": "Java is a conservative default for stored-value and promotion ledgers."
     },
@@ -704,10 +708,10 @@
       "domain": "Dispatch",
       "language": "golang",
       "runtime": "go",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
-      "priority": "P1",
-      "workPackages": [],
+      "phase": "phase-1-core",
+      "status": "integration-ready",
+      "priority": "P0",
+      "workPackages": ["REQ-114"],
       "docs": [
         "docs/02-domains/dispatch.md"
       ],

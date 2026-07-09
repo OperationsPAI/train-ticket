@@ -29,6 +29,7 @@ journey_mix:
   fulfillment: 7    # board + complete (or no-show) with an issued entitlement
   support: 4        # open a support case about one of their orders
   legacy: 6         # whole lifecycle through the legacy ACL facade
+  ride: 5           # dispatch ride request lifecycle
 
 # ---------------------------------------------------------------------------
 # Within-journey behavior knobs.
@@ -56,6 +57,9 @@ behavior:
 
   # legacy facade
   p_legacy_cancel: 0.30       # cancel after ticket_issue instead of boarding
+
+  # dispatch ride branch probabilities
+  ride_branches: { complete: 0.75, driver_cancel_reassign: 0.10, user_cancel: 0.10, no_show: 0.05 }
 
   # waitlist fallback for purchase journeys that hit NO_AVAILABLE_CAPACITY.
   # Conservative defaults: convert only some sold-out traffic and cancel rarely.
@@ -110,6 +114,8 @@ ops:
   interval_seconds: { min: 180, max: 420 }
   dashboard_id: dash-revenue
   p_supplier_catalog_write: 0.25
+  p_wallet_manual_issue: 0.20
+  wallet_manual_issue_minor_units: 100
 
 # ---------------------------------------------------------------------------
 # Bootstrap — ops-side inventory guarantees (NOT customer actions). Runs once
@@ -134,6 +140,10 @@ bootstrap:
 polling:
   attempts: 8
   interval_seconds: 4
+
+wallet_promotion:
+  p_purchase_reserve_redeem: 0.02
+  purchase_benefit_minor_units: 100
 
 waitlist:
   poll_attempts: 8

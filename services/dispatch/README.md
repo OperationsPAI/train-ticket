@@ -1,19 +1,12 @@
 # dispatch
 
-> **Status — future-scope skeleton**
->
-> This service is **not deployed**, is **not part of the current 23-service set**,
-> and remains **future-scope** until activated by the roadmap in
-> [`docs/04-implementation-plan`](../../docs/04-implementation-plan/).
-
-
 Domain: Dispatch
 
 Language: golang
 
-Phase: future-scope
+Phase: phase-1-core
 
-Status: placeholder-skeleton
+Status: active-dispatch-service
 
 ## Owns
 
@@ -30,7 +23,15 @@ Status: placeholder-skeleton
 
 Go fits real-time dispatch APIs, adapter calls, and low-latency state updates.
 
-## Skeleton Check
+## Active Slice
+
+REQ-114 implements the REQ-113 activation contract: ride request creation,
+assignment, ETA, arrival/start/complete, driver cancellation with automatic
+return to matching, user cancellation, no-show recording, persisted snapshots,
+and transactional outbox publication for the nine lifecycle facts. Driver-arrived
+wait timeout to no-show is intentionally ops-command driven in this wave.
+
+## Service Check
 
 ```bash
 go test ./...
