@@ -283,6 +283,7 @@ impl SeatAssignmentApi for PostgresSeatAssignmentService {
         key: String,
         corr: String,
     ) -> Result<SeatMap, SeatAssignmentError> {
+        validate_uuid_v7_key(&key)?;
         let fp = normalize_json(&cmd);
         let mut tx = self.pool().begin().await.map_err(db_error)?;
         if let rust_kit::storage::IdempotencyTxDecision::Replay(r) =
@@ -431,6 +432,7 @@ impl SeatAssignmentApi for PostgresSeatAssignmentService {
         key: String,
         corr: String,
     ) -> Result<AllocateSeatResponse, SeatAssignmentError> {
+        validate_uuid_v7_key(&key)?;
         let fp = normalize_json(&cmd);
         let mut tx = self.pool().begin().await.map_err(db_error)?;
         if let rust_kit::storage::IdempotencyTxDecision::Replay(r) =
@@ -533,6 +535,7 @@ impl PostgresSeatAssignmentService {
     where
         F: FnOnce(&mut SeatMap, String) -> Result<SeatAssignmentEvent, SeatAssignmentError>,
     {
+        validate_uuid_v7_key(&key)?;
         let mut tx = self.pool().begin().await.map_err(db_error)?;
         if let rust_kit::storage::IdempotencyTxDecision::Replay(r) =
             rust_kit::storage::DbIdempotencyStore::claim_response(&mut tx, &key, &fp)

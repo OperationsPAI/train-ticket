@@ -13,6 +13,7 @@ use axum::{
 use rust_kit::{http as kit_http, idempotency as kit_idempotency};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use shared_kernel::{
     OpenTelemetryObserver, RequestContext, RuntimeConfig, apply_runtime, router_with_config,
 };
@@ -1933,6 +1934,12 @@ pub struct IssueEntitlementRequest {
     pub expires_at: Option<String>,
 }
 
+impl IssueEntitlementRequest {
+    pub fn needs_seat_assignment(&self) -> bool {
+        self.seat_preferences.is_some() || self.scheduled_service_ref.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StationIntervalDto {
@@ -2217,28 +2224,63 @@ impl IssuePurposeDto {
     }
 }
 
+fn folded_uuid_v7(material: &str) -> uuid::Uuid {
+    let digest = Sha256::digest(material.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+fn normalized_seat_preferences(preferences: &Option<SeatPreferencesDto>) -> String {
+    serde_json::to_string(preferences).unwrap_or_else(|_| "null".to_string())
+}
+
+pub fn seat_assignment_idempotency_key(command: &IssueEntitlementRequest) -> ApiResult<String> {
+    let hold = command.capacity_hold_id.as_deref().ok_or_else(|| {
+        ApiErrorKind::PreconditionFailed(
+            "capacityHoldId is required from accepted capacity facts for seat assignment".into(),
+        )
+    })?;
+    let material = format!(
+        "{}:{}:{}:{}:{}",
+        command.segment_booking_id,
+        command.traveler_ref,
+        hold,
+        normalized_seat_preferences(&command.seat_preferences),
+        command.issue_purpose.to_contract()
+    );
+    Ok(folded_uuid_v7(&material).to_string())
+}
+
 async fn allocate_seat_for_issue(
     command: &IssueEntitlementRequest,
     key: &str,
     correlation_id: &str,
 ) -> ApiResult<Option<SeatRefDto>> {
-    let Some(scheduled_service_ref) = command.scheduled_service_ref.clone() else {
+    if !command.needs_seat_assignment() {
         return Ok(None);
-    };
+    }
+    let scheduled_service_ref = command.scheduled_service_ref.clone().ok_or_else(|| {
+        ApiErrorKind::PreconditionFailed(
+            "scheduledServiceRef is required from accepted segment booking facts for seat assignment".into(),
+        )
+    })?;
     let body = serde_json::json!({
         "segmentBookingId": command.segment_booking_id,
         "journeyOrderId": command.journey_order_id,
         "travelerRef": command.traveler_ref,
         "segmentRef": command.segment_ref,
         "scheduledServiceRef": scheduled_service_ref,
-        "serviceDate": command.service_date.clone().ok_or_else(|| ApiErrorKind::ValidationFailed("serviceDate is required when seat assignment is requested".into()))?,
-        "capacityHoldId": command.capacity_hold_id.clone().ok_or_else(|| ApiErrorKind::ValidationFailed("capacityHoldId is required when seat assignment is requested".into()))?,
-        "capacityUnitRef": command.capacity_unit_ref.clone().unwrap_or_else(|| "cap-standard".into()),
-        "interval": command.interval.clone().unwrap_or(StationIntervalDto{from_seq:1,to_seq:2}),
-        "classRef": command.class_ref.clone().unwrap_or_else(|| "standard".into()),
+        "serviceDate": command.service_date.clone().ok_or_else(|| ApiErrorKind::PreconditionFailed("serviceDate is required from accepted segment booking facts for seat assignment".into()))?,
+        "capacityHoldId": command.capacity_hold_id.clone().ok_or_else(|| ApiErrorKind::PreconditionFailed("capacityHoldId is required from accepted capacity facts for seat assignment".into()))?,
+        "capacityUnitRef": command.capacity_unit_ref.clone().ok_or_else(|| ApiErrorKind::PreconditionFailed("capacityUnitRef is required from accepted capacity facts for seat assignment".into()))?,
+        "interval": command.interval.clone().ok_or_else(|| ApiErrorKind::PreconditionFailed("interval is required from accepted capacity facts for seat assignment".into()))?,
+        "classRef": command.class_ref.clone().ok_or_else(|| ApiErrorKind::PreconditionFailed("classRef is required from accepted capacity facts for seat assignment".into()))?,
         "issuePurpose": command.issue_purpose.to_contract(),
         "seatPreferences": command.seat_preferences,
-        "expiresAt": command.expires_at.clone().unwrap_or_else(current_rfc3339),
+        "expiresAt": command.expires_at.clone().ok_or_else(|| ApiErrorKind::PreconditionFailed("expiresAt is required from accepted capacity facts for seat assignment".into()))?,
     });
     let base = std::env::var("SEAT_ASSIGNMENT_BASE_URL")
         .unwrap_or_else(|_| "http://seat-assignment:8080".into());

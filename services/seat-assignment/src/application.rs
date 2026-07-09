@@ -33,11 +33,14 @@ impl InMemorySeatAssignmentService {
         &self,
         envelope: rust_kit::messaging::EventEnvelope,
     ) -> Result<(), SeatAssignmentError> {
+        if self
+            .state
+            .lock()
+            .expect("seat state")
+            .processed_events
+            .contains(&envelope.event_id)
         {
-            let mut s = self.state.lock().expect("seat state");
-            if !s.processed_events.insert(envelope.event_id.clone()) {
-                return Ok(());
-            }
+            return Ok(());
         }
         match envelope.event_type.as_str() {
             "EntitlementIssued" => self.confirm_from_entitlement(envelope).await,
@@ -71,19 +74,23 @@ impl InMemorySeatAssignmentService {
         });
         let Some(id) = allocation else { return Ok(()) };
         let entitlement = string_field(&e.payload, "entitlementId").unwrap_or_default();
+        let event_id = e.event_id.clone();
         let pending = {
             let mut s = self.state.lock().unwrap();
             let Some(a) = s.allocations.get_mut(&id) else {
+                s.processed_events.insert(event_id);
                 return Ok(());
             };
             let ev = a.confirm(entitlement, e.event_id.clone(), e.occurred_at.clone())?;
-            vec![PendingEnvelope::new(
+            let pending = vec![PendingEnvelope::new(
                 &a.seat_allocation_id,
                 a.version,
                 ev,
                 e.correlation_id,
                 Some(e.event_id),
-            )]
+            )];
+            s.processed_events.insert(event_id);
+            pending
         };
         publish_events(self.publisher.as_ref(), pending).await
     }
@@ -98,6 +105,7 @@ impl InMemorySeatAssignmentService {
                 .and_then(|v| string_field(v, "seatAllocationId"))
         });
         let segment = string_field(&e.payload, "segmentBookingId");
+        let event_id = e.event_id.clone();
         let pending = {
             let mut s = self.state.lock().unwrap();
             let id = allocation.or_else(|| {
@@ -108,11 +116,15 @@ impl InMemorySeatAssignmentService {
                         .map(|a| a.seat_allocation_id.clone())
                 })
             });
-            let Some(id) = id else { return Ok(()) };
-            let Some(a) = s.allocations.get_mut(&id) else {
+            let Some(id) = id else {
+                s.processed_events.insert(event_id);
                 return Ok(());
             };
-            match a.release(reason, Some(e.event_id.clone()), e.occurred_at.clone())? {
+            let Some(a) = s.allocations.get_mut(&id) else {
+                s.processed_events.insert(event_id);
+                return Ok(());
+            };
+            let pending = match a.release(reason, Some(e.event_id.clone()), e.occurred_at.clone())? {
                 Some(ev) => vec![PendingEnvelope::new(
                     &a.seat_allocation_id,
                     a.version,
@@ -121,7 +133,9 @@ impl InMemorySeatAssignmentService {
                     Some(e.event_id),
                 )],
                 None => vec![],
-            }
+            };
+            s.processed_events.insert(event_id);
+            pending
         };
         publish_events(self.publisher.as_ref(), pending).await
     }
@@ -136,6 +150,7 @@ impl InMemorySeatAssignmentService {
         else {
             return Ok(());
         };
+        let event_id = e.event_id.clone();
         let pending = {
             let mut s = self.state.lock().unwrap();
             let mut out = Vec::new();
@@ -159,6 +174,7 @@ impl InMemorySeatAssignmentService {
                     ))
                 }
             }
+            s.processed_events.insert(event_id);
             out
         };
         publish_events(self.publisher.as_ref(), pending).await

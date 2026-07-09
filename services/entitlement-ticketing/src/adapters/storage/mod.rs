@@ -603,30 +603,12 @@ impl PostgresEntitlementService {
         fingerprint: &str,
         correlation_id: &str,
     ) -> PgResult<IssueEntitlementResponse> {
-        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
-        if let Some(response) = self
-            .claim_idempotency::<IssueEntitlementResponse>(&mut tx, key, fingerprint)
-            .await?
-        {
-            tx.commit().await.map_err(to_api_storage)?;
-            return Ok(response);
-        }
-        tx.commit().await.map_err(to_api_storage)?;
-        let seat_ref = allocate_seat_for_issue(command, key, correlation_id).await?;
-        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
-        let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
-        let issued_at = current_rfc3339();
-        let credential_no = self.next_credential_no(&mut tx).await?;
-        let response = IssueEntitlementResponse {
-            entitlement_id: entitlement_id.clone(),
-            segment_booking_id: command.segment_booking_id.clone(),
-            journey_order_id: command.journey_order_id.clone(),
-            credential_no: credential_no.clone(),
-            credential_type: CredentialTypeDto::ETicket,
-            status: EntitlementStatusDto::Issued,
-            issued_at: issued_at.clone(),
-            seat_ref: seat_ref.clone(),
+        let seat_key = if command.needs_seat_assignment() {
+            Some(seat_assignment_idempotency_key(command)?)
+        } else {
+            None
         };
+        let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
         let (mut aggregate, _) = Entitlement::request(RequestEntitlement {
             command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
                 .map_err(ApiErrorKind::from)?,
@@ -650,6 +632,42 @@ impl PostgresEntitlementService {
                 .map_err(ApiErrorKind::from)?,
         })
         .map_err(ApiErrorKind::from)?;
+        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
+        if let Some(response) = self
+            .claim_idempotency::<IssueEntitlementResponse>(&mut tx, key, fingerprint)
+            .await?
+        {
+            tx.commit().await.map_err(to_api_storage)?;
+            return Ok(response);
+        }
+        let mut initial_snapshot = EntitlementSnapshot::from_domain(&aggregate);
+        initial_snapshot.seat_assignment_idempotency_key = seat_key.clone();
+        self.entitlement_repo
+            .save(&mut tx, aggregate.id().as_str(), None, &initial_snapshot)
+            .await
+            .map_err(to_api_storage)?;
+        tx.commit().await.map_err(to_api_storage)?;
+
+        let seat_ref = allocate_seat_for_issue(
+            command,
+            seat_key.as_deref().unwrap_or(key),
+            correlation_id,
+        )
+        .await?;
+
+        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
+        let issued_at = current_rfc3339();
+        let credential_no = self.next_credential_no(&mut tx).await?;
+        let response = IssueEntitlementResponse {
+            entitlement_id: entitlement_id.clone(),
+            segment_booking_id: command.segment_booking_id.clone(),
+            journey_order_id: command.journey_order_id.clone(),
+            credential_no: credential_no.clone(),
+            credential_type: CredentialTypeDto::ETicket,
+            status: EntitlementStatusDto::Issued,
+            issued_at: issued_at.clone(),
+            seat_ref: seat_ref.clone(),
+        };
         let mut registry = CredentialRegistry::new();
         aggregate
             .issue(
@@ -666,7 +684,13 @@ impl PostgresEntitlementService {
                 &mut registry,
             )
             .map_err(ApiErrorKind::from)?;
-        self.save_entitlement(&mut tx, &aggregate, None).await?;
+        let mut issued_snapshot = EntitlementSnapshot::from_domain(&aggregate);
+        issued_snapshot.seat_ref = seat_ref.clone();
+        issued_snapshot.seat_assignment_idempotency_key = seat_key;
+        self.entitlement_repo
+            .save(&mut tx, aggregate.id().as_str(), Some(1), &issued_snapshot)
+            .await
+            .map_err(to_api_storage)?;
         let outbound = entitlement_issued_envelope(&response, command, correlation_id)?;
         OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
             .await
@@ -770,6 +794,10 @@ struct EntitlementSnapshot {
     validity_starts_at: u64,
     validity_ends_at: u64,
     status: StatusSnapshot,
+    #[serde(default)]
+    seat_ref: Option<SeatRefDto>,
+    #[serde(default)]
+    seat_assignment_idempotency_key: Option<String>,
     credential_ref: Option<CredentialRefSnapshot>,
     fulfillment_use_state: FulfillmentUseStateSnapshot,
     audit_trail: Vec<AuditSnapshot>,
@@ -794,6 +822,8 @@ impl EntitlementSnapshot {
             validity_starts_at: entitlement.validity_window.starts_at().as_u64(),
             validity_ends_at: entitlement.validity_window.ends_at().as_u64(),
             status: StatusSnapshot::from_domain(&entitlement.status),
+            seat_ref: None,
+            seat_assignment_idempotency_key: None,
             credential_ref: entitlement
                 .credential_ref
                 .as_ref()
@@ -896,7 +926,7 @@ impl EntitlementSnapshot {
                 .map(|a| unix_millis_to_rfc3339(a.occurred_at))
                 .unwrap_or_else(current_rfc3339),
             voided_at,
-            seat_ref: None,
+            seat_ref: self.seat_ref.clone(),
         }
     }
 }
@@ -1171,6 +1201,41 @@ fn validate_issue_request(c: &IssueEntitlementRequest) -> PgResult<()> {
     validate_prefixed_uuid(&c.journey_order_id, "journeyOrderId", "ord-")?;
     validate_prefixed_uuid(&c.traveler_ref, "travelerRef", "tvl-")?;
     validate_prefixed_uuid(&c.segment_ref, "segmentRef", "seg-")?;
+    if let Some(prefs) = &c.seat_preferences {
+        if prefs.preference_version.trim().is_empty() {
+            return Err(ApiErrorKind::ValidationFailed(
+                "seatPreferences.preferenceVersion must not be blank".into(),
+            ));
+        }
+        for seat_unit in prefs.avoid_seat_unit_refs.iter().flatten() {
+            if seat_unit.trim().is_empty() {
+                return Err(ApiErrorKind::ValidationFailed(
+                    "seatPreferences.avoidSeatUnitRefs must not contain blank values".into(),
+                ));
+            }
+        }
+    }
+    if c.needs_seat_assignment() {
+        for (name, present) in [
+            ("scheduledServiceRef", c.scheduled_service_ref.as_ref()),
+            ("serviceDate", c.service_date.as_ref()),
+            ("capacityHoldId", c.capacity_hold_id.as_ref()),
+            ("capacityUnitRef", c.capacity_unit_ref.as_ref()),
+            ("classRef", c.class_ref.as_ref()),
+            ("expiresAt", c.expires_at.as_ref()),
+        ] {
+            if present.is_none_or(|value| value.trim().is_empty()) {
+                return Err(ApiErrorKind::PreconditionFailed(format!(
+                    "{name} is required from accepted upstream facts for seat assignment"
+                )));
+            }
+        }
+        if c.interval.is_none() {
+            return Err(ApiErrorKind::PreconditionFailed(
+                "interval is required from accepted upstream facts for seat assignment".into(),
+            ));
+        }
+    }
     Ok(())
 }
 fn to_api_storage(error: impl std::fmt::Display) -> ApiErrorKind {

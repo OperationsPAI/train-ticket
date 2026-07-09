@@ -377,6 +377,7 @@ dependencies = [
  "rust-kit",
  "serde",
  "serde_json",
+ "sha2",
  "shared-kernel",
  "sqlx",
  "tokio",

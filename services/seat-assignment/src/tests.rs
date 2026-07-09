@@ -270,3 +270,62 @@ async fn consumed_entitlement_and_capacity_events_confirm_and_recycle() {
         AllocationStatus::Released
     );
 }
+
+#[tokio::test]
+async fn consumed_event_dedup_marks_only_after_successful_state_change() {
+    let svc = InMemorySeatAssignmentService::new(Arc::new(InMemoryEventPublisher::default()));
+    let ss = format!("ss-{}", uuid7());
+    let map = svc
+        .create_seat_map(
+            map_cmd(&ss, None),
+            uuid7(),
+            rust_kit::messaging::correlation_id(),
+        )
+        .await
+        .unwrap();
+    svc.publish_seat_map(
+        map.seat_map_id,
+        PublishSeatMapCommand {
+            expected_seat_map_version: 1,
+            publish_reason: "ready".into(),
+            operator_ref: "op".into(),
+        },
+        uuid7(),
+        rust_kit::messaging::correlation_id(),
+    )
+    .await
+    .unwrap();
+    let sb = format!("sb-{}", uuid7());
+    let tvl = format!("tvl-{}", uuid7());
+    let allocation = svc
+        .allocate(
+            alloc_cmd(&ss, &sb, &tvl, None),
+            uuid7(),
+            rust_kit::messaging::correlation_id(),
+        )
+        .await
+        .unwrap();
+    let event = rust_kit::messaging::EventEnvelope::canonical(
+        "EntitlementIssued",
+        rust_kit::messaging::correlation_id(),
+        None::<String>,
+        "entitlement-ticketing",
+        serde_json::json!({"entitlementId":format!("ent-{}",uuid7()),"segmentBookingId":sb,"seatAllocationId":allocation.seat_allocation_id,"seatRef":allocation.seat_ref}),
+    );
+    svc.apply_subscribed_event(event.clone()).await.unwrap();
+    assert_eq!(
+        svc.get_allocation(allocation.seat_allocation_id.clone())
+            .await
+            .unwrap()
+            .status,
+        AllocationStatus::Confirmed
+    );
+    svc.apply_subscribed_event(event).await.unwrap();
+    assert_eq!(
+        svc.get_allocation(allocation.seat_allocation_id)
+            .await
+            .unwrap()
+            .version,
+        2
+    );
+}
