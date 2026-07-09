@@ -80,6 +80,15 @@ check_code 200 "get wait recovered connection"
 STATUS=$(jget "['status']")
 [ "$STATUS" = "RECOVERED" ] && ok "wait branch recovered" || bad "wait branch status $STATUS"
 
+EVENT_CON=$(create_connection PLATFORM_ASSISTED "event-$RUN" | tail -1)
+req POST fulfillment /api/v1/segment-status "{\"segmentRef\":\"seg-prev-event-$RUN\",\"scheduledServiceRef\":\"svc-event-$RUN\",\"serviceDate\":\"$(date -u +%F)\",\"status\":\"DELAY\",\"sourceSystem\":\"OPS\",\"observedAt\":\"$(iso 1)\",\"estimatedArrivalAt\":\"$(iso 40)\"}"
+check_code 201 "fulfillment segment delay declaration"
+sleep 3
+req GET transfer-management "/api/v1/connections/$EVENT_CON"
+check_code 200 "get event-driven at-risk connection"
+STATUS=$(jget "['status']")
+[ "$STATUS" = "AT_RISK" ] && ok "fulfillment event made connection at-risk" || bad "event-driven status $STATUS"
+
 SELF=$(create_connection SELF_TRANSFER "self-$RUN" | tail -1)
 req POST transfer-management /api/v1/segment-status-reports "{\"segmentRef\":\"seg-next-self-$RUN\",\"reportType\":\"CANCELLED\",\"reportedBy\":{\"actorType\":\"SYSTEM\",\"actorId\":\"ops\"},\"sourceSystem\":\"OPERATIONS\",\"sourceRecordId\":\"cancel-self-$RUN\",\"observedAt\":\"$(iso 1)\",\"cancelledAt\":\"$(iso 1)\"}"
 check_code 202 "self-transfer missed"

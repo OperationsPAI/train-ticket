@@ -196,3 +196,25 @@ def test_reaccommodate_precondition_and_self_completion_skip() -> None:
     env = EventEnvelope(eventId="evt-" + idem(), eventType="RecoveryCompleted", producer="disruption-recovery", correlationId="corr-" + idem(), causationId="evt-" + idem(), payload={"caseId": "rcv-1", "journeyOrderId": "jo-1"})
     assert service.handle_recovery_event(env, "events:disruption-recovery") is True
     assert [e for e in store.take_outbox() if e.eventType == "ConnectionRecovered"] == []
+
+
+def test_fulfillment_segment_delayed_event_marks_connection_at_risk() -> None:
+    from datetime import UTC, datetime
+    from train_ticket_platform.events import EventEnvelope
+    from transfer_management.application.service import TransferManagementService
+
+    store = InMemoryStore()
+    service = TransferManagementService(store)
+    cid = "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c201"
+    cmd = "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c202"
+    rule = service.create_mct_rule({"fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "minimumMinutes": 20, "conditions": {}, "validFrom": "2026-07-01T00:00:00Z"}, cid, cmd)
+    service.publish_mct_rule(rule["mctRuleId"], {"publishedBy": {"actorType": "SYSTEM", "actorId": "test"}}, cid, cmd)
+    plan = service.create_plan({"itineraryRef": "iti-1", "planningSnapshotVersion": 1, "travelerRefs": ["tvl-1"], "journeyOrderId": "ord-1"}, cid, cmd)
+    connection = service.register_connection({"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-1", "previousSegmentRef": "seg-prev", "nextSegmentRef": "seg-next", "travelerRefs": ["tvl-1"], "fromNodeRef": "node-a", "toNodeRef": "node-b", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "contract-1", "contractType": "PLATFORM_ASSISTED", "window": {"plannedArrivalAt": "2026-07-05T10:00:00Z", "nextDepartureAt": "2026-07-05T10:45:00Z", "nextCutoffAt": "2026-07-05T10:45:00Z", "mctMinutes": 20}}, cid, cmd)
+
+    envelope = EventEnvelope(eventId="evt-0194f2e0-7b3e-7610-8284-5c26e8b0c203", eventType="SegmentDelayed", occurredAt=datetime(2026, 7, 5, 9, 50, tzinfo=UTC), correlationId=cid, causationId=cmd, producer="fulfillment", payload={"segmentRef": "seg-prev", "scheduledServiceRef": "svc-1", "serviceDate": "2026-07-05", "estimatedArrivalAt": "2026-07-05T10:30:00Z", "observedAt": "2026-07-05T09:50:00Z", "sourceSystem": "OPS"})
+
+    assert service.handle_fulfillment_event(envelope, "events:fulfillment") is True
+    updated = service.get_connection(connection["connectionId"])
+    assert updated["status"] == "AT_RISK"
+    assert store.mark_processed(envelope.eventId, "events:fulfillment") is False

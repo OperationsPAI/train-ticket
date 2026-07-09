@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +50,11 @@ type FulfillmentRepository interface {
 	FindByEntitlementSegment(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error)
 }
 
+type SegmentStatusRepository interface {
+	SaveSegmentStatus(ctx context.Context, record *domain.SegmentStatusRecord) (bool, error)
+	FindSegmentStatusByCommandID(ctx context.Context, commandID string) (*domain.SegmentStatusRecord, error)
+}
+
 type ConsumedEventLog interface {
 	Claim(ctx context.Context, eventID string) (bool, error)
 }
@@ -60,6 +67,7 @@ type Clock func() time.Time
 
 type Service struct {
 	repo     FulfillmentRepository
+	segments SegmentStatusRepository
 	pub      EventPublisher
 	consumed ConsumedEventLog
 	idGen    IDGenerator
@@ -85,12 +93,20 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{repo: repo, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}}
+	segments, _ := repo.(SegmentStatusRepository)
+	return &Service{repo: repo, segments: segments, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}}
 }
 
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+func (s *Service) WithSegmentStatusRepository(repo SegmentStatusRepository) *Service {
+	if s != nil {
+		s.segments = repo
 	}
 	return s
 }
@@ -105,6 +121,27 @@ func (s *Service) within(ctx context.Context, fn func(context.Context) error) er
 type CommandMetadata struct {
 	CorrelationID string
 	CausationID   string
+}
+
+type ReportSegmentStatusCommand struct {
+	CommandID           string
+	SegmentRef          domain.SegmentRef
+	ScheduledServiceRef string
+	ServiceDate         string
+	Status              domain.SegmentOperationalStatus
+	EstimatedArrivalAt  *time.Time
+	ArrivedAt           *time.Time
+	CancelledAt         *time.Time
+	ObservedAt          time.Time
+	SourceSystem        domain.SegmentStatusSourceSystem
+}
+
+type SegmentStatusResult struct {
+	SegmentStatusRecordID domain.SegmentStatusRecordID    `json:"segmentStatusRecordId"`
+	CommandID             string                          `json:"commandId"`
+	SegmentRef            domain.SegmentRef               `json:"segmentRef"`
+	Status                domain.SegmentOperationalStatus `json:"status"`
+	ObservedAt            time.Time                       `json:"observedAt"`
 }
 
 type VerifyBoardingCommand struct {
@@ -154,6 +191,48 @@ type FulfillmentCompletedResult struct {
 	FulfillmentRecordID domain.FulfillmentRecordID `json:"fulfillmentRecordId"`
 	Status              domain.FulfillmentStatus   `json:"status"`
 	CompletedAt         time.Time                  `json:"completedAt"`
+}
+
+func (s *Service) ReportSegmentStatus(ctx context.Context, cmd ReportSegmentStatusCommand, meta CommandMetadata) (SegmentStatusResult, error) {
+	if s == nil || s.segments == nil || s.pub == nil {
+		return SegmentStatusResult{}, errors.New("fulfillment service is not configured")
+	}
+	if err := validateReportSegmentStatus(cmd); err != nil {
+		return SegmentStatusResult{}, err
+	}
+	var result SegmentStatusResult
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		existing, err := s.segments.FindSegmentStatusByCommandID(txCtx, strings.TrimSpace(cmd.CommandID))
+		if err == nil {
+			result = segmentStatusResult(existing)
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		record, err := domain.NewSegmentStatusRecord(domain.SegmentStatusRecordID(s.idGen("ssr")), strings.TrimSpace(cmd.CommandID), cmd.SegmentRef, cmd.ScheduledServiceRef, cmd.ServiceDate, cmd.Status, cmd.EstimatedArrivalAt, cmd.ArrivedAt, cmd.CancelledAt, cmd.ObservedAt, cmd.SourceSystem)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+		}
+		saved, err := s.segments.SaveSegmentStatus(txCtx, record)
+		if err != nil {
+			return err
+		}
+		if saved {
+			event := record.PendingEvent()
+			if event != nil {
+				if err := s.publishEvents(txCtx, []domain.DomainEvent{event}, meta); err != nil {
+					return err
+				}
+				record.ClearEvent()
+			}
+		}
+		result = segmentStatusResult(record)
+		return nil
+	}); err != nil {
+		return SegmentStatusResult{}, err
+	}
+	return result, nil
 }
 
 func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand, meta CommandMetadata) (BoardingResult, error) {
@@ -496,7 +575,82 @@ func (s *Service) WrapDomainEvent(ctx context.Context, event domain.DomainEvent,
 	if strings.TrimSpace(meta.CausationID) != "" {
 		options[0].CausationID = meta.CausationID
 	}
-	return kitmsg.NewEventEnvelope(event.EventType(), ProducerName, meta.CorrelationID, payload, options...)
+	envelope, err := kitmsg.NewEventEnvelope(event.EventType(), ProducerName, meta.CorrelationID, payload, options...)
+	if err != nil {
+		return EventEnvelope{}, err
+	}
+	if deterministic := deterministicSegmentEventID(event); deterministic != "" {
+		envelope.EventID = deterministic
+	}
+	return envelope, envelope.Validate()
+}
+
+func segmentStatusResult(record *domain.SegmentStatusRecord) SegmentStatusResult {
+	return SegmentStatusResult{SegmentStatusRecordID: record.SegmentStatusRecordID, CommandID: record.CommandID, SegmentRef: record.SegmentRef, Status: record.Status, ObservedAt: record.ObservedAt.UTC()}
+}
+
+func validateReportSegmentStatus(cmd ReportSegmentStatusCommand) error {
+	if strings.TrimSpace(cmd.CommandID) == "" {
+		return errors.New("commandId is required")
+	}
+	if err := cmd.SegmentRef.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cmd.ScheduledServiceRef) == "" {
+		return errors.New("scheduledServiceRef is required")
+	}
+	if strings.TrimSpace(cmd.ServiceDate) == "" {
+		return errors.New("serviceDate is required")
+	}
+	if cmd.ObservedAt.IsZero() {
+		return errors.New("observedAt is required")
+	}
+	switch cmd.SourceSystem {
+	case domain.SegmentStatusSourceSystemSystem, domain.SegmentStatusSourceSystemOps:
+	default:
+		return fmt.Errorf("invalid sourceSystem: %s", cmd.SourceSystem)
+	}
+	switch cmd.Status {
+	case domain.SegmentOperationalStatusDelay:
+		if cmd.EstimatedArrivalAt == nil {
+			return errors.New("estimatedArrivalAt is required")
+		}
+	case domain.SegmentOperationalStatusArrival:
+		if cmd.ArrivedAt == nil {
+			return errors.New("arrivedAt is required")
+		}
+	case domain.SegmentOperationalStatusCancelled:
+		if cmd.CancelledAt == nil {
+			return errors.New("cancelledAt is required")
+		}
+	default:
+		return fmt.Errorf("invalid status: %s", cmd.Status)
+	}
+	return nil
+}
+
+func deterministicSegmentEventID(event domain.DomainEvent) string {
+	suffix := ""
+	switch e := event.(type) {
+	case domain.SegmentDelayedEvent:
+		suffix = e.CommandID
+	case domain.SegmentArrivedEvent:
+		suffix = e.CommandID
+	case domain.SegmentCancelledEvent:
+		suffix = e.CommandID
+	default:
+		return ""
+	}
+	return "evt-" + foldedUUIDv7(ProducerName+":"+event.EventType()+":"+strings.TrimSpace(suffix))
+}
+
+func foldedUUIDv7(material string) string {
+	digest := sha256.Sum256([]byte(material))
+	bytes := append([]byte(nil), digest[:16]...)
+	bytes[6] = (bytes[6] & 0x0f) | 0x70
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(bytes)
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
 }
 
 func validateVerifyBoarding(cmd VerifyBoardingCommand) error {
@@ -593,6 +747,33 @@ func validCompletionSource(source domain.CompletionSource) bool {
 	}
 }
 
+type segmentDelayedPayload struct {
+	SegmentRef          domain.SegmentRef                `json:"segmentRef"`
+	ScheduledServiceRef string                           `json:"scheduledServiceRef"`
+	ServiceDate         string                           `json:"serviceDate"`
+	EstimatedArrivalAt  time.Time                        `json:"estimatedArrivalAt"`
+	ObservedAt          time.Time                        `json:"observedAt"`
+	SourceSystem        domain.SegmentStatusSourceSystem `json:"sourceSystem"`
+}
+
+type segmentArrivedPayload struct {
+	SegmentRef          domain.SegmentRef                `json:"segmentRef"`
+	ScheduledServiceRef string                           `json:"scheduledServiceRef"`
+	ServiceDate         string                           `json:"serviceDate"`
+	ArrivedAt           time.Time                        `json:"arrivedAt"`
+	ObservedAt          time.Time                        `json:"observedAt"`
+	SourceSystem        domain.SegmentStatusSourceSystem `json:"sourceSystem"`
+}
+
+type segmentCancelledPayload struct {
+	SegmentRef          domain.SegmentRef                `json:"segmentRef"`
+	ScheduledServiceRef string                           `json:"scheduledServiceRef"`
+	ServiceDate         string                           `json:"serviceDate"`
+	CancelledAt         time.Time                        `json:"cancelledAt"`
+	ObservedAt          time.Time                        `json:"observedAt"`
+	SourceSystem        domain.SegmentStatusSourceSystem `json:"sourceSystem"`
+}
+
 type boardingPayload struct {
 	FulfillmentRecordID domain.FulfillmentRecordID `json:"fulfillmentRecordId"`
 	EntitlementID       domain.EntitlementRef      `json:"entitlementId"`
@@ -637,6 +818,12 @@ func MarshalDomainEventPayload(event domain.DomainEvent) (json.RawMessage, error
 		payload = noShowPayload{e.FulfillmentRecordID, e.EntitlementID, e.SegmentBookingID, e.JourneyOrderID, e.TravelerID, e.SegmentRef, e.Reason, e.OccurredAt().UTC()}
 	case domain.FulfillmentCompletedEvent:
 		payload = segmentCompletedPayload{e.FulfillmentRecordID, e.EntitlementID, e.SegmentBookingID, e.JourneyOrderID, e.TravelerID, e.OccurredAt().UTC(), e.CompletionSource}
+	case domain.SegmentDelayedEvent:
+		payload = segmentDelayedPayload{e.SegmentRef, e.ScheduledServiceRef, e.ServiceDate, e.EstimatedArrivalAt.UTC(), e.ObservedAt.UTC(), e.SourceSystem}
+	case domain.SegmentArrivedEvent:
+		payload = segmentArrivedPayload{e.SegmentRef, e.ScheduledServiceRef, e.ServiceDate, e.ArrivedAt.UTC(), e.ObservedAt.UTC(), e.SourceSystem}
+	case domain.SegmentCancelledEvent:
+		payload = segmentCancelledPayload{e.SegmentRef, e.ScheduledServiceRef, e.ServiceDate, e.CancelledAt.UTC(), e.ObservedAt.UTC(), e.SourceSystem}
 	default:
 		payload = event
 	}
@@ -650,13 +837,15 @@ func newUUIDLike() string { return ids.NewUUIDv7() }
 
 // InMemoryRepository is the default process-local repository used by the HTTP runtime.
 type InMemoryRepository struct {
-	mu      sync.RWMutex
-	byID    map[domain.FulfillmentRecordID]*domain.FulfillmentRecord
-	byTuple map[string]domain.FulfillmentRecordID
+	mu               sync.RWMutex
+	byID             map[domain.FulfillmentRecordID]*domain.FulfillmentRecord
+	byTuple          map[string]domain.FulfillmentRecordID
+	segmentByID      map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord
+	segmentByCommand map[string]domain.SegmentStatusRecordID
 }
 
 func NewInMemoryRepository() *InMemoryRepository {
-	return &InMemoryRepository{byID: map[domain.FulfillmentRecordID]*domain.FulfillmentRecord{}, byTuple: map[string]domain.FulfillmentRecordID{}}
+	return &InMemoryRepository{byID: map[domain.FulfillmentRecordID]*domain.FulfillmentRecord{}, byTuple: map[string]domain.FulfillmentRecordID{}, segmentByID: map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord{}, segmentByCommand: map[string]domain.SegmentStatusRecordID{}}
 }
 
 func (r *InMemoryRepository) Save(_ context.Context, record *domain.FulfillmentRecord) error {
@@ -685,6 +874,48 @@ func (r *InMemoryRepository) FindByEntitlementSegment(_ context.Context, entitle
 		return nil, ErrNotFound
 	}
 	return cloneRecord(r.byID[id]), nil
+}
+
+func (r *InMemoryRepository) SaveSegmentStatus(_ context.Context, record *domain.SegmentStatusRecord) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	commandID := strings.TrimSpace(record.CommandID)
+	if _, ok := r.segmentByCommand[commandID]; ok {
+		return false, nil
+	}
+	r.segmentByID[record.SegmentStatusRecordID] = cloneSegmentStatus(record)
+	r.segmentByCommand[commandID] = record.SegmentStatusRecordID
+	return true, nil
+}
+
+func (r *InMemoryRepository) FindSegmentStatusByCommandID(_ context.Context, commandID string) (*domain.SegmentStatusRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	id, ok := r.segmentByCommand[strings.TrimSpace(commandID)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneSegmentStatus(r.segmentByID[id]), nil
+}
+
+func cloneSegmentStatus(record *domain.SegmentStatusRecord) *domain.SegmentStatusRecord {
+	if record == nil {
+		return nil
+	}
+	copy := *record
+	if record.EstimatedArrivalAt != nil {
+		t := *record.EstimatedArrivalAt
+		copy.EstimatedArrivalAt = &t
+	}
+	if record.ArrivedAt != nil {
+		t := *record.ArrivedAt
+		copy.ArrivedAt = &t
+	}
+	if record.CancelledAt != nil {
+		t := *record.CancelledAt
+		copy.CancelledAt = &t
+	}
+	return &copy
 }
 
 func tupleKey(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) string {

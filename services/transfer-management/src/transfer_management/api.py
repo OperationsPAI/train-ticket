@@ -9,15 +9,15 @@ from typing import Any, Protocol
 from fastapi import FastAPI, Request, Response
 
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
-from train_ticket_platform.messaging import RedisEventSubscriber
+from train_ticket_platform.messaging import RedisEventSubscriber, TransientHandlerError
 from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 from train_ticket_platform.ids import new_uuid7
 
-from .adapters.messaging import DISRUPTION_RECOVERY_STREAM
+from .adapters.messaging import DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM
 from .adapters.storage.postgres import PostgresTransferManagementStore
 from .application.service import InMemoryStore, TransferManagementService
-from .downstream import DisruptionRecoveryClient
+from .downstream import DisruptionRecoveryClient, DownstreamError
 from .runtime import health, profile
 from .web.errors import register_exception_handlers
 from .web.handlers import router as transfer_router
@@ -156,8 +156,13 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     subscriber = RedisEventSubscriber()
     holder: dict[str, Any] = {}
     def handle(envelope: Any) -> None:
-        holder["service"].handle_recovery_event(envelope, DISRUPTION_RECOVERY_STREAM)
-    thread = subscriber.start_in_background((DISRUPTION_RECOVERY_STREAM,), "transfer-management", handle)
+        try:
+            handled_fulfillment = holder["service"].handle_fulfillment_event(envelope, FULFILLMENT_STREAM)
+        except DownstreamError as exc:
+            raise TransientHandlerError(str(exc)) from exc
+        if not handled_fulfillment:
+            holder["service"].handle_recovery_event(envelope, DISRUPTION_RECOVERY_STREAM)
+    thread = subscriber.start_in_background((DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM), "transfer-management", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
     app.state.event_subscriber_thread = thread
