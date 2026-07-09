@@ -85,6 +85,7 @@ echo "== 2. register traveler and quote new fare"
 req POST traveler-profile /api/v1/travelers "{\"accountId\":\"$ACCT_RULE\",\"travelerType\":\"ADULT\",\"givenName\":\"Rule\",\"familyName\":\"Tester\"}"
 check_code 201 "register traveler"
 TVL_RULE=$(jget "['travelerId']")
+verify_traveler "${TVL_RULE}"
 sleep 3
 req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"2026-08-01\",\"travelerRefs\":[\"$TVL_RULE\"],\"channel\":\"WEB\"}"
 check_code 200 "search itineraries"

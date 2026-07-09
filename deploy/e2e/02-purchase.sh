@@ -11,6 +11,7 @@ echo "== 0. register traveler (offer needs a consumed Traveler snapshot)"
 req POST traveler-profile /api/v1/travelers "{\"accountId\":\"$ACCT\",\"travelerType\":\"ADULT\",\"givenName\":\"Wei\",\"familyName\":\"Zhang\"}"
 check_code 201 "register traveler"
 TVL=$(jget "['travelerId']")
+verify_traveler "${TVL}"
 echo "  TVL=$TVL"
 sleep 3
 

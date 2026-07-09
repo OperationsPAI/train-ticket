@@ -81,3 +81,26 @@ check_code() { # expected description
   if [ "$LAST_CODE" = "$1" ]; then ok "$2 [$LAST_CODE]"; else bad "$2 [got $LAST_CODE want $1]"; fi
 }
 summary() { echo "== RESULT pass=$PASS fail=$FAIL"; [ "$FAIL" -eq 0 ]; }
+
+# Real-name verification helper (ADR-0003 wave A): registers an ID_CARD
+# credential with a SIM pass-tail and opens a verification case that the
+# deterministic gateway PASSES. Call after creating any traveler that will
+# purchase. Usage: verify_traveler <travelerRef>
+verify_traveler() {
+  local tvl=$1
+  local doc="1101011990010105$((RANDOM % 900 + 100))5" # tail 5 => SIM pass (<=5)
+  local dochash
+  dochash="$(printf '%s' "$doc" | sha256sum | cut -c1-64)${doc: -1}" # SIM reads the appended tail digit
+  req POST identity-verification /api/v1/identity-verification/credentials "{\"travelerId\":\"$tvl\",\"profileSnapshotVersion\":\"snap-1\",\"documentType\":\"ID_CARD\",\"maskedDocumentNo\":\"110***********${doc: -2}\",\"documentHash\":\"$dochash\",\"canonicalNameHash\":\"name-$tvl\",\"validUntil\":\"2027-01-01T00:00:00Z\"}"
+  local cred
+  cred=$(jget "['credentialRecordId']")
+  local fp
+  fp=$(python3 - "$tvl" "$dochash" <<'PY'
+import hashlib, sys
+parts = [f"name-{sys.argv[1]}", "ID_CARD", sys.argv[2], "", "2027-01-01T00:00:00Z", "", "snap-1"]
+print(hashlib.sha256("|".join(parts).encode()).hexdigest())
+PY
+)
+  req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"$tvl\",\"credentialRecordId\":\"$cred\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$fp\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+  [ "$(jget "['status']")" = PASSED ] || bad "verify_traveler $tvl status $(jget "['status']")"
+}
