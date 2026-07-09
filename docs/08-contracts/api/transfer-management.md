@@ -120,11 +120,16 @@ key.
 
 | Command | Material folded into UUID-v7 idempotency key |
 |---|---|
-| Create/evaluate transfer plan | `itineraryRef`, `planningSnapshotVersion`, `requestId` |
+| Create/evaluate transfer plan | `itineraryRef`, `planningSnapshotVersion`, `trigger` (`API`/`REFRESH`) |
 | Register connection | `journeyOrderId`, `previousSegmentRef`, `nextSegmentRef`, `travelerSetHash` |
 | Segment status report | `sourceSystem`, `sourceRecordId`, `segmentRef`, `reportType`, `observedAt` |
 | Publish MCT rule | `mctRuleId`, `version` |
 | Open Disruption Recovery report | `connectionId`, `missedAt`, `connectionVersion`, `journeyOrderId` |
+
+API-triggered commands use the client-supplied `Idempotency-Key` header
+directly as the command key; the fold materials above apply to commands the
+service originates internally (scheduled refreshes, event-driven
+re-evaluations, outbound reports).
 
 Outbound HTTP idempotency keys used for Disruption Recovery MUST be persisted
 before the call is attempted and reused on retry. Correlation and causation IDs
