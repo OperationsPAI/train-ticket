@@ -14,6 +14,7 @@ services=(
   trip-planning
   offer-management
   journey-order
+  identity-verification
   booking-orchestration
   payment
   provider-integration
