@@ -31,6 +31,7 @@ journey_mix:
   legacy: 6         # whole lifecycle through the legacy ACL facade
   ride: 5           # dispatch ride request lifecycle
   disruption: 1     # low-frequency ops disruption recovery drill
+  transfer: 1        # low-frequency transfer-management drill
 
 # ---------------------------------------------------------------------------
 # Within-journey behavior knobs.
@@ -68,6 +69,9 @@ behavior:
   p_waitlist_on_no_capacity: 0.30
   p_waitlist_cancel: 0.05
   disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
+  transfer_contract_mix: { PROTECTED: 0.55, SELF_TRANSFER: 0.45 }
+  p_transfer_delay: 0.35
+  p_transfer_missed: 0.25
   waitlist_deadline_minutes: 30
 
   # sales channel weights. NOTE: fare rule sets are published per channel;

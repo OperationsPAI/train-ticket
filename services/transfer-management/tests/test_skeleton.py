@@ -29,6 +29,7 @@ class SkeletonTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["X-Request-ID"], "req-123")
         self.assertEqual(response.headers["X-Correlation-ID"], "corr-456")
+        self.assertEqual(response.headers["X-Correlation-Id"], "corr-456")
 
     def test_request_and_correlation_ids_are_generated(self) -> None:
         client = TestClient(create_app())

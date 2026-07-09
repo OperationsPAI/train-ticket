@@ -77,6 +77,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'dispatch')\gexec
     SELECT 'CREATE DATABASE disruption_recovery'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'disruption_recovery')\gexec
+    SELECT 'CREATE DATABASE transfer_management'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'transfer_management')\gexec
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

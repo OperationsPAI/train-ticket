@@ -34,6 +34,7 @@ services=(
   wallet-promotion
   dispatch
   disruption-recovery
+  transfer-management
   ancillary-service
 )
 

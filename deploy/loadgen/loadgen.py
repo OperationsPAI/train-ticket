@@ -940,6 +940,49 @@ class CustomerSim:
             if p.status == "consumed":
                 await self.reg.release_purchase(p, "confirmed")
 
+
+    async def journey_transfer(self) -> str:
+        suffix = uuid7()
+        now = datetime.now(timezone.utc)
+        _, rule = await self.api.request(
+            "POST", "transfer-management", "/api/v1/mct-rules",
+            {"fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION",
+             "minimumMinutes": 20, "conditions": {"loadgen": True},
+             "validFrom": iso(now - timedelta(days=1))}, ok=(201,), step="transfer-mct-create")
+        await self.api.request(
+            "POST", "transfer-management", f"/api/v1/mct-rules/{quote(rule['mctRuleId'])}/publish",
+            {"publishedBy": {"actorType": "OPERATIONS", "actorId": "loadgen"}, "publishReason": "loadgen"},
+            ok=(200,), step="transfer-mct-publish")
+        order = f"jo-lg-{suffix}"
+        _, plan = await self.api.request(
+            "POST", "transfer-management", "/api/v1/transfer-plans",
+            {"itineraryRef": f"iti-lg-{suffix}", "planningSnapshotVersion": 1, "journeyOrderId": order,
+             "travelerRefs": [f"trav-lg-{suffix}"]}, ok=(201,), step="transfer-plan")
+        contract_type = weighted_choice(self.rng, self.b.get("transfer_contract_mix", {"PROTECTED": 0.55, "SELF_TRANSFER": 0.45}))
+        _, conn = await self.api.request(
+            "POST", "transfer-management", "/api/v1/connections",
+            {"transferPlanId": plan["transferPlanId"], "itineraryRef": plan["itineraryRef"], "journeyOrderId": order,
+             "previousSegmentRef": f"seg-lg-prev-{suffix}", "nextSegmentRef": f"seg-lg-next-{suffix}",
+             "travelerRefs": [f"trav-lg-{suffix}"], "fromNodeRef": "sta-lg-a", "toNodeRef": "sta-lg-a",
+             "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION",
+             "contractId": f"cct-lg-{suffix}", "contractType": contract_type,
+             "window": {"plannedArrivalAt": iso(now), "nextDepartureAt": iso(now + timedelta(minutes=60)),
+                        "nextCutoffAt": iso(now + timedelta(minutes=50))}}, ok=(201,), step="transfer-connection")
+        outcome = str(conn.get("status", "planned")).lower()
+        if self.rng.random() < float(self.b.get("p_transfer_delay", 0.35)):
+            miss = self.rng.random() < float(self.b.get("p_transfer_missed", 0.25))
+            eta = now + timedelta(minutes=80 if miss else 40)
+            _, result = await self.api.request(
+                "POST", "transfer-management", "/api/v1/segment-status-reports",
+                {"segmentRef": f"seg-lg-prev-{suffix}", "reportType": "DELAY",
+                 "reportedBy": {"actorType": "SYSTEM", "actorId": "loadgen"}, "sourceSystem": "OPERATIONS",
+                 "sourceRecordId": f"lg-transfer-{suffix}", "observedAt": now_iso(), "estimatedArrivalAt": iso(eta)},
+                ok=(202,), step="transfer-report")
+            updated = (result.get("updatedConnections") or [{}])[0]
+            outcome = str(updated.get("status", outcome)).lower()
+        await self.maybe_read_probe({"transfer_plan": plan.get("transferPlanId"), "transfer_connection": conn.get("connectionId"), "transfer_journey": order})
+        return outcome
+
     async def journey_support(self) -> str:
         async with self.reg.lock:
             pool = [p for p in self.reg.purchases if p.status != "consumed"]
@@ -1045,6 +1088,12 @@ class CustomerSim:
             page = await self.assert_get("waitlist", f"/api/v1/waitlist-requests?travelerRef={quote(refs['waitlist_traveler'])}&limit=20&offset=0", None, None, "tail-list-waitlist")
             self.assert_list_contains(page, "waitlistRequestId", refs["waitlist"], "tail-list-waitlist")
             await self.assert_get("waitlist", f"/api/v1/waitlist-requests/{quote(refs['waitlist'])}", "waitlistRequestId", refs["waitlist"], "tail-get-waitlist")
+        if refs.get("transfer_plan"):
+            await self.assert_get("transfer-management", f"/api/v1/transfer-plans/{quote(refs['transfer_plan'])}", "transferPlanId", refs["transfer_plan"], "tail-get-transfer-plan")
+        if refs.get("transfer_connection"):
+            await self.assert_get("transfer-management", f"/api/v1/connections/{quote(refs['transfer_connection'])}", "connectionId", refs["transfer_connection"], "tail-get-transfer-connection")
+        if refs.get("transfer_journey"):
+            await self.assert_get("transfer-management", f"/api/v1/connections?journeyOrderId={quote(refs['transfer_journey'])}", None, None, "tail-list-transfer-connections")
         if refs.get("disruption_incident"):
             await self.assert_get("disruption-recovery", f"/api/v1/incidents/{quote(refs['disruption_incident'])}", "incidentId", refs["disruption_incident"], "tail-get-disruption-incident")
         if refs.get("disruption_case"):
@@ -1447,6 +1496,7 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "legacy": sim.journey_legacy,
         "ride": sim.journey_ride,
         "disruption": sim.journey_disruption,
+        "transfer": sim.journey_transfer,
     }
     pause = cfg["run"]["session_pause_seconds"]
     while not stop.is_set():

@@ -1,10 +1,9 @@
-from .api import create_app
-from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
+from .runtime import health, profile
 
-__all__ = [
-    'SERVICE_PROFILE',
-    'ServiceProfile',
-    'create_app',
-    'health',
-    'profile',
-]
+
+def create_app(*args, **kwargs):
+    from .api import create_app as _create_app
+    return _create_app(*args, **kwargs)
+
+
+__all__ = ["create_app", "health", "profile"]
