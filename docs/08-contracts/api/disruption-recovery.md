@@ -30,14 +30,20 @@ Activation-wave rulings:
   domain document (`OPENED` through `CLOSED`) and follows the transition table
   below. One `RecoveryCase` is opened for each `affectedOrderId` supplied in the
   report.
-- `RecoveryOptionSet` supports four option types in this wave: `WAIT`, `REFUND`,
-  `COMPENSATION`, and `MANUAL`. `REACCOMMODATION` is deferred until wave 18 after
-  Transfer Management activation.
-- Automatic selection rules may only select `WAIT`, which completes immediately
-  as `RECOVERED` without a downstream call. `REFUND`, `COMPENSATION`, and
-  `MANUAL` move the case to `AWAITING_USER_CHOICE` and require
-  `POST /api/v1/recovery-cases/{caseId}/select-option` by the user or customer
-  service.
+- `RecoveryOptionSet` supports five option types in this wave: `WAIT`, `REFUND`,
+  `COMPENSATION`, `MANUAL`, and a narrowly-scoped `REACCOMMODATION`.
+  RULING (2026-07-09): `REACCOMMODATION` may be generated only when
+  `disruptionType=MISSED_CONNECTION`, `reportedBy.actorType=SYSTEM`, and
+  `evidence.sourceSystem=TRANSFER_MANAGEMENT`; all other disruption types and
+  case sources still defer `REACCOMMODATION` to a later wave.
+- Automatic selection rules may select `WAIT` only when the generated option set
+  contains no other user-choice option. If a Transfer Management missed-connection
+  case generates both `WAIT` and `REACCOMMODATION`, it MUST move to
+  `AWAITING_USER_CHOICE`; this is a behavior change from WAIT auto-through for
+  single-option WAIT cases. `WAIT` still completes immediately as `RECOVERED`
+  when selected. `REFUND`, `COMPENSATION`, `REACCOMMODATION`, and `MANUAL`
+  require `POST /api/v1/recovery-cases/{caseId}/select-option` by the user or
+  customer service.
 
 Field shapes reference `docs/08-contracts/shared-primitives.md` for IDs,
 timestamps, event envelope fields, pagination conventions, and Money
@@ -51,12 +57,29 @@ camelCase and enum values are SCREAMING_SNAKE_CASE.
 | `disruptionType` | `SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`, `SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`, `SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`, `PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED`, `MISSED_CONNECTION` |
 | `incidentStatus` | `DETECTED`, `CONFIRMED`, `BATCH_PROCESSING`, `MONITORING`, `RESOLVED`, `CLOSED` |
 | `recoveryCaseStatus` | `OPENED`, `ASSESSING_IMPACT`, `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`, `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED` |
-| `recoveryOptionType` | `WAIT`, `REFUND`, `COMPENSATION`, `MANUAL` |
+| `recoveryOptionType` | `WAIT`, `REFUND`, `COMPENSATION`, `REACCOMMODATION`, `MANUAL` |
 | `actorType` | `USER`, `CUSTOMER_SERVICE`, `OPERATIONS`, `SYSTEM` |
-| `executionTarget` | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `MANUAL_QUEUE` |
+| `executionTarget` | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `TRANSFER_MANAGEMENT`, `MANUAL_QUEUE` |
 
-`REACCOMMODATION` is intentionally absent from the active option-type enum in
-this wave. It remains a domain capability but is deferred until a later wave.
+`REACCOMMODATION` is active only for Transfer Management system-originated
+`MISSED_CONNECTION` cases. It remains absent from generated option sets for every
+other disruption type or source until a later wave.
+
+
+## Downstream execution idempotency
+
+Disruption Recovery persists downstream command keys before attempting HTTP and
+reuses the same key on retry. When the downstream contract requires UUID-v7
+headers, the application folds the stable material with SHA-256, stamps UUID
+version 7 and RFC-4122 variant bits, and sends only the UUID-v7-shaped value on
+the wire. Correlation and causation IDs on emitted envelopes and outbound command
+metadata use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
+
+| Option type | Downstream command | Stable material folded into key |
+|---|---|---|
+| `REFUND` | `POST /api/v1/post-sales-cases` with `caseType=REFUND` | `disruption-recovery:refund:<caseId>:<optionId>` |
+| `COMPENSATION` | `POST /api/v1/benefits` with `issuanceSource=DISRUPTION_COMP` | `disruption-recovery:compensation:<caseId>:<optionId>` |
+| `REACCOMMODATION` | `POST /api/v1/connections/{connectionId}/reaccommodate` | `disruption-recovery:reaccommodation:<caseId>:<optionId>:<connectionId>` |
 
 ## RecoveryCase state machine
 
@@ -70,7 +93,7 @@ The wire status enum is the 10-state domain state machine:
 | `AWAITING_USER_CHOICE` | User or customer service must choose an unexpired option. | `EXECUTING_RECOVERY`, `MANUAL_REVIEW`, `DECLINED` |
 | `EXECUTING_RECOVERY` | The selected option is executing locally or in a downstream context. | `RECOVERED`, `OPTIONS_GENERATED`, `MANUAL_REVIEW`, `FAILED` |
 | `MANUAL_REVIEW` | Automatic decision or execution cannot proceed safely. | `EXECUTING_RECOVERY`, `RECOVERED`, `FAILED` |
-| `RECOVERED` | Recovery completed by wait, refund, compensation, or an explicit manual outcome. | `CLOSED` |
+| `RECOVERED` | Recovery completed by wait, refund, compensation, reaccommodation, or an explicit manual outcome. | `CLOSED` |
 | `DECLINED` | User declined available recovery or chose to self-handle. | `CLOSED` |
 | `FAILED` | Execution failed and no automatic recovery path remains. | `CLOSED` |
 | `CLOSED` | Case is archived; no further execution occurs on this case. | - |
@@ -82,8 +105,8 @@ option set:
 |---|---|---|---|
 | `OPENED` | `AssessRecoveryImpact` | `ASSESSING_IMPACT` | Case has `affectedScope` and source `evidenceRef`. |
 | `ASSESSING_IMPACT` | `RecoveryImpactAssessed` | `OPTIONS_GENERATED` | Responsibility, protection, and waiver candidates were assessed for the supplied order. |
-| `OPTIONS_GENERATED` | Automatic `WAIT` rule | `EXECUTING_RECOVERY` then `RECOVERED` | Only `WAIT` may be auto-selected; no downstream call is made. |
-| `OPTIONS_GENERATED` | Non-`WAIT` option set generated | `AWAITING_USER_CHOICE` | `REFUND`, `COMPENSATION`, and `MANUAL` require user or customer-service selection. |
+| `OPTIONS_GENERATED` | Automatic `WAIT` rule | `EXECUTING_RECOVERY` then `RECOVERED` | Only a single-option `WAIT` set may be auto-selected; no downstream call is made. |
+| `OPTIONS_GENERATED` | Multiple-option or non-`WAIT` option set generated | `AWAITING_USER_CHOICE` | `REFUND`, `COMPENSATION`, `REACCOMMODATION`, and `MANUAL` require user or customer-service selection. Transfer Management missed-connection sets that contain `WAIT` plus `REACCOMMODATION` are included here. |
 | `AWAITING_USER_CHOICE` | `RecoveryOptionSelected` | `EXECUTING_RECOVERY` | Option exists, is unexpired, belongs to the current option set, and actor is authorized. |
 | `EXECUTING_RECOVERY` | Downstream execution succeeded or `WAIT` completed | `RECOVERED` | Required downstream convergence has been observed. |
 | `EXECUTING_RECOVERY` | Recoverable execution failure | `OPTIONS_GENERATED` or `MANUAL_REVIEW` | The service may refresh options or require manual review. |
@@ -171,23 +194,24 @@ option set:
 |---|---|---|---|
 | `optionSetId` | string | yes | Option set ID (`ros-<uuid>`). |
 | `caseId` | string | yes | Owning recovery case. |
-| `options` | array[RecoveryOption] | yes | Active options. This wave supports `WAIT`, `REFUND`, `COMPENSATION`, and `MANUAL`. |
+| `options` | array[RecoveryOption] | yes | Active options. This wave supports `WAIT`, `REFUND`, `COMPENSATION`, scoped `REACCOMMODATION`, and `MANUAL`. |
 | `generatedAt` | RFC3339 UTC | yes | Generation timestamp. |
 | `expiresAt` | RFC3339 UTC | no | Choice deadline when user choice is required. |
-| `requiresUserChoice` | boolean | yes | `false` only when the generated set contains an auto-selected `WAIT` path. |
+| `requiresUserChoice` | boolean | yes | `false` only when the generated set contains a single auto-selected `WAIT` path. Multiple-option sets, including `WAIT` plus `REACCOMMODATION`, set this to `true`. |
 
 ### RecoveryOption
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `optionId` | string | yes | Option ID (`rop-<uuid>`). |
-| `optionType` | enum | yes | `WAIT`, `REFUND`, `COMPENSATION`, or `MANUAL`. |
+| `optionType` | enum | yes | `WAIT`, `REFUND`, `COMPENSATION`, `REACCOMMODATION`, or `MANUAL`. |
 | `title` | string | yes | User/customer-service display title. |
 | `description` | string | yes | Explanation of the recovery path; must not include sensitive personal data. |
-| `executionTarget` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, or `MANUAL_QUEUE`. |
+| `executionTarget` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `TRANSFER_MANAGEMENT`, or `MANUAL_QUEUE`. |
 | `refund` | object | for `REFUND` | Refund execution parameters. See `RefundOption`. |
 | `compensation` | object | for `COMPENSATION` | Wallet benefit execution parameters. See `CompensationOption`. |
 | `manualReason` | string | for `MANUAL` | Reason the case should enter manual review. |
+| `reaccommodation` | object | for `REACCOMMODATION` | Transfer Management execution parameters. See `ReaccommodationOption`. |
 | `expiresAt` | RFC3339 UTC | no | Option-specific expiry. |
 
 ### RefundOption
@@ -221,13 +245,49 @@ Selecting this option starts execution by calling Wallet / Promotion
 `issuanceSource=DISRUPTION_COMP`. `DISRUPTION_COMP` is an additive Wallet /
 Promotion issuance-source enum value introduced by this activation wave.
 
+### ReaccommodationOption
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectionId` | string | yes | Transfer Management connection to recover (`con-<uuid>`). Must match the missed connection that opened this case. |
+| `replacementWindow` | object | yes | Replacement connection arrival/departure declaration. See `ReplacementWindow`. |
+
+`REACCOMMODATION` options are generated only for Transfer Management
+system-originated `MISSED_CONNECTION` cases. The `replacementWindow` values are
+supplied by operations/system option-generation input in this wave; Disruption
+Recovery treats them as declared recovery parameters and does not perform real
+rebooking or inventory mutation.
+
+### ReplacementWindow
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `plannedArrivalAt` | RFC3339 UTC | yes | New planned/declared arrival time for the replacement connection's previous leg. |
+| `nextDepartureAt` | RFC3339 UTC | yes | New planned/declared departure time for the replacement connection's next leg. |
+| `nextCutoffAt` | RFC3339 UTC | no | Replacement boarding/check-in/driver-wait cutoff when known. |
+| `source` | enum | yes | `OPERATIONS` or `SYSTEM`; identifies who supplied the declaration. |
+
+Selecting this option starts execution by calling Transfer Management
+`POST /api/v1/connections/{connectionId}/reaccommodate` with a deterministic
+UUID-v7 `Idempotency-Key` folded from
+`disruption-recovery:reaccommodation:<caseId>:<optionId>:<connectionId>`. The
+body contains `caseId` and `replacementWindow`. Transfer Management registers a
+replacement `Connection`, marks the original connection `RECOVERED`, emits
+`ConnectionRecovered` with `replacementConnectionId`, and returns `200`.
+Disruption Recovery then records `RecoveryCompleted` using the response as the
+execution result. Transfer Management `404 NOT_FOUND`, `412 PRECONDITION_FAILED`
+(already `RECOVERED`, `INVALIDATED`, or `caseId` mismatch), and
+`422 DOMAIN_RULE_VIOLATION` (invalid replacement window) are terminal downstream
+execution failures for the selected option and are recorded as sanitized
+`RecoveryFailed`/manual-review evidence according to the existing failure policy.
+
 ### RecoveryExecution
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `executionId` | string | yes | Execution tracking ID (`rex-<uuid>`). |
-| `target` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, or `MANUAL_QUEUE`. |
-| `idempotencyKey` | string | no | Deterministic downstream idempotency key when a downstream HTTP command is used. |
+| `target` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `TRANSFER_MANAGEMENT`, or `MANUAL_QUEUE`. |
+| `idempotencyKey` | string | no | Deterministic UUID-v7 downstream idempotency key when a downstream HTTP command is used. |
 | `externalRef` | string | no | Downstream case/benefit/manual-queue reference. |
 | `startedAt` | RFC3339 UTC | yes | Execution start timestamp. |
 | `completedAt` | RFC3339 UTC | no | Completion timestamp. |
@@ -327,9 +387,10 @@ return the original response. Reusing the same key with a different body returns
 `IDEMPOTENCY_KEY_REUSED`.
 
 This endpoint is used by users or customer-service agents when a case is in
-`AWAITING_USER_CHOICE`. `WAIT` normally auto-selects before reaching this state;
-if exposed for an already waiting case, selecting `WAIT` still performs no
-downstream call and completes as `RECOVERED`.
+`AWAITING_USER_CHOICE`. `WAIT` auto-selects before reaching this state only for a
+single-option WAIT set. For Transfer Management missed-connection cases,
+`WAIT` may be exposed alongside `REACCOMMODATION`; selecting `WAIT` still
+performs no downstream call and completes as `RECOVERED`.
 
 **Request:**
 
@@ -346,9 +407,11 @@ state advancement.
 `RecoveryExecutionStarted` for executable options. `WAIT` emits
 `RecoveryCompleted` immediately and moves to `RECOVERED`. `REFUND` opens a Post
 Sales `REFUND` case and waits for `PostSalesApplied`. `COMPENSATION` issues a
-Wallet / Promotion benefit with `issuanceSource=DISRUPTION_COMP`. `MANUAL` moves
-to `MANUAL_REVIEW` and is handled by operations/customer service outside this
-public API.
+Wallet / Promotion benefit with `issuanceSource=DISRUPTION_COMP`.
+`REACCOMMODATION` calls Transfer Management
+`POST /api/v1/connections/{connectionId}/reaccommodate` and completes according
+to that `200` response. `MANUAL` moves to `MANUAL_REVIEW` and is handled by
+operations/customer service outside this public API.
 
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
@@ -377,6 +440,16 @@ public API.
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`
 
+## Migration note for WAIT auto-through
+
+Before REQ-121, any generated `WAIT` option could be auto-selected and close the
+case without user choice. From this contract onward, auto-through is valid only
+for a single-option `WAIT` set. Transfer Management missed-connection cases that
+produce both `WAIT` and `REACCOMMODATION` enter `AWAITING_USER_CHOICE`. The same
+implementation wave MUST update Disruption Recovery and Transfer Management code
+and the existing e2e 17/19 assertions so tests expect the user-choice state for
+these multi-option cases.
+
 ## Bus-only behavior
 
 The following domain commands have no public HTTP endpoint in this activation
@@ -385,7 +458,9 @@ wave:
 - `AssessRecoveryImpact` — runs after a report opens a case using the explicit
   order scope supplied by operations.
 - `GenerateRecoveryOptions` — creates this wave's option set (`WAIT`, `REFUND`,
-  `COMPENSATION`, `MANUAL`); `REACCOMMODATION` generation is deferred.
+  `COMPENSATION`, scoped `REACCOMMODATION`, `MANUAL`). `REACCOMMODATION` is
+  generated only for Transfer Management system-originated
+  `MISSED_CONNECTION` cases; all other `REACCOMMODATION` generation is deferred.
 - `ApplyRecoveryDecision` / execution convergence — driven internally after
   selection and by consuming `PostSalesApplied` from `events:post-sales`.
 - `PublishServiceAlert` — publishes the event-only `ServiceAlertPublished` fact;
