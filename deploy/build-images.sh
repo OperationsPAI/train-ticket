@@ -33,6 +33,7 @@ services=(
   waitlist
   wallet-promotion
   dispatch
+  ancillary-service
 )
 
 for service in "${services[@]}"; do
