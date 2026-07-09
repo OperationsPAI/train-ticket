@@ -73,6 +73,7 @@ context.
 | 23 | `waitlist` | `events:waitlist` | WaitlistRequestCreated, WaitlistPaymentAuthorizationRequested, WaitlistQueued, WaitlistMatchStarted, WaitlistHoldAuthorized, WaitlistFulfilled, WaitlistCancelled, WaitlistExpired |
 | 24 | `dispatch` | `events:dispatch` | DispatchRequested, DriverAssigned, DriverEtaUpdated, DriverArrived, RideStarted, RideEnded, DriverCancelled, DispatchUserCancelled, DispatchNoShowRecorded, DispatchFailed |
 | 25 | `wallet-promotion` | `events:wallet-promotion` | BenefitIssued, BenefitReserved, BenefitRedeemed, BenefitReservationReleased, BenefitExpired, BenefitRevoked, BenefitRedemptionReversed |
+| 26 | `disruption-recovery` | `events:disruption-recovery` | DisruptionReported, IncidentOpened, RecoveryCaseOpened, RecoveryOptionsGenerated, RecoveryOptionSelected, RecoveryExecutionStarted, RecoveryCompleted, RecoveryFailed, RecoveryCaseClosed, ServiceAlertPublished |
 
 ### Dead-Letter Streams
 
@@ -257,8 +258,8 @@ plus notification/finance/reporting fan-in.
 | 31 | `events:post-sales` | `entitlement-ticketing` | PostSalesApproved to void entitlement |
 | 32 | `events:post-sales` | `journey-order` | PostSalesApplied to adjust order |
 | 33 | `events:post-sales` | `notification` | Post-sales events for user notifications |
-| 34 | `events:transfer-management` | `disruption-recovery` | Connection risk events for recovery planning |
-| 35 | `events:disruption-recovery` | `post-sales` | RecoveryOptionAccepted to trigger post-sales |
+| 34 | `events:transfer-management` | *(none for disruption-recovery in this wave)* | Transfer risk/recovery signals are deferred to wave 18 |
+| 35 | `events:disruption-recovery` | *(none — downstream consumers deferred)* | Disruption recovery notification/reporting/order touchpoints are documented in `events/disruption-recovery.md` but not active in this wave |
 | 36 | `events:notification` | *(none — notification owns its stream)* | Notification events are not consumed by other business contexts in phase 1 |
 | 37 | `events:traveler-profile` | `offer-management` | Profile changes for eligibility checks |
 | 38 | `events:traveler-profile` | `journey-order` | Profile changes affecting existing orders |
@@ -279,6 +280,7 @@ plus notification/finance/reporting fan-in.
 | 53 | `events:wallet-promotion` | `finance-settlement` | Benefit issuance, reservation, redemption, release, expiry, revocation, and reversal facts for future cost attribution and settlement read models; concrete consumption deferred to a later wave |
 | 54 | `events:wallet-promotion` | `notification` | Benefit arrival, expiry, redemption, revocation, and reversal user touchpoints; concrete consumption deferred to a later wave |
 | 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
+| 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 
 ### Cross-Cutting Consumers
 
@@ -287,9 +289,20 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch` and `events:wallet-promotion` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
+| `reporting` | All active `events:*` streams except `events:dispatch`, `events:wallet-promotion`, and `events:disruption-recovery` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation. Wallet / Promotion benefit-cost events are a documented deferred consumer (events/wallet-promotion.md). |
 | `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers. Wallet / Promotion benefit touchpoints are a documented deferred consumer. |
+
+### Disruption Recovery subscriptions
+
+`events:disruption-recovery` is registered as a produced stream in this
+contract, but Notification, Reporting, Journey Order, and Customer Service
+consumption of its lifecycle and alert facts is deferred in this activation
+wave. Disruption Recovery has one active inbound subscription: it consumes
+`PostSalesApplied` from `events:post-sales` to converge selected `REFUND`
+recovery options after the downstream Post Sales case reaches `APPLIED`.
+Service Plan, Provider Integration, Fulfillment, and Transfer Management signal
+sources are deferred; Transfer Management belongs to wave 18.
 
 ### Deferred Dispatch Subscriptions
 

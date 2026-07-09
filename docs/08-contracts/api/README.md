@@ -152,6 +152,7 @@ correlation IDs.
 | 23 | `waitlist.md` | Waitlist | rust (activated, ADR-0002) |
 | 24 | `dispatch.md` | Dispatch | activation wave in progress |
 | 25 | `wallet-promotion.md` | Wallet / Promotion | activation wave in progress |
+| 26 | `disruption-recovery.md` | Disruption Recovery | activation wave in progress |
 
 ## Open Issues
 
