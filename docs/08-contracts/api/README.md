@@ -157,6 +157,7 @@ correlation IDs.
 | 28 | `seat-assignment.md` | Seat Assignment | activation wave in progress (ADR-0003 wave A) |
 | 29 | `identity-verification.md` | Identity Verification | activation wave in progress (ADR-0003 wave A) |
 | 30 | `payment-channel.md` | Payment Channel | ADR-0003 Wave A contract |
+| 31 | `invoicing.md` | Invoicing | activation wave in progress (ADR-0003 wave A) |
 
 ## Open Issues
 
