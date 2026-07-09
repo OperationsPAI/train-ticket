@@ -134,19 +134,19 @@ for i in $(seq 1 30); do
   req GET payment "/api/v1/payment-intents/$PI"
   PSTATUS=$(jget "['status']")
   CHREF=$(jget "['channelRef']['channelOrderId']")
-  [ "$PSTATUS" = CAPTURED ] && [ -n "$CHREF" ] && break
+  [ "$PSTATUS" = CAPTURED ] && [ -n "$CHREF" ] && [ "$CHREF" != None ] && break
   sleep 2
 done
 [ "$PSTATUS" = CAPTURED ] && ok "payment captured via channel" || bad "payment status $PSTATUS"
-[ -n "$CHREF" ] && ok "channelRef backfilled ($CHREF)" || bad "channelRef missing"
+{ [ -n "$CHREF" ] && [ "$CHREF" != None ]; } && ok "channelRef backfilled ($CHREF)" || bad "channelRef missing"
 
 req GET payment-channel "/api/v1/channel-orders/$CHREF"
 check_code 200 "channel order readable"
 [ "$(jget "['status']")" = SUCCEEDED ] && ok "channel order succeeded" || bad "channel order status $(jget "['status']")"
-[ "$(jget "['businessRef']")" = "$PI" ] && ok "channel order bound to intent" || bad "channel businessRef $(jget "['businessRef']")"
+[ "$(jget "['paymentIntentId']")" = "$PI" ] && ok "channel order bound to intent" || bad "channel paymentIntentId $(jget "['paymentIntentId']")"
 
 # --- original-route refund via post-sales ---
-req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$ORDER\",\"caseType\":\"REFUND\",\"openedBy\":{\"actorType\":\"CUSTOMER\",\"actorRef\":\"$TVL\"},\"reasonCode\":\"CUSTOMER_REQUEST\",\"scope\":{\"orderItemRefs\":[\"$SB\"],\"segmentRefs\":[\"$SEEDED_SEG\"],\"travelerRefs\":[\"$TVL\"],\"entitlementRefs\":[\"$ENT\"]}}"
+req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$ORDER\",\"caseType\":\"REFUND\",\"scope\":{\"orderItemRefs\":[\"$SB\"],\"segmentRefs\":[\"$SEEDED_SEG\"],\"travelerRefs\":[\"$TVL\"],\"entitlementRefs\":[\"$ENT\"]},\"reasonCode\":\"CUSTOMER_REQUEST\",\"actorRef\":\"$ACCT\"}"
 check_code 201 "refund case opened"
 CASE=$(jget "['caseId']")
 req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'

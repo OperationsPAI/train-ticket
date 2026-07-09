@@ -73,11 +73,21 @@ check_code 201 "create invoice title"
 TITLE=$(jget "['titleId']"); TVER=$(jget "['version']")
 sleep 4
 BASIS=$(finance_basis "$MAIN_ORDER")
-inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$MAIN_ACCT\",\"orderId\":\"$MAIN_ORDER\",\"titleId\":\"$TITLE\",\"titleVersion\":$TVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$BASIS,\"recipientEmail\":\"e2e@example.com\",\"simSeedRef\":\"accept-e2e\"}"
+for _retry in $(seq 1 15); do
+  inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$MAIN_ACCT\",\"orderId\":\"$MAIN_ORDER\",\"titleId\":\"$TITLE\",\"titleVersion\":$TVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$BASIS,\"recipientEmail\":\"e2e@example.com\",\"simSeedRef\":\"accept-e2e\"}"
+  [ "$LAST_CODE" = 201 ] && break
+  sleep 2
+done
 check_code 201 "request blue e-invoice"
 REQ=$(jget "['invoiceRequestId']"); STATUS=$(jget "['status']"); EIN=$(jget "['eInvoiceId']")
 [ "$STATUS" = ISSUED ] && ok "SIM accepted and blue invoice issued" || bad "blue invoice status $STATUS"
-[ "$(stream_has EInvoiceIssued "$MAIN_ORDER")" = yes ] && ok "EInvoiceIssued event" || bad "missing EInvoiceIssued"
+EISSUED=""
+for _retry in $(seq 1 10); do
+  EISSUED=$(stream_has EInvoiceIssued "$MAIN_ORDER")
+  [ "$EISSUED" = yes ] && break
+  sleep 2
+done
+[ "$EISSUED" = yes ] && ok "EInvoiceIssued event" || bad "missing EInvoiceIssued"
 inv_req GET "/api/v1/e-invoices/$EIN"; check_code 200 "get issued invoice"
 
 bash ./02-purchase.sh >/tmp/23-purchase-b.out 2>&1 || { cat /tmp/23-purchase-b.out; bad "purchase chain B failed"; summary; exit 0; }
@@ -88,7 +98,11 @@ check_code 201 "create rejection title"
 RTITLE=$(jget "['titleId']"); RTVER=$(jget "['version']")
 sleep 4
 RBASIS=$(finance_basis "$REJ_ORDER")
-inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$REJ_ACCT\",\"orderId\":\"$REJ_ORDER\",\"titleId\":\"$RTITLE\",\"titleVersion\":$RTVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$RBASIS,\"simSeedRef\":\"reject-e2e\"}"
+for _retry in $(seq 1 15); do
+  inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$REJ_ACCT\",\"orderId\":\"$REJ_ORDER\",\"titleId\":\"$RTITLE\",\"titleVersion\":$RTVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$RBASIS,\"simSeedRef\":\"reject-e2e\"}"
+  [ "$LAST_CODE" = 201 ] && break
+  sleep 2
+done
 check_code 201 "request rejected seed invoice"
 [ "$(jget "['status']")" = REJECTED ] && ok "SIM deterministic rejection resource" || bad "expected REJECTED got $(jget "['status']")"
 
@@ -103,7 +117,11 @@ sleep 10
 for i in $(seq 1 8); do inv_req GET "/api/v1/red-flushes?orderId=$MAIN_ORDER"; [ "$(jget "['items'][0]['status']")" = COMPLETED ] && break; sleep 1; done
 [ "$(jget "['items'][0]['status']")" = COMPLETED ] && ok "red flush completed" || bad "red flush status $(jget "['items'][0]['status']")"
 
-inv_req GET "/api/v1/itinerary-receipts/generated?orderId=$MAIN_ORDER&travelerRefs=$MAIN_TVL&segmentRefs=$MAIN_SEG&receiptVersion=1"
+for _retry in $(seq 1 10); do
+  inv_req GET "/api/v1/itinerary-receipts/generated?orderId=$MAIN_ORDER&travelerRefs=$MAIN_TVL&segmentRefs=$MAIN_SEG&receiptVersion=1"
+  [ "$LAST_CODE" = 200 ] && break
+  sleep 2
+done
 check_code 200 "generate itinerary receipt projection"
 [ -n "$(jget "['artifactRef']")" ] && ok "itinerary artifact ref" || bad "missing itinerary artifact"
 

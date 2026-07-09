@@ -121,8 +121,13 @@ pub(crate) fn array_strings(payload: &Value, field: &str) -> Vec<String> {
         .map(|items| {
             items
                 .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
+                .filter_map(|v| {
+                    v.as_str().map(str::to_string).or_else(|| {
+                        v.get("travelerId")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default()

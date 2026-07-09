@@ -182,7 +182,7 @@ impl InMemoryInvoicingService {
             return Ok(());
         }
         match envelope.event_type.as_str() {
-            "JourneyOrderConfirmed" | "JourneyOrderPostSalesAdjusted" => {
+            "JourneyOrderCreated" | "JourneyOrderConfirmed" | "JourneyOrderPostSalesAdjusted" => {
                 self.project_order(envelope).await
             }
             "RevenueRecognized" | "InvoiceGenerated" => self.project_amount(envelope).await,
@@ -225,14 +225,28 @@ impl InMemoryInvoicingService {
         let travelers = array_strings(&e.payload, "travelerRefs");
         let segments = array_strings(&e.payload, "segmentRefs");
         let mut s = self.state.lock().unwrap();
-        s.orders.insert(
-            order_id.clone(),
-            OrderProjection {
-                account_id,
-                traveler_refs: travelers,
-                segment_refs: segments,
-            },
-        );
+        if let Some(existing) = s.orders.get_mut(&order_id) {
+            existing.account_id = account_id;
+            for t in &travelers {
+                if !existing.traveler_refs.contains(t) {
+                    existing.traveler_refs.push(t.clone());
+                }
+            }
+            for seg in &segments {
+                if !existing.segment_refs.contains(seg) {
+                    existing.segment_refs.push(seg.clone());
+                }
+            }
+        } else {
+            s.orders.insert(
+                order_id.clone(),
+                OrderProjection {
+                    account_id,
+                    traveler_refs: travelers,
+                    segment_refs: segments,
+                },
+            );
+        }
         s.processed_events.insert(e.event_id);
         Ok(())
     }
@@ -261,8 +275,13 @@ impl InMemoryInvoicingService {
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
             })
             .unwrap_or_default();
+        let basis_type = if e.event_type == "InvoiceGenerated" {
+            "FINANCE_INVOICE"
+        } else {
+            "REVENUE_RECOGNITION"
+        };
         let basis = AmountBasis {
-            basis_type: "REVENUE_RECOGNITION".into(),
+            basis_type: basis_type.into(),
             revenue_recognition_ids: rr,
             finance_invoice_id: string_field(&e.payload, "invoiceId"),
             tax_lines: vec![TaxLine {
@@ -379,9 +398,14 @@ pub(crate) struct IdemRecord {
 fn amount_basis_matches_projection(requested: &AmountBasis, projected: &AmountBasis) -> bool {
     let mut requested = requested.clone();
     let mut projected = projected.clone();
-    requested.validate_and_sort().is_ok()
-        && projected.validate_and_sort().is_ok()
-        && requested == projected
+    if requested.validate_and_sort().is_err() || projected.validate_and_sort().is_err() {
+        return false;
+    }
+    requested.basis_type == projected.basis_type
+        && requested.total_amount == projected.total_amount
+        && requested.revenue_recognition_ids == projected.revenue_recognition_ids
+        && requested.finance_invoice_id == projected.finance_invoice_id
+        && requested.tax_lines == projected.tax_lines
 }
 
 #[async_trait]

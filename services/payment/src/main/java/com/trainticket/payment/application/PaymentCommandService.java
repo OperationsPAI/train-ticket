@@ -114,13 +114,6 @@ public class PaymentCommandService {
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, String requestedChannel) {
         PaymentIntent intent = getIntent(paymentIntentId);
         String channel = requestedChannel == null || requestedChannel.isBlank() ? DEFAULT_CHANNEL : requestedChannel;
-        if (DEFAULT_CHANNEL.equals(channel)) {
-            int before = intent.domainEvents().size();
-            intent.capture(intent.amount().subtract(intent.capturedAmount()), channel, "txn-" + idempotencyKey, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
-            paymentIntentRepository.save(intent);
-            publishNewEvents(intent.domainEvents(), before);
-            return intent;
-        }
         validateSimChannel(channel);
         ChannelRef requestedRef = new ChannelRef(channel, null, null, null, null, null, null);
         String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
@@ -129,7 +122,14 @@ public class PaymentCommandService {
         paymentIntentRepository.save(intent);
         PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, orderKey, submitKey, correlationId, requestedRef);
         intent.recordChannelHandoff(handoff.channelRef());
-        paymentIntentRepository.save(intent);
+        if ("SUCCEEDED".equals(handoff.status()) && handoff.channelTransactionId() != null) {
+            int before = intent.domainEvents().size();
+            intent.capture(intent.amount().subtract(intent.capturedAmount()), channel, handoff.channelTransactionId(), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+            paymentIntentRepository.save(intent);
+            publishNewEvents(intent.domainEvents(), before);
+        } else {
+            paymentIntentRepository.save(intent);
+        }
         return intent;
     }
 
@@ -231,7 +231,7 @@ public class PaymentCommandService {
             throw new DomainRuleViolation("channel refund amount does not match requested refund amount");
         }
         int beforeRefund = refund.domainEvents().size();
-        if (channel != null && !channel.isBlank()) {
+        if (channel != null && !channel.isBlank() && refund.channelRef() == null) {
             refund.recordChannelHandoff(new ChannelRef(channel, channelOrderId, channelRefundId, originalChannelTransactionId, null, null, null));
         }
         refund.settle(intent, channelRefundTransactionId, Instant.now(clock), commandId(causationId), causationId, correlationId);
