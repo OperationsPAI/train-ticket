@@ -67,8 +67,8 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT data::text
               FROM promotion_instrument_snapshots
              WHERE data->>'accountId' = ?
-               AND (? IS NULL OR data->>'status' = ?)
-               AND (? IS NULL OR data->>'benefitType' = ?)
+               AND (?::text IS NULL OR data->>'status' = ?::text)
+               AND (?::text IS NULL OR data->>'benefitType' = ?::text)
              ORDER BY data->>'createdAt'
              LIMIT ? OFFSET ?
             """;
@@ -91,8 +91,8 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT count(*)
               FROM promotion_instrument_snapshots
              WHERE data->>'accountId' = ?
-               AND (? IS NULL OR data->>'status' = ?)
-               AND (? IS NULL OR data->>'benefitType' = ?)
+               AND (?::text IS NULL OR data->>'status' = ?::text)
+               AND (?::text IS NULL OR data->>'benefitType' = ?::text)
             """;
         Integer count = jdbc.queryForObject(
             sql,
