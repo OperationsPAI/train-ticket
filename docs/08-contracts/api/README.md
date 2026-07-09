@@ -154,6 +154,7 @@ correlation IDs.
 | 25 | `wallet-promotion.md` | Wallet / Promotion | activation wave in progress |
 | 26 | `disruption-recovery.md` | Disruption Recovery | activation wave in progress |
 | 27 | `ancillary-service.md` | Ancillary Service | activation wave in progress |
+| 28 | `invoicing.md` | Invoicing | activation wave in progress |
 
 ## Open Issues
 
