@@ -27,9 +27,22 @@ export class PostgresAncillaryRepository implements AncillaryRepository {
   clear(): void { void this.db.query("TRUNCATE ancillary_catalog_items, ancillary_offers, ancillary_order_items"); }
 }
 
-async function save<T>(repo: SnapshotRepository<T>, id: string, snapshot: T, version: number): Promise<void> {
+export async function save<T>(repo: SnapshotRepository<T>, id: string, snapshot: T, version: number): Promise<void> {
   const existing = await repo.get(id);
-  await repo.save(id, snapshot, existing ? BigInt(version - 1) : undefined);
+  if (!existing) {
+    await repo.save(id, snapshot, undefined);
+    return;
+  }
+  if (existing.version >= BigInt(version)) {
+    // Replayed/duplicate command that slipped past the idempotency layers:
+    // the stored aggregate already advanced at least this far. Same-version
+    // replays are harmless no-ops (trip-planning/wallet OCC ruling), not
+    // loud OptimisticConcurrencyConflict failures.
+    return;
+  }
+  // Guard against concurrent writers using the STORED version, not an
+  // expectation derived from the incoming snapshot.
+  await repo.save(id, snapshot, existing.version);
 }
 async function listJson<T>(db: Database, table: string, filters: Record<string, unknown>, keys: readonly string[]): Promise<readonly T[]> {
   const clauses: string[] = [];
