@@ -28,13 +28,22 @@ Activation-wave rulings:
   statuses use the exact 10-state domain machine: `OPENED`, `ASSESSING_IMPACT`,
   `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`,
   `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED`.
-- `RecoveryOptionSet` supports `WAIT`, `REFUND`, `COMPENSATION`, and `MANUAL`.
-  `REACCOMMODATION` remains deferred until a later wave after Transfer Management.
-- Automatic rules may select only `WAIT`. `WAIT` completes as `RECOVERED` with
-  no downstream command. `REFUND` calls the existing Post Sales HTTP contract
-  using a deterministic idempotency key and converges on `PostSalesApplied`.
-  `COMPENSATION` calls Wallet / Promotion `POST /api/v1/benefits` with
-  `issuanceSource=DISRUPTION_COMP`. `MANUAL` moves the case to manual review.
+- `RecoveryOptionSet` supports `WAIT`, `REFUND`, `COMPENSATION`, scoped
+  `REACCOMMODATION`, and `MANUAL`. RULING (2026-07-09):
+  `REACCOMMODATION` is generated only for `disruptionType=MISSED_CONNECTION`
+  cases reported by `reportedBy.actorType=SYSTEM` with
+  `evidence.sourceSystem=TRANSFER_MANAGEMENT`; all other disruption types and
+  case sources still defer `REACCOMMODATION` to a later wave.
+- Automatic rules may select `WAIT` only for single-option WAIT sets. A Transfer
+  Management missed-connection set containing `WAIT` plus `REACCOMMODATION`
+  enters `AWAITING_USER_CHOICE` instead of WAIT auto-through. `WAIT` completes as
+  `RECOVERED` with no downstream command when selected. `REFUND` calls the
+  existing Post Sales HTTP contract using a deterministic idempotency key and
+  converges on `PostSalesApplied`. `COMPENSATION` calls Wallet / Promotion
+  `POST /api/v1/benefits` with `issuanceSource=DISRUPTION_COMP`.
+  `REACCOMMODATION` calls Transfer Management
+  `POST /api/v1/connections/{connectionId}/reaccommodate` with a folded UUID-v7
+  idempotency key. `MANUAL` moves the case to manual review.
 - Consumers of Disruption Recovery events are deferred for Notification and
   Reporting in this wave. The only active inbound subscription is
   `events:post-sales` `PostSalesApplied` for REFUND execution convergence.
@@ -66,6 +75,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 |---|---|---|
 | `REFUND` | `POST /api/v1/post-sales-cases` with `caseType=REFUND` | `disruption-recovery:refund:<caseId>:<optionId>` |
 | `COMPENSATION` | `POST /api/v1/benefits` with `issuanceSource=DISRUPTION_COMP` | `disruption-recovery:compensation:<caseId>:<optionId>` |
+| `REACCOMMODATION` | `POST /api/v1/connections/{connectionId}/reaccommodate` | Fold `disruption-recovery:reaccommodation:<caseId>:<optionId>:<connectionId>` into a UUID-v7 wire key. |
 
 ## Common payload objects
 
@@ -102,13 +112,14 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `optionId` | string | yes | Option ID (`rop-<uuid>`). |
-| `optionType` | enum | yes | `WAIT`, `REFUND`, `COMPENSATION`, or `MANUAL`. |
+| `optionType` | enum | yes | `WAIT`, `REFUND`, `COMPENSATION`, `REACCOMMODATION`, or `MANUAL`. |
 | `title` | string | yes | Display title. |
 | `description` | string | yes | Explanation; must not include sensitive personal data. |
-| `executionTarget` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, or `MANUAL_QUEUE`. |
+| `executionTarget` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `TRANSFER_MANAGEMENT`, or `MANUAL_QUEUE`. |
 | `refund` | object | for `REFUND` | `{reasonCode, scope, waiverRef?}` for the Post Sales REFUND case. |
 | `compensation` | object | for `COMPENSATION` | `{amount: Money, benefitType, balanceType, validUntil, reasonCode}` for Wallet / Promotion. |
 | `manualReason` | string | for `MANUAL` | Reason the case requires manual review. |
+| `reaccommodation` | object | for `REACCOMMODATION` | `{connectionId, replacementWindow}`. `replacementWindow` has RFC3339 UTC `plannedArrivalAt`, `nextDepartureAt`, optional `nextCutoffAt`, and `source` (`OPERATIONS` or `SYSTEM`). |
 | `expiresAt` | RFC3339 UTC | no | Option-specific expiry. |
 
 ## Published Events
@@ -194,8 +205,8 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `incidentId` | string | yes | Parent incident. |
 | `journeyOrderId` | string | yes | Affected order. |
 | `optionSetId` | string | yes | Option set ID (`ros-<uuid>`). |
-| `options` | array[RecoveryOption] | yes | Options; active enum is `WAIT`, `REFUND`, `COMPENSATION`, or `MANUAL`. |
-| `requiresUserChoice` | boolean | yes | `false` only for auto-selectable `WAIT`. |
+| `options` | array[RecoveryOption] | yes | Options; active enum is `WAIT`, `REFUND`, `COMPENSATION`, scoped `REACCOMMODATION`, or `MANUAL`. |
+| `requiresUserChoice` | boolean | yes | `false` only for a single-option auto-selectable `WAIT`; `WAIT` plus `REACCOMMODATION` sets this to `true`. |
 | `generatedAt` | RFC3339 UTC | yes | Generation timestamp. |
 | `expiresAt` | RFC3339 UTC | no | Choice deadline. |
 | `status` | enum | yes | `OPTIONS_GENERATED` or `AWAITING_USER_CHOICE` after generation flow. |
@@ -217,8 +228,8 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `journeyOrderId` | string | yes | Affected order. |
 | `optionSetId` | string | yes | Option set containing the selected option. |
 | `optionId` | string | yes | Selected option. |
-| `optionType` | enum | yes | `WAIT`, `REFUND`, `COMPENSATION`, or `MANUAL`. |
-| `selectedBy` | object | yes | Actor that selected the option; `SYSTEM` is allowed only for `WAIT`. |
+| `optionType` | enum | yes | `WAIT`, `REFUND`, `COMPENSATION`, `REACCOMMODATION`, or `MANUAL`. |
+| `selectedBy` | object | yes | Actor that selected the option; `SYSTEM` is allowed only for automatic single-option `WAIT`. |
 | `selectedAt` | RFC3339 UTC | yes | Selection timestamp. |
 | `status` | enum | yes | `EXECUTING_RECOVERY` for executable options, or `MANUAL_REVIEW` for `MANUAL`. |
 
@@ -240,9 +251,9 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `optionId` | string | yes | Selected option. |
 | `optionType` | enum | yes | Selected option type. |
 | `executionId` | string | yes | Execution ID (`rex-<uuid>`). |
-| `executionTarget` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, or `MANUAL_QUEUE`. |
-| `idempotencyKey` | string | no | Deterministic downstream idempotency key for `REFUND` or `COMPENSATION`. |
-| `downstreamRequest` | object | no | Sanitized downstream request summary. For `REFUND`, includes `caseType=REFUND`; for `COMPENSATION`, includes `issuanceSource=DISRUPTION_COMP`. |
+| `executionTarget` | enum | yes | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `TRANSFER_MANAGEMENT`, or `MANUAL_QUEUE`. |
+| `idempotencyKey` | string | no | Deterministic UUID-v7 downstream idempotency key for `REFUND`, `COMPENSATION`, or `REACCOMMODATION`. |
+| `downstreamRequest` | object | no | Sanitized downstream request summary. For `REFUND`, includes `caseType=REFUND`; for `COMPENSATION`, includes `issuanceSource=DISRUPTION_COMP`; for `REACCOMMODATION`, includes `connectionId`, folded `idempotencyKey`, and `replacementWindow` (RFC3339 UTC times only, no PII). |
 | `startedAt` | RFC3339 UTC | yes | Execution start timestamp. |
 | `status` | enum | yes | `EXECUTING_RECOVERY` or `MANUAL_REVIEW`. |
 
@@ -252,7 +263,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 |---|---|
 | **Producer** | disruption-recovery |
 | **Consumers** | transfer-management; deferred: notification, reporting |
-| **Trigger** | `WAIT` completes locally, Wallet / Promotion benefit issuance succeeds, or consumed `PostSalesApplied` converges a REFUND execution. |
+| **Trigger** | `WAIT` completes locally, Wallet / Promotion benefit issuance succeeds, consumed `PostSalesApplied` converges a REFUND execution, or Transfer Management reaccommodation returns `200`. |
 
 **Payload:**
 
@@ -265,7 +276,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `optionType` | enum | yes | Completed option type. |
 | `executionId` | string | yes | Execution ID. |
 | `completedAt` | RFC3339 UTC | yes | Completion timestamp. |
-| `externalRef` | string | no | Post Sales case ID, Wallet benefit ID, or manual reference when applicable. |
+| `externalRef` | string | no | Post Sales case ID, Wallet benefit ID, Transfer Management replacement `connectionId`, or manual reference when applicable. |
 | `status` | enum | yes | `RECOVERED`. |
 
 ### RecoveryFailed
@@ -341,9 +352,9 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `OpenIncident` | Application flow after report, or merge lookup miss | `IncidentOpened` |
 | `OpenRecoveryCase` | Application flow for each explicit `affectedOrderId` | `RecoveryCaseOpened` |
 | `GenerateRecoveryOptions` | Application flow after impact assessment | `RecoveryOptionsGenerated` |
-| `SelectRecoveryOption` | Automatic `WAIT`, or HTTP `POST /api/v1/recovery-cases/{caseId}/select-option` | `RecoveryOptionSelected` |
+| `SelectRecoveryOption` | Automatic single-option `WAIT`, or HTTP `POST /api/v1/recovery-cases/{caseId}/select-option` | `RecoveryOptionSelected` |
 | `ApplyRecoveryDecision` | Internal execution start after selection | `RecoveryExecutionStarted` |
-| `RecordRecoveryExecutionResult` | Local wait completion, Wallet issuance result, or consumed `PostSalesApplied` | `RecoveryCompleted` or `RecoveryFailed` |
+| `RecordRecoveryExecutionResult` | Local wait completion, Wallet issuance result, consumed `PostSalesApplied`, or Transfer Management reaccommodation response | `RecoveryCompleted` or `RecoveryFailed` |
 | `CloseRecoveryCase` | HTTP `POST /api/v1/recovery-cases/{caseId}/close` or manual closure | `RecoveryCaseClosed` |
 | `PublishServiceAlert` | Application flow after incident open/merge | `ServiceAlertPublished` |
 
@@ -358,7 +369,9 @@ Provider Integration, and Fulfillment disruption sources are deferred. Transfer
 Management protected missed-connection reports arrive over HTTP with
 `disruptionType=MISSED_CONNECTION`, `reportedBy.actorType=SYSTEM`, and
 `evidence.sourceSystem=TRANSFER_MANAGEMENT`; the same wave implementation MUST
-update Disruption Recovery code enum/validation allowlists for those values.
+update Disruption Recovery code enum/validation allowlists for those values and
+MUST update e2e 17/19 expectations for the `WAIT` plus `REACCOMMODATION`
+`AWAITING_USER_CHOICE` behavior.
 
 ## Deferred downstream touchpoints
 

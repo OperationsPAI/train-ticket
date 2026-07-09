@@ -284,7 +284,7 @@ plus notification/finance/reporting fan-in.
 | 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
-| 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. |
+| 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. RULING (2026-07-09): for self-executed `REACCOMMODATION`, `RecoveryCompleted` for an already `RECOVERED` connection and matching `caseId` is acknowledged as an idempotent no-op. |
 
 ### Cross-Cutting Consumers
 
@@ -309,6 +309,11 @@ Service Plan, Provider Integration, and Fulfillment signal sources remain
 deferred. Transfer Management opens protected missed-connection cases through
 Disruption Recovery HTTP and actively consumes `RecoveryCompleted` and
 `RecoveryFailed` from `events:disruption-recovery` by stored `caseId`.
+Disruption Recovery executes scoped `REACCOMMODATION` through Transfer Management
+HTTP (`POST /api/v1/connections/{connectionId}/reaccommodate`); this does not add
+a new subscription row. The resulting `ConnectionRecovered` event carries
+`replacementConnectionId` and replacement-window fields rather than introducing a
+new `ConnectionReaccommodated` event.
 
 ### Deferred Ancillary Service Subscriptions
 
