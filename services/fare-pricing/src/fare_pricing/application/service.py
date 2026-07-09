@@ -80,11 +80,17 @@ class InMemoryStore:
         return self.adjustment_quotes[adjustment_quote_id]
 
 
+class EligibilityCertificatePort:
+    def has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
+        return True
+
+
 class FarePricingService:
     """Application service that orchestrates fare pricing operations."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, eligibility: EligibilityCertificatePort | None = None) -> None:
         self._store = store
+        self._eligibility = eligibility or EligibilityCertificatePort()
 
     def transaction(self) -> Any:
         transaction = getattr(self._store, "transaction", None)
@@ -111,6 +117,7 @@ class FarePricingService:
         ttl = ttl or timedelta(minutes=15)
         rule_set = self._store.get_rule_set(rule_set_id)
 
+        active_discount_types = self._active_discount_types(rule_set, traveler_refs, now.date().isoformat())
         quote = calculate_fare_quote(
             quote_id=quote_id,
             input_hash=input_hash,
@@ -120,10 +127,22 @@ class FarePricingService:
             requested_currency=requested_currency,
             quoted_at=now,
             ttl=ttl,
+            active_discount_types=active_discount_types,
         )
         self._store.save_quote(quote)
         self.link_fare_quote_to_segments(quote.quote_id, segment_refs or [])
         return quote
+
+    def _active_discount_types(self, rule_set: FareRuleSet, traveler_refs: list[str], journey_date: str) -> set[str]:
+        requested = {rule.explanation.as_mapping().get("eligibilityType", "").strip().upper() for rule in rule_set.rules if rule.kind.value == "discount"}
+        requested.discard("")
+        if not requested:
+            return set()
+        active: set[str] = set()
+        for eligibility_type in requested:
+            if any(self._eligibility.has_active_certificate(traveler, eligibility_type, journey_date, rule_set.product_code) for traveler in traveler_refs):
+                active.add(eligibility_type)
+        return active
 
     def compute_adjustment_quote(
         self,

@@ -432,6 +432,7 @@ def calculate_fare_quote(
     requested_currency: str,
     quoted_at: datetime,
     ttl: timedelta,
+    active_discount_types: set[str] | None = None,
 ) -> FareQuote:
     normalized_currency = requested_currency.strip().upper()
     quote_until = min(quoted_at + ttl, rule_set.effective_window.ends_at)
@@ -455,7 +456,8 @@ def calculate_fare_quote(
     base_rule = next(rule for rule in rule_set.rules if rule.kind is RuleKind.BASE_FARE)
     taxes = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.TAX)
     fees = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.FEE)
-    discounts = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.DISCOUNT)
+    active_discount_types = active_discount_types or set()
+    discounts = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.DISCOUNT and _discount_allowed(rule, active_discount_types))
     breakdown = FareBreakdown(base_rule.amount, taxes, fees, discounts)
     snapshot = RuleSnapshot.from_rule_set(rule_set, quoted_at)
     return FareQuote(
@@ -472,6 +474,11 @@ def calculate_fare_quote(
         breakdown,
         tuple(rule.explanation for rule in rule_set.rules),
     )
+
+
+def _discount_allowed(rule: FareRule, active_discount_types: set[str]) -> bool:
+    eligibility_type = rule.explanation.as_mapping().get("eligibilityType", "").strip().upper()
+    return not eligibility_type or eligibility_type in active_discount_types
 
 
 def assess_refund(

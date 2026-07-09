@@ -22,6 +22,7 @@ from train_ticket_platform.storage import (
     run_migrations,
 )
 from .application.service import FarePricingService, InMemoryStore
+from .identity import HttpEligibilityCertificateAdapter
 from .adapters.storage import PostgresFarePricingStore
 from .adapters.messaging.publisher import RedisEventPublisher
 from .ports.messaging import EventPublisher
@@ -167,7 +168,7 @@ def configure_fare_pricing_routes(
     """Register the fare-pricing business API routes and application service."""
     if store is None:
         store = InMemoryStore()
-    service = FarePricingService(store)
+    service = FarePricingService(store, HttpEligibilityCertificateAdapter() if os.getenv("IDENTITY_VERIFICATION_URL") else None)
     unit_of_work = getattr(store, "unit_of_work", None)
     if callable(unit_of_work):
         @app.middleware("http")

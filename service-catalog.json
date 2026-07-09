@@ -658,6 +658,31 @@
       "rationale": "TypeScript fits productized add-ons and bundle-facing API composition."
     },
     {
+      "id": "seat-assignment",
+      "path": "services/seat-assignment",
+      "domain": "Seat Assignment",
+      "language": "rust",
+      "runtime": "rust",
+      "phase": "activation-wave-A1",
+      "status": "integration-ready",
+      "priority": "P1",
+      "workPackages": [
+        "REQ-140"
+      ],
+      "docs": [
+        "docs/02-domains/seat-assignment.md",
+        "docs/08-contracts/api/seat-assignment.md",
+        "docs/08-contracts/events/seat-assignment.md"
+      ],
+      "owns": [
+        "SeatMap",
+        "SeatAllocation",
+        "AdjacencyGroup",
+        "BerthPreference"
+      ],
+      "rationale": "Rust fits overlap, immutability, idempotency, and allocation-state invariants."
+    },
+    {
       "id": "waitlist",
       "path": "services/waitlist",
       "domain": "Waitlist",
@@ -711,7 +736,9 @@
       "phase": "phase-1-core",
       "status": "integration-ready",
       "priority": "P0",
-      "workPackages": ["REQ-114"],
+      "workPackages": [
+        "REQ-114"
+      ],
       "docs": [
         "docs/02-domains/dispatch.md"
       ],
@@ -742,6 +769,27 @@
       ],
       "owns": [],
       "rationale": "Python/FastAPI strangler facade maps legacy entrypoints to bounded-context HTTP commands without owning state."
+    },
+    {
+      "id": "identity-verification",
+      "path": "services/identity-verification",
+      "language": "python",
+      "domain": "Identity Verification",
+      "phase": "activation",
+      "workPackages": [
+        "REQ-141"
+      ],
+      "owns": [
+        "VerificationCase",
+        "CredentialRecord",
+        "EligibilityCertificate",
+        "PurchaseLimitFact"
+      ],
+      "contracts": [
+        "docs/08-contracts/api/identity-verification.md",
+        "docs/08-contracts/events/identity-verification.md"
+      ]
     }
+
   ]
 }

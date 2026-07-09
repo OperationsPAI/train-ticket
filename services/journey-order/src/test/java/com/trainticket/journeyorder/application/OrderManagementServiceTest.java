@@ -14,6 +14,7 @@ import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.InMemoryJourneyOrderStateRepository;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
+import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.time.Clock;
 import java.time.Instant;
@@ -471,6 +472,70 @@ class OrderManagementServiceTest {
         assertEquals(new EventSubscriber.Success(), result);
     }
 
+
+    @Test
+    void orderConfirmationConfirmsIdentityPreOrderCheck() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        RecordingIdentityVerificationPort identity = new RecordingIdentityVerificationPort();
+        OrderManagementService orderService = new OrderManagementService(
+            envelope -> published.add(envelope),
+            FIXED_CLOCK,
+            repository,
+            identity
+        );
+        JourneyOrderResult created = orderService.createOrder(
+            new JourneyOrderRequest("account-identity-confirm", "offer-identity-confirm", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-identity-confirm",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d100"
+        );
+
+        orderService.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d101",
+            "PaymentCaptured",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d100",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d102",
+            "payment",
+            1,
+            Map.of(
+                "orderId", created.orderId(),
+                "businessRef", created.orderId(),
+                "paymentIntentId", "pi-identity-confirm",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 10000),
+                "channel", "SIM",
+                "channelTransactionId", "ch-identity-confirm"
+            )
+        ));
+        orderService.handle(entitlementIssuedEvent(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d103",
+            created.orderId()
+        ));
+        orderService.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d104",
+            "RiskAssessmentResult",
+            Instant.parse("2026-07-05T10:03:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d100",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d105",
+            "risk-compliance",
+            1,
+            Map.of(
+                "assessmentId", "asmt-0194f2e0-7b3e-7610-8284-5c26e8b0d110",
+                "subjectRef", created.orderId(),
+                "scenario", "order_risk",
+                "decision", "ALLOW",
+                "policyVersion", "risk-policy-v1",
+                "evidenceRef", "evid-0194f2e0-7b3e-7610-8284-5c26e8b0d111",
+                "reasonCode", "LOW_RISK",
+                "assessmentSnapshotHash", "hash-risk",
+                "assessedAt", "2026-07-05T10:03:00Z"
+            )
+        ));
+
+        assertEquals("CONFIRMED", orderService.getOrder(created.orderId()).orElseThrow().status());
+        assertEquals("poc-recorded", identity.confirmedPreOrderCheckId);
+        assertEquals(created.orderId(), identity.confirmedJourneyOrderId);
+    }
+
     private static void assertNotNull(Object obj) {
         if (obj == null) throw new AssertionError("Expected non-null");
     }
@@ -497,6 +562,23 @@ class OrderManagementServiceTest {
                 "issuedAt", "2026-07-05T10:01:00Z"
             )
         );
+    }
+
+
+    private static class RecordingIdentityVerificationPort implements IdentityVerificationPort {
+        String confirmedPreOrderCheckId;
+        String confirmedJourneyOrderId;
+
+        @Override
+        public PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId) {
+            return new PreOrderCheckResult("PASS", "poc-recorded");
+        }
+
+        @Override
+        public void confirmPreOrderCheck(String preOrderCheckId, String journeyOrderId, String idempotencyKey, String correlationId) {
+            this.confirmedPreOrderCheckId = preOrderCheckId;
+            this.confirmedJourneyOrderId = journeyOrderId;
+        }
     }
 
     private static class JourneyOrderStateRepositoryAdapter extends InMemoryJourneyOrderStateRepository {

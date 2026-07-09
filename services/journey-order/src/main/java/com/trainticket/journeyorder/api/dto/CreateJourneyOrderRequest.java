@@ -10,5 +10,7 @@ public record CreateJourneyOrderRequest(
     @NotBlank String offerId,
     @Min(1) int offerVersion,
     @NotEmpty List<@NotBlank String> travelerRefs,
-    @NotEmpty List<@NotBlank String> segmentRefs
+    @NotEmpty List<@NotBlank String> segmentRefs,
+    String journeyDate,
+    String productCode
 ) {}

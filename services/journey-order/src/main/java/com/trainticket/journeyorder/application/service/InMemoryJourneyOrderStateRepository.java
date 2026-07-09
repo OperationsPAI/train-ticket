@@ -21,6 +21,7 @@ public class InMemoryJourneyOrderStateRepository implements JourneyOrderStateRep
     private final Map<String, OrderManagementService.IdempotencyEntry<JourneyOrderResult>> createIds = new ConcurrentHashMap<>();
     private final Map<String, OrderManagementService.IdempotencyEntry<CancelJourneyOrderResult>> cancelIds = new ConcurrentHashMap<>();
     private final Set<String> events = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> identityPreOrderChecks = new ConcurrentHashMap<>();
 
     @Override
     public Optional<OrderManagementService.StoredOrder> findOrder(String orderId) {
@@ -75,6 +76,16 @@ public class InMemoryJourneyOrderStateRepository implements JourneyOrderStateRep
     @Override
     public void saveCancelIdempotency(String key, OrderManagementService.IdempotencyEntry<CancelJourneyOrderResult> entry) {
         cancelIds.put(key, entry);
+    }
+
+    @Override
+    public Optional<String> findIdentityPreOrderCheckId(String orderId) {
+        return Optional.ofNullable(identityPreOrderChecks.get(orderId));
+    }
+
+    @Override
+    public void saveIdentityPreOrderCheckId(String orderId, String preOrderCheckId) {
+        identityPreOrderChecks.put(orderId, preOrderCheckId);
     }
 
     @Override
