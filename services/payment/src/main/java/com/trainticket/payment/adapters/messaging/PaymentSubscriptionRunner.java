@@ -22,7 +22,7 @@ public class PaymentSubscriptionRunner implements CommandLineRunner {
     @Override
     public void run(String... args) {
         subscriber.subscribe(
-            List.of(RedisStreamNames.BOOKING_ORCHESTRATION_STREAM, RedisStreamNames.POST_SALES_STREAM),
+            List.of(RedisStreamNames.BOOKING_ORCHESTRATION_STREAM, RedisStreamNames.POST_SALES_STREAM, RedisStreamNames.PAYMENT_CHANNEL_STREAM),
             RedisStreamNames.PAYMENT_GROUP,
             "payment-" + UUID.randomUUID(),
             handler

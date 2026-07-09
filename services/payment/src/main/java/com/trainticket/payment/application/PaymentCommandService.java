@@ -86,9 +86,18 @@ public class PaymentCommandService {
 
     @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId) {
+        return captureIntent(paymentIntentId, idempotencyKey, correlationId, null);
+    }
+
+    @Transactional
+    public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, String requestedChannel) {
         PaymentIntent intent = getIntent(paymentIntentId);
         int before = intent.domainEvents().size();
-        intent.capture(intent.amount().subtract(intent.capturedAmount()), DEFAULT_CHANNEL, "txn-" + idempotencyKey, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        String channel = requestedChannel == null || requestedChannel.isBlank() ? DEFAULT_CHANNEL : requestedChannel;
+        if (!DEFAULT_CHANNEL.equals(channel)) {
+            validateSimChannel(channel);
+        }
+        intent.capture(intent.amount().subtract(intent.capturedAmount()), channel, "txn-" + idempotencyKey, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
@@ -119,8 +128,60 @@ public class PaymentCommandService {
         return refund;
     }
 
-    public ReservationPaymentRequest getReservationPaymentRequest(String segmentBookingId) {
-        return reservationPaymentRequestRepository.findBySegmentBookingId(requireText(segmentBookingId, "segmentBookingId"))
+
+    @Transactional
+    public PaymentIntent captureIntentFromChannel(String paymentIntentId, Money amount, String channel, String channelTransactionId, String channelOrderId, String causationId, String correlationId) {
+        validateSimChannel(channel);
+        PaymentIntent intent = getIntent(paymentIntentId);
+        if (intent.status().name().equals("CAPTURED")) {
+            return intent;
+        }
+        int before = intent.domainEvents().size();
+        intent.capture(amount, channel, channelTransactionId, Instant.now(clock), commandId(channelOrderId), causationId, correlationId);
+        paymentIntentRepository.save(intent);
+        publishNewEvents(intent.domainEvents(), before);
+        return intent;
+    }
+
+    @Transactional
+    public PaymentIntent failIntentFromChannel(String paymentIntentId, String reasonCode, String causationId, String correlationId) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        int before = intent.domainEvents().size();
+        intent.fail(reasonCode, false, Instant.now(clock), commandId(causationId), causationId, correlationId);
+        paymentIntentRepository.save(intent);
+        publishNewEvents(intent.domainEvents(), before);
+        return intent;
+    }
+
+    @Transactional
+    public Refund settleRefundFromChannel(String refundId, String paymentIntentId, Money amount, String channelRefundTransactionId, String causationId, String correlationId) {
+        Refund refund = getRefund(refundId);
+        PaymentIntent intent = getIntent(paymentIntentId);
+        if (refund.status().name().equals("SETTLED")) {
+            return refund;
+        }
+        if (!refund.amount().equals(amount)) {
+            throw new DomainRuleViolation("channel refund amount does not match requested refund amount");
+        }
+        int beforeRefund = refund.domainEvents().size();
+        refund.settle(intent, channelRefundTransactionId, Instant.now(clock), commandId(causationId), causationId, correlationId);
+        paymentIntentRepository.save(intent);
+        refundRepository.save(refund);
+        publishNewEvents(refund.domainEvents(), beforeRefund);
+        return refund;
+    }
+
+    @Transactional
+    public Refund failRefundFromChannel(String refundId, String reasonCode, String causationId, String correlationId) {
+        Refund refund = getRefund(refundId);
+        int before = refund.domainEvents().size();
+        refund.fail(reasonCode, false, Instant.now(clock), commandId(causationId), causationId, correlationId);
+        refundRepository.save(refund);
+        publishNewEvents(refund.domainEvents(), before);
+        return refund;
+    }
+
+    public ReservationPaymentRequest getReservationPaymentRequest(String segmentBookingId) {        return reservationPaymentRequestRepository.findBySegmentBookingId(requireText(segmentBookingId, "segmentBookingId"))
             .orElseThrow(() -> new NotFoundException("reservation payment request not found"));
     }
 
@@ -145,7 +206,14 @@ public class PaymentCommandService {
     }
 
     private static String commandId(String idempotencyKey) {
-        return "cmd-" + requireText(idempotencyKey, "idempotencyKey");
+        String value = requireText(idempotencyKey, "idempotencyKey");
+        return value.startsWith("cmd-") || value.startsWith("evt-") ? value : "cmd-" + value;
+    }
+
+    private static void validateSimChannel(String channel) {
+        if (!"ALIPAY_SIM".equals(channel) && !"WECHAT_SIM".equals(channel) && !"UNIONPAY_SIM".equals(channel)) {
+            throw new DomainRuleViolation("unsupported payment channel");
+        }
     }
 
     private static String requireText(String value, String name) {

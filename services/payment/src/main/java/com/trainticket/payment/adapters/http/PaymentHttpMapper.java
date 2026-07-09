@@ -52,12 +52,15 @@ final class PaymentHttpMapper {
         return new CancelPaymentIntentResponse(intent.paymentIntentId(), intent.status().name(), lastEventAt(intent));
     }
 
-    static CapturePaymentResponse captureResponse(PaymentIntent intent) {
-        return new CapturePaymentResponse(intent.paymentIntentId(), intent.status().name(), money(intent.capturedAmount()), lastChannelTransactionId(intent));
+    static CapturePaymentResponse captureResponse(PaymentIntent intent, ChannelRefJson channelRef) {
+        String txn = lastChannelTransactionId(intent);
+        ChannelRefJson ref = channelRef == null ? null : new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), channelRef.channelRefundId(), txn, channelRef.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        return new CapturePaymentResponse(intent.paymentIntentId(), intent.status().name(), money(intent.capturedAmount()), txn, ref);
     }
 
-    static RefundResponse refundResponse(Refund refund) {
-        return new RefundResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name());
+    static RefundResponse refundResponse(Refund refund, ChannelRefJson channelRef) {
+        ChannelRefJson ref = channelRef == null ? null : new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), refund.refundId(), channelRef.channelTransactionId(), refund.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        return new RefundResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), ref);
     }
 
     static RefundDetailsResponse refundDetails(Refund refund) {

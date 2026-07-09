@@ -58,6 +58,14 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             handleSegmentReservationRequested(envelope);
         } else if ("PostSalesApproved".equals(envelope.eventType())) {
             handlePostSalesApproved(envelope);
+        } else if ("ChannelOrderSucceeded".equals(envelope.eventType()) || "ChannelOrderRecoveryDetected".equals(envelope.eventType())) {
+            handleChannelOrderSucceeded(envelope);
+        } else if ("ChannelOrderFailed".equals(envelope.eventType()) || "ChannelOrderMissed".equals(envelope.eventType())) {
+            handleChannelOrderFailed(envelope);
+        } else if ("ChannelRefundSucceeded".equals(envelope.eventType()) || "ChannelRefundRecoveryDetected".equals(envelope.eventType())) {
+            handleChannelRefundSucceeded(envelope);
+        } else if ("ChannelRefundFailed".equals(envelope.eventType()) || "ChannelRefundMissed".equals(envelope.eventType())) {
+            handleChannelRefundFailed(envelope);
         }
     }
 
@@ -72,6 +80,57 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             payload.requiredText("idempotencyKey"),
             envelope.correlationId(),
             envelope.occurredAt()
+        );
+    }
+
+    private void handleChannelOrderSucceeded(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        Money amount = "ChannelOrderRecoveryDetected".equals(envelope.eventType())
+            ? payload.requiredMoney("recoveredAmount")
+            : payload.requiredMoney("succeededAmount");
+        paymentCommands.captureIntentFromChannel(
+            payload.requiredText("paymentIntentId"),
+            amount,
+            payload.requiredText("channel"),
+            payload.requiredText("channelTransactionId"),
+            payload.requiredText("channelOrderId"),
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+    }
+
+    private void handleChannelOrderFailed(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        paymentCommands.failIntentFromChannel(
+            payload.requiredText("paymentIntentId"),
+            envelope.eventType(),
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+    }
+
+    private void handleChannelRefundSucceeded(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        Money amount = "ChannelRefundRecoveryDetected".equals(envelope.eventType())
+            ? payload.requiredMoney("recoveredAmount")
+            : payload.requiredMoney("succeededAmount");
+        paymentCommands.settleRefundFromChannel(
+            payload.requiredText("refundId"),
+            payload.requiredText("paymentIntentId"),
+            amount,
+            payload.requiredText("channelRefundTransactionId"),
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+    }
+
+    private void handleChannelRefundFailed(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        paymentCommands.failRefundFromChannel(
+            payload.requiredText("refundId"),
+            envelope.eventType(),
+            envelope.eventId(),
+            envelope.correlationId()
         );
     }
 

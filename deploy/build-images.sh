@@ -17,6 +17,7 @@ services=(
   identity-verification
   booking-orchestration
   payment
+  payment-channel
   provider-integration
   entitlement-ticketing
   seat-assignment

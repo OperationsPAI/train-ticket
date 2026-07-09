@@ -279,6 +279,30 @@
       "rationale": "Java is a strong default for money state machines, idempotency, and audit-heavy flows."
     },
     {
+      "id": "payment-channel",
+      "path": "services/payment-channel",
+      "domain": "Payment Channel",
+      "language": "golang",
+      "runtime": "go",
+      "phase": "adr-0003-wave-a",
+      "status": "integration-ready",
+      "priority": "P0",
+      "workPackages": [
+        "REQ-142"
+      ],
+      "docs": [
+        "docs/08-contracts/api/payment-channel.md",
+        "docs/08-contracts/events/payment-channel.md"
+      ],
+      "owns": [
+        "ChannelOrder",
+        "ChannelRefund",
+        "ChannelStatement",
+        "ReconciliationDiscrepancy"
+      ],
+      "rationale": "Go service implements deterministic SIM payment channel boundary with outbox-backed facts."
+    },
+    {
       "id": "provider-integration",
       "path": "services/provider-integration",
       "domain": "Provider Integration",
@@ -790,6 +814,5 @@
         "docs/08-contracts/events/identity-verification.md"
       ]
     }
-
   ]
 }

@@ -1353,3 +1353,4 @@ requirements:
     depends_on: [REQ-108, REQ-109, REQ-110, REQ-112, REQ-114, REQ-119]
     confidence: confirmed
     source: "docs/03-ddd-final/implementation-roadmap.md"
+  - {id: REQ-142, title: "Payment Channel service implementation", status: implemented, ref: services/payment-channel}

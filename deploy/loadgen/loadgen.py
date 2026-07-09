@@ -733,9 +733,12 @@ class CustomerSim:
                 return "cancelled_before_payment"
             return "abandoned_before_payment"
 
+        channel_ref = {"channel": "ALIPAY_SIM"}
+        if self.chance("p_payment_channel_missed_seed"):
+            channel_ref["faultSeedRef"] = "MISSED_ORDER:loadgen"
         await self.api.request("POST", "payment",
                                f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
-                               {}, ok=(200, 201), step="payment-capture")
+                               {"channelRef": channel_ref}, ok=(200, 201), step="payment-capture")
 
         # ticket issuing is a platform/staff action — enqueue & wait
         tick = {"kind": "ticketing", "order": order_id, "sb": sb,
@@ -1097,6 +1100,8 @@ class CustomerSim:
             await self.assert_get("ancillary-service", f"/api/v1/ancillary-order-items/{quote(refs['ancillary_order_item'])}", "ancillaryOrderItemId", refs["ancillary_order_item"], "tail-get-anc-item")
         if refs.get("payment_intent"):
             await self.assert_get("payment", f"/api/v1/payment-intents/{quote(refs['payment_intent'])}", "paymentIntentId", refs["payment_intent"], "tail-get-payment-intent")
+        if self.long_tail_chance("p_payment_channel_read_probe", 0.10):
+            await self.assert_get("payment-channel", "/api/v1/channel-statements?channel=ALIPAY_SIM&limit=5&offset=0", None, None, "tail-list-channel-statements")
         if order_id and refs.get("entitlement"):
             page = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0", None, None, "tail-list-entitlements")
             self.assert_list_contains(page, "entitlementId", refs["entitlement"], "tail-list-entitlements")
