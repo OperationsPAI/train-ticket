@@ -73,6 +73,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'wallet_promotion')\gexec
     SELECT 'CREATE DATABASE dispatch'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'dispatch')\gexec
+    SELECT 'CREATE DATABASE disruption_recovery'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'disruption_recovery')\gexec
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
