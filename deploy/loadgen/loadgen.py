@@ -54,6 +54,9 @@ def uuid7() -> str:
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+def iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 def weighted_choice(rng: random.Random, weights: dict[str, float]) -> str:
     items = [(k, float(v)) for k, v in weights.items() if float(v) > 0]
@@ -673,6 +676,8 @@ class CustomerSim:
             "quote": quote.get("quoteId"), "service": found.get("service"),
             "place": route.get("origin_place"), "node": found.get("origin_node"),
         }
+        ancillary_refs = await self.maybe_purchase_ancillary(order_id, travelers[0], found["segment"])
+        common_refs.update(ancillary_refs)
         await self.maybe_read_probe(common_refs)
         if resv.get("no_capacity"):
             return await self.handle_no_capacity_waitlist(
@@ -992,6 +997,14 @@ class CustomerSim:
             if got != refs["offer"]:
                 self.stats.errors["long_tail:tail-get-offer:id_mismatch"] += 1
                 raise StepFailed("tail-get-offer", f"offer id {got} expected {refs['offer']}")
+        if refs.get("ancillary_catalog") and self.long_tail_chance("p_ancillary_read_probe", 0.20):
+            await self.assert_get("ancillary-service", f"/api/v1/ancillary-catalog-items/{quote(refs['ancillary_catalog'])}", "catalogItemId", refs["ancillary_catalog"], "tail-get-anc-catalog")
+        if refs.get("ancillary_offer") and self.long_tail_chance("p_ancillary_read_probe", 0.20):
+            await self.assert_get("ancillary-service", f"/api/v1/ancillary-offers/{quote(refs['ancillary_offer'])}", "ancillaryOfferId", refs["ancillary_offer"], "tail-get-anc-offer")
+        if refs.get("ancillary_order_item") and order_id and self.long_tail_chance("p_ancillary_read_probe", 0.20):
+            page = await self.assert_get("ancillary-service", f"/api/v1/ancillary-order-items?journeyOrderId={quote(order_id)}&limit=20&offset=0", None, None, "tail-list-anc-items")
+            self.assert_list_contains(page, "ancillaryOrderItemId", refs["ancillary_order_item"], "tail-list-anc-items")
+            await self.assert_get("ancillary-service", f"/api/v1/ancillary-order-items/{quote(refs['ancillary_order_item'])}", "ancillaryOrderItemId", refs["ancillary_order_item"], "tail-get-anc-item")
         if refs.get("payment_intent"):
             await self.assert_get("payment", f"/api/v1/payment-intents/{quote(refs['payment_intent'])}", "paymentIntentId", refs["payment_intent"], "tail-get-payment-intent")
         if order_id and refs.get("entitlement"):
@@ -1044,6 +1057,28 @@ class CustomerSim:
             if refs.get("benefit"):
                 self.assert_list_contains(page, "benefitId", refs["benefit"], "tail-list-benefits")
 
+
+
+    async def maybe_purchase_ancillary(self, order_id: str, traveler_ref: str, segment_ref: str) -> dict[str, str]:
+        if not self.chance_default("p_ancillary_purchase", 0.03):
+            return {}
+        suffix = uuid7()
+        now = datetime.now(timezone.utc)
+        catalog_body = {
+            "serviceType": "MEAL", "displayName": f"Loadgen meal {suffix}", "attachmentScope": "SEGMENT",
+            "modalities": ["TRAIN"], "price": {"currency": "CNY", "minorUnits": 1200},
+            "salesWindow": {"startAt": iso(now - timedelta(hours=1)), "endAt": iso(now + timedelta(days=1))},
+            "purchaseCutoffHoursBeforeDeparture": 1, "eligibilityRuleVersion": "min-v1",
+            "requiresEntitlementRef": True, "requiresSegmentRef": True, "fulfillmentMethod": "VOUCHER",
+        }
+        _, catalog = await self.api.request("POST", "ancillary-service", "/api/v1/ancillary-catalog-items", catalog_body, ok=(201,), step="anc-catalog")
+        await self.api.request("POST", "ancillary-service", f"/api/v1/ancillary-catalog-items/{catalog['catalogItemId']}/publish", {"approvalRef": "loadgen", "expectedVersion": catalog.get("version", 1)}, ok=(200,), step="anc-publish")
+        _, draft = await self.api.request("POST", "ancillary-service", "/api/v1/ancillary-offers", {"catalogItemId": catalog["catalogItemId"], "journeyOrderId": order_id, "travelerRef": traveler_ref, "segmentRef": segment_ref, "entitlementRef": f"ent-{suffix}", "departureAt": iso(now + timedelta(hours=4)), "quantity": 1}, ok=(201,), step="anc-draft")
+        _, offer = await self.api.request("POST", "ancillary-service", f"/api/v1/ancillary-offers/{draft['ancillaryOfferId']}/quote", {"expectedVersion": draft.get("offerVersion", 1), "validitySeconds": 600}, ok=(200,), step="anc-quote")
+        _, item = await self.api.request("POST", "ancillary-service", f"/api/v1/ancillary-offers/{offer['ancillaryOfferId']}/select", {"journeyOrderId": order_id, "expectedVersion": offer.get("offerVersion", 2)}, ok=(201,), step="anc-select")
+        await self.api.request("POST", "ancillary-service", f"/api/v1/ancillary-order-items/{item['ancillaryOrderItemId']}/confirm", {"reasonCode": "LOADGEN"}, ok=(200,), step="anc-confirm-pending")
+        _, confirmed = await self.api.request("POST", "ancillary-service", f"/api/v1/ancillary-order-items/{item['ancillaryOrderItemId']}/confirm", {"confirmationRef": f"anc-conf-{suffix}"}, ok=(200,), step="anc-confirm")
+        return {"ancillary_catalog": catalog["catalogItemId"], "ancillary_offer": offer["ancillaryOfferId"], "ancillary_order_item": confirmed["ancillaryOrderItemId"]}
 
     async def maybe_wallet_purchase_benefit(self, account_id: str) -> dict[str, str]:
         if self.rng.random() >= float(self.wallet_cfg.get("p_purchase_reserve_redeem", 0.02)):
