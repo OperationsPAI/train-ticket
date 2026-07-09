@@ -11,7 +11,9 @@ export class PostgresAncillaryRepository implements AncillaryRepository {
   async saveOffer(snapshot: AncillaryOfferSnapshot): Promise<void> { await save(new SnapshotRepository<AncillaryOfferSnapshot>(this.db, "ancillary_offers"), snapshot.ancillaryOfferId, snapshot, snapshot.offerVersion); }
   async getOffer(ancillaryOfferId: string): Promise<AncillaryOfferSnapshot | undefined> { return (await new SnapshotRepository<AncillaryOfferSnapshot>(this.db, "ancillary_offers").get(ancillaryOfferId))?.data; }
   async listExpiredQuotedOffers(now: Date, limit: number): Promise<readonly AncillaryOfferSnapshot[]> {
-    const result = await this.db.query("SELECT data FROM ancillary_offers WHERE data->>'status' IN ('QUOTED','SELECTED') AND (data->>'expiresAt')::timestamptz <= $1 ORDER BY id LIMIT $2", [now.toISOString(), limit]);
+    // Text comparison matches the text-ordered index; RFC3339 UTC compares
+    // chronologically as text (REQ-081A ruling).
+    const result = await this.db.query("SELECT data FROM ancillary_offers WHERE data->>'status' IN ('QUOTED','SELECTED') AND data->>'expiresAt' <= $1 ORDER BY id LIMIT $2", [now.toISOString(), limit]);
     return result.rows.map((row: { data: AncillaryOfferSnapshot }) => row.data);
   }
   async saveOrderItem(snapshot: AncillaryOrderItemSnapshot): Promise<void> { await save(new SnapshotRepository<AncillaryOrderItemSnapshot>(this.db, "ancillary_order_items"), snapshot.ancillaryOrderItemId, snapshot, snapshot.aggregateVersion); }
