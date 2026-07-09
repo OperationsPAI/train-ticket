@@ -1,0 +1,158 @@
+# Load generator configuration.
+# Every probability / weight in here is a tunable hyperparameter; the code
+# never hardcodes a distribution. Weights need not sum to 1 — they are
+# normalized at runtime.
+
+target:
+  # In-cluster service DNS. {service} is substituted per call.
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"       # backoffice driver only (saga discovery)
+  request_timeout_seconds: 10
+
+run:
+  workers: 6                  # concurrent virtual customers
+  duration_seconds: 0         # 0 = run until stopped
+  seed: null                  # set an int for reproducible randomness
+  think_time_seconds: { min: 0.5, max: 3.0 }   # uniform pause between steps
+  session_pause_seconds: { min: 1.0, max: 5.0 } # pause between journeys
+  stats_interval_seconds: 30
+  state_file: "/data/loadgen-state.json"  # entity registry; "" disables persistence
+
+# ---------------------------------------------------------------------------
+# Journey mix — relative weights of what a virtual customer does next.
+# ---------------------------------------------------------------------------
+journey_mix:
+  browse: 30        # search (+ maybe quote) and leave
+  purchase: 40      # full funnel: traveler -> search -> quote -> offer -> order -> pay -> ticket
+  refund: 8         # refund one of their own completed purchases
+  change: 5         # change case on a completed purchase
+  fulfillment: 7    # board + complete (or no-show) with an issued entitlement
+  support: 4        # open a support case about one of their orders
+  legacy: 6         # whole lifecycle through the legacy ACL facade
+  ride: 5           # dispatch ride request lifecycle
+  disruption: 1     # low-frequency ops disruption recovery drill
+  transfer: 1        # low-frequency transfer-management drill
+
+# ---------------------------------------------------------------------------
+# Within-journey behavior knobs.
+# ---------------------------------------------------------------------------
+behavior:
+  # identity
+  p_new_account: 0.35         # else: reuse an account from the registry (re-validated via GET)
+  p_new_traveler: 0.50        # else: reuse one of the account's travelers (GET-validated)
+  p_second_traveler: 0.15     # purchase for two travelers instead of one
+
+  # funnel abandonment (customer walks away without error)
+  p_abandon_after_search: 0.20
+  p_abandon_after_quote: 0.15
+  p_abandon_before_payment: 0.10
+  p_cancel_payment_intent_on_abandon: 0.20  # subset explicitly POSTs payment-intents/{id}/cancel
+  p_cancel_order_before_payment: 0.10       # subset explicitly POSTs journey-orders/{id}/cancel
+  p_refund_get_after_completion: 0.50       # after refund approval, poll payment events and GET refunds/{id}
+  p_ancillary_purchase: 0.03                  # small add-on branch in purchase journeys
+
+  # how long a customer waits for a staff-handled step (reservation,
+  # ticketing, risk review) before giving up
+  staff_wait_seconds: 90
+
+  # fulfillment variant
+  p_no_show: 0.15             # else: board + complete
+
+  # legacy facade
+  p_legacy_cancel: 0.30       # cancel after ticket_issue instead of boarding
+
+  # dispatch ride branch probabilities
+  ride_branches: { complete: 0.75, driver_cancel_reassign: 0.10, user_cancel: 0.10, no_show: 0.05 }
+
+  # waitlist fallback for purchase journeys that hit NO_AVAILABLE_CAPACITY.
+  # Conservative defaults: convert only some sold-out traffic and cancel rarely.
+  p_waitlist_on_no_capacity: 0.30
+  p_waitlist_cancel: 0.05
+  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
+  transfer_contract_mix: { PROTECTED: 0.55, SELF_TRANSFER: 0.45 }
+  p_transfer_delay: 0.35
+  p_transfer_missed: 0.25
+  waitlist_deadline_minutes: 30
+
+  # sales channel weights. NOTE: fare rule sets are published per channel;
+  # out of the box only WEB has published rules, so other channels will get
+  # quote failures unless you publish rule sets for them first.
+  channels: { WEB: 1.0 }
+
+  # legacy seat types
+  seat_types: { SECOND: 0.8, FIRST: 0.2 }
+
+  # traveler identity pools used when creating (mock) travelers
+  traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
+
+# ---------------------------------------------------------------------------
+# Staff simulator — the platform/agent actor pool (simulated like customers).
+# Staff process queues: saga reservation driving, ticket issuing, manual
+# risk review, support case handling.
+# ---------------------------------------------------------------------------
+staff:
+  workers: 2
+  think_time_seconds: { min: 0.5, max: 2.0 }   # agent reaction time
+  queue_poll_seconds: 0.5
+  p_risk_approve: 0.50        # manual review lifts the block, else rejected
+  p_support_assign: 0.80
+  p_support_resolve: 0.60
+  p_support_assign_resolve_branch: 0.70     # existing assign/resolve path
+  p_support_classify_escalate_branch: 0.15  # classify -> assign -> escalate lifecycle coverage
+  p_support_classify_close_branch: 0.15     # classify -> close, optionally reopen -> close
+  p_support_reopen_after_close: 0.10        # only after the classify/close branch
+
+# ---------------------------------------------------------------------------
+# Long-tail probes — conservative low-frequency coverage for read endpoints.
+# Reads are attached to real entities just produced by normal journeys; ID
+# mismatches are counted in errors. Disable with enabled: false.
+# ---------------------------------------------------------------------------
+long_tail:
+  enabled: true
+  p_read_probe_after_journey: 0.05
+  p_ancillary_read_probe: 0.20
+
+# ---------------------------------------------------------------------------
+# Operations-side actor — runs every few minutes and drives read-only reporting
+# and finance queries plus very low-frequency supplier-catalog master-data writes.
+# Idempotency keys are generated per command by the API client (UUIDv7).
+# ---------------------------------------------------------------------------
+ops:
+  enabled: true
+  interval_seconds: { min: 180, max: 420 }
+  dashboard_id: dash-revenue
+  p_supplier_catalog_write: 0.25
+  p_wallet_manual_issue: 0.20
+  wallet_manual_issue_minor_units: 100
+
+# ---------------------------------------------------------------------------
+# Bootstrap — ops-side inventory guarantees (NOT customer actions). Runs once
+# at startup; idempotent. Ensures searches can actually find trips.
+# ---------------------------------------------------------------------------
+bootstrap:
+  enabled: true
+  # city pool drawn from in order; places/nodes are created only if a place
+  # with the same code is not already registered (discovered via list API).
+  cities:
+    - { name: Beijing,  code: BJS }
+    - { name: Shanghai, code: SHA }
+    - { name: Guangzhou, code: CAN }
+    - { name: Hangzhou, code: HGH }
+  # scheduled services are ensured between consecutive random city pairs for
+  # each date below (created only if the registry doesn't know the tuple).
+  departure_dates: ["2026-08-01", "2026-08-02"]
+  services_per_date: 2
+  service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
+
+# Poll tuning for asynchronous state (saga completion, order confirmation).
+polling:
+  attempts: 8
+  interval_seconds: 4
+
+wallet_promotion:
+  p_purchase_reserve_redeem: 0.02
+  purchase_benefit_minor_units: 100
+
+waitlist:
+  poll_attempts: 8
+  poll_interval_seconds: 4

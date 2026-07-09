@@ -8,3 +8,10 @@ resources:
   - otel-collector.yaml
   - jaeger.yaml
   - services.yaml
+  - loadgen.yaml
+
+configMapGenerator:
+  - name: loadgen-config
+    namespace: train-ticket
+    files:
+      - config.yaml=loadgen-config.yaml

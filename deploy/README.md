@@ -75,10 +75,13 @@ deploy/e2e/12-restart.sh
 ## Resident load generator
 
 `deploy/loadgen/` contains the resident load generator. Use
-`deploy/loadgen/run.sh` to build, kind-load, apply, and follow stats, or apply
-`deploy/loadgen/loadgen.yaml` after loading `train-ticket/loadgen:local`. The
-restart certification script pauses this deployment before comparing snapshot
-row counts and resumes it afterward.
+`deploy/loadgen/run.sh` to build, kind-load, `apply -k`, and follow stats, or
+run `kubectl -n train-ticket apply -k deploy/k8s` after loading
+`train-ticket/loadgen:local`. The loadgen manifest and hashed ConfigMap are
+managed by `deploy/k8s`; compatibility symlinks remain under `deploy/loadgen/`
+for local editing and existing references. The restart certification script
+pauses this deployment before comparing snapshot row counts and resumes it
+afterward.
 
 ## Smoke check
 
@@ -91,8 +94,8 @@ kubectl -n train-ticket get pods \
   -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[*].ready,PHASE:.status.phase'
 ```
 
-A rendered-manifest sanity check should report 25 Deployments (23 services +
-Redis + PostgreSQL):
+A rendered-manifest sanity check should report 26 Deployments (23 services +
+Redis + PostgreSQL + loadgen):
 
 ```bash
 kubectl kustomize deploy/k8s > /tmp/k8s-out.yaml
