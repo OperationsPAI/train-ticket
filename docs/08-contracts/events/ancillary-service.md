@@ -465,8 +465,9 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | **Consumer group** | `ancillary-service` |
 | **Purpose** | Automatically cancel non-terminal `AncillaryOrderItem` records associated with the cancelled Journey Order. |
 
-Required consumed payload fields from the Journey Order event are `journeyOrderId`
-and the envelope `eventId`/`occurredAt`. Ancillary Service MUST process this event
+Required consumed payload fields from the Journey Order event are `orderId`
+(the producer-contract field name in events/journey-order.md, mapped internally
+to this domain's `journeyOrderId`) and the envelope `eventId`/`occurredAt`. Ancillary Service MUST process this event
 through its inbox/consumed-event log. For each associated order item not already
 terminal (`FULFILLED`, `REFUNDED`, or terminal `CANCELLED`), it emits
 `AncillaryOrderItemCancelled` with:
