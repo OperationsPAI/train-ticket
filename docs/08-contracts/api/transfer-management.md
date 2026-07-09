@@ -19,10 +19,10 @@ Activation-wave rulings:
 - `Connection` uses the nine-state runtime machine below. RULING: once a
   connection reaches `MISSED`, it MUST NOT transition back to `FEASIBLE`; it may
   only converge to `RECOVERED`, `SELF_HANDLED`, or a terminal state.
-- Fulfillment does not currently publish segment-level delay/arrival/cancelled
-  facts. Runtime inputs are accepted through the system/ops endpoint
-  `POST /api/v1/segment-status-reports`. Future Fulfillment events may replace
-  this adapter without changing aggregate invariants.
+- Fulfillment publishes segment-level `SegmentDelayed`, `SegmentArrived`, and
+  `SegmentCancelled` facts. Runtime inputs are accepted from those events and
+  through the system/ops fallback endpoint `POST /api/v1/segment-status-reports`;
+  both paths share aggregate invariants.
 - Evaluation reads the itinerary snapshot from Trip Planning by `itineraryRef`,
   uses this domain's published MCT rules, and derives schedule windows from the
   itinerary snapshot plus accepted segment-status reports. Place Network
@@ -410,10 +410,12 @@ are available.
 
 **Idempotency:** REQUIRED.
 
-This endpoint is the activation-wave runtime input channel for delay, arrival,
-and cancellation facts. It is intentionally compatible with future Fulfillment
-segment events: the report body is the material that will later be mapped from
-those events.
+This endpoint is retained as the operations fallback runtime input channel for
+delay, arrival, and cancellation facts. The primary event-driven path consumes
+Fulfillment `SegmentDelayed`, `SegmentArrived`, and `SegmentCancelled` events and
+maps them to the same application path with `sourceSystem=FULFILLMENT-EVENT`.
+If the event-driven path reaches a Disruption Recovery downstream failure, the
+consumer logs WARN and nacks for retry instead of applying HTTP `503` semantics.
 
 **Request:**
 
@@ -422,7 +424,7 @@ those events.
 | `segmentRef` | string | yes | Segment being reported. |
 | `reportType` | enum | yes | `DELAY`, `ARRIVAL`, or `CANCELLED`. |
 | `reportedBy` | object | yes | ActorRef; `SYSTEM` and `OPERATIONS` are accepted. |
-| `sourceSystem` | enum | yes | `OPERATIONS` or `ADMIN` in this wave; future `FULFILLMENT` may replace this path. |
+| `sourceSystem` | enum | yes | `OPERATIONS` or `ADMIN` for HTTP fallback; event-mapped reports use `FULFILLMENT-EVENT`. |
 | `sourceRecordId` | string | yes | Source record ID for replay detection. |
 | `observedAt` | RFC3339 UTC | yes | Observation time. |
 | `estimatedArrivalAt` | RFC3339 UTC | for `DELAY` | Updated ETA. |
@@ -716,8 +718,6 @@ same outbound idempotency key.
 - `TransferRiskPolicy` CRUD/simulation is deferred; the built-in fixed policy
   version is always `builtin-v1`.
 - Place Network topology/path and external map-time integration are deferred.
-- Fulfillment segment events are deferred and may replace `segment-status-reports`
-  later.
 - Notification, Reporting, Customer Service, Offer Management, and Journey Order
   consumption of Transfer Management events is documented as intended but not
   registered as active downstream consumption in this wave.

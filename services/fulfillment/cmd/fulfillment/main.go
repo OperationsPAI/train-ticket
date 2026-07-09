@@ -62,7 +62,7 @@ func main() {
 	transactor := adapterpg.NewTransactor(pool)
 	repo := adapterpg.NewFulfillmentRepositoryWithProvider(transactor)
 	consumed := adapterpg.NewProcessedEventsWithProvider(transactor)
-	service := application.NewService(repo, adapterpg.NewOutboxPublisherWithProvider(transactor), consumed, nil, nil).WithUnitOfWork(transactor.Within)
+	service := application.NewService(repo, adapterpg.NewOutboxPublisherWithProvider(transactor), consumed, nil, nil).WithSegmentStatusRepository(repo).WithUnitOfWork(transactor.Within)
 
 	if subscriber, err := messaging.NewSubscriberFromURL(os.Getenv("REDIS_URL")); err == nil {
 		consumer := os.Getenv("FULFILLMENT_CONSUMER_NAME")

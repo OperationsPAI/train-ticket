@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/trainticket/greenfield/platform/go-kit/httpkit"
 	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/application"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
@@ -24,7 +25,7 @@ type Handler struct {
 func Router() *gin.Engine {
 	repo := application.NewInMemoryRepository()
 	publisher := application.NoopPublisher{}
-	service := application.NewService(repo, publisher, application.NewInMemoryConsumedEventLog(), nil, nil)
+	service := application.NewService(repo, publisher, application.NewInMemoryConsumedEventLog(), nil, nil).WithSegmentStatusRepository(repo)
 	return RouterWithService(service)
 }
 
@@ -54,6 +55,7 @@ func RegisterRoutes(router gin.IRouter, service *application.Service, store idem
 	router.POST("/api/v1/fulfillment-records/boarding", idempotent, h.verifyBoarding)
 	router.POST("/api/v1/fulfillment-records/completions", idempotent, h.fulfillmentCompleted)
 	router.POST("/api/v1/fulfillment-records/no-show", idempotent, h.recordNoShow)
+	router.POST("/api/v1/segment-status", idempotent, h.reportSegmentStatus)
 	router.GET("/api/v1/fulfillment-records/:fulfillmentRecordId", h.getFulfillmentRecord)
 }
 
@@ -163,6 +165,64 @@ func (h *Handler) recordNoShow(ctx *gin.Context) {
 	ctx.JSON(http.StatusCreated, result)
 }
 
+type segmentStatusRequest struct {
+	SegmentRef          string `json:"segmentRef"`
+	ScheduledServiceRef string `json:"scheduledServiceRef"`
+	ServiceDate         string `json:"serviceDate"`
+	Status              string `json:"status"`
+	EstimatedArrivalAt  string `json:"estimatedArrivalAt"`
+	ArrivedAt           string `json:"arrivedAt"`
+	CancelledAt         string `json:"cancelledAt"`
+	ObservedAt          string `json:"observedAt"`
+	SourceSystem        string `json:"sourceSystem"`
+}
+
+func (h *Handler) reportSegmentStatus(ctx *gin.Context) {
+	var req segmentStatusRequest
+	if err := decodeJSON(ctx, &req); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	observedAt, err := parseRequiredTime(req.ObservedAt, "observedAt")
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	estimatedArrivalAt, err := parseOptionalTime(req.EstimatedArrivalAt, "estimatedArrivalAt")
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	arrivedAt, err := parseOptionalTime(req.ArrivedAt, "arrivedAt")
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	cancelledAt, err := parseOptionalTime(req.CancelledAt, "cancelledAt")
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+		return
+	}
+	idem, _ := idempotency.FromContext(ctx)
+	result, err := h.svc.ReportSegmentStatus(ctx.Request.Context(), application.ReportSegmentStatusCommand{
+		CommandID:           "cmd-" + idem.Key,
+		SegmentRef:          domain.SegmentRef(req.SegmentRef),
+		ScheduledServiceRef: req.ScheduledServiceRef,
+		ServiceDate:         req.ServiceDate,
+		Status:              domain.SegmentOperationalStatus(req.Status),
+		EstimatedArrivalAt:  estimatedArrivalAt,
+		ArrivedAt:           arrivedAt,
+		CancelledAt:         cancelledAt,
+		ObservedAt:          observedAt,
+		SourceSystem:        domain.SegmentStatusSourceSystem(req.SourceSystem),
+	}, commandMetadata(ctx))
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, result)
+}
+
 func (h *Handler) getFulfillmentRecord(ctx *gin.Context) {
 	record, err := h.svc.GetFulfillmentRecord(ctx.Request.Context(), domain.FulfillmentRecordID(ctx.Param("fulfillmentRecordId")))
 	if err != nil {
@@ -241,6 +301,18 @@ func decodeJSON(ctx *gin.Context, dest any) error {
 	return nil
 }
 
+func parseOptionalTime(value, field string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := parseRequiredTime(trimmed, field)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
 func parseRequiredTime(value, field string) (time.Time, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -255,8 +327,8 @@ func parseRequiredTime(value, field string) (time.Time, error) {
 
 func commandMetadata(ctx *gin.Context) application.CommandMetadata {
 	return application.CommandMetadata{
-		CorrelationID: goruntime.CorrelationID(ctx.Request.Context()),
-		CausationID:   goruntime.RequestID(ctx.Request.Context()),
+		CorrelationID: ids.CanonicalCorrelationID(goruntime.CorrelationID(ctx.Request.Context())),
+		CausationID:   ids.CanonicalCausationID(goruntime.RequestID(ctx.Request.Context())),
 	}
 }
 

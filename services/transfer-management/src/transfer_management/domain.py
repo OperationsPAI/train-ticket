@@ -516,7 +516,7 @@ class SegmentStatusReport:
     reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.sourceSystem not in {"OPERATIONS", "ADMIN", "FULFILLMENT"}:
+        if self.sourceSystem not in {"OPERATIONS", "ADMIN", "FULFILLMENT", "FULFILLMENT-EVENT"}:
             raise DomainError("sourceSystem is invalid")
         if self.reportType is ReportType.DELAY and self.estimatedArrivalAt is None:
             raise DomainError("estimatedArrivalAt is required for DELAY")

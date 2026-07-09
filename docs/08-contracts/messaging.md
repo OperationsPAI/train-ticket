@@ -58,7 +58,7 @@ context.
 | 9 | `payment` | `events:payment` | PaymentIntentCreated, PaymentCaptured, PaymentIntentFailed, PaymentExpired, RefundRequested, RefundSettled, RefundFailed |
 | 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementSuspended, EntitlementReinstated |
-| 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved |
+| 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved, SegmentArrived, SegmentDelayed, SegmentCancelled |
 | 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied |
 | 14 | `notification` | `events:notification` | NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled |
 | 15 | `traveler-profile` | `events:traveler-profile` | TravelerSnapshotUpdated, TravelerDocumentVerified, TravelerEligibilityChanged |
@@ -253,7 +253,7 @@ plus notification/finance/reporting fan-in.
 | 25 | `events:entitlement-ticketing` | `booking-orchestration` | EntitlementIssued to mark segment ticketed |
 | 26 | `events:entitlement-ticketing` | `notification` | Ticketing events for user notifications |
 | 26a | `events:entitlement-ticketing` | `capacity-availability` | RULING (2026-07-07): EntitlementVoided (payload `references.segmentBookingRef`) releases the matching hold promptly. Closes the refund-applied gap: post-sales flips APPLIED on `CapacityReleased`, which previously only arrived via booking-orchestration's lazy fallback (~90s). Row 30 (release on PostSalesApplied) stays as idempotent backstop. |
-| 27 | `events:fulfillment` | `transfer-management` | deferred; wave-18 runtime input uses `POST /api/v1/segment-status-reports` until Fulfillment publishes segment-level delay/arrival/cancelled facts |
+| 27 | `events:fulfillment` | `transfer-management` | subscribes only SegmentArrived, SegmentDelayed, SegmentCancelled; all other fulfillment events are explicitly ignored by transfer-management |
 | 28 | `events:fulfillment` | `entitlement-ticketing` | BoardingVerified for entitlement lifecycle |
 | 29 | `events:post-sales` | `payment` | PostSalesApproved to trigger refund |
 | 30 | `events:post-sales` | `capacity-availability` | PostSalesApplied to release capacity |

@@ -191,3 +191,63 @@ Last updated: 2026-07-05
 | `resolution` | string | yes | `UPHELD`, `REJECTED`, `INCONCLUSIVE`. |
 | `reason` | string | yes | Reason for the resolution. |
 | `resolvedBy` | string | yes | Who resolved the dispute. |
+
+### SegmentDelayed
+
+| Field | Description |
+|---|---|
+| **Producer** | fulfillment |
+| **Consumers** | transfer-management |
+| **Trigger** | Operational segment status reported through `POST /api/v1/segment-status` with `status=DELAY`. Fulfillment currently has no native delay signal source; this event is emitted from SYSTEM/OPS declaration only. |
+| **eventId** | Deterministic: `evt-` + UUID-v7-shaped SHA-256 fold of `fulfillment:SegmentDelayed:<commandId>`, where `commandId` is the `cmd-<Idempotency-Key>` command id. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `segmentRef` | `SegmentRef` | yes | Affected service segment (`seg-<uuid>`). |
+| `scheduledServiceRef` | string | yes | Scheduled service/run reference. |
+| `serviceDate` | string | yes | Operating date, `YYYY-MM-DD`. |
+| `estimatedArrivalAt` | RFC3339 UTC | yes | Latest estimated arrival. |
+| `observedAt` | RFC3339 UTC | yes | When the status was observed/declared. |
+| `sourceSystem` | string | yes | Declaration source: `SYSTEM` or `OPS`. |
+
+### SegmentArrived
+
+| Field | Description |
+|---|---|
+| **Producer** | fulfillment |
+| **Consumers** | transfer-management |
+| **Trigger** | Operational segment status reported through `POST /api/v1/segment-status` with `status=ARRIVAL`. |
+| **eventId** | Deterministic: `evt-` + UUID-v7-shaped SHA-256 fold of `fulfillment:SegmentArrived:<commandId>`. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `segmentRef` | `SegmentRef` | yes | Affected service segment (`seg-<uuid>`). |
+| `scheduledServiceRef` | string | yes | Scheduled service/run reference. |
+| `serviceDate` | string | yes | Operating date, `YYYY-MM-DD`. |
+| `arrivedAt` | RFC3339 UTC | yes | Actual arrival time. |
+| `observedAt` | RFC3339 UTC | yes | When the status was observed/declared. |
+| `sourceSystem` | string | yes | Declaration source: `SYSTEM` or `OPS`. |
+
+### SegmentCancelled
+
+| Field | Description |
+|---|---|
+| **Producer** | fulfillment |
+| **Consumers** | transfer-management |
+| **Trigger** | Operational segment status reported through `POST /api/v1/segment-status` with `status=CANCELLED`. |
+| **eventId** | Deterministic: `evt-` + UUID-v7-shaped SHA-256 fold of `fulfillment:SegmentCancelled:<commandId>`. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `segmentRef` | `SegmentRef` | yes | Affected service segment (`seg-<uuid>`). |
+| `scheduledServiceRef` | string | yes | Scheduled service/run reference. |
+| `serviceDate` | string | yes | Operating date, `YYYY-MM-DD`. |
+| `cancelledAt` | RFC3339 UTC | yes | Cancellation timestamp. |
+| `observedAt` | RFC3339 UTC | yes | When the status was observed/declared. |
+| `sourceSystem` | string | yes | Declaration source: `SYSTEM` or `OPS`. |

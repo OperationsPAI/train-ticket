@@ -13,6 +13,7 @@ import (
 )
 
 const fulfillmentRecordTable = "fulfillment_record_snapshots"
+const segmentStatusTable = "segment_status_records"
 
 type FulfillmentRepository struct{ db ContextDBProvider }
 
@@ -74,6 +75,69 @@ func (r *FulfillmentRepository) FindByEntitlementSegment(ctx context.Context, en
 		return nil, err
 	}
 	return decodeRecord(raw)
+}
+
+func (r *FulfillmentRepository) SaveSegmentStatus(ctx context.Context, record *domain.SegmentStatusRecord) (bool, error) {
+	data, err := json.Marshal(segmentStatusSnapshotFromDomain(record))
+	if err != nil {
+		return false, err
+	}
+	result, err := r.db.DBFor(ctx).Exec(ctx, `INSERT INTO segment_status_records(id, command_id, data) VALUES ($1, $2, $3) ON CONFLICT (command_id) DO NOTHING`, string(record.SegmentStatusRecordID), record.CommandID, data)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() > 0, nil
+}
+
+func (r *FulfillmentRepository) FindSegmentStatusByCommandID(ctx context.Context, commandID string) (*domain.SegmentStatusRecord, error) {
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM segment_status_records WHERE command_id = $1 LIMIT 1`, commandID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, application.ErrNotFound
+	}
+	var raw json.RawMessage
+	if err := rows.Scan(&raw); err != nil {
+		return nil, err
+	}
+	return decodeSegmentStatus(raw)
+}
+
+type segmentStatusSnapshot struct {
+	SegmentStatusRecordID string                           `json:"segmentStatusRecordId"`
+	CommandID             string                           `json:"commandId"`
+	SegmentRef            string                           `json:"segmentRef"`
+	ScheduledServiceRef   string                           `json:"scheduledServiceRef"`
+	ServiceDate           string                           `json:"serviceDate"`
+	Status                string                           `json:"status"`
+	EstimatedArrivalAt    *time.Time                       `json:"estimatedArrivalAt,omitempty"`
+	ArrivedAt             *time.Time                       `json:"arrivedAt,omitempty"`
+	CancelledAt           *time.Time                       `json:"cancelledAt,omitempty"`
+	ObservedAt            time.Time                        `json:"observedAt"`
+	SourceSystem          domain.SegmentStatusSourceSystem `json:"sourceSystem"`
+	CreatedAt             time.Time                        `json:"createdAt"`
+}
+
+func segmentStatusSnapshotFromDomain(r *domain.SegmentStatusRecord) segmentStatusSnapshot {
+	return segmentStatusSnapshot{SegmentStatusRecordID: string(r.SegmentStatusRecordID), CommandID: r.CommandID, SegmentRef: string(r.SegmentRef), ScheduledServiceRef: r.ScheduledServiceRef, ServiceDate: r.ServiceDate, Status: string(r.Status), EstimatedArrivalAt: utcPtr(r.EstimatedArrivalAt), ArrivedAt: utcPtr(r.ArrivedAt), CancelledAt: utcPtr(r.CancelledAt), ObservedAt: r.ObservedAt.UTC(), SourceSystem: r.SourceSystem, CreatedAt: r.CreatedAt.UTC()}
+}
+
+func utcPtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	t := value.UTC()
+	return &t
+}
+
+func decodeSegmentStatus(raw []byte) (*domain.SegmentStatusRecord, error) {
+	var s segmentStatusSnapshot
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	return &domain.SegmentStatusRecord{SegmentStatusRecordID: domain.SegmentStatusRecordID(s.SegmentStatusRecordID), CommandID: s.CommandID, SegmentRef: domain.SegmentRef(s.SegmentRef), ScheduledServiceRef: s.ScheduledServiceRef, ServiceDate: s.ServiceDate, Status: domain.SegmentOperationalStatus(s.Status), EstimatedArrivalAt: utcPtr(s.EstimatedArrivalAt), ArrivedAt: utcPtr(s.ArrivedAt), CancelledAt: utcPtr(s.CancelledAt), ObservedAt: s.ObservedAt.UTC(), SourceSystem: s.SourceSystem, CreatedAt: s.CreatedAt.UTC()}, nil
 }
 
 type ProcessedEvents struct{ db ContextDBProvider }

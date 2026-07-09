@@ -972,14 +972,23 @@ class CustomerSim:
         if self.rng.random() < float(self.b.get("p_transfer_delay", 0.35)):
             miss = self.rng.random() < float(self.b.get("p_transfer_missed", 0.25))
             eta = now + timedelta(minutes=80 if miss else 40)
-            _, result = await self.api.request(
-                "POST", "transfer-management", "/api/v1/segment-status-reports",
-                {"segmentRef": f"seg-lg-prev-{suffix}", "reportType": "DELAY",
-                 "reportedBy": {"actorType": "SYSTEM", "actorId": "loadgen"}, "sourceSystem": "OPERATIONS",
-                 "sourceRecordId": f"lg-transfer-{suffix}", "observedAt": now_iso(), "estimatedArrivalAt": iso(eta)},
-                ok=(202,), step="transfer-report")
-            updated = (result.get("updatedConnections") or [{}])[0]
-            outcome = str(updated.get("status", outcome)).lower()
+            if self.rng.random() < 0.10:
+                _, result = await self.api.request(
+                    "POST", "transfer-management", "/api/v1/segment-status-reports",
+                    {"segmentRef": f"seg-lg-prev-{suffix}", "reportType": "DELAY",
+                     "reportedBy": {"actorType": "SYSTEM", "actorId": "loadgen"}, "sourceSystem": "OPERATIONS",
+                     "sourceRecordId": f"lg-transfer-{suffix}", "observedAt": now_iso(), "estimatedArrivalAt": iso(eta)},
+                    ok=(202,), step="transfer-report-ops")
+                updated = (result.get("updatedConnections") or [{}])[0]
+                outcome = str(updated.get("status", outcome)).lower()
+            else:
+                await self.api.request(
+                    "POST", "fulfillment", "/api/v1/segment-status",
+                    {"segmentRef": f"seg-lg-prev-{suffix}", "scheduledServiceRef": f"svc-lg-{suffix}",
+                     "serviceDate": now.date().isoformat(), "status": "DELAY", "sourceSystem": "OPS",
+                     "observedAt": now_iso(), "estimatedArrivalAt": iso(eta)},
+                    ok=(201,), step="fulfillment-transfer-report")
+                outcome = "event_reported"
         await self.maybe_read_probe({"transfer_plan": plan.get("transferPlanId"), "transfer_connection": conn.get("connectionId"), "transfer_journey": order})
         return outcome
 

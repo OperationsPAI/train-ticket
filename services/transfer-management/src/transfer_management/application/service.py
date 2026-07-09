@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import UUID
+import logging
 from typing import Any, NoReturn
 
 from train_ticket_platform.events import EventEnvelope, canonical_correlation_id, rfc3339_utc
@@ -42,6 +43,8 @@ from transfer_management.downstream import DisruptionRecoveryClient, DownstreamE
 
 PRODUCER = "transfer-management"
 PROTECTED_TYPES = {ContractType.PROTECTED, ContractType.SUPPLIER_PROTECTED}
+FULFILLMENT_SEGMENT_EVENT_TYPES = {"SegmentArrived", "SegmentDelayed", "SegmentCancelled"}
+LOGGER = logging.getLogger(__name__)
 
 
 class NotFoundError(KeyError):
@@ -192,6 +195,28 @@ def _replacement_window_json(window: Mapping[str, Any]) -> dict[str, Any]:
         raise DomainError("replacementWindow.nextDepartureAt must be after plannedArrivalAt")
     return data
 
+
+
+def segment_status_report_from_fulfillment_event(envelope: EventEnvelope) -> dict[str, Any]:
+    payload = dict(envelope.payload or {})
+    event_type = envelope.eventType
+    report_type = {"SegmentDelayed": "DELAY", "SegmentArrived": "ARRIVAL", "SegmentCancelled": "CANCELLED"}[event_type]
+    observed_at = payload.get("observedAt") or envelope.occurredAt
+    data: dict[str, Any] = {
+        "segmentRef": require_text(payload.get("segmentRef"), "payload.segmentRef"),
+        "reportType": report_type,
+        "reportedBy": {"actorType": "SYSTEM", "actorId": "fulfillment"},
+        "sourceSystem": "FULFILLMENT-EVENT",
+        "sourceRecordId": envelope.eventId,
+        "observedAt": rfc3339_utc(parse_dt(observed_at, "observedAt")),
+    }
+    if event_type == "SegmentDelayed":
+        data["estimatedArrivalAt"] = rfc3339_utc(parse_dt(payload.get("estimatedArrivalAt"), "estimatedArrivalAt"))
+    elif event_type == "SegmentArrived":
+        data["actualArrivalAt"] = rfc3339_utc(parse_dt(payload.get("arrivedAt"), "arrivedAt"))
+    else:
+        data["cancelledAt"] = rfc3339_utc(parse_dt(payload.get("cancelledAt"), "cancelledAt"))
+    return data
 
 class TransferManagementService:
     def __init__(self, store: Any, downstream: DisruptionRecoveryClient | None = None) -> None:
@@ -422,6 +447,22 @@ class TransferManagementService:
         limit = max(1, min(int(filters.get("limit") or 20), 100))
         offset = max(0, int(filters.get("offset") or 0))
         return {"items": [r.to_json() for r in items[offset:offset + limit]], "total": total, "limit": limit, "offset": offset}
+
+
+    def handle_fulfillment_event(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType not in FULFILLMENT_SEGMENT_EVENT_TYPES:
+            return False
+        try:
+            with self.transaction():
+                mark = getattr(self.store, "mark_processed", None)
+                if callable(mark) and not mark(envelope.eventId, stream):
+                    return True
+                report_data = segment_status_report_from_fulfillment_event(envelope)
+                self.report_segment_status(report_data, envelope.correlationId, envelope.eventId)
+            return True
+        except DownstreamError as exc:
+            LOGGER.warning("fulfillment segment event processing hit downstream error eventId=%s eventType=%s: %s", envelope.eventId, envelope.eventType, exc)
+            raise
 
     def handle_recovery_event(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
         if envelope.eventType not in {"RecoveryCompleted", "RecoveryFailed"}:
