@@ -11,14 +11,17 @@ in `docs/08-contracts/api/transfer-management.md`.
 Activation-wave rulings:
 
 - Active aggregate events are for `TransferPlan`, `Connection`,
-  `ConnectionContract`, and `MinimumConnectionTimeRule`. `TransferRiskPolicy`
-  CRUD events are deferred; every risk evaluation carries
-  `riskPolicyVersion="builtin-v1"`.
+  `ConnectionContract`, `MinimumConnectionTimeRule`, and `TransferRiskPolicy`.
+  Every risk evaluation carries the active policy version, or `builtin-v1` when
+  no active policy exists.
 - Fulfillment segment delay/arrival/cancelled events are not active today.
   Runtime facts enter through `POST /api/v1/segment-status-reports`; future
   Fulfillment events may be mapped to the same command material.
-- Place Network topology/path integration is deferred. Event payloads carry the
-  itinerary/node refs and transfer category used by this wave's MCT lookup.
+- Place Network node/place read integration is active for evaluation metadata.
+  Event payloads carry itinerary/node refs, transfer category, and risk
+  evaluations may include `placeGraphVersion` or degradation fields. Place
+  Network walking/access-time weights remain deferred because that contract has no
+  such fields.
 - Protected missed connections use outbound HTTP to Disruption Recovery. Transfer
   Management stores returned `caseId` mappings and consumes
   `RecoveryCompleted`/`RecoveryFailed` by `caseId` to converge the `Connection`.
@@ -80,12 +83,15 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 |---|---|---|---|
 | `riskEvaluationId` | string | yes | Evaluation ID (`tre-<uuid>`). |
 | `riskLevel` | enum | yes | `FEASIBLE`, `TIGHT`, `AT_RISK`, `MISSED`, or `RECOVERED`. |
-| `riskPolicyVersion` | string | yes | Always `builtin-v1` in this wave. |
+| `riskPolicyVersion` | string | yes | Active TransferRiskPolicy version, or `builtin-v1` fallback. |
 | `mctRuleId` | string | yes | Published MCT rule used. |
 | `mctRuleVersion` | integer | yes | MCT rule version used. |
 | `availableMinutes` | integer | yes | Available transfer minutes. |
 | `requiredMinutes` | integer | yes | Required MCT minutes. |
-| `reasons` | array[string] | yes | Explainable reason codes; no PII. |
+| `reasons` | array[string] | yes | Explainable reason codes and threshold hits; no PII. |
+| `placeGraphVersion` | string | no | Derived from Place Network node IDs and created timestamps when available. |
+| `degraded` | boolean | no | `true` when optional Place Network read enhancement failed but evaluation completed. |
+| `degradedReasons` | array[string] | no | Degradation codes such as `PLACE_NETWORK_UNAVAILABLE`; required when degraded. |
 | `evaluatedAt` | RFC3339 UTC | yes | Evaluation timestamp. |
 
 ### ConnectionRef
@@ -132,7 +138,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | `journeyOrderId` | string | no | Purchased order when known. |
 | `travelerRefs` | array[string] | yes | Traveler refs. |
 | `status` | enum | yes | `DRAFT` or `EVALUATING` if evaluation starts synchronously. |
-| `riskPolicyVersion` | string | yes | `builtin-v1`. |
+| `riskPolicyVersion` | string | yes | Active TransferRiskPolicy version or `builtin-v1`. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
 | `expiresAt` | RFC3339 UTC | no | Planning/offer expiry. |
 
@@ -155,7 +161,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | `status` | enum | yes | `EVALUATED` or `UNSERVICEABLE`. |
 | `evaluationVersion` | integer | yes | Monotonic evaluation version. |
 | `connectionIds` | array[string] | yes | Connections included in the plan. |
-| `riskPolicyVersion` | string | yes | `builtin-v1`. |
+| `riskPolicyVersion` | string | yes | Active TransferRiskPolicy version or `builtin-v1`. |
 | `evaluatedAt` | RFC3339 UTC | yes | Evaluation timestamp. |
 | `unserviceableReasons` | array[string] | no | Required when status is `UNSERVICEABLE`. |
 
@@ -205,7 +211,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | `transferCategory` | enum | yes | MCT transfer category. |
 | `contractId` | string | yes | Associated contract. |
 | `contractType` | enum | yes | Contract type snapshot. |
-| `status` | enum | yes | `PLANNED`, `FEASIBLE`, or `TIGHT` after initial evaluation. |
+| `status` | enum | yes | `PLANNED`, `FEASIBLE`, `TIGHT`, or `AT_RISK` after initial evaluation. |
 | `window` | object | yes | ConnectionWindow. |
 | `registeredAt` | RFC3339 UTC | yes | Registration timestamp. |
 
@@ -244,7 +250,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | `previousStatus` | enum | yes | Prior status, normally `FEASIBLE` or `TIGHT`. |
 | `status` | enum | yes | `AT_RISK`. |
 | `riskLevel` | enum | yes | `AT_RISK`. |
-| `riskPolicyVersion` | string | yes | `builtin-v1`. |
+| `riskPolicyVersion` | string | yes | Active TransferRiskPolicy version or `builtin-v1`. |
 | `reasons` | array[string] | yes | Explainable risk reasons. |
 | `window` | object | yes | ConnectionWindow. |
 | `detectedAt` | RFC3339 UTC | yes | Detection timestamp. |
@@ -386,6 +392,28 @@ a normal transition to `RECOVERED`.
 | `reason` | string | yes | Non-PII reason. |
 | `withdrawnAt` | RFC3339 UTC | yes | Withdrawal timestamp. |
 
+
+### RiskPolicyActivated
+
+| Field | Description |
+|---|---|
+| **Producer** | transfer-management |
+| **Consumers** | deferred: reporting, operations audit |
+| **Trigger** | Operations activates a `TransferRiskPolicy`; any previous active policy is retired. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `riskPolicyId` | string | yes | Policy ID (`trp-<uuid>`). |
+| `version` | string | yes | Version label that evaluations write to `riskPolicyVersion`. |
+| `status` | enum | yes | `ACTIVE`. |
+| `thresholds` | object | yes | `{tightMinutes, atRiskMinutes}` integer minute boundaries. |
+| `createdBy` | object | yes | ActorRef from creation. |
+| `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
+| `activatedBy` | object | yes | ActorRef that activated the policy. |
+| `activatedAt` | RFC3339 UTC | yes | Activation timestamp. |
+
 ### MctRuleCreated
 
 | Field | Description |
@@ -471,6 +499,8 @@ a normal transition to `RECOVERED`.
 | `CreateMctRule` | HTTP `POST /api/v1/mct-rules` | `MctRuleCreated` |
 | `PublishMctRule` | HTTP `POST /api/v1/mct-rules/{mctRuleId}/publish` | `MctRulePublished` |
 | `RetireMctRule` | HTTP `POST /api/v1/mct-rules/{mctRuleId}/retire` | `MctRuleRetired` |
+| `CreateRiskPolicy` | HTTP `POST /api/v1/risk-policies` | none until activation |
+| `ActivateRiskPolicy` | HTTP `POST /api/v1/risk-policies/{riskPolicyId}/activate` | `RiskPolicyActivated` |
 | `RecordRecoveryCompleted` | Consumed Disruption Recovery `RecoveryCompleted` by `caseId`; if the matching connection is already `RECOVERED` by `ReaccommodateConnection`, idempotently skip with no event | `ConnectionRecovered` or no-op |
 | `RecordRecoveryFailed` | Consumed Disruption Recovery `RecoveryFailed` by `caseId` | `ConnectionRecoveryFailed` |
 
@@ -481,9 +511,9 @@ a normal transition to `RECOVERED`.
 | `events:disruption-recovery` | `RecoveryCompleted` | Match payload `caseId` to stored recovery-case mapping and transition the related connection to `RECOVERED`; for self-executed `REACCOMMODATION`, an already `RECOVERED` connection with the same `caseId` is an idempotent no-op. |
 | `events:disruption-recovery` | `RecoveryFailed` | Match payload `caseId` to stored recovery-case mapping, keep the connection `MISSED`, and record sanitized failure evidence. |
 
-Fulfillment runtime facts are intentionally not consumed from the bus in this
-wave because segment-level delay/arrival/cancelled events are not produced today.
-The system/ops segment-status reporting endpoint is the active adapter.
+Fulfillment runtime facts are consumed when produced and mapped to the same
+segment-status command material; the system/ops segment-status reporting endpoint
+remains the active fallback adapter.
 
 ## Deferred downstream touchpoints
 

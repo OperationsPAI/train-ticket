@@ -17,6 +17,32 @@ def idem() -> str:
     return new_uuid7()
 
 
+class FakeTopology:
+    def __init__(self, place_graph_version: str = "place-network:test-v1", fail: bool = False, missing: bool = False) -> None:
+        self.place_graph_version = place_graph_version
+        self.fail = fail
+        self.missing = missing
+
+    @property
+    def enabled(self):
+        return True
+
+    def validate_connection_nodes(self, from_node_ref, to_node_ref, from_node_type, to_node_type):
+        if self.missing:
+            from transfer_management.topology import PlaceNetworkValidationError
+            raise PlaceNetworkValidationError("place-network resource not found: /api/v1/transport-nodes/missing")
+        if self.fail:
+            from transfer_management.topology import PlaceNetworkUnavailable
+            raise PlaceNetworkUnavailable("boom")
+        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version})()
+
+    def fetch_snapshot(self, from_node_ref, to_node_ref):
+        if self.fail:
+            from transfer_management.topology import PlaceNetworkUnavailable
+            raise PlaceNetworkUnavailable("boom")
+        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version})()
+
+
 class FakeDownstream:
     def __init__(self, failures: int = 0) -> None:
         self.calls = []
@@ -35,10 +61,10 @@ class FakeDownstream:
         return {"disruption": {"disruptionId": "drp-1"}, "incident": {"incidentId": "inc-1"}, "recoveryCases": [{"caseId": "rcv-1"}]}
 
 
-def setup_client(downstream: FakeDownstream | None = None) -> tuple[TestClient, InMemoryStore, FakeDownstream]:
+def setup_client(downstream: FakeDownstream | None = None, topology=None) -> tuple[TestClient, InMemoryStore, FakeDownstream]:
     store = InMemoryStore()
     downstream = downstream or FakeDownstream()
-    return TestClient(create_app(store=store, downstream=downstream), raise_server_exceptions=False), store, downstream
+    return TestClient(create_app(store=store, downstream=downstream, topology=topology), raise_server_exceptions=False), store, downstream
 
 
 def create_rule(client: TestClient) -> str:
@@ -218,3 +244,72 @@ def test_fulfillment_segment_delayed_event_marks_connection_at_risk() -> None:
     updated = service.get_connection(connection["connectionId"])
     assert updated["status"] == "AT_RISK"
     assert store.mark_processed(envelope.eventId, "events:fulfillment") is False
+
+
+def test_topology_degradation_path_marks_evaluation_degraded() -> None:
+    client, _, _ = setup_client(topology=FakeTopology(fail=True))
+    con = create_plan_and_connection(client, "SELF_TRANSFER")
+    now = datetime.now(UTC).replace(microsecond=0)
+    res = client.post("/api/v1/segment-status-reports", headers={"Idempotency-Key": idem()}, json={"segmentRef": "seg-a", "reportType": "DELAY", "reportedBy": {"actorType": "SYSTEM", "actorId": "sys"}, "sourceSystem": "OPERATIONS", "sourceRecordId": "r-topo", "observedAt": rfc3339_utc(now), "estimatedArrivalAt": rfc3339_utc(now + timedelta(minutes=35))})
+    assert res.status_code == 202, res.text
+    evaluation = res.json()["updatedConnections"][0]["latestEvaluation"]
+    assert evaluation["degraded"] is True
+    assert evaluation["degradedReasons"] == ["PLACE_NETWORK_UNAVAILABLE"]
+
+
+def test_topology_place_graph_version_is_recorded() -> None:
+    client, _, _ = setup_client(topology=FakeTopology("place-network:test-v2"))
+    con = create_plan_and_connection(client, "SELF_TRANSFER")
+    evaluation = con["latestEvaluation"]
+    assert evaluation["placeGraphVersion"] == "place-network:test-v2"
+
+
+def test_active_risk_policy_version_drives_evaluation() -> None:
+    client, _, _ = setup_client()
+    res = client.post("/api/v1/risk-policies", headers={"Idempotency-Key": idem()}, json={"version": "ops-aggressive-v1", "thresholds": {"tightMinutes": 999, "atRiskMinutes": 120}, "createdBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+    assert res.status_code == 201, res.text
+    policy_id = res.json()["riskPolicyId"]
+    res = client.post(f"/api/v1/risk-policies/{policy_id}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+    assert res.status_code == 200, res.text
+    con = create_plan_and_connection(client, "SELF_TRANSFER")
+    assert con["status"] == "AT_RISK"
+    assert con["latestEvaluation"]["riskPolicyVersion"] == "ops-aggressive-v1"
+    assert any(reason == "THRESHOLD_AT_RISK_BUFFER_LT_120_MIN" for reason in con["latestEvaluation"]["reasons"])
+
+
+def test_risk_policy_activation_retires_previous_active_and_active_is_immutable() -> None:
+    client, store, _ = setup_client()
+    first = client.post("/api/v1/risk-policies", headers={"Idempotency-Key": idem()}, json={"version": "ops-v1", "thresholds": {"tightMinutes": 10, "atRiskMinutes": 0}, "createdBy": {"actorType": "OPERATIONS", "actorId": "ops"}}).json()
+    second = client.post("/api/v1/risk-policies", headers={"Idempotency-Key": idem()}, json={"version": "ops-v2", "thresholds": {"tightMinutes": 15, "atRiskMinutes": 5}, "createdBy": {"actorType": "OPERATIONS", "actorId": "ops"}}).json()
+    assert client.post(f"/api/v1/risk-policies/{first['riskPolicyId']}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}}).status_code == 200
+    assert client.post(f"/api/v1/risk-policies/{second['riskPolicyId']}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}}).status_code == 200
+    assert store.get_risk_policy(first["riskPolicyId"]).status.value == "RETIRED"
+    assert client.get("/api/v1/risk-policies/active").json()["version"] == "ops-v2"
+    assert client.post(f"/api/v1/risk-policies/{first['riskPolicyId']}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}}).status_code == 412
+
+
+def test_missing_place_network_node_registration_returns_validation_failed() -> None:
+    client, _, _ = setup_client(topology=FakeTopology(missing=True))
+    create_rule(client)
+    plan = client.post("/api/v1/transfer-plans", headers={"Idempotency-Key": idem()}, json={"itineraryRef": "iti-missing-node", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"], "journeyOrderId": "jo-missing-node"})
+    assert plan.status_code == 201, plan.text
+    now = datetime.now(UTC).replace(microsecond=0)
+    res = client.post("/api/v1/connections", headers={"Idempotency-Key": idem()}, json={"transferPlanId": plan.json()["transferPlanId"], "itineraryRef": "iti-missing-node", "journeyOrderId": "jo-missing-node", "previousSegmentRef": "seg-a", "nextSegmentRef": "seg-b", "travelerRefs": ["trav-1"], "fromNodeRef": "missing", "toNodeRef": "sta", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-missing", "contractType": "SELF_TRANSFER", "window": {"plannedArrivalAt": rfc3339_utc(now), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=60)), "nextCutoffAt": rfc3339_utc(now + timedelta(minutes=50))}})
+    assert res.status_code == 422, res.text
+    assert res.json()["code"] == "VALIDATION_FAILED"
+
+
+def test_failed_activation_does_not_retire_the_active_policy() -> None:
+    client, store, _ = setup_client()
+    def make(version):
+        res = client.post("/api/v1/risk-policies", headers={"Idempotency-Key": idem()}, json={"version": version, "thresholds": {"tightMinutes": 15, "atRiskMinutes": 5}, "createdBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+        assert res.status_code == 201, res.text
+        return res.json()["riskPolicyId"]
+    p1, p2 = make("v1"), make("v2")
+    for pid in (p1, p2):
+        res = client.post(f"/api/v1/risk-policies/{pid}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+        assert res.status_code == 200, res.text
+    res = client.post(f"/api/v1/risk-policies/{p1}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+    assert res.status_code == 412, res.text
+    res = client.get("/api/v1/risk-policies/active")
+    assert res.json()["riskPolicyId"] == p2, res.text

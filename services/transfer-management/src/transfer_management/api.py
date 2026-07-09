@@ -18,6 +18,7 @@ from .adapters.messaging import DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM
 from .adapters.storage.postgres import PostgresTransferManagementStore
 from .application.service import InMemoryStore, TransferManagementService
 from .downstream import DisruptionRecoveryClient, DownstreamError
+from .topology import PlaceNetworkClient
 from .runtime import health, profile
 from .web.errors import register_exception_handlers
 from .web.handlers import router as transfer_router
@@ -124,9 +125,11 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"service": profile(), "observability": {"tracing": "opt-in", "default": "noop"}}
 
 
-def configure_transfer_routes(app: FastAPI, store: Any | None = None, idempotency_store: IdempotencyStore | None = None, downstream: Any | None = None) -> None:
+def configure_transfer_routes(app: FastAPI, store: Any | None = None, idempotency_store: IdempotencyStore | None = None, downstream: Any | None = None, topology: Any | None = None) -> None:
     store = store or InMemoryStore()
-    service = TransferManagementService(store, downstream or DisruptionRecoveryClient())
+    if topology is None:
+        topology = PlaceNetworkClient("") if type(store) is InMemoryStore else PlaceNetworkClient()
+    service = TransferManagementService(store, downstream or DisruptionRecoveryClient(), topology)
     unit_of_work = getattr(store, "unit_of_work", None)
     if callable(unit_of_work):
         @app.middleware("http")
@@ -135,7 +138,7 @@ def configure_transfer_routes(app: FastAPI, store: Any | None = None, idempotenc
                 return await call_next(request)
     app.state.transfer_management_service = service
     app.state.transfer_management_store = store
-    configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/transfer-plans", "/api/v1/connections", "/api/v1/segment-status-reports", "/api/v1/connection-contracts", "/api/v1/mct-rules"))
+    configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/transfer-plans", "/api/v1/connections", "/api/v1/segment-status-reports", "/api/v1/connection-contracts", "/api/v1/mct-rules", "/api/v1/risk-policies"))
     for route in transfer_router.routes:
         app.router.routes.append(route)
 
@@ -170,7 +173,7 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     return store, PostgresIdempotencyStore(pool)
 
 
-def create_app(tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None, store: Any | None = None, idempotency_store: IdempotencyStore | None = None, downstream: Any | None = None) -> FastAPI:
+def create_app(tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None, store: Any | None = None, idempotency_store: IdempotencyStore | None = None, downstream: Any | None = None, topology: Any | None = None) -> FastAPI:
     app = FastAPI(title="Transfer Management", version="0.1.0")
     init_opentelemetry(profile()["service_id"], app=app)
     if store is None:
@@ -178,7 +181,7 @@ def create_app(tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | Non
         idempotency_store = idempotency_store or default_idempotency_store
     register_exception_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
-    configure_transfer_routes(app, store, idempotency_store, downstream)
+    configure_transfer_routes(app, store, idempotency_store, downstream, topology)
     holder = getattr(app.state, "_tm_service_holder", None)
     if isinstance(holder, dict):
         holder["service"] = app.state.transfer_management_service

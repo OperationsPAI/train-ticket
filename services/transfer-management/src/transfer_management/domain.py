@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from train_ticket_platform.events import rfc3339_utc
 
@@ -100,6 +100,11 @@ class MctRuleStatus(StrEnum):
     PUBLISHED = "PUBLISHED"
     RETIRED = "RETIRED"
 
+class RiskPolicyStatus(StrEnum):
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    RETIRED = "RETIRED"
+
 
 class RecoveryTriggerStatus(StrEnum):
     NOT_REQUIRED = "NOT_REQUIRED"
@@ -118,7 +123,7 @@ TRANSFER_PLAN_TRANSITIONS = {
     TransferPlanStatus.EXPIRED: set(),
 }
 CONNECTION_TRANSITIONS = {
-    ConnectionStatus.PLANNED: {ConnectionStatus.FEASIBLE, ConnectionStatus.TIGHT, ConnectionStatus.INVALIDATED},
+    ConnectionStatus.PLANNED: {ConnectionStatus.FEASIBLE, ConnectionStatus.TIGHT, ConnectionStatus.AT_RISK, ConnectionStatus.INVALIDATED},
     ConnectionStatus.FEASIBLE: {ConnectionStatus.TIGHT, ConnectionStatus.AT_RISK, ConnectionStatus.COMPLETED, ConnectionStatus.INVALIDATED},
     ConnectionStatus.TIGHT: {ConnectionStatus.FEASIBLE, ConnectionStatus.AT_RISK, ConnectionStatus.MISSED, ConnectionStatus.COMPLETED},
     ConnectionStatus.AT_RISK: {ConnectionStatus.TIGHT, ConnectionStatus.MISSED, ConnectionStatus.RECOVERED},
@@ -224,9 +229,12 @@ class RiskEvaluation:
     reasons: tuple[str, ...]
     evaluatedAt: datetime
     riskPolicyVersion: str = RISK_POLICY_VERSION
+    placeGraphVersion: str | None = None
+    degraded: bool = False
+    degradedReasons: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        data = {
             "riskEvaluationId": self.riskEvaluationId,
             "riskLevel": self.riskLevel.value,
             "riskPolicyVersion": self.riskPolicyVersion,
@@ -237,6 +245,12 @@ class RiskEvaluation:
             "reasons": list(self.reasons),
             "evaluatedAt": rfc3339_utc(self.evaluatedAt),
         }
+        if self.placeGraphVersion:
+            data["placeGraphVersion"] = self.placeGraphVersion
+        if self.degraded:
+            data["degraded"] = True
+            data["degradedReasons"] = list(self.degradedReasons)
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,4 +549,64 @@ class SegmentStatusReport:
             data["cancelledAt"] = rfc3339_utc(self.cancelledAt)
         if self.reason:
             data["reason"] = self.reason
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class RiskThresholds:
+    tightMinutes: int
+    atRiskMinutes: int
+
+    def __post_init__(self) -> None:
+        if self.tightMinutes < 0 or self.atRiskMinutes < 0:
+            raise DomainError("risk policy thresholds must be non-negative")
+
+    def to_json(self) -> dict[str, int]:
+        return {"tightMinutes": self.tightMinutes, "atRiskMinutes": self.atRiskMinutes}
+
+
+@dataclass(frozen=True, slots=True)
+class TransferRiskPolicy:
+    riskPolicyId: str
+    version: str
+    status: RiskPolicyStatus
+    thresholds: RiskThresholds
+    createdBy: ActorRef
+    createdAt: datetime
+    activatedAt: datetime | None = None
+    retiredAt: datetime | None = None
+
+    def activate(self, at: datetime) -> "TransferRiskPolicy":
+        if self.status is RiskPolicyStatus.RETIRED:
+            raise PreconditionFailed("retired risk policy cannot be activated")
+        if self.status is RiskPolicyStatus.ACTIVE:
+            return self
+        return replace(self, status=RiskPolicyStatus.ACTIVE, activatedAt=at)
+
+    def retire(self, at: datetime) -> "TransferRiskPolicy":
+        if self.status is RiskPolicyStatus.RETIRED:
+            return self
+        return replace(self, status=RiskPolicyStatus.RETIRED, retiredAt=at)
+
+    def classify(self, available_minutes: int, buffer_minutes: int, reasons: Iterable[str]) -> tuple[RiskLevel, tuple[str, ...]]:
+        explanation = list(reasons)
+        if "NEXT_SEGMENT_CANCELLED" in explanation or "PREVIOUS_SEGMENT_CANCELLED" in explanation:
+            return RiskLevel.MISSED, tuple(dict.fromkeys(explanation))
+        if available_minutes < 0:
+            explanation.append("CUTOFF_EXPIRED")
+            return RiskLevel.MISSED, tuple(dict.fromkeys(explanation))
+        if buffer_minutes < self.thresholds.atRiskMinutes:
+            explanation.append(f"THRESHOLD_AT_RISK_BUFFER_LT_{self.thresholds.atRiskMinutes}_MIN")
+            return RiskLevel.AT_RISK, tuple(dict.fromkeys(explanation))
+        if buffer_minutes < self.thresholds.tightMinutes:
+            explanation.append(f"THRESHOLD_TIGHT_BUFFER_LT_{self.thresholds.tightMinutes}_MIN")
+            return RiskLevel.TIGHT, tuple(dict.fromkeys(explanation))
+        return RiskLevel.FEASIBLE, tuple(dict.fromkeys(explanation))
+
+    def to_json(self) -> dict[str, Any]:
+        data = {"riskPolicyId": self.riskPolicyId, "version": self.version, "status": self.status.value, "thresholds": self.thresholds.to_json(), "createdBy": self.createdBy.to_json(), "createdAt": rfc3339_utc(self.createdAt)}
+        if self.activatedAt:
+            data["activatedAt"] = rfc3339_utc(self.activatedAt)
+        if self.retiredAt:
+            data["retiredAt"] = rfc3339_utc(self.retiredAt)
         return data

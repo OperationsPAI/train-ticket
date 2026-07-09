@@ -12,6 +12,15 @@ PY
 
 json_get() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
+RUN=$(uuid7 | tail -c 13)
+
+req POST place-network /api/v1/places "{\"placeType\":\"STATION\",\"canonicalName\":\"Transfer E2E $RUN station\",\"code\":\"TM$RUN\",\"timezone\":\"UTC\"}"
+check_code 201 "create place-network place"
+PLACE=$(jget "['placeId']")
+req POST place-network /api/v1/transport-nodes "{\"placeId\":\"$PLACE\",\"displayName\":\"Transfer E2E node\",\"servingModes\":[\"RAIL\"]}"
+check_code 201 "create place-network node"
+NODE=$(jget "['nodeId']")
+
 req POST transfer-management /api/v1/mct-rules "{\"fromNodeType\":\"STATION\",\"toNodeType\":\"STATION\",\"transferCategory\":\"SAME_STATION\",\"minimumMinutes\":20,\"conditions\":{},\"validFrom\":\"2025-01-01T00:00:00Z\"}"
 check_code 201 "create mct rule"
 MCT=$(jget "['mctRuleId']")
@@ -20,15 +29,15 @@ check_code 200 "publish mct rule"
 req PATCH transfer-management "/api/v1/mct-rules/$MCT" "{\"minimumMinutes\":25}"
 check_code 412 "published mct immutable"
 
-RUN=$(uuid7 | tail -c 13)
-
 create_connection() {
   local typ=$1 suffix=$2
   req POST transfer-management /api/v1/transfer-plans "{\"itineraryRef\":\"iti-tm-$suffix\",\"planningSnapshotVersion\":1,\"journeyOrderId\":\"jo-tm-$suffix\",\"travelerRefs\":[\"trav-$suffix\"]}"
   check_code 201 "create transfer plan $typ"
   local plan; plan=$(jget "['transferPlanId']")
-  req POST transfer-management /api/v1/connections "{\"transferPlanId\":\"$plan\",\"itineraryRef\":\"iti-tm-$suffix\",\"journeyOrderId\":\"jo-tm-$suffix\",\"previousSegmentRef\":\"seg-prev-$suffix\",\"nextSegmentRef\":\"seg-next-$suffix\",\"travelerRefs\":[\"trav-$suffix\"],\"fromNodeRef\":\"sta-a\",\"toNodeRef\":\"sta-a\",\"fromNodeType\":\"STATION\",\"toNodeType\":\"STATION\",\"transferCategory\":\"SAME_STATION\",\"contractId\":\"cct-$suffix\",\"contractType\":\"$typ\",\"window\":{\"plannedArrivalAt\":\"$(iso 0)\",\"nextDepartureAt\":\"$(iso 60)\",\"nextCutoffAt\":\"$(iso 50)\"}}"
+  req POST transfer-management /api/v1/connections "{\"transferPlanId\":\"$plan\",\"itineraryRef\":\"iti-tm-$suffix\",\"journeyOrderId\":\"jo-tm-$suffix\",\"previousSegmentRef\":\"seg-prev-$suffix\",\"nextSegmentRef\":\"seg-next-$suffix\",\"travelerRefs\":[\"trav-$suffix\"],\"fromNodeRef\":\"$NODE\",\"toNodeRef\":\"$NODE\",\"fromNodeType\":\"STATION\",\"toNodeType\":\"STATION\",\"transferCategory\":\"SAME_STATION\",\"contractId\":\"cct-$suffix\",\"contractType\":\"$typ\",\"window\":{\"plannedArrivalAt\":\"$(iso 0)\",\"nextDepartureAt\":\"$(iso 60)\",\"nextCutoffAt\":\"$(iso 50)\"}}"
   check_code 201 "register connection $typ"
+  PGV=$(echo "$RESP" | json_get 'd["latestEvaluation"].get("placeGraphVersion", "")')
+  [ -n "$PGV" ] && ok "connection evaluation has placeGraphVersion" || bad "missing placeGraphVersion"
   jget "['connectionId']"
 }
 
@@ -43,6 +52,41 @@ miss_connection() {
   CASE=$(echo "$RESP" | json_get '((d["updatedConnections"][0].get("recovery") or {}).get("caseIds",[""])[0])')
   [ -n "$CASE" ] && ok "disruption recovery case opened $CASE" || bad "missing recovery case $suffix"
 }
+
+
+req POST transfer-management /api/v1/transfer-plans "{\"itineraryRef\":\"iti-tm-bad-$RUN\",\"planningSnapshotVersion\":1,\"journeyOrderId\":\"jo-tm-bad-$RUN\",\"travelerRefs\":[\"trav-bad-$RUN\"]}"
+check_code 201 "create bad-node transfer plan"
+BAD_PLAN=$(jget "['transferPlanId']")
+req POST transfer-management /api/v1/connections "{\"transferPlanId\":\"$BAD_PLAN\",\"itineraryRef\":\"iti-tm-bad-$RUN\",\"journeyOrderId\":\"jo-tm-bad-$RUN\",\"previousSegmentRef\":\"seg-prev-bad-$RUN\",\"nextSegmentRef\":\"seg-next-bad-$RUN\",\"travelerRefs\":[\"trav-bad-$RUN\"],\"fromNodeRef\":\"tnd-missing-$RUN\",\"toNodeRef\":\"$NODE\",\"fromNodeType\":\"STATION\",\"toNodeType\":\"STATION\",\"transferCategory\":\"SAME_STATION\",\"contractId\":\"cct-bad-$RUN\",\"contractType\":\"SELF_TRANSFER\",\"window\":{\"plannedArrivalAt\":\"$(iso 0)\",\"nextDepartureAt\":\"$(iso 60)\",\"nextCutoffAt\":\"$(iso 50)\"}}"
+check_code 422 "missing place-network node rejected"
+
+req POST transfer-management /api/v1/risk-policies "{\"version\":\"e2e-aggressive-$RUN\",\"thresholds\":{\"tightMinutes\":999,\"atRiskMinutes\":120},\"createdBy\":{\"actorType\":\"OPERATIONS\",\"actorId\":\"ops-e2e\"}}"
+check_code 201 "create aggressive risk policy"
+RISK_POLICY=$(jget "['riskPolicyId']")
+RISK_VERSION=$(jget "['version']")
+req POST transfer-management "/api/v1/risk-policies/$RISK_POLICY/activate" "{\"activatedBy\":{\"actorType\":\"OPERATIONS\",\"actorId\":\"ops-e2e\"},\"activateReason\":\"e2e\"}"
+check_code 200 "activate aggressive risk policy"
+AGG=$(create_connection SELF_TRANSFER "aggr-$RUN" | tail -1)
+req GET transfer-management "/api/v1/connections/$AGG"
+check_code 200 "get aggressive-policy connection"
+STATUS=$(jget "['status']")
+RPV=$(jget "['latestEvaluation']['riskPolicyVersion']")
+[ "$STATUS" = "AT_RISK" ] && ok "aggressive policy makes connection at-risk" || bad "aggressive status $STATUS"
+[ "$RPV" = "$RISK_VERSION" ] && ok "riskPolicyVersion uses active policy" || bad "riskPolicyVersion $RPV"
+req GET transfer-management /api/v1/risk-policies/active
+check_code 200 "get active risk policy"
+req POST transfer-management /api/v1/risk-policies "{\"version\":\"builtin-v1\",\"thresholds\":{\"tightMinutes\":10,\"atRiskMinutes\":0},\"createdBy\":{\"actorType\":\"OPERATIONS\",\"actorId\":\"ops-e2e\"}}"
+check_code 201 "create default risk policy"
+DEFAULT_POLICY=$(jget "['riskPolicyId']")
+req POST transfer-management "/api/v1/risk-policies/$DEFAULT_POLICY/activate" "{\"activatedBy\":{\"actorType\":\"OPERATIONS\",\"actorId\":\"ops-e2e\"},\"activateReason\":\"e2e default\"}"
+check_code 200 "activate default risk policy"
+DEF=$(create_connection SELF_TRANSFER "default-$RUN" | tail -1)
+req GET transfer-management "/api/v1/connections/$DEF"
+check_code 200 "get default-policy connection"
+STATUS=$(jget "['status']")
+RPV=$(jget "['latestEvaluation']['riskPolicyVersion']")
+[ "$STATUS" = "FEASIBLE" ] && ok "default policy restores feasible baseline" || bad "default status $STATUS"
+[ "$RPV" = "builtin-v1" ] && ok "default riskPolicyVersion builtin-v1" || bad "default riskPolicyVersion $RPV"
 
 CON=$(create_connection PROTECTED "prot-$RUN" | tail -1)
 miss_connection "prot-$RUN"
