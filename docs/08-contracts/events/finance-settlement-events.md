@@ -1,5 +1,16 @@
 # Finance Settlement Event Contracts
 
+Last updated: 2026-07-10
+
+ADR-0003 Wave A same-wave increment（需同波实现）: Finance Settlement consumes Payment Channel
+statement and discrepancy facts for SIM channel reconciliation. Implementation
+MUST register the `events:payment-channel` consumer, validate statement payloads,
+deduplicate by envelope `eventId`, and map Payment Channel `differenceType`
+values (`MISSING_IN_CHANNEL`, `MISSING_IN_PLATFORM`, `AMOUNT_MISMATCH`,
+`CURRENCY_MISMATCH`, `DUPLICATE`, `LATE_PAYMENT`, `REFUND_LAG`, plus
+`STATUS_MISMATCH` as a reconciliation description) to the existing Finance
+case fields; this is not a docs-only increment.
+
 ## RevenueRecognized
 
 Produced when revenue is recognized for a completed fulfillment or entitlement
@@ -46,7 +57,9 @@ Produced when a reconciliation mismatch is detected.
 | `differenceType` | string | Type: missing-in-channel, missing-in-platform, amount-mismatch, currency-mismatch, duplicate, late-payment, refund-lag. |
 | `expectedAmount` | Money | Amount expected by the platform. |
 | `actualAmount` | Money | Amount observed from channel/provider. |
-| `description` | string | Human-readable explanation. |
+| `description` | string | Human-readable explanation. For Payment Channel input, include the statement/discrepancy references without raw PII or unmasked documents. |
+| `channelStatementId` | string | Optional Payment Channel statement ID when the case is opened from a channel statement discrepancy. |
+| `paymentChannelDiscrepancyId` | string | Optional Payment Channel discrepancy ID when linked. |
 | `metadata` | EventMetadata | Standard event envelope. |
 
 ## ReconciliationCaseResolved
@@ -73,7 +86,8 @@ Produced when finance reconciliation completes for an order/payment fact.
 | `expectedAmount` | Money | Amount expected by finance. |
 | `actualAmount` | Money | Amount observed from the matched upstream facts. |
 | `matchedRevenueRecognitionIds` | string[] | Revenue records included in the match. |
-| `sourceEventIds` | string[] | Upstream event IDs included in the match. |
+| `sourceEventIds` | string[] | Upstream event IDs included in the match, including Payment Channel statement event IDs when applicable. |
+| `channelStatementId` | string | Optional Payment Channel statement ID reconciled. |
 | `metadata` | EventMetadata | Standard event envelope. |
 
 ## InvoiceGenerated
