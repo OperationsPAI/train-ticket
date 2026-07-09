@@ -9,6 +9,12 @@ timestamps, and Money.
 
 Finance & Settlement handles revenue recognition, reconciliation cases, and
 settlement views. It consumes upstream events and produces financial records.
+ADR-0003 Wave A same-wave increment（需同波实现）: Finance Settlement consumes Payment Channel
+`ChannelStatementGenerated`, `ChannelStatementFrozen`, and discrepancy events for
+daily SIM channel reconciliation. This requires same-wave code touchpoints in
+event consumer registration, statement payload validation, consumed-event dedup,
+and mapping Payment Channel SCREAMING_SNAKE `differenceType` values to the
+existing Finance difference strings.
 Commands are event-backed. `GenerateInvoice` is exposed as an HTTP command for
 idempotent invoice generation; other financial operations remain bus-only. Query
 endpoints are provided for reporting and audit.
@@ -116,7 +122,7 @@ Item fields:
 | Command | Trigger | Description |
 |---|---|---|
 | `RecognizeRevenue` | `PaymentCaptured`, post-sales refund facts | Recognize revenue from capture facts and reverse previously recognized revenue from post-sales refund facts. |
-| `OpenReconciliationCase` | Mismatch detection | Open a reconciliation case. |
+| `OpenReconciliationCase` | Mismatch detection, including Payment Channel statement discrepancies | Open a reconciliation case. ADR-0003 same-wave implementation validates channel statement refs and maps Payment Channel difference types without adding a new Finance enum. |
 | `ResolveReconciliationCase` | Manual or auto | Resolve a reconciliation case. |
 | `RebuildSettlementView` | Manual or scheduled | Rebuild a settlement view from event log. |
 

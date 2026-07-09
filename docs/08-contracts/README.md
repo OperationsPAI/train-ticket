@@ -28,6 +28,7 @@ docs/08-contracts/
     ├── capacity-availability.md
     ├── fare-pricing.md
     ├── payment.md
+    ├── payment-channel.md
     ├── provider-integration.md
     ├── entitlement-ticketing.md
     ├── post-sales.md

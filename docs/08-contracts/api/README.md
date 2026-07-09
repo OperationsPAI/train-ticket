@@ -156,6 +156,7 @@ correlation IDs.
 | 27 | `ancillary-service.md` | Ancillary Service | activation wave in progress |
 | 28 | `seat-assignment.md` | Seat Assignment | activation wave in progress (ADR-0003 wave A) |
 | 29 | `identity-verification.md` | Identity Verification | activation wave in progress (ADR-0003 wave A) |
+| 30 | `payment-channel.md` | Payment Channel | ADR-0003 Wave A contract |
 
 ## Open Issues
 

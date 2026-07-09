@@ -1,6 +1,12 @@
 # Payment — Events & Commands
 
-Last updated: 2026-06-28
+Last updated: 2026-07-10
+
+ADR-0003 Wave A same-wave increment（需同波实现）: Payment events that represent channel-backed
+capture/refund outcomes carry `channelRef` from Payment Channel. This requires
+Payment implementation changes in channel enum validation, event payload
+serializers/deserializers, capture/refund state guards, and read-model
+projection; it is not a docs-only increment.
 
 ## Published Events
 
@@ -40,6 +46,7 @@ Last updated: 2026-06-28
 | `authorizedAmount` | `Money` | yes | Amount authorised. |
 | `channel` | string | yes | Payment channel. |
 | `channelTransactionId` | string | yes | Channel transaction reference. |
+| `channelRef` | object | yes | Payment Channel reference with `channel`, `channelOrderId`, and `channelTransactionId`. |
 
 ### PaymentCaptured
 
@@ -58,6 +65,7 @@ Last updated: 2026-06-28
 | `capturedAmount` | `Money` | yes | Amount captured. |
 | `channel` | string | yes | Payment channel. |
 | `channelTransactionId` | string | yes | Channel transaction reference. |
+| `channelRef` | object | yes | Payment Channel reference with `channel`, `channelOrderId`, and `channelTransactionId`. |
 
 ### PaymentFailed
 
@@ -119,6 +127,7 @@ Last updated: 2026-06-28
 | `refundId` | `RefundId` | yes | Refund ID. |
 | `paymentIntentId` | `PaymentIntentId` | yes | Original payment intent. |
 | `amount` | `Money` | yes | Amount refunded. |
+| `channelRef` | object | yes | Payment Channel refund reference with `channel`, `channelOrderId`, `channelRefundId`, `channelTransactionId`, and `channelRefundTransactionId` when available. |
 
 ### RefundFailed
 
@@ -135,3 +144,4 @@ Last updated: 2026-06-28
 | `refundId` | `RefundId` | yes | Refund ID. |
 | `paymentIntentId` | `PaymentIntentId` | yes | Original payment intent. |
 | `reason` | string | yes | Failure reason. |
+| `channelRef` | object | no | Payment Channel refund reference when failure happened after channel handoff. |
