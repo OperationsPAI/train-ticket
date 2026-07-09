@@ -71,6 +71,16 @@ class ReleasePreOrderRequest(LooseModel):
     sourceEventId: str | None = None
 
 
+class MarkPurchaseLimitMissedRequest(LooseModel):
+    ttlBucket: str
+    monitorRunId: str
+
+
+class MarkPurchaseLimitFailedRequest(LooseModel):
+    failureCode: str
+    detectionRunId: str
+
+
 def _service(request: Request) -> IdentityVerificationService:
     return request.app.state.identity_verification_service
 
@@ -134,3 +144,13 @@ def confirm_pre_order_check(pre_order_check_id: str, body: ConfirmPreOrderReques
 @router.post("/pre-order-checks/{pre_order_check_id}/release")
 def release_pre_order_check(pre_order_check_id: str, body: ReleasePreOrderRequest, request: Request) -> dict[str, Any]:
     return _service(request).release_pre_order_check(pre_order_check_id, body.releaseReason, _corr(request), _cause(request), body.sourceEventId)
+
+
+@router.post("/purchase-limit-facts/{purchase_limit_fact_id}/mark-missed")
+def mark_purchase_limit_missed(purchase_limit_fact_id: str, body: MarkPurchaseLimitMissedRequest, request: Request) -> dict[str, Any]:
+    return _service(request).mark_purchase_limit_missed(purchase_limit_fact_id, body.ttlBucket, body.monitorRunId, _corr(request), _cause(request))
+
+
+@router.post("/purchase-limit-facts/{purchase_limit_fact_id}/mark-failed")
+def mark_purchase_limit_failed(purchase_limit_fact_id: str, body: MarkPurchaseLimitFailedRequest, request: Request) -> dict[str, Any]:
+    return _service(request).mark_purchase_limit_failed(purchase_limit_fact_id, body.failureCode, body.detectionRunId, _corr(request), _cause(request))

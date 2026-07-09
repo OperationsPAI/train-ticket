@@ -233,12 +233,12 @@ class IdentityVerificationService:
             duplicate = self.store.find_credential_duplicate(str(data["travelerId"]), str(data["documentType"]), str(data["documentHash"]), material_fingerprint, str(data["profileSnapshotVersion"]))
             if duplicate is not None:
                 return duplicate.to_json()
-            cluster_id = "icl-" + sha256(str(data["documentHash"]).encode()).hexdigest()[:32]
+            cluster_id = _prefixed_fold("icl", f"identity-cluster:{data['documentHash']}")
             credential = CredentialRecord.register(credential_id=prefixed_uuid7("crd"), traveler_id=str(data["travelerId"]), profile_snapshot_version=str(data["profileSnapshotVersion"]), document_type=str(data["documentType"]), masked_document_no=str(data["maskedDocumentNo"]), document_hash=str(data["documentHash"]), material_fingerprint=material_fingerprint, canonical_name_hash=str(data["canonicalNameHash"]), birth_date_hash=data.get("birthDateHash"), valid_until=_parse_dt(data.get("validUntil")), evidence_hash=data.get("evidenceHash"), identity_cluster_id=cluster_id, at=at)
             self.store.save_credential(credential)
-            payload = {**credential.to_json(), "materialFingerprint": credential.materialFingerprint, "credentialStatus": credential.status.value, "registeredAt": rfc3339_utc(at), "aggregateVersion": credential.version + 1}
+            payload = {**credential.to_json(), "materialFingerprint": credential.materialFingerprint, "credentialStatus": credential.status.value, "registeredAt": rfc3339_utc(at), "aggregateVersion": 1}
             payload.pop("status", None); payload.pop("createdAt", None); payload.pop("updatedAt", None)
-            self._append((_envelope("CredentialRegistered", credential.credentialRecordId, credential.version + 1, payload, correlation_id, causation_id, at),))
+            self._append((_envelope("CredentialRegistered", credential.credentialRecordId, 1, payload, correlation_id, causation_id, at),))
             return credential.to_json()
 
     def start_verification_case(self, data: Mapping[str, Any], correlation_id: str, causation_id: str | None) -> dict[str, Any]:
@@ -281,7 +281,7 @@ class IdentityVerificationService:
         return _envelope("VerificationSubmittedToSim", case.verificationCaseId, 2, payload, corr, cause, at)
 
     def _case_result(self, case: VerificationCase, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
-        version = 3 if case.status is not VerificationStatus.PASSED or case.version == 0 else case.version + 1
+        version = case.version
         if case.status is VerificationStatus.PASSED:
             payload = {"verificationCaseId": case.verificationCaseId, "travelerId": case.travelerId, "credentialRecordId": case.credentialRecordId, "simOutcome": "MATCH", "simResultRef": case.simResultRef or "sim-override", "verificationStatus": "PASSED", "validFrom": rfc3339_utc(case.validFrom or at), "validUntil": rfc3339_utc(case.validUntil or at + timedelta(days=365)), "policyVersion": case.simPolicyVersion, "completedAt": rfc3339_utc(case.completedAt or at), "aggregateVersion": version}
             return _envelope("VerificationPassed", case.verificationCaseId, version, payload, corr, cause, at)
@@ -414,6 +414,25 @@ class IdentityVerificationService:
             record["status"] = "RELEASED"; self.store.save_pre_order_check(record); self._append(tuple(envelopes))
             return body
 
+
+    def mark_purchase_limit_missed(self, purchase_limit_fact_id: str, ttl_bucket: str, monitor_run_id: str, corr: str, cause: str | None) -> dict[str, Any]:
+        with self.transaction():
+            at = now_utc()
+            fact = self.store.get_fact(purchase_limit_fact_id)
+            missed = fact.miss(ttl_bucket, monitor_run_id, at)
+            self.store.save_fact(missed)
+            self._append((self._fact_missed_event(missed, ttl_bucket, monitor_run_id, corr, cause, at),))
+            return missed.to_json()
+
+    def mark_purchase_limit_failed(self, purchase_limit_fact_id: str, failure_code: str, detection_run_id: str, corr: str, cause: str | None) -> dict[str, Any]:
+        with self.transaction():
+            at = now_utc()
+            fact = self.store.get_fact(purchase_limit_fact_id)
+            failed = fact.fail(failure_code, detection_run_id, at)
+            self.store.save_fact(failed)
+            self._append((self._fact_failed_event(failed, failure_code, detection_run_id, corr, cause, at),))
+            return failed.to_json()
+
     def _eligibility_reserved_event(self, certificate: EligibilityCertificate, reservation_id: str, order_intent_id: str, version: int, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
         return _envelope("EligibilityUsageReserved", certificate.eligibilityCertificateId, version, {"usageReservationId": reservation_id, "eligibilityCertificateId": certificate.eligibilityCertificateId, "travelerId": certificate.travelerId, "eligibilityType": certificate.eligibilityType, "policyYear": certificate.policyYear, "orderIntentId": order_intent_id, "annualUsageReserved": certificate.annualUsageReserved, "annualUsageConfirmed": certificate.annualUsageConfirmed, "reservedAt": rfc3339_utc(at), "aggregateVersion": version}, corr, cause, at)
 
@@ -434,6 +453,14 @@ class IdentityVerificationService:
         payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "orderIntentId": fact.orderIntentId, "releaseReason": reason, "factStatus": "RELEASED", "limitPolicyVersion": fact.limitPolicyVersion, "releasedAt": rfc3339_utc(at), "aggregateVersion": fact.version}
         if source_event_id: payload["sourceEventId"] = source_event_id
         return _envelope("PurchaseLimitFactReleased", LEDGER_AGGREGATE_ID, fact.version, payload, corr, cause, at, fact.purchaseLimitFactId)
+
+    def _fact_missed_event(self, fact: PurchaseLimitFact, ttl_bucket: str, monitor_run_id: str, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "ttlBucket": ttl_bucket, "monitorRunId": monitor_run_id, "factStatus": "MISSED", "limitPolicyVersion": fact.limitPolicyVersion, "missedAt": rfc3339_utc(at), "aggregateVersion": fact.version}
+        return _envelope("PurchaseLimitFactMissed", LEDGER_AGGREGATE_ID, fact.version, payload, corr, cause, at, fact.purchaseLimitFactId)
+
+    def _fact_failed_event(self, fact: PurchaseLimitFact, failure_code: str, detection_run_id: str, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "failureCode": failure_code, "detectionRunId": detection_run_id, "factStatus": "FAILED", "limitPolicyVersion": fact.limitPolicyVersion, "failedAt": rfc3339_utc(at), "aggregateVersion": fact.version}
+        return _envelope("PurchaseLimitFactFailed", LEDGER_AGGREGATE_ID, fact.version, payload, corr, cause, at, fact.purchaseLimitFactId)
 
     def handle_traveler_snapshot_updated(self, envelope: EventEnvelope, stream: str) -> None:
         with self.transaction():

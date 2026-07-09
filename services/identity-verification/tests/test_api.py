@@ -80,6 +80,30 @@ def test_preorder_reserve_confirm_release_and_stable_id():
     assert {event.eventType for event in store.take_outbox()} >= {"EligibilityUsageReleased", "PurchaseLimitFactReleased"}
 
 
+def test_purchase_limit_missed_and_failed_events():
+    store = InMemoryStore(); client = TestClient(create_app(store=store))
+    cred = register(client, idem=50).json(); verify(client, cred, 51)
+    body = {"orderIntentId": "oint-monitor", "accountId": "acct-1", "offerId": "off-1", "offerVersion": 1, "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"], "journeyDate": "2026-02-01", "productCode": "TRAIN", "limitPolicyVersion": "limit-v1", "requestedAt": "2026-01-01T00:00:00Z"}
+    check = client.post("/api/v1/identity-verification/pre-order-checks", json=body, headers={"Idempotency-Key": key(52)}).json()
+    fact_id = check["purchaseLimitFacts"][0]["purchaseLimitFactId"]
+    store.take_outbox()
+    missed = client.post(f"/api/v1/identity-verification/purchase-limit-facts/{fact_id}/mark-missed", json={"ttlBucket": "ttl-10m", "monitorRunId": "mon-1"}, headers={"Idempotency-Key": key(53)})
+    assert missed.status_code == 200
+    events = store.take_outbox()
+    assert events[0].eventType == "PurchaseLimitFactMissed"
+    assert events[0].payload["ttlBucket"] == "ttl-10m"
+
+    body["orderIntentId"] = "oint-failed"
+    failed_check = client.post("/api/v1/identity-verification/pre-order-checks", json=body, headers={"Idempotency-Key": key(54)}).json()
+    failed_fact_id = failed_check["purchaseLimitFacts"][0]["purchaseLimitFactId"]
+    store.take_outbox()
+    failed = client.post(f"/api/v1/identity-verification/purchase-limit-facts/{failed_fact_id}/mark-failed", json={"failureCode": "DOWNSTREAM_FAILURE", "detectionRunId": "det-1"}, headers={"Idempotency-Key": key(55)})
+    assert failed.status_code == 200
+    events = store.take_outbox()
+    assert events[0].eventType == "PurchaseLimitFactFailed"
+    assert events[0].payload["failureCode"] == "DOWNSTREAM_FAILURE"
+
+
 def test_certificate_query_excludes_exhausted_certificates():
     store = InMemoryStore(); client = TestClient(create_app(store=store))
     cred = register(client, idem=40).json(); verify(client, cred, 41)

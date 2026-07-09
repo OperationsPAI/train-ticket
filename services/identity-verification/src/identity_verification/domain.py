@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Self
 
 from train_ticket_platform.events import rfc3339_utc
 
@@ -142,21 +142,22 @@ class VerificationCase:
     def start(cls, case_id: str, traveler_id: str, credential_id: str, purpose: str, material_fingerprint: str, sim_policy_version: str, at: datetime) -> "VerificationCase":
         if purpose not in {"ORDER_CREATION", "PROFILE_RECHECK", "ELIGIBILITY_CERTIFICATE", "MANUAL_AUDIT"}:
             raise DomainError("purpose is invalid")
-        return cls(case_id, traveler_id, credential_id, purpose, VerificationStatus.DRAFT, material_fingerprint, sim_policy_version, None, None, None, None, None, None, None, at)
+        return cls(case_id, traveler_id, credential_id, purpose, VerificationStatus.DRAFT, material_fingerprint, sim_policy_version, None, None, None, None, None, None, None, at, 1)
 
     def submit_and_record(self, outcome: SimOutcome, sim_result_ref: str, at: datetime) -> "VerificationCase":
         if self.status is not VerificationStatus.DRAFT:
             raise DomainError("verification case is already submitted")
+        result_version = self.version + 2  # submitted-to-SIM and terminal result transitions
         if outcome is SimOutcome.MATCH:
-            return replace(self, status=VerificationStatus.PASSED, simOutcome=outcome, simResultRef=sim_result_ref, validFrom=at, validUntil=at + timedelta(days=365), submittedAt=at, completedAt=at)
+            return replace(self, status=VerificationStatus.PASSED, simOutcome=outcome, simResultRef=sim_result_ref, validFrom=at, validUntil=at + timedelta(days=365), submittedAt=at, completedAt=at, version=result_version)
         status = VerificationStatus.MANUAL_REVIEW_REQUIRED if outcome is SimOutcome.MANUAL_REVIEW_REQUIRED else VerificationStatus.FAILED
         reason = "MANUAL_REVIEW_REQUIRED" if outcome is SimOutcome.MANUAL_REVIEW_REQUIRED else "NAME_DOCUMENT_MISMATCH"
-        return replace(self, status=status, simOutcome=outcome, simResultRef=sim_result_ref, reasonCode=reason, submittedAt=at, completedAt=at)
+        return replace(self, status=status, simOutcome=outcome, simResultRef=sim_result_ref, reasonCode=reason, submittedAt=at, completedAt=at, version=result_version)
 
     def manual_override(self, at: datetime) -> "VerificationCase":
         if self.status not in {VerificationStatus.MANUAL_REVIEW_REQUIRED, VerificationStatus.FAILED}:
             raise DomainError("only failed or manual cases can be overridden")
-        return replace(self, status=VerificationStatus.PASSED, simOutcome=SimOutcome.MATCH, reasonCode=None, validFrom=at, validUntil=at + timedelta(days=365), completedAt=at)
+        return replace(self, status=VerificationStatus.PASSED, simOutcome=SimOutcome.MATCH, reasonCode=None, validFrom=at, validUntil=at + timedelta(days=365), completedAt=at, version=self.version + 1)
 
     def to_json(self) -> dict[str, Any]:
         data = {"verificationCaseId": self.verificationCaseId, "travelerId": self.travelerId, "credentialRecordId": self.credentialRecordId, "purpose": self.purpose, "status": self.status.value, "materialFingerprint": self.materialFingerprint, "simPolicyVersion": self.simPolicyVersion, "createdAt": rfc3339_utc(self.createdAt)}
@@ -250,20 +251,38 @@ class PurchaseLimitFact:
     journeyOrderId: str | None = None
     releaseReason: str | None = None
     sourceEventId: str | None = None
+    ttlBucket: str | None = None
+    monitorRunId: str | None = None
+    failureCode: str | None = None
+    detectionRunId: str | None = None
+
+    def _ensure_recorded(self) -> None:
+        if self.status != "RECORDED":
+            raise PreconditionFailed("purchase-limit fact is not recorded")
+
+    def _transition(self, status: str, **changes: Any) -> Self:
+        self._ensure_recorded()
+        return replace(self, status=status, version=self.version + 1, **changes)
 
     def confirm(self, journey_order_id: str, at: datetime) -> "PurchaseLimitFact":
-        if self.status != "RECORDED":
-            raise PreconditionFailed("purchase-limit fact is not recorded")
-        return replace(self, status="CONFIRMED", journeyOrderId=journey_order_id, version=self.version + 1)
+        return self._transition("CONFIRMED", journeyOrderId=journey_order_id)
 
     def release(self, release_reason: str, at: datetime, source_event_id: str | None = None) -> "PurchaseLimitFact":
-        if self.status != "RECORDED":
-            raise PreconditionFailed("purchase-limit fact is not recorded")
-        return replace(self, status="RELEASED", releaseReason=release_reason, sourceEventId=source_event_id, version=self.version + 1)
+        return self._transition("RELEASED", releaseReason=release_reason, sourceEventId=source_event_id)
+
+    def miss(self, ttl_bucket: str, monitor_run_id: str, at: datetime) -> "PurchaseLimitFact":
+        return self._transition("MISSED", ttlBucket=ttl_bucket, monitorRunId=monitor_run_id)
+
+    def fail(self, failure_code: str, detection_run_id: str, at: datetime) -> "PurchaseLimitFact":
+        return self._transition("FAILED", failureCode=failure_code, detectionRunId=detection_run_id)
 
     def to_json(self) -> dict[str, Any]:
         data = {"purchaseLimitFactId": self.purchaseLimitFactId, "scopeType": self.scopeType, "scopeRef": self.scopeRef, "travelerId": self.travelerId, "orderIntentId": self.orderIntentId, "journeyDate": self.journeyDate, "productCode": self.productCode, "segmentRefs": list(self.segmentRefs), "limitPolicyVersion": self.limitPolicyVersion, "status": self.status, "recordedAt": rfc3339_utc(self.recordedAt)}
         if self.journeyOrderId: data["journeyOrderId"] = self.journeyOrderId
         if self.releaseReason: data["releaseReason"] = self.releaseReason
         if self.sourceEventId: data["sourceEventId"] = self.sourceEventId
+        if self.ttlBucket: data["ttlBucket"] = self.ttlBucket
+        if self.monitorRunId: data["monitorRunId"] = self.monitorRunId
+        if self.failureCode: data["failureCode"] = self.failureCode
+        if self.detectionRunId: data["detectionRunId"] = self.detectionRunId
         return data

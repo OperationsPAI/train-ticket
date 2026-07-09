@@ -102,7 +102,7 @@ def configure_identity_routes(app: FastAPI, store: Any | None = None, idempotenc
         async def identity_unit_of_work_middleware(request: Request, call_next: Any):
             with unit_of_work(): return await call_next(request)
     app.state.identity_verification_service = service; app.state.identity_verification_store = store
-    configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/identity-verification/credentials", "/api/v1/identity-verification/verification-cases", "/api/v1/identity-verification/eligibility-certificates", "/api/v1/identity-verification/pre-order-checks"))
+    configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/identity-verification/credentials", "/api/v1/identity-verification/verification-cases", "/api/v1/identity-verification/eligibility-certificates", "/api/v1/identity-verification/pre-order-checks", "/api/v1/identity-verification/purchase-limit-facts"))
     for route in identity_router.routes: app.router.routes.append(route)
 
 

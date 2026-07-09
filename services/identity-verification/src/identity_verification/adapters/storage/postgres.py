@@ -38,12 +38,12 @@ def credential_from_json(data: Mapping[str, Any] | str, version: int = 0) -> Cre
 
 
 def case_to_json(c: VerificationCase) -> dict[str, Any]:
-    return {"verificationCaseId": c.verificationCaseId, "travelerId": c.travelerId, "credentialRecordId": c.credentialRecordId, "purpose": c.purpose, "status": c.status.value, "materialFingerprint": c.materialFingerprint, "simPolicyVersion": c.simPolicyVersion, "simOutcome": c.simOutcome.value if c.simOutcome else None, "simResultRef": c.simResultRef, "reasonCode": c.reasonCode, "validFrom": _dt(c.validFrom), "validUntil": _dt(c.validUntil), "submittedAt": _dt(c.submittedAt), "completedAt": _dt(c.completedAt), "createdAt": _dt(c.createdAt)}
+    return {"verificationCaseId": c.verificationCaseId, "travelerId": c.travelerId, "credentialRecordId": c.credentialRecordId, "purpose": c.purpose, "status": c.status.value, "materialFingerprint": c.materialFingerprint, "simPolicyVersion": c.simPolicyVersion, "simOutcome": c.simOutcome.value if c.simOutcome else None, "simResultRef": c.simResultRef, "reasonCode": c.reasonCode, "validFrom": _dt(c.validFrom), "validUntil": _dt(c.validUntil), "submittedAt": _dt(c.submittedAt), "completedAt": _dt(c.completedAt), "createdAt": _dt(c.createdAt), "aggregateVersion": c.version}
 
 
 def case_from_json(data: Mapping[str, Any] | str, version: int = 0) -> VerificationCase:
     d = _json(data)
-    return VerificationCase(str(d["verificationCaseId"]), str(d["travelerId"]), str(d["credentialRecordId"]), str(d["purpose"]), VerificationStatus(str(d["status"])), str(d["materialFingerprint"]), str(d["simPolicyVersion"]), SimOutcome(str(d["simOutcome"])) if d.get("simOutcome") else None, d.get("simResultRef"), d.get("reasonCode"), _parse_dt(d.get("validFrom")), _parse_dt(d.get("validUntil")), _parse_dt(d.get("submittedAt")), _parse_dt(d.get("completedAt")), _parse_dt(str(d["createdAt"])) or datetime.now(UTC), version)
+    return VerificationCase(str(d["verificationCaseId"]), str(d["travelerId"]), str(d["credentialRecordId"]), str(d["purpose"]), VerificationStatus(str(d["status"])), str(d["materialFingerprint"]), str(d["simPolicyVersion"]), SimOutcome(str(d["simOutcome"])) if d.get("simOutcome") else None, d.get("simResultRef"), d.get("reasonCode"), _parse_dt(d.get("validFrom")), _parse_dt(d.get("validUntil")), _parse_dt(d.get("submittedAt")), _parse_dt(d.get("completedAt")), _parse_dt(str(d["createdAt"])) or datetime.now(UTC), int(d.get("aggregateVersion", version)))
 
 
 def certificate_to_json(c: EligibilityCertificate) -> dict[str, Any]:
@@ -60,12 +60,16 @@ def fact_to_json(f: PurchaseLimitFact) -> dict[str, Any]:
     if f.journeyOrderId: data["journeyOrderId"] = f.journeyOrderId
     if f.releaseReason: data["releaseReason"] = f.releaseReason
     if f.sourceEventId: data["sourceEventId"] = f.sourceEventId
+    if f.ttlBucket: data["ttlBucket"] = f.ttlBucket
+    if f.monitorRunId: data["monitorRunId"] = f.monitorRunId
+    if f.failureCode: data["failureCode"] = f.failureCode
+    if f.detectionRunId: data["detectionRunId"] = f.detectionRunId
     return data
 
 
 def fact_from_json(data: Mapping[str, Any] | str, version: int = 0) -> PurchaseLimitFact:
     d = _json(data)
-    return PurchaseLimitFact(str(d["purchaseLimitFactId"]), str(d["scopeType"]), str(d["scopeRef"]), str(d["travelerId"]), str(d["orderIntentId"]), str(d["journeyDate"]), str(d["productCode"]), tuple(str(x) for x in d.get("segmentRefs", ())), str(d["limitPolicyVersion"]), str(d["status"]), _parse_dt(str(d["recordedAt"])) or datetime.now(UTC), int(d.get("aggregateVersion", version)), d.get("journeyOrderId"), d.get("releaseReason"), d.get("sourceEventId"))
+    return PurchaseLimitFact(str(d["purchaseLimitFactId"]), str(d["scopeType"]), str(d["scopeRef"]), str(d["travelerId"]), str(d["orderIntentId"]), str(d["journeyDate"]), str(d["productCode"]), tuple(str(x) for x in d.get("segmentRefs", ())), str(d["limitPolicyVersion"]), str(d["status"]), _parse_dt(str(d["recordedAt"])) or datetime.now(UTC), int(d.get("aggregateVersion", version)), d.get("journeyOrderId"), d.get("releaseReason"), d.get("sourceEventId"), d.get("ttlBucket"), d.get("monitorRunId"), d.get("failureCode"), d.get("detectionRunId"))
 
 
 @dataclass
