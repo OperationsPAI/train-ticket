@@ -157,6 +157,19 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             // nothing to refund, so this event is a no-op for payment.
             return;
         }
+        com.trainticket.payment.domain.ChannelRef route = paymentCommands.getIntent(intentId).channelRef();
+        if (route != null && isSimChannel(route.channel()) && route.channelOrderId() != null && route.channelTransactionId() != null) {
+            paymentCommands.requestRefund(
+                intentId,
+                amount,
+                reason == null ? "post-sales-approved" : reason,
+                caseId,
+                caseId,
+                envelope.correlationId(),
+                route
+            );
+            return;
+        }
         paymentCommands.requestRefund(
             intentId,
             amount,
@@ -165,5 +178,9 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             caseId,
             envelope.correlationId()
         );
+    }
+
+    private static boolean isSimChannel(String channel) {
+        return "ALIPAY_SIM".equals(channel) || "WECHAT_SIM".equals(channel) || "UNIONPAY_SIM".equals(channel);
     }
 }

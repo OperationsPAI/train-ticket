@@ -53,6 +53,12 @@ final class JacksonPaymentJson {
         if (intent.channelRef() != null) {
             root.set("channelRef", objectMapper.valueToTree(EventEnvelopeMapper.channelRef(intent.channelRef())));
         }
+        if (intent.channelOrderIdempotencyKey() != null) {
+            root.put("channelOrderIdempotencyKey", intent.channelOrderIdempotencyKey());
+        }
+        if (intent.channelOrderSubmitIdempotencyKey() != null) {
+            root.put("channelOrderSubmitIdempotencyKey", intent.channelOrderSubmitIdempotencyKey());
+        }
         ArrayNode events = root.putArray("domainEvents");
         for (PaymentEvent event : intent.domainEvents()) {
             events.add(objectMapper.valueToTree(EventEnvelopeMapper.fromDomainEvent(event)));
@@ -80,7 +86,9 @@ final class JacksonPaymentJson {
             money(root.path("refundedAmount")),
             refs,
             events,
-            channelRef(root.path("channelRef"))
+            channelRef(root.path("channelRef")),
+            root.path("channelOrderIdempotencyKey").asText(null),
+            root.path("channelOrderSubmitIdempotencyKey").asText(null)
         );
     }
 
@@ -100,6 +108,12 @@ final class JacksonPaymentJson {
         }
         if (refund.channelRef() != null) {
             root.set("channelRef", objectMapper.valueToTree(EventEnvelopeMapper.channelRef(refund.channelRef())));
+        }
+        if (refund.channelRefundIdempotencyKey() != null) {
+            root.put("channelRefundIdempotencyKey", refund.channelRefundIdempotencyKey());
+        }
+        if (refund.channelRefundSubmitIdempotencyKey() != null) {
+            root.put("channelRefundSubmitIdempotencyKey", refund.channelRefundSubmitIdempotencyKey());
         }
         root.put("attemptCount", refund.attemptCount());
         ArrayNode events = root.putArray("domainEvents");
@@ -124,7 +138,9 @@ final class JacksonPaymentJson {
             root.path("channelRefundTransactionId").isNull() ? null : root.path("channelRefundTransactionId").asText(null),
             root.path("attemptCount").asInt(0),
             events,
-            channelRef(root.path("channelRef"))
+            channelRef(root.path("channelRef")),
+            root.path("channelRefundIdempotencyKey").asText(null),
+            root.path("channelRefundSubmitIdempotencyKey").asText(null)
         );
     }
 

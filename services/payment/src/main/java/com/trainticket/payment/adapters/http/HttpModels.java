@@ -23,7 +23,8 @@ record PaymentIntentDetailsResponse(
     Instant expiresAt,
     MoneyJson authorizedAmount,
     MoneyJson capturedAmount,
-    MoneyJson refundedAmount
+    MoneyJson refundedAmount,
+    ChannelRefJson channelRef
 ) {
 }
 
@@ -58,7 +59,8 @@ record RefundDetailsResponse(
     String status,
     String reason,
     String businessCaseRef,
-    String channelRefundTransactionId
+    String channelRefundTransactionId,
+    ChannelRefJson channelRef
 ) {
 }
 

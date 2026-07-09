@@ -53,7 +53,8 @@ final class PaymentHttpMapper {
             intent.expiresAt(),
             money(intent.authorizedAmount()),
             money(intent.capturedAmount()),
-            money(intent.refundedAmount())
+            money(intent.refundedAmount()),
+            fromChannelRef(intent.channelRef())
         );
     }
 
@@ -67,7 +68,8 @@ final class PaymentHttpMapper {
         if (ref == null && channelRef != null) {
             ref = new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), channelRef.channelRefundId(), txn, channelRef.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
         }
-        return new CapturePaymentResponse(intent.paymentIntentId(), intent.status().name(), money(intent.capturedAmount()), txn, ref);
+        String status = intent.channelRef() != null && intent.status().name().equals("CREATED") ? "PENDING_CHANNEL" : intent.status().name();
+        return new CapturePaymentResponse(intent.paymentIntentId(), status, money(intent.capturedAmount()), txn, ref);
     }
 
     static RefundResponse refundResponse(Refund refund, ChannelRefJson channelRef) {
@@ -79,7 +81,7 @@ final class PaymentHttpMapper {
     }
 
     static RefundDetailsResponse refundDetails(Refund refund) {
-        return new RefundDetailsResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), refund.reasonCode(), refund.sourceCaseRef(), refund.channelRefundTransactionId());
+        return new RefundDetailsResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), refund.reasonCode(), refund.sourceCaseRef(), refund.channelRefundTransactionId(), fromChannelRef(refund.channelRef()));
     }
 
     private static Instant createdAt(PaymentIntent intent) {

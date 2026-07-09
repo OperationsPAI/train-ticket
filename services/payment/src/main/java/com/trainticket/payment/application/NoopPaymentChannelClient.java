@@ -10,12 +10,12 @@ import org.springframework.stereotype.Component;
 @ConditionalOnMissingBean(PaymentChannelClient.class)
 final class NoopPaymentChannelClient implements PaymentChannelClient {
     @Override
-    public HandoffOrder handoffCapture(PaymentIntent intent, String idempotencyKey, String correlationId, ChannelRef requestedRef) {
+    public HandoffOrder handoffCapture(PaymentIntent intent, String orderIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef requestedRef) {
         throw new IllegalStateException("payment-channel client is not configured");
     }
 
     @Override
-    public HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
+    public HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String refundIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef originalRoute) {
         throw new IllegalStateException("payment-channel client is not configured");
     }
 }

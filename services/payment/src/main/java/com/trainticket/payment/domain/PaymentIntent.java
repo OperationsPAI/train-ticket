@@ -21,6 +21,8 @@ public final class PaymentIntent {
     private final Set<String> channelTransactionRefs;
     private final List<PaymentEvent> domainEvents;
     private ChannelRef channelRef;
+    private String channelOrderIdempotencyKey;
+    private String channelOrderSubmitIdempotencyKey;
     private PaymentIntentStatus status;
     private Money authorizedAmount;
     private Money capturedAmount;
@@ -96,8 +98,31 @@ public final class PaymentIntent {
         List<PaymentEvent> domainEvents,
         ChannelRef channelRef
     ) {
+        return rehydrate(paymentIntentId, businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey, status, authorizedAmount, capturedAmount, refundedAmount, channelTransactionRefs, domainEvents, channelRef, null, null);
+    }
+
+    public static PaymentIntent rehydrate(
+        String paymentIntentId,
+        String businessRef,
+        String purpose,
+        Money amount,
+        String payerRef,
+        Instant expiresAt,
+        String idempotencyKey,
+        PaymentIntentStatus status,
+        Money authorizedAmount,
+        Money capturedAmount,
+        Money refundedAmount,
+        Set<String> channelTransactionRefs,
+        List<PaymentEvent> domainEvents,
+        ChannelRef channelRef,
+        String channelOrderIdempotencyKey,
+        String channelOrderSubmitIdempotencyKey
+    ) {
         PaymentIntent intent = rehydrate(paymentIntentId, businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey, status, authorizedAmount, capturedAmount, refundedAmount, channelTransactionRefs, domainEvents);
         intent.channelRef = channelRef;
+        intent.channelOrderIdempotencyKey = blankToNull(channelOrderIdempotencyKey);
+        intent.channelOrderSubmitIdempotencyKey = blankToNull(channelOrderSubmitIdempotencyKey);
         return intent;
     }
 
@@ -146,6 +171,22 @@ public final class PaymentIntent {
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
     public Set<String> channelTransactionRefs() { return Set.copyOf(channelTransactionRefs); }
     public ChannelRef channelRef() { return channelRef; }
+    public String channelOrderIdempotencyKey() { return channelOrderIdempotencyKey; }
+    public String channelOrderSubmitIdempotencyKey() { return channelOrderSubmitIdempotencyKey; }
+
+    public void rememberChannelOrderKeys(String orderKey, String submitKey) {
+        requireNonTerminalForPayment("handoff payment capture");
+        String normalizedOrderKey = requireText(orderKey, "channelOrderIdempotencyKey");
+        String normalizedSubmitKey = requireText(submitKey, "channelOrderSubmitIdempotencyKey");
+        if (channelOrderIdempotencyKey != null && !channelOrderIdempotencyKey.equals(normalizedOrderKey)) {
+            throw new DomainRuleViolation("channel order idempotency key already assigned");
+        }
+        if (channelOrderSubmitIdempotencyKey != null && !channelOrderSubmitIdempotencyKey.equals(normalizedSubmitKey)) {
+            throw new DomainRuleViolation("channel order submit idempotency key already assigned");
+        }
+        this.channelOrderIdempotencyKey = normalizedOrderKey;
+        this.channelOrderSubmitIdempotencyKey = normalizedSubmitKey;
+    }
 
     public boolean semanticallyMatches(String businessRef, String purpose, Money amount, String payerRef, Instant expiresAt, String idempotencyKey) {
         return this.businessRef.equals(businessRef)
@@ -158,7 +199,19 @@ public final class PaymentIntent {
 
     public void recordChannelHandoff(ChannelRef ref) {
         requireNonTerminalForPayment("handoff payment capture");
-        this.channelRef = Objects.requireNonNull(ref, "channelRef is required");
+        ChannelRef next = Objects.requireNonNull(ref, "channelRef is required");
+        if (this.channelRef != null) {
+            next = new ChannelRef(
+                next.channel() == null ? this.channelRef.channel() : next.channel(),
+                next.channelOrderId() == null ? this.channelRef.channelOrderId() : next.channelOrderId(),
+                next.channelRefundId() == null ? this.channelRef.channelRefundId() : next.channelRefundId(),
+                next.channelTransactionId() == null ? this.channelRef.channelTransactionId() : next.channelTransactionId(),
+                next.channelRefundTransactionId() == null ? this.channelRef.channelRefundTransactionId() : next.channelRefundTransactionId(),
+                next.channelStatementId() == null ? this.channelRef.channelStatementId() : next.channelStatementId(),
+                next.faultSeedRef() == null ? this.channelRef.faultSeedRef() : next.faultSeedRef()
+            );
+        }
+        this.channelRef = next;
     }
 
     public void authorize(Money authorizedAmount, String channel, String channelTransactionId, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -297,6 +350,10 @@ public final class PaymentIntent {
             throw new DomainRuleViolation(name + " must not be blank");
         }
         return value;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
     private static EventEnvelope createEnvelope(String eventType, Instant occurredAt, String causationId, String correlationId) {
         return new EventEnvelope(

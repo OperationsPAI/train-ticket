@@ -14,7 +14,6 @@ import java.util.Map;
 import java.util.Objects;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.trainticket.platformkit.messaging.PrefixedIds;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -34,19 +33,18 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
     }
 
     @Override
-    public HandoffOrder handoffCapture(PaymentIntent intent, String idempotencyKey, String correlationId, ChannelRef requestedRef) {
+    public HandoffOrder handoffCapture(PaymentIntent intent, String orderIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef requestedRef) {
         ChannelRef ref = Objects.requireNonNull(requestedRef, "channelRef is required");
-        String commandId = PrefixedIds.newCommandId();
-        JsonNode created = post("/api/v1/channel-orders", idempotencyKey, correlationId, Map.of(
+        JsonNode created = post("/api/v1/channel-orders", orderIdempotencyKey, correlationId, Map.of(
             "paymentIntentId", intent.paymentIntentId(),
             "businessRef", intent.businessRef(),
             "purpose", intent.purpose(),
             "channel", ref.channel(),
             "amount", money(intent.amount()),
-            "sourceCommandId", commandId,
+            "sourceCommandId", commandId(orderIdempotencyKey),
             "correlationId", correlationId
         ));
-        JsonNode submitted = post("/api/v1/channel-orders/" + text(created, "channelOrderId") + "/submit", idempotencyKeyFor("submit", idempotencyKey), correlationId, Map.of(
+        JsonNode submitted = post("/api/v1/channel-orders/" + text(created, "channelOrderId") + "/submit", submitIdempotencyKey, correlationId, Map.of(
             "expectedVersion", created.path("version").asLong(),
             "requestFingerprint", text(created, "requestFingerprint")
         ));
@@ -55,9 +53,9 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
     }
 
     @Override
-    public HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
+    public HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String refundIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef originalRoute) {
         ChannelRef ref = Objects.requireNonNull(originalRoute, "channelRef is required");
-        JsonNode created = post("/api/v1/channel-refunds", idempotencyKey, correlationId, Map.of(
+        JsonNode created = post("/api/v1/channel-refunds", refundIdempotencyKey, correlationId, Map.of(
             "refundId", refund.refundId(),
             "paymentIntentId", intent.paymentIntentId(),
             "channelOrderId", ref.channelOrderId(),
@@ -65,10 +63,10 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
             "channel", ref.channel(),
             "amount", money(refund.amount()),
             "refundReasonCode", refund.reasonCode(),
-            "sourceCommandId", PrefixedIds.newCommandId(),
+            "sourceCommandId", commandId(refundIdempotencyKey),
             "correlationId", correlationId
         ));
-        JsonNode submitted = post("/api/v1/channel-refunds/" + text(created, "channelRefundId") + "/submit", idempotencyKeyFor("refund-submit", idempotencyKey), correlationId, Map.of(
+        JsonNode submitted = post("/api/v1/channel-refunds/" + text(created, "channelRefundId") + "/submit", submitIdempotencyKey, correlationId, Map.of(
             "expectedVersion", created.path("version").asLong(),
             "requestFingerprint", text(created, "requestFingerprint")
         ));
@@ -117,8 +115,8 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
         return value == null || value.isBlank() ? null : value;
     }
 
-    private static String idempotencyKeyFor(String salt, String idempotencyKey) {
-        return com.trainticket.platformkit.idempotency.UuidV7.generate();
+    private static String commandId(String idempotencyKey) {
+        return "cmd-" + stripCommandPrefix(idempotencyKey);
     }
 
     private static String stripCommandPrefix(String value) {

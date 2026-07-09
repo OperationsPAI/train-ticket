@@ -6,6 +6,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
 	"testing"
+	"time"
 )
 
 type memRepo struct {
@@ -33,10 +34,14 @@ func (m *memRepo) GetOrder(_ context.Context, id string) (*domain.ChannelOrder, 
 	}
 	return o, nil
 }
-func (m *memRepo) ListOrdersForStatement(context.Context, string, string, string) ([]domain.ChannelOrder, error) {
+func (m *memRepo) ListOrdersForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelOrder, error) {
 	out := []domain.ChannelOrder{}
+	start, _ := time.Parse("2006-01-02", date)
+	end := start.Add(24 * time.Hour)
 	for _, o := range m.orders {
-		out = append(out, *o)
+		if o.Channel == channel && o.Amount.Currency == currency && !o.UpdatedAt.Before(start) && o.UpdatedAt.Before(end) {
+			out = append(out, *o)
+		}
 	}
 	return out, nil
 }
@@ -55,10 +60,14 @@ func (m *memRepo) GetRefund(_ context.Context, id string) (*domain.ChannelRefund
 	}
 	return o, nil
 }
-func (m *memRepo) ListRefundsForStatement(context.Context, string, string, string) ([]domain.ChannelRefund, error) {
+func (m *memRepo) ListRefundsForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelRefund, error) {
 	out := []domain.ChannelRefund{}
+	start, _ := time.Parse("2006-01-02", date)
+	end := start.Add(24 * time.Hour)
 	for _, o := range m.refunds {
-		out = append(out, *o)
+		if o.Channel == channel && o.Amount.Currency == currency && !o.UpdatedAt.Before(start) && o.UpdatedAt.Before(end) {
+			out = append(out, *o)
+		}
 	}
 	return out, nil
 }
@@ -155,7 +164,8 @@ func TestOrderRefundStatementDiscrepancyFlow(t *testing.T) {
 	if rf.Status != domain.StatusSucceeded {
 		t.Fatalf("refund not succeeded")
 	}
-	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: "2026-07-10", Currency: "CNY", SeedVersion: "v1", CorrelationID: corr, SourceCommandID: cmd, ScenarioCodes: []string{"AMOUNT_MISMATCH"}})
+	statementDate := o.UpdatedAt.Format("2006-01-02")
+	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: statementDate, Currency: "CNY", SeedVersion: "v1", CorrelationID: corr, SourceCommandID: cmd, ScenarioCodes: []string{"AMOUNT_MISMATCH"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,5 +208,37 @@ func TestMissedOrderRecovery(t *testing.T) {
 	}
 	if o.Status != domain.StatusSucceeded {
 		t.Fatalf("want recovered success got %s", o.Status)
+	}
+}
+
+func TestStatementGenerationFiltersByStatementDate(t *testing.T) {
+	repo := newMem()
+	svc := New(repo, &pub{}, nil)
+	ctx := context.Background()
+	cmd := ids.NewCommandID()
+	corr := ids.NewCorrelationID()
+	o, err := svc.CreateOrder(ctx, CreateOrderRequest{PaymentIntentID: "pi-date", BusinessRef: "ord-date", Purpose: "purchase", Channel: domain.ChannelAlipay, Amount: domain.Money{"CNY", 100}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err = svc.SubmitOrder(ctx, o.ChannelOrderID, o.Version, o.RequestFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	today := o.UpdatedAt.Format("2006-01-02")
+	yesterday := o.UpdatedAt.Add(-24 * time.Hour).Format("2006-01-02")
+	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: yesterday, Currency: "CNY", SeedVersion: "v1", CorrelationID: corr, SourceCommandID: cmd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LineCount != 0 {
+		t.Fatalf("expected no prior-day lines, got %d", st.LineCount)
+	}
+	st, err = svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: today, Currency: "CNY", SeedVersion: "v2", CorrelationID: corr, SourceCommandID: cmd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LineCount != 1 {
+		t.Fatalf("expected one same-day line, got %d", st.LineCount)
 	}
 }

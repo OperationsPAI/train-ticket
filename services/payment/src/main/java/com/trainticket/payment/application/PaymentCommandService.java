@@ -9,6 +9,9 @@ import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
 import java.time.Clock;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import com.trainticket.payment.domain.ports.PaymentIntentRepository;
@@ -116,7 +119,11 @@ public class PaymentCommandService {
         }
         validateSimChannel(channel);
         ChannelRef requestedRef = new ChannelRef(channel, null, null, null, null, null, null);
-        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, idempotencyKey, correlationId, requestedRef);
+        String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
+        String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
+        intent.rememberChannelOrderKeys(orderKey, submitKey);
+        paymentIntentRepository.save(intent);
+        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, orderKey, submitKey, correlationId, requestedRef);
         intent.recordChannelHandoff(handoff.channelRef());
         paymentIntentRepository.save(intent);
         return intent;
@@ -129,7 +136,11 @@ public class PaymentCommandService {
         }
         validateSimChannel(requestedRef.channel());
         PaymentIntent intent = getIntent(paymentIntentId);
-        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, idempotencyKey, correlationId, requestedRef);
+        String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
+        String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
+        intent.rememberChannelOrderKeys(orderKey, submitKey);
+        paymentIntentRepository.save(intent);
+        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, orderKey, submitKey, correlationId, requestedRef);
         intent.recordChannelHandoff(handoff.channelRef());
         paymentIntentRepository.save(intent);
         return intent;
@@ -169,7 +180,11 @@ public class PaymentCommandService {
         }
         validateSimChannel(originalRoute.channel());
         PaymentIntent intent = getIntent(paymentIntentId);
-        PaymentChannelClient.HandoffRefund handoff = paymentChannelClient.handoffRefund(intent, refund, idempotencyKey, correlationId, originalRoute);
+        String refundKey = keyOrFold(refund.channelRefundIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":" + originalRoute.channelTransactionId(), idempotencyKey);
+        String submitKey = keyOrFold(refund.channelRefundSubmitIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":submit", idempotencyKey);
+        refund.rememberChannelRefundKeys(refundKey, submitKey);
+        refundRepository.save(refund);
+        PaymentChannelClient.HandoffRefund handoff = paymentChannelClient.handoffRefund(intent, refund, refundKey, submitKey, correlationId, originalRoute);
         refund.recordChannelHandoff(handoff.channelRef());
         refundRepository.save(refund);
         return refund;
@@ -184,7 +199,7 @@ public class PaymentCommandService {
             return intent;
         }
         int before = intent.domainEvents().size();
-        intent.recordChannelHandoff(new ChannelRef(channel, channelOrderId, null, null, null, null, null));
+        intent.recordChannelHandoff(new ChannelRef(channel, channelOrderId, null, channelTransactionId, null, null, null));
         intent.capture(amount, channel, channelTransactionId, Instant.now(clock), commandId(channelOrderId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
@@ -254,6 +269,36 @@ public class PaymentCommandService {
         for (PaymentEvent event : events) {
             eventPublisher.publish(EventEnvelopeMapper.fromDomainEvent(event));
         }
+    }
+
+    private static String keyOrFold(String existing, String material, String fallbackKey) {
+        if (existing != null && !existing.isBlank()) {
+            return existing;
+        }
+        String normalized = requireText(fallbackKey, "idempotencyKey");
+        if (com.trainticket.platformkit.idempotency.UuidV7.isValid(stripCommandPrefix(normalized))) {
+            return stripCommandPrefix(normalized);
+        }
+        return foldedUuidV7(material + ":" + normalized);
+    }
+
+    private static String foldedUuidV7(String material) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
+            byte[] bytes = java.util.Arrays.copyOf(digest, 16);
+            bytes[6] = (byte) ((bytes[6] & 0x0f) | 0x70);
+            bytes[8] = (byte) ((bytes[8] & 0x3f) | 0x80);
+            return String.format("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static String stripCommandPrefix(String value) {
+        String trimmed = requireText(value, "idempotencyKey");
+        return trimmed.startsWith("cmd-") ? trimmed.substring(4) : trimmed;
     }
 
     private static String commandId(String idempotencyKey) {

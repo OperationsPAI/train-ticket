@@ -6,9 +6,9 @@ import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
 
 public interface PaymentChannelClient {
-    HandoffOrder handoffCapture(PaymentIntent intent, String idempotencyKey, String correlationId, ChannelRef requestedRef);
+    HandoffOrder handoffCapture(PaymentIntent intent, String orderIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef requestedRef);
 
-    HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String idempotencyKey, String correlationId, ChannelRef originalRoute);
+    HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String refundIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef originalRoute);
 
     record HandoffOrder(String channelOrderId, String status, String channelTransactionId, ChannelRef channelRef) {
     }

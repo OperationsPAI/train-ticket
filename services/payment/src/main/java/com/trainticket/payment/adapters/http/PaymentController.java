@@ -48,7 +48,9 @@ public class PaymentController {
     public ResponseEntity<?> capturePayment(@PathVariable String paymentIntentId, @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CapturePaymentRequest request, HttpServletRequest httpRequest) {
         ChannelRefJson channelRef = request == null ? null : request.channelRef();
         validateOptionalChannelRef(channelRef, false);
-        return ResponseEntity.ok(PaymentHttpMapper.captureResponse(service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest), PaymentHttpMapper.toChannelRef(channelRef)), channelRef));
+        PaymentIntent intent = service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest), PaymentHttpMapper.toChannelRef(channelRef));
+        return ResponseEntity.status(intent.channelRef() != null && intent.status().name().equals("CREATED") ? 202 : 200)
+            .body(PaymentHttpMapper.captureResponse(intent, channelRef));
     }
 
     @PostMapping("/refunds")
