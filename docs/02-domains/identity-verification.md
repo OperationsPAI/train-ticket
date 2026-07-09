@@ -199,7 +199,7 @@ Missed/Failed 类事实不可逆：后续恢复只能追加新的 correction fac
 
 ## 8. 策略和 Saga 参与点
 
-- 下单前核验策略：Journey Order 在处理 `CreateJourneyOrder` 前按 travelerRefs、segmentRefs 和 orderIntentId 查询本域；本域返回证件实名状态、证书状态和限购事实建议，但不创建 JourneyOrder，也不决定支付。
+- 下单前核验策略：Journey Order 在处理 `CreateJourneyOrder` 总线命令（真实字段 `travelers`、`segments`、`clientRequestId`）或 HTTP `POST /api/v1/journey-orders`（真实字段 `travelerRefs`、`segmentRefs`）前按旅客引用查询本域；本域返回证件实名状态、证书状态和限购事实建议，但不创建 JourneyOrder，也不决定支付。
 - 优惠资质策略：Fare & Pricing 在 `Compute Fare Quote` 过程中可查询 Active 的 EligibilityCertificate 摘要；Fare & Pricing 决定优惠规则和金额，本域只维护资格、有效期和年度次数。
 - 限购事实策略：当订单意图进入受保护窗口时记录 `PurchaseLimitFactRecorded`；订单创建成功或进入需保护状态后确认；放弃、取消或超时按原因释放、Missed 或 Failed。
 - 多证归并策略：同一自然人的身份证与护照可归并到 IdentityCluster；归并依据必须可审计，归并事实发布给 Risk & Compliance 用于跨证件限购。
@@ -248,7 +248,7 @@ Identity Verification 拥有 SIM 公安网关防腐层，镜像 Provider Integra
 | Journey Order 下单前校验 | 在 `CreateJourneyOrder` 前新增对本域查询：证件实名 Passed、证件未过期、优惠证书可用、限购事实可记录。 |
 | Fare & Pricing 报价 | `Compute Fare Quote` 可按 travelerRefs 查询有效优惠证书；金额、Money 口径和规则快照仍由 Fare & Pricing 管理。 |
 | Risk & Compliance scalper 规则 | 从本域消费 PurchaseLimitFact 与 IdentityClusterMerged，作为 ADR-0003 中 per-identity purchase limits 输入。 |
-| 客服后台 | 新增 IdentityVerificationCaseView、CredentialMaskedView、EligibilityCertificateView；明文证件查看改为受控审计。 |
+| 客服后台 | 新增 VerificationStatusView、CredentialMaskedView、EligibilityCertificateView（见第 9 节读模型）；明文证件查看改为受控审计。 |
 | 报表和运营监控 | 新增 SIM 成功率、失败原因、资质使用次数、限购 fact Missed/Failed 指标；所有指标使用脱敏维度。 |
 | 旧同步公安核验工具 | 替换为 SimGatewayAdapter 与 VerificationCase outbox；不再支持真实网络调用或无审计的同步覆盖。 |
 
