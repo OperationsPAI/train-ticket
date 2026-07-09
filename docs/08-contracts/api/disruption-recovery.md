@@ -69,7 +69,7 @@ The wire status enum is the 10-state domain state machine:
 | `OPTIONS_GENERATED` | A recovery option set exists and can either auto-select or wait for choice. | `EXECUTING_RECOVERY`, `AWAITING_USER_CHOICE`, `MANUAL_REVIEW` |
 | `AWAITING_USER_CHOICE` | User or customer service must choose an unexpired option. | `EXECUTING_RECOVERY`, `MANUAL_REVIEW`, `DECLINED` |
 | `EXECUTING_RECOVERY` | The selected option is executing locally or in a downstream context. | `RECOVERED`, `OPTIONS_GENERATED`, `MANUAL_REVIEW`, `FAILED` |
-| `MANUAL_REVIEW` | Automatic decision or execution cannot proceed safely. | `EXECUTING_RECOVERY`, `RECOVERED`, `FAILED`, `CLOSED` |
+| `MANUAL_REVIEW` | Automatic decision or execution cannot proceed safely. | `EXECUTING_RECOVERY`, `RECOVERED`, `FAILED` |
 | `RECOVERED` | Recovery completed by wait, refund, compensation, or an explicit manual outcome. | `CLOSED` |
 | `DECLINED` | User declined available recovery or chose to self-handle. | `CLOSED` |
 | `FAILED` | Execution failed and no automatic recovery path remains. | `CLOSED` |

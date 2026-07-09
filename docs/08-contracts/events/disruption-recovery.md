@@ -302,7 +302,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `caseId` | string | yes | Recovery case ID. |
 | `incidentId` | string | yes | Parent incident. |
 | `journeyOrderId` | string | yes | Affected order. |
-| `previousStatus` | enum | yes | `RECOVERED`, `DECLINED`, `FAILED`, or `MANUAL_REVIEW` when manually closed. |
+| `previousStatus` | enum | yes | `RECOVERED`, `DECLINED`, or `FAILED` — the only states `CloseRecoveryCase` accepts (domain key-transition table). |
 | `closedBy` | object | yes | Closing actor. |
 | `closeReason` | string | yes | Closure reason; must not include sensitive personal data. |
 | `closedAt` | RFC3339 UTC | yes | Closure timestamp. |
