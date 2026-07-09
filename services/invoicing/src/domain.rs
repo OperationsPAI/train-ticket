@@ -660,11 +660,17 @@ impl RedFlushView {
         refund_fact_event_id: String,
         now: String,
     ) -> (Self, EInvoice, Vec<InvoicingEvent>) {
-        let id = format!("irf-{}", uuid::Uuid::now_v7());
         let refund_scope_hash = sha256_prefixed(&format!(
             "{}|{}|{}",
             original.order_id, post_sales_case_id, refund_fact_event_id
         ));
+        let id = folded_id(
+            "irf",
+            &format!(
+                "{}|{}|{}|{}",
+                original.e_invoice_id, original.order_id, post_sales_case_id, refund_fact_event_id
+            ),
+        );
         let mut rf = Self {
             red_flush_id: id.clone(),
             original_invoice_id: original.e_invoice_id.clone(),
@@ -684,6 +690,7 @@ impl RedFlushView {
             InvoicingEvent::RefundWithoutRedFlushObserved {
                 red_flush: rf.clone(),
                 original_invoice_ids: vec![original.e_invoice_id.clone()],
+                refund_scope_hash: refund_scope_hash.clone(),
                 at: now.clone(),
             },
             InvoicingEvent::RedFlushRequested {
@@ -731,7 +738,7 @@ impl RedFlushView {
             download_ref: Some(format!("artifact://invoicing/{red_id}")),
             total_amount: Money {
                 currency: original.total_amount.currency.clone(),
-                minor_units: -original.total_amount.minor_units.abs(),
+                minor_units: original.total_amount.minor_units.abs(),
             },
             issued_at: Some(now.clone()),
             status: InvoiceRequestStatus::RedFlushed,
@@ -745,6 +752,7 @@ impl RedFlushView {
         rf.updated_at = now.clone();
         events.push(InvoicingEvent::RedFlushCompleted {
             red_flush: rf.clone(),
+            original_invoice_number: original.invoice_number.clone().unwrap_or_default(),
             red_invoice: red_invoice.clone(),
             at: now,
         });
@@ -810,6 +818,7 @@ pub enum InvoicingEvent {
     RefundWithoutRedFlushObserved {
         red_flush: RedFlushView,
         original_invoice_ids: Vec<String>,
+        refund_scope_hash: String,
         at: String,
     },
     RedFlushRequested {
@@ -831,6 +840,7 @@ pub enum InvoicingEvent {
     },
     RedFlushCompleted {
         red_flush: RedFlushView,
+        original_invoice_number: String,
         red_invoice: EInvoice,
         at: String,
     },
@@ -971,13 +981,14 @@ impl InvoicingEvent {
             Self::RefundWithoutRedFlushObserved {
                 red_flush,
                 original_invoice_ids,
+                refund_scope_hash,
                 at,
             } => (
                 "RefundWithoutRedFlushObserved",
                 red_flush.red_flush_id.clone(),
                 red_flush.version,
                 at.clone(),
-                json!({"postSalesCaseId":red_flush.post_sales_case_id,"orderId":red_flush.order_id,"refundFactEventId":red_flush.refund_fact_event_id,"originalInvoiceIds":original_invoice_ids,"observationStatus":"VIOLATION_OBSERVED","refundReleaseFlagStatus":"VIOLATION_OBSERVED","observedAt":at}),
+                json!({"observationId":red_flush.red_flush_id,"postSalesCaseId":red_flush.post_sales_case_id,"orderId":red_flush.order_id,"refundFactEventId":red_flush.refund_fact_event_id,"originalInvoiceIds":original_invoice_ids,"refundScopeHash":refund_scope_hash,"refundReleaseFlagStatus":"SUSPENDED","observationStatus":"VIOLATION_OBSERVED","ruling":"OBSERVE_ONLY_NO_POST_SALES_BLOCKER_WAVE_A","observedAt":at}),
                 None,
                 Some((
                     red_flush.post_sales_case_id.clone(),
@@ -1028,6 +1039,7 @@ impl InvoicingEvent {
             ),
             Self::RedFlushCompleted {
                 red_flush,
+                original_invoice_number,
                 red_invoice,
                 at,
             } => (
@@ -1035,7 +1047,7 @@ impl InvoicingEvent {
                 red_flush.red_flush_id.clone(),
                 red_flush.version,
                 at.clone(),
-                json!({"redFlushId":red_flush.red_flush_id,"originalInvoiceId":red_flush.original_invoice_id,"postSalesCaseId":red_flush.post_sales_case_id,"redInvoiceId":red_invoice.e_invoice_id,"redInvoiceNumber":red_invoice.invoice_number,"completedAt":at,"status":"COMPLETED","refundReleaseFlagStatus":"RELEASED_AFTER_RED_FLUSH"}),
+                json!({"redFlushId":red_flush.red_flush_id,"originalInvoiceId":red_flush.original_invoice_id,"originalInvoiceNumber":original_invoice_number,"redInvoiceId":red_invoice.e_invoice_id,"redInvoiceNumber":red_invoice.invoice_number,"postSalesCaseId":red_flush.post_sales_case_id,"orderId":red_flush.order_id,"totalAmount":red_invoice.total_amount,"completedAt":at,"status":"COMPLETED"}),
                 None,
                 None,
             ),

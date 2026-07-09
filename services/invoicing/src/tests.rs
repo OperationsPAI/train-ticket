@@ -244,10 +244,39 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
         .await
         .unwrap();
     assert_eq!(page.items[0].status, RedFlushStatus::Completed);
+    let events = publisher.events();
+    let observation = events
+        .iter()
+        .find(|e| e.event_type == "RefundWithoutRedFlushObserved")
+        .expect("missing refund observation");
+    assert_eq!(observation.payload["refundReleaseFlagStatus"], "SUSPENDED");
+    assert_eq!(
+        observation.payload["ruling"],
+        "OBSERVE_ONLY_NO_POST_SALES_BLOCKER_WAVE_A"
+    );
     assert!(
-        publisher
-            .events()
-            .iter()
-            .any(|e| e.event_type == "RefundWithoutRedFlushObserved")
+        observation.payload["observationId"]
+            .as_str()
+            .unwrap()
+            .starts_with("irf-")
+    );
+    assert!(
+        observation.payload["refundScopeHash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+
+    let completed = events
+        .iter()
+        .find(|e| e.event_type == "RedFlushCompleted")
+        .expect("missing red flush completed");
+    assert_eq!(completed.payload["orderId"], "ord-ref");
+    assert_eq!(completed.payload["totalAmount"]["minorUnits"], 1000);
+    assert!(
+        completed.payload["originalInvoiceNumber"]
+            .as_str()
+            .unwrap()
+            .starts_with("SIM")
     );
 }
