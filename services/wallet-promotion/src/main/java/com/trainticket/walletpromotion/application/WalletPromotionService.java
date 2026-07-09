@@ -26,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class WalletPromotionService {
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(WalletPromotionService.class);
     private final PromotionRepository repository;
     private final Clock clock;
 
@@ -289,7 +290,13 @@ public class WalletPromotionService {
     public void expireDueBenefits() {
         Instant now = clock.instant();
         for (PromotionInstrument before : repository.findExpirable(now, 50)) {
-            expireOne(before, now);
+            try {
+                expireOne(before, now);
+            } catch (RuntimeException ex) {
+                // One bad candidate must not abort the whole sweep.
+                LOGGER.warn("expiry sweep skipped benefitId={} exceptionClass={} message={}",
+                    before.benefitId(), ex.getClass().getName(), ex.getMessage());
+            }
         }
     }
 

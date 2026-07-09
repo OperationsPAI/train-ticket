@@ -30,6 +30,7 @@ journey_mix:
   support: 4        # open a support case about one of their orders
   legacy: 6         # whole lifecycle through the legacy ACL facade
   ride: 5           # dispatch ride request lifecycle
+  disruption: 1     # low-frequency ops disruption recovery drill
 
 # ---------------------------------------------------------------------------
 # Within-journey behavior knobs.
@@ -47,6 +48,7 @@ behavior:
   p_cancel_payment_intent_on_abandon: 0.20  # subset explicitly POSTs payment-intents/{id}/cancel
   p_cancel_order_before_payment: 0.10       # subset explicitly POSTs journey-orders/{id}/cancel
   p_refund_get_after_completion: 0.50       # after refund approval, poll payment events and GET refunds/{id}
+  p_ancillary_purchase: 0.03                  # small add-on branch in purchase journeys
 
   # how long a customer waits for a staff-handled step (reservation,
   # ticketing, risk review) before giving up
@@ -65,6 +67,7 @@ behavior:
   # Conservative defaults: convert only some sold-out traffic and cancel rarely.
   p_waitlist_on_no_capacity: 0.30
   p_waitlist_cancel: 0.05
+  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
   waitlist_deadline_minutes: 30
 
   # sales channel weights. NOTE: fare rule sets are published per channel;
@@ -103,6 +106,7 @@ staff:
 long_tail:
   enabled: true
   p_read_probe_after_journey: 0.05
+  p_ancillary_read_probe: 0.20
 
 # ---------------------------------------------------------------------------
 # Operations-side actor — runs every few minutes and drives read-only reporting

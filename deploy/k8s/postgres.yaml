@@ -25,6 +25,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'account')\gexec
     SELECT 'CREATE DATABASE admin_audit'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'admin_audit')\gexec
+    SELECT 'CREATE DATABASE ancillary_service'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'ancillary_service')\gexec
     SELECT 'CREATE DATABASE booking_orchestration'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'booking_orchestration')\gexec
     SELECT 'CREATE DATABASE capacity_availability'
@@ -73,6 +75,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'wallet_promotion')\gexec
     SELECT 'CREATE DATABASE dispatch'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'dispatch')\gexec
+    SELECT 'CREATE DATABASE disruption_recovery'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'disruption_recovery')\gexec
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
