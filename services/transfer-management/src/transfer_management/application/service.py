@@ -30,9 +30,12 @@ from transfer_management.domain import (
     ReportType,
     RiskEvaluation,
     RiskLevel,
+    RiskPolicyStatus,
+    RiskThresholds,
     SegmentStatusReport,
     TransferCategory,
     TransferPlan,
+    TransferRiskPolicy,
     TransferPlanStatus,
     now_utc,
     optional_dt,
@@ -40,6 +43,7 @@ from transfer_management.domain import (
     require_text,
 )
 from transfer_management.downstream import DisruptionRecoveryClient, DownstreamError
+from transfer_management.topology import PlaceNetworkClient, PlaceNetworkUnavailable, PlaceNetworkValidationError
 
 PRODUCER = "transfer-management"
 PROTECTED_TYPES = {ContractType.PROTECTED, ContractType.SUPPLIER_PROTECTED}
@@ -52,6 +56,10 @@ class NotFoundError(KeyError):
 
 
 PreconditionFailedError = PreconditionFailed
+
+
+class ValidationFailedError(ValueError):
+    pass
 
 
 def folded_uuid7(material: str) -> str:
@@ -78,6 +86,7 @@ class InMemoryStore:
         self.connections: dict[str, Connection] = {}
         self.contracts: dict[str, ConnectionContract] = {}
         self.mct_rules: dict[str, MctRule] = {}
+        self.risk_policies: dict[str, TransferRiskPolicy] = {}
         self.reports: dict[str, SegmentStatusReport] = {}
         self.processed_events: set[str] = set()
         self._outbox: list[EventEnvelope] = []
@@ -166,6 +175,24 @@ class InMemoryStore:
             items = filtered
         return tuple(sorted(items, key=lambda r: (r.mctRuleId, r.version)))
 
+    def save_risk_policy(self, policy: TransferRiskPolicy) -> None:
+        self.risk_policies[policy.riskPolicyId] = policy
+
+    def get_risk_policy(self, policy_id: str) -> TransferRiskPolicy:
+        try:
+            return self.risk_policies[policy_id]
+        except KeyError as exc:
+            raise NotFoundError(f"risk policy not found: {policy_id}") from exc
+
+    def list_risk_policies(self) -> tuple[TransferRiskPolicy, ...]:
+        return tuple(sorted(self.risk_policies.values(), key=lambda p: (p.createdAt, p.riskPolicyId)))
+
+    def get_active_risk_policy(self) -> TransferRiskPolicy | None:
+        active = [p for p in self.risk_policies.values() if p.status is RiskPolicyStatus.ACTIVE]
+        if not active:
+            return None
+        return max(active, key=lambda p: (p.activatedAt or p.createdAt, p.riskPolicyId))
+
     def find_report_by_source_key(self, source_key: str) -> SegmentStatusReport | None:
         return self.reports.get(source_key)
 
@@ -219,9 +246,10 @@ def segment_status_report_from_fulfillment_event(envelope: EventEnvelope) -> dic
     return data
 
 class TransferManagementService:
-    def __init__(self, store: Any, downstream: DisruptionRecoveryClient | None = None) -> None:
+    def __init__(self, store: Any, downstream: DisruptionRecoveryClient | None = None, topology: PlaceNetworkClient | None = None) -> None:
         self.store = store
         self.downstream = downstream or DisruptionRecoveryClient()
+        self.topology = topology or PlaceNetworkClient("")
 
     def transaction(self) -> Any:
         transaction = getattr(self.store, "transaction", None)
@@ -255,6 +283,8 @@ class TransferManagementService:
                 reasons.append("NO_PUBLISHED_MCT_RULE")
                 break
         plan = plan.evaluated(int(data.get("planningSnapshotVersion") or plan.planningSnapshotVersion), tuple(c.connectionId for c in connections), at, unserviceable)
+        active_policy = self._active_risk_policy()
+        plan = replace(plan, riskPolicyVersion=active_policy.version if active_policy else "builtin-v1")
         self.store.save_plan(plan)
         payload = {"transferPlanId": plan.transferPlanId, "itineraryRef": plan.itineraryRef, "planningSnapshotVersion": plan.planningSnapshotVersion, "status": plan.status.value, "evaluationVersion": plan.evaluationVersion, "connectionIds": list(plan.connections), "riskPolicyVersion": plan.riskPolicyVersion, "evaluatedAt": rfc3339_utc(at)} | ({"journeyOrderId": plan.journeyOrderId} if plan.journeyOrderId else {})
         if reasons:
@@ -285,17 +315,29 @@ class TransferManagementService:
     def register_connection(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
         at = now_utc()
         plan = self.store.get_plan(require_text(data.get("transferPlanId"), "transferPlanId"))
-        rule = self._require_published_rule(NodeType(str(data.get("fromNodeType"))), NodeType(str(data.get("toNodeType"))), TransferCategory(str(data.get("transferCategory"))), at)
+        from_node_type = NodeType(str(data.get("fromNodeType")))
+        to_node_type = NodeType(str(data.get("toNodeType")))
+        from_node_ref = require_text(data.get("fromNodeRef"), "fromNodeRef")
+        to_node_ref = require_text(data.get("toNodeRef"), "toNodeRef")
+        degraded_reasons: tuple[str, ...] = ()
+        try:
+            topology = self.topology.validate_connection_nodes(from_node_ref, to_node_ref, from_node_type, to_node_type)
+        except PlaceNetworkValidationError as exc:
+            raise ValidationFailedError(str(exc)) from exc
+        except PlaceNetworkUnavailable:
+            topology = None
+            degraded_reasons = ("PLACE_NETWORK_UNAVAILABLE",)
+        rule = self._require_published_rule(from_node_type, to_node_type, TransferCategory(str(data.get("transferCategory"))), at)
         window_data = dict(data.get("window") or {})
         planned = parse_dt(window_data.get("plannedArrivalAt"), "window.plannedArrivalAt")
         departure = parse_dt(window_data.get("nextDepartureAt"), "window.nextDepartureAt")
         cutoff = parse_dt(window_data.get("nextCutoffAt") or window_data.get("nextDepartureAt"), "window.nextCutoffAt")
         window = ConnectionWindow.build(planned, departure, cutoff, int(window_data.get("mctMinutes") or rule.minimumMinutes), optional_dt(window_data.get("actualArrivalAt")))
-        evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), ())
+        evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), (), topology.placeGraphVersion if topology else None, degraded_reasons)
         contract_id = require_text(data.get("contractId"), "contractId")
         contract_type = ContractType(str(data.get("contractType")))
         status = ConnectionStatus.FEASIBLE if evaluation.riskLevel is RiskLevel.FEASIBLE else ConnectionStatus.TIGHT if evaluation.riskLevel is RiskLevel.TIGHT else ConnectionStatus.AT_RISK
-        connection = Connection(new_prefixed_uuid7("con"), plan.transferPlanId, require_text(data.get("itineraryRef"), "itineraryRef"), require_text(data.get("previousSegmentRef"), "previousSegmentRef"), require_text(data.get("nextSegmentRef"), "nextSegmentRef"), tuple(str(x) for x in data.get("travelerRefs") or []), require_text(data.get("fromNodeRef"), "fromNodeRef"), require_text(data.get("toNodeRef"), "toNodeRef"), NodeType(str(data.get("fromNodeType"))), NodeType(str(data.get("toNodeType"))), TransferCategory(str(data.get("transferCategory"))), contract_id, contract_type, ConnectionStatus.PLANNED, evaluation, window, at, at, str(data.get("journeyOrderId") or plan.journeyOrderId or "").strip() or None, serviceDate=str(data.get("serviceDate") or cutoff.date().isoformat()), scheduledServiceRef=str(data.get("scheduledServiceRef") or "").strip() or None)
+        connection = Connection(new_prefixed_uuid7("con"), plan.transferPlanId, require_text(data.get("itineraryRef"), "itineraryRef"), require_text(data.get("previousSegmentRef"), "previousSegmentRef"), require_text(data.get("nextSegmentRef"), "nextSegmentRef"), tuple(str(x) for x in data.get("travelerRefs") or []), from_node_ref, to_node_ref, from_node_type, to_node_type, TransferCategory(str(data.get("transferCategory"))), contract_id, contract_type, ConnectionStatus.PLANNED, evaluation, window, at, at, str(data.get("journeyOrderId") or plan.journeyOrderId or "").strip() or None, serviceDate=str(data.get("serviceDate") or cutoff.date().isoformat()), scheduledServiceRef=str(data.get("scheduledServiceRef") or "").strip() or None)
         connection = connection.transition(status, at)
         plan = plan.add_connection(connection.connectionId, at)
         self.store.save_plan(plan)
@@ -448,6 +490,37 @@ class TransferManagementService:
         offset = max(0, int(filters.get("offset") or 0))
         return {"items": [r.to_json() for r in items[offset:offset + limit]], "total": total, "limit": limit, "offset": offset}
 
+    def create_risk_policy(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
+        at = now_utc()
+        thresholds = dict(data.get("thresholds") or {})
+        policy = TransferRiskPolicy(new_prefixed_uuid7("trp"), require_text(data.get("version"), "version"), RiskPolicyStatus.DRAFT, RiskThresholds(int(thresholds.get("tightMinutes") if thresholds.get("tightMinutes") is not None else 10), int(thresholds.get("atRiskMinutes") if thresholds.get("atRiskMinutes") is not None else 0)), ActorRef(**dict(data.get("createdBy") or {})), at)
+        self.store.save_risk_policy(policy)
+        return policy.to_json()
+
+    def activate_risk_policy(self, policy_id: str, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
+        at = now_utc()
+        actor = ActorRef(**dict(data.get("activatedBy") or {}))
+        policy = self.store.get_risk_policy(policy_id)
+        active = self._active_risk_policy()
+        events: list[EventEnvelope] = []
+        # Validate the target BEFORE touching the currently active policy:
+        # a failed activation must not leave the system policy-less.
+        activated = policy.activate(at)
+        if active and active.riskPolicyId != policy.riskPolicyId:
+            retired = active.retire(at)
+            self.store.save_risk_policy(retired)
+        self.store.save_risk_policy(activated)
+        if policy.status is not RiskPolicyStatus.ACTIVE:
+            payload = activated.to_json() | {"activatedBy": actor.to_json(), "activatedAt": rfc3339_utc(at)}
+            events.append(_envelope("RiskPolicyActivated", activated.riskPolicyId, 1, payload, correlation_id, causation_id, at))
+            self._append(events)
+        return activated.to_json()
+
+    def get_active_risk_policy(self) -> dict[str, Any]:
+        policy = self._active_risk_policy()
+        if policy is None:
+            return {"riskPolicyId": "builtin", "version": "builtin-v1", "status": "ACTIVE", "thresholds": {"tightMinutes": 10, "atRiskMinutes": 0}, "builtin": True}
+        return policy.to_json()
 
     def handle_fulfillment_event(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
         if envelope.eventType not in FULFILLMENT_SEGMENT_EVENT_TYPES:
@@ -510,21 +583,21 @@ class TransferManagementService:
             raise DomainError("NO_PUBLISHED_MCT_RULE")
         return rule
 
-    def _evaluate_window(self, window: ConnectionWindow, rule: MctRule, at: datetime, evaluation_id: str, extra_reasons: Iterable[str]) -> RiskEvaluation:
-        reasons = list(extra_reasons)
-        if window.availableMinutes < 0 or "NEXT_SEGMENT_CANCELLED" in reasons or "PREVIOUS_SEGMENT_CANCELLED" in reasons:
-            level = RiskLevel.MISSED
-            if window.availableMinutes < 0:
-                reasons.append("CUTOFF_EXPIRED")
-        elif window.bufferMinutes < 0:
-            level = RiskLevel.AT_RISK
-            reasons.append("INSUFFICIENT_BUFFER")
-        elif window.bufferMinutes < 10:
-            level = RiskLevel.TIGHT
-            reasons.append("LOW_BUFFER")
-        else:
-            level = RiskLevel.FEASIBLE
-        return RiskEvaluation(evaluation_id, level, rule.mctRuleId, rule.version, window.availableMinutes, rule.minimumMinutes, tuple(dict.fromkeys(reasons)), at)
+    def _active_risk_policy(self) -> TransferRiskPolicy | None:
+        getter = getattr(self.store, "get_active_risk_policy", None)
+        if callable(getter):
+            return getter()
+        policies = list(getattr(self.store, "risk_policies", {}).values())
+        active = [policy for policy in policies if policy.status is RiskPolicyStatus.ACTIVE]
+        return max(active, key=lambda p: (p.activatedAt or p.createdAt, p.riskPolicyId)) if active else None
+
+    def _evaluate_window(self, window: ConnectionWindow, rule: MctRule, at: datetime, evaluation_id: str, extra_reasons: Iterable[str], place_graph_version: str | None = None, degraded_reasons: Iterable[str] = ()) -> RiskEvaluation:
+        policy = self._active_risk_policy()
+        if policy is None:
+            policy = TransferRiskPolicy("builtin", "builtin-v1", RiskPolicyStatus.ACTIVE, RiskThresholds(10, 0), ActorRef("SYSTEM", "transfer-management"), at, at)
+        level, reasons = policy.classify(window.availableMinutes, window.bufferMinutes, tuple(extra_reasons))
+        degraded = tuple(dict.fromkeys(degraded_reasons))
+        return RiskEvaluation(evaluation_id, level, rule.mctRuleId, rule.version, window.availableMinutes, rule.minimumMinutes, reasons, at, policy.version, place_graph_version, bool(degraded), degraded)
 
     def _refresh_connection(self, connection: Connection, at: datetime, correlation_id: str, causation_id: str, report: SegmentStatusReport | None) -> tuple[Connection, list[EventEnvelope]]:
         previous_status = connection.status
@@ -542,11 +615,19 @@ class TransferManagementService:
             elif report.segmentRef == connection.nextSegmentRef and report.reportType is ReportType.CANCELLED:
                 reasons.append("NEXT_SEGMENT_CANCELLED")
         rule = self._require_published_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, at)
-        evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), reasons)
+        place_graph_version = connection.latestEvaluation.placeGraphVersion
+        degraded_reasons: tuple[str, ...] = ()
+        try:
+            topology = self.topology.fetch_snapshot(connection.fromNodeRef, connection.toNodeRef)
+            if topology is not None:
+                place_graph_version = topology.placeGraphVersion
+        except (PlaceNetworkUnavailable, PlaceNetworkValidationError):
+            degraded_reasons = ("PLACE_NETWORK_UNAVAILABLE",)
+        evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), reasons, place_graph_version, degraded_reasons)
         updated = connection.apply_evaluation(evaluation, window, at)
         events = [self._risk_event(updated, previous_status if previous_status != updated.status else None, correlation_id, causation_id, at, report.segmentStatusReportId if report else None)]
         if updated.status is ConnectionStatus.AT_RISK and previous_status != ConnectionStatus.AT_RISK:
-            events.append(_envelope("TransferAtRisk", updated.connectionId, updated.version + 2, {"connection": updated.ref_json(), "previousStatus": previous_status.value, "status": "AT_RISK", "riskLevel": "AT_RISK", "riskPolicyVersion": "builtin-v1", "reasons": list(evaluation.reasons), "window": updated.window.to_json(), "detectedAt": rfc3339_utc(at)}, correlation_id, causation_id, at))
+            events.append(_envelope("TransferAtRisk", updated.connectionId, updated.version + 2, {"connection": updated.ref_json(), "previousStatus": previous_status.value, "status": "AT_RISK", "riskLevel": "AT_RISK", "riskPolicyVersion": evaluation.riskPolicyVersion, "reasons": list(evaluation.reasons), "window": updated.window.to_json(), "detectedAt": rfc3339_utc(at)}, correlation_id, causation_id, at))
         if updated.status is ConnectionStatus.MISSED and previous_status != ConnectionStatus.MISSED:
             cause = "OPS_DECLARED"
             if "PREVIOUS_SEGMENT_CANCELLED" in evaluation.reasons:

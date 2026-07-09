@@ -27,9 +27,12 @@ from transfer_management.domain import (
     ReportType,
     RiskEvaluation,
     RiskLevel,
+    RiskPolicyStatus,
+    RiskThresholds,
     SegmentStatusReport,
     TransferCategory,
     TransferPlan,
+    TransferRiskPolicy,
     TransferPlanStatus,
     parse_dt,
 )
@@ -50,12 +53,12 @@ def _json_obj(data: Mapping[str, Any] | str) -> Mapping[str, Any]:
 
 
 def plan_to_json(plan: TransferPlan) -> dict[str, Any]:
-    return {"transferPlanId": plan.transferPlanId, "itineraryRef": plan.itineraryRef, "planningSnapshotVersion": plan.planningSnapshotVersion, "journeyOrderId": plan.journeyOrderId, "travelerRefs": list(plan.travelerRefs), "status": plan.status.value, "connections": list(plan.connections), "evaluationVersion": plan.evaluationVersion, "createdAt": _dt(plan.createdAt), "updatedAt": _dt(plan.updatedAt), "expiresAt": _dt(plan.expiresAt) if plan.expiresAt else None}
+    return {"transferPlanId": plan.transferPlanId, "itineraryRef": plan.itineraryRef, "planningSnapshotVersion": plan.planningSnapshotVersion, "journeyOrderId": plan.journeyOrderId, "travelerRefs": list(plan.travelerRefs), "status": plan.status.value, "connections": list(plan.connections), "evaluationVersion": plan.evaluationVersion, "riskPolicyVersion": plan.riskPolicyVersion, "createdAt": _dt(plan.createdAt), "updatedAt": _dt(plan.updatedAt), "expiresAt": _dt(plan.expiresAt) if plan.expiresAt else None}
 
 
 def plan_from_json(data: Mapping[str, Any] | str, version: int = 0) -> TransferPlan:
     data = _json_obj(data)
-    return TransferPlan(str(data["transferPlanId"]), str(data["itineraryRef"]), int(data["planningSnapshotVersion"]), data.get("journeyOrderId"), tuple(data.get("travelerRefs") or ()), TransferPlanStatus(str(data["status"])), tuple(data.get("connections") or ()), int(data["evaluationVersion"]), _parse(data.get("createdAt")) or datetime.now(UTC), _parse(data.get("updatedAt")) or datetime.now(UTC), _parse(data.get("expiresAt")), version=version)
+    return TransferPlan(str(data["transferPlanId"]), str(data["itineraryRef"]), int(data["planningSnapshotVersion"]), data.get("journeyOrderId"), tuple(data.get("travelerRefs") or ()), TransferPlanStatus(str(data["status"])), tuple(data.get("connections") or ()), int(data["evaluationVersion"]), _parse(data.get("createdAt")) or datetime.now(UTC), _parse(data.get("updatedAt")) or datetime.now(UTC), _parse(data.get("expiresAt")), str(data.get("riskPolicyVersion") or "builtin-v1"), version)
 
 
 def evaluation_to_json(e: RiskEvaluation) -> dict[str, Any]:
@@ -63,7 +66,7 @@ def evaluation_to_json(e: RiskEvaluation) -> dict[str, Any]:
 
 
 def evaluation_from_json(data: Mapping[str, Any]) -> RiskEvaluation:
-    return RiskEvaluation(str(data["riskEvaluationId"]), RiskLevel(str(data["riskLevel"])), str(data["mctRuleId"]), int(data["mctRuleVersion"]), int(data["availableMinutes"]), int(data["requiredMinutes"]), tuple(data.get("reasons") or ()), _parse(data.get("evaluatedAt")) or datetime.now(UTC), str(data.get("riskPolicyVersion") or "builtin-v1"))
+    return RiskEvaluation(str(data["riskEvaluationId"]), RiskLevel(str(data["riskLevel"])), str(data["mctRuleId"]), int(data["mctRuleVersion"]), int(data["availableMinutes"]), int(data["requiredMinutes"]), tuple(data.get("reasons") or ()), _parse(data.get("evaluatedAt")) or datetime.now(UTC), str(data.get("riskPolicyVersion") or "builtin-v1"), data.get("placeGraphVersion"), bool(data.get("degraded") or False), tuple(data.get("degradedReasons") or ()))
 
 
 def window_from_json(data: Mapping[str, Any]) -> ConnectionWindow:
@@ -103,6 +106,12 @@ def report_to_json(r: SegmentStatusReport) -> dict[str, Any]:
     return r.to_json()
 
 
+def risk_policy_from_json(data: Mapping[str, Any] | str) -> TransferRiskPolicy:
+    data = _json_obj(data)
+    thresholds = dict(data.get("thresholds") or {})
+    return TransferRiskPolicy(str(data["riskPolicyId"]), str(data["version"]), RiskPolicyStatus(str(data["status"])), RiskThresholds(int(thresholds.get("tightMinutes") or 0), int(thresholds.get("atRiskMinutes") or 0)), ActorRef(**dict(data.get("createdBy") or {"actorType": "SYSTEM", "actorId": "unknown"})), _parse(data.get("createdAt")) or datetime.now(UTC), _parse(data.get("activatedAt")), _parse(data.get("retiredAt")))
+
+
 @dataclass
 class _UnitOfWorkState:
     connection: Any | None = None
@@ -123,6 +132,7 @@ class PostgresTransferManagementStore(InMemoryStore):
         self._plans = SnapshotRepository("transfer_plan_snapshots")
         self._connections = SnapshotRepository("connection_snapshots")
         self._contracts = SnapshotRepository("connection_contract_snapshots")
+        self._risk_policies = SnapshotRepository("risk_policy_snapshots")
         self._processed = ProcessedEventsGuard()
 
     @contextmanager
@@ -239,6 +249,31 @@ class PostgresTransferManagementStore(InMemoryStore):
             rows = conn.execute("SELECT data FROM mct_rule_snapshots ORDER BY data->>'mctRuleId'").fetchall()
             return tuple(rule_from_json(row[0]) for row in rows)
         return self._with_conn(read)
+
+    def save_risk_policy(self, policy: TransferRiskPolicy) -> None:
+        def write(conn: Any) -> None:
+            self._risk_policies.save(conn, policy.riskPolicyId, policy.to_json(), self._take("risk_policy", policy.riskPolicyId))
+        self._with_conn(write)
+
+    def get_risk_policy(self, policy_id: str) -> TransferRiskPolicy:
+        def read(conn: Any) -> TransferRiskPolicy:
+            snap = self._risk_policies.get(conn, policy_id)
+            if snap is None: raise NotFoundError(f"risk policy not found: {policy_id}")
+            version, data = snap; self._remember("risk_policy", policy_id, version); return risk_policy_from_json(data)
+        return self._with_conn(read)
+
+    def list_risk_policies(self) -> tuple[TransferRiskPolicy, ...]:
+        def read(conn: Any) -> tuple[TransferRiskPolicy, ...]:
+            rows = conn.execute("SELECT id, version, data FROM risk_policy_snapshots ORDER BY data->>'createdAt', id").fetchall()
+            items = []
+            for aggregate_id, version, data in rows:
+                self._remember("risk_policy", str(aggregate_id), int(version)); items.append(risk_policy_from_json(data))
+            return tuple(items)
+        return self._with_conn(read)
+
+    def get_active_risk_policy(self) -> TransferRiskPolicy | None:
+        policies = [p for p in self.list_risk_policies() if p.status is RiskPolicyStatus.ACTIVE]
+        return max(policies, key=lambda p: (p.activatedAt or p.createdAt, p.riskPolicyId)) if policies else None
 
     def find_report_by_source_key(self, source_key: str) -> SegmentStatusReport | None:
         def read(conn: Any) -> SegmentStatusReport | None:

@@ -2539,6 +2539,8 @@ spec:
               value: postgresql://trainticket:trainticket-dev@postgres:5432/transfer_management
             - name: DISRUPTION_RECOVERY_URL
               value: http://disruption-recovery:8080
+            - name: PLACE_NETWORK_URL
+              value: http://place-network:8080
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://otel-collector:4317
             - name: OTEL_SERVICE_NAME

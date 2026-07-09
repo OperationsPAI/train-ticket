@@ -11,11 +11,11 @@ rules. This contract activates the bounded context from
 
 Activation-wave rulings:
 
-- Active aggregates are `TransferPlan`, `Connection`, and `ConnectionContract`.
-  `MinimumConnectionTimeRule` is active as operations CRUD plus publish/retire;
-  a `PUBLISHED` version is immutable. `TransferRiskPolicy` CRUD is deferred:
-  all evaluations use built-in fixed policy version `builtin-v1`, and every risk
-  result MUST carry that value.
+- Active aggregates are `TransferPlan`, `Connection`, `ConnectionContract`, and
+  `TransferRiskPolicy`. `MinimumConnectionTimeRule` is active as operations CRUD
+  plus publish/retire; a `PUBLISHED` version is immutable. Risk evaluations use
+  the currently active risk policy version. If no active policy exists, the
+  backwards-compatible built-in policy `builtin-v1` is used and recorded.
 - `Connection` uses the nine-state runtime machine below. RULING: once a
   connection reaches `MISSED`, it MUST NOT transition back to `FEASIBLE`; it may
   only converge to `RECOVERED`, `SELF_HANDLED`, or a terminal state.
@@ -24,10 +24,16 @@ Activation-wave rulings:
   through the system/ops fallback endpoint `POST /api/v1/segment-status-reports`;
   both paths share aggregate invariants.
 - Evaluation reads the itinerary snapshot from Trip Planning by `itineraryRef`,
-  uses this domain's published MCT rules, and derives schedule windows from the
-  itinerary snapshot plus accepted segment-status reports. Place Network
-  topology/path integration is deferred; this wave records node refs, node types,
-  and transfer category but does not call Place Network.
+  reads Place Network transport nodes by `fromNodeRef`/`toNodeRef` with
+  `GET /api/v1/transport-nodes/{nodeId}` and parent place type via
+  `GET /api/v1/places/{placeId}`, uses this domain's published MCT rules, and
+  derives schedule windows from the itinerary snapshot plus accepted
+  segment-status reports. The current Place Network contract exposes node
+  identity, place ID, serving modes, and created timestamp only; it does not
+  expose walking/access-time weights, so MCT minutes remain sourced from
+  published Transfer Management MCT rules. Read failures during evaluation are
+  non-blocking and produce `degraded=true` with `degradedReasons`. Missing nodes
+  during registration are rejected with validation failure.
 - Closed loop with Disruption Recovery is HTTP-first. When a protected connection
   (`PROTECTED` or `SUPPLIER_PROTECTED`) becomes `MISSED`, Transfer Management
   calls Disruption Recovery `POST /api/v1/disruptions` as a `SYSTEM` report with
@@ -83,7 +89,7 @@ Error codes follow `docs/08-contracts/api/README.md` / REQ-079.
 
 | Status | Meaning | Allowed next statuses |
 |---|---|---|
-| `PLANNED` | Connection was registered from planned itinerary/schedule data. | `FEASIBLE`, `TIGHT`, `INVALIDATED` |
+| `PLANNED` | Connection was registered from planned itinerary/schedule data. | `FEASIBLE`, `TIGHT`, `AT_RISK`, `INVALIDATED` |
 | `FEASIBLE` | Available window exceeds MCT and buffer threshold. | `TIGHT`, `AT_RISK`, `COMPLETED`, `INVALIDATED` |
 | `TIGHT` | Still reachable but with insufficient buffer. | `FEASIBLE`, `AT_RISK`, `MISSED`, `COMPLETED` |
 | `AT_RISK` | Delay, cancellation, baggage/security, or schedule report creates high risk. | `TIGHT`, `MISSED`, `RECOVERED` |
@@ -152,7 +158,7 @@ on outbound events/commands use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
 | `status` | enum | yes | Transfer plan status. |
 | `connections` | array[ConnectionSummary] | yes | Connections produced from adjacent itinerary legs. |
 | `evaluationVersion` | integer | yes | Monotonic plan evaluation version. |
-| `riskPolicyVersion` | string | yes | Always `builtin-v1` in this wave. |
+| `riskPolicyVersion` | string | yes | Active TransferRiskPolicy version used by latest plan evaluation, or `builtin-v1` fallback. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
 | `updatedAt` | RFC3339 UTC | yes | Last mutation timestamp. |
 | `expiresAt` | RFC3339 UTC | no | Planning/offer expiry. |
@@ -213,12 +219,15 @@ on outbound events/commands use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
 |---|---|---|---|
 | `riskEvaluationId` | string | yes | Evaluation ID (`tre-<uuid>`). |
 | `riskLevel` | enum | yes | Risk output, not aggregate state. |
-| `riskPolicyVersion` | string | yes | Always `builtin-v1`; TransferRiskPolicy management is deferred. |
+| `riskPolicyVersion` | string | yes | Active TransferRiskPolicy version used, or `builtin-v1` fallback when no active policy exists. |
 | `mctRuleId` | string | yes | Published MCT rule used. |
 | `mctRuleVersion` | integer | yes | Published MCT rule version. |
 | `availableMinutes` | integer | yes | Available transfer minutes used in the calculation. |
 | `requiredMinutes` | integer | yes | MCT minutes required. |
-| `reasons` | array[string] | yes | Explainable reason codes such as `INSUFFICIENT_BUFFER`, `PREVIOUS_SEGMENT_DELAYED`, or `NEXT_SEGMENT_CANCELLED`. |
+| `reasons` | array[string] | yes | Explainable reason codes such as `THRESHOLD_TIGHT_BUFFER_LT_10_MIN`, `PREVIOUS_SEGMENT_DELAYED`, or `NEXT_SEGMENT_CANCELLED`. |
+| `placeGraphVersion` | string | no | Snapshot identifier derived from Place Network node IDs and node `createdAt` timestamps when topology read succeeds. |
+| `degraded` | boolean | no | `true` when optional Place Network read enhancement failed but evaluation completed. |
+| `degradedReasons` | array[string] | no | Non-PII degradation codes, e.g. `PLACE_NETWORK_UNAVAILABLE`. Required when `degraded=true`. |
 | `evaluatedAt` | RFC3339 UTC | yes | Evaluation timestamp. |
 
 ### ConnectionContract
@@ -254,6 +263,24 @@ on outbound events/commands use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
 | `publishedAt` | RFC3339 UTC | no | Publish timestamp. |
 | `retiredAt` | RFC3339 UTC | no | Retire timestamp. |
 
+
+### TransferRiskPolicy
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `riskPolicyId` | string | yes | Risk policy ID (`trp-<uuid>`). |
+| `version` | string | yes | Operator supplied immutable version label written into evaluations. |
+| `status` | enum | yes | `DRAFT`, `ACTIVE`, or `RETIRED`. |
+| `thresholds.tightMinutes` | integer | yes | Buffer below this minute boundary is `TIGHT` unless the at-risk boundary is hit. |
+| `thresholds.atRiskMinutes` | integer | yes | Buffer below this minute boundary is `AT_RISK`; at-risk applies when buffer is below this boundary; setting a wide value makes at-risk more aggressive. |
+| `createdBy` | ActorRef | yes | Operations actor creating the policy. |
+| `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
+| `activatedAt` | RFC3339 UTC | no | Activation timestamp. |
+| `retiredAt` | RFC3339 UTC | no | Automatic retirement timestamp after another policy is activated. |
+
+Active policies are immutable through the public API. Activating a new policy
+automatically retires the previously active policy. Retired policies cannot be
+reactivated.
 
 ### ReaccommodateConnectionRequest
 
@@ -653,6 +680,43 @@ immutable.
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`,
 `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`
 
+
+### Create Transfer Risk Policy
+
+**POST** `/api/v1/risk-policies`
+
+**Idempotency:** REQUIRED.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `version` | string | yes | Immutable operator version label. |
+| `thresholds.tightMinutes` | integer | yes | Tight buffer minute boundary. |
+| `thresholds.atRiskMinutes` | integer | yes | At-risk buffer minute boundary. |
+| `createdBy` | ActorRef | yes | Operations actor. |
+
+**Response (201):** `TransferRiskPolicy` in `DRAFT` status.
+
+### Activate Transfer Risk Policy
+
+**POST** `/api/v1/risk-policies/{riskPolicyId}/activate`
+
+**Idempotency:** REQUIRED. Activates the policy, retires any previously active
+policy, and emits `RiskPolicyActivated`. Active versions are not mutable; create
+and activate a new policy for changes. Retired policies cannot be reactivated.
+
+**Request:** `activatedBy` ActorRef and optional `activateReason`.
+
+**Response (200):** Active `TransferRiskPolicy`.
+
+### Get Active Transfer Risk Policy
+
+**GET** `/api/v1/risk-policies/active`
+
+**Response (200):** Active `TransferRiskPolicy`, or the built-in fallback shape
+with `version=builtin-v1` and `builtin=true` when no active policy exists.
+
 ### List MCT Rules
 
 **GET** `/api/v1/mct-rules?fromNodeType=STATION&toNodeType=STATION&transferCategory=SAME_STATION&status=PUBLISHED&limit=20&offset=0`
@@ -715,9 +779,11 @@ same outbound idempotency key.
 
 ## Deferred behavior
 
-- `TransferRiskPolicy` CRUD/simulation is deferred; the built-in fixed policy
-  version is always `builtin-v1`.
-- Place Network topology/path and external map-time integration are deferred.
+- TransferRiskPolicy simulation and future richer policy dimensions are deferred;
+  this wave activates create/activate/current for runtime evaluation.
+- Place Network walking/access-time weights remain deferred because the current
+  Place Network contract exposes no such fields; Transfer Management only reads
+  current node/place identity and node created timestamp for `placeGraphVersion`.
 - Notification, Reporting, Customer Service, Offer Management, and Journey Order
   consumption of Transfer Management events is documented as intended but not
   registered as active downstream consumption in this wave.
