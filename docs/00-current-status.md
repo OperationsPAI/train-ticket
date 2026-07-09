@@ -132,10 +132,11 @@ e2e smoke (13-observability.sh, receiver-counter based).
 ## Current backlog
 
 Nothing queued. Next per ADR-0002: disruption-recovery + ancillary-service,
-then transfer-management. Known small debts: loadgen's ConfigMap is created
-imperatively by deploy/loadgen/run.sh (a stale copy masked new journeys for a
-day — should move under kustomize), and Wallet/Promotion's
-finance/notification consumers remain documented-deferred.
+then transfer-management. Known small debts: ~~loadgen's ConfigMap is created imperatively by
+deploy/loadgen/run.sh (a stale copy masked new journeys for a day — should move
+under kustomize)~~ — resolved: `loadgen-config-*` is generated from
+`deploy/loadgen/config.yaml` and config changes roll the Deployment;
+Wallet/Promotion's finance/notification consumers remain documented-deferred.
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
 boundary; legacy-acl rebook books the first leg only (caller follows up) — both

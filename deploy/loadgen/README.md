@@ -23,11 +23,12 @@ funnel abandonment, sold-out waitlist fallback, channels, seat types),
 ## Run
 
 ```bash
-deploy/loadgen/run.sh          # build + kind load + apply + follow stats
+deploy/loadgen/run.sh          # build + kind load + apply -k + follow stats
+kubectl -n train-ticket apply -k deploy/k8s                 # apply config/deployment only
 kubectl -n train-ticket scale deploy/loadgen --replicas=0   # pause
 ```
 
-Edit `config.yaml`, rerun `run.sh` to apply new hyperparameters.
+Edit `config.yaml`, then run `kubectl -n train-ticket apply -k deploy/k8s` (or rerun `run.sh` when rebuilding the image). Kustomize generates a hashed `loadgen-config-*` ConfigMap from the file, and the Deployment reference changes with the hash so Kubernetes rolls loadgen automatically; no manual ConfigMap creation or `rollout restart` is needed.
 
 ## Notes
 
