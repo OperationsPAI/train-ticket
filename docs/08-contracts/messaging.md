@@ -74,6 +74,7 @@ context.
 | 24 | `dispatch` | `events:dispatch` | DispatchRequested, DriverAssigned, DriverEtaUpdated, DriverArrived, RideStarted, RideEnded, DriverCancelled, DispatchUserCancelled, DispatchNoShowRecorded, DispatchFailed |
 | 25 | `wallet-promotion` | `events:wallet-promotion` | BenefitIssued, BenefitReserved, BenefitRedeemed, BenefitReservationReleased, BenefitExpired, BenefitRevoked, BenefitRedemptionReversed |
 | 26 | `disruption-recovery` | `events:disruption-recovery` | DisruptionReported, IncidentOpened, RecoveryCaseOpened, RecoveryOptionsGenerated, RecoveryOptionSelected, RecoveryExecutionStarted, RecoveryCompleted, RecoveryFailed, RecoveryCaseClosed, ServiceAlertPublished |
+| 27 | `ancillary-service` | `events:ancillary-service` | AncillaryCatalogItemPublished, AncillaryCatalogItemSuspended, AncillaryCatalogItemSuperseded, AncillaryOfferQuoted, AncillaryOfferExpired, AncillaryOrderItemSelected, AncillaryOrderItemPendingConfirmation, AncillaryOrderItemConfirmed, AncillaryOrderItemFulfillmentReady, AncillaryOrderItemFulfilled, AncillaryOrderItemFailed, AncillaryOrderItemCancelled, AncillaryOrderItemRefundPending, AncillaryOrderItemRefunded, AncillaryFulfillmentFactRecorded |
 
 ### Dead-Letter Streams
 
@@ -281,6 +282,7 @@ plus notification/finance/reporting fan-in.
 | 54 | `events:wallet-promotion` | `notification` | Benefit arrival, expiry, redemption, revocation, and reversal user touchpoints; concrete consumption deferred to a later wave |
 | 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
+| 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
 
 ### Cross-Cutting Consumers
 
@@ -303,6 +305,15 @@ wave. Disruption Recovery has one active inbound subscription: it consumes
 recovery options after the downstream Post Sales case reaches `APPLIED`.
 Service Plan, Provider Integration, Fulfillment, and Transfer Management signal
 sources are deferred; Transfer Management belongs to wave 18.
+### Deferred Ancillary Service Subscriptions
+
+`events:ancillary-service` is registered as a produced stream in this contract.
+Ancillary Service actively consumes only `JourneyOrderCancelled` from
+`events:journey-order` in this activation wave. Finance Settlement, Notification,
+and Post Sales are documented downstream touchpoints for ancillary order-item,
+refund, and fulfillment-fact events, but their concrete consumer implementations
+are deferred. Journey Order contract shapes are not changed by this activation;
+any order-detail projection of ancillary items is future work.
 
 ### Deferred Dispatch Subscriptions
 
