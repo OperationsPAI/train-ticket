@@ -90,7 +90,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | `CreateChannelOrder` command accepted from Payment handoff. |
 
 **Payload:**
@@ -116,7 +116,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | `SubmitChannelOrder` records an outbound SIM submit attempt. |
 
 **Payload:**
@@ -139,7 +139,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | SIM deterministically accepts the order but finality is not yet known. |
 
 **Payload:**
@@ -234,7 +234,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment ack-skip; none in this wave (deferred: reporting). |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | `QueryChannelOrder` records deterministic status query evidence. |
 
 **Payload:**
@@ -277,7 +277,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | `CreateChannelRefund` command accepted from Payment handoff. |
 
 **Payload:**
@@ -302,10 +302,16 @@ stored directly; internal commands fold canonical material as documented in
 
 ### ChannelRefundSubmitted
 
+`ACCEPTED` is a transitional channel-side status observable via
+`GET /api/v1/channel-refunds/{channelRefundId}`; no dedicated fact is
+published for it — the terminal facts (`ChannelRefundSucceeded` /
+`ChannelRefundFailed` / `ChannelRefundMissed`) carry the transition
+out of `ACCEPTED`.
+
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | `SubmitChannelRefund` records an outbound SIM refund attempt. |
 
 **Payload:**
@@ -403,7 +409,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | payment ack-skip; none in this wave (deferred: reporting). |
+| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
 | **Trigger** | `QueryChannelRefund` records deterministic refund query evidence. |
 
 **Payload:**
