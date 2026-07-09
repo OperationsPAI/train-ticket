@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import re
@@ -11,7 +10,6 @@ from uuid import UUID
 from train_ticket_platform.events import EventEnvelope, canonical_correlation_id, rfc3339_utc
 
 from identity_verification.domain import (
-    CertificateStatus,
     CredentialRecord,
     CredentialStatus,
     DomainError,
@@ -23,12 +21,12 @@ from identity_verification.domain import (
     VerificationCase,
     VerificationStatus,
     now_utc,
-    require_text,
 )
 from identity_verification.ids import prefixed_uuid7
 
 PRODUCER = "identity-verification"
 TAIL_RE = re.compile(r"(\d)(?!.*\d)")
+LEDGER_AGGREGATE_ID = "purchase-limit-ledger"
 
 
 class NotFoundError(KeyError):
@@ -44,12 +42,20 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
 
 
-def _event_id(event_type: str, aggregate_id: str, version: int, fact_id: str | None = None) -> str:
-    material = f"{PRODUCER}:{event_type}:{aggregate_id}:{fact_id + ':' if fact_id else ''}{version}"
+def _folded_uuid(material: str) -> str:
     digest = bytearray(sha256(material.encode("utf-8")).digest()[:16])
     digest[6] = (digest[6] & 0x0F) | 0x70
     digest[8] = (digest[8] & 0x3F) | 0x80
-    return f"evt-{UUID(bytes=bytes(digest))}"
+    return str(UUID(bytes=bytes(digest)))
+
+
+def _prefixed_fold(prefix: str, material: str) -> str:
+    return f"{prefix}-{_folded_uuid(material)}"
+
+
+def _event_id(event_type: str, aggregate_id: str, version: int, fact_id: str | None = None) -> str:
+    material = f"{PRODUCER}:{event_type}:{aggregate_id}:{fact_id + ':' if fact_id else ''}{version}"
+    return _prefixed_fold("evt", material)
 
 
 def _command_id(value: str | None) -> str:
@@ -66,6 +72,16 @@ def _safe_hash(*parts: object) -> str:
     return sha256("|".join("" if p is None else str(p) for p in parts).encode("utf-8")).hexdigest()
 
 
+def _pre_order_material(data: Mapping[str, Any]) -> str:
+    return _safe_hash(
+        data.get("orderIntentId"), data.get("accountId"),
+        ",".join(sorted(str(x) for x in data.get("travelerRefs") or [])),
+        ",".join(sorted(str(x) for x in data.get("segmentRefs") or [])),
+        data.get("journeyDate"), data.get("productCode"), data.get("limitPolicyVersion"),
+        ",".join(sorted(str(x) for x in data.get("requestedEligibilityTypes") or [])),
+    )
+
+
 class InMemoryStore:
     def __init__(self) -> None:
         self.credentials: dict[str, CredentialRecord] = {}
@@ -76,6 +92,8 @@ class InMemoryStore:
         self.certificate_duplicate_index: dict[tuple[str, str, str, str, str], str] = {}
         self.facts: dict[str, PurchaseLimitFact] = {}
         self.fact_duplicate_index: dict[tuple[str, str, str, str, str], str] = {}
+        self.pre_order_checks: dict[str, dict[str, Any]] = {}
+        self.pre_order_duplicate_index: dict[str, str] = {}
         self.traveler_snapshots: dict[str, dict[str, Any]] = {}
         self._outbox: list[EventEnvelope] = []
         self.processed_events: set[str] = set()
@@ -126,6 +144,14 @@ class InMemoryStore:
         cid = self.case_duplicate_index.get((traveler_id, credential_id, purpose, material_fingerprint, policy))
         return self.cases.get(cid) if cid else None
 
+    def find_case_by_credential(self, credential_id: str) -> VerificationCase | None:
+        cases = [case for case in self.cases.values() if case.credentialRecordId == credential_id]
+        return max(cases, key=lambda item: item.createdAt, default=None)
+
+    def get_certificate(self, certificate_id: str) -> EligibilityCertificate:
+        try: return self.certificates[certificate_id]
+        except KeyError as exc: raise NotFoundError(f"eligibility certificate not found: {certificate_id}") from exc
+
     def save_certificate(self, certificate: EligibilityCertificate) -> None:
         self.certificates[certificate.eligibilityCertificateId] = certificate
         self.certificate_duplicate_index[(certificate.travelerId, certificate.eligibilityType, certificate.certificateHash, certificate.policyYear, certificate.policyVersion)] = certificate.eligibilityCertificateId
@@ -147,6 +173,23 @@ class InMemoryStore:
         fid = self.fact_duplicate_index.get((scope_type, scope_ref, journey_date, product_code, order_intent_id))
         return self.facts.get(fid) if fid else None
 
+    def get_fact(self, fact_id: str) -> PurchaseLimitFact:
+        try: return self.facts[fact_id]
+        except KeyError as exc: raise NotFoundError(f"purchase limit fact not found: {fact_id}") from exc
+
+    def save_pre_order_check(self, record: Mapping[str, Any]) -> None:
+        data = dict(record)
+        self.pre_order_checks[str(data["preOrderCheckId"])] = data
+        self.pre_order_duplicate_index[str(data["materialHash"])] = str(data["preOrderCheckId"])
+
+    def get_pre_order_check(self, pre_order_check_id: str) -> dict[str, Any]:
+        try: return dict(self.pre_order_checks[pre_order_check_id])
+        except KeyError as exc: raise NotFoundError(f"pre-order check not found: {pre_order_check_id}") from exc
+
+    def find_pre_order_check_duplicate(self, material_hash: str) -> dict[str, Any] | None:
+        cid = self.pre_order_duplicate_index.get(material_hash)
+        return self.get_pre_order_check(cid) if cid else None
+
 
 class DeterministicSimGateway:
     def __init__(self, seed: str = "sim-tail-v1") -> None:
@@ -166,10 +209,7 @@ class DeterministicSimGateway:
         else:
             outcome = SimOutcome.MANUAL_REVIEW_REQUIRED
         ref_material = f"{self.seed}:{credential.credentialRecordId}:{material_fingerprint}:{policy_version}:{outcome.value}"
-        digest = bytearray(sha256(ref_material.encode()).digest()[:16])
-        digest[6] = (digest[6] & 0x0F) | 0x70
-        digest[8] = (digest[8] & 0x3F) | 0x80
-        return outcome, f"sim-{UUID(bytes=bytes(digest))}"
+        return outcome, _prefixed_fold("sim", ref_material)
 
 
 class IdentityVerificationService:
@@ -186,47 +226,50 @@ class IdentityVerificationService:
         if callable(append): append(envelopes)
 
     def register_credential(self, data: Mapping[str, Any], correlation_id: str, causation_id: str | None) -> dict[str, Any]:
-        at = now_utc()
-        material_fingerprint = str(data.get("materialFingerprint") or _safe_hash(data.get("canonicalNameHash"), data.get("documentType"), data.get("documentHash"), data.get("birthDateHash"), data.get("validUntil"), data.get("evidenceHash"), data.get("profileSnapshotVersion")))
-        duplicate = self.store.find_credential_duplicate(str(data["travelerId"]), str(data["documentType"]), str(data["documentHash"]), material_fingerprint, str(data["profileSnapshotVersion"]))
-        if duplicate is not None:
-            return duplicate.to_json()
-        cluster_id = "icl-" + sha256(str(data["documentHash"]).encode()).hexdigest()[:32]
-        credential = CredentialRecord.register(credential_id=prefixed_uuid7("crd"), traveler_id=str(data["travelerId"]), profile_snapshot_version=str(data["profileSnapshotVersion"]), document_type=str(data["documentType"]), masked_document_no=str(data["maskedDocumentNo"]), document_hash=str(data["documentHash"]), material_fingerprint=material_fingerprint, canonical_name_hash=str(data["canonicalNameHash"]), birth_date_hash=data.get("birthDateHash"), valid_until=_parse_dt(data.get("validUntil")), evidence_hash=data.get("evidenceHash"), identity_cluster_id=cluster_id, at=at)
-        self.store.save_credential(credential)
-        payload = {**credential.to_json(), "materialFingerprint": credential.materialFingerprint, "credentialStatus": credential.status.value, "registeredAt": rfc3339_utc(at), "aggregateVersion": credential.version + 1}
-        payload.pop("status", None); payload.pop("createdAt", None); payload.pop("updatedAt", None)
-        self._append((_envelope("CredentialRegistered", credential.credentialRecordId, credential.version + 1, payload, correlation_id, causation_id, at),))
-        return credential.to_json()
+        with self.transaction():
+            at = now_utc()
+            material_fingerprint = str(data.get("materialFingerprint") or _safe_hash(data.get("canonicalNameHash"), data.get("documentType"), data.get("documentHash"), data.get("birthDateHash"), data.get("validUntil"), data.get("evidenceHash"), data.get("profileSnapshotVersion")))
+            duplicate = self.store.find_credential_duplicate(str(data["travelerId"]), str(data["documentType"]), str(data["documentHash"]), material_fingerprint, str(data["profileSnapshotVersion"]))
+            if duplicate is not None:
+                return duplicate.to_json()
+            cluster_id = "icl-" + sha256(str(data["documentHash"]).encode()).hexdigest()[:32]
+            credential = CredentialRecord.register(credential_id=prefixed_uuid7("crd"), traveler_id=str(data["travelerId"]), profile_snapshot_version=str(data["profileSnapshotVersion"]), document_type=str(data["documentType"]), masked_document_no=str(data["maskedDocumentNo"]), document_hash=str(data["documentHash"]), material_fingerprint=material_fingerprint, canonical_name_hash=str(data["canonicalNameHash"]), birth_date_hash=data.get("birthDateHash"), valid_until=_parse_dt(data.get("validUntil")), evidence_hash=data.get("evidenceHash"), identity_cluster_id=cluster_id, at=at)
+            self.store.save_credential(credential)
+            payload = {**credential.to_json(), "materialFingerprint": credential.materialFingerprint, "credentialStatus": credential.status.value, "registeredAt": rfc3339_utc(at), "aggregateVersion": credential.version + 1}
+            payload.pop("status", None); payload.pop("createdAt", None); payload.pop("updatedAt", None)
+            self._append((_envelope("CredentialRegistered", credential.credentialRecordId, credential.version + 1, payload, correlation_id, causation_id, at),))
+            return credential.to_json()
 
     def start_verification_case(self, data: Mapping[str, Any], correlation_id: str, causation_id: str | None) -> dict[str, Any]:
-        at = now_utc()
-        credential = self.store.get_credential(str(data["credentialRecordId"]))
-        if credential.travelerId != str(data["travelerId"]):
-            raise DomainError("credential does not belong to traveler")
-        if credential.materialFingerprint != str(data["materialFingerprint"]):
-            raise DomainError("materialFingerprint does not match credential")
-        duplicate = self.store.find_case_duplicate(str(data["travelerId"]), credential.credentialRecordId, str(data["purpose"]), str(data["materialFingerprint"]), str(data["simPolicyVersion"]))
-        if duplicate is not None:
-            return duplicate.to_json()
-        case = VerificationCase.start(prefixed_uuid7("ivc"), credential.travelerId, credential.credentialRecordId, str(data["purpose"]), str(data["materialFingerprint"]), str(data["simPolicyVersion"]), at)
-        credential = credential.mark_pending(at)
-        outcome, sim_ref = self.sim.verify(credential, case.materialFingerprint, case.simPolicyVersion)
-        submitted = case.submit_and_record(outcome, sim_ref, at)
-        credential = credential.mark_verified(submitted.verificationCaseId, at) if submitted.status is VerificationStatus.PASSED else credential.mark_failed(at)
-        self.store.save_credential(credential)
-        self.store.save_case(submitted)
-        envelopes = [self._case_started(case, correlation_id, causation_id, at), self._submitted_to_sim(submitted, correlation_id, causation_id, at), self._case_result(submitted, correlation_id, causation_id, at)]
-        self._append(tuple(envelopes))
-        return submitted.to_json()
+        with self.transaction():
+            at = now_utc()
+            credential = self.store.get_credential(str(data["credentialRecordId"]))
+            if credential.travelerId != str(data["travelerId"]):
+                raise DomainError("credential does not belong to traveler")
+            if credential.materialFingerprint != str(data["materialFingerprint"]):
+                raise DomainError("materialFingerprint does not match credential")
+            duplicate = self.store.find_case_duplicate(str(data["travelerId"]), credential.credentialRecordId, str(data["purpose"]), str(data["materialFingerprint"]), str(data["simPolicyVersion"]))
+            if duplicate is not None:
+                return duplicate.to_json()
+            case = VerificationCase.start(prefixed_uuid7("ivc"), credential.travelerId, credential.credentialRecordId, str(data["purpose"]), str(data["materialFingerprint"]), str(data["simPolicyVersion"]), at)
+            credential = credential.mark_pending(at)
+            outcome, sim_ref = self.sim.verify(credential, case.materialFingerprint, case.simPolicyVersion)
+            submitted = case.submit_and_record(outcome, sim_ref, at)
+            credential = credential.mark_verified(submitted.verificationCaseId, at) if submitted.status is VerificationStatus.PASSED else credential.mark_failed(at)
+            self.store.save_credential(credential)
+            self.store.save_case(submitted)
+            envelopes = [self._case_started(case, correlation_id, causation_id, at), self._submitted_to_sim(submitted, correlation_id, causation_id, at), self._case_result(submitted, correlation_id, causation_id, at)]
+            self._append(tuple(envelopes))
+            return submitted.to_json()
 
     def manual_override(self, case_id: str, correlation_id: str, causation_id: str | None) -> dict[str, Any]:
-        at = now_utc()
-        case = self.store.get_case(case_id).manual_override(at)
-        credential = self.store.get_credential(case.credentialRecordId).mark_verified(case.verificationCaseId, at)
-        self.store.save_case(case); self.store.save_credential(credential)
-        self._append((self._case_result(case, correlation_id, causation_id, at),))
-        return case.to_json()
+        with self.transaction():
+            at = now_utc()
+            case = self.store.get_case(case_id).manual_override(at)
+            credential = self.store.get_credential(case.credentialRecordId).mark_verified(case.verificationCaseId, at)
+            self.store.save_case(case); self.store.save_credential(credential)
+            self._append((self._case_result(case, correlation_id, causation_id, at),))
+            return case.to_json()
 
     def _case_started(self, case: VerificationCase, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
         payload = {"verificationCaseId": case.verificationCaseId, "travelerId": case.travelerId, "credentialRecordId": case.credentialRecordId, "purpose": case.purpose, "materialFingerprint": case.materialFingerprint, "verificationStatus": "DRAFT", "simPolicyVersion": case.simPolicyVersion, "startedAt": rfc3339_utc(at), "aggregateVersion": 1}
@@ -246,66 +289,149 @@ class IdentityVerificationService:
 
     def credential_status(self, credential_id: str) -> dict[str, Any]:
         at = now_utc(); c = self.store.get_credential(credential_id)
-        latest = None
-        if c.verifiedByCaseId:
-            latest = self.store.get_case(c.verifiedByCaseId)
-        else:
-            cases = [case for case in self.store.cases.values() if case.credentialRecordId == credential_id]
-            latest = max(cases, key=lambda item: item.createdAt, default=None)
-        return {"credentialRecordId": c.credentialRecordId, "travelerId": c.travelerId, "credentialStatus": c.status.value, "latestVerificationCaseId": latest.verificationCaseId if latest else None, "verificationStatus": latest.status.value if latest else "DRAFT", "validUntil": rfc3339_utc((latest.validUntil if latest else c.validUntil) or c.validUntil) if ((latest.validUntil if latest else None) or c.validUntil) else None, "reasonCode": latest.reasonCode if latest else None, "readAt": rfc3339_utc(at)}
+        latest = self.store.get_case(c.verifiedByCaseId) if c.verifiedByCaseId else self.store.find_case_by_credential(credential_id)
+        valid_until = (latest.validUntil if latest else None) or c.validUntil
+        return {"credentialRecordId": c.credentialRecordId, "travelerId": c.travelerId, "credentialStatus": c.status.value, "latestVerificationCaseId": latest.verificationCaseId if latest else None, "verificationStatus": latest.status.value if latest else "DRAFT", "validUntil": rfc3339_utc(valid_until) if valid_until else None, "reasonCode": latest.reasonCode if latest else None, "readAt": rfc3339_utc(at)}
 
     def register_certificate(self, data: Mapping[str, Any], corr: str, cause: str | None) -> dict[str, Any]:
-        at = now_utc()
-        duplicate = self.store.find_certificate_duplicate(str(data["travelerId"]), str(data["eligibilityType"]), str(data["certificateHash"]), str(data["policyYear"]), str(data["policyVersion"]))
-        if duplicate is not None: return duplicate.to_json()
-        credential_id = data.get("credentialRecordId")
-        if credential_id:
-            credential = self.store.get_credential(str(credential_id))
-            if credential.status is not CredentialStatus.VERIFIED:
-                raise PreconditionFailed("credential is not verified")
-        cert = EligibilityCertificate.register(certificate_id=prefixed_uuid7("elc"), traveler_id=str(data["travelerId"]), credential_id=str(credential_id) if credential_id else None, cluster_id=data.get("identityClusterId"), eligibility_type=str(data["eligibilityType"]), valid_from=_parse_dt(str(data["validFrom"])) or at, valid_until=_parse_dt(str(data["validUntil"])) or at, policy_year=str(data["policyYear"]), policy_version=str(data["policyVersion"]), annual_usage_limit=int(data["annualUsageLimit"]), product_codes=tuple(str(x) for x in data["applicableProductCodes"]), certificate_hash=str(data["certificateHash"]), evidence_hash=str(data["evidenceHash"]), at=at)
-        self.store.save_certificate(cert)
-        base = cert.to_json(include_evidence=True)
-        payload = {k: v for k, v in base.items() if k not in {"status", "createdAt", "updatedAt"}}
-        payload.update({"certificateStatus": "DRAFT", "certificateHash": cert.certificateHash, "evidenceHash": cert.evidenceHash, "registeredAt": rfc3339_utc(at), "aggregateVersion": 1})
-        verified = {k: v for k, v in payload.items() if k not in {"certificateHash", "evidenceHash", "registeredAt"}}
-        verified.update({"certificateStatus": "ACTIVE", "verificationAttemptId": prefixed_uuid7("eva"), "verifiedAt": rfc3339_utc(at), "aggregateVersion": 2})
-        self._append((_envelope("EligibilityCertificateRegistered", cert.eligibilityCertificateId, 1, payload, corr, cause, at), _envelope("EligibilityCertificateVerified", cert.eligibilityCertificateId, 2, verified, corr, cause, at)))
-        return cert.to_json()
+        with self.transaction():
+            at = now_utc()
+            duplicate = self.store.find_certificate_duplicate(str(data["travelerId"]), str(data["eligibilityType"]), str(data["certificateHash"]), str(data["policyYear"]), str(data["policyVersion"]))
+            if duplicate is not None: return duplicate.to_json()
+            credential_id = data.get("credentialRecordId")
+            if credential_id:
+                credential = self.store.get_credential(str(credential_id))
+                if credential.status is not CredentialStatus.VERIFIED:
+                    raise PreconditionFailed("credential is not verified")
+            cert = EligibilityCertificate.register(certificate_id=prefixed_uuid7("elc"), traveler_id=str(data["travelerId"]), credential_id=str(credential_id) if credential_id else None, cluster_id=data.get("identityClusterId"), eligibility_type=str(data["eligibilityType"]), valid_from=_parse_dt(str(data["validFrom"])) or at, valid_until=_parse_dt(str(data["validUntil"])) or at, policy_year=str(data["policyYear"]), policy_version=str(data["policyVersion"]), annual_usage_limit=int(data["annualUsageLimit"]), product_codes=tuple(str(x) for x in data["applicableProductCodes"]), certificate_hash=str(data["certificateHash"]), evidence_hash=str(data["evidenceHash"]), at=at)
+            self.store.save_certificate(cert)
+            base = cert.to_json(include_evidence=True)
+            payload = {k: v for k, v in base.items() if k not in {"status", "createdAt", "updatedAt"}}
+            payload.update({"certificateStatus": "DRAFT", "certificateHash": cert.certificateHash, "evidenceHash": cert.evidenceHash, "registeredAt": rfc3339_utc(at), "aggregateVersion": 1})
+            verified = {k: v for k, v in payload.items() if k not in {"certificateHash", "evidenceHash", "registeredAt"}}
+            verified.update({"certificateStatus": "ACTIVE", "verificationAttemptId": prefixed_uuid7("eva"), "verifiedAt": rfc3339_utc(at), "aggregateVersion": 2})
+            self._append((_envelope("EligibilityCertificateRegistered", cert.eligibilityCertificateId, 1, payload, corr, cause, at), _envelope("EligibilityCertificateVerified", cert.eligibilityCertificateId, 2, verified, corr, cause, at)))
+            return cert.to_json()
 
     def query_certificates(self, traveler_id: str, eligibility_type: str | None, journey_date: str, product_code: str | None, limit: int, offset: int) -> dict[str, Any]:
         items, total = self.store.query_certificates(traveler_id, eligibility_type, journey_date, product_code, limit, offset)
         return {"items": [item.to_json(include_evidence=False) for item in items], "total": total, "limit": limit, "offset": offset}
 
     def pre_order_check(self, data: Mapping[str, Any], corr: str, cause: str | None) -> tuple[dict[str, Any], bool]:
-        at = now_utc(); checks: list[dict[str, Any]] = []; facts: list[dict[str, Any]] = []; envelopes: list[EventEnvelope] = []
-        result = PreOrderResult.PASS
-        for traveler_id in [str(x) for x in data["travelerRefs"]]:
-            creds = [c for c in self.store.credentials_for_traveler(traveler_id) if c.status is CredentialStatus.VERIFIED and (c.validUntil is None or c.validUntil > at)]
-            if not creds:
-                checks.append({"travelerId": traveler_id, "code": "VERIFICATION_NOT_PASSED", "status": "REJECT", "reasonCode": "NO_VERIFIED_CREDENTIAL", "policyVersion": str(data["limitPolicyVersion"])})
-                result = PreOrderResult.REJECT
-                continue
-            credential = creds[0]
-            checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "VERIFICATION_PASSED", "status": "PASS", "policyVersion": str(data["limitPolicyVersion"])})
-            for eligibility_type in data.get("requestedEligibilityTypes") or []:
-                certs, _ = self.store.query_certificates(traveler_id, str(eligibility_type), str(data["journeyDate"]), str(data["productCode"]), 1, 0)
-                if certs:
-                    checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "eligibilityCertificateId": certs[0].eligibilityCertificateId, "code": "ELIGIBILITY_ACTIVE", "status": "PASS", "policyVersion": certs[0].policyVersion})
-                else:
-                    checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "ELIGIBILITY_UNAVAILABLE", "status": "REJECT", "reasonCode": "NO_ACTIVE_CERTIFICATE", "policyVersion": str(data["limitPolicyVersion"])})
+        with self.transaction():
+            material_hash = _pre_order_material(data)
+            existing_record = self.store.find_pre_order_check_duplicate(material_hash)
+            if existing_record is not None:
+                return dict(existing_record["body"]), False
+
+            at = now_utc(); checks: list[dict[str, Any]] = []; facts: list[dict[str, Any]] = []
+            candidate_facts: list[PurchaseLimitFact] = []; candidate_certificates: list[EligibilityCertificate] = []
+            result = PreOrderResult.PASS
+            traveler_refs = [str(x) for x in data["travelerRefs"]]
+            for traveler_id in traveler_refs:
+                creds = [c for c in self.store.credentials_for_traveler(traveler_id) if c.status is CredentialStatus.VERIFIED and (c.validUntil is None or c.validUntil > at)]
+                if not creds:
+                    checks.append({"travelerId": traveler_id, "code": "VERIFICATION_NOT_PASSED", "status": "REJECT", "reasonCode": "NO_VERIFIED_CREDENTIAL", "policyVersion": str(data["limitPolicyVersion"])})
                     result = PreOrderResult.REJECT
-            existing = self.store.find_fact_duplicate("CREDENTIAL", credential.credentialRecordId, str(data["journeyDate"]), str(data["productCode"]), str(data["orderIntentId"]))
-            if existing is None:
-                fact = PurchaseLimitFact(prefixed_uuid7("plf"), "CREDENTIAL", credential.credentialRecordId, traveler_id, str(data["orderIntentId"]), str(data["journeyDate"]), str(data["productCode"]), tuple(str(x) for x in data["segmentRefs"]), str(data["limitPolicyVersion"]), "RECORDED", at)
-                self.store.save_fact(fact); existing = fact
-                payload = {k: v for k, v in fact.to_json().items() if k != "status"}; payload.update({"factStatus": "RECORDED", "recordedAt": rfc3339_utc(at), "aggregateVersion": 1})
-                envelopes.append(_envelope("PurchaseLimitFactRecorded", "purchase-limit-ledger", 1, payload, corr, cause, at, fact.purchaseLimitFactId))
-            facts.append({"purchaseLimitFactId": existing.purchaseLimitFactId, "scopeType": existing.scopeType, "scopeRef": existing.scopeRef, "status": existing.status, "limitPolicyVersion": existing.limitPolicyVersion})
-            checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "PURCHASE_LIMIT_RECORDED", "status": "PASS", "policyVersion": existing.limitPolicyVersion})
-        body = {"preOrderCheckId": prefixed_uuid7("poc"), "orderIntentId": str(data["orderIntentId"]), "accountId": str(data["accountId"]), "travelerRefs": [str(x) for x in data["travelerRefs"]], "segmentRefs": [str(x) for x in data["segmentRefs"]], "journeyDate": str(data["journeyDate"]), "productCode": str(data["productCode"]), "result": result.value, "checks": checks, "purchaseLimitFacts": facts, "evaluatedAt": rfc3339_utc(at), "expiresAt": rfc3339_utc(at + timedelta(minutes=10))}
-        self._append(tuple(envelopes))
-        return body, bool(envelopes)
+                    continue
+                credential = creds[0]
+                checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "VERIFICATION_PASSED", "status": "PASS", "policyVersion": str(data["limitPolicyVersion"])})
+                for eligibility_type in data.get("requestedEligibilityTypes") or []:
+                    certs, _ = self.store.query_certificates(traveler_id, str(eligibility_type), str(data["journeyDate"]), str(data["productCode"]), 1, 0)
+                    if certs:
+                        candidate_certificates.append(certs[0])
+                        checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "eligibilityCertificateId": certs[0].eligibilityCertificateId, "code": "ELIGIBILITY_ACTIVE", "status": "PASS", "policyVersion": certs[0].policyVersion})
+                    else:
+                        checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "ELIGIBILITY_UNAVAILABLE", "status": "REJECT", "reasonCode": "NO_ACTIVE_CERTIFICATE", "policyVersion": str(data["limitPolicyVersion"])})
+                        result = PreOrderResult.REJECT
+                existing = self.store.find_fact_duplicate("CREDENTIAL", credential.credentialRecordId, str(data["journeyDate"]), str(data["productCode"]), str(data["orderIntentId"]))
+                if existing is None:
+                    candidate_facts.append(PurchaseLimitFact(prefixed_uuid7("plf"), "CREDENTIAL", credential.credentialRecordId, traveler_id, str(data["orderIntentId"]), str(data["journeyDate"]), str(data["productCode"]), tuple(str(x) for x in data["segmentRefs"]), str(data["limitPolicyVersion"]), "RECORDED", at))
+                else:
+                    facts.append({"purchaseLimitFactId": existing.purchaseLimitFactId, "scopeType": existing.scopeType, "scopeRef": existing.scopeRef, "status": existing.status, "limitPolicyVersion": existing.limitPolicyVersion})
+                checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "PURCHASE_LIMIT_RECORDED", "status": "PASS", "policyVersion": str(data["limitPolicyVersion"])})
+
+            body = {"preOrderCheckId": _prefixed_fold("poc", f"pre-order:{material_hash}"), "orderIntentId": str(data["orderIntentId"]), "accountId": str(data["accountId"]), "travelerRefs": traveler_refs, "segmentRefs": [str(x) for x in data["segmentRefs"]], "journeyDate": str(data["journeyDate"]), "productCode": str(data["productCode"]), "result": result.value, "checks": checks, "purchaseLimitFacts": facts, "evaluatedAt": rfc3339_utc(at), "expiresAt": rfc3339_utc(at + timedelta(minutes=10))}
+            record: dict[str, Any] = {"preOrderCheckId": body["preOrderCheckId"], "materialHash": material_hash, "status": "REJECTED" if result is PreOrderResult.REJECT else "RESERVED", "body": body, "usageReservations": [], "purchaseLimitFactIds": []}
+            envelopes: list[EventEnvelope] = []
+            if result is PreOrderResult.PASS:
+                for certificate in candidate_certificates:
+                    reservation_id = _prefixed_fold("eur", f"{certificate.eligibilityCertificateId}:{certificate.policyYear}:{data['orderIntentId']}")
+                    reserved = certificate.reserve(at); version = certificate.version + 2
+                    self.store.save_certificate(reserved)
+                    record["usageReservations"].append({"usageReservationId": reservation_id, "eligibilityCertificateId": reserved.eligibilityCertificateId, "status": "RESERVED"})
+                    envelopes.append(self._eligibility_reserved_event(reserved, reservation_id, str(data["orderIntentId"]), version, corr, cause, at))
+                for fact in candidate_facts:
+                    self.store.save_fact(fact); record["purchaseLimitFactIds"].append(fact.purchaseLimitFactId)
+                    facts.append({"purchaseLimitFactId": fact.purchaseLimitFactId, "scopeType": fact.scopeType, "scopeRef": fact.scopeRef, "status": fact.status, "limitPolicyVersion": fact.limitPolicyVersion})
+                    envelopes.append(self._fact_recorded_event(fact, corr, cause, at))
+                body["purchaseLimitFacts"] = facts
+            self.store.save_pre_order_check(record)
+            self._append(tuple(envelopes))
+            return body, bool(envelopes)
+
+    def confirm_pre_order_check(self, pre_order_check_id: str, journey_order_id: str, corr: str, cause: str | None) -> dict[str, Any]:
+        with self.transaction():
+            record = self.store.get_pre_order_check(pre_order_check_id)
+            if record.get("status") == "CONFIRMED": return dict(record["body"])
+            if record.get("status") == "RELEASED": raise PreconditionFailed("pre-order check is already released")
+            at = now_utc(); envelopes: list[EventEnvelope] = []
+            for reservation in record.get("usageReservations", []):
+                if reservation.get("status") != "RESERVED": continue
+                certificate = self.store.get_certificate(str(reservation["eligibilityCertificateId"]))
+                confirmed = certificate.confirm(at); version = certificate.version + 2
+                self.store.save_certificate(confirmed); reservation["status"] = "CONFIRMED"
+                envelopes.append(self._eligibility_confirmed_event(confirmed, str(reservation["usageReservationId"]), journey_order_id, version, corr, cause, at))
+            for fact_id in record.get("purchaseLimitFactIds", []):
+                fact = self.store.get_fact(str(fact_id))
+                if fact.status != "RECORDED": continue
+                confirmed_fact = fact.confirm(journey_order_id, at)
+                self.store.save_fact(confirmed_fact)
+                envelopes.append(self._fact_confirmed_event(confirmed_fact, journey_order_id, corr, cause, at))
+            record["status"] = "CONFIRMED"; self.store.save_pre_order_check(record); self._append(tuple(envelopes))
+            return dict(record["body"])
+
+    def release_pre_order_check(self, pre_order_check_id: str, release_reason: str, corr: str, cause: str | None, source_event_id: str | None = None) -> dict[str, Any]:
+        with self.transaction():
+            record = self.store.get_pre_order_check(pre_order_check_id)
+            if record.get("status") == "RELEASED": return dict(record["body"])
+            if record.get("status") == "CONFIRMED": raise PreconditionFailed("pre-order check is already confirmed")
+            at = now_utc(); body = dict(record["body"]); envelopes: list[EventEnvelope] = []
+            for reservation in record.get("usageReservations", []):
+                if reservation.get("status") != "RESERVED": continue
+                certificate = self.store.get_certificate(str(reservation["eligibilityCertificateId"]))
+                released = certificate.release(at); version = certificate.version + 2
+                self.store.save_certificate(released); reservation["status"] = "RELEASED"
+                envelopes.append(self._eligibility_released_event(released, str(reservation["usageReservationId"]), body["orderIntentId"], release_reason, version, corr, cause, at))
+            for fact_id in record.get("purchaseLimitFactIds", []):
+                fact = self.store.get_fact(str(fact_id))
+                if fact.status != "RECORDED": continue
+                released_fact = fact.release(release_reason, at, source_event_id)
+                self.store.save_fact(released_fact)
+                envelopes.append(self._fact_released_event(released_fact, release_reason, source_event_id, corr, cause, at))
+            record["status"] = "RELEASED"; self.store.save_pre_order_check(record); self._append(tuple(envelopes))
+            return body
+
+    def _eligibility_reserved_event(self, certificate: EligibilityCertificate, reservation_id: str, order_intent_id: str, version: int, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        return _envelope("EligibilityUsageReserved", certificate.eligibilityCertificateId, version, {"usageReservationId": reservation_id, "eligibilityCertificateId": certificate.eligibilityCertificateId, "travelerId": certificate.travelerId, "eligibilityType": certificate.eligibilityType, "policyYear": certificate.policyYear, "orderIntentId": order_intent_id, "annualUsageReserved": certificate.annualUsageReserved, "annualUsageConfirmed": certificate.annualUsageConfirmed, "reservedAt": rfc3339_utc(at), "aggregateVersion": version}, corr, cause, at)
+
+    def _eligibility_confirmed_event(self, certificate: EligibilityCertificate, reservation_id: str, journey_order_id: str, version: int, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        return _envelope("EligibilityUsageConfirmed", certificate.eligibilityCertificateId, version, {"usageReservationId": reservation_id, "eligibilityCertificateId": certificate.eligibilityCertificateId, "travelerId": certificate.travelerId, "journeyOrderId": journey_order_id, "policyYear": certificate.policyYear, "annualUsageReserved": certificate.annualUsageReserved, "annualUsageConfirmed": certificate.annualUsageConfirmed, "confirmedAt": rfc3339_utc(at), "aggregateVersion": version}, corr, cause, at)
+
+    def _eligibility_released_event(self, certificate: EligibilityCertificate, reservation_id: str, order_intent_id: str, reason: str, version: int, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        return _envelope("EligibilityUsageReleased", certificate.eligibilityCertificateId, version, {"usageReservationId": reservation_id, "eligibilityCertificateId": certificate.eligibilityCertificateId, "travelerId": certificate.travelerId, "orderIntentId": order_intent_id, "releaseReason": reason, "annualUsageReserved": certificate.annualUsageReserved, "annualUsageConfirmed": certificate.annualUsageConfirmed, "releasedAt": rfc3339_utc(at), "aggregateVersion": version}, corr, cause, at)
+
+    def _fact_recorded_event(self, fact: PurchaseLimitFact, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        payload = {k: v for k, v in fact.to_json().items() if k != "status"}; payload.update({"factStatus": "RECORDED", "recordedAt": rfc3339_utc(at), "aggregateVersion": 1})
+        return _envelope("PurchaseLimitFactRecorded", LEDGER_AGGREGATE_ID, 1, payload, corr, cause, at, fact.purchaseLimitFactId)
+
+    def _fact_confirmed_event(self, fact: PurchaseLimitFact, journey_order_id: str, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        return _envelope("PurchaseLimitFactConfirmed", LEDGER_AGGREGATE_ID, fact.version + 1, {"purchaseLimitFactId": fact.purchaseLimitFactId, "journeyOrderId": journey_order_id, "orderIntentId": fact.orderIntentId, "factStatus": "CONFIRMED", "limitPolicyVersion": fact.limitPolicyVersion, "confirmedAt": rfc3339_utc(at), "aggregateVersion": fact.version + 1}, corr, cause, at, fact.purchaseLimitFactId)
+
+    def _fact_released_event(self, fact: PurchaseLimitFact, reason: str, source_event_id: str | None, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "orderIntentId": fact.orderIntentId, "releaseReason": reason, "factStatus": "RELEASED", "limitPolicyVersion": fact.limitPolicyVersion, "releasedAt": rfc3339_utc(at), "aggregateVersion": fact.version + 1}
+        if source_event_id: payload["sourceEventId"] = source_event_id
+        return _envelope("PurchaseLimitFactReleased", LEDGER_AGGREGATE_ID, fact.version + 1, payload, corr, cause, at, fact.purchaseLimitFactId)
 
     def handle_traveler_snapshot_updated(self, envelope: EventEnvelope, stream: str) -> None:
         with self.transaction():

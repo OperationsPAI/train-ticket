@@ -133,12 +133,17 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             sourceCommandId, correlationId
         );
 
-        stateRepository.saveOrder(order, idempotencyKey);
-        JourneyOrderResult result = toResult(order);
-        stateRepository.saveCreateIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
-        publishEvents(order.domainEvents());
+        try {
+            stateRepository.saveOrder(order, idempotencyKey);
+            JourneyOrderResult result = toResult(order);
+            stateRepository.saveCreateIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+            publishEvents(order.domainEvents());
+            return result;
+        } catch (RuntimeException exception) {
+            identityVerification.releasePreOrderCheck(identityResult.preOrderCheckId(), "ORDER_CREATE_FAILED", identityIdempotencyKey, correlationId);
+            throw exception;
+        }
 
-        return result;
     }
 
     @Override

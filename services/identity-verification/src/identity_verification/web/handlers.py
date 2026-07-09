@@ -62,6 +62,15 @@ class PreOrderCheckRequest(LooseModel):
     requestedAt: str
 
 
+class ConfirmPreOrderRequest(LooseModel):
+    journeyOrderId: str
+
+
+class ReleasePreOrderRequest(LooseModel):
+    releaseReason: str
+    sourceEventId: str | None = None
+
+
 def _service(request: Request) -> IdentityVerificationService:
     return request.app.state.identity_verification_service
 
@@ -115,3 +124,13 @@ def pre_order_check(body: PreOrderCheckRequest, request: Request, response: Resp
     result, created = _service(request).pre_order_check(body.model_dump(exclude_none=True), _corr(request), _cause(request))
     response.status_code = 201 if created else 200
     return result
+
+
+@router.post("/pre-order-checks/{pre_order_check_id}/confirm")
+def confirm_pre_order_check(pre_order_check_id: str, body: ConfirmPreOrderRequest, request: Request) -> dict[str, Any]:
+    return _service(request).confirm_pre_order_check(pre_order_check_id, body.journeyOrderId, _corr(request), _cause(request))
+
+
+@router.post("/pre-order-checks/{pre_order_check_id}/release")
+def release_pre_order_check(pre_order_check_id: str, body: ReleasePreOrderRequest, request: Request) -> dict[str, Any]:
+    return _service(request).release_pre_order_check(pre_order_check_id, body.releaseReason, _corr(request), _cause(request), body.sourceEventId)

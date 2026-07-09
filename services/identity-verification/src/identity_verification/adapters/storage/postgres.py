@@ -56,12 +56,16 @@ def certificate_from_json(data: Mapping[str, Any] | str, version: int = 0) -> El
 
 
 def fact_to_json(f: PurchaseLimitFact) -> dict[str, Any]:
-    return {"purchaseLimitFactId": f.purchaseLimitFactId, "scopeType": f.scopeType, "scopeRef": f.scopeRef, "travelerId": f.travelerId, "orderIntentId": f.orderIntentId, "journeyDate": f.journeyDate, "productCode": f.productCode, "segmentRefs": list(f.segmentRefs), "limitPolicyVersion": f.limitPolicyVersion, "status": f.status, "recordedAt": _dt(f.recordedAt)}
+    data = {"purchaseLimitFactId": f.purchaseLimitFactId, "scopeType": f.scopeType, "scopeRef": f.scopeRef, "travelerId": f.travelerId, "orderIntentId": f.orderIntentId, "journeyDate": f.journeyDate, "productCode": f.productCode, "segmentRefs": list(f.segmentRefs), "limitPolicyVersion": f.limitPolicyVersion, "status": f.status, "recordedAt": _dt(f.recordedAt)}
+    if f.journeyOrderId: data["journeyOrderId"] = f.journeyOrderId
+    if f.releaseReason: data["releaseReason"] = f.releaseReason
+    if f.sourceEventId: data["sourceEventId"] = f.sourceEventId
+    return data
 
 
 def fact_from_json(data: Mapping[str, Any] | str, version: int = 0) -> PurchaseLimitFact:
     d = _json(data)
-    return PurchaseLimitFact(str(d["purchaseLimitFactId"]), str(d["scopeType"]), str(d["scopeRef"]), str(d["travelerId"]), str(d["orderIntentId"]), str(d["journeyDate"]), str(d["productCode"]), tuple(str(x) for x in d.get("segmentRefs", ())), str(d["limitPolicyVersion"]), str(d["status"]), _parse_dt(str(d["recordedAt"])) or datetime.now(UTC), version)
+    return PurchaseLimitFact(str(d["purchaseLimitFactId"]), str(d["scopeType"]), str(d["scopeRef"]), str(d["travelerId"]), str(d["orderIntentId"]), str(d["journeyDate"]), str(d["productCode"]), tuple(str(x) for x in d.get("segmentRefs", ())), str(d["limitPolicyVersion"]), str(d["status"]), _parse_dt(str(d["recordedAt"])) or datetime.now(UTC), version, d.get("journeyOrderId"), d.get("releaseReason"), d.get("sourceEventId"))
 
 
 @dataclass
@@ -82,6 +86,7 @@ class PostgresIdentityVerificationStore(InMemoryStore):
         self._cases = SnapshotRepository("verification_case_snapshots")
         self._certificates = SnapshotRepository("eligibility_certificate_snapshots")
         self._facts = SnapshotRepository("purchase_limit_fact_snapshots")
+        self._pre_orders = SnapshotRepository("pre_order_check_snapshots")
         self._processed = ProcessedEventsGuard()
 
     @contextmanager
@@ -157,6 +162,20 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             self._remember("case", str(row[0]), int(row[1])); return case_from_json(row[2], int(row[1]))
         return self._with_conn(read)
 
+    def find_case_by_credential(self, credential_id: str) -> VerificationCase | None:
+        def read(conn: Any) -> VerificationCase | None:
+            row = conn.execute("SELECT id, version, data FROM verification_case_snapshots WHERE data->>'credentialRecordId'=%s ORDER BY data->>'createdAt' DESC LIMIT 1", (credential_id,)).fetchone()
+            if not row: return None
+            self._remember("case", str(row[0]), int(row[1])); return case_from_json(row[2], int(row[1]))
+        return self._with_conn(read)
+
+    def get_certificate(self, certificate_id: str) -> EligibilityCertificate:
+        def read(conn: Any) -> EligibilityCertificate:
+            snap = self._certificates.get(conn, certificate_id)
+            if snap is None: raise NotFoundError(f"eligibility certificate not found: {certificate_id}")
+            version, data = snap; self._remember("certificate", certificate_id, version); return certificate_from_json(data, version)
+        return self._with_conn(read)
+
     def save_certificate(self, certificate: EligibilityCertificate) -> None:
         self._with_conn(lambda conn: self._certificates.save(conn, certificate.eligibilityCertificateId, certificate_to_json(certificate), self._take("certificate", certificate.eligibilityCertificateId)))
 
@@ -186,6 +205,31 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             row = conn.execute("SELECT id, version, data FROM purchase_limit_fact_snapshots WHERE data->>'scopeType'=%s AND data->>'scopeRef'=%s AND data->>'journeyDate'=%s AND data->>'productCode'=%s AND data->>'orderIntentId'=%s LIMIT 1", (scope_type, scope_ref, journey_date, product_code, order_intent_id)).fetchone()
             if not row: return None
             self._remember("fact", str(row[0]), int(row[1])); return fact_from_json(row[2], int(row[1]))
+        return self._with_conn(read)
+
+    def get_fact(self, fact_id: str) -> PurchaseLimitFact:
+        def read(conn: Any) -> PurchaseLimitFact:
+            snap = self._facts.get(conn, fact_id)
+            if snap is None: raise NotFoundError(f"purchase-limit fact not found: {fact_id}")
+            version, data = snap; self._remember("fact", fact_id, version); return fact_from_json(data, version)
+        return self._with_conn(read)
+
+    def save_pre_order_check(self, record: Mapping[str, Any]) -> None:
+        record_id = str(record["preOrderCheckId"])
+        self._with_conn(lambda conn: self._pre_orders.save(conn, record_id, dict(record), self._take("pre-order", record_id)))
+
+    def get_pre_order_check(self, pre_order_check_id: str) -> dict[str, Any]:
+        def read(conn: Any) -> dict[str, Any]:
+            snap = self._pre_orders.get(conn, pre_order_check_id)
+            if snap is None: raise NotFoundError(f"pre-order check not found: {pre_order_check_id}")
+            version, data = snap; self._remember("pre-order", pre_order_check_id, version); return dict(data)
+        return self._with_conn(read)
+
+    def find_pre_order_check_duplicate(self, material_hash: str) -> dict[str, Any] | None:
+        def read(conn: Any) -> dict[str, Any] | None:
+            row = conn.execute("SELECT id, version, data FROM pre_order_check_snapshots WHERE data->>'materialHash'=%s LIMIT 1", (material_hash,)).fetchone()
+            if not row: return None
+            self._remember("pre-order", str(row[0]), int(row[1])); return dict(row[2])
         return self._with_conn(read)
 
     def save_traveler_snapshot(self, traveler_id: str, data: Mapping[str, Any]) -> None:

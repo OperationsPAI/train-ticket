@@ -92,6 +92,34 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
         }
     }
 
+    @Override
+    public void releasePreOrderCheck(String preOrderCheckId, String releaseReason, String idempotencyKey, String correlationId) {
+        if (preOrderCheckId == null || preOrderCheckId.isBlank()) {
+            return;
+        }
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("releaseReason", releaseReason);
+            HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(baseUrl + "/api/v1/identity-verification/pre-order-checks/" + preOrderCheckId + "/release"))
+                .timeout(Duration.ofSeconds(10))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Idempotency-Key", idempotencyKey)
+                .header("X-Correlation-Id", correlationId)
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
+                .build();
+            HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                JsonNode json = mapper.readTree(response.body().isBlank() ? "{}" : response.body());
+                warn(json, "identity verification release failed");
+            }
+        } catch (IOException exception) {
+            LOGGER.warn("identity verification downstream failure code={} message={}", "IO_ERROR", exception.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void warn(JsonNode json, String fallback) {
         String code = json.path("details").path("domainCode").asText(json.path("code").asText("UNAVAILABLE"));
         String message = json.path("message").asText(fallback);

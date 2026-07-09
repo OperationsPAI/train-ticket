@@ -54,3 +54,60 @@ def test_idempotency_replay_and_certificate_query():
     query = client.get("/api/v1/identity-verification/eligibility-certificates?travelerId=tvl-1&eligibilityType=STUDENT&journeyDate=2026-02-01&productCode=TRAIN")
     assert query.json()["total"] == 1
     assert "evidenceHash" not in query.json()["items"][0]
+
+
+
+def test_preorder_reserve_confirm_release_and_stable_id():
+    store = InMemoryStore(); client = TestClient(create_app(store=store))
+    cred = register(client, idem=20).json(); verify(client, cred, 21)
+    cert = client.post("/api/v1/identity-verification/eligibility-certificates", json={"travelerId": "tvl-1", "credentialRecordId": cred["credentialRecordId"], "eligibilityType": "STUDENT", "validFrom": "2026-01-01T00:00:00Z", "validUntil": "2026-12-31T00:00:00Z", "policyYear": "2026", "policyVersion": "student-v1", "annualUsageLimit": 2, "applicableProductCodes": ["TRAIN"], "certificateHash": "cert-hash-2", "evidenceHash": "evidence-hash"}, headers={"Idempotency-Key": key(22)}).json()
+    body = {"orderIntentId": "oint-stable", "accountId": "acct-1", "offerId": "off-1", "offerVersion": 1, "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"], "journeyDate": "2026-02-01", "productCode": "TRAIN", "requestedEligibilityTypes": ["STUDENT"], "limitPolicyVersion": "limit-v1", "requestedAt": "2026-01-01T00:00:00Z"}
+    first = client.post("/api/v1/identity-verification/pre-order-checks", json=body, headers={"Idempotency-Key": key(23)})
+    replay = client.post("/api/v1/identity-verification/pre-order-checks", json=body, headers={"Idempotency-Key": key(24)})
+    assert first.json()["preOrderCheckId"] == replay.json()["preOrderCheckId"]
+    assert store.certificates[cert["eligibilityCertificateId"]].annualUsageReserved == 1
+    events = [event.eventType for event in store.take_outbox()]
+    assert "EligibilityUsageReserved" in events
+    assert "PurchaseLimitFactRecorded" in events
+    client.post(f"/api/v1/identity-verification/pre-order-checks/{first.json()['preOrderCheckId']}/confirm", json={"journeyOrderId": "ord-1"}, headers={"Idempotency-Key": key(25)})
+    assert store.certificates[cert["eligibilityCertificateId"]].annualUsageReserved == 0
+    assert store.certificates[cert["eligibilityCertificateId"]].annualUsageConfirmed == 1
+    assert {event.eventType for event in store.take_outbox()} >= {"EligibilityUsageConfirmed", "PurchaseLimitFactConfirmed"}
+
+    body["orderIntentId"] = "oint-release"
+    released = client.post("/api/v1/identity-verification/pre-order-checks", json=body, headers={"Idempotency-Key": key(26)}).json()
+    client.post(f"/api/v1/identity-verification/pre-order-checks/{released['preOrderCheckId']}/release", json={"releaseReason": "ORDER_CANCELLED"}, headers={"Idempotency-Key": key(27)})
+    assert {event.eventType for event in store.take_outbox()} >= {"EligibilityUsageReleased", "PurchaseLimitFactReleased"}
+
+
+class StoreWithoutCasesAttribute(InMemoryStore):
+    @property
+    def cases(self):
+        raise AssertionError("service must use find_case_by_credential")
+
+    @cases.setter
+    def cases(self, value):
+        self._cases = value
+
+    def get_case(self, case_id):
+        return self._cases[case_id]
+
+    def save_case(self, case):
+        self._cases[case.verificationCaseId] = case
+        self.case_duplicate_index[(case.travelerId, case.credentialRecordId, case.purpose, case.materialFingerprint, case.simPolicyVersion)] = case.verificationCaseId
+
+    def find_case_duplicate(self, traveler_id, credential_id, purpose, material_fingerprint, policy):
+        cid = self.case_duplicate_index.get((traveler_id, credential_id, purpose, material_fingerprint, policy))
+        return self._cases.get(cid) if cid else None
+
+    def find_case_by_credential(self, credential_id):
+        cases = [case for case in self._cases.values() if case.credentialRecordId == credential_id]
+        return max(cases, key=lambda item: item.createdAt, default=None)
+
+
+def test_credential_status_uses_store_interface_not_cases_attribute():
+    store = StoreWithoutCasesAttribute(); client = TestClient(create_app(store=store))
+    cred = register(client, idem=30).json(); verify(client, cred, 31)
+    response = client.get(f"/api/v1/identity-verification/credentials/{cred['credentialRecordId']}/verification-status")
+    assert response.status_code == 200
+    assert response.json()["verificationStatus"] == "PASSED"

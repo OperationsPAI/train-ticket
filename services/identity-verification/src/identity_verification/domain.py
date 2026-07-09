@@ -208,9 +208,21 @@ class EligibilityCertificate:
         return self.status is CertificateStatus.ACTIVE and start <= day <= end and product_ok and (self.annualUsageReserved + self.annualUsageConfirmed) < self.annualUsageLimit
 
     def reserve(self, at: datetime) -> "EligibilityCertificate":
+        if self.status is not CertificateStatus.ACTIVE:
+            raise PreconditionFailed("certificate is not active")
         if self.annualUsageReserved + self.annualUsageConfirmed >= self.annualUsageLimit:
-            raise DomainError("annual usage limit exhausted")
+            raise PreconditionFailed("annual usage limit exhausted")
         return replace(self, annualUsageReserved=self.annualUsageReserved + 1, updatedAt=at)
+
+    def confirm(self, at: datetime) -> "EligibilityCertificate":
+        if self.annualUsageReserved <= 0:
+            raise PreconditionFailed("no reserved usage to confirm")
+        return replace(self, annualUsageReserved=self.annualUsageReserved - 1, annualUsageConfirmed=self.annualUsageConfirmed + 1, updatedAt=at)
+
+    def release(self, at: datetime) -> "EligibilityCertificate":
+        if self.annualUsageReserved <= 0:
+            raise PreconditionFailed("no reserved usage to release")
+        return replace(self, annualUsageReserved=self.annualUsageReserved - 1, updatedAt=at)
 
     def to_json(self, include_evidence: bool = True) -> dict[str, Any]:
         data = {"eligibilityCertificateId": self.eligibilityCertificateId, "travelerId": self.travelerId, "eligibilityType": self.eligibilityType, "status": self.status.value, "validFrom": rfc3339_utc(self.validFrom), "validUntil": rfc3339_utc(self.validUntil), "policyYear": self.policyYear, "policyVersion": self.policyVersion, "annualUsageLimit": self.annualUsageLimit, "annualUsageReserved": self.annualUsageReserved, "annualUsageConfirmed": self.annualUsageConfirmed, "applicableProductCodes": list(self.applicableProductCodes), "createdAt": rfc3339_utc(self.createdAt), "updatedAt": rfc3339_utc(self.updatedAt)}
@@ -235,6 +247,23 @@ class PurchaseLimitFact:
     status: str
     recordedAt: datetime
     version: int = 0
+    journeyOrderId: str | None = None
+    releaseReason: str | None = None
+    sourceEventId: str | None = None
+
+    def confirm(self, journey_order_id: str, at: datetime) -> "PurchaseLimitFact":
+        if self.status != "RECORDED":
+            raise PreconditionFailed("purchase-limit fact is not recorded")
+        return replace(self, status="CONFIRMED", journeyOrderId=journey_order_id)
+
+    def release(self, release_reason: str, at: datetime, source_event_id: str | None = None) -> "PurchaseLimitFact":
+        if self.status != "RECORDED":
+            raise PreconditionFailed("purchase-limit fact is not recorded")
+        return replace(self, status="RELEASED", releaseReason=release_reason, sourceEventId=source_event_id)
 
     def to_json(self) -> dict[str, Any]:
-        return {"purchaseLimitFactId": self.purchaseLimitFactId, "scopeType": self.scopeType, "scopeRef": self.scopeRef, "travelerId": self.travelerId, "orderIntentId": self.orderIntentId, "journeyDate": self.journeyDate, "productCode": self.productCode, "segmentRefs": list(self.segmentRefs), "limitPolicyVersion": self.limitPolicyVersion, "status": self.status, "recordedAt": rfc3339_utc(self.recordedAt)}
+        data = {"purchaseLimitFactId": self.purchaseLimitFactId, "scopeType": self.scopeType, "scopeRef": self.scopeRef, "travelerId": self.travelerId, "orderIntentId": self.orderIntentId, "journeyDate": self.journeyDate, "productCode": self.productCode, "segmentRefs": list(self.segmentRefs), "limitPolicyVersion": self.limitPolicyVersion, "status": self.status, "recordedAt": rfc3339_utc(self.recordedAt)}
+        if self.journeyOrderId: data["journeyOrderId"] = self.journeyOrderId
+        if self.releaseReason: data["releaseReason"] = self.releaseReason
+        if self.sourceEventId: data["sourceEventId"] = self.sourceEventId
+        return data
