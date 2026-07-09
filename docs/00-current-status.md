@@ -26,10 +26,10 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 
 | Language | Services |
 |---|---|
-| Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, journey-order, payment, post-sales, traveler-profile |
+| Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, journey-order, payment, post-sales, traveler-profile, wallet-promotion |
 | Python (FastAPI) | fare-pricing, legacy-acl, reporting, risk-compliance, trip-planning |
 | Node (TS) | account, customer-service, notification, offer-management |
-| Go | fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
+| Go | dispatch, fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
 | Rust | capacity-availability, entitlement-ticketing, waitlist |
 
 Wave 15 activated **waitlist** (ADR-0002): sold-out demand now queues with
@@ -40,9 +40,14 @@ under persisted idempotency keys — staff reservation/ticketing steps stay
 staff-driven. `deploy/e2e/14-waitlist.sh` covers the full lifecycle and is
 part of the restart certification (latest run: 250/0 across 24 services).
 
-`services/` still contains five future-scope skeletons pending activation per
-ADR-0002: ancillary-service, dispatch, disruption-recovery,
-transfer-management, wallet-promotion.
+Wave 16 activated **wallet-promotion** (benefit instruments with a 7-state
+lifecycle, wallet ledgers, idempotent redemption; combined payment explicitly
+deferred) and **dispatch** (full ride lifecycle behind a simulated supply
+boundary, FAILED timeout closure added to the contract during the gate), plus
+the trip-planning OCC fix. e2e 15/16 cover both; the restart certification now
+spans 26 services and suite 01-16 (latest run: 296/0). `services/` retains
+three future-scope skeletons per ADR-0002: ancillary-service,
+disruption-recovery, transfer-management.
 
 ## Verification baseline
 
@@ -109,9 +114,11 @@ e2e smoke (13-observability.sh, receiver-counter based).
 
 ## Current backlog
 
-Queued: REQ-110 (trip-planning optimistic-concurrency retry under corridor
-contention — live finding from the waitlist gate). Next activations per
-ADR-0002: wallet-promotion + dispatch.
+Nothing queued. Next per ADR-0002: disruption-recovery + ancillary-service,
+then transfer-management. Known small debts: loadgen's ConfigMap is created
+imperatively by deploy/loadgen/run.sh (a stale copy masked new journeys for a
+day — should move under kustomize), and Wallet/Promotion's
+finance/notification consumers remain documented-deferred.
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
 boundary; legacy-acl rebook books the first leg only (caller follows up) — both
