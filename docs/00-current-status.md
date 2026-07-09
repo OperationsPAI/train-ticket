@@ -27,7 +27,7 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 | Language | Services |
 |---|---|
 | Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, journey-order, payment, post-sales, traveler-profile, wallet-promotion |
-| Python (FastAPI) | disruption-recovery, fare-pricing, legacy-acl, reporting, risk-compliance, trip-planning |
+| Python (FastAPI) | disruption-recovery, fare-pricing, legacy-acl, reporting, risk-compliance, transfer-management, trip-planning |
 | Node (TS) | account, ancillary-service, customer-service, notification, offer-management |
 | Go | dispatch, fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
 | Rust | capacity-availability, entitlement-ticketing, waitlist |
@@ -39,6 +39,16 @@ running the normal quote→offer→order→payment chain on the customer's behal
 under persisted idempotency keys — staff reservation/ticketing steps stay
 staff-driven. `deploy/e2e/14-waitlist.sh` covers the full lifecycle and is
 part of the restart certification (latest run: 250/0 across 24 services).
+
+Wave 18 activated **transfer-management**, completing the ADR-0002
+activation arc: all six future-scope domains are live. TransferPlan /
+Connection / ConnectionContract aggregates, system-reported segment status
+driving the nine-state connection machine, and a protected missed-connection
+closed loop through disruption-recovery (SYSTEM `MISSED_CONNECTION` reports,
+`RecoveryCompleted` convergence). Restart certification spans 29 services and
+suite 01-19 (latest run: 436/0, all DLQ zero). Deferred and documented:
+`REACCOMMODATION` execution, TransferRiskPolicy (builtin-v1), place-network
+topology integration, fulfillment segment events replacing status reports.
 
 Wave 17 activated **disruption-recovery** (ops-reported incidents,
 RecoveryCase state machine, REFUND executed through post-sales with event
@@ -53,8 +63,8 @@ lifecycle, wallet ledgers, idempotent redemption; combined payment explicitly
 deferred) and **dispatch** (full ride lifecycle behind a simulated supply
 boundary, FAILED timeout closure added to the contract during the gate), plus
 the trip-planning OCC fix. e2e 15/16 cover both; the restart certification now
-spans 26 services and suite 01-16 (latest run: 296/0). `services/` retains one
-future-scope skeleton per ADR-0002: transfer-management (wave 18).
+spans 26 services and suite 01-16 (latest run: 296/0). All ADR-0002 skeletons are
+now activated; `services/` contains no dormant skeletons.
 
 ## Verification baseline
 
