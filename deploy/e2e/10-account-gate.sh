@@ -15,6 +15,7 @@ create_offer_for_account() {
   req POST traveler-profile /api/v1/travelers "{\"accountId\":\"$account_id\",\"travelerType\":\"ADULT\",\"givenName\":\"Account\",\"familyName\":\"Gate$suffix\"}"
   check_code 201 "register traveler $suffix"
   traveler=$(jget "['travelerId']")
+  verify_traveler "$traveler"
   sleep 3
 
   req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"2026-08-01\",\"travelerRefs\":[\"$traveler\"],\"channel\":\"WEB\"}"

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import os
 import random
 import signal
@@ -403,12 +404,17 @@ class StaffSim:
         return False
 
     async def do_ticketing(self, item: dict) -> None:
+        body = {"segmentBookingId": item["sb"], "journeyOrderId": item["order"],
+                "travelerRef": item["traveler"], "segmentRef": item["seg"], "issuePurpose": "INITIAL"}
+        if self.rng.random() < float(self.cfg.get("p_seat_preferences", 0.03)):
+            body["seatPreferences"] = {"acceptStanding": True, "adjacencyPreference": "NONE",
+                                       "preferenceVersion": "loadgen-v1"}
         _, data = await self.api.request(
-            "POST", "entitlement-ticketing", "/api/v1/entitlements",
-            {"segmentBookingId": item["sb"], "journeyOrderId": item["order"],
-             "travelerRef": item["traveler"], "segmentRef": item["seg"], "issuePurpose": "INITIAL"},
+            "POST", "entitlement-ticketing", "/api/v1/entitlements", body,
             step="staff-ticketing")
         item["entitlement"] = data["entitlementId"]
+        if data.get("seatRef"):
+            item["seatAllocationId"] = data["seatRef"].get("seatAllocationId")
 
     async def do_risk(self, item: dict) -> None:
         """Manual risk review: approve (lift) or reject per hyperparameter."""
@@ -553,6 +559,27 @@ class CustomerSim:
                                ok=(200, 201), step="register-account")
         return await self.reg.add_account(account_id)
 
+
+    async def ensure_identity_verified(self, traveler_id: str) -> dict[str, str]:
+        tail = str(self.rng.randint(0, 5))
+        doc = f"loadgen-{traveler_id}-{tail}"
+        document_hash = hashlib.sha256(doc.encode()).hexdigest() + tail
+        name_hash = hashlib.sha256(("name-" + traveler_id).encode()).hexdigest()
+        valid_until = (datetime.now(timezone.utc) + timedelta(days=365)).replace(microsecond=0)
+        credential_body = {
+            "travelerId": traveler_id, "profileSnapshotVersion": "loadgen-v1", "documentType": "ID_CARD",
+            "maskedDocumentNo": f"LG***********{tail}", "documentHash": document_hash,
+            "canonicalNameHash": name_hash, "validUntil": iso(valid_until),
+        }
+        _, credential = await self.api.request("POST", "identity-verification", "/api/v1/identity-verification/credentials", credential_body, ok=(200, 201), step="identity-credential")
+        material = "|".join([name_hash, "ID_CARD", document_hash, "", iso(valid_until), "", "loadgen-v1"])
+        verify_body = {
+            "travelerId": traveler_id, "credentialRecordId": credential["credentialRecordId"], "purpose": "ORDER_CREATION",
+            "materialFingerprint": hashlib.sha256(material.encode()).hexdigest(), "simPolicyVersion": "sim-tail-v1", "requestedAt": now_iso(),
+        }
+        _, case = await self.api.request("POST", "identity-verification", "/api/v1/identity-verification/verification-cases", verify_body, ok=(200, 201), step="identity-verify")
+        return {"identity_credential": credential["credentialRecordId"], "identity_case": case["verificationCaseId"]}
+
     async def obtain_traveler(self, entry: dict, exclude: tuple = ()) -> str:
         # journey-order rejects duplicate travelerRefs within one order, so
         # multi-traveler journeys exclude already-picked travelers from reuse.
@@ -622,6 +649,16 @@ class CustomerSim:
         travelers = [await self.obtain_traveler(entry)]
         if self.chance("p_second_traveler"):
             travelers.append(await self.obtain_traveler(entry, exclude=tuple(travelers)))
+        identity_refs = {}
+        async with self.reg.lock:
+            verified = entry.setdefault("identity_verified", [])
+        for traveler in travelers:
+            if traveler not in verified:
+                identity_refs.update(await self.ensure_identity_verified(traveler))
+                async with self.reg.lock:
+                    if traveler not in entry.setdefault("identity_verified", []):
+                        entry["identity_verified"].append(traveler)
+                verified = entry.get("identity_verified", [])
         channel = weighted_choice(self.rng, self.b["channels"])
         route = await self.pick_route()
 
@@ -645,7 +682,8 @@ class CustomerSim:
             "POST", "journey-order", "/api/v1/journey-orders",
             {"accountId": entry["account_id"], "offerId": offer["offerId"],
              "offerVersion": offer.get("offerVersion", 1),
-             "travelerRefs": travelers, "segmentRefs": [found["segment"]]}, step="order")
+             "travelerRefs": travelers, "segmentRefs": [found["segment"]],
+             "journeyDate": route["date"], "productCode": "TRAIN"}, step="order")
         order_id = order["orderId"]
 
         # risk gate — a blocked order goes to the staff risk queue
@@ -1062,7 +1100,10 @@ class CustomerSim:
         if order_id and refs.get("entitlement"):
             page = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0", None, None, "tail-list-entitlements")
             self.assert_list_contains(page, "entitlementId", refs["entitlement"], "tail-list-entitlements")
-            await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements/{quote(refs['entitlement'])}", "entitlementId", refs["entitlement"], "tail-get-entitlement")
+            ent = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements/{quote(refs['entitlement'])}", "entitlementId", refs["entitlement"], "tail-get-entitlement")
+            seat_ref = ent.get("seatRef") if isinstance(ent, dict) else None
+            if seat_ref and seat_ref.get("seatAllocationId"):
+                await self.assert_get("seat-assignment", f"/api/v1/seat-allocations/{quote(seat_ref['seatAllocationId'])}", "seatAllocationId", seat_ref["seatAllocationId"], "tail-get-seat-allocation")
         if refs.get("fulfillment_record"):
             await self.assert_get("fulfillment", f"/api/v1/fulfillment-records/{quote(refs['fulfillment_record'])}", "fulfillmentRecordId", refs["fulfillment_record"], "tail-get-fulfillment")
         if refs.get("post_sales_case"):
@@ -1088,6 +1129,10 @@ class CustomerSim:
             await self.assert_get("customer-service", f"/api/v1/support-cases/{quote(refs['support_case'])}", "caseId", refs["support_case"], "tail-get-support-case")
         if refs.get("quote"):
             await self.assert_get("fare-pricing", f"/api/v1/fare-quotes/{quote(refs['quote'])}", "quoteId", refs["quote"], "tail-get-fare-quote")
+        if refs.get("identity_credential"):
+            await self.assert_get("identity-verification", f"/api/v1/identity-verification/credentials/{quote(refs['identity_credential'])}/verification-status", "credentialRecordId", refs["identity_credential"], "tail-get-identity-credential")
+        if refs.get("identity_case"):
+            await self.assert_get("identity-verification", f"/api/v1/identity-verification/verification-cases/{quote(refs['identity_case'])}", "verificationCaseId", refs["identity_case"], "tail-get-identity-case")
         if refs.get("ride_request"):
             await self.assert_get("dispatch", f"/api/v1/ride-requests/{quote(refs['ride_request'])}", "rideRequestId", refs["ride_request"], "tail-get-ride-request")
         if refs.get("ride_rider") and refs.get("ride_request"):

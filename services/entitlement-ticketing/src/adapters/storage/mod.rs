@@ -408,6 +408,7 @@ impl PostgresEntitlementService {
             let policy = action.policy.clone();
             let mut entitlement = snapshot
                 .data
+                .clone()
                 .try_into_domain()
                 .map_err(inbound_from_api_error)?;
             let events = entitlement
@@ -428,11 +429,17 @@ impl PostgresEntitlementService {
             self.save_entitlement(&mut tx, &entitlement, Some(snapshot.version))
                 .await
                 .map_err(inbound_from_api_error)?;
+            let seat_allocation_id = snapshot
+                .data
+                .seat_ref
+                .as_ref()
+                .map(|seat| seat.seat_allocation_id.clone());
             let outbound = entitlement_voided_envelope(
                 &entitlement,
                 &reason,
                 &policy,
                 Some(case_id.to_string()),
+                seat_allocation_id,
                 &envelope.correlation_id,
             )
             .map_err(inbound_from_api_error)?;
@@ -603,26 +610,12 @@ impl PostgresEntitlementService {
         fingerprint: &str,
         correlation_id: &str,
     ) -> PgResult<IssueEntitlementResponse> {
-        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
-        if let Some(response) = self
-            .claim_idempotency::<IssueEntitlementResponse>(&mut tx, key, fingerprint)
-            .await?
-        {
-            tx.commit().await.map_err(to_api_storage)?;
-            return Ok(response);
-        }
-        let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
-        let issued_at = current_rfc3339();
-        let credential_no = self.next_credential_no(&mut tx).await?;
-        let response = IssueEntitlementResponse {
-            entitlement_id: entitlement_id.clone(),
-            segment_booking_id: command.segment_booking_id.clone(),
-            journey_order_id: command.journey_order_id.clone(),
-            credential_no: credential_no.clone(),
-            credential_type: CredentialTypeDto::ETicket,
-            status: EntitlementStatusDto::Issued,
-            issued_at: issued_at.clone(),
+        let seat_key = if command.needs_seat_assignment() {
+            Some(seat_assignment_idempotency_key(command)?)
+        } else {
+            None
         };
+        let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
         let (mut aggregate, _) = Entitlement::request(RequestEntitlement {
             command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
                 .map_err(ApiErrorKind::from)?,
@@ -646,6 +639,39 @@ impl PostgresEntitlementService {
                 .map_err(ApiErrorKind::from)?,
         })
         .map_err(ApiErrorKind::from)?;
+        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
+        if let Some(response) = self
+            .claim_idempotency::<IssueEntitlementResponse>(&mut tx, key, fingerprint)
+            .await?
+        {
+            tx.commit().await.map_err(to_api_storage)?;
+            return Ok(response);
+        }
+        let mut initial_snapshot = EntitlementSnapshot::from_domain(&aggregate);
+        initial_snapshot.seat_assignment_idempotency_key = seat_key.clone();
+        self.entitlement_repo
+            .save(&mut tx, aggregate.id().as_str(), None, &initial_snapshot)
+            .await
+            .map_err(to_api_storage)?;
+        tx.commit().await.map_err(to_api_storage)?;
+
+        let seat_ref =
+            allocate_seat_for_issue(command, seat_key.as_deref().unwrap_or(key), correlation_id)
+                .await?;
+
+        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
+        let issued_at = current_rfc3339();
+        let credential_no = self.next_credential_no(&mut tx).await?;
+        let response = IssueEntitlementResponse {
+            entitlement_id: entitlement_id.clone(),
+            segment_booking_id: command.segment_booking_id.clone(),
+            journey_order_id: command.journey_order_id.clone(),
+            credential_no: credential_no.clone(),
+            credential_type: CredentialTypeDto::ETicket,
+            status: EntitlementStatusDto::Issued,
+            issued_at: issued_at.clone(),
+            seat_ref: seat_ref.clone(),
+        };
         let mut registry = CredentialRegistry::new();
         aggregate
             .issue(
@@ -662,7 +688,13 @@ impl PostgresEntitlementService {
                 &mut registry,
             )
             .map_err(ApiErrorKind::from)?;
-        self.save_entitlement(&mut tx, &aggregate, None).await?;
+        let mut issued_snapshot = EntitlementSnapshot::from_domain(&aggregate);
+        issued_snapshot.seat_ref = seat_ref.clone();
+        issued_snapshot.seat_assignment_idempotency_key = seat_key;
+        self.entitlement_repo
+            .save(&mut tx, aggregate.id().as_str(), Some(1), &issued_snapshot)
+            .await
+            .map_err(to_api_storage)?;
         let outbound = entitlement_issued_envelope(&response, command, correlation_id)?;
         OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
             .await
@@ -699,7 +731,7 @@ impl PostgresEntitlementService {
             .load_entitlement(&mut tx, entitlement_id)
             .await?
             .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".into()))?;
-        let mut aggregate = snapshot.data.try_into_domain()?;
+        let mut aggregate = snapshot.data.clone().try_into_domain()?;
         let business_case_ref = command
             .business_case_ref
             .clone()
@@ -736,6 +768,11 @@ impl PostgresEntitlementService {
             &reason,
             &policy,
             command.business_case_ref.clone(),
+            snapshot
+                .data
+                .seat_ref
+                .as_ref()
+                .map(|seat| seat.seat_allocation_id.clone()),
             correlation_id,
         )?;
         OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
@@ -766,6 +803,10 @@ struct EntitlementSnapshot {
     validity_starts_at: u64,
     validity_ends_at: u64,
     status: StatusSnapshot,
+    #[serde(default)]
+    seat_ref: Option<SeatRefDto>,
+    #[serde(default)]
+    seat_assignment_idempotency_key: Option<String>,
     credential_ref: Option<CredentialRefSnapshot>,
     fulfillment_use_state: FulfillmentUseStateSnapshot,
     audit_trail: Vec<AuditSnapshot>,
@@ -790,6 +831,8 @@ impl EntitlementSnapshot {
             validity_starts_at: entitlement.validity_window.starts_at().as_u64(),
             validity_ends_at: entitlement.validity_window.ends_at().as_u64(),
             status: StatusSnapshot::from_domain(&entitlement.status),
+            seat_ref: None,
+            seat_assignment_idempotency_key: None,
             credential_ref: entitlement
                 .credential_ref
                 .as_ref()
@@ -892,6 +935,7 @@ impl EntitlementSnapshot {
                 .map(|a| unix_millis_to_rfc3339(a.occurred_at))
                 .unwrap_or_else(current_rfc3339),
             voided_at,
+            seat_ref: self.seat_ref.clone(),
         }
     }
 }
@@ -1166,6 +1210,41 @@ fn validate_issue_request(c: &IssueEntitlementRequest) -> PgResult<()> {
     validate_prefixed_uuid(&c.journey_order_id, "journeyOrderId", "ord-")?;
     validate_prefixed_uuid(&c.traveler_ref, "travelerRef", "tvl-")?;
     validate_prefixed_uuid(&c.segment_ref, "segmentRef", "seg-")?;
+    if let Some(prefs) = &c.seat_preferences {
+        if prefs.preference_version.trim().is_empty() {
+            return Err(ApiErrorKind::ValidationFailed(
+                "seatPreferences.preferenceVersion must not be blank".into(),
+            ));
+        }
+        for seat_unit in prefs.avoid_seat_unit_refs.iter().flatten() {
+            if seat_unit.trim().is_empty() {
+                return Err(ApiErrorKind::ValidationFailed(
+                    "seatPreferences.avoidSeatUnitRefs must not contain blank values".into(),
+                ));
+            }
+        }
+    }
+    if c.needs_seat_assignment() {
+        for (name, present) in [
+            ("scheduledServiceRef", c.scheduled_service_ref.as_ref()),
+            ("serviceDate", c.service_date.as_ref()),
+            ("capacityHoldId", c.capacity_hold_id.as_ref()),
+            ("capacityUnitRef", c.capacity_unit_ref.as_ref()),
+            ("classRef", c.class_ref.as_ref()),
+            ("expiresAt", c.expires_at.as_ref()),
+        ] {
+            if present.is_none_or(|value| value.trim().is_empty()) {
+                return Err(ApiErrorKind::PreconditionFailed(format!(
+                    "{name} is required from accepted upstream facts for seat assignment"
+                )));
+            }
+        }
+        if c.interval.is_none() {
+            return Err(ApiErrorKind::PreconditionFailed(
+                "interval is required from accepted upstream facts for seat assignment".into(),
+            ));
+        }
+    }
     Ok(())
 }
 fn to_api_storage(error: impl std::fmt::Display) -> ApiErrorKind {
@@ -1245,6 +1324,11 @@ fn entitlement_issued_envelope(
             credential_no: response.credential_no.clone(),
             credential_type: response.credential_type.to_contract(),
             issued_at: response.issued_at.clone(),
+            seat_ref: response.seat_ref.clone(),
+            seat_allocation_id: response
+                .seat_ref
+                .as_ref()
+                .map(|s| s.seat_allocation_id.clone()),
         })
         .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?,
     )
@@ -1255,6 +1339,7 @@ fn entitlement_voided_envelope(
     reason: &VoidReason,
     policy: &VoidPolicy,
     business_case_ref: Option<String>,
+    seat_allocation_id: Option<String>,
     correlation_id: &str,
 ) -> PgResult<application::EventEnvelope> {
     let voided_at = current_rfc3339();
@@ -1276,6 +1361,7 @@ fn entitlement_voided_envelope(
             reason: reason_to_contract(reason),
             policy: policy_to_contract(policy),
             business_case_ref,
+            seat_allocation_id,
         })
         .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?,
     )
@@ -1337,6 +1423,14 @@ mod tests {
             traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0aa13".to_string(),
             segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0aa14".to_string(),
             issue_purpose: IssuePurposeDto::Initial,
+            seat_preferences: None,
+            scheduled_service_ref: None,
+            service_date: None,
+            capacity_hold_id: None,
+            capacity_unit_ref: None,
+            interval: None,
+            class_ref: None,
+            expires_at: None,
         }
     }
 

@@ -31,6 +31,7 @@ create_traveler() {
   check_code 201 "create traveler $suffix"
   CREATED_TRAVELER=$(jget "['travelerId']")
   sleep 3
+  verify_traveler "$CREATED_TRAVELER"
 }
 
 seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
