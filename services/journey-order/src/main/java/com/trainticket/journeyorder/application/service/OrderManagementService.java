@@ -135,6 +135,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
         try {
             stateRepository.saveOrder(order, idempotencyKey);
+            stateRepository.saveIdentityPreOrderCheckId(order.orderId(), identityResult.preOrderCheckId());
             JourneyOrderResult result = toResult(order);
             stateRepository.saveCreateIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
             publishEvents(order.domainEvents());
@@ -179,6 +180,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
 
         JourneyOrder order = stored.order;
+        boolean shouldReleaseIdentity = shouldReleaseIdentityReservation(order);
 
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
@@ -190,6 +192,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         stateRepository.saveOrder(order, stored.idempotencyKey());
         stateRepository.saveCancelIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
         publishEvents(newEvents);
+        if (shouldReleaseIdentity) {
+            releaseIdentityPreOrderCheck(order.orderId(), "ORDER_CANCELLED", idempotencyKey, correlationId);
+        }
         return result;
     }
 
@@ -431,6 +436,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("payment-captured", envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+            confirmIdentityPreOrderCheck(order.orderId(), envelope.eventId(), envelope.correlationId());
         }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
@@ -482,6 +488,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("entitlement-issued", envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
+            confirmIdentityPreOrderCheck(order.orderId(), envelope.eventId(), envelope.correlationId());
         }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
@@ -492,6 +499,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         requirePayloadFields(envelope, "paymentIntentId");
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
+        boolean shouldReleaseIdentity = shouldReleaseIdentityReservation(order);
         if (order.state() != com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
             return ackSkipStateRace(envelope, order);
         }
@@ -505,6 +513,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         );
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        if (shouldReleaseIdentity) {
+            releaseIdentityPreOrderCheck(order.orderId(), "PAYMENT_EXPIRED", envelope.eventId(), envelope.correlationId());
+        }
         return new EventSubscriber.Success();
     }
 
@@ -547,6 +558,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("risk-assessment-allowed", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+            confirmIdentityPreOrderCheck(order.orderId(), envelope.eventId(), envelope.correlationId());
         }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
@@ -557,6 +569,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         requirePayloadFields(envelope, "blockId", "subjectRef", "scope", "reasonCode", "policyVersion", "evidenceRef", "blockedAt");
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
+        boolean shouldReleaseIdentity = shouldReleaseIdentityReservation(order);
         int eventCount = order.domainEvents().size();
         try {
             order.cancel(requiredTextPayload(envelope, "reasonCode"), envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
@@ -565,6 +578,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        if (shouldReleaseIdentity) {
+            releaseIdentityPreOrderCheck(order.orderId(), requiredTextPayload(envelope, "reasonCode"), envelope.eventId(), envelope.correlationId());
+        }
         return new EventSubscriber.Success();
     }
 
@@ -584,10 +600,39 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
             && order.confirmationConditions().canConfirm()) {
             order.confirm("risk-block-lifted", envelope.occurredAt(), "cmd-consume-risk", envelope.eventId(), envelope.correlationId());
+            confirmIdentityPreOrderCheck(order.orderId(), envelope.eventId(), envelope.correlationId());
         }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         return new EventSubscriber.Success();
+    }
+
+
+    private void confirmIdentityPreOrderCheck(String orderId, String causationId, String correlationId) {
+        stateRepository.findIdentityPreOrderCheckId(orderId)
+            .ifPresent(preOrderCheckId -> identityVerification.confirmPreOrderCheck(
+                preOrderCheckId,
+                orderId,
+                uuidFromMaterial("journey-order:identity-confirm:" + orderId + ":" + causationId),
+                correlationId
+            ));
+    }
+
+    private void releaseIdentityPreOrderCheck(String orderId, String releaseReason, String causationId, String correlationId) {
+        stateRepository.findIdentityPreOrderCheckId(orderId)
+            .ifPresent(preOrderCheckId -> identityVerification.releasePreOrderCheck(
+                preOrderCheckId,
+                releaseReason,
+                uuidFromMaterial("journey-order:identity-release:" + orderId + ":" + causationId),
+                correlationId
+            ));
+    }
+
+    private static boolean shouldReleaseIdentityReservation(JourneyOrder order) {
+        return switch (order.state()) {
+            case PENDING_CONFIRMATION, PENDING_PAYMENT, CONFIRMING -> true;
+            default -> false;
+        };
     }
 
     private StoredOrder storedOrderFromPayload(EventEnvelope envelope) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import re
@@ -304,6 +305,7 @@ class IdentityVerificationService:
                 if credential.status is not CredentialStatus.VERIFIED:
                     raise PreconditionFailed("credential is not verified")
             cert = EligibilityCertificate.register(certificate_id=prefixed_uuid7("elc"), traveler_id=str(data["travelerId"]), credential_id=str(credential_id) if credential_id else None, cluster_id=data.get("identityClusterId"), eligibility_type=str(data["eligibilityType"]), valid_from=_parse_dt(str(data["validFrom"])) or at, valid_until=_parse_dt(str(data["validUntil"])) or at, policy_year=str(data["policyYear"]), policy_version=str(data["policyVersion"]), annual_usage_limit=int(data["annualUsageLimit"]), product_codes=tuple(str(x) for x in data["applicableProductCodes"]), certificate_hash=str(data["certificateHash"]), evidence_hash=str(data["evidenceHash"]), at=at)
+            cert = replace(cert, version=2)
             self.store.save_certificate(cert)
             base = cert.to_json(include_evidence=True)
             payload = {k: v for k, v in base.items() if k not in {"status", "createdAt", "updatedAt"}}
@@ -346,7 +348,7 @@ class IdentityVerificationService:
                         result = PreOrderResult.REJECT
                 existing = self.store.find_fact_duplicate("CREDENTIAL", credential.credentialRecordId, str(data["journeyDate"]), str(data["productCode"]), str(data["orderIntentId"]))
                 if existing is None:
-                    candidate_facts.append(PurchaseLimitFact(prefixed_uuid7("plf"), "CREDENTIAL", credential.credentialRecordId, traveler_id, str(data["orderIntentId"]), str(data["journeyDate"]), str(data["productCode"]), tuple(str(x) for x in data["segmentRefs"]), str(data["limitPolicyVersion"]), "RECORDED", at))
+                    candidate_facts.append(PurchaseLimitFact(prefixed_uuid7("plf"), "CREDENTIAL", credential.credentialRecordId, traveler_id, str(data["orderIntentId"]), str(data["journeyDate"]), str(data["productCode"]), tuple(str(x) for x in data["segmentRefs"]), str(data["limitPolicyVersion"]), "RECORDED", at, 1))
                 else:
                     facts.append({"purchaseLimitFactId": existing.purchaseLimitFactId, "scopeType": existing.scopeType, "scopeRef": existing.scopeRef, "status": existing.status, "limitPolicyVersion": existing.limitPolicyVersion})
                 checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "PURCHASE_LIMIT_RECORDED", "status": "PASS", "policyVersion": str(data["limitPolicyVersion"])})
@@ -357,7 +359,7 @@ class IdentityVerificationService:
             if result is PreOrderResult.PASS:
                 for certificate in candidate_certificates:
                     reservation_id = _prefixed_fold("eur", f"{certificate.eligibilityCertificateId}:{certificate.policyYear}:{data['orderIntentId']}")
-                    reserved = certificate.reserve(at); version = certificate.version + 2
+                    reserved = certificate.reserve(at); version = reserved.version
                     self.store.save_certificate(reserved)
                     record["usageReservations"].append({"usageReservationId": reservation_id, "eligibilityCertificateId": reserved.eligibilityCertificateId, "status": "RESERVED"})
                     envelopes.append(self._eligibility_reserved_event(reserved, reservation_id, str(data["orderIntentId"]), version, corr, cause, at))
@@ -379,7 +381,7 @@ class IdentityVerificationService:
             for reservation in record.get("usageReservations", []):
                 if reservation.get("status") != "RESERVED": continue
                 certificate = self.store.get_certificate(str(reservation["eligibilityCertificateId"]))
-                confirmed = certificate.confirm(at); version = certificate.version + 2
+                confirmed = certificate.confirm(at); version = confirmed.version
                 self.store.save_certificate(confirmed); reservation["status"] = "CONFIRMED"
                 envelopes.append(self._eligibility_confirmed_event(confirmed, str(reservation["usageReservationId"]), journey_order_id, version, corr, cause, at))
             for fact_id in record.get("purchaseLimitFactIds", []):
@@ -400,7 +402,7 @@ class IdentityVerificationService:
             for reservation in record.get("usageReservations", []):
                 if reservation.get("status") != "RESERVED": continue
                 certificate = self.store.get_certificate(str(reservation["eligibilityCertificateId"]))
-                released = certificate.release(at); version = certificate.version + 2
+                released = certificate.release(at); version = released.version
                 self.store.save_certificate(released); reservation["status"] = "RELEASED"
                 envelopes.append(self._eligibility_released_event(released, str(reservation["usageReservationId"]), body["orderIntentId"], release_reason, version, corr, cause, at))
             for fact_id in record.get("purchaseLimitFactIds", []):
@@ -422,16 +424,16 @@ class IdentityVerificationService:
         return _envelope("EligibilityUsageReleased", certificate.eligibilityCertificateId, version, {"usageReservationId": reservation_id, "eligibilityCertificateId": certificate.eligibilityCertificateId, "travelerId": certificate.travelerId, "orderIntentId": order_intent_id, "releaseReason": reason, "annualUsageReserved": certificate.annualUsageReserved, "annualUsageConfirmed": certificate.annualUsageConfirmed, "releasedAt": rfc3339_utc(at), "aggregateVersion": version}, corr, cause, at)
 
     def _fact_recorded_event(self, fact: PurchaseLimitFact, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
-        payload = {k: v for k, v in fact.to_json().items() if k != "status"}; payload.update({"factStatus": "RECORDED", "recordedAt": rfc3339_utc(at), "aggregateVersion": 1})
-        return _envelope("PurchaseLimitFactRecorded", LEDGER_AGGREGATE_ID, 1, payload, corr, cause, at, fact.purchaseLimitFactId)
+        payload = {k: v for k, v in fact.to_json().items() if k != "status"}; payload.update({"factStatus": "RECORDED", "recordedAt": rfc3339_utc(at), "aggregateVersion": fact.version})
+        return _envelope("PurchaseLimitFactRecorded", LEDGER_AGGREGATE_ID, fact.version, payload, corr, cause, at, fact.purchaseLimitFactId)
 
     def _fact_confirmed_event(self, fact: PurchaseLimitFact, journey_order_id: str, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
-        return _envelope("PurchaseLimitFactConfirmed", LEDGER_AGGREGATE_ID, fact.version + 1, {"purchaseLimitFactId": fact.purchaseLimitFactId, "journeyOrderId": journey_order_id, "orderIntentId": fact.orderIntentId, "factStatus": "CONFIRMED", "limitPolicyVersion": fact.limitPolicyVersion, "confirmedAt": rfc3339_utc(at), "aggregateVersion": fact.version + 1}, corr, cause, at, fact.purchaseLimitFactId)
+        return _envelope("PurchaseLimitFactConfirmed", LEDGER_AGGREGATE_ID, fact.version, {"purchaseLimitFactId": fact.purchaseLimitFactId, "journeyOrderId": journey_order_id, "orderIntentId": fact.orderIntentId, "factStatus": "CONFIRMED", "limitPolicyVersion": fact.limitPolicyVersion, "confirmedAt": rfc3339_utc(at), "aggregateVersion": fact.version}, corr, cause, at, fact.purchaseLimitFactId)
 
     def _fact_released_event(self, fact: PurchaseLimitFact, reason: str, source_event_id: str | None, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
-        payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "orderIntentId": fact.orderIntentId, "releaseReason": reason, "factStatus": "RELEASED", "limitPolicyVersion": fact.limitPolicyVersion, "releasedAt": rfc3339_utc(at), "aggregateVersion": fact.version + 1}
+        payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "orderIntentId": fact.orderIntentId, "releaseReason": reason, "factStatus": "RELEASED", "limitPolicyVersion": fact.limitPolicyVersion, "releasedAt": rfc3339_utc(at), "aggregateVersion": fact.version}
         if source_event_id: payload["sourceEventId"] = source_event_id
-        return _envelope("PurchaseLimitFactReleased", LEDGER_AGGREGATE_ID, fact.version + 1, payload, corr, cause, at, fact.purchaseLimitFactId)
+        return _envelope("PurchaseLimitFactReleased", LEDGER_AGGREGATE_ID, fact.version, payload, corr, cause, at, fact.purchaseLimitFactId)
 
     def handle_traveler_snapshot_updated(self, envelope: EventEnvelope, stream: str) -> None:
         with self.transaction():

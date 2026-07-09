@@ -17,3 +17,16 @@ def test_invalid_certificate_window_rejected():
     now = datetime(2026, 1, 1, tzinfo=UTC)
     with pytest.raises(DomainError):
         EligibilityCertificate.register(certificate_id="elc-1", traveler_id="tvl-1", credential_id="crd-1", cluster_id=None, eligibility_type="STUDENT", valid_from=now, valid_until=now, policy_year="2026", policy_version="v1", annual_usage_limit=4, product_codes=("TRAIN",), certificate_hash="h", evidence_hash="e", at=now)
+
+
+def test_certificate_and_fact_versions_advance_monotonically():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    cert = EligibilityCertificate.register(certificate_id="elc-2", traveler_id="tvl-1", credential_id="crd-1", cluster_id=None, eligibility_type="STUDENT", valid_from=now, valid_until=now + timedelta(days=10), policy_year="2026", policy_version="v1", annual_usage_limit=2, product_codes=("TRAIN",), certificate_hash="h2", evidence_hash="e2", at=now)
+    cert = cert.reserve(now)
+    assert cert.version == 1
+    cert = cert.confirm(now)
+    assert cert.version == 2
+    cert = cert.reserve(now)
+    assert cert.version == 3
+    cert = cert.release(now)
+    assert cert.version == 4

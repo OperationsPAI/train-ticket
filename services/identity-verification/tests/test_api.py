@@ -80,6 +80,20 @@ def test_preorder_reserve_confirm_release_and_stable_id():
     assert {event.eventType for event in store.take_outbox()} >= {"EligibilityUsageReleased", "PurchaseLimitFactReleased"}
 
 
+def test_certificate_query_excludes_exhausted_certificates():
+    store = InMemoryStore(); client = TestClient(create_app(store=store))
+    cred = register(client, idem=40).json(); verify(client, cred, 41)
+    cert = client.post("/api/v1/identity-verification/eligibility-certificates", json={"travelerId": "tvl-1", "credentialRecordId": cred["credentialRecordId"], "eligibilityType": "STUDENT", "validFrom": "2026-01-01T00:00:00Z", "validUntil": "2026-12-31T00:00:00Z", "policyYear": "2026", "policyVersion": "student-v1", "annualUsageLimit": 1, "applicableProductCodes": ["TRAIN"], "certificateHash": "cert-hash-exhausted", "evidenceHash": "evidence-hash"}, headers={"Idempotency-Key": key(42)}).json()
+    body = {"orderIntentId": "oint-exhaust", "accountId": "acct-1", "offerId": "off-1", "offerVersion": 1, "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"], "journeyDate": "2026-02-01", "productCode": "TRAIN", "requestedEligibilityTypes": ["STUDENT"], "limitPolicyVersion": "limit-v1", "requestedAt": "2026-01-01T00:00:00Z"}
+    first = client.post("/api/v1/identity-verification/pre-order-checks", json=body, headers={"Idempotency-Key": key(43)}).json()
+    assert store.certificates[cert["eligibilityCertificateId"]].annualUsageReserved == 1
+    query_reserved = client.get("/api/v1/identity-verification/eligibility-certificates?travelerId=tvl-1&eligibilityType=STUDENT&journeyDate=2026-02-01&productCode=TRAIN")
+    assert query_reserved.json()["total"] == 0
+    client.post(f"/api/v1/identity-verification/pre-order-checks/{first['preOrderCheckId']}/confirm", json={"journeyOrderId": "ord-exhaust"}, headers={"Idempotency-Key": key(44)})
+    query_confirmed = client.get("/api/v1/identity-verification/eligibility-certificates?travelerId=tvl-1&eligibilityType=STUDENT&journeyDate=2026-02-01&productCode=TRAIN")
+    assert query_confirmed.json()["total"] == 0
+
+
 class StoreWithoutCasesAttribute(InMemoryStore):
     @property
     def cases(self):

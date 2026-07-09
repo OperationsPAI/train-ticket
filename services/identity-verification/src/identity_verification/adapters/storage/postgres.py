@@ -47,16 +47,16 @@ def case_from_json(data: Mapping[str, Any] | str, version: int = 0) -> Verificat
 
 
 def certificate_to_json(c: EligibilityCertificate) -> dict[str, Any]:
-    return {"eligibilityCertificateId": c.eligibilityCertificateId, "travelerId": c.travelerId, "credentialRecordId": c.credentialRecordId, "identityClusterId": c.identityClusterId, "eligibilityType": c.eligibilityType, "status": c.status.value, "validFrom": _dt(c.validFrom), "validUntil": _dt(c.validUntil), "policyYear": c.policyYear, "policyVersion": c.policyVersion, "annualUsageLimit": c.annualUsageLimit, "annualUsageReserved": c.annualUsageReserved, "annualUsageConfirmed": c.annualUsageConfirmed, "applicableProductCodes": list(c.applicableProductCodes), "certificateHash": c.certificateHash, "evidenceHash": c.evidenceHash, "reasonCode": c.reasonCode, "createdAt": _dt(c.createdAt), "updatedAt": _dt(c.updatedAt)}
+    return {"eligibilityCertificateId": c.eligibilityCertificateId, "travelerId": c.travelerId, "credentialRecordId": c.credentialRecordId, "identityClusterId": c.identityClusterId, "eligibilityType": c.eligibilityType, "status": c.status.value, "validFrom": _dt(c.validFrom), "validUntil": _dt(c.validUntil), "policyYear": c.policyYear, "policyVersion": c.policyVersion, "annualUsageLimit": c.annualUsageLimit, "annualUsageReserved": c.annualUsageReserved, "annualUsageConfirmed": c.annualUsageConfirmed, "applicableProductCodes": list(c.applicableProductCodes), "certificateHash": c.certificateHash, "evidenceHash": c.evidenceHash, "reasonCode": c.reasonCode, "createdAt": _dt(c.createdAt), "updatedAt": _dt(c.updatedAt), "aggregateVersion": c.version}
 
 
 def certificate_from_json(data: Mapping[str, Any] | str, version: int = 0) -> EligibilityCertificate:
     d = _json(data)
-    return EligibilityCertificate(str(d["eligibilityCertificateId"]), str(d["travelerId"]), d.get("credentialRecordId"), d.get("identityClusterId"), str(d["eligibilityType"]), CertificateStatus(str(d["status"])), _parse_dt(str(d["validFrom"])) or datetime.now(UTC), _parse_dt(str(d["validUntil"])) or datetime.now(UTC), str(d["policyYear"]), str(d["policyVersion"]), int(d["annualUsageLimit"]), int(d.get("annualUsageReserved", 0)), int(d.get("annualUsageConfirmed", 0)), tuple(str(x) for x in d.get("applicableProductCodes", ())), str(d["certificateHash"]), str(d["evidenceHash"]), d.get("reasonCode"), _parse_dt(str(d["createdAt"])) or datetime.now(UTC), _parse_dt(str(d["updatedAt"])) or datetime.now(UTC), version)
+    return EligibilityCertificate(str(d["eligibilityCertificateId"]), str(d["travelerId"]), d.get("credentialRecordId"), d.get("identityClusterId"), str(d["eligibilityType"]), CertificateStatus(str(d["status"])), _parse_dt(str(d["validFrom"])) or datetime.now(UTC), _parse_dt(str(d["validUntil"])) or datetime.now(UTC), str(d["policyYear"]), str(d["policyVersion"]), int(d["annualUsageLimit"]), int(d.get("annualUsageReserved", 0)), int(d.get("annualUsageConfirmed", 0)), tuple(str(x) for x in d.get("applicableProductCodes", ())), str(d["certificateHash"]), str(d["evidenceHash"]), d.get("reasonCode"), _parse_dt(str(d["createdAt"])) or datetime.now(UTC), _parse_dt(str(d["updatedAt"])) or datetime.now(UTC), int(d.get("aggregateVersion", version)))
 
 
 def fact_to_json(f: PurchaseLimitFact) -> dict[str, Any]:
-    data = {"purchaseLimitFactId": f.purchaseLimitFactId, "scopeType": f.scopeType, "scopeRef": f.scopeRef, "travelerId": f.travelerId, "orderIntentId": f.orderIntentId, "journeyDate": f.journeyDate, "productCode": f.productCode, "segmentRefs": list(f.segmentRefs), "limitPolicyVersion": f.limitPolicyVersion, "status": f.status, "recordedAt": _dt(f.recordedAt)}
+    data = {"purchaseLimitFactId": f.purchaseLimitFactId, "scopeType": f.scopeType, "scopeRef": f.scopeRef, "travelerId": f.travelerId, "orderIntentId": f.orderIntentId, "journeyDate": f.journeyDate, "productCode": f.productCode, "segmentRefs": list(f.segmentRefs), "limitPolicyVersion": f.limitPolicyVersion, "status": f.status, "recordedAt": _dt(f.recordedAt), "aggregateVersion": f.version}
     if f.journeyOrderId: data["journeyOrderId"] = f.journeyOrderId
     if f.releaseReason: data["releaseReason"] = f.releaseReason
     if f.sourceEventId: data["sourceEventId"] = f.sourceEventId
@@ -65,7 +65,7 @@ def fact_to_json(f: PurchaseLimitFact) -> dict[str, Any]:
 
 def fact_from_json(data: Mapping[str, Any] | str, version: int = 0) -> PurchaseLimitFact:
     d = _json(data)
-    return PurchaseLimitFact(str(d["purchaseLimitFactId"]), str(d["scopeType"]), str(d["scopeRef"]), str(d["travelerId"]), str(d["orderIntentId"]), str(d["journeyDate"]), str(d["productCode"]), tuple(str(x) for x in d.get("segmentRefs", ())), str(d["limitPolicyVersion"]), str(d["status"]), _parse_dt(str(d["recordedAt"])) or datetime.now(UTC), version, d.get("journeyOrderId"), d.get("releaseReason"), d.get("sourceEventId"))
+    return PurchaseLimitFact(str(d["purchaseLimitFactId"]), str(d["scopeType"]), str(d["scopeRef"]), str(d["travelerId"]), str(d["orderIntentId"]), str(d["journeyDate"]), str(d["productCode"]), tuple(str(x) for x in d.get("segmentRefs", ())), str(d["limitPolicyVersion"]), str(d["status"]), _parse_dt(str(d["recordedAt"])) or datetime.now(UTC), int(d.get("aggregateVersion", version)), d.get("journeyOrderId"), d.get("releaseReason"), d.get("sourceEventId"))
 
 
 @dataclass
@@ -192,8 +192,8 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             where = "data->>'travelerId'=%s AND data->>'status'='ACTIVE' AND substring(data->>'validFrom' from 1 for 10) <= %s AND substring(data->>'validUntil' from 1 for 10) >= %s"
             if eligibility_type: where += " AND data->>'eligibilityType'=%s"; params.append(eligibility_type)
             if product_code: where += " AND (data->'applicableProductCodes') ? %s"; params.append(product_code)
-            total = int(conn.execute(f"SELECT count(*) FROM eligibility_certificate_snapshots WHERE {where}", tuple(params)).fetchone()[0])
-            rows = conn.execute(f"SELECT id, version, data FROM eligibility_certificate_snapshots WHERE {where} ORDER BY data->>'createdAt' LIMIT %s OFFSET %s", tuple(params + [limit, offset])).fetchall()
+            total = int(conn.execute(f"SELECT count(*) FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric", tuple(params)).fetchone()[0])
+            rows = conn.execute(f"SELECT id, version, data FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric ORDER BY data->>'createdAt' LIMIT %s OFFSET %s", tuple(params + [limit, offset])).fetchall()
             return tuple(certificate_from_json(row[2], int(row[1])) for row in rows), total
         return self._with_conn(read)
 

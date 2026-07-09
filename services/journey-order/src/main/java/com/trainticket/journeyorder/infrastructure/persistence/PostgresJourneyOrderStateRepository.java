@@ -162,6 +162,24 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public Optional<String> findIdentityPreOrderCheckId(String orderId) {
+        return jdbc.query(
+            "SELECT pre_order_check_id FROM journey_order_identity_checks WHERE order_id = ?",
+            rs -> rs.next() ? Optional.of(rs.getString("pre_order_check_id")) : Optional.empty(),
+            orderId
+        );
+    }
+
+    @Override
+    public void saveIdentityPreOrderCheckId(String orderId, String preOrderCheckId) {
+        jdbc.update(
+            "INSERT INTO journey_order_identity_checks(order_id, pre_order_check_id) VALUES (?, ?) ON CONFLICT (order_id) DO UPDATE SET pre_order_check_id = EXCLUDED.pre_order_check_id",
+            orderId,
+            preOrderCheckId
+        );
+    }
+
+    @Override
     public boolean recordProcessedEvent(String eventId, String stream) {
         return events.recordIfNew(eventId, stream);
     }
