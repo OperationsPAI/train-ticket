@@ -214,6 +214,7 @@ class Registry:
     waitlists: list[WaitlistRef] = field(default_factory=list)
     routes: list[dict] = field(default_factory=list)
     ops_entities: dict[str, list[str]] = field(default_factory=lambda: {"suppliers": [], "carriers": [], "contracts": []})
+    invoice_titles: dict[str, str] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # staff work queues (runtime only, never persisted)
     q_reservation: deque = field(default_factory=deque, repr=False)
@@ -237,6 +238,7 @@ class Registry:
                     reg.waitlists.append(WaitlistRef(**w))
                 reg.routes = raw.get("routes", [])
                 reg.ops_entities = raw.get("ops_entities", reg.ops_entities)
+                reg.invoice_titles = raw.get("invoice_titles", {})
             except Exception as exc:
                 print(f"[registry] ignoring unreadable state file: {exc}")
         return reg
@@ -250,7 +252,8 @@ class Registry:
                        "purchases": [vars(p) for p in self.purchases],
                        "waitlists": [vars(w) for w in self.waitlists],
                        "routes": self.routes,
-                       "ops_entities": self.ops_entities}, fh)
+                       "ops_entities": self.ops_entities,
+                       "invoice_titles": self.invoice_titles}, fh)
         os.replace(tmp, path)
 
     async def pick_account(self, rng: random.Random) -> dict | None:
@@ -296,6 +299,21 @@ class Registry:
             bucket.append(entity_id)
             if len(bucket) > 200:
                 bucket.pop(0)
+
+    async def ensure_invoice_title(self, account_id: str, api: "Api") -> str:
+        async with self.lock:
+            cached = self.invoice_titles.get(account_id)
+        if cached:
+            code, data = await api.request("GET", "invoicing", f"/api/v1/invoice-titles/{quote(cached)}", ok=(), step="invoice-title-get")
+            if code == 200 and data.get("status") == "ACTIVE":
+                return cached
+        _, title = await api.request("POST", "invoicing", "/api/v1/invoice-titles",
+                                    {"accountId": account_id, "titleType": "PERSONAL", "titleName": "个人", "setAsDefault": True},
+                                    ok=(201,), step="invoice-title-create")
+        title_id = title["titleId"]
+        async with self.lock:
+            self.invoice_titles[account_id] = title_id
+        return title_id
 
 
 async def wait_for(item: dict, key: str, timeout: float, poll: float = 1.0) -> Any:
@@ -749,21 +767,48 @@ class CustomerSim:
         final = await self.poll_order(order_id, {"CONFIRMED"})
         if final != "CONFIRMED":
             raise StepFailed("confirm", f"order {order_id} ended {final}")
-        await self.reg.add_purchase(Purchase(
+        purchase = Purchase(
             order=order_id, saga=resv.get("saga", ""), sb=sb, seg=found["segment"],
             traveler=travelers[0], account=entry["account_id"],
             entitlement=ent, total_minor=total_minor, offer=offer.get("offerId", ""),
             payment_intent=intent.get("paymentIntentId", ""), itinerary=found.get("itinerary", ""),
-            quote=quote.get("quoteId", "")))
+            quote=quote.get("quoteId", ""))
+        await self.reg.add_purchase(purchase)
+        invoice_refs = await self.maybe_request_invoice(purchase)
         wallet_refs = await self.maybe_wallet_purchase_benefit(entry["account_id"])
         await self.maybe_read_probe({
             "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
             "payment_intent": intent.get("paymentIntentId"), "entitlement": ent,
             "itinerary": found.get("itinerary"), "quote": quote.get("quoteId"),
             "service": found.get("service"), "place": route.get("origin_place"),
-            "node": found.get("origin_node"), **wallet_refs,
+            "node": found.get("origin_node"), **invoice_refs, **wallet_refs,
         })
         return "purchased"
+
+
+    async def maybe_request_invoice(self, p: Purchase) -> dict[str, str]:
+        if not self.optional_chance("p_invoice_after_purchase", 0.02):
+            return {}
+        title_id = await self.reg.ensure_invoice_title(p.account, self.api)
+        basis = {
+            "basisType": "REVENUE_RECOGNITION",
+            "revenueRecognitionIds": [f"rr-loadgen-{p.order[-8:]}"],
+            "taxLines": [{"taxCode": "VAT_SIM", "taxRateBasisPoints": 0,
+                           "taxableAmount": {"currency": "CNY", "minorUnits": p.total_minor},
+                           "taxAmount": {"currency": "CNY", "minorUnits": 0}}],
+            "totalAmount": {"currency": "CNY", "minorUnits": p.total_minor},
+        }
+        basis["amountBasisHash"] = "sha256:" + hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+        code, req = await self.api.request("POST", "invoicing", "/api/v1/e-invoice-requests",
+            {"accountId": p.account, "orderId": p.order, "titleId": title_id, "titleVersion": 1,
+             "invoiceScope": {"scopeType": "ORDER"}, "amountBasis": basis,
+             "recipientEmail": "loadgen@example.com", "simSeedRef": "loadgen-accept"},
+            ok=(201, 409, 412, 422), step="invoice-request")
+        if code == 201:
+            self.stats.journeys[f"invoicing:{str(req.get('status','unknown')).lower()}"] += 1
+            return {"invoice_title": title_id, "invoice_request": req.get("invoiceRequestId"), "invoice": req.get("eInvoiceId")}
+        self.stats.journeys[f"invoicing:skipped:{code}"] += 1
+        return {"invoice_title": title_id}
 
     async def handle_no_capacity_waitlist(self, account: str, traveler: str, segment: str, payment_intent: str,
                                           refs: dict[str, str | None]) -> str:
@@ -1102,6 +1147,15 @@ class CustomerSim:
             await self.assert_get("payment", f"/api/v1/payment-intents/{quote(refs['payment_intent'])}", "paymentIntentId", refs["payment_intent"], "tail-get-payment-intent")
         if self.long_tail_chance("p_payment_channel_read_probe", 0.10):
             await self.assert_get("payment-channel", "/api/v1/channel-statements?channel=ALIPAY_SIM&limit=5&offset=0", None, None, "tail-list-channel-statements")
+        if refs.get("invoice_title"):
+            await self.assert_get("invoicing", f"/api/v1/invoice-titles/{quote(refs['invoice_title'])}", "titleId", refs["invoice_title"], "tail-get-invoice-title")
+        if refs.get("invoice_request"):
+            await self.assert_get("invoicing", f"/api/v1/e-invoice-requests/{quote(refs['invoice_request'])}", "invoiceRequestId", refs["invoice_request"], "tail-get-invoice-request")
+        if refs.get("invoice"):
+            await self.assert_get("invoicing", f"/api/v1/e-invoices/{quote(refs['invoice'])}", "eInvoiceId", refs["invoice"], "tail-get-e-invoice")
+        if refs.get("order") and refs.get("invoice"):
+            page = await self.assert_get("invoicing", f"/api/v1/e-invoices?orderId={quote(refs['order'])}&limit=20&offset=0", None, None, "tail-list-e-invoices")
+            self.assert_list_contains(page, "eInvoiceId", refs["invoice"], "tail-list-e-invoices")
         if order_id and refs.get("entitlement"):
             page = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0", None, None, "tail-list-entitlements")
             self.assert_list_contains(page, "entitlementId", refs["entitlement"], "tail-list-entitlements")
