@@ -295,6 +295,9 @@ func (s *Service) GetStatement(ctx context.Context, id string) (*domain.ChannelS
 	return st, nil
 }
 func (s *Service) ListStatements(ctx context.Context, f StatementFilter) ([]domain.ChannelStatement, int, error) {
+	if f.Channel == "" && f.StatementDate == "" {
+		return nil, 0, derr("VALIDATION_FAILED", "channel or statementDate is required")
+	}
 	return s.repo.ListStatements(ctx, normalizeStatementFilter(f))
 }
 

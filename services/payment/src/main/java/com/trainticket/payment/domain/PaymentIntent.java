@@ -20,6 +20,7 @@ public final class PaymentIntent {
     private final String idempotencyKey;
     private final Set<String> channelTransactionRefs;
     private final List<PaymentEvent> domainEvents;
+    private ChannelRef channelRef;
     private PaymentIntentStatus status;
     private Money authorizedAmount;
     private Money capturedAmount;
@@ -79,6 +80,27 @@ public final class PaymentIntent {
         return intent;
     }
 
+    public static PaymentIntent rehydrate(
+        String paymentIntentId,
+        String businessRef,
+        String purpose,
+        Money amount,
+        String payerRef,
+        Instant expiresAt,
+        String idempotencyKey,
+        PaymentIntentStatus status,
+        Money authorizedAmount,
+        Money capturedAmount,
+        Money refundedAmount,
+        Set<String> channelTransactionRefs,
+        List<PaymentEvent> domainEvents,
+        ChannelRef channelRef
+    ) {
+        PaymentIntent intent = rehydrate(paymentIntentId, businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey, status, authorizedAmount, capturedAmount, refundedAmount, channelTransactionRefs, domainEvents);
+        intent.channelRef = channelRef;
+        return intent;
+    }
+
     public PaymentIntent withVersion(long version) {
         if (version < 0) {
             throw new DomainRuleViolation("version must not be negative");
@@ -123,6 +145,7 @@ public final class PaymentIntent {
     public long version() { return version; }
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
     public Set<String> channelTransactionRefs() { return Set.copyOf(channelTransactionRefs); }
+    public ChannelRef channelRef() { return channelRef; }
 
     public boolean semanticallyMatches(String businessRef, String purpose, Money amount, String payerRef, Instant expiresAt, String idempotencyKey) {
         return this.businessRef.equals(businessRef)
@@ -131,6 +154,11 @@ public final class PaymentIntent {
             && this.payerRef.equals(payerRef)
             && this.expiresAt.equals(expiresAt)
             && this.idempotencyKey.equals(idempotencyKey);
+    }
+
+    public void recordChannelHandoff(ChannelRef ref) {
+        requireNonTerminalForPayment("handoff payment capture");
+        this.channelRef = Objects.requireNonNull(ref, "channelRef is required");
     }
 
     public void authorize(Money authorizedAmount, String channel, String channelTransactionId, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
@@ -227,9 +255,10 @@ public final class PaymentIntent {
         this.capturedAmount = capturedAmount.add(captureAmount);
         this.status = capturedAmount.equals(amount) ? PaymentIntentStatus.CAPTURED : status;
         this.channelTransactionRefs.add(channelTransactionKey(channel, channelTransactionId));
+        this.channelRef = (this.channelRef == null ? new ChannelRef(channel, null, null, channelTransactionId, null, null, null) : this.channelRef.withTransaction(channelTransactionId));
         domainEvents.add(new PaymentCaptured(
             createEnvelope("PaymentCaptured", occurredAt, causationId, correlationId),
-            paymentIntentId, businessRef, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId")
+            paymentIntentId, businessRef, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId"), this.channelRef
         ));
     }
 

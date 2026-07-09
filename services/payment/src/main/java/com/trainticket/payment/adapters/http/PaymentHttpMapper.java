@@ -1,5 +1,6 @@
 package com.trainticket.payment.adapters.http;
 
+import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentEvent;
 import com.trainticket.payment.domain.PaymentIntent;
@@ -28,6 +29,14 @@ final class PaymentHttpMapper {
         return new MoneyJson(money.currency().getCurrencyCode(), money.toMinorUnits());
     }
 
+    static ChannelRef toChannelRef(ChannelRefJson json) {
+        return json == null ? null : new ChannelRef(json.channel(), json.channelOrderId(), json.channelRefundId(), json.channelTransactionId(), json.channelRefundTransactionId(), json.channelStatementId(), json.faultSeedRef());
+    }
+
+    static ChannelRefJson fromChannelRef(ChannelRef ref) {
+        return ref == null ? null : new ChannelRefJson(ref.channel(), ref.channelOrderId(), ref.channelRefundId(), ref.channelTransactionId(), ref.channelRefundTransactionId(), ref.channelStatementId(), ref.faultSeedRef());
+    }
+
     static PaymentIntentResponse intentResponse(PaymentIntent intent) {
         return new PaymentIntentResponse(intent.paymentIntentId(), intent.businessRef(), money(intent.amount()), intent.status().name(), createdAt(intent));
     }
@@ -54,12 +63,18 @@ final class PaymentHttpMapper {
 
     static CapturePaymentResponse captureResponse(PaymentIntent intent, ChannelRefJson channelRef) {
         String txn = lastChannelTransactionId(intent);
-        ChannelRefJson ref = channelRef == null ? null : new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), channelRef.channelRefundId(), txn, channelRef.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        ChannelRefJson ref = fromChannelRef(intent.channelRef());
+        if (ref == null && channelRef != null) {
+            ref = new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), channelRef.channelRefundId(), txn, channelRef.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        }
         return new CapturePaymentResponse(intent.paymentIntentId(), intent.status().name(), money(intent.capturedAmount()), txn, ref);
     }
 
     static RefundResponse refundResponse(Refund refund, ChannelRefJson channelRef) {
-        ChannelRefJson ref = channelRef == null ? null : new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), refund.refundId(), channelRef.channelTransactionId(), refund.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        ChannelRefJson ref = fromChannelRef(refund.channelRef());
+        if (ref == null && channelRef != null) {
+            ref = new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), refund.refundId(), channelRef.channelTransactionId(), refund.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        }
         return new RefundResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), ref);
     }
 

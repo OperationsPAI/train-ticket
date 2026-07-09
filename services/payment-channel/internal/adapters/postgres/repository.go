@@ -92,7 +92,7 @@ func (r *Repository) GetDiscrepancy(ctx context.Context, id string) (*domain.Rec
 }
 
 func (r *Repository) ListOrdersForStatement(ctx context.Context, channel, date, currency string) ([]domain.ChannelOrder, error) {
-	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_order_snapshots WHERE data->>'channel'=$1 AND data->'amount'->>'currency'=$2 ORDER BY id`, channel, currency)
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_order_snapshots WHERE data->>'channel'=$1 AND data->'amount'->>'currency'=$2 AND (data->>'updatedAt')::timestamptz >= ($3::date)::timestamptz AND (data->>'updatedAt')::timestamptz < (($3::date + INTERVAL '1 day'))::timestamptz ORDER BY id`, channel, currency, date)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (r *Repository) ListOrdersForStatement(ctx context.Context, channel, date, 
 	return out, rows.Err()
 }
 func (r *Repository) ListRefundsForStatement(ctx context.Context, channel, date, currency string) ([]domain.ChannelRefund, error) {
-	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_refund_snapshots WHERE data->>'channel'=$1 AND data->'amount'->>'currency'=$2 ORDER BY id`, channel, currency)
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_refund_snapshots WHERE data->>'channel'=$1 AND data->'amount'->>'currency'=$2 AND (data->>'updatedAt')::timestamptz >= ($3::date)::timestamptz AND (data->>'updatedAt')::timestamptz < (($3::date + INTERVAL '1 day'))::timestamptz ORDER BY id`, channel, currency, date)
 	if err != nil {
 		return nil, err
 	}

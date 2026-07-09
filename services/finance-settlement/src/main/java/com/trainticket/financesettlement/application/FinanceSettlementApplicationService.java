@@ -103,6 +103,9 @@ public class FinanceSettlementApplicationService {
         if (offset < 0) {
             throw new ValidationException("offset must not be negative");
         }
+        if ((channel == null || channel.isBlank()) && (statementDate == null || statementDate.isBlank())) {
+            throw new ValidationException("channel or statementDate is required");
+        }
         int normalizedLimit = limit;
         int normalizedOffset = offset;
         return new Page<>(

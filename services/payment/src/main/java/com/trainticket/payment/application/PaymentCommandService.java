@@ -1,6 +1,7 @@
 package com.trainticket.payment.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentEvent;
@@ -26,6 +27,23 @@ public class PaymentCommandService {
     private final PaymentIntentRepository paymentIntentRepository;
     private final RefundRepository refundRepository;
     private final ReservationPaymentRequestRepository reservationPaymentRequestRepository;
+    private final PaymentChannelClient paymentChannelClient;
+
+    public PaymentCommandService(
+        Clock clock,
+        EventPublisher eventPublisher,
+        PaymentIntentRepository paymentIntentRepository,
+        RefundRepository refundRepository,
+        ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        PaymentChannelClient paymentChannelClient
+    ) {
+        this.clock = Objects.requireNonNull(clock, "clock is required");
+        this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
+        this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
+        this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
+        this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
+        this.paymentChannelClient = Objects.requireNonNull(paymentChannelClient, "paymentChannelClient is required");
+    }
 
     public PaymentCommandService(
         Clock clock,
@@ -34,11 +52,7 @@ public class PaymentCommandService {
         RefundRepository refundRepository,
         ReservationPaymentRequestRepository reservationPaymentRequestRepository
     ) {
-        this.clock = Objects.requireNonNull(clock, "clock is required");
-        this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
-        this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
-        this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
-        this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, new NoopPaymentChannelClient());
     }
 
     @Transactional
@@ -86,20 +100,38 @@ public class PaymentCommandService {
 
     @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId) {
-        return captureIntent(paymentIntentId, idempotencyKey, correlationId, null);
+        return captureIntent(paymentIntentId, idempotencyKey, correlationId, (String) null);
     }
 
     @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, String requestedChannel) {
         PaymentIntent intent = getIntent(paymentIntentId);
-        int before = intent.domainEvents().size();
         String channel = requestedChannel == null || requestedChannel.isBlank() ? DEFAULT_CHANNEL : requestedChannel;
-        if (!DEFAULT_CHANNEL.equals(channel)) {
-            validateSimChannel(channel);
+        if (DEFAULT_CHANNEL.equals(channel)) {
+            int before = intent.domainEvents().size();
+            intent.capture(intent.amount().subtract(intent.capturedAmount()), channel, "txn-" + idempotencyKey, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+            paymentIntentRepository.save(intent);
+            publishNewEvents(intent.domainEvents(), before);
+            return intent;
         }
-        intent.capture(intent.amount().subtract(intent.capturedAmount()), channel, "txn-" + idempotencyKey, Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        validateSimChannel(channel);
+        ChannelRef requestedRef = new ChannelRef(channel, null, null, null, null, null, null);
+        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, idempotencyKey, correlationId, requestedRef);
+        intent.recordChannelHandoff(handoff.channelRef());
         paymentIntentRepository.save(intent);
-        publishNewEvents(intent.domainEvents(), before);
+        return intent;
+    }
+
+    @Transactional
+    public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, ChannelRef requestedRef) {
+        if (requestedRef == null) {
+            return captureIntent(paymentIntentId, idempotencyKey, correlationId, (String) null);
+        }
+        validateSimChannel(requestedRef.channel());
+        PaymentIntent intent = getIntent(paymentIntentId);
+        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, idempotencyKey, correlationId, requestedRef);
+        intent.recordChannelHandoff(handoff.channelRef());
+        paymentIntentRepository.save(intent);
         return intent;
     }
 
@@ -130,6 +162,21 @@ public class PaymentCommandService {
 
 
     @Transactional
+    public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
+        Refund refund = requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
+        if (originalRoute == null) {
+            return refund;
+        }
+        validateSimChannel(originalRoute.channel());
+        PaymentIntent intent = getIntent(paymentIntentId);
+        PaymentChannelClient.HandoffRefund handoff = paymentChannelClient.handoffRefund(intent, refund, idempotencyKey, correlationId, originalRoute);
+        refund.recordChannelHandoff(handoff.channelRef());
+        refundRepository.save(refund);
+        return refund;
+    }
+
+
+    @Transactional
     public PaymentIntent captureIntentFromChannel(String paymentIntentId, Money amount, String channel, String channelTransactionId, String channelOrderId, String causationId, String correlationId) {
         validateSimChannel(channel);
         PaymentIntent intent = getIntent(paymentIntentId);
@@ -137,6 +184,7 @@ public class PaymentCommandService {
             return intent;
         }
         int before = intent.domainEvents().size();
+        intent.recordChannelHandoff(new ChannelRef(channel, channelOrderId, null, null, null, null, null));
         intent.capture(amount, channel, channelTransactionId, Instant.now(clock), commandId(channelOrderId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
@@ -154,7 +202,7 @@ public class PaymentCommandService {
     }
 
     @Transactional
-    public Refund settleRefundFromChannel(String refundId, String paymentIntentId, Money amount, String channelRefundTransactionId, String causationId, String correlationId) {
+    public Refund settleRefundFromChannel(String refundId, String paymentIntentId, Money amount, String channelRefundId, String channelOrderId, String channel, String originalChannelTransactionId, String channelRefundTransactionId, String causationId, String correlationId) {
         Refund refund = getRefund(refundId);
         PaymentIntent intent = getIntent(paymentIntentId);
         if (refund.status().name().equals("SETTLED")) {
@@ -164,6 +212,9 @@ public class PaymentCommandService {
             throw new DomainRuleViolation("channel refund amount does not match requested refund amount");
         }
         int beforeRefund = refund.domainEvents().size();
+        if (channel != null && !channel.isBlank()) {
+            refund.recordChannelHandoff(new ChannelRef(channel, channelOrderId, channelRefundId, originalChannelTransactionId, null, null, null));
+        }
         refund.settle(intent, channelRefundTransactionId, Instant.now(clock), commandId(causationId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         refundRepository.save(refund);

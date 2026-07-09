@@ -2,6 +2,7 @@ package com.trainticket.payment.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.ChannelCallbackReceived;
+import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.DuplicateChannelCallbackDetected;
 import com.trainticket.payment.domain.LatePaymentDetected;
 import com.trainticket.payment.domain.Money;
@@ -60,6 +61,9 @@ public final class EventEnvelopeMapper {
                 payload.put("capturedAmount", money(captured.capturedAmount()));
                 payload.put("channel", captured.channel());
                 payload.put("channelTransactionId", captured.channelTransactionId());
+                if (captured.channelRef() != null) {
+                    payload.put("channelRef", channelRef(captured.channelRef()));
+                }
             }
             case PaymentFailed failed -> {
                 payload.put("paymentIntentId", failed.paymentIntentId());
@@ -84,6 +88,9 @@ public final class EventEnvelopeMapper {
                 payload.put("paymentIntentId", settled.paymentIntentId());
                 payload.put("amount", money(settled.amount()));
                 payload.put("channelRefundTransactionId", settled.channelRefundTransactionId());
+                if (settled.channelRef() != null) {
+                    payload.put("channelRef", channelRef(settled.channelRef()));
+                }
             }
             case RefundFailed failed -> {
                 payload.put("refundId", failed.refundId());
@@ -116,5 +123,23 @@ public final class EventEnvelopeMapper {
 
     public static Map<String, Object> money(Money money) {
         return Map.of("currency", money.currency().getCurrencyCode(), "minorUnits", money.toMinorUnits());
+    }
+
+    public static Map<String, Object> channelRef(ChannelRef ref) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        putIfPresent(value, "channel", ref.channel());
+        putIfPresent(value, "channelOrderId", ref.channelOrderId());
+        putIfPresent(value, "channelRefundId", ref.channelRefundId());
+        putIfPresent(value, "channelTransactionId", ref.channelTransactionId());
+        putIfPresent(value, "channelRefundTransactionId", ref.channelRefundTransactionId());
+        putIfPresent(value, "channelStatementId", ref.channelStatementId());
+        putIfPresent(value, "faultSeedRef", ref.faultSeedRef());
+        return value;
+    }
+
+    private static void putIfPresent(Map<String, Object> value, String key, String field) {
+        if (field != null && !field.isBlank()) {
+            value.put(key, field);
+        }
     }
 }

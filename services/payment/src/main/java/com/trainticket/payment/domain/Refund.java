@@ -18,6 +18,7 @@ public final class Refund {
     private final List<PaymentEvent> domainEvents;
     private RefundStatus status;
     private String channelRefundTransactionId;
+    private ChannelRef channelRef;
     private int attemptCount;
     private long version;
 
@@ -53,6 +54,24 @@ public final class Refund {
         refund.channelRefundTransactionId = channelRefundTransactionId;
         refund.attemptCount = attemptCount;
         refund.domainEvents.addAll(Objects.requireNonNull(domainEvents, "domainEvents are required"));
+        return refund;
+    }
+
+    public static Refund rehydrate(
+        String refundId,
+        String paymentIntentId,
+        Money amount,
+        String sourceCaseRef,
+        String reasonCode,
+        String idempotencyKey,
+        RefundStatus status,
+        String channelRefundTransactionId,
+        int attemptCount,
+        List<PaymentEvent> domainEvents,
+        ChannelRef channelRef
+    ) {
+        Refund refund = rehydrate(refundId, paymentIntentId, amount, sourceCaseRef, reasonCode, idempotencyKey, status, channelRefundTransactionId, attemptCount, domainEvents);
+        refund.channelRef = channelRef;
         return refund;
     }
 
@@ -97,6 +116,7 @@ public final class Refund {
     public String idempotencyKey() { return idempotencyKey; }
     public RefundStatus status() { return status; }
     public String channelRefundTransactionId() { return channelRefundTransactionId; }
+    public ChannelRef channelRef() { return channelRef; }
     public int attemptCount() { return attemptCount; }
     public long version() { return version; }
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
@@ -107,6 +127,15 @@ public final class Refund {
             && this.sourceCaseRef.equals(sourceCaseRef)
             && this.reasonCode.equals(reasonCode)
             && this.idempotencyKey.equals(idempotencyKey);
+    }
+
+    public void recordChannelHandoff(ChannelRef ref) {
+        if (status != RefundStatus.REQUESTED && status != RefundStatus.FAILED) {
+            throw new DomainRuleViolation("refund can only be submitted when requested or failed retryable");
+        }
+        this.channelRef = Objects.requireNonNull(ref, "channelRef is required");
+        this.attemptCount++;
+        this.status = RefundStatus.SUBMITTED;
     }
 
     public void submitToChannel(String channelRefundTransactionId) {
@@ -130,11 +159,12 @@ public final class Refund {
             throw new DomainRuleViolation("refund settlement payment intent mismatch");
         }
         this.channelRefundTransactionId = requireText(channelRefundTransactionId, "channelRefundTransactionId");
+        this.channelRef = (this.channelRef == null ? new ChannelRef(null, null, null, null, this.channelRefundTransactionId, null, null) : this.channelRef.withRefundTransaction(this.channelRefundTransactionId));
         capturedIntent.markRefunded(amount);
         this.status = RefundStatus.SETTLED;
         domainEvents.add(new RefundSettled(
             createEnvelope("RefundSettled", occurredAt, causationId, correlationId),
-            refundId, paymentIntentId, amount, this.channelRefundTransactionId
+            refundId, paymentIntentId, amount, this.channelRefundTransactionId, this.channelRef
         ));
     }
 

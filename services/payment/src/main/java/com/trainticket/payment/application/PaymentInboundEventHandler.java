@@ -118,6 +118,10 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             payload.requiredText("refundId"),
             payload.requiredText("paymentIntentId"),
             amount,
+            payload.requiredText("channelRefundId"),
+            payload.optionalText("channelOrderId"),
+            payload.optionalText("channel"),
+            payload.optionalText("originalChannelTransactionId"),
             payload.requiredText("channelRefundTransactionId"),
             envelope.eventId(),
             envelope.correlationId()

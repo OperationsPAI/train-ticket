@@ -48,14 +48,14 @@ public class PaymentController {
     public ResponseEntity<?> capturePayment(@PathVariable String paymentIntentId, @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CapturePaymentRequest request, HttpServletRequest httpRequest) {
         ChannelRefJson channelRef = request == null ? null : request.channelRef();
         validateOptionalChannelRef(channelRef, false);
-        return ResponseEntity.ok(PaymentHttpMapper.captureResponse(service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest), channelRef == null ? null : channelRef.channel()), channelRef));
+        return ResponseEntity.ok(PaymentHttpMapper.captureResponse(service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest), PaymentHttpMapper.toChannelRef(channelRef)), channelRef));
     }
 
     @PostMapping("/refunds")
     public ResponseEntity<?> requestRefund(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) RequestRefundRequest request, HttpServletRequest httpRequest) {
         validateRefund(request);
         validateOptionalChannelRef(request.channelRef(), true);
-        Refund refund = service.requestRefund(request.paymentIntentId(), PaymentHttpMapper.toMoney(request.amount()), request.reason(), request.businessCaseRef(), idempotencyKey, correlationId(httpRequest));
+        Refund refund = service.requestRefund(request.paymentIntentId(), PaymentHttpMapper.toMoney(request.amount()), request.reason(), request.businessCaseRef(), idempotencyKey, correlationId(httpRequest), PaymentHttpMapper.toChannelRef(request.channelRef()));
         return ResponseEntity.created(URI.create("/api/v1/refunds/" + refund.refundId())).body(PaymentHttpMapper.refundResponse(refund, request.channelRef()));
     }
 
