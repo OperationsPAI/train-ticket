@@ -47,6 +47,25 @@ class ExecutionTarget(StrEnum):
     MANUAL_QUEUE = "MANUAL_QUEUE"
 
 
+DISRUPTION_TYPES = {
+    "SERVICE_DELAY",
+    "SERVICE_CANCELLED",
+    "SERVICE_SUSPENDED",
+    "SAILING_SUSPENDED",
+    "ROAD_CLOSED",
+    "WEATHER",
+    "OPERATION_RESTRICTION",
+    "SUPPLIER_FAILURE",
+    "DRIVER_CANCELLED",
+    "DISPATCH_FAILED",
+    "STOP_CHANGED",
+    "PORT_CALL_CHANGED",
+    "BATCH_SYSTEM_EVENT",
+    "CONNECTION_MISSED",
+    "MISSED_CONNECTION",
+}
+
+
 TERMINAL_BEFORE_CLOSE = {RecoveryCaseStatus.RECOVERED, RecoveryCaseStatus.DECLINED, RecoveryCaseStatus.FAILED}
 ALLOWED_TRANSITIONS: dict[RecoveryCaseStatus, set[RecoveryCaseStatus]] = {
     RecoveryCaseStatus.OPENED: {RecoveryCaseStatus.ASSESSING_IMPACT, RecoveryCaseStatus.MANUAL_REVIEW},
@@ -96,7 +115,7 @@ class Evidence:
 
     def __post_init__(self) -> None:
         require_text(self.evidenceRef, "evidenceRef")
-        if self.sourceSystem not in {"CUSTOMER_SERVICE", "ADMIN"}:
+        if self.sourceSystem not in {"CUSTOMER_SERVICE", "ADMIN", "TRANSFER_MANAGEMENT"}:
             raise DomainError("evidence.sourceSystem is invalid")
         require_text(self.sourceRecordId, "sourceRecordId")
         require_text(self.summary, "summary")

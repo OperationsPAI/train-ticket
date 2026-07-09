@@ -75,6 +75,7 @@ context.
 | 25 | `wallet-promotion` | `events:wallet-promotion` | BenefitIssued, BenefitReserved, BenefitRedeemed, BenefitReservationReleased, BenefitExpired, BenefitRevoked, BenefitRedemptionReversed |
 | 26 | `disruption-recovery` | `events:disruption-recovery` | DisruptionReported, IncidentOpened, RecoveryCaseOpened, RecoveryOptionsGenerated, RecoveryOptionSelected, RecoveryExecutionStarted, RecoveryCompleted, RecoveryFailed, RecoveryCaseClosed, ServiceAlertPublished |
 | 27 | `ancillary-service` | `events:ancillary-service` | AncillaryCatalogItemPublished, AncillaryCatalogItemSuspended, AncillaryCatalogItemSuperseded, AncillaryOfferQuoted, AncillaryOfferExpired, AncillaryOrderItemSelected, AncillaryOrderItemPendingConfirmation, AncillaryOrderItemConfirmed, AncillaryOrderItemFulfillmentReady, AncillaryOrderItemFulfilled, AncillaryOrderItemFailed, AncillaryOrderItemCancelled, AncillaryOrderItemRefundPending, AncillaryOrderItemRefunded, AncillaryFulfillmentFactRecorded |
+| 28 | `transfer-management` | `events:transfer-management` | TransferPlanCreated, TransferPlanEvaluated, TransferPlanExpired, ConnectionRegistered, TransferRiskEvaluated, TransferAtRisk, ConnectionMissed, ConnectionRecovered, ConnectionRecoveryFailed, ConnectionContractProposed, ConnectionContractConfirmed, ConnectionContractWithdrawn, MctRuleCreated, MctRulePublished, MctRuleRetired |
 
 ### Dead-Letter Streams
 
@@ -252,14 +253,14 @@ plus notification/finance/reporting fan-in.
 | 25 | `events:entitlement-ticketing` | `booking-orchestration` | EntitlementIssued to mark segment ticketed |
 | 26 | `events:entitlement-ticketing` | `notification` | Ticketing events for user notifications |
 | 26a | `events:entitlement-ticketing` | `capacity-availability` | RULING (2026-07-07): EntitlementVoided (payload `references.segmentBookingRef`) releases the matching hold promptly. Closes the refund-applied gap: post-sales flips APPLIED on `CapacityReleased`, which previously only arrived via booking-orchestration's lazy fallback (~90s). Row 30 (release on PostSalesApplied) stays as idempotent backstop. |
-| 27 | `events:fulfillment` | `transfer-management` | future-scope; arrival/delay facts are not part of the phase-1 contract |
+| 27 | `events:fulfillment` | `transfer-management` | deferred; wave-18 runtime input uses `POST /api/v1/segment-status-reports` until Fulfillment publishes segment-level delay/arrival/cancelled facts |
 | 28 | `events:fulfillment` | `entitlement-ticketing` | BoardingVerified for entitlement lifecycle |
 | 29 | `events:post-sales` | `payment` | PostSalesApproved to trigger refund |
 | 30 | `events:post-sales` | `capacity-availability` | PostSalesApplied to release capacity |
 | 31 | `events:post-sales` | `entitlement-ticketing` | PostSalesApproved to void entitlement |
 | 32 | `events:post-sales` | `journey-order` | PostSalesApplied to adjust order |
 | 33 | `events:post-sales` | `notification` | Post-sales events for user notifications |
-| 34 | `events:transfer-management` | *(none for disruption-recovery in this wave)* | Transfer risk/recovery signals are deferred to wave 18 |
+| 34 | `events:transfer-management` | *(none — downstream consumers deferred)* | Transfer risk, connection, contract, and MCT facts are produced in wave 18; Notification/Reporting/Journey Order/Customer Service consumption is deferred |
 | 35 | `events:disruption-recovery` | *(none — downstream consumers deferred)* | Disruption recovery notification/reporting/order touchpoints are documented in `events/disruption-recovery.md` but not active in this wave |
 | 36 | `events:notification` | *(none — notification owns its stream)* | Notification events are not consumed by other business contexts in phase 1 |
 | 37 | `events:traveler-profile` | `offer-management` | Profile changes for eligibility checks |
@@ -283,6 +284,7 @@ plus notification/finance/reporting fan-in.
 | 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
+| 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. |
 
 ### Cross-Cutting Consumers
 
@@ -291,7 +293,7 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch`, `events:wallet-promotion`, and `events:disruption-recovery` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
+| `reporting` | All active `events:*` streams except `events:dispatch`, `events:wallet-promotion`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation. Wallet / Promotion benefit-cost events are a documented deferred consumer (events/wallet-promotion.md). |
 | `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers. Wallet / Promotion benefit touchpoints are a documented deferred consumer. |
 
@@ -303,8 +305,11 @@ consumption of its lifecycle and alert facts is deferred in this activation
 wave. Disruption Recovery has one active inbound subscription: it consumes
 `PostSalesApplied` from `events:post-sales` to converge selected `REFUND`
 recovery options after the downstream Post Sales case reaches `APPLIED`.
-Service Plan, Provider Integration, Fulfillment, and Transfer Management signal
-sources are deferred; Transfer Management belongs to wave 18.
+Service Plan, Provider Integration, and Fulfillment signal sources remain
+deferred. Transfer Management opens protected missed-connection cases through
+Disruption Recovery HTTP and actively consumes `RecoveryCompleted` and
+`RecoveryFailed` from `events:disruption-recovery` by stored `caseId`.
+
 ### Deferred Ancillary Service Subscriptions
 
 `events:ancillary-service` is registered as a produced stream in this contract.

@@ -10,14 +10,16 @@ by the activation rulings in `docs/08-contracts/api/disruption-recovery.md`.
 
 Activation-wave rulings:
 
-- The only signal source is the operations HTTP command
+- The active signal source is the operations/system HTTP command
   `POST /api/v1/disruptions`. It represents Customer Service/Admin manual rows
-  and carries a normalized `disruptionType`, `scheduledServiceRef` and/or
-  `segmentRef`, `evidence`, and explicit `affectedOrderIds`.
+  or Transfer Management system reports and carries a normalized
+  `disruptionType`, `scheduledServiceRef` and/or `segmentRef`, `evidence`, and
+  explicit `affectedOrderIds`.
 - Automatic `segmentRef` to orders fan-out is deferred because Journey Order has
-  no by-segment query contract. Service Plan, Provider Integration,
-  Fulfillment, and Transfer Management signal events are also deferred; Transfer
-  belongs to wave 18.
+  no by-segment query contract. Service Plan, Provider Integration, and
+  Fulfillment signal events remain deferred. Transfer Management wave 18 opens
+  protected missed-connection recovery through HTTP
+  `POST /api/v1/disruptions`, not by a new inbound event.
 - The report opens or merges an `Incident`; merge key is
   `(scheduledServiceRef, serviceDate)` when `scheduledServiceRef` is present.
   `ServiceAlert` is event-only in this wave: `ServiceAlertPublished` is
@@ -27,7 +29,7 @@ Activation-wave rulings:
   `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`,
   `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED`.
 - `RecoveryOptionSet` supports `WAIT`, `REFUND`, `COMPENSATION`, and `MANUAL`.
-  `REACCOMMODATION` is deferred until wave 18 after Transfer Management.
+  `REACCOMMODATION` remains deferred until a later wave after Transfer Management.
 - Automatic rules may select only `WAIT`. `WAIT` completes as `RECOVERED` with
   no downstream command. `REFUND` calls the existing Post Sales HTTP contract
   using a deterministic idempotency key and converges on `PostSalesApplied`.
@@ -72,7 +74,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `evidenceRef` | string | yes | Reference to the customer-service/admin evidence record. |
-| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE` or `ADMIN`; all other sources are deferred. |
+| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`; all other sources are deferred. |
 | `sourceRecordId` | string | yes | Upstream manual-row identifier. |
 | `summary` | string | yes | Operational summary; must not include unmasked documents or sensitive personal data. |
 | `occurredAt` | RFC3339 UTC | no | Observation time if known. |
@@ -249,7 +251,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | transfer-management; deferred: notification, reporting |
 | **Trigger** | `WAIT` completes locally, Wallet / Promotion benefit issuance succeeds, or consumed `PostSalesApplied` converges a REFUND execution. |
 
 **Payload:**
@@ -271,7 +273,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | transfer-management; deferred: notification, reporting |
 | **Trigger** | A selected option fails and cannot automatically converge. |
 
 **Payload:**
@@ -352,8 +354,11 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `events:post-sales` | `PostSalesApplied` | Converge a selected `REFUND` option when the downstream Post Sales case reaches `APPLIED`. |
 
 No other upstream event subscription is active in this wave. Service Plan,
-Provider Integration, Fulfillment, and Transfer Management disruption sources
-are deferred.
+Provider Integration, and Fulfillment disruption sources are deferred. Transfer
+Management protected missed-connection reports arrive over HTTP with
+`disruptionType=MISSED_CONNECTION`, `reportedBy.actorType=SYSTEM`, and
+`evidence.sourceSystem=TRANSFER_MANAGEMENT`; the same wave implementation MUST
+update Disruption Recovery code enum/validation allowlists for those values.
 
 ## Deferred downstream touchpoints
 

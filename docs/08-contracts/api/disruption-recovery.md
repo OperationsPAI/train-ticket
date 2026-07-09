@@ -12,15 +12,15 @@ contract is scoped to the ADR-0002 third activation wave and is bounded by
 
 Activation-wave rulings:
 
-- The only disruption signal source in this wave is **operations reporting** via
-  `POST /api/v1/disruptions`. The request represents the Customer
-  Service/Admin manual rows from the upstream table and MUST carry
+- The disruption signal source in this wave is **operations/system reporting** via
+  `POST /api/v1/disruptions`. The request represents Customer Service/Admin
+  manual rows or Transfer Management system reports and MUST carry
   `disruptionType`, `scheduledServiceRef` and/or `segmentRef`, `serviceDate`,
   `evidence`, and explicit `affectedOrderIds`. Automatic `segmentRef` to order
   fan-out is deferred because Journey Order has no by-segment query contract.
-- Service Plan, Provider Integration, Fulfillment, and Transfer Management event
-  sources are deferred. Most of those events are not in production today;
-  Transfer Management is wave 18.
+- Service Plan, Provider Integration, and Fulfillment event sources remain
+  deferred. Transfer Management wave 18 opens protected missed-connection
+  recovery through outbound HTTP to this API, not through a new input event.
 - An `Incident` is opened or merged by the same report. This wave merges by
   `(scheduledServiceRef, serviceDate)` when `scheduledServiceRef` is present;
   otherwise the report opens a distinct incident for its supplied scope.
@@ -48,7 +48,7 @@ camelCase and enum values are SCREAMING_SNAKE_CASE.
 
 | Enum | Values |
 |---|---|
-| `disruptionType` | `SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`, `SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`, `SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`, `PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED` |
+| `disruptionType` | `SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`, `SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`, `SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`, `PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED`, `MISSED_CONNECTION` |
 | `incidentStatus` | `DETECTED`, `CONFIRMED`, `BATCH_PROCESSING`, `MONITORING`, `RESOLVED`, `CLOSED` |
 | `recoveryCaseStatus` | `OPENED`, `ASSESSING_IMPACT`, `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`, `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED` |
 | `recoveryOptionType` | `WAIT`, `REFUND`, `COMPENSATION`, `MANUAL` |
@@ -56,7 +56,7 @@ camelCase and enum values are SCREAMING_SNAKE_CASE.
 | `executionTarget` | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `MANUAL_QUEUE` |
 
 `REACCOMMODATION` is intentionally absent from the active option-type enum in
-this wave. It remains a domain capability but is deferred until wave 18.
+this wave. It remains a domain capability but is deferred until a later wave.
 
 ## RecoveryCase state machine
 
@@ -112,7 +112,7 @@ option set:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `evidenceRef` | string | yes | Reference to the admin/customer-service evidence record or uploaded artifact. |
-| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE` or `ADMIN`. Other upstream source systems are deferred. |
+| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`. Other upstream source systems are deferred. |
 | `sourceRecordId` | string | yes | Upstream manual-row identifier. |
 | `summary` | string | yes | Operational summary; MUST NOT include unmasked documents or other sensitive personal data. |
 | `occurredAt` | RFC3339 UTC | no | When the disruption was observed, if known. |
@@ -251,9 +251,9 @@ return the original response. Reusing the same key with a different body returns
 | `scheduledServiceRef` | string | no | Scheduled service reference. Required when `segmentRef` is absent. |
 | `segmentRef` | string | no | Segment reference. Required when `scheduledServiceRef` is absent. |
 | `serviceDate` | string | yes | ISO `YYYY-MM-DD` operating date; used with `scheduledServiceRef` for incident merge. |
-| `evidence` | object | yes | Evidence object with `sourceSystem` of `CUSTOMER_SERVICE` or `ADMIN`. |
+| `evidence` | object | yes | Evidence object with `sourceSystem` of `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`. |
 | `affectedOrderIds` | array[string] | yes | Explicit affected `ord-<uuid>` IDs. Must be non-empty. |
-| `reportedBy` | object | yes | Reporting actor; normally `CUSTOMER_SERVICE` or `OPERATIONS`. |
+| `reportedBy` | object | yes | Reporting actor; normally `CUSTOMER_SERVICE`, `OPERATIONS`, or `SYSTEM` for Transfer Management missed-connection reports. |
 
 **Response (202):**
 
@@ -268,7 +268,10 @@ incident is opened, `RecoveryCaseOpened` for each affected order, optionally
 `RecoveryOptionsGenerated`, and `ServiceAlertPublished` for the incident alert
 fact. A repeated report for an already known `(scheduledServiceRef, serviceDate)`
 merges into the existing incident and does not duplicate active cases for the
-same `(incidentId, journeyOrderId)`.
+same `(incidentId, journeyOrderId)`. Wave-18 implementation MUST update the
+Disruption Recovery code enum/validation allowlists for
+`reportedBy.actorType=SYSTEM`, `disruptionType=MISSED_CONNECTION`, and
+`evidence.sourceSystem=TRANSFER_MANAGEMENT`; this is not a docs-only increment.
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
@@ -389,5 +392,6 @@ wave:
   the ServiceAlert read model is deferred.
 
 Deferred signal sources remain out of this wave: Service Plan, Provider
-Integration, Fulfillment, and Transfer Management events do not open incidents
-or cases until their activation waves.
+Integration, and Fulfillment events do not open incidents or cases until their
+activation waves. Transfer Management opens protected missed-connection recovery
+through this HTTP endpoint, not by publishing a Disruption Recovery input event.
