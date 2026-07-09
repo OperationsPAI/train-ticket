@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS promotion_instrument_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS idx_promotion_account ON promotion_instrument_snapshots ((data->>'accountId'));
-CREATE INDEX IF NOT EXISTS idx_promotion_expiry ON promotion_instrument_snapshots (((data->>'validUntil')::timestamptz)) WHERE data->>'status' IN ('ISSUED','RESERVED','RELEASED');
+-- Text-ordered index: RFC3339 UTC strings sort chronologically, and the
+-- timestamptz cast is not IMMUTABLE in index expressions (REQ-081A ruling).
+CREATE INDEX IF NOT EXISTS idx_promotion_expiry ON promotion_instrument_snapshots ((data->>'validUntil')) WHERE data->>'status' IN ('ISSUED','RESERVED','RELEASED');
 CREATE TABLE IF NOT EXISTS wallet_account_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_account_account ON wallet_account_snapshots ((data->>'accountId'));
 CREATE TABLE IF NOT EXISTS wallet_ledger_entries (ledger_entry_id text PRIMARY KEY, wallet_account_id text NOT NULL, benefit_id text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
