@@ -359,12 +359,15 @@ class DisruptionRecoveryService:
     def _failed_event(self, case: RecoveryCase, reason: str, correlation_id: str, causation_id: str, at: datetime) -> EventEnvelope:
         return _envelope("RecoveryFailed", case.caseId, case.version + 5, {"caseId": case.caseId, "incidentId": case.incidentId, "journeyOrderId": case.journeyOrderId, "optionId": case.selectedOptionId, "executionId": case.execution.executionId if case.execution else None, "failedAt": rfc3339_utc(at), "reason": reason, "nextStatus": case.status.value}, correlation_id, causation_id, at)
 
-    def _downstream_key(self, case_id: str, option: RecoveryOption) -> str | None:
-        if option.optionType is RecoveryOptionType.REFUND:
-            return f"disruption-recovery:refund:{case_id}:{option.optionId}"
-        if option.optionType is RecoveryOptionType.COMPENSATION:
-            return f"disruption-recovery:compensation:{case_id}:{option.optionId}"
-        return None
+    def _downstream_key(self, case_id: str, option: RecoveryOption) -> str:
+        # Downstream HTTP idempotency middleware only accepts UUID-v7 keys;
+        # deterministic material folded into a version-stamped UUID keeps
+        # replays stable (legacy-acl / waitlist ruling — composite string
+        # keys were rejected live at the wave-17 gate).
+        digest = bytearray(sha256(f"{PRODUCER}:downstream:{case_id}:{option.optionType.value}".encode("utf-8")).digest()[:16])
+        digest[6] = (digest[6] & 0x0F) | 0x70
+        digest[8] = (digest[8] & 0x3F) | 0x80
+        return str(UUID(bytes=bytes(digest)))
 
     def _with_external(self, case: RecoveryCase, external_ref: str) -> RecoveryCase:
         from dataclasses import replace

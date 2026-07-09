@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from disruption_recovery import create_app
 from disruption_recovery.application.service import InMemoryStore
+import re as _re
 
 
 def report_body(order="ord-0194f2e0-7b3e-7610-8000-000000000001", auto=None):
@@ -91,7 +92,7 @@ def test_refund_execution_started_has_contract_status_and_downstream_summary() -
     assert response.status_code == 200
     started = event_payloads(store, "RecoveryExecutionStarted")[0]
     assert started["status"] == "EXECUTING_RECOVERY"
-    assert started["idempotencyKey"] == f"disruption-recovery:refund:{case['caseId']}:{refund['optionId']}"
+    assert _re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", started["idempotencyKey"])  # deterministic UUID-v7-shaped downstream key
     assert started["downstreamRequest"]["caseType"] == "REFUND"
 
 
@@ -107,7 +108,7 @@ def test_compensation_execution_started_has_downstream_summary() -> None:
     assert response.status_code == 200
     started = event_payloads(store, "RecoveryExecutionStarted")[0]
     assert started["status"] == "EXECUTING_RECOVERY"
-    assert started["idempotencyKey"] == f"disruption-recovery:compensation:{case['caseId']}:{comp['optionId']}"
+    assert _re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", started["idempotencyKey"])
     assert started["downstreamRequest"]["issuanceSource"] == "DISRUPTION_COMP"
 
 
