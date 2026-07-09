@@ -48,6 +48,11 @@ class RegisterConnectionRequest(LooseModel):
     scheduledServiceRef: str | None = None
 
 
+class ReaccommodateConnectionRequest(LooseModel):
+    caseId: str
+    replacementWindow: dict[str, Any]
+
+
 class SegmentReportRequest(LooseModel):
     segmentRef: str
     reportType: str
@@ -148,6 +153,11 @@ def register_connection(body: RegisterConnectionRequest, request: Request) -> di
 @router.get("/connections/{connection_id}")
 def get_connection(connection_id: str, request: Request) -> dict[str, Any]:
     return _service(request).get_connection(connection_id)
+
+
+@router.post("/connections/{connection_id}/reaccommodate")
+def reaccommodate_connection(connection_id: str, body: ReaccommodateConnectionRequest, request: Request) -> dict[str, Any]:
+    return _service(request).reaccommodate_connection(connection_id, body.model_dump(exclude_none=True), _corr(request), _cause(request))
 
 
 @router.get("/connections")

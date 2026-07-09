@@ -33,7 +33,7 @@ def _option_to_json(option: RecoveryOption) -> dict[str, Any]:
 
 
 def _option_from_json(data: Mapping[str, Any]) -> RecoveryOption:
-    return RecoveryOption(str(data["optionId"]), RecoveryOptionType(str(data["optionType"])), str(data["title"]), str(data["description"]), ExecutionTarget(str(data["executionTarget"])), data.get("refund"), data.get("compensation"), data.get("manualReason"), _parse_dt(data.get("expiresAt")))
+    return RecoveryOption(str(data["optionId"]), RecoveryOptionType(str(data["optionType"])), str(data["title"]), str(data["description"]), ExecutionTarget(str(data["executionTarget"])), data.get("refund"), data.get("compensation"), data.get("manualReason"), data.get("reaccommodation"), _parse_dt(data.get("expiresAt")))
 
 
 def _option_set_to_json(option_set: RecoveryOptionSet | None) -> dict[str, Any] | None:

@@ -2447,6 +2447,8 @@ spec:
               value: http://post-sales:8080
             - name: WALLET_PROMOTION_URL
               value: http://wallet-promotion:8080
+            - name: TRANSFER_MANAGEMENT_URL
+              value: http://transfer-management:8080
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://otel-collector:4317
             - name: OTEL_SERVICE_NAME

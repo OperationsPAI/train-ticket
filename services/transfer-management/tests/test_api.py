@@ -161,3 +161,38 @@ def test_rule_selection_is_deterministic_newest_published_version_wins() -> None
     picked = service._find_published_rule(sample.fromNodeType, sample.toNodeType, sample.transferCategory, sample.validFrom)
     expected = max((rules[first], rules[second]), key=lambda r: (r.version, r.mctRuleId))
     assert picked.mctRuleId == expected.mctRuleId
+
+
+def test_reaccommodate_registers_replacement_and_recovered_event() -> None:
+    client, store, downstream = setup_client()
+    con = create_plan_and_connection(client)
+    now = datetime.now(UTC).replace(microsecond=0)
+    res = client.post("/api/v1/segment-status-reports", headers={"Idempotency-Key": idem(), "X-Correlation-Id": f"corr-{idem()}"}, json={"segmentRef": "seg-a", "reportType": "DELAY", "reportedBy": {"actorType": "SYSTEM", "actorId": "sys"}, "sourceSystem": "OPERATIONS", "sourceRecordId": "r-reacc", "observedAt": rfc3339_utc(now), "estimatedArrivalAt": rfc3339_utc(now + timedelta(hours=2))})
+    assert res.status_code == 202, res.text
+    assert downstream.calls
+    body = {"caseId": "rcv-1", "replacementWindow": {"plannedArrivalAt": rfc3339_utc(now + timedelta(minutes=10)), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=70)), "nextCutoffAt": rfc3339_utc(now + timedelta(minutes=65)), "source": "SYSTEM"}}
+    res = client.post(f"/api/v1/connections/{con['connectionId']}/reaccommodate", headers={"Idempotency-Key": idem()}, json=body)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["connection"]["status"] == "RECOVERED"
+    replacement_id = data["replacementConnection"]["connectionId"]
+    assert data["connection"]["replacementConnectionId"] == replacement_id
+    assert data["replacementConnection"]["replacementOfConnectionId"] == con["connectionId"]
+    recovered_events = [e for e in store.take_outbox() if e.eventType == "ConnectionRecovered"]
+    assert recovered_events[-1].payload["replacementConnectionId"] == replacement_id
+
+
+def test_reaccommodate_precondition_and_self_completion_skip() -> None:
+    client, store, downstream = setup_client()
+    con = create_plan_and_connection(client)
+    now = datetime.now(UTC).replace(microsecond=0)
+    client.post("/api/v1/segment-status-reports", headers={"Idempotency-Key": idem(), "X-Correlation-Id": f"corr-{idem()}"}, json={"segmentRef": "seg-a", "reportType": "DELAY", "reportedBy": {"actorType": "SYSTEM", "actorId": "sys"}, "sourceSystem": "OPERATIONS", "sourceRecordId": "r-skip", "observedAt": rfc3339_utc(now), "estimatedArrivalAt": rfc3339_utc(now + timedelta(hours=2))})
+    body = {"caseId": "rcv-1", "replacementWindow": {"plannedArrivalAt": rfc3339_utc(now + timedelta(minutes=10)), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=70)), "source": "SYSTEM"}}
+    assert client.post(f"/api/v1/connections/{con['connectionId']}/reaccommodate", headers={"Idempotency-Key": idem()}, json=body).status_code == 200
+    rejected = client.post(f"/api/v1/connections/{con['connectionId']}/reaccommodate", headers={"Idempotency-Key": idem()}, json=body)
+    assert rejected.status_code == 412
+    store.take_outbox()
+    service = client.app.state.transfer_management_service
+    env = EventEnvelope(eventId="evt-" + idem(), eventType="RecoveryCompleted", producer="disruption-recovery", correlationId="corr-" + idem(), causationId="evt-" + idem(), payload={"caseId": "rcv-1", "journeyOrderId": "jo-1"})
+    assert service.handle_recovery_event(env, "events:disruption-recovery") is True
+    assert [e for e in store.take_outbox() if e.eventType == "ConnectionRecovered"] == []
