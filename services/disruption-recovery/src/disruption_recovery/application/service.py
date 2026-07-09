@@ -171,8 +171,13 @@ def _envelope(event_type: str, aggregate_id: str, version: int, payload: Mapping
     # Wire ids are canonical corr-/cmd- prefixed UUID v7 (java-kit consumers
     # validate strictly; a raw request id poisoned the woken post-sales
     # subscription at the wave-17 gate).
-    from train_ticket_platform.events import canonical_causation_id, canonical_correlation_id
-    return EventEnvelope(eventId=_event_id(event_type, aggregate_id, version), eventType=event_type, occurredAt=occurred_at, correlationId=canonical_correlation_id(correlation_id), causationId=canonical_causation_id(causation_id), producer=PRODUCER, schemaVersion=1, payload=payload)
+    from train_ticket_platform.events import canonical_correlation_id
+    causation = causation_id or ""
+    if causation and not causation.startswith(("cmd-", "evt-")):
+        # java-kit consumers require a cmd-/evt- prefixed causation id; the
+        # HTTP layer hands us the raw request id.
+        causation = f"cmd-{causation}"
+    return EventEnvelope(eventId=_event_id(event_type, aggregate_id, version), eventType=event_type, occurredAt=occurred_at, correlationId=canonical_correlation_id(correlation_id), causationId=causation or None, producer=PRODUCER, schemaVersion=1, payload=payload)
 
 
 class DisruptionRecoveryService:
