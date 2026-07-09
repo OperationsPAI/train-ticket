@@ -22,6 +22,8 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
     private final ObjectMapper mapper;
     private final String baseUrl;
 
+    @org.springframework.beans.factory.annotation.Autowired
+
     public HttpPaymentChannelClient(ObjectMapper mapper) {
         this(HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(3)).build(), mapper, System.getenv().getOrDefault("PAYMENT_CHANNEL_URL", "http://payment-channel:8080"));
     }
