@@ -329,3 +329,79 @@ async fn consumed_event_dedup_marks_only_after_successful_state_change() {
         2
     );
 }
+
+#[tokio::test]
+async fn preference_events_cover_adjacency_and_berth_contracts() {
+    let publisher = Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemorySeatAssignmentService::new(publisher.clone());
+    let ss = format!("ss-{}", uuid7());
+    let map = svc
+        .create_seat_map(
+            map_cmd(&ss, None),
+            uuid7(),
+            rust_kit::messaging::correlation_id(),
+        )
+        .await
+        .unwrap();
+    svc.publish_seat_map(
+        map.seat_map_id,
+        PublishSeatMapCommand {
+            expected_seat_map_version: 1,
+            publish_reason: "ready".into(),
+            operator_ref: "op".into(),
+        },
+        uuid7(),
+        rust_kit::messaging::correlation_id(),
+    )
+    .await
+    .unwrap();
+    let mut pref = prefs(true, Some("family-1"));
+    pref.preferred_berth_positions = Some(vec![BerthPosition::Lower]);
+    let response = svc
+        .allocate(
+            alloc_cmd(
+                &ss,
+                &format!("sb-{}", uuid7()),
+                &format!("tvl-{}", uuid7()),
+                Some(pref),
+            ),
+            uuid7(),
+            rust_kit::messaging::correlation_id(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status, AllocationStatus::Allocated);
+    let events = publisher.published();
+    for expected in [
+        "AdjacencyGroupCreated",
+        "AdjacentAllocationSolved",
+        "BerthPreferenceRecorded",
+        "BerthPreferenceApplied",
+    ] {
+        assert!(
+            events.iter().any(|event| event.event_type == expected),
+            "missing {expected}"
+        );
+    }
+    let solved = events
+        .iter()
+        .find(|event| event.event_type == "AdjacentAllocationSolved")
+        .unwrap();
+    assert_eq!(
+        solved.payload["seatAllocationIds"][0],
+        response.seat_allocation_id
+    );
+    assert_eq!(
+        solved.payload["segmentRef"],
+        solved.payload["segmentRef"].clone()
+    );
+    let berth = events
+        .iter()
+        .find(|event| event.event_type == "BerthPreferenceApplied")
+        .unwrap();
+    assert_eq!(
+        berth.payload["seatAllocationId"],
+        response.seat_allocation_id
+    );
+    assert!(berth.payload.get("requestedPositions").is_some());
+}

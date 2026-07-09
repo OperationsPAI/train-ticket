@@ -643,10 +643,58 @@ impl SeatAllocation {
                 expires_at: Some(cmd.expires_at),
                 version: 1,
             };
-            let mut events = vec![SeatAssignmentEvent::seat_allocated(
+            let mut events = Vec::new();
+            if let Some(pref) = allocation.preferences.as_ref() {
+                if pref
+                    .adjacency_preference
+                    .is_some_and(|value| value != AdjacencyPreference::None)
+                    || pref.adjacency_group_ref.is_some()
+                {
+                    events.push(SeatAssignmentEvent::adjacency_group_created(
+                        &allocation,
+                        pref,
+                        now.clone(),
+                    ));
+                }
+                if pref
+                    .preferred_berth_positions
+                    .as_ref()
+                    .is_some_and(|positions| !positions.is_empty())
+                {
+                    events.push(SeatAssignmentEvent::berth_preference_recorded(
+                        &allocation,
+                        pref,
+                        now.clone(),
+                    ));
+                }
+            }
+            events.push(SeatAssignmentEvent::seat_allocated(
                 &allocation,
                 now.clone(),
-            )];
+            ));
+            if let Some(pref) = allocation.preferences.as_ref() {
+                if pref
+                    .adjacency_preference
+                    .is_some_and(|value| value != AdjacencyPreference::None)
+                    || pref.adjacency_group_ref.is_some()
+                {
+                    events.push(SeatAssignmentEvent::adjacent_allocation_solved(
+                        &allocation,
+                        now.clone(),
+                    ));
+                }
+                if pref
+                    .preferred_berth_positions
+                    .as_ref()
+                    .is_some_and(|positions| !positions.is_empty())
+                {
+                    events.push(SeatAssignmentEvent::berth_preference_applied(
+                        &allocation,
+                        pref,
+                        now.clone(),
+                    ));
+                }
+            }
             if degraded {
                 events.push(SeatAssignmentEvent::adjacency_degradation(&allocation, now));
             }
@@ -686,10 +734,63 @@ impl SeatAllocation {
                 expires_at: Some(cmd.expires_at),
                 version: 1,
             };
-            return Ok((
-                allocation.clone(),
-                vec![SeatAssignmentEvent::standing_assigned(&allocation, now)],
+            let mut events = Vec::new();
+            if let Some(pref) = allocation.preferences.as_ref() {
+                if pref
+                    .adjacency_preference
+                    .is_some_and(|value| value != AdjacencyPreference::None)
+                    || pref.adjacency_group_ref.is_some()
+                {
+                    events.push(SeatAssignmentEvent::adjacency_group_created(
+                        &allocation,
+                        pref,
+                        now.clone(),
+                    ));
+                }
+                if pref
+                    .preferred_berth_positions
+                    .as_ref()
+                    .is_some_and(|positions| !positions.is_empty())
+                {
+                    events.push(SeatAssignmentEvent::berth_preference_recorded(
+                        &allocation,
+                        pref,
+                        now.clone(),
+                    ));
+                }
+            }
+            events.push(SeatAssignmentEvent::standing_assigned(
+                &allocation,
+                now.clone(),
             ));
+            if let Some(pref) = allocation.preferences.as_ref() {
+                if pref
+                    .adjacency_preference
+                    .is_some_and(|value| value != AdjacencyPreference::None)
+                    || pref.adjacency_group_ref.is_some()
+                {
+                    events.push(SeatAssignmentEvent::adjacent_allocation_solved(
+                        &allocation,
+                        now.clone(),
+                    ));
+                    events.push(SeatAssignmentEvent::adjacency_degradation(
+                        &allocation,
+                        now.clone(),
+                    ));
+                }
+                if pref
+                    .preferred_berth_positions
+                    .as_ref()
+                    .is_some_and(|positions| !positions.is_empty())
+                {
+                    events.push(SeatAssignmentEvent::berth_preference_applied(
+                        &allocation,
+                        pref,
+                        now.clone(),
+                    ));
+                }
+            }
+            return Ok((allocation, events));
         }
         Err(SeatAssignmentError::DomainRuleViolation(
             "no compatible SeatUnit exists and STANDING is not accepted".into(),
@@ -988,10 +1089,80 @@ impl SeatAssignmentEvent {
             payload: json!({"seatAllocationId":a.seat_allocation_id,"segmentBookingId":a.segment_booking_id,"journeyOrderId":a.journey_order_id,"travelerRef":a.traveler_ref,"segmentRef":a.segment_ref,"scheduledServiceRef":a.scheduled_service_ref,"serviceDate":a.service_date,"capacityHoldId":a.capacity_hold_id,"capacityUnitRef":a.capacity_unit_ref,"interval":a.interval,"seatRef":a.seat_ref,"preferences":a.preferences,"assignedAt":t,"expiresAt":a.expires_at,"status":"STANDING"}),
         }
     }
+    fn adjacency_group_id(a: &SeatAllocation) -> String {
+        format!(
+            "adj-{}",
+            folded_uuid_v7(
+                a.preferences
+                    .as_ref()
+                    .and_then(|p| p.adjacency_group_ref.as_deref())
+                    .unwrap_or(&a.seat_allocation_id)
+            )
+        )
+    }
+    fn berth_preference_request_id(a: &SeatAllocation) -> String {
+        format!(
+            "bpr-{}",
+            folded_uuid_v7(&format!(
+                "{}:{}:{}",
+                a.segment_booking_id,
+                a.traveler_ref,
+                a.preferences
+                    .as_ref()
+                    .map(|p| p.preference_version.as_str())
+                    .unwrap_or("none")
+            ))
+        )
+    }
+    fn adjacency_group_created(a: &SeatAllocation, p: &SeatPreferences, t: String) -> Self {
+        let mut travelers = vec![a.traveler_ref.clone()];
+        travelers.sort();
+        Self::Event {
+            event_type: "AdjacencyGroupCreated",
+            payload: json!({"adjacencyGroupId":Self::adjacency_group_id(a),"journeyOrderId":a.journey_order_id,"segmentRef":a.segment_ref,"travelerRefs":travelers,"preference":p.adjacency_preference.unwrap_or(AdjacencyPreference::Adjacent),"preferenceVersion":p.preference_version,"status":"OPEN","createdAt":t}),
+        }
+    }
+    fn adjacent_allocation_solved(a: &SeatAllocation, t: String) -> Self {
+        let degraded = a.seat_ref.degraded;
+        let mut payload = json!({"adjacencyGroupId":Self::adjacency_group_id(a),"journeyOrderId":a.journey_order_id,"segmentRef":a.segment_ref,"seatAllocationIds":[a.seat_allocation_id],"result":if degraded {"PARTIALLY_SATISFIED"} else {"SATISFIED"},"degraded":degraded,"solvedAt":t,"status":if degraded {"PARTIALLY_SATISFIED"} else {"SATISFIED"}});
+        if let Some(reason) = a.seat_ref.degradation_reason {
+            payload["degradationReason"] = json!(reason.as_contract());
+        }
+        Self::Event {
+            event_type: "AdjacentAllocationSolved",
+            payload,
+        }
+    }
     fn adjacency_degradation(a: &SeatAllocation, t: String) -> Self {
         Self::Event {
             event_type: "AdjacencyDegradationAccepted",
-            payload: json!({"adjacencyGroupId":format!("adj-{}", folded_uuid_v7(a.preferences.as_ref().and_then(|p|p.adjacency_group_ref.as_deref()).unwrap_or(&a.seat_allocation_id))),"journeyOrderId":a.journey_order_id,"seatAllocationIds":[a.seat_allocation_id],"acceptedByRef":"POLICY","degradationReason":a.seat_ref.degradation_reason.unwrap_or(DegradationReason::NoAdjacentBlock).as_contract(),"acceptedAt":t}),
+            payload: json!({"adjacencyGroupId":Self::adjacency_group_id(a),"journeyOrderId":a.journey_order_id,"seatAllocationIds":[a.seat_allocation_id],"acceptedByRef":"POLICY","degradationReason":a.seat_ref.degradation_reason.unwrap_or(DegradationReason::NoAdjacentBlock).as_contract(),"acceptedAt":t}),
+        }
+    }
+    fn berth_preference_recorded(a: &SeatAllocation, p: &SeatPreferences, t: String) -> Self {
+        Self::Event {
+            event_type: "BerthPreferenceRecorded",
+            payload: json!({"berthPreferenceRequestId":Self::berth_preference_request_id(a),"segmentBookingId":a.segment_booking_id,"travelerRef":a.traveler_ref,"preferredBerthPositions":p.preferred_berth_positions.clone().unwrap_or_default(),"sameCompartment":p.same_compartment.unwrap_or(false),"preferenceVersion":p.preference_version,"recordedAt":t}),
+        }
+    }
+    fn berth_preference_applied(a: &SeatAllocation, p: &SeatPreferences, t: String) -> Self {
+        let requested = p.preferred_berth_positions.clone().unwrap_or_default();
+        let matched = a
+            .seat_ref
+            .berth_position
+            .is_some_and(|assigned| requested.contains(&assigned));
+        let degraded = !requested.is_empty() && !matched;
+        let mut payload = json!({"berthPreferenceRequestId":Self::berth_preference_request_id(a),"seatAllocationId":a.seat_allocation_id,"travelerRef":a.traveler_ref,"requestedPositions":requested,"degraded":degraded,"appliedAt":t});
+        if let Some(position) = a.seat_ref.berth_position {
+            payload["assignedPosition"] = json!(position);
+        }
+        if degraded {
+            payload["degradationReason"] =
+                json!(DegradationReason::BerthPreferenceUnavailable.as_contract());
+        }
+        Self::Event {
+            event_type: "BerthPreferenceApplied",
+            payload,
         }
     }
     fn seat_allocation_confirmed(

@@ -2130,6 +2130,8 @@ struct EntitlementVoidedPayload {
     policy: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     business_case_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seat_allocation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2882,6 +2884,10 @@ impl InMemoryEntitlementService {
                 reason: reason_to_contract(&reason),
                 policy: policy_to_contract(&policy),
                 business_case_ref: Some(case_id.to_string()),
+                seat_allocation_id: entitlement_details
+                    .seat_ref
+                    .as_ref()
+                    .map(|seat| seat.seat_allocation_id.clone()),
             };
             state.pending_events.insert(
                 pending_key.clone(),
@@ -3204,6 +3210,10 @@ impl EntitlementApi for InMemoryEntitlementService {
                 reason: command.reason.to_contract(),
                 policy: command.policy.to_contract(),
                 business_case_ref: command.business_case_ref.clone(),
+                seat_allocation_id: entitlement_details
+                    .seat_ref
+                    .as_ref()
+                    .map(|seat| seat.seat_allocation_id.clone()),
             };
             let response = VoidEntitlementResponse {
                 entitlement_id,

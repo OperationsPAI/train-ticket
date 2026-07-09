@@ -408,6 +408,7 @@ impl PostgresEntitlementService {
             let policy = action.policy.clone();
             let mut entitlement = snapshot
                 .data
+                .clone()
                 .try_into_domain()
                 .map_err(inbound_from_api_error)?;
             let events = entitlement
@@ -428,11 +429,17 @@ impl PostgresEntitlementService {
             self.save_entitlement(&mut tx, &entitlement, Some(snapshot.version))
                 .await
                 .map_err(inbound_from_api_error)?;
+            let seat_allocation_id = snapshot
+                .data
+                .seat_ref
+                .as_ref()
+                .map(|seat| seat.seat_allocation_id.clone());
             let outbound = entitlement_voided_envelope(
                 &entitlement,
                 &reason,
                 &policy,
                 Some(case_id.to_string()),
+                seat_allocation_id,
                 &envelope.correlation_id,
             )
             .map_err(inbound_from_api_error)?;
@@ -648,12 +655,9 @@ impl PostgresEntitlementService {
             .map_err(to_api_storage)?;
         tx.commit().await.map_err(to_api_storage)?;
 
-        let seat_ref = allocate_seat_for_issue(
-            command,
-            seat_key.as_deref().unwrap_or(key),
-            correlation_id,
-        )
-        .await?;
+        let seat_ref =
+            allocate_seat_for_issue(command, seat_key.as_deref().unwrap_or(key), correlation_id)
+                .await?;
 
         let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
         let issued_at = current_rfc3339();
@@ -727,7 +731,7 @@ impl PostgresEntitlementService {
             .load_entitlement(&mut tx, entitlement_id)
             .await?
             .ok_or_else(|| ApiErrorKind::NotFound("entitlement not found".into()))?;
-        let mut aggregate = snapshot.data.try_into_domain()?;
+        let mut aggregate = snapshot.data.clone().try_into_domain()?;
         let business_case_ref = command
             .business_case_ref
             .clone()
@@ -764,6 +768,11 @@ impl PostgresEntitlementService {
             &reason,
             &policy,
             command.business_case_ref.clone(),
+            snapshot
+                .data
+                .seat_ref
+                .as_ref()
+                .map(|seat| seat.seat_allocation_id.clone()),
             correlation_id,
         )?;
         OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
@@ -1330,6 +1339,7 @@ fn entitlement_voided_envelope(
     reason: &VoidReason,
     policy: &VoidPolicy,
     business_case_ref: Option<String>,
+    seat_allocation_id: Option<String>,
     correlation_id: &str,
 ) -> PgResult<application::EventEnvelope> {
     let voided_at = current_rfc3339();
@@ -1351,6 +1361,7 @@ fn entitlement_voided_envelope(
             reason: reason_to_contract(reason),
             policy: policy_to_contract(policy),
             business_case_ref,
+            seat_allocation_id,
         })
         .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?,
     )

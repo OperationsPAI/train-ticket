@@ -33,6 +33,8 @@ PREF_ADJ='{"acceptStanding":false,"adjacencyPreference":"ADJACENT","adjacencyGro
 B1=$(alloc_body "sb-$(uuid7)" "tvl-$(uuid7)" "hold-$(uuid7)" "$PREF_ADJ"); seat_req POST /api/v1/internal/seat-allocations "$B1"; check_code 201 "allocate first adjacent traveler"; A1=$(jget "['seatAllocationId']"); C1=$(jget "['seatRef']['coachNo']")
 B2=$(alloc_body "sb-$(uuid7)" "tvl-$(uuid7)" "hold-$(uuid7)" "$PREF_ADJ"); seat_req POST /api/v1/internal/seat-allocations "$B2"; check_code 201 "allocate second adjacent traveler"; C2=$(jget "['seatRef']['coachNo']"); DEG=$(jget "['seatRef']['degraded']")
 [ "$C1" = "$C2" ] || [ "$DEG" = True ] || [ "$DEG" = true ] && ok "adjacency satisfied or degradation fact returned" || bad "adjacency neither satisfied nor degraded"
+k exec "$(redis_pod)" -- redis-cli --no-raw XREVRANGE events:seat-assignment + - COUNT 120 >/tmp/seat-events.txt 2>/dev/null || true
+grep -q 'AdjacencyGroupCreated' /tmp/seat-events.txt && grep -q 'AdjacentAllocationSolved' /tmp/seat-events.txt && ok "adjacency contract events emitted" || bad "missing adjacency contract events"
 PREF_ST='{"acceptStanding":true,"preferenceVersion":"pv-standing"}'
 B3=$(alloc_body "sb-$(uuid7)" "tvl-$(uuid7)" "hold-$(uuid7)" "$PREF_ST"); seat_req POST /api/v1/internal/seat-allocations "$B3"; check_code 201 "full SeatMap returns STANDING"; TYPE=$(jget "['seatRef']['allocationType']"); [ "$TYPE" = STANDING ] && ok "STANDING success seatRef" || bad "expected STANDING got $TYPE"
 seat_req GET "/api/v1/seat-allocations/$A1"; HOLD=$(jget "['capacityHoldId']")
