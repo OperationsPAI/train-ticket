@@ -142,17 +142,25 @@ Seat Assignment 负责在出票时刻回答“具体哪个座/铺”。Capacity 
 | `BuildSeatMap` | `SeatMap` | `SeatMapBuilt` / `SeatMapBuildFailed` | `scheduledServiceRef + serviceDate + compositionVersion + buildSourceRef` |
 | `PublishSeatMapVersion` | `SeatMap` | `SeatMapVersionPublished` | `seatMapId + seatMapVersion + publishRequestId` |
 | `RetireSeatMapVersion` | `SeatMap` | `SeatMapVersionRetired` | `seatMapId + seatMapVersion + retireReason + sourceEventId` |
+| `MarkSeatUnitUnavailable` | `SeatMap` | `SeatUnitUnavailableMarked` | `seatMapId + seatMapVersion + seatUnitRef + unavailableReason + sourceEventId` |
+| `ReopenSeatUnit` | `SeatMap` | `SeatUnitReopened` | `seatMapId + seatMapVersion + seatUnitRef + reopenReason + sourceEventId` |
 | `CreateAdjacencyGroup` | `AdjacencyGroup` | `AdjacencyGroupCreated` | `journeyOrderId + segmentRef + sortedTravelerRefs + preferenceVersion` |
 | `RecordBerthPreference` | `BerthPreferenceRequest` | `BerthPreferenceRecorded` | `segmentBookingId + travelerRef + preferenceVersion` |
+| `CancelBerthPreference` | `BerthPreferenceRequest` | `BerthPreferenceCancelled` | `berthPreferenceRequestId + cancelReason + sourceEventId` |
 | `AllocateSeat` | `SeatAllocation` | `SeatAllocated` / `SeatAllocationFailed` | `segmentBookingId + travelerRef + capacityHoldId + allocationPurpose` |
 | `AssignStanding` | `SeatAllocation` | `StandingAssigned` | `segmentBookingId + travelerRef + capacityHoldId + standingPolicyVersion` |
 | `SolveAdjacentAllocation` | `AdjacencyGroup` | `AdjacentAllocationSolved` / `SeatAllocationFailed` | `adjacencyGroupId + seatMapVersion + capacityHoldSetHash + solveAttemptNo` |
+| `AcceptAdjacencyDegradation` | `AdjacencyGroup` | `AdjacencyDegradationAccepted` | `adjacencyGroupId + acceptedByRef + degradationVersion + sourceEventId` |
+| `CancelAdjacencyGroup` | `AdjacencyGroup` | `AdjacencyGroupCancelled` | `adjacencyGroupId + cancelReason + sourceEventId` |
 | `ApplyBerthPreference` | `BerthPreferenceRequest`, `SeatAllocation` | `BerthPreferenceApplied` / `SeatAllocationFailed` | `berthPreferenceRequestId + allocationAttemptId` |
 | `ConfirmSeatAllocation` | `SeatAllocation` | `SeatAllocationConfirmed` | `seatAllocationId + entitlementId + issueEventId` |
 | `ReleaseSeatAllocation` | `SeatAllocation` | `SeatAllocationReleased` | `seatAllocationId + releaseReason + sourceEventId` |
 | `ExpireSeatAllocation` | `SeatAllocation` | `SeatAllocationExpired` | `seatAllocationId + capacityHoldExpiredEventId` |
+| `FailSeatAllocation` | `SeatAllocation` | `SeatAllocationFailed` | `seatAllocationId + failureReason + sourceEventId` |
 | `MarkSeatAllocationMissed` | `SeatAllocation` | `SeatAllocationMissed` | `seatAllocationId + missedReason + sourceEventId` |
 | `ReassignSeat` | `SeatAllocation` | `SeatReassigned` | `seatAllocationId + oldSeatUnitRef + newSeatUnitRef + reassignCaseId` |
+| `AppendSeatAllocationLedgerEvent` | `SeatAllocationLedger` | `SeatAllocationLedgerAppended` | `seatAllocationId + sourceEventId + ledgerEventType` |
+| `AppendSeatAllocationCorrection` | `SeatAllocationLedger` | `SeatAllocationCorrectionAppended` | `seatAllocationId + correctionCaseId + correctionVersion` |
 | `DetectSeatAllocationDiscrepancy` | `SeatAllocationLedger` | `SeatAllocationDiscrepancyDetected` | `seatMapVersion + detectionRunId` |
 
 语义：`SeatAllocated` 不表示已支付或出票；`StandingAssigned` 不创建伪 SeatUnit；`SeatAllocationReleased` 不替代 `CapacityReleased`；`SeatAllocationFailed` 原因至少覆盖 `NO_COMPATIBLE_SEAT`、`OVERLAPPING_ALLOCATION`、`CAPACITY_REFERENCE_MISSING`、`PREFERENCE_UNSATISFIABLE`、`SEAT_MAP_VERSION_STALE`。
