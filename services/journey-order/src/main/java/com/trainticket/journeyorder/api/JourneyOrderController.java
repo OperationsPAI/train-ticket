@@ -48,7 +48,7 @@ public class JourneyOrderController {
 
         var appRequest = new com.trainticket.journeyorder.application.port.in.JourneyOrderRequest(
             body.accountId(), body.offerId(), body.offerVersion(),
-            body.travelerRefs(), body.segmentRefs()
+            body.travelerRefs(), body.segmentRefs(), body.journeyDate(), body.productCode()
         );
 
         JourneyOrderResult result = orderService.createOrder(appRequest, idempotencyKey, correlationId);

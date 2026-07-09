@@ -10,6 +10,7 @@ import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
+import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
@@ -50,12 +51,18 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final JourneyOrderStateRepository stateRepository;
     private final EventPublisher eventPublisher;
     private final Clock clock;
+    private final IdentityVerificationPort identityVerification;
 
     @Autowired
-    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository) {
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository, IdentityVerificationPort identityVerification) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.stateRepository = stateRepository;
+        this.identityVerification = identityVerification;
+    }
+
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository) {
+        this(eventPublisher, clock, stateRepository, (request, orderIntentId, idempotencyKey, correlationId) -> new IdentityVerificationPort.PreOrderCheckResult("PASS", "poc-disabled"));
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock) {
@@ -79,6 +86,15 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
 
         AccountOrderGate.assertCanCreateOrder(request.accountId(), stateRepository.findAccountState(request.accountId()));
+        String orderIntentId = orderIntentId(idempotencyKey, request);
+        String identityIdempotencyKey = identityIdempotencyKey(idempotencyKey, request);
+        IdentityVerificationPort.PreOrderCheckResult identityResult = identityVerification.preOrderCheck(request, orderIntentId, identityIdempotencyKey, correlationId);
+        if (identityResult.rejected() || identityResult.manualReviewRequired()) {
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "Identity verification is not passed for all travelers");
+        }
+        if (!identityResult.accepted()) {
+            throw new ApiException(ApiErrorCode.UNAVAILABLE, "Identity verification did not return PASS");
+        }
 
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
@@ -285,6 +301,26 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private static String cancelFingerprint(CancelJourneyOrderRequest request) {
         return Objects.requireNonNull(request.orderId()) + "|" + Objects.requireNonNull(request.reason());
+    }
+
+    private static String orderIntentId(String idempotencyKey, JourneyOrderRequest request) {
+        return "oint-" + uuidFromMaterial("journey-order:intent:" + Objects.requireNonNull(idempotencyKey) + ":" + createFingerprint(request));
+    }
+
+    private static String identityIdempotencyKey(String idempotencyKey, JourneyOrderRequest request) {
+        return uuidFromMaterial("journey-order:identity-pre-order:" + Objects.requireNonNull(idempotencyKey) + ":" + createFingerprint(request));
+    }
+
+    private static String uuidFromMaterial(String material) {
+        byte[] digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256").digest(material.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
+        digest[6] = (byte) ((digest[6] & 0x0f) | 0x70);
+        digest[8] = (byte) ((digest[8] & 0x3f) | 0x80);
+        return new UUID(java.nio.ByteBuffer.wrap(digest, 0, 8).getLong(), java.nio.ByteBuffer.wrap(digest, 8, 8).getLong()).toString();
     }
 
     public static String toApiStatus(JourneyOrder order) {
