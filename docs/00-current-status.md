@@ -27,8 +27,8 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 | Language | Services |
 |---|---|
 | Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, journey-order, payment, post-sales, traveler-profile, wallet-promotion |
-| Python (FastAPI) | fare-pricing, legacy-acl, reporting, risk-compliance, trip-planning |
-| Node (TS) | account, customer-service, notification, offer-management |
+| Python (FastAPI) | disruption-recovery, fare-pricing, legacy-acl, reporting, risk-compliance, trip-planning |
+| Node (TS) | account, ancillary-service, customer-service, notification, offer-management |
 | Go | dispatch, fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
 | Rust | capacity-availability, entitlement-ticketing, waitlist |
 
@@ -40,14 +40,21 @@ under persisted idempotency keys — staff reservation/ticketing steps stay
 staff-driven. `deploy/e2e/14-waitlist.sh` covers the full lifecycle and is
 part of the restart certification (latest run: 250/0 across 24 services).
 
+Wave 17 activated **disruption-recovery** (ops-reported incidents,
+RecoveryCase state machine, REFUND executed through post-sales with event
+convergence, COMPENSATION through wallet-promotion `DISRUPTION_COMP`,
+reaccommodation deferred to the transfer wave) and **ancillary-service**
+(catalog/offer/order-item lifecycle with catalog pricing and
+JourneyOrderCancelled linkage). Restart certification now spans 28 services
+and suite 01-18 (latest run: 410/0).
+
 Wave 16 activated **wallet-promotion** (benefit instruments with a 7-state
 lifecycle, wallet ledgers, idempotent redemption; combined payment explicitly
 deferred) and **dispatch** (full ride lifecycle behind a simulated supply
 boundary, FAILED timeout closure added to the contract during the gate), plus
 the trip-planning OCC fix. e2e 15/16 cover both; the restart certification now
-spans 26 services and suite 01-16 (latest run: 296/0). `services/` retains
-three future-scope skeletons per ADR-0002: ancillary-service,
-disruption-recovery, transfer-management.
+spans 26 services and suite 01-16 (latest run: 296/0). `services/` retains one
+future-scope skeleton per ADR-0002: transfer-management (wave 18).
 
 ## Verification baseline
 
