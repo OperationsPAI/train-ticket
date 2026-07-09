@@ -53,13 +53,13 @@ context.
 | 4 | `fare-pricing` | `events:fare-pricing` | FareRuleSetPublished, FareRuleSetSuperseded |
 | 5 | `trip-planning` | `events:trip-planning` | ItineraryProposed |
 | 6 | `offer-management` | `events:offer-management` | OfferQuoted, OfferExpired, OfferAccepted, OfferDeclined |
-| 7 | `journey-order` | `events:journey-order` | JourneyOrderCreated, JourneyOrderPendingPayment, JourneyOrderConfirmed, JourneyOrderCancelled, JourneyOrderAdjusted |
+| 7 | `journey-order` | `events:journey-order` | JourneyOrderCreated, JourneyOrderPendingPayment, JourneyOrderConfirmed, JourneyOrderCancelled, JourneyOrderPostSalesAdjusted |
 | 8 | `booking-orchestration` | `events:booking-orchestration` | BookingSagaStarted, SegmentReservationRequested, SegmentReservationConfirmed, SegmentReservationFailed, SegmentTicketed, SegmentBookingCancelled |
 | 9 | `payment` | `events:payment` | PaymentIntentCreated, PaymentCaptured, PaymentIntentFailed, PaymentExpired, RefundRequested, RefundSettled, RefundFailed |
 | 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementSuspended, EntitlementReinstated |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved, SegmentArrived, SegmentDelayed, SegmentCancelled |
-| 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied |
+| 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied, PostSalesFailed |
 | 14 | `notification` | `events:notification` | NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled |
 | 15 | `traveler-profile` | `events:traveler-profile` | TravelerSnapshotUpdated, TravelerDocumentVerified, TravelerEligibilityChanged |
 | 16 | `risk-compliance` | `events:risk-compliance` | RiskAssessmentResult, RiskBlockApplied, RiskBlockLifted |
@@ -76,6 +76,7 @@ context.
 | 26 | `disruption-recovery` | `events:disruption-recovery` | DisruptionReported, IncidentOpened, RecoveryCaseOpened, RecoveryOptionsGenerated, RecoveryOptionSelected, RecoveryExecutionStarted, RecoveryCompleted, RecoveryFailed, RecoveryCaseClosed, ServiceAlertPublished |
 | 27 | `ancillary-service` | `events:ancillary-service` | AncillaryCatalogItemPublished, AncillaryCatalogItemSuspended, AncillaryCatalogItemSuperseded, AncillaryOfferQuoted, AncillaryOfferExpired, AncillaryOrderItemSelected, AncillaryOrderItemPendingConfirmation, AncillaryOrderItemConfirmed, AncillaryOrderItemFulfillmentReady, AncillaryOrderItemFulfilled, AncillaryOrderItemFailed, AncillaryOrderItemCancelled, AncillaryOrderItemRefundPending, AncillaryOrderItemRefunded, AncillaryFulfillmentFactRecorded |
 | 28 | `transfer-management` | `events:transfer-management` | TransferPlanCreated, TransferPlanEvaluated, TransferPlanExpired, ConnectionRegistered, TransferRiskEvaluated, TransferAtRisk, ConnectionMissed, ConnectionRecovered, ConnectionRecoveryFailed, ConnectionContractProposed, ConnectionContractConfirmed, ConnectionContractWithdrawn, MctRuleCreated, MctRulePublished, MctRuleRetired |
+| 29 | `invoicing` | `events:invoicing` | InvoiceTitleCreated, InvoiceTitleUpdated, DefaultInvoiceTitleSet, InvoiceTitleDeactivated, InvoiceRequested, InvoiceAmountBasisAttached, EInvoiceSubmitted, EInvoiceAccepted, EInvoiceRejected, EInvoiceFailed, EInvoiceIssued, EInvoiceExpired, RedFlushRequested, RedFlushSubmitted, RedFlushAccepted, RedFlushRejected, RedFlushFailed, RedFlushCompleted, RefundWithoutRedFlushObserved |
 
 ### Dead-Letter Streams
 
@@ -285,6 +286,15 @@ plus notification/finance/reporting fan-in.
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
 | 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. RULING (2026-07-09): for self-executed `REACCOMMODATION`, `RecoveryCompleted` for an already `RECOVERED` connection and matching `caseId` is acknowledged as an idempotent no-op. |
+| 59 | `events:journey-order` | `invoicing` | JourneyOrderConfirmed builds invoice eligibility and read-only itinerary receipt projections; JourneyOrderPostSalesAdjusted updates invoiceable/read-model summaries without mutating issued invoices. |
+| 60 | `events:finance-settlement` | `invoicing` | RevenueRecognized, RevenueRecognitionReversed, and InvoiceGenerated provide the authoritative amount basis for blue invoice issuance and red-flush checks. |
+| 61 | `events:post-sales` | `invoicing` | PostSalesApproved detects refund intent for local red-flush work; PostSalesApplied is the existing true applied-refund fact used to observe missing red flush; PostSalesFailed cancels unsubmitted local red-flush work when no refund happened. RULING (2026-07-10): Post Sales adds no same-wave pre-refund blocker hook. |
+| 62 | `events:admin-audit` | `invoicing` | ManualActionApproved/ManualActionRejected/ManualActionExecuted govern manual invoice and red-flush exception handling. |
+| 63 | `events:invoicing` | `notification` | EInvoiceAccepted/EInvoiceRejected/EInvoiceFailed/EInvoiceIssued and red-flush completion/failure facts trigger safe user or enterprise-contact notifications. |
+| 64 | `events:invoicing` | `customer-service` | Invoice title, e-invoice, red-flush, and violation facts append safe support timeline entries. |
+| 65 | `events:invoicing` | `finance-settlement` | EInvoiceIssued and RedFlushCompleted provide tax-document lifecycle references for finance settlement read models; Finance does not recompute invoice amounts from them. |
+| 66 | `events:invoicing` | `admin-audit` | RefundWithoutRedFlushObserved records governance/audit observations for refunds applied before red flush completion. |
+| 67 | `events:invoicing` | `reporting` | Invoicing lifecycle, SIM outcome, red-flush timeliness, and violation metrics. |
 
 ### Cross-Cutting Consumers
 
@@ -293,9 +303,27 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
-| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion` | Revenue recognition, reconciliation, invoice generation, and Wallet / Promotion benefit-cost attribution. |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion` | User-facing notification triggers including Wallet / Promotion issued, expired, and revoked benefit touchpoints. |
+| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves; includes `events:invoicing` for invoice/SIM/red-flush metrics | Business metrics, funnel analysis, operational dashboards |
+| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion`, `events:invoicing` | Revenue recognition, reconciliation, invoice generation, Wallet / Promotion benefit-cost attribution, and tax-document lifecycle read models. |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:invoicing` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints and invoice/red-flush status touchpoints. |
+
+### Invoicing subscriptions and exclusions
+
+`events:invoicing` is registered as an active produced stream in this ADR-0003
+Wave-A contract. Active downstream consumers are Notification, Customer Service,
+Finance Settlement, Admin & Audit, and Reporting. Post Sales consumption of
+`RedFlushCompleted` is explicitly deferred in this wave. Invoicing actively
+consumes Journey Order, Finance Settlement, Post Sales, and Admin & Audit streams as listed in
+the subscription table. Payment does not consume `events:invoicing` and
+Invoicing does not consume `events:payment` in this wave; refund-money authority
+remains with Payment, while the existing Post Sales `PostSalesApplied` fact is
+the observed applied-refund business fact. No Provider Integration, Capacity,
+Entitlement, Fare Pricing, Offer, Traveler Profile, Wallet, Dispatch, Ancillary,
+Disruption Recovery, Transfer Management, or Waitlist consumer is added by the
+Invoicing contract. 需同波实现: the active subscription rows require Invoicing-side
+consumer/producer registration, consumed-event deduplication, red-flush
+read-model handlers, and SIM outcome event publishing; they require no same-wave
+Post Sales blocking-hook code or consumer registration.
 
 ### Disruption Recovery subscriptions
 

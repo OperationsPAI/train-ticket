@@ -37,6 +37,7 @@ docs/08-contracts/
     ├── waitlist.md
     ├── dispatch.md
     ├── wallet-promotion.md
+    ├── invoicing.md
     └── finance-settlement-events.md
 ```
 
