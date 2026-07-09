@@ -76,6 +76,7 @@ context.
 | 26 | `disruption-recovery` | `events:disruption-recovery` | DisruptionReported, IncidentOpened, RecoveryCaseOpened, RecoveryOptionsGenerated, RecoveryOptionSelected, RecoveryExecutionStarted, RecoveryCompleted, RecoveryFailed, RecoveryCaseClosed, ServiceAlertPublished |
 | 27 | `ancillary-service` | `events:ancillary-service` | AncillaryCatalogItemPublished, AncillaryCatalogItemSuspended, AncillaryCatalogItemSuperseded, AncillaryOfferQuoted, AncillaryOfferExpired, AncillaryOrderItemSelected, AncillaryOrderItemPendingConfirmation, AncillaryOrderItemConfirmed, AncillaryOrderItemFulfillmentReady, AncillaryOrderItemFulfilled, AncillaryOrderItemFailed, AncillaryOrderItemCancelled, AncillaryOrderItemRefundPending, AncillaryOrderItemRefunded, AncillaryFulfillmentFactRecorded |
 | 28 | `transfer-management` | `events:transfer-management` | TransferPlanCreated, TransferPlanEvaluated, TransferPlanExpired, ConnectionRegistered, TransferRiskEvaluated, TransferAtRisk, ConnectionMissed, ConnectionRecovered, ConnectionRecoveryFailed, ConnectionContractProposed, ConnectionContractConfirmed, ConnectionContractWithdrawn, MctRuleCreated, MctRulePublished, MctRuleRetired |
+| 29 | `identity-verification` | `events:identity-verification` | CredentialRegistered, VerificationCaseStarted, VerificationSubmittedToSim, VerificationPassed, VerificationFailed, EligibilityCertificateRegistered, EligibilityCertificateVerified, EligibilityUsageReserved, EligibilityUsageConfirmed, EligibilityUsageReleased, PurchaseLimitFactRecorded, PurchaseLimitFactConfirmed, PurchaseLimitFactReleased, PurchaseLimitFactMissed, PurchaseLimitFactFailed |
 
 ### Dead-Letter Streams
 
@@ -285,6 +286,8 @@ plus notification/finance/reporting fan-in.
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
 | 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. RULING (2026-07-09): for self-executed `REACCOMMODATION`, `RecoveryCompleted` for an already `RECOVERED` connection and matching `caseId` is acknowledged as an idempotent no-op. |
+| 59 | `events:traveler-profile` | `identity-verification` | TravelerSnapshotUpdated links traveler snapshots to CredentialRecord read models; Identity Verification does not copy full Traveler Profile master data. |
+| 60 | `events:identity-verification` | *(none — downstream consumers deferred)* | ADR-0003 wave A registers identity-verification facts. Journey Order and Fare & Pricing use synchronous HTTP hooks/read queries in this wave. Risk & Compliance consumption of PurchaseLimitFact* and IdentityCluster facts is future-scope and explicitly not active in this wave. |
 
 ### Cross-Cutting Consumers
 
@@ -293,7 +296,7 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
+| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, `events:transfer-management`, and `events:identity-verification` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion` | Revenue recognition, reconciliation, invoice generation, and Wallet / Promotion benefit-cost attribution. |
 | `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion` | User-facing notification triggers including Wallet / Promotion issued, expired, and revoked benefit touchpoints. |
 
@@ -314,6 +317,12 @@ HTTP (`POST /api/v1/connections/{connectionId}/reaccommodate`); this does not ad
 a new subscription row. The resulting `ConnectionRecovered` event carries
 `replacementConnectionId` and replacement-window fields rather than introducing a
 new `ConnectionReaccommodated` event.
+
+### Deferred Identity Verification Subscriptions
+
+`events:identity-verification` is registered as a produced stream in this contract. In ADR-0003 wave A there is no active downstream consumer group for this stream: Journey Order uses `POST /api/v1/identity-verification/pre-order-checks`, Fare & Pricing uses the read-only eligibility-certificate query, and Risk & Compliance consumption of `PurchaseLimitFactRecorded`, `PurchaseLimitFactConfirmed`, `PurchaseLimitFactReleased`, `PurchaseLimitFactMissed`, and `PurchaseLimitFactFailed` is future-scope. Reporting and Customer Service projections are likewise deferred unless a later wave activates their consumers.
+
+Identity Verification has one active inbound subscription in this wave: it consumes `TravelerSnapshotUpdated` from `events:traveler-profile` for traveler linkage and masked document references. Optional annotation from `RiskBlockApplied`/`RiskBlockLifted` remains a documented future extension and does not create a required subscription row in this wave.
 
 ### Deferred Ancillary Service Subscriptions
 
