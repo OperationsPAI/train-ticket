@@ -297,3 +297,19 @@ def test_missing_place_network_node_registration_returns_validation_failed() -> 
     res = client.post("/api/v1/connections", headers={"Idempotency-Key": idem()}, json={"transferPlanId": plan.json()["transferPlanId"], "itineraryRef": "iti-missing-node", "journeyOrderId": "jo-missing-node", "previousSegmentRef": "seg-a", "nextSegmentRef": "seg-b", "travelerRefs": ["trav-1"], "fromNodeRef": "missing", "toNodeRef": "sta", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-missing", "contractType": "SELF_TRANSFER", "window": {"plannedArrivalAt": rfc3339_utc(now), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=60)), "nextCutoffAt": rfc3339_utc(now + timedelta(minutes=50))}})
     assert res.status_code == 422, res.text
     assert res.json()["code"] == "VALIDATION_FAILED"
+
+
+def test_failed_activation_does_not_retire_the_active_policy() -> None:
+    client, store, _ = setup_client()
+    def make(version):
+        res = client.post("/api/v1/risk-policies", headers={"Idempotency-Key": idem()}, json={"version": version, "thresholds": {"tightMinutes": 15, "atRiskMinutes": 5}, "createdBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+        assert res.status_code == 201, res.text
+        return res.json()["riskPolicyId"]
+    p1, p2 = make("v1"), make("v2")
+    for pid in (p1, p2):
+        res = client.post(f"/api/v1/risk-policies/{pid}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+        assert res.status_code == 200, res.text
+    res = client.post(f"/api/v1/risk-policies/{p1}/activate", headers={"Idempotency-Key": idem()}, json={"activatedBy": {"actorType": "OPERATIONS", "actorId": "ops"}})
+    assert res.status_code == 412, res.text
+    res = client.get("/api/v1/risk-policies/active")
+    assert res.json()["riskPolicyId"] == p2, res.text

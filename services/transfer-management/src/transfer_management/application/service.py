@@ -503,10 +503,12 @@ class TransferManagementService:
         policy = self.store.get_risk_policy(policy_id)
         active = self._active_risk_policy()
         events: list[EventEnvelope] = []
+        # Validate the target BEFORE touching the currently active policy:
+        # a failed activation must not leave the system policy-less.
+        activated = policy.activate(at)
         if active and active.riskPolicyId != policy.riskPolicyId:
             retired = active.retire(at)
             self.store.save_risk_policy(retired)
-        activated = policy.activate(at)
         self.store.save_risk_policy(activated)
         if policy.status is not RiskPolicyStatus.ACTIVE:
             payload = activated.to_json() | {"activatedBy": actor.to_json(), "activatedAt": rfc3339_utc(at)}
