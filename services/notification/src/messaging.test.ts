@@ -278,4 +278,67 @@ describe("notification messaging integration surface", () => {
     assert.equal(await service.handleExternalTrigger(upstream), "ignored");
     assert.equal(publisher.envelopes.length, 0);
   });
+
+  it("notifies account recipients when wallet benefits are issued", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c226",
+      eventType: "BenefitIssued",
+      schemaVersion: 1,
+      producer: "wallet-promotion",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        benefitId: "ben-test-001",
+        accountId: "acc-test-001",
+        issuedAmount: { currency: "CNY", minorUnits: 1000 },
+        issuanceSource: "MANUAL_OPS",
+        issuedAt: "2026-07-05T10:00:00.000Z",
+      },
+    };
+
+    assert.equal(await service.handleExternalTrigger(upstream), "delivered");
+    assert.equal(publisher.envelopes[0].eventType, "NotificationScheduled");
+    assert.equal(publisher.envelopes[0].payload.recipientRef, "acc-test-001");
+    assert.equal(publisher.envelopes[0].payload.templateCode, "wallet_benefit_issued");
+  });
+
+  it("does not notify noisy wallet benefit redemptions", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c227",
+      eventType: "BenefitRedeemed",
+      schemaVersion: 1,
+      producer: "wallet-promotion",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: { benefitId: "ben-test-001", accountId: "acc-test-001" },
+    };
+
+    assert.equal(await service.handleExternalTrigger(upstream), "ignored");
+    assert.equal(publisher.envelopes.length, 0);
+  });
+
+  it("ack-skips unknown wallet event types", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const upstream: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c228",
+      eventType: "BenefitReserved",
+      schemaVersion: 1,
+      producer: "wallet-promotion",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: { benefitId: "ben-test-001", accountId: "acc-test-001" },
+    };
+
+    assert.equal(await service.handleExternalTrigger(upstream), "ignored");
+    assert.equal(publisher.envelopes.length, 0);
+  });
+
 });

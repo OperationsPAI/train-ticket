@@ -8,6 +8,7 @@ export const NOTIFICATION_SUBSCRIBED_STREAMS = Object.freeze([
   "events:payment",
   "events:entitlement-ticketing",
   "events:post-sales",
+  "events:wallet-promotion",
 ]);
 
 export function notificationConsumerName(instanceId = process.env.HOSTNAME ?? process.pid.toString()): string {

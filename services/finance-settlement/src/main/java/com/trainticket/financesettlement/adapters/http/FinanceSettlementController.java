@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.adapters.http;
 
+import com.trainticket.financesettlement.application.BenefitCostEntry;
 import com.trainticket.financesettlement.application.DomainEventEnvelopeMapper;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService.Page;
@@ -46,6 +47,16 @@ public class FinanceSettlementController {
     @ResponseStatus(HttpStatus.CREATED)
     public InvoiceResponse generateInvoice(@RequestBody GenerateInvoiceRequest request, HttpServletRequest httpRequest) {
         return InvoiceResponse.from(service.generateInvoice(request.orderId(), (String) httpRequest.getAttribute("X-Correlation-Id")));
+    }
+
+    @GetMapping("/api/v1/benefit-costs")
+    public PagedResponse<BenefitCostResponse> listBenefitCosts(
+        @RequestParam(required = false) String accountId,
+        @RequestParam(defaultValue = "20") int limit,
+        @RequestParam(defaultValue = "0") int offset
+    ) {
+        Page<BenefitCostEntry> page = service.listBenefitCosts(accountId, limit, offset);
+        return new PagedResponse<>(page.items().stream().map(BenefitCostResponse::from).toList(), page.total(), page.limit(), page.offset());
     }
 
     @GetMapping("/api/v1/reconciliation-cases")
@@ -106,6 +117,28 @@ public class FinanceSettlementController {
                 reconciliationCase.status().name(),
                 reconciliationCase.resolution(),
                 reconciliationCase.resolutionNote()
+            );
+        }
+    }
+
+    public record BenefitCostResponse(
+        String benefitId,
+        String accountId,
+        String issuanceSource,
+        String caseId,
+        Map<String, Object> amount,
+        String eventType,
+        Instant occurredAt
+    ) {
+        static BenefitCostResponse from(BenefitCostEntry entry) {
+            return new BenefitCostResponse(
+                entry.benefitId(),
+                entry.accountId(),
+                entry.issuanceSource(),
+                entry.caseId(),
+                DomainEventEnvelopeMapper.moneyPayload(entry.amount()),
+                entry.eventType(),
+                entry.occurredAt()
             );
         }
     }

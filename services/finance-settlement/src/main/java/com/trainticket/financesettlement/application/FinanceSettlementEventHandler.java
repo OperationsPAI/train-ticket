@@ -8,8 +8,10 @@ import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.Currency;
 import java.util.List;
 import java.util.Map;
@@ -92,6 +94,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     @Override
     @Transactional
     public HandlerResult handle(EventEnvelope envelope) {
+        validateEnvelopeIds(envelope);
         ConsumedEventLog log = ConsumedEventLog.record(envelope.eventId(), envelope.producer(), envelope.eventType(), clock.instant());
         boolean preRecorded = consumedEvents.guardsTransactionally();
         if (preRecorded && !consumedEvents.recordIfNew(log)) {
@@ -116,6 +119,14 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
                 envelope.eventId(), envelope.eventType(), ex.getClass().getName(), ex.getMessage(), ex);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.FATAL_FAILURE;
+        }
+    }
+
+    private static void validateEnvelopeIds(EventEnvelope envelope) {
+        PrefixedIds.requireEventId(envelope.eventId());
+        PrefixedIds.requireCorrelationId(envelope.correlationId());
+        if (envelope.causationId() != null) {
+            PrefixedIds.requireCausationId(envelope.causationId());
         }
     }
 
@@ -146,10 +157,59 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             case "PostSalesApplied" -> {
                 if (service != null) applyPostSales(envelope, payload);
             }
+            case "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired" -> recordBenefitCostEntry(envelope, payload);
             default -> {
                 // Streams contain event types that do not affect finance settlement.
             }
         }
+    }
+
+    private void recordBenefitCostEntry(EventEnvelope envelope, Map<String, Object> payload) {
+        String benefitId = text(payload, "benefitId");
+        BenefitCostEntry previousEntry = projections.findLatestBenefitCostEntryForBenefit(benefitId).orElse(null);
+        projections.saveBenefitCostEntry(new BenefitCostEntry(
+            envelope.eventId(),
+            benefitId,
+            text(payload, "accountId"),
+            optionalText(payload, "issuanceSource").orElse(previousEntry == null ? "UNKNOWN" : previousEntry.issuanceSource()),
+            optionalText(payload, "caseId").orElse(previousEntry == null ? null : previousEntry.caseId()),
+            benefitCostAmount(envelope.eventType(), payload),
+            normalizedBenefitCostEventType(envelope.eventType()),
+            benefitOccurredAt(envelope, payload)
+        ));
+    }
+
+    private static Money benefitCostAmount(String eventType, Map<String, Object> payload) {
+        return switch (eventType) {
+            case "BenefitIssued" -> money(payload.get("issuedAmount"), "issuedAmount");
+            case "BenefitRedeemed" -> money(payload.get("redeemedAmount"), "redeemedAmount");
+            case "BenefitRedemptionReversed" -> money(payload.get("reversedAmount"), "reversedAmount").negate();
+            case "BenefitRevoked" -> money(payload.get("revokedAmount"), "revokedAmount").negate();
+            case "BenefitExpired" -> money(payload.get("expiredAmount"), "expiredAmount").negate();
+            default -> throw new IllegalArgumentException("unsupported benefit cost event type " + eventType);
+        };
+    }
+
+    private static String normalizedBenefitCostEventType(String eventType) {
+        return switch (eventType) {
+            case "BenefitRedemptionReversed" -> "BenefitReversed";
+            default -> eventType;
+        };
+    }
+
+    private static Instant benefitOccurredAt(EventEnvelope envelope, Map<String, Object> payload) {
+        String timestampField = switch (envelope.eventType()) {
+            case "BenefitIssued" -> "issuedAt";
+            case "BenefitRedeemed" -> "redeemedAt";
+            case "BenefitRedemptionReversed" -> "reversedAt";
+            case "BenefitRevoked" -> "revokedAt";
+            case "BenefitExpired" -> "expiredAt";
+            default -> null;
+        };
+        if (timestampField == null) {
+            return envelope.occurredAt();
+        }
+        return optionalText(payload, timestampField).map(Instant::parse).orElse(envelope.occurredAt());
     }
 
     private void rememberPaymentIntentOrderReference(Map<String, Object> payload) {

@@ -170,6 +170,12 @@ function templateCodeFor(eventType: string): string | undefined {
       return "post_sales_failed";
     case "ChangeApplied":
       return "change_applied";
+    case "BenefitIssued":
+      return "wallet_benefit_issued";
+    case "BenefitExpired":
+      return "wallet_benefit_expired";
+    case "BenefitRevoked":
+      return "wallet_benefit_revoked";
     default:
       return undefined;
   }
@@ -205,6 +211,7 @@ function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.paymentIntentId)
     ?? stringValue(payload.refundId)
     ?? stringValue(payload.entitlementId)
+    ?? stringValue(payload.benefitId)
     ?? stringValue(payload.segmentBookingId)
     ?? stringValue(payload.caseId)
     ?? stringValue(payload.postSalesCaseId)

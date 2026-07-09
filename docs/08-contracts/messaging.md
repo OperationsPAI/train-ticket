@@ -279,8 +279,8 @@ plus notification/finance/reporting fan-in.
 | 50 | `events:journey-order` | `waitlist` | JourneyOrderConfirmed/JourneyOrderCancelled advance a matching request to FULFILLED or return it to QUEUED |
 | 51 | `events:waitlist` | `notification` | Waitlist success, failure/requeue, expiry, and cancellation user touchpoints |
 | 52 | `events:waitlist` | `reporting` | Waitlist lifecycle metrics and read models |
-| 53 | `events:wallet-promotion` | `finance-settlement` | Benefit issuance, reservation, redemption, release, expiry, revocation, and reversal facts for future cost attribution and settlement read models; concrete consumption deferred to a later wave |
-| 54 | `events:wallet-promotion` | `notification` | Benefit arrival, expiry, redemption, revocation, and reversal user touchpoints; concrete consumption deferred to a later wave |
+| 53 | `events:wallet-promotion` | `finance-settlement` | Benefit issuance, redemption, expiry, revocation, and reversal facts for active benefit cost attribution read models |
+| 54 | `events:wallet-promotion` | `notification` | Active benefit arrival, expiry, and revocation user touchpoints; BenefitRedeemed and reversal facts are ack-skipped to avoid noisy notifications |
 | 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
@@ -293,9 +293,9 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch`, `events:wallet-promotion`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
-| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales` | Revenue recognition, reconciliation, invoice generation. Wallet / Promotion benefit-cost events are a documented deferred consumer (events/wallet-promotion.md). |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:waitlist` | User-facing notification triggers. Wallet / Promotion benefit touchpoints are a documented deferred consumer. |
+| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
+| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion` | Revenue recognition, reconciliation, invoice generation, and Wallet / Promotion benefit-cost attribution. |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion` | User-facing notification triggers including Wallet / Promotion issued, expired, and revoked benefit touchpoints. |
 
 ### Disruption Recovery subscriptions
 

@@ -78,6 +78,31 @@ return the original response; reusing a key with a different body returns
 
 **Response (200):** Paginated response.
 
+
+### List Benefit Costs
+
+**GET** `/api/v1/benefit-costs?accountId={accountId}&limit=20&offset=0`
+
+Internal operations read endpoint for SYSTEM/OPS benefit cost attribution from
+Wallet / Promotion events. `accountId` is optional; when omitted the endpoint
+returns all cost entries in reverse occurrence order.
+
+**Response (200):** Paginated response with `items`, `total`, `limit`, and `offset`.
+
+Item fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `benefitId` | string | Wallet benefit ID. |
+| `accountId` | string | Benefit owner / cost attribution account. |
+| `issuanceSource` | enum | `MANUAL_OPS`, `POST_SALES_COMP`, `DISRUPTION_COMP`, or `UNKNOWN` when no prior issuance attribution is available for a lifecycle fact. |
+| `caseId` | string | Optional post-sales/disruption case reference; lifecycle events inherit the latest known benefit attribution when the event payload does not carry it. |
+| `amount` | Money | Signed cost delta in Money minorUnits. Issuance/redemption are positive; reversal/revocation/expiry are negative reductions. |
+| `eventType` | enum | `BenefitIssued`, `BenefitRedeemed`, `BenefitReversed`, `BenefitRevoked`, or `BenefitExpired`. |
+| `occurredAt` | RFC3339 UTC | Event payload timestamp parsed from wallet RFC3339 fields. |
+
+**Error codes:** `VALIDATION_FAILED`
+
 ### Get Invoice
 
 **GET** `/api/v1/invoices/{invoiceId}`

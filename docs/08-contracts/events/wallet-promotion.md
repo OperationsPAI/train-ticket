@@ -22,9 +22,10 @@ Activation-wave rulings:
   `DISRUPTION_COMP`.
 - Payment contracts are unchanged. Combination payment is not part of this wave;
   future note: a later wave will define the "cash remaining payable" interface.
-- Finance Settlement and Notification are event consumers at the contract
-  surface, but their concrete consumer implementations are deferred to a later
-  wave. Reporting may consume all events for read models and metrics.
+- Finance Settlement and Notification are active event consumers in wave 19.
+  Finance records benefit cost attribution; Notification sends issued/expired/
+  revoked touchpoints and intentionally ack-skips redemption noise. Reporting may
+  consume all events for read models and metrics.
 - Every event payload carries the `businessReason` that caused the state or
   balance change. Producers MUST NOT include unmasked documents or other
   sensitive personal data in reason descriptions.
@@ -90,7 +91,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | finance-settlement, notification, reporting |
 | **Trigger** | `IssueBenefit` command accepted from manual operations or post-sales compensation issuance request. |
 
 **Payload:**
@@ -123,7 +124,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | reporting; finance-settlement and notification ack-skip. |
 | **Trigger** | `ReserveBenefit` command freezes available benefit value for an order, post-sales workflow, or other business reference. |
 
 **Payload:**
@@ -151,7 +152,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | finance-settlement, reporting; notification intentionally ack-skips (redemption notifications are noisy). |
 | **Trigger** | `RedeemBenefit` command consumes benefit value and creates an idempotent `BenefitRedemption` record. |
 
 **Payload:**
@@ -181,7 +182,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | reporting; finance-settlement and notification ack-skip. |
 | **Trigger** | `ReleaseReservedBenefit` command releases a prior reservation because the business use ended or timed out. |
 
 **Payload:**
@@ -208,7 +209,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | finance-settlement, notification, reporting |
 | **Trigger** | `ExpireBenefit` scheduler/domain policy runs when `validUntil` has elapsed before the benefit reaches a terminal state. |
 
 **Payload:**
@@ -235,7 +236,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | finance-settlement, notification, reporting |
 | **Trigger** | `RevokeBenefit` command revokes an issued or released benefit according to its revocation rule. |
 
 **Payload:**
@@ -261,7 +262,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | Field | Description |
 |---|---|
 | **Producer** | wallet-promotion |
-| **Consumers** | finance-settlement (deferred), notification (deferred), reporting |
+| **Consumers** | finance-settlement, reporting; notification intentionally ack-skips (redemption reversal notifications are noisy). |
 | **Trigger** | `ReverseRedemption` command compensates a prior `BenefitRedeemed` fact. |
 
 **Payload:**
