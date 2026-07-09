@@ -144,3 +144,64 @@ def test_transfer_management_missed_connection_report_values_are_accepted() -> N
     assert data["disruption"]["disruptionType"] == "MISSED_CONNECTION"
     assert data["disruption"]["evidence"]["sourceSystem"] == "TRANSFER_MANAGEMENT"
     assert data["disruption"]["reportedBy"]["actorType"] == "SYSTEM"
+
+
+class FakeTransferDownstream:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def open_refund_case(self, body, idempotency_key, correlation_id):
+        return {"caseId": "psc-1"}
+
+    def issue_compensation(self, body, idempotency_key, correlation_id):
+        return {"benefitId": "ben-1"}
+
+    def reaccommodate_connection(self, connection_id, body, idempotency_key, correlation_id):
+        self.calls.append((connection_id, body, idempotency_key, correlation_id))
+        return {"replacementConnection": {"connectionId": "con-replacement"}}
+
+
+def missed_connection_body():
+    body = report_body("ord-0194f2e0-7b3e-7610-8000-000000000556")
+    body["disruptionType"] = "MISSED_CONNECTION"
+    body.pop("scheduledServiceRef", None)
+    body["evidence"] = {"evidenceRef": "con-0194f2e0-7b3e-7610-8000-000000000333", "sourceSystem": "TRANSFER_MANAGEMENT", "sourceRecordId": "evt-0194f2e0-7b3e-7610-8000-000000000444", "summary": "Protected missed connection"}
+    body["reportedBy"] = {"actorType": "SYSTEM", "actorId": "transfer-management"}
+    body["replacementWindow"] = {"plannedArrivalAt": "2026-08-02T10:00:00Z", "nextDepartureAt": "2026-08-02T11:00:00Z", "nextCutoffAt": "2026-08-02T10:55:00Z", "source": "SYSTEM"}
+    return body
+
+
+def test_transfer_management_missed_connection_gets_wait_and_reaccommodation_options() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    client = TestClient(app)
+    response = client.post("/api/v1/disruptions", json=missed_connection_body(), headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000115"})
+    assert response.status_code == 202, response.text
+    case = response.json()["recoveryCases"][0]
+    assert case["status"] == "AWAITING_USER_CHOICE"
+    assert {option["optionType"] for option in case["optionSet"]["options"]} == {"WAIT", "REACCOMMODATION"}
+    reacc = next(option for option in case["optionSet"]["options"] if option["optionType"] == "REACCOMMODATION")
+    assert reacc["executionTarget"] == "TRANSFER_MANAGEMENT"
+    assert reacc["reaccommodation"]["connectionId"].startswith("con-")
+
+
+def test_reaccommodation_selection_posts_downstream_and_replay_keeps_key() -> None:
+    store = InMemoryStore()
+    downstream = FakeTransferDownstream()
+    app = create_app(store=store, downstream=downstream)
+    client = TestClient(app)
+    created = client.post("/api/v1/disruptions", json=missed_connection_body(), headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000116"}).json()
+    store.take_outbox()
+    case = created["recoveryCases"][0]
+    reacc = next(option for option in case["optionSet"]["options"] if option["optionType"] == "REACCOMMODATION")
+    response = client.post(f"/api/v1/recovery-cases/{case['caseId']}/select-option", json={"optionId": reacc["optionId"], "selectedBy": {"actorType": "USER", "actorId": "acc-1"}}, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000117"})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "RECOVERED"
+    assert len(downstream.calls) == 1
+    first_key = downstream.calls[0][2]
+    response = client.post(f"/api/v1/recovery-cases/{case['caseId']}/select-option", json={"optionId": reacc["optionId"], "selectedBy": {"actorType": "USER", "actorId": "acc-1"}}, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000117"})
+    assert response.status_code == 200
+    assert len(downstream.calls) == 1
+    started = event_payloads(store, "RecoveryExecutionStarted")[0]
+    assert started["downstreamRequest"]["connectionId"] == downstream.calls[0][0]
+    assert started["downstreamRequest"]["idempotencyKey"] == first_key

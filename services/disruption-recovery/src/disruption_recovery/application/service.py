@@ -149,6 +149,9 @@ class DownstreamPort:
     def issue_compensation(self, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
         raise NotImplementedError
 
+    def reaccommodate_connection(self, connection_id: str, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
+        raise NotImplementedError
+
 
 class NoopDownstream(DownstreamPort):
     def open_refund_case(self, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
@@ -156,6 +159,10 @@ class NoopDownstream(DownstreamPort):
 
     def issue_compensation(self, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
         return {"benefitId": "ben-" + sha256(idempotency_key.encode()).hexdigest()[:32], "status": "ISSUED"}
+
+    def reaccommodate_connection(self, connection_id: str, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
+        replacement_id = "con-" + sha256(idempotency_key.encode()).hexdigest()[:32]
+        return {"connection": {"connectionId": connection_id, "status": "RECOVERED", "replacementConnectionId": replacement_id}, "replacementConnection": {"connectionId": replacement_id}, "caseId": body.get("caseId")}
 
 
 def _event_id(event_type: str, aggregate_id: str, version: int) -> str:
@@ -179,6 +186,30 @@ def _envelope(event_type: str, aggregate_id: str, version: int, payload: Mapping
         # HTTP layer hands us the raw request id.
         causation = f"cmd-{causation}"
     return EventEnvelope(eventId=_event_id(event_type, aggregate_id, version), eventType=event_type, occurredAt=occurred_at, correlationId=canonical_correlation_id(correlation_id), causationId=causation or None, producer=PRODUCER, schemaVersion=1, payload=payload)
+
+
+def _coerce_replacement_window(data: Mapping[str, Any], generated_at: datetime) -> dict[str, Any]:
+    window = dict(data.get("replacementWindow") or {})
+    planned = str(window.get("plannedArrivalAt") or rfc3339_utc(generated_at + timedelta(minutes=15)))
+    departure = str(window.get("nextDepartureAt") or rfc3339_utc(generated_at + timedelta(minutes=75)))
+    cutoff = str(window.get("nextCutoffAt") or departure)
+    source = str(window.get("source") or "SYSTEM").strip().upper()
+    if source not in {"OPERATIONS", "SYSTEM"}:
+        source = "SYSTEM"
+    return {"plannedArrivalAt": planned, "nextDepartureAt": departure, "nextCutoffAt": cutoff, "source": source}
+
+
+def _reaccommodation_from_report(data: Mapping[str, Any], generated_at: datetime) -> dict[str, Any] | None:
+    if str(data.get("disruptionType") or "") != "MISSED_CONNECTION":
+        return None
+    evidence = dict(data.get("evidence") or {})
+    reported_by = dict(data.get("reportedBy") or {})
+    if evidence.get("sourceSystem") != "TRANSFER_MANAGEMENT" or reported_by.get("actorType") != "SYSTEM":
+        return None
+    connection_id = str(data.get("connectionId") or evidence.get("evidenceRef") or "").strip()
+    if not connection_id:
+        return None
+    return {"connectionId": connection_id, "replacementWindow": _coerce_replacement_window(data, generated_at)}
 
 
 class DisruptionRecoveryService:
@@ -239,8 +270,9 @@ class DisruptionRecoveryService:
             case = RecoveryCase(prefixed_uuid7("rcv"), incident.incidentId, order_id, affected_scope, RecoveryCaseStatus.OPENED, at, at)
             events.append(_envelope("RecoveryCaseOpened", case.caseId, 1, {"caseId": case.caseId, "incidentId": incident.incidentId, "disruptionId": disruption_id, "journeyOrderId": order_id, "affectedScope": dict(case.affectedScope), "openedAt": rfc3339_utc(at), "status": "OPENED"}, correlation_id, causation_id, at))
             case = case.assess(at)
-            wait_only = order_id.endswith("0") or str(data.get("autoRecovery") or "").upper() == "WAIT"
-            option_set = build_option_set(case.caseId, order_id, segment, at, prefixed_uuid7("ros"), tuple(prefixed_uuid7("rop") for _ in range(4)), wait_only)
+            reaccommodation = _reaccommodation_from_report(data, at)
+            wait_only = reaccommodation is None and (order_id.endswith("0") or str(data.get("autoRecovery") or "").upper() == "WAIT")
+            option_set = build_option_set(case.caseId, order_id, segment, at, prefixed_uuid7("ros"), tuple(prefixed_uuid7("rop") for _ in range(4)), wait_only, reaccommodation)
             refund_scope = data.get("refundScope")
             if isinstance(refund_scope, Mapping) and not wait_only:
                 option_set = replace(option_set, options=tuple(self._with_refund_scope(option, refund_scope) for option in option_set.options))
@@ -276,6 +308,10 @@ class DisruptionRecoveryService:
             case = self._with_external(case, external)
         elif option.optionType is RecoveryOptionType.COMPENSATION:
             external = self._execute_compensation(case, option, correlation_id)
+            case = self._with_external(case, external).complete(option, external, at)
+            events.append(self._completed_event(case, option, correlation_id, causation_id, at))
+        elif option.optionType is RecoveryOptionType.REACCOMMODATION:
+            external = self._execute_reaccommodation(case, option, correlation_id)
             case = self._with_external(case, external).complete(option, external, at)
             events.append(self._completed_event(case, option, correlation_id, causation_id, at))
         self.store.save_case(case)
@@ -362,6 +398,9 @@ class DisruptionRecoveryService:
         if option.optionType is RecoveryOptionType.COMPENSATION:
             comp = dict(option.compensation or {})
             return {"issuanceSource": "DISRUPTION_COMP", "benefitType": comp.get("benefitType") or "COMPENSATION_CREDIT", "amount": comp.get("amount") or {"currency": "CNY", "minorUnits": 1000}, "idempotencyKey": case.execution.idempotencyKey if case.execution else None}
+        if option.optionType is RecoveryOptionType.REACCOMMODATION:
+            reaccommodation = dict(option.reaccommodation or {})
+            return {"connectionId": reaccommodation.get("connectionId"), "replacementWindow": dict(reaccommodation.get("replacementWindow") or {}), "idempotencyKey": case.execution.idempotencyKey if case.execution else None}
         return None
 
     def _completed_event(self, case: RecoveryCase, option: RecoveryOption, correlation_id: str, causation_id: str, at: datetime) -> EventEnvelope:
@@ -376,7 +415,12 @@ class DisruptionRecoveryService:
         # deterministic material folded into a version-stamped UUID keeps
         # replays stable (legacy-acl / waitlist ruling — composite string
         # keys were rejected live at the wave-17 gate).
-        digest = bytearray(sha256(f"{PRODUCER}:downstream:{case_id}:{option.optionType.value}".encode("utf-8")).digest()[:16])
+        if option.optionType is RecoveryOptionType.REACCOMMODATION:
+            reaccommodation = dict(option.reaccommodation or {})
+            material = f"{PRODUCER}:reaccommodation:{case_id}:{option.optionId}:{reaccommodation.get('connectionId')}"
+        else:
+            material = f"{PRODUCER}:downstream:{case_id}:{option.optionType.value}"
+        digest = bytearray(sha256(material.encode("utf-8")).digest()[:16])
         digest[6] = (digest[6] & 0x0F) | 0x70
         digest[8] = (digest[8] & 0x3F) | 0x80
         return str(UUID(bytes=bytes(digest)))
@@ -403,3 +447,12 @@ class DisruptionRecoveryService:
         body = {"accountId": str(case.affectedScope.get("accountId") or case.journeyOrderId), "benefitType": comp.get("benefitType") or "COMPENSATION_CREDIT", "balanceType": comp.get("balanceType") or "PROMOTION_CREDIT", "amount": comp.get("amount") or {"currency": "CNY", "minorUnits": 1000}, "issuanceSource": "DISRUPTION_COMP", "caseId": case.caseId, "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"}, "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {}, "validFrom": rfc3339_utc(now), "validUntil": comp.get("validUntil") or rfc3339_utc(now + timedelta(days=30)), "businessReason": {"reasonType": "DISRUPTION_COMP", "reasonCode": comp.get("reasonCode") or "DISRUPTION_COMP", "referenceType": "RECOVERY_CASE", "referenceId": case.caseId}}
         response = self.downstream.issue_compensation(body, case.execution.idempotencyKey, correlation_id)
         return str(response.get("benefitId") or "")
+
+    def _execute_reaccommodation(self, case: RecoveryCase, option: RecoveryOption, correlation_id: str) -> str:
+        assert case.execution and case.execution.idempotencyKey
+        reaccommodation = dict(option.reaccommodation or {})
+        connection_id = require_text(reaccommodation.get("connectionId"), "reaccommodation.connectionId")
+        body = {"caseId": case.caseId, "replacementWindow": dict(reaccommodation.get("replacementWindow") or {})}
+        response = self.downstream.reaccommodate_connection(connection_id, body, case.execution.idempotencyKey, correlation_id)
+        replacement = dict(response.get("replacementConnection") or {})
+        return str(replacement.get("connectionId") or response.get("replacementConnectionId") or connection_id)

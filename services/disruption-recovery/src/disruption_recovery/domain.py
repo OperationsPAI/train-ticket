@@ -37,6 +37,7 @@ class RecoveryOptionType(StrEnum):
     WAIT = "WAIT"
     REFUND = "REFUND"
     COMPENSATION = "COMPENSATION"
+    REACCOMMODATION = "REACCOMMODATION"
     MANUAL = "MANUAL"
 
 
@@ -44,6 +45,7 @@ class ExecutionTarget(StrEnum):
     NONE = "NONE"
     POST_SALES = "POST_SALES"
     WALLET_PROMOTION = "WALLET_PROMOTION"
+    TRANSFER_MANAGEMENT = "TRANSFER_MANAGEMENT"
     MANUAL_QUEUE = "MANUAL_QUEUE"
 
 
@@ -182,6 +184,7 @@ class RecoveryOption:
     refund: Mapping[str, Any] | None = None
     compensation: Mapping[str, Any] | None = None
     manualReason: str | None = None
+    reaccommodation: Mapping[str, Any] | None = None
     expiresAt: datetime | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -192,6 +195,8 @@ class RecoveryOption:
             data["compensation"] = dict(self.compensation)
         if self.manualReason:
             data["manualReason"] = self.manualReason
+        if self.reaccommodation is not None:
+            data["reaccommodation"] = dict(self.reaccommodation)
         if self.expiresAt:
             data["expiresAt"] = rfc3339_utc(self.expiresAt)
         return data
@@ -354,9 +359,29 @@ class RecoveryCase:
         return data
 
 
-def build_option_set(case_id: str, journey_order_id: str, segment_ref: str | None, generated_at: datetime, option_set_id: str, option_ids: tuple[str, str, str, str], wait_only: bool) -> RecoveryOptionSet:
+def build_option_set(
+    case_id: str,
+    journey_order_id: str,
+    segment_ref: str | None,
+    generated_at: datetime,
+    option_set_id: str,
+    option_ids: tuple[str, str, str, str],
+    wait_only: bool,
+    reaccommodation: Mapping[str, Any] | None = None,
+) -> RecoveryOptionSet:
     expires = None if wait_only else generated_at + timedelta(hours=24)
     wait = RecoveryOption(option_ids[0], RecoveryOptionType.WAIT, "Wait for service recovery", "Keep the current trip and wait for operations recovery.", ExecutionTarget.NONE, expiresAt=expires)
+    if reaccommodation is not None:
+        recovery_option = RecoveryOption(
+            option_ids[1],
+            RecoveryOptionType.REACCOMMODATION,
+            "Reaccommodate protected transfer",
+            "Register a replacement protected transfer connection.",
+            ExecutionTarget.TRANSFER_MANAGEMENT,
+            reaccommodation=dict(reaccommodation),
+            expiresAt=expires,
+        )
+        return RecoveryOptionSet(option_set_id, case_id, (wait, recovery_option), generated_at, expires, True)
     if wait_only:
         return RecoveryOptionSet(option_set_id, case_id, (wait,), generated_at, None, False)
     refund_scope = {"orderItemRefs": [], "segmentRefs": [segment_ref] if segment_ref else [], "travelerRefs": [], "entitlementRefs": []}
