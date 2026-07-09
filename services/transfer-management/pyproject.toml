@@ -1,10 +1,11 @@
 [project]
 name = "transfer-management"
 version = "0.1.0"
-description = "Transfer Management service skeleton"
+description = "Transfer Management service"
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi==0.138.1",
+  "train-ticket-platform",
+  "httpx",
 ]
 
 [dependency-groups]
@@ -14,5 +15,8 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.11.25,<0.12"]
-build-backend = "uv_build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+train-ticket-platform = { path = "../../platform/python-kit", editable = true }
