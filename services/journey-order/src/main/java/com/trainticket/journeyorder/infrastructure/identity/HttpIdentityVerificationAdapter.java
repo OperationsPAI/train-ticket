@@ -30,6 +30,7 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
     private final ObjectMapper mapper;
     private final String baseUrl;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public HttpIdentityVerificationAdapter(ObjectMapper mapper) {
         this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build(), mapper, System.getenv().getOrDefault("IDENTITY_VERIFICATION_URL", "http://identity-verification:8080"));
     }
