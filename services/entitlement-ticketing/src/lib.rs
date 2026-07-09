@@ -1915,6 +1915,115 @@ pub struct IssueEntitlementRequest {
     pub traveler_ref: String,
     pub segment_ref: String,
     pub issue_purpose: IssuePurposeDto,
+    #[serde(default)]
+    pub seat_preferences: Option<SeatPreferencesDto>,
+    #[serde(default)]
+    pub scheduled_service_ref: Option<String>,
+    #[serde(default)]
+    pub service_date: Option<String>,
+    #[serde(default)]
+    pub capacity_hold_id: Option<String>,
+    #[serde(default)]
+    pub capacity_unit_ref: Option<String>,
+    #[serde(default)]
+    pub interval: Option<StationIntervalDto>,
+    #[serde(default)]
+    pub class_ref: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StationIntervalDto {
+    pub from_seq: i32,
+    pub to_seq: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatPreferencesDto {
+    pub accept_standing: bool,
+    #[serde(default)]
+    pub adjacency_preference: Option<AdjacencyPreferenceDto>,
+    #[serde(default)]
+    pub adjacency_group_ref: Option<String>,
+    #[serde(default)]
+    pub preferred_seat_positions: Option<Vec<SeatPositionDto>>,
+    #[serde(default)]
+    pub preferred_berth_positions: Option<Vec<BerthPositionDto>>,
+    #[serde(default)]
+    pub same_compartment: Option<bool>,
+    #[serde(default)]
+    pub avoid_seat_unit_refs: Option<Vec<String>>,
+    pub preference_version: String,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AdjacencyPreferenceDto {
+    None,
+    SameCoach,
+    SameRow,
+    Adjacent,
+    SameCompartment,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SeatPositionDto {
+    Window,
+    Aisle,
+    Middle,
+    LowerDeck,
+    UpperDeck,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BerthPositionDto {
+    Upper,
+    Middle,
+    Lower,
+    SideUpper,
+    SideLower,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatRefDto {
+    pub seat_allocation_id: String,
+    pub allocation_type: AllocationTypeDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_map_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_map_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_unit_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coach_no: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_no: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub berth_position: Option<BerthPositionDto>,
+    pub display_label: String,
+    pub degraded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degradation_reason: Option<DegradationReasonDto>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AllocationTypeDto {
+    Seat,
+    Berth,
+    Standing,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DegradationReasonDto {
+    None,
+    NoAdjacentBlock,
+    ClassMismatch,
+    IntervalConflict,
+    BerthPreferenceUnavailable,
+    StandingAssigned,
+    PolicyLimit,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1997,6 +2106,10 @@ struct EntitlementIssuedPayload {
     credential_no: String,
     credential_type: &'static str,
     issued_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seat_ref: Option<SeatRefDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seat_allocation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2032,6 +2145,8 @@ pub struct IssueEntitlementResponse {
     pub credential_type: CredentialTypeDto,
     pub status: EntitlementStatusDto,
     pub issued_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_ref: Option<SeatRefDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2055,6 +2170,8 @@ pub struct EntitlementDetails {
     pub status: EntitlementStatusDto,
     pub issued_at: String,
     pub voided_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_ref: Option<SeatRefDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2098,6 +2215,66 @@ impl IssuePurposeDto {
             Self::DisruptionReplacement => "DISRUPTION_REPLACEMENT",
         }
     }
+}
+
+async fn allocate_seat_for_issue(
+    command: &IssueEntitlementRequest,
+    key: &str,
+    correlation_id: &str,
+) -> ApiResult<Option<SeatRefDto>> {
+    let Some(scheduled_service_ref) = command.scheduled_service_ref.clone() else {
+        return Ok(None);
+    };
+    let body = serde_json::json!({
+        "segmentBookingId": command.segment_booking_id,
+        "journeyOrderId": command.journey_order_id,
+        "travelerRef": command.traveler_ref,
+        "segmentRef": command.segment_ref,
+        "scheduledServiceRef": scheduled_service_ref,
+        "serviceDate": command.service_date.clone().ok_or_else(|| ApiErrorKind::ValidationFailed("serviceDate is required when seat assignment is requested".into()))?,
+        "capacityHoldId": command.capacity_hold_id.clone().ok_or_else(|| ApiErrorKind::ValidationFailed("capacityHoldId is required when seat assignment is requested".into()))?,
+        "capacityUnitRef": command.capacity_unit_ref.clone().unwrap_or_else(|| "cap-standard".into()),
+        "interval": command.interval.clone().unwrap_or(StationIntervalDto{from_seq:1,to_seq:2}),
+        "classRef": command.class_ref.clone().unwrap_or_else(|| "standard".into()),
+        "issuePurpose": command.issue_purpose.to_contract(),
+        "seatPreferences": command.seat_preferences,
+        "expiresAt": command.expires_at.clone().unwrap_or_else(current_rfc3339),
+    });
+    let base = std::env::var("SEAT_ASSIGNMENT_BASE_URL")
+        .unwrap_or_else(|_| "http://seat-assignment:8080".into());
+    let response = reqwest::Client::new()
+        .post(format!("{base}/api/v1/internal/seat-allocations"))
+        .header("Idempotency-Key", key)
+        .header("X-Correlation-Id", correlation_id)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            log::warn!("seat assignment downstream error code=SEND message={}", e);
+            ApiErrorKind::Unavailable("seat assignment unavailable".into())
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        log::warn!(
+            "seat assignment downstream error code={} message={}",
+            status.as_u16(),
+            text
+        );
+        return Err(ApiErrorKind::Unavailable(
+            "seat assignment unavailable".into(),
+        ));
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AllocationResponse {
+        seat_ref: SeatRefDto,
+    }
+    let allocation: AllocationResponse = response
+        .json()
+        .await
+        .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?;
+    Ok(Some(allocation.seat_ref))
 }
 
 impl VoidReasonDto {
@@ -2769,6 +2946,7 @@ impl EntitlementApi for InMemoryEntitlementService {
             self.record_idempotent_success(key, fingerprint, pending.response);
             return Ok(response);
         }
+        let seat_ref = allocate_seat_for_issue(&command, &key, &correlation_id).await?;
         let (response, event_payload) = {
             let mut state = self
                 .state
@@ -2785,6 +2963,7 @@ impl EntitlementApi for InMemoryEntitlementService {
                 credential_type: CredentialTypeDto::ETicket,
                 status: EntitlementStatusDto::Issued,
                 issued_at: issued_at.clone(),
+                seat_ref: seat_ref.clone(),
             };
             let event_payload = EntitlementIssuedPayload {
                 entitlement_id: entitlement_id.clone(),
@@ -2796,6 +2975,11 @@ impl EntitlementApi for InMemoryEntitlementService {
                 credential_no: response.credential_no.clone(),
                 credential_type: response.credential_type.to_contract(),
                 issued_at: issued_at.clone(),
+                seat_ref: response.seat_ref.clone(),
+                seat_allocation_id: response
+                    .seat_ref
+                    .as_ref()
+                    .map(|s| s.seat_allocation_id.clone()),
             };
             let details = EntitlementDetails {
                 entitlement_id: entitlement_id.clone(),
@@ -2808,6 +2992,7 @@ impl EntitlementApi for InMemoryEntitlementService {
                 status: response.status.clone(),
                 issued_at,
                 voided_at: None,
+                seat_ref: response.seat_ref.clone(),
             };
             let (mut aggregate, _) = Entitlement::request(RequestEntitlement {
                 command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
@@ -3332,6 +3517,14 @@ mod api_domain_wiring_tests {
                     traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0aa13".to_string(),
                     segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0aa14".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
+                    seat_preferences: None,
+                    scheduled_service_ref: None,
+                    service_date: None,
+                    capacity_hold_id: None,
+                    capacity_unit_ref: None,
+                    interval: None,
+                    class_ref: None,
+                    expires_at: None,
                 },
                 "0194f2e0-7b3e-7610-8284-5c26e8b0aa01".to_string(),
                 "corr-0194f2e0-7b3e-7610-8284-5c26e8b0aa02".to_string(),
@@ -3381,6 +3574,14 @@ mod api_domain_wiring_tests {
                     traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0bb13".to_string(),
                     segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0bb14".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
+                    seat_preferences: None,
+                    scheduled_service_ref: None,
+                    service_date: None,
+                    capacity_hold_id: None,
+                    capacity_unit_ref: None,
+                    interval: None,
+                    class_ref: None,
+                    expires_at: None,
                 },
                 "0194f2e0-7b3e-7610-8284-5c26e8b0bb01".to_string(),
                 "corr-0194f2e0-7b3e-7610-8284-5c26e8b0bb02".to_string(),
@@ -3415,6 +3616,14 @@ mod api_domain_wiring_tests {
                     traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0cc13".to_string(),
                     segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0cc14".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
+                    seat_preferences: None,
+                    scheduled_service_ref: None,
+                    service_date: None,
+                    capacity_hold_id: None,
+                    capacity_unit_ref: None,
+                    interval: None,
+                    class_ref: None,
+                    expires_at: None,
                 },
                 "0194f2e0-7b3e-7610-8284-5c26e8b0cc01".to_string(),
                 "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cc02".to_string(),
@@ -3449,6 +3658,14 @@ mod api_domain_wiring_tests {
                     traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0e333".to_string(),
                     segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0e444".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
+                    seat_preferences: None,
+                    scheduled_service_ref: None,
+                    service_date: None,
+                    capacity_hold_id: None,
+                    capacity_unit_ref: None,
+                    interval: None,
+                    class_ref: None,
+                    expires_at: None,
                 },
                 "018f2e07-b3e7-7100-8284-5c26e8b0d001".to_string(),
                 "corr-domain-invariant".to_string(),
@@ -3498,6 +3715,14 @@ mod api_domain_wiring_tests {
                     traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0e333".to_string(),
                     segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0e444".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
+                    seat_preferences: None,
+                    scheduled_service_ref: None,
+                    service_date: None,
+                    capacity_hold_id: None,
+                    capacity_unit_ref: None,
+                    interval: None,
+                    class_ref: None,
+                    expires_at: None,
                 },
                 "018f2e07-b3e7-7100-8284-5c26e8b0e001".to_string(),
                 "corr-post-sales-retry".to_string(),
@@ -3557,6 +3782,14 @@ mod api_domain_wiring_tests {
                     traveler_ref: "tvl-0194f2e0-7b3e-7610-0284-5c26e8b0f333".to_string(),
                     segment_ref: "seg-0194f2e0-7b3e-7610-0284-5c26e8b0f444".to_string(),
                     issue_purpose: IssuePurposeDto::Initial,
+                    seat_preferences: None,
+                    scheduled_service_ref: None,
+                    service_date: None,
+                    capacity_hold_id: None,
+                    capacity_unit_ref: None,
+                    interval: None,
+                    class_ref: None,
+                    expires_at: None,
                 },
                 "018f2e07-b3e7-7100-8284-5c26e8b0f001".to_string(),
                 "corr-post-sales".to_string(),

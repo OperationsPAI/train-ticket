@@ -61,6 +61,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'reporting')\gexec
     SELECT 'CREATE DATABASE risk_compliance'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'risk_compliance')\gexec
+    SELECT 'CREATE DATABASE seat_assignment'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'seat_assignment')\gexec
     SELECT 'CREATE DATABASE service_plan'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'service_plan')\gexec
     SELECT 'CREATE DATABASE supplier_catalog'

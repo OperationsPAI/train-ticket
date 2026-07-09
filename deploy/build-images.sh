@@ -18,6 +18,7 @@ services=(
   payment
   provider-integration
   entitlement-ticketing
+  seat-assignment
   fulfillment
   post-sales
   notification

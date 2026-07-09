@@ -611,6 +611,9 @@ impl PostgresEntitlementService {
             tx.commit().await.map_err(to_api_storage)?;
             return Ok(response);
         }
+        tx.commit().await.map_err(to_api_storage)?;
+        let seat_ref = allocate_seat_for_issue(command, key, correlation_id).await?;
+        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
         let entitlement_id = format!("ent-{}", uuid::Uuid::now_v7());
         let issued_at = current_rfc3339();
         let credential_no = self.next_credential_no(&mut tx).await?;
@@ -622,6 +625,7 @@ impl PostgresEntitlementService {
             credential_type: CredentialTypeDto::ETicket,
             status: EntitlementStatusDto::Issued,
             issued_at: issued_at.clone(),
+            seat_ref: seat_ref.clone(),
         };
         let (mut aggregate, _) = Entitlement::request(RequestEntitlement {
             command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
@@ -892,6 +896,7 @@ impl EntitlementSnapshot {
                 .map(|a| unix_millis_to_rfc3339(a.occurred_at))
                 .unwrap_or_else(current_rfc3339),
             voided_at,
+            seat_ref: None,
         }
     }
 }
@@ -1245,6 +1250,11 @@ fn entitlement_issued_envelope(
             credential_no: response.credential_no.clone(),
             credential_type: response.credential_type.to_contract(),
             issued_at: response.issued_at.clone(),
+            seat_ref: response.seat_ref.clone(),
+            seat_allocation_id: response
+                .seat_ref
+                .as_ref()
+                .map(|s| s.seat_allocation_id.clone()),
         })
         .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?,
     )
@@ -1337,6 +1347,14 @@ mod tests {
             traveler_ref: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b0aa13".to_string(),
             segment_ref: "seg-0194f2e0-7b3e-7610-8284-5c26e8b0aa14".to_string(),
             issue_purpose: IssuePurposeDto::Initial,
+            seat_preferences: None,
+            scheduled_service_ref: None,
+            service_date: None,
+            capacity_hold_id: None,
+            capacity_unit_ref: None,
+            interval: None,
+            class_ref: None,
+            expires_at: None,
         }
     }
 

@@ -403,12 +403,17 @@ class StaffSim:
         return False
 
     async def do_ticketing(self, item: dict) -> None:
+        body = {"segmentBookingId": item["sb"], "journeyOrderId": item["order"],
+                "travelerRef": item["traveler"], "segmentRef": item["seg"], "issuePurpose": "INITIAL"}
+        if self.rng.random() < float(self.cfg.get("p_seat_preferences", 0.03)):
+            body["seatPreferences"] = {"acceptStanding": True, "adjacencyPreference": "NONE",
+                                       "preferenceVersion": "loadgen-v1"}
         _, data = await self.api.request(
-            "POST", "entitlement-ticketing", "/api/v1/entitlements",
-            {"segmentBookingId": item["sb"], "journeyOrderId": item["order"],
-             "travelerRef": item["traveler"], "segmentRef": item["seg"], "issuePurpose": "INITIAL"},
+            "POST", "entitlement-ticketing", "/api/v1/entitlements", body,
             step="staff-ticketing")
         item["entitlement"] = data["entitlementId"]
+        if data.get("seatRef"):
+            item["seatAllocationId"] = data["seatRef"].get("seatAllocationId")
 
     async def do_risk(self, item: dict) -> None:
         """Manual risk review: approve (lift) or reject per hyperparameter."""
@@ -1062,7 +1067,10 @@ class CustomerSim:
         if order_id and refs.get("entitlement"):
             page = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0", None, None, "tail-list-entitlements")
             self.assert_list_contains(page, "entitlementId", refs["entitlement"], "tail-list-entitlements")
-            await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements/{quote(refs['entitlement'])}", "entitlementId", refs["entitlement"], "tail-get-entitlement")
+            ent = await self.assert_get("entitlement-ticketing", f"/api/v1/entitlements/{quote(refs['entitlement'])}", "entitlementId", refs["entitlement"], "tail-get-entitlement")
+            seat_ref = ent.get("seatRef") if isinstance(ent, dict) else None
+            if seat_ref and seat_ref.get("seatAllocationId"):
+                await self.assert_get("seat-assignment", f"/api/v1/seat-allocations/{quote(seat_ref['seatAllocationId'])}", "seatAllocationId", seat_ref["seatAllocationId"], "tail-get-seat-allocation")
         if refs.get("fulfillment_record"):
             await self.assert_get("fulfillment", f"/api/v1/fulfillment-records/{quote(refs['fulfillment_record'])}", "fulfillmentRecordId", refs["fulfillment_record"], "tail-get-fulfillment")
         if refs.get("post_sales_case"):
