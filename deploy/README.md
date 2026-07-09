@@ -94,8 +94,10 @@ kubectl -n train-ticket get pods \
   -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[*].ready,PHASE:.status.phase'
 ```
 
-A rendered-manifest sanity check should report 26 Deployments (23 services +
-Redis + PostgreSQL + loadgen):
+A rendered-manifest sanity check counts the Deployments (business services
+plus infra: Redis, PostgreSQL, otel-collector, Jaeger, Mailpit, loadgen,
+e2e-curl — 35 at the time of writing; the exact number grows with new
+services, so treat a *decrease* as the red flag):
 
 ```bash
 kubectl kustomize deploy/k8s > /tmp/k8s-out.yaml
