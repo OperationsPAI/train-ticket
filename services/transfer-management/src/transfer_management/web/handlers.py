@@ -107,6 +107,17 @@ class RetireRuleRequest(LooseModel):
     retiredAt: str | None = None
 
 
+class RiskPolicyRequest(LooseModel):
+    version: str
+    thresholds: dict[str, Any]
+    createdBy: dict[str, Any]
+
+
+class ActivateRiskPolicyRequest(LooseModel):
+    activatedBy: dict[str, Any]
+    activateReason: str | None = None
+
+
 def _service(request: Request) -> TransferManagementService:
     return request.app.state.transfer_management_service
 
@@ -208,3 +219,18 @@ def retire_mct_rule(rule_id: str, body: RetireRuleRequest, request: Request) -> 
 @router.get("/mct-rules")
 def list_mct_rules(request: Request, fromNodeType: str | None = None, toNodeType: str | None = None, transferCategory: str | None = None, status: str | None = None, limit: int = 20, offset: int = 0) -> dict[str, Any]:
     return _service(request).list_mct_rules({"fromNodeType": fromNodeType, "toNodeType": toNodeType, "transferCategory": transferCategory, "status": status, "limit": limit, "offset": offset})
+
+
+@router.post("/risk-policies", status_code=201)
+def create_risk_policy(body: RiskPolicyRequest, request: Request) -> dict[str, Any]:
+    return _service(request).create_risk_policy(body.model_dump(exclude_none=True), _corr(request), _cause(request))
+
+
+@router.post("/risk-policies/{policy_id}/activate")
+def activate_risk_policy(policy_id: str, body: ActivateRiskPolicyRequest, request: Request) -> dict[str, Any]:
+    return _service(request).activate_risk_policy(policy_id, body.model_dump(exclude_none=True), _corr(request), _cause(request))
+
+
+@router.get("/risk-policies/active")
+def get_active_risk_policy(request: Request) -> dict[str, Any]:
+    return _service(request).get_active_risk_policy()

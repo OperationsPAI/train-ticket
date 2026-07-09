@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from train_ticket_platform.http import error_response, register_exception_handlers as register_base
 
-from transfer_management.application.service import NotFoundError, PreconditionFailedError
+from transfer_management.application.service import NotFoundError, PreconditionFailedError, ValidationFailedError
 from transfer_management.domain import DomainError, PreconditionFailed
 from transfer_management.downstream import DownstreamError
 
@@ -18,6 +18,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(NotFoundError)
     async def not_found(request: Request, exc: NotFoundError) -> JSONResponse:
         return error_response(request, "NOT_FOUND", str(exc), 404)
+
+    @app.exception_handler(ValidationFailedError)
+    async def validation_failed(request: Request, exc: ValidationFailedError) -> JSONResponse:
+        return error_response(request, "VALIDATION_FAILED", str(exc), 422)
 
     @app.exception_handler(PreconditionFailed)
     @app.exception_handler(PreconditionFailedError)
