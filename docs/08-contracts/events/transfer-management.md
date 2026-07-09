@@ -22,7 +22,12 @@ Activation-wave rulings:
 - Protected missed connections use outbound HTTP to Disruption Recovery. Transfer
   Management stores returned `caseId` mappings and consumes
   `RecoveryCompleted`/`RecoveryFailed` by `caseId` to converge the `Connection`.
-  `SELF_TRANSFER` misses publish facts only.
+  RULING (2026-07-09): scoped `REACCOMMODATION` execution is an inbound HTTP
+  command from Disruption Recovery to Transfer Management. Transfer Management
+  registers a replacement connection and emits `ConnectionRecovered` with
+  replacement fields; when it later consumes the resulting `RecoveryCompleted`
+  for the same `caseId`, it idempotently skips because the original connection is
+  already `RECOVERED`. `SELF_TRANSFER` misses publish facts only.
 - Downstream Notification, Reporting, Offer Management, Journey Order, and
   Customer Service consumers are deferred in this wave. The events below are
   published to the registered stream, but no new downstream consumer is activated
@@ -53,7 +58,7 @@ Wire correlation and causation IDs MUST use `corr-<uuid-v7>` and
 `cmd-<uuid-v7>`/`evt-<uuid-v7>` prefixes. HTTP idempotency keys are UUID-v7
 shaped. Domain material such as `connectionId:missedAt:journeyOrderId` is folded
 into those UUID-v7 command keys; the material string itself is not used as a wire
-key. Outbound Disruption Recovery idempotency keys are persisted and reused.
+key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inbound `ReaccommodateConnection` idempotency keys are UUID-v7-shaped and folded from `disruption-recovery:reaccommodation:<caseId>:<optionId>:<connectionId>` by the caller.
 
 ## Common payload objects
 
@@ -94,6 +99,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused.
 | `previousSegmentRef` | string | yes | Previous segment. |
 | `nextSegmentRef` | string | yes | Next segment. |
 | `travelerRefs` | array[string] | yes | Affected travelers. |
+| `replacementOfConnectionId` | string | no | Original connection ID when this connection is a reaccommodation replacement. |
 
 ### RecoveryCaseMapping
 
@@ -191,6 +197,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused.
 | `previousSegmentRef` | string | yes | Previous segment. |
 | `nextSegmentRef` | string | yes | Next segment. |
 | `travelerRefs` | array[string] | yes | Affected travelers. |
+| `replacementOfConnectionId` | string | no | Original connection ID when this connection is a reaccommodation replacement. |
 | `fromNodeRef` | string | yes | Arrival node/place. |
 | `toNodeRef` | string | yes | Departure node/place. |
 | `fromNodeType` | enum | yes | Arrival node type. |
@@ -271,7 +278,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused.
 |---|---|
 | **Producer** | transfer-management |
 | **Consumers** | deferred: notification, customer-service, reporting |
-| **Trigger** | Consumed Disruption Recovery `RecoveryCompleted` matches a stored `caseId`, or an explicit controlled recovery command restores the connection. |
+| **Trigger** | Consumed Disruption Recovery `RecoveryCompleted` matches a stored `caseId`, an explicit controlled recovery command restores the connection, or Disruption Recovery calls `POST /api/v1/connections/{connectionId}/reaccommodate`. |
 
 **Payload:**
 
@@ -282,9 +289,19 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused.
 | `status` | enum | yes | `RECOVERED`. |
 | `riskLevel` | enum | yes | `RECOVERED`. |
 | `recoveryCaseId` | string | no | Matched Disruption Recovery case ID. |
+| `replacementConnectionId` | string | no | Replacement connection registered by the `REACCOMMODATION` endpoint. Required for reaccommodation-triggered recovery. |
+| `replacementWindow` | object | no | Declared replacement window with RFC3339 UTC `plannedArrivalAt`, `nextDepartureAt`, optional `nextCutoffAt`, and `source` (`OPERATIONS` or `SYSTEM`). Required when `replacementConnectionId` is present. |
+| `reaccommodatedAt` | RFC3339 UTC | no | Time the replacement connection was registered. Present for reaccommodation-triggered recovery and equal to `recoveredAt`. |
 | `disruptionRecoveryEventId` | string | no | Consumed envelope event ID when event-driven. |
 | `recoveredAt` | RFC3339 UTC | yes | Recovery convergence timestamp. |
 | `recoverySummary` | string | no | Sanitized summary; no unmasked PII. |
+
+RULING (2026-07-09): REQ-121 uses `ConnectionRecovered` rather than a separate
+`ConnectionReaccommodated` event. The additive fields `replacementConnectionId`,
+`replacementWindow`, and `reaccommodatedAt` carry the reaccommodation-specific
+delta while preserving the existing connection-convergence subscription.
+Consumers that do not need replacement details may continue to treat the event as
+a normal transition to `RECOVERED`.
 
 ### ConnectionRecoveryFailed
 
@@ -447,20 +464,21 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused.
 | `EvaluateTransferPlan` | HTTP `POST /api/v1/transfer-plans/{transferPlanId}/evaluate` | `TransferPlanEvaluated`, `TransferRiskEvaluated` |
 | `RegisterConnection` | HTTP `POST /api/v1/connections` or application flow after plan creation | `ConnectionRegistered`, `TransferRiskEvaluated` |
 | `ReportSegmentStatus` | HTTP `POST /api/v1/segment-status-reports` | `TransferRiskEvaluated`, `TransferAtRisk`, `ConnectionMissed`, `ConnectionRecovered`, `ConnectionRecoveryFailed` |
+| `ReaccommodateConnection` | HTTP `POST /api/v1/connections/{connectionId}/reaccommodate` from Disruption Recovery | `ConnectionRegistered`, `ConnectionRecovered` |
 | `ProposeConnectionContract` | HTTP `POST /api/v1/connection-contracts` | `ConnectionContractProposed` |
 | `ConfirmConnectionContract` | HTTP `POST /api/v1/connection-contracts/{connectionContractId}/confirm` | `ConnectionContractConfirmed` |
 | `WithdrawConnectionContract` | HTTP `POST /api/v1/connection-contracts/{connectionContractId}/withdraw` | `ConnectionContractWithdrawn` |
 | `CreateMctRule` | HTTP `POST /api/v1/mct-rules` | `MctRuleCreated` |
 | `PublishMctRule` | HTTP `POST /api/v1/mct-rules/{mctRuleId}/publish` | `MctRulePublished` |
 | `RetireMctRule` | HTTP `POST /api/v1/mct-rules/{mctRuleId}/retire` | `MctRuleRetired` |
-| `RecordRecoveryCompleted` | Consumed Disruption Recovery `RecoveryCompleted` by `caseId` | `ConnectionRecovered` |
+| `RecordRecoveryCompleted` | Consumed Disruption Recovery `RecoveryCompleted` by `caseId`; if the matching connection is already `RECOVERED` by `ReaccommodateConnection`, idempotently skip with no event | `ConnectionRecovered` or no-op |
 | `RecordRecoveryFailed` | Consumed Disruption Recovery `RecoveryFailed` by `caseId` | `ConnectionRecoveryFailed` |
 
 ## Consumed upstream events
 
 | Upstream stream | Event type | Purpose |
 |---|---|---|
-| `events:disruption-recovery` | `RecoveryCompleted` | Match payload `caseId` to stored recovery-case mapping and transition the related connection to `RECOVERED`. |
+| `events:disruption-recovery` | `RecoveryCompleted` | Match payload `caseId` to stored recovery-case mapping and transition the related connection to `RECOVERED`; for self-executed `REACCOMMODATION`, an already `RECOVERED` connection with the same `caseId` is an idempotent no-op. |
 | `events:disruption-recovery` | `RecoveryFailed` | Match payload `caseId` to stored recovery-case mapping, keep the connection `MISSED`, and record sanitized failure evidence. |
 
 Fulfillment runtime facts are intentionally not consumed from the bus in this

@@ -35,8 +35,11 @@ Activation-wave rulings:
   `evidence.sourceSystem=TRANSFER_MANAGEMENT`. It persists the outbound UUID-v7
   idempotency key and the `recoveryCases[].caseId` values from the response.
   `SELF_TRANSFER` missed connections publish facts only and do not open recovery
-  cases. `REACCOMMODATION` remains deferred to a later wave; Disruption Recovery
-  still offers `WAIT`, `REFUND`, `COMPENSATION`, and `MANUAL` only.
+  cases. RULING (2026-07-09): Disruption Recovery may now offer scoped
+  `REACCOMMODATION` for those Transfer Management missed-connection cases. The
+  execution path calls the new Transfer Management reaccommodation endpoint,
+  registers a replacement connection, marks the original connection `RECOVERED`,
+  and emits `ConnectionRecovered` with `replacementConnectionId`.
 
 Field shapes reference `docs/08-contracts/shared-primitives.md` for IDs,
 timestamps, event envelope fields, pagination conventions, and Money
@@ -125,6 +128,7 @@ key.
 | Segment status report | `sourceSystem`, `sourceRecordId`, `segmentRef`, `reportType`, `observedAt` |
 | Publish MCT rule | `mctRuleId`, `version` |
 | Open Disruption Recovery report | `connectionId`, `missedAt`, `connectionVersion`, `journeyOrderId` |
+| Reaccommodate connection | `connectionId`, `caseId`, `replacementWindow.plannedArrivalAt`, `replacementWindow.nextDepartureAt` |
 
 API-triggered commands use the client-supplied `Idempotency-Key` header
 directly as the command key; the fold materials above apply to commands the
@@ -185,6 +189,8 @@ on outbound events/commands use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
 | `status` | enum | yes | Connection runtime status. |
 | `latestEvaluation` | RiskEvaluation | yes | Latest risk evaluation. |
 | `window` | ConnectionWindow | yes | Planned/actual transfer window. |
+| `replacementOfConnectionId` | string | no | Original connection ID when this connection was registered as a reaccommodation replacement. |
+| `replacementConnectionId` | string | no | Replacement connection ID when this original connection has been reaccommodated. |
 | `recovery` | RecoveryCaseMapping | no | Present after protected missed-connection report opens recovery cases. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
 | `updatedAt` | RFC3339 UTC | yes | Last mutation timestamp. |
@@ -247,6 +253,23 @@ on outbound events/commands use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
 | `validUntil` | RFC3339 UTC | no | Rule effective end. |
 | `publishedAt` | RFC3339 UTC | no | Publish timestamp. |
 | `retiredAt` | RFC3339 UTC | no | Retire timestamp. |
+
+
+### ReaccommodateConnectionRequest
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `caseId` | string | yes | Disruption Recovery case ID (`rcv-<uuid>`) selecting the `REACCOMMODATION` option. Must match a stored recovery-case mapping for the target connection. |
+| `replacementWindow` | object | yes | Declared replacement arrival/departure window. See `ReplacementWindow`. |
+
+### ReplacementWindow
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `plannedArrivalAt` | RFC3339 UTC | yes | New planned/declared arrival time for the replacement connection's previous leg. |
+| `nextDepartureAt` | RFC3339 UTC | yes | New planned/declared departure time for the replacement connection's next leg. |
+| `nextCutoffAt` | RFC3339 UTC | no | Replacement boarding/check-in/driver-wait cutoff when known. |
+| `source` | enum | yes | `OPERATIONS` or `SYSTEM`; identifies the declaration source supplied through Disruption Recovery option parameters. |
 
 ### SegmentStatusReport
 
@@ -422,6 +445,53 @@ command](#outbound-disruption-recovery-command).
 
 **Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
+
+
+### Reaccommodate Connection
+
+**POST** `/api/v1/connections/{connectionId}/reaccommodate`
+
+**Idempotency:** REQUIRED (`Idempotency-Key` UUID-v7-shaped header). Disruption
+Recovery folds `disruption-recovery:reaccommodation:<caseId>:<optionId>:<connectionId>`
+into the UUID-v7 key and reuses it on retry. Replays with the same body return
+the original `200` response; reuse with a different body returns
+`IDEMPOTENCY_KEY_REUSED` (422).
+
+This endpoint is called by Disruption Recovery after a user or customer-service
+actor selects a scoped `REACCOMMODATION` option. The request does not perform real
+rebooking in this wave; `replacementWindow` is the operations/system-declared
+recovery input carried in the option parameters.
+
+**Request:** `ReaccommodateConnectionRequest`
+
+**Response (200):**
+
+| Field | Type | Description |
+|---|---|---|
+| `connection` | Connection | Original connection after transition to `RECOVERED`. |
+| `replacementConnection` | Connection | Newly registered replacement connection. |
+| `caseId` | string | Disruption Recovery case ID applied. |
+| `reaccommodatedAt` | RFC3339 UTC | Transition timestamp. |
+
+**Domain effects:** validates that the original connection exists, is not
+`RECOVERED` or `INVALIDATED`, and has a stored recovery mapping containing
+`caseId`. It registers a replacement `Connection` using the original connection's
+plan/order/traveler/contract metadata plus the declared `replacementWindow`, sets
+`replacementOfConnectionId` on the replacement, sets `replacementConnectionId` on
+the original, transitions the original connection to `RECOVERED`, and emits
+`ConnectionRecovered`.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
+`IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
+
+- `NOT_FOUND` is returned when `connectionId` does not identify a known
+  connection.
+- `PRECONDITION_FAILED` (412) is returned when the connection is already
+  `RECOVERED`, is `INVALIDATED`, is otherwise not recoverable, or `caseId` is not
+  in the stored recovery mapping for the connection.
+- `DOMAIN_RULE_VIOLATION` (422) is returned when `replacementWindow` is missing,
+  has invalid RFC3339 UTC timestamps, or violates aggregate invariants such as
+  `nextDepartureAt` not being after `plannedArrivalAt`.
 
 ### Propose Connection Contract
 
@@ -635,7 +705,7 @@ When a `Connection` transitions to `MISSED` and `contractType` is `PROTECTED` or
 **Response handling:** Transfer Management persists `disruption.disruptionId`,
 `incident.incidentId`, and each `recoveryCases[].caseId` in `RecoveryCaseMapping`.
 Subsequent `RecoveryCompleted` or `RecoveryFailed` events from
-`events:disruption-recovery` are matched by `caseId`.
+`events:disruption-recovery` are matched by `caseId`. For `REACCOMMODATION`, Transfer Management is also the executor; when it later consumes the `RecoveryCompleted` emitted as a result of its own `reaccommodate` response, it MUST treat the already-`RECOVERED` connection and matching `caseId` as an idempotent no-op rather than a failure or duplicate event.
 
 **Failure handling:** downstream unavailability records
 `recoveryTriggerStatus=FAILED` and a sanitized `failureReason`; retries reuse the
@@ -651,4 +721,4 @@ same outbound idempotency key.
 - Notification, Reporting, Customer Service, Offer Management, and Journey Order
   consumption of Transfer Management events is documented as intended but not
   registered as active downstream consumption in this wave.
-- `REACCOMMODATION` recovery option generation remains deferred to a later wave.
+- `REACCOMMODATION` is active only for Transfer Management system-originated `MISSED_CONNECTION` recovery cases. Other disruption types and sources remain deferred. The same implementation wave MUST update Transfer Management and Disruption Recovery code plus e2e 17/19 assertions for the WAIT-plus-REACCOMMODATION user-choice behavior.
