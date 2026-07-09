@@ -46,10 +46,12 @@ Connection / ConnectionContract aggregates, system-reported segment status
 driving the nine-state connection machine, and a protected missed-connection
 closed loop through disruption-recovery (SYSTEM `MISSED_CONNECTION` reports,
 `RecoveryCompleted` convergence). Restart certification spans 29 services and
-suite 01-19 (latest run: 436/0, all DLQ zero). Deferred and documented: TransferRiskPolicy (builtin-v1), place-network
-topology integration, fulfillment segment events replacing status reports.
-(REACCOMMODATION execution and the wallet deferred consumers were activated
-in wave 19; the loadgen ConfigMap debt is resolved.)
+suite 01-19 (latest run: 436/0, all DLQ zero). Wave 20 cleared the remaining functional debts: fulfillment publishes
+SegmentArrived/Delayed/Cancelled (transfer-management consumes them
+event-driven, HTTP reports remain as the ops fallback), transfer evaluation
+reads place-network topology (degraded-not-blocking semantics), and the
+TransferRiskPolicy aggregate replaces the builtin-v1 fallback. No deferred
+functional scope remains; latest restart certification: 470/0.
 
 Wave 17 activated **disruption-recovery** (ops-reported incidents,
 RecoveryCase state machine, REFUND executed through post-sales with event
