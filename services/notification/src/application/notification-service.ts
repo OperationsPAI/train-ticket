@@ -185,6 +185,7 @@ function triggerBusinessRef(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.paymentIntentId)
     ?? stringValue(payload.refundId)
     ?? stringValue(payload.entitlementId)
+    ?? stringValue(payload.benefitId)
     ?? stringValue(payload.segmentBookingId)
     ?? stringValue(payload.caseId)
     ?? stringValue(payload.postSalesCaseId)
@@ -315,6 +316,25 @@ const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]
     { name: "newEntitlementRef", type: "string" },
     { name: "changeOfferRef", type: "string" },
   ],
+  BenefitIssued: [
+    { name: "benefitId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "issuedAmount", type: "money" },
+    { name: "issuanceSource", type: "string" },
+    { name: "issuedAt", type: "string" },
+  ],
+  BenefitExpired: [
+    { name: "benefitId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "expiredAmount", type: "money" },
+    { name: "expiredAt", type: "string" },
+  ],
+  BenefitRevoked: [
+    { name: "benefitId", type: "string" },
+    { name: "accountId", type: "string" },
+    { name: "revokedAmount", type: "money" },
+    { name: "revokedAt", type: "string" },
+  ],
 });
 
 function validateTriggerContract(envelope: EventEnvelope): void {
@@ -340,10 +360,27 @@ function envelopeContractViolations(envelope: EventEnvelope): string[] {
       violations.push(`${field} must be a non-empty string`);
     }
   }
+  if (!hasPrefix(envelope.eventId, "evt-")) {
+    violations.push("eventId must use evt- prefix");
+  }
+  if (!hasPrefix(envelope.correlationId, "corr-")) {
+    violations.push("correlationId must use corr- prefix");
+  }
+  if (envelope.causationId !== undefined && !hasAnyPrefix(envelope.causationId, ["cmd-", "evt-"])) {
+    violations.push("causationId must use cmd- or evt- prefix");
+  }
   if (typeof envelope.schemaVersion !== "number" || !Number.isInteger(envelope.schemaVersion) || envelope.schemaVersion < 1) {
     violations.push("schemaVersion must be a positive integer");
   }
   return violations;
+}
+
+function hasPrefix(value: unknown, prefix: string): boolean {
+  return typeof value === "string" && value.startsWith(prefix) && value.length > prefix.length;
+}
+
+function hasAnyPrefix(value: unknown, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => hasPrefix(value, prefix));
 }
 
 function fieldViolation(payload: Record<string, unknown>, field: RequiredField): string[] {
@@ -412,6 +449,12 @@ function mappingFor(eventType: string): TriggerMapping | undefined {
       return postSalesMapping("post_sales_failed", "POST_SALES_FAILED");
     case "ChangeApplied":
       return postSalesMapping("change_applied", "CHANGE_APPLIED");
+    case "BenefitIssued":
+      return walletBenefitMapping("wallet_benefit_issued", "WALLET_BENEFIT_ISSUED");
+    case "BenefitExpired":
+      return walletBenefitMapping("wallet_benefit_expired", "WALLET_BENEFIT_EXPIRED");
+    case "BenefitRevoked":
+      return walletBenefitMapping("wallet_benefit_revoked", "WALLET_BENEFIT_REVOKED");
     default:
       return undefined;
   }
@@ -456,6 +499,16 @@ function ticketIssuedMapping(): TriggerMapping {
     channel: "EMAIL",
     recipient: (payload) => recipientFromDirectFields(payload) ?? stringValue(payload.travelerRef),
     variables: (payload) => pickStringVariables(payload, ["entitlementId", "journeyOrderId", "orderId", "orderItemId", "segmentBookingId", "segmentRef", "credentialNo", "credentialType"]),
+  };
+}
+
+function walletBenefitMapping(templateCode: string, intent: string): TriggerMapping {
+  return {
+    templateCode,
+    intent,
+    channel: "IN_APP",
+    recipient: (payload) => stringValue(payload.accountId),
+    variables: (payload) => pickStringVariables(payload, ["benefitId", "accountId", "issuanceSource", "caseId", "status"]),
   };
 }
 

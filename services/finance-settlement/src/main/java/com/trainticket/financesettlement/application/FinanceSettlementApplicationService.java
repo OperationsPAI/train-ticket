@@ -18,6 +18,7 @@ public class FinanceSettlementApplicationService {
     private final RevenueRecognitionRepository revenueRecognitions;
     private final ReconciliationCaseRepository reconciliationCases;
     private final InvoiceRepository invoices;
+    private final FinanceSettlementProjectionRepository projections;
     private final EventPublisher eventPublisher;
     private final DomainEventEnvelopeMapper envelopeMapper;
     private final Clock clock;
@@ -28,7 +29,7 @@ public class FinanceSettlementApplicationService {
         EventPublisher eventPublisher,
         DomainEventEnvelopeMapper envelopeMapper
     ) {
-        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
+        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), new InMemoryFinanceSettlementProjectionRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
     }
 
     public FinanceSettlementApplicationService(
@@ -39,9 +40,22 @@ public class FinanceSettlementApplicationService {
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock
     ) {
+        this(revenueRecognitions, reconciliationCases, invoices, new InMemoryFinanceSettlementProjectionRepository(), eventPublisher, envelopeMapper, clock);
+    }
+
+    public FinanceSettlementApplicationService(
+        RevenueRecognitionRepository revenueRecognitions,
+        ReconciliationCaseRepository reconciliationCases,
+        InvoiceRepository invoices,
+        FinanceSettlementProjectionRepository projections,
+        EventPublisher eventPublisher,
+        DomainEventEnvelopeMapper envelopeMapper,
+        Clock clock
+    ) {
         this.revenueRecognitions = revenueRecognitions;
         this.reconciliationCases = reconciliationCases;
         this.invoices = invoices;
+        this.projections = projections;
         this.eventPublisher = eventPublisher;
         this.envelopeMapper = envelopeMapper;
         this.clock = clock;
@@ -75,6 +89,17 @@ public class FinanceSettlementApplicationService {
         }
         List<ReconciliationCase> items = reconciliationCases.find(orderId, limit, offset);
         return new Page<>(items, reconciliationCases.count(orderId), limit, offset);
+    }
+
+    public Page<BenefitCostEntry> listBenefitCosts(String accountId, int limit, int offset) {
+        if (limit < 1 || limit > 100) {
+            throw new ValidationException("limit must be between 1 and 100");
+        }
+        if (offset < 0) {
+            throw new ValidationException("offset must not be negative");
+        }
+        List<BenefitCostEntry> items = projections.findBenefitCostEntries(accountId, limit, offset);
+        return new Page<>(items, projections.countBenefitCostEntries(accountId), limit, offset);
     }
 
     public Invoice generateInvoice(String orderId, String correlationId) {

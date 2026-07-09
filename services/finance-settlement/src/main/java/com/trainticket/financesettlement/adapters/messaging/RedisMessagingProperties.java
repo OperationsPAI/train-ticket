@@ -11,7 +11,8 @@ public class RedisMessagingProperties {
         "events:payment",
         "events:provider-integration",
         "events:booking-orchestration",
-        "events:post-sales"
+        "events:post-sales",
+        "events:wallet-promotion"
     );
 
     private final String url;
