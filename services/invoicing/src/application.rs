@@ -341,7 +341,7 @@ impl InMemoryInvoicingService {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InvoicingStateSnapshot {
     pub titles: HashMap<String, InvoiceTitle>,
     pub requests: HashMap<String, EInvoiceRequest>,
@@ -363,15 +363,15 @@ struct InMemoryState {
     idempotency: HashMap<String, IdemRecord>,
     processed_events: HashSet<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OrderProjection {
     pub account_id: String,
     pub traveler_refs: Vec<String>,
     pub segment_refs: Vec<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct IdemRecord {
-    pub(crate) op: &'static str,
+    pub(crate) op: String,
     pub(crate) fp: String,
     pub(crate) response: serde_json::Value,
 }
@@ -441,7 +441,7 @@ impl InvoicingApi for InMemoryInvoicingService {
             s.idempotency.insert(
                 key,
                 IdemRecord {
-                    op: "create_title",
+                    op: "create_title".to_string(),
                     fp,
                     response: serde_json::to_value(&title).unwrap(),
                 },
@@ -550,7 +550,7 @@ impl InvoicingApi for InMemoryInvoicingService {
             s.idempotency.insert(
                 key,
                 IdemRecord {
-                    op: "set_default",
+                    op: "set_default".to_string(),
                     fp,
                     response: serde_json::to_value(&out).unwrap(),
                 },
@@ -601,7 +601,7 @@ impl InvoicingApi for InMemoryInvoicingService {
             s.idempotency.insert(
                 key,
                 IdemRecord {
-                    op: "deactivate",
+                    op: "deactivate".to_string(),
                     fp,
                     response: serde_json::to_value(&resp).unwrap(),
                 },
@@ -713,7 +713,7 @@ impl InvoicingApi for InMemoryInvoicingService {
             s.idempotency.insert(
                 key,
                 IdemRecord {
-                    op: "request_invoice",
+                    op: "request_invoice".to_string(),
                     fp,
                     response: serde_json::to_value(&req).unwrap(),
                 },
@@ -904,7 +904,7 @@ impl InMemoryInvoicingService {
             s.idempotency.insert(
                 key,
                 IdemRecord {
-                    op,
+                    op: op.to_string(),
                     fp,
                     response: serde_json::to_value(&out).unwrap(),
                 },
