@@ -147,4 +147,17 @@ def test_evaluate_plan_without_published_rule_marks_unserviceable() -> None:
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "UNSERVICEABLE"
     events = [event for event in store.take_outbox() if event.eventType == "TransferPlanEvaluated"]
-    assert events[-1].payload["reasons"] == ["NO_PUBLISHED_MCT_RULE"]
+    assert events[-1].payload["unserviceableReasons"] == ["NO_PUBLISHED_MCT_RULE"]
+
+
+def test_rule_selection_is_deterministic_newest_published_version_wins() -> None:
+    client, store, _ = setup_client()
+    first = create_rule(client)
+    second = create_rule(client)
+    rules = store.mct_rules
+    from transfer_management.application.service import TransferManagementService
+    service = TransferManagementService(store)
+    sample = rules[second]
+    picked = service._find_published_rule(sample.fromNodeType, sample.toNodeType, sample.transferCategory, sample.validFrom)
+    expected = max((rules[first], rules[second]), key=lambda r: (r.version, r.mctRuleId))
+    assert picked.mctRuleId == expected.mctRuleId

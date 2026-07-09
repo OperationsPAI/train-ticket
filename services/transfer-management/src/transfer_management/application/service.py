@@ -218,7 +218,7 @@ class TransferManagementService:
         self.store.save_plan(plan)
         payload = {"transferPlanId": plan.transferPlanId, "itineraryRef": plan.itineraryRef, "planningSnapshotVersion": plan.planningSnapshotVersion, "status": plan.status.value, "evaluationVersion": plan.evaluationVersion, "connectionIds": list(plan.connections), "riskPolicyVersion": plan.riskPolicyVersion, "evaluatedAt": rfc3339_utc(at)} | ({"journeyOrderId": plan.journeyOrderId} if plan.journeyOrderId else {})
         if reasons:
-            payload["reasons"] = reasons
+            payload["unserviceableReasons"] = reasons
         events = [_envelope("TransferPlanEvaluated", plan.transferPlanId, plan.version + 1, payload, correlation_id, causation_id, at)]
         if unserviceable:
             self._append(events)
@@ -397,6 +397,7 @@ class TransferManagementService:
                 event = _envelope("ConnectionRecovered", connection.connectionId, connection.version + 1, {"connection": connection.ref_json(), "previousStatus": previous.value, "status": "RECOVERED", "riskLevel": "RECOVERED", "recoveryCaseId": case_id, "disruptionRecoveryEventId": envelope.eventId, "recoveredAt": rfc3339_utc(at), "recoverySummary": "Disruption recovery completed"}, envelope.correlationId, envelope.eventId, at)
             else:
                 reason = str(envelope.payload.get("reason") or "Recovery failed")[:500]
+                connection = replace(connection, recovery=replace(connection.recovery, failureReason=reason), updatedAt=at)
                 event = _envelope("ConnectionRecoveryFailed", connection.connectionId, connection.version + 1, {"connection": connection.ref_json(), "status": connection.status.value, "recoveryCaseId": case_id, "disruptionRecoveryEventId": envelope.eventId, "failedAt": rfc3339_utc(at), "reason": reason}, envelope.correlationId, envelope.eventId, at)
             self.store.save_connection(connection)
             self._append([event])
@@ -408,10 +409,12 @@ class TransferManagementService:
 
     def _find_published_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, at: datetime) -> MctRule | None:
         items = list(getattr(self.store, "mct_rules", {}).values()) if hasattr(self.store, "mct_rules") else list(self.store.list_mct_rules())
-        for rule in items:
-            if rule.matches(from_type, to_type, category, at):
-                return rule
-        return None
+        # Deterministic selection: among matching published rules, the highest
+        # (version, mctRuleId) wins regardless of storage iteration order.
+        matching = [rule for rule in items if rule.matches(from_type, to_type, category, at)]
+        if not matching:
+            return None
+        return max(matching, key=lambda rule: (rule.version, rule.mctRuleId))
 
     def _require_published_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, at: datetime) -> MctRule:
         rule = self._find_published_rule(from_type, to_type, category, at)
