@@ -30,6 +30,7 @@ journey_mix:
   support: 4        # open a support case about one of their orders
   legacy: 6         # whole lifecycle through the legacy ACL facade
   ride: 5           # dispatch ride request lifecycle
+  disruption: 1     # low-frequency ops disruption recovery drill
 
 # ---------------------------------------------------------------------------
 # Within-journey behavior knobs.
@@ -65,6 +66,7 @@ behavior:
   # Conservative defaults: convert only some sold-out traffic and cancel rarely.
   p_waitlist_on_no_capacity: 0.30
   p_waitlist_cancel: 0.05
+  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
   waitlist_deadline_minutes: 30
 
   # sales channel weights. NOTE: fare rule sets are published per channel;

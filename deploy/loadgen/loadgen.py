@@ -898,6 +898,43 @@ class CustomerSim:
         await self.maybe_read_probe({"ride_request": ride_id, "ride_rider": entry["account_id"]})
         return outcome
 
+    async def journey_disruption(self) -> str:
+        p = await self.reg.take_purchase(self.rng)
+        if p is None:
+            return "no_purchase_for_disruption"
+        try:
+            suffix = uuid7().replace("-", "")[:12]
+            _, reported = await self.api.request(
+                "POST", "disruption-recovery", "/api/v1/disruptions",
+                {"disruptionType": "SERVICE_DELAY", "scheduledServiceRef": f"ssch-lg-{suffix}",
+                 "segmentRef": p.seg, "serviceDate": "2026-08-02",
+                 "evidence": {"evidenceRef": f"ev-lg-{suffix}", "sourceSystem": "ADMIN", "sourceRecordId": f"lg-{suffix}", "summary": "Loadgen disruption drill"},
+                 "affectedOrderIds": [p.order], "reportedBy": {"actorType": "OPERATIONS", "actorId": "loadgen-ops"},
+                 "accountId": p.account,
+                 "refundScope": {"orderItemRefs": [p.sb], "segmentRefs": [p.seg], "travelerRefs": [p.traveler], "entitlementRefs": [p.entitlement]}},
+                ok=(202,), step="disruption-report")
+            incident_id = reported.get("incident", {}).get("incidentId")
+            case = (reported.get("recoveryCases") or [])[0]
+            case_id = case.get("caseId")
+            choice = weighted_choice(self.rng, self.b.get("disruption_option_mix", {"WAIT": 0.5, "REFUND": 0.35, "COMPENSATION": 0.15}))
+            option_set = case.get("optionSet") or {}
+            options = option_set.get("options") or []
+            option = next((o for o in options if o.get("optionType") == choice), None) or (options[0] if options else None)
+            if option and case.get("status") == "AWAITING_USER_CHOICE":
+                _, case = await self.api.request(
+                    "POST", "disruption-recovery", f"/api/v1/recovery-cases/{quote(case_id)}/select-option",
+                    {"optionId": option["optionId"], "selectedBy": {"actorType": "USER", "actorId": p.account}},
+                    ok=(200,), step="disruption-select")
+            self.stats.journeys[f"disruption:option:{choice.lower()}"] += 1
+            await self.maybe_read_probe({"disruption_incident": incident_id, "disruption_case": case_id})
+            return str(case.get("status", "reported")).lower()
+        except Exception:
+            await self.reg.release_purchase(p, "confirmed")
+            raise
+        finally:
+            if p.status == "consumed":
+                await self.reg.release_purchase(p, "confirmed")
+
     async def journey_support(self) -> str:
         async with self.reg.lock:
             pool = [p for p in self.reg.purchases if p.status != "consumed"]
@@ -995,6 +1032,10 @@ class CustomerSim:
             page = await self.assert_get("waitlist", f"/api/v1/waitlist-requests?travelerRef={quote(refs['waitlist_traveler'])}&limit=20&offset=0", None, None, "tail-list-waitlist")
             self.assert_list_contains(page, "waitlistRequestId", refs["waitlist"], "tail-list-waitlist")
             await self.assert_get("waitlist", f"/api/v1/waitlist-requests/{quote(refs['waitlist'])}", "waitlistRequestId", refs["waitlist"], "tail-get-waitlist")
+        if refs.get("disruption_incident"):
+            await self.assert_get("disruption-recovery", f"/api/v1/incidents/{quote(refs['disruption_incident'])}", "incidentId", refs["disruption_incident"], "tail-get-disruption-incident")
+        if refs.get("disruption_case"):
+            await self.assert_get("disruption-recovery", f"/api/v1/recovery-cases/{quote(refs['disruption_case'])}", "caseId", refs["disruption_case"], "tail-get-disruption-case")
         if refs.get("benefit"):
             await self.assert_get("wallet-promotion", f"/api/v1/benefits/{quote(refs['benefit'])}", "benefitId", refs["benefit"], "tail-get-benefit")
         if refs.get("wallet_account"):
@@ -1370,6 +1411,7 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "support": sim.journey_support,
         "legacy": sim.journey_legacy,
         "ride": sim.journey_ride,
+        "disruption": sim.journey_disruption,
     }
     pause = cfg["run"]["session_pause_seconds"]
     while not stop.is_set():
