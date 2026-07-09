@@ -47,7 +47,7 @@ class EventFactoryTest {
             "status", "aggregateVersion"
         );
         assertThat(event.payload()).containsEntry("issuedAmount", benefit.issuedAmount());
-        assertThat(event.payload()).containsEntry("issuedAt", AT);
+        assertThat(event.payload()).containsEntry("issuedAt", java.time.format.DateTimeFormatter.ISO_INSTANT.format(AT));
     }
 
     @Test
