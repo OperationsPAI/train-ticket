@@ -328,7 +328,7 @@ model instead of treating terminal state as an error.
 | `status` | enum | `DEACTIVATED`. |
 | `deactivatedAt` | RFC3339 UTC | Deactivation timestamp. |
 
-**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`,
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `PRECONDITION_FAILED`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
 
 ### Request Blue E-Invoice

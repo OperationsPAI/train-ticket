@@ -77,13 +77,14 @@ hashes canonical JSON with SHA-256.
 | `RequestEInvoice` | `orderId + titleId + titleVersion + invoiceScope hash + amountBasisHash + recipientEmailHash? + simSeedRef?` |
 | `AttachAmountBasis` | `invoiceRequestId + revenueRecognitionIdsHash + amountBasisHash` |
 | `SubmitEInvoice` | `invoiceRequestId + gatewayProfile + submitAttemptNo + requestFingerprint` |
-| `RecordGatewayAccepted` | `gatewayRequestId + gatewayAcceptedAt` |
-| `RecordGatewayRejected` | `gatewayRequestId + rejectionCode` |
-| `RecordGatewayFailed` | `gatewayRequestId + failureClass + attemptNo` |
+| `RecordGatewayAccepted` / `RecordGatewayRejected` / `RecordGatewayFailed` | `gatewayRequestId + gatewayStatus + gatewayAcceptedAt?/rejectionCode?/failureClass?` (single collapsed rule, identical to `api/invoicing.md`) |
 | `MarkEInvoiceIssued` | `gatewayInvoiceNumber + originalRequestId` |
 | `RequestRedFlush` | `originalInvoiceId + postSalesCaseId + refundScopeHash` |
 | `CompleteRedFlush` | `redInvoiceNumber + originalInvoiceId` |
 | `ObserveRefundWithoutRedFlush` | `postSalesCaseId + orderId + refundFactEventId + originalInvoiceIdsHash` |
+| `ExpireEInvoiceRequest` | `invoiceRequestId + expiryDeadlineAt` |
+| `SubmitRedFlush` | `redFlushId + gatewayProfile + submitAttemptNo + requestFingerprint` |
+| `RecordRedFlushAccepted` / `RecordRedFlushRejected` / `RecordRedFlushFailed` | `redFlushGatewayRequestId + gatewayStatus + acceptedAt?/rejectionCode?/failureClass?` (single collapsed rule, mirroring blue-ticket gateway result recording) |
 
 ## Common payload shapes
 
