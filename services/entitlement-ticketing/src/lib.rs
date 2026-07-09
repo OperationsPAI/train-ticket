@@ -2994,7 +2994,20 @@ impl EntitlementApi for InMemoryEntitlementService {
             self.record_idempotent_success(key, fingerprint, pending.response);
             return Ok(response);
         }
-        let seat_ref = allocate_seat_for_issue(&command, &key, &correlation_id).await?;
+        // Outbound seat-assignment idempotency uses the contract-folded key,
+        // never the caller's public issue key (same semantics as the Postgres
+        // implementation; the folded key is derived from persisted facts).
+        let seat_outbound_key = if command.needs_seat_assignment() {
+            Some(seat_assignment_idempotency_key(&command)?)
+        } else {
+            None
+        };
+        let seat_ref = allocate_seat_for_issue(
+            &command,
+            seat_outbound_key.as_deref().unwrap_or(&key),
+            &correlation_id,
+        )
+        .await?;
         let (response, event_payload) = {
             let mut state = self
                 .state

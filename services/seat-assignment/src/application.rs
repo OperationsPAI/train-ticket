@@ -75,6 +75,7 @@ impl InMemorySeatAssignmentService {
         let Some(id) = allocation else { return Ok(()) };
         let entitlement = string_field(&e.payload, "entitlementId").unwrap_or_default();
         let event_id = e.event_id.clone();
+        let event_id2 = event_id.clone();
         let pending = {
             let mut s = self.state.lock().unwrap();
             let Some(a) = s.allocations.get_mut(&id) else {
@@ -82,17 +83,19 @@ impl InMemorySeatAssignmentService {
                 return Ok(());
             };
             let ev = a.confirm(entitlement, e.event_id.clone(), e.occurred_at.clone())?;
-            let pending = vec![PendingEnvelope::new(
+            vec![PendingEnvelope::new(
                 &a.seat_allocation_id,
                 a.version,
                 ev,
                 e.correlation_id,
                 Some(e.event_id),
-            )];
-            s.processed_events.insert(event_id);
-            pending
+            )]
         };
-        publish_events(self.publisher.as_ref(), pending).await
+        // Dedup lands only after publish succeeds: a failed publish must be
+        // replayable (state transitions are replay-tolerant noops).
+        publish_events(self.publisher.as_ref(), pending).await?;
+        self.state.lock().unwrap().processed_events.insert(event_id2);
+        Ok(())
     }
     async fn release_from_entitlement(
         &self,
@@ -106,6 +109,7 @@ impl InMemorySeatAssignmentService {
         });
         let segment = string_field(&e.payload, "segmentBookingId");
         let event_id = e.event_id.clone();
+        let event_id2 = event_id.clone();
         let pending = {
             let mut s = self.state.lock().unwrap();
             let id = allocation.or_else(|| {
@@ -134,10 +138,11 @@ impl InMemorySeatAssignmentService {
                 )],
                 None => vec![],
             };
-            s.processed_events.insert(event_id);
             pending
         };
-        publish_events(self.publisher.as_ref(), pending).await
+        publish_events(self.publisher.as_ref(), pending).await?;
+        self.state.lock().unwrap().processed_events.insert(event_id2);
+        Ok(())
     }
     async fn release_by_hold(
         &self,
@@ -151,6 +156,7 @@ impl InMemorySeatAssignmentService {
             return Ok(());
         };
         let event_id = e.event_id.clone();
+        let event_id2 = event_id.clone();
         let pending = {
             let mut s = self.state.lock().unwrap();
             let mut out = Vec::new();
@@ -174,10 +180,11 @@ impl InMemorySeatAssignmentService {
                     ))
                 }
             }
-            s.processed_events.insert(event_id);
             out
         };
-        publish_events(self.publisher.as_ref(), pending).await
+        publish_events(self.publisher.as_ref(), pending).await?;
+        self.state.lock().unwrap().processed_events.insert(event_id2);
+        Ok(())
     }
 }
 
