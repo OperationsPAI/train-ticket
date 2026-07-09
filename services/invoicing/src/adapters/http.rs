@@ -76,7 +76,7 @@ pub(crate) async fn create_title<S: InvoicingApi + 'static>(
     headers: HeaderMap,
     body: Result<Json<CreateInvoiceTitleCommand>, JsonRejection>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     let k = match key(&headers) {
         Ok(k) => k,
         Err(e) => return idem_err(e, corr),
@@ -103,7 +103,7 @@ pub(crate) async fn list_titles<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Query(q): Query<ListTitlesQuery>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     match st
         .service
         .list_titles(
@@ -123,7 +123,7 @@ pub(crate) async fn get_title<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     match st.service.get_title(id).await {
         Ok(r) => Json(r).into_response(),
         Err(e) => api_error_response(e, corr),
@@ -136,7 +136,7 @@ pub(crate) async fn update_title<S: InvoicingApi + 'static>(
     Path(id): Path<String>,
     body: Result<Json<UpdateInvoiceTitleCommand>, JsonRejection>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     let k = match key(&headers) {
         Ok(k) => k,
         Err(e) => return idem_err(e, corr),
@@ -157,7 +157,7 @@ pub(crate) async fn set_default_title<S: InvoicingApi + 'static>(
     Path(id): Path<String>,
     body: Result<Json<SetDefaultTitleCommand>, JsonRejection>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     let k = match key(&headers) {
         Ok(k) => k,
         Err(e) => return idem_err(e, corr),
@@ -178,7 +178,7 @@ pub(crate) async fn deactivate_title<S: InvoicingApi + 'static>(
     Path(id): Path<String>,
     body: Result<Json<DeactivateTitleCommand>, JsonRejection>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     let k = match key(&headers) {
         Ok(k) => k,
         Err(e) => return idem_err(e, corr),
@@ -198,7 +198,7 @@ pub(crate) async fn request_invoice<S: InvoicingApi + 'static>(
     headers: HeaderMap,
     body: Result<Json<RequestEInvoiceCommand>, JsonRejection>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     let k = match key(&headers) {
         Ok(k) => k,
         Err(e) => return idem_err(e, corr),
@@ -217,7 +217,7 @@ pub(crate) async fn get_request<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     match st.service.get_request(id).await {
         Ok(r) => Json(r).into_response(),
         Err(e) => api_error_response(e, corr),
@@ -228,7 +228,7 @@ pub(crate) async fn get_invoice<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     match st.service.get_invoice(id).await {
         Ok(r) => Json(r).into_response(),
         Err(e) => api_error_response(e, corr),
@@ -248,7 +248,7 @@ pub(crate) async fn list_invoices<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Query(q): Query<ListInvoicesQuery>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     match st
         .service
         .list_invoices(
@@ -269,7 +269,7 @@ pub(crate) async fn get_red_flush<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     match st.service.get_red_flush(id).await {
         Ok(r) => Json(r).into_response(),
         Err(e) => api_error_response(e, corr),
@@ -289,7 +289,7 @@ pub(crate) async fn list_red_flushes<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Query(q): Query<ListRedQuery>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     if q.order_id.is_none() && q.post_sales_case_id.is_none() {
         return validation(corr, "orderId or postSalesCaseId is required");
     }
@@ -321,7 +321,7 @@ pub(crate) async fn generate_itinerary<S: InvoicingApi + 'static>(
     Extension(ctx): Extension<RequestContext>,
     Query(q): Query<ItineraryQuery>,
 ) -> Response {
-    let corr = ctx.correlation_id().to_string();
+    let corr = crate::utils::canonical_corr(ctx.correlation_id());
     let travelers = q
         .traveler_refs
         .split(',')

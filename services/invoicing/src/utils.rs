@@ -174,3 +174,17 @@ pub(crate) fn mask_email(value: &str) -> Option<String> {
     let first = name.chars().next().unwrap_or('*');
     Some(format!("{first}***@{domain}"))
 }
+
+
+/// Wire correlation ids are `corr-<uuid-v7>`; the HTTP middleware hands us the
+/// raw header value (or a bare uuid), and rust-kit's envelope builder PANICS on
+/// unprefixed ids. Canonicalize before any envelope is built.
+pub(crate) fn canonical_corr(raw: &str) -> String {
+    if raw.starts_with("corr-") {
+        return raw.to_string();
+    }
+    if uuid::Uuid::parse_str(raw).is_ok() {
+        return format!("corr-{raw}");
+    }
+    rust_kit::messaging::correlation_id()
+}

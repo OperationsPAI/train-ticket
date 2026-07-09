@@ -23,7 +23,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PaymentCommandService {
-    private static final String DEFAULT_CHANNEL = "internal_payment_channel";
+    // RULING (wave A2): captures without an explicit channel route through the
+    // default SIM channel so saga-driven and loadgen traffic exercises the real
+    // handoff; the legacy internal path remains reachable only by explicit env.
+    private static final String DEFAULT_CHANNEL = System.getenv().getOrDefault("PAYMENT_DEFAULT_CHANNEL", "ALIPAY_SIM");
 
     private final Clock clock;
     private final EventPublisher eventPublisher;
