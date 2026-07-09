@@ -32,7 +32,9 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
 
     @org.springframework.beans.factory.annotation.Autowired
     public HttpIdentityVerificationAdapter(ObjectMapper mapper) {
-        this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build(), mapper, System.getenv().getOrDefault("IDENTITY_VERIFICATION_URL", "http://identity-verification:8080"));
+        // HTTP/1.1 pinned: uvicorn rejects java.net.http's default h2c upgrade
+        // with a plain-text body that breaks JSON error parsing.
+        this(HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(3)).build(), mapper, System.getenv().getOrDefault("IDENTITY_VERIFICATION_URL", "http://identity-verification:8080"));
     }
 
     HttpIdentityVerificationAdapter(HttpClient client, ObjectMapper mapper, String baseUrl) {

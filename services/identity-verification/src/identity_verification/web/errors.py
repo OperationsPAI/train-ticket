@@ -14,6 +14,13 @@ class DownstreamError(RuntimeError):
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    from train_ticket_platform.storage import OptimisticConcurrencyError
+
+    @app.exception_handler(OptimisticConcurrencyError)
+    async def occ(request: Request, exc: OptimisticConcurrencyError) -> JSONResponse:
+        # Concurrent writers race on the same aggregate; callers retry.
+        return error_response(request, "CONFLICT", "Concurrent update, retry", 409)
+
     register_base(app)
 
     @app.exception_handler(NotFoundError)
