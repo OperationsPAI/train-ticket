@@ -14,9 +14,12 @@ Activation-wave rulings:
 
 - Wallet / Promotion produces events in this wave and subscribes to no upstream
   streams. Issuance from Post Sales compensation is represented by the issuing
-  command's `issuanceSource=POST_SALES_COMP` plus `caseId`; no Post Sales event
-  or API contract changes are introduced.
-- Supported issuance sources are `MANUAL_OPS` and `POST_SALES_COMP` only.
+  command's `issuanceSource=POST_SALES_COMP` plus `caseId`; Disruption Recovery
+  compensation is represented by `issuanceSource=DISRUPTION_COMP` plus the
+  recovery `caseId`. Wallet / Promotion does not subscribe to either upstream
+  stream in this wave.
+- Supported issuance sources are `MANUAL_OPS`, `POST_SALES_COMP`, and
+  `DISRUPTION_COMP`.
 - Payment contracts are unchanged. Combination payment is not part of this wave;
   future note: a later wave will define the "cash remaining payable" interface.
 - Finance Settlement and Notification are event consumers at the contract
@@ -61,10 +64,10 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `reasonType` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, `ORDER_PURCHASE`, `RESERVATION_TIMEOUT`, `CUSTOMER_SERVICE_ADJUSTMENT`, `SYSTEM_EXPIRY`, or `REVERSAL`. |
+| `reasonType` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, `DISRUPTION_COMP`, `ORDER_PURCHASE`, `RESERVATION_TIMEOUT`, `CUSTOMER_SERVICE_ADJUSTMENT`, `SYSTEM_EXPIRY`, or `REVERSAL`. |
 | `reasonCode` | string | yes | Stable business reason code. |
 | `referenceType` | string | no | Referenced object class such as `ORDER`, `POST_SALES_CASE`, `MANUAL_ACTION`, or `SCHEDULER_JOB`. |
-| `referenceId` | string | no | Referenced object ID. For post-sales compensation this is the carried `caseId`. |
+| `referenceId` | string | no | Referenced object ID. For post-sales or disruption compensation this is the carried `caseId`. |
 | `description` | string | no | Human-readable reason; must not contain unmasked sensitive personal data. |
 
 `walletBalanceDelta` fields used by all balance-changing events:
@@ -102,8 +105,8 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | `issuedAmount` | Money | yes | Original issued value. |
 | `availableAmount` | Money | yes | Available amount after issuance. |
 | `reservedAmount` | Money | yes | Reserved amount after issuance; normally zero. |
-| `issuanceSource` | enum | yes | `MANUAL_OPS` or `POST_SALES_COMP`. |
-| `caseId` | string | no | Post-sales case reference when `issuanceSource` is `POST_SALES_COMP`. |
+| `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
+| `caseId` | string | no | Post-sales case reference when `issuanceSource` is `POST_SALES_COMP`, or Disruption Recovery case reference when `issuanceSource` is `DISRUPTION_COMP`. |
 | `applicableScope` | object | yes | Benefit eligibility scope. |
 | `redemptionRule` | object | yes | Redemption rule captured at issuance. |
 | `revocationRule` | object | yes | Revocation rule captured at issuance. |

@@ -27,10 +27,12 @@ Activation-wave rulings:
 - Finance Settlement and Notification are event consumers at the contract
   surface, but their concrete consumption implementations are deferred to a
   later wave.
-- Issuance sources supported in this wave are `MANUAL_OPS` and
-  `POST_SALES_COMP`. Post-sales compensation is carried by the issuance request
-  as `caseId`; the Post Sales contract is not changed and Wallet / Promotion
-  does not subscribe to a Post Sales stream in this wave.
+- Issuance sources supported in this wave are `MANUAL_OPS`,
+  `POST_SALES_COMP`, and the additive Disruption Recovery value
+  `DISRUPTION_COMP`. Post-sales compensation is carried by the issuance request
+  as `caseId`; Disruption Recovery compensation is carried as a recovery
+  `caseId`/business reason. Wallet / Promotion does not subscribe to Post Sales
+  or Disruption Recovery streams in this wave.
 
 Field shapes reference `docs/08-contracts/shared-primitives.md` for IDs,
 timestamps, event envelope fields, pagination conventions, and `Money`. All
@@ -73,8 +75,8 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 |---|---|
 | `benefitType` | `BALANCE`, `COUPON`, `COMPENSATION_CREDIT`, `POINTS` |
 | `balanceType` | `STORED_VALUE`, `POINTS`, `PROMOTION_CREDIT` |
-| `issuanceSource` | `MANUAL_OPS`, `POST_SALES_COMP` |
-| `businessReason.reasonType` | `MANUAL_OPS`, `POST_SALES_COMP`, `ORDER_PURCHASE`, `RESERVATION_TIMEOUT`, `CUSTOMER_SERVICE_ADJUSTMENT`, `SYSTEM_EXPIRY`, `REVERSAL` |
+| `issuanceSource` | `MANUAL_OPS`, `POST_SALES_COMP`, `DISRUPTION_COMP` |
+| `businessReason.reasonType` | `MANUAL_OPS`, `POST_SALES_COMP`, `DISRUPTION_COMP`, `ORDER_PURCHASE`, `RESERVATION_TIMEOUT`, `CUSTOMER_SERVICE_ADJUSTMENT`, `SYSTEM_EXPIRY`, `REVERSAL` |
 
 `businessReason` is the cross-command audit reason object:
 
@@ -102,8 +104,8 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 | `availableAmount` | Money | yes | Currently available amount; never negative. |
 | `reservedAmount` | Money | yes | Currently frozen amount; never negative. |
 | `redeemedAmount` | Money | yes | Amount already redeemed. |
-| `issuanceSource` | enum | yes | `MANUAL_OPS` or `POST_SALES_COMP`. |
-| `caseId` | string | no | Post-sales case reference when `issuanceSource` is `POST_SALES_COMP`. |
+| `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
+| `caseId` | string | no | Post-sales case reference when `issuanceSource` is `POST_SALES_COMP`, or Disruption Recovery case reference when `issuanceSource` is `DISRUPTION_COMP`. |
 | `applicableScope` | object | yes | Scope/rules for eligibility. See `ApplicableScope`. |
 | `redemptionRule` | object | yes | Redemption rule such as single-use and maximum amount. See `RedemptionRule`. |
 | `revocationRule` | object | yes | Revocation rule for allowed administrative/business revoke conditions. |
@@ -168,8 +170,8 @@ return the original response. Reusing the same key with a different body returns
 | `benefitType` | enum | yes | `BALANCE`, `COUPON`, `COMPENSATION_CREDIT`, or `POINTS`. |
 | `balanceType` | enum | yes | Wallet sub-ledger to credit. |
 | `amount` | Money | yes | Issued amount. `minorUnits` must be positive. |
-| `issuanceSource` | enum | yes | `MANUAL_OPS` or `POST_SALES_COMP`. |
-| `caseId` | string | no | Required when `issuanceSource` is `POST_SALES_COMP`; ignored otherwise. |
+| `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
+| `caseId` | string | no | Required when `issuanceSource` is `POST_SALES_COMP` or `DISRUPTION_COMP`; ignored otherwise. |
 | `applicableScope` | object | yes | Eligibility scope. |
 | `redemptionRule` | object | yes | Redemption rule. |
 | `revocationRule` | object | yes | Revocation rule. |
