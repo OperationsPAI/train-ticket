@@ -25,7 +25,7 @@ fn amount() -> AmountBasis {
         revenue_recognition_ids: vec!["rr-1".into()],
         finance_invoice_id: None,
         tax_lines: vec![TaxLine {
-            tax_code: "VAT".into(),
+            tax_code: "VAT_SIM".into(),
             tax_rate_basis_points: 0,
             taxable_amount: Money {
                 currency: "CNY".into(),
@@ -42,6 +42,29 @@ fn amount() -> AmountBasis {
         },
         amount_basis_hash: "sha256:test".into(),
     }
+}
+
+async fn project_amount(
+    svc: &InMemoryInvoicingService,
+    order_id: &str,
+    event_id: &str,
+) -> AmountBasis {
+    let payload = serde_json::json!({
+        "orderId": order_id,
+        "revenueRecognitionId": format!("rr-{order_id}"),
+        "amount": {"currency":"CNY","minorUnits":1000}
+    });
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "RevenueRecognized",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(event_id.to_string()),
+        "finance-settlement",
+        payload,
+    ))
+    .await
+    .unwrap();
+    svc.snapshot().amounts.get(order_id).cloned().unwrap()
 }
 
 #[tokio::test]
@@ -97,6 +120,7 @@ async fn deterministic_sim_accepts_and_rejects_by_seed() {
     let svc = InMemoryInvoicingService::new(publisher.clone());
     let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
     svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new("JourneyOrderConfirmed", rust_kit::messaging::now_rfc3339_utc(), corr(), Some(format!("evt-{}", uuid::Uuid::now_v7())), "journey-order", serde_json::json!({"orderId":"ord-ok","accountId":"acc-test","travelerRefs":["tvl-1"],"segmentRefs":["seg-1"]}))).await.unwrap();
+    let basis = project_amount(&svc, "ord-ok", "evt-01900000-0000-7000-8000-000000000001").await;
     let req = svc
         .request_invoice(
             RequestEInvoiceCommand {
@@ -110,7 +134,7 @@ async fn deterministic_sim_accepts_and_rejects_by_seed() {
                     segment_refs: vec![],
                     traveler_refs: vec![],
                 },
-                amount_basis: amount(),
+                amount_basis: basis,
                 recipient_email: Some("a@example.com".into()),
                 gateway_profile: None,
                 sim_seed_ref: Some("accept-1".into()),
@@ -131,8 +155,7 @@ async fn deterministic_sim_accepts_and_rejects_by_seed() {
     ))
     .await
     .unwrap();
-    let mut a = amount();
-    a.amount_basis_hash = "sha256:reject".into();
+    let a = project_amount(&svc, "ord-rej", "evt-01900000-0000-7000-8000-000000000002").await;
     let req2 = svc
         .request_invoice(
             RequestEInvoiceCommand {
@@ -181,6 +204,7 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
     ))
     .await
     .unwrap();
+    let basis = project_amount(&svc, "ord-ref", "evt-01900000-0000-7000-8000-000000000003").await;
     let req = svc
         .request_invoice(
             RequestEInvoiceCommand {
@@ -194,7 +218,7 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
                     segment_refs: vec![],
                     traveler_refs: vec![],
                 },
-                amount_basis: amount(),
+                amount_basis: basis,
                 recipient_email: None,
                 gateway_profile: None,
                 sim_seed_ref: Some("accept".into()),

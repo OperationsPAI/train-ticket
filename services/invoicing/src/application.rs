@@ -144,6 +144,7 @@ impl InMemoryInvoicingService {
         state.red_flushes = snapshot.red_flushes;
         state.orders = snapshot.orders;
         state.amounts = snapshot.amounts;
+        state.idempotency = snapshot.idempotency;
     }
 
     pub(crate) fn snapshot(&self) -> InvoicingStateSnapshot {
@@ -155,6 +156,7 @@ impl InMemoryInvoicingService {
             red_flushes: state.red_flushes.clone(),
             orders: state.orders.clone(),
             amounts: state.amounts.clone(),
+            idempotency: state.idempotency.clone(),
         }
     }
 
@@ -184,7 +186,23 @@ impl InMemoryInvoicingService {
                 self.project_order(envelope).await
             }
             "RevenueRecognized" | "InvoiceGenerated" => self.project_amount(envelope).await,
-            "PostSalesApplied" => self.observe_refund(envelope).await,
+            "PostSalesApproved" | "PostSalesApplied" => self.observe_refund(envelope).await,
+            "PostSalesFailed" => {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .processed_events
+                    .insert(envelope.event_id);
+                Ok(())
+            }
+            "ManualActionApproved" | "ManualActionRejected" | "ManualActionExecuted" => {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .processed_events
+                    .insert(envelope.event_id);
+                Ok(())
+            }
             _ => {
                 self.state
                     .lock()
@@ -331,6 +349,7 @@ pub(crate) struct InvoicingStateSnapshot {
     pub red_flushes: HashMap<String, RedFlushView>,
     pub orders: HashMap<String, OrderProjection>,
     pub amounts: HashMap<String, AmountBasis>,
+    pub idempotency: HashMap<String, IdemRecord>,
 }
 
 #[derive(Default)]
@@ -351,10 +370,18 @@ pub(crate) struct OrderProjection {
     pub segment_refs: Vec<String>,
 }
 #[derive(Clone)]
-struct IdemRecord {
-    op: &'static str,
-    fp: String,
-    response: serde_json::Value,
+pub(crate) struct IdemRecord {
+    pub(crate) op: &'static str,
+    pub(crate) fp: String,
+    pub(crate) response: serde_json::Value,
+}
+
+fn amount_basis_matches_projection(requested: &AmountBasis, projected: &AmountBasis) -> bool {
+    let mut requested = requested.clone();
+    let mut projected = projected.clone();
+    requested.validate_and_sort().is_ok()
+        && projected.validate_and_sort().is_ok()
+        && requested == projected
 }
 
 #[async_trait]
@@ -608,14 +635,35 @@ impl InvoicingApi for InMemoryInvoicingService {
                 .get(&cmd.title_id)
                 .cloned()
                 .ok_or_else(|| InvoicingError::NotFound("InvoiceTitle not found".into()))?;
-            let Some(order) = s.orders.get(&cmd.order_id) else {
-                return Err(InvoicingError::ValidationFailed(
-                    "missing journey-order confirmation fact for order".into(),
-                ));
+            let order = match s.orders.get(&cmd.order_id) {
+                Some(order) => order,
+                None => {
+                    if title.status != TitleStatus::Active
+                        || title.version != cmd.title_version
+                        || title.account_id != cmd.account_id
+                    {
+                        return Err(InvoicingError::PreconditionFailed(
+                            "invoice title is not current/usable for this account".into(),
+                        ));
+                    }
+                    return Err(InvoicingError::PreconditionFailed(
+                        "missing journey-order confirmation fact for order".into(),
+                    ));
+                }
             };
             if order.account_id != cmd.account_id {
                 return Err(InvoicingError::PreconditionFailed(
                     "order confirmation account does not match invoice request".into(),
+                ));
+            }
+            let Some(projected_amount) = s.amounts.get(&cmd.order_id) else {
+                return Err(InvoicingError::PreconditionFailed(
+                    "missing finance-settlement amount basis projection for order".into(),
+                ));
+            };
+            if !amount_basis_matches_projection(&cmd.amount_basis, projected_amount) {
+                return Err(InvoicingError::PreconditionFailed(
+                    "amountBasis does not match consumed finance-settlement projection".into(),
                 ));
             }
             let mut scope_check = cmd.invoice_scope.clone();
@@ -784,6 +832,22 @@ impl InvoicingApi for InMemoryInvoicingService {
         }
         traveler_refs.sort();
         segment_refs.sort();
+        let Some(order) = self.state.lock().unwrap().orders.get(&order_id).cloned() else {
+            return Err(InvoicingError::NotFound(
+                "order confirmation projection not found".into(),
+            ));
+        };
+        if !traveler_refs
+            .iter()
+            .all(|traveler| order.traveler_refs.contains(traveler))
+            || !segment_refs
+                .iter()
+                .all(|segment| order.segment_refs.contains(segment))
+        {
+            return Err(InvoicingError::PreconditionFailed(
+                "requested itinerary traveler/segment material is not proven by order facts".into(),
+            ));
+        }
         let material = normalize_json(&(
             order_id.clone(),
             traveler_refs.clone(),

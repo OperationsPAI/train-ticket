@@ -498,10 +498,18 @@ impl AmountBasis {
                 "amountBasis.totalAmount must be positive".into(),
             ));
         }
-        if self.amount_basis_hash.trim().is_empty() {
-            self.amount_basis_hash = sha256_prefixed(&normalize_json(self));
+        self.amount_basis_hash = self.amount_basis_hash.trim().to_string();
+        if self.amount_basis_hash.is_empty() {
+            return Err(InvoicingError::DomainRuleViolation(
+                "amountBasisHash must be supplied from Finance Settlement projection".into(),
+            ));
         }
         self.revenue_recognition_ids.sort();
+        for line in &mut self.tax_lines {
+            line.tax_code = line.tax_code.trim().to_ascii_uppercase();
+            line.taxable_amount.currency = line.taxable_amount.currency.trim().to_ascii_uppercase();
+            line.tax_amount.currency = line.tax_amount.currency.trim().to_ascii_uppercase();
+        }
         Ok(())
     }
 }

@@ -23,13 +23,43 @@ for m in re.finditer(r'\{.*\}', raw):
     except Exception: pass
 PY
 }
-amount_basis() { python3 - "$1" <<'PY'
-import hashlib,json,sys
-order=sys.argv[1]
-b={"basisType":"REVENUE_RECOGNITION","revenueRecognitionIds":["rr-e2e-"+order[-8:]],"taxLines":[{"taxCode":"VAT_SIM","taxRateBasisPoints":0,"taxableAmount":{"currency":"CNY","minorUnits":10750},"taxAmount":{"currency":"CNY","minorUnits":0}}],"totalAmount":{"currency":"CNY","minorUnits":10750}}
-b["amountBasisHash"]="sha256:"+hashlib.sha256(json.dumps(b,sort_keys=True).encode()).hexdigest()
-print(json.dumps(b,separators=(',',':')))
+finance_basis() { # ORDER -> amountBasis from consumed finance-settlement facts
+  local order=$1 invoice_id code out
+  for _ in $(seq 1 12); do
+    req POST finance-settlement /api/v1/invoices "{\"orderId\":\"$order\"}"
+    code=$LAST_CODE
+    if [ "$code" = 201 ] || [ "$code" = 200 ]; then break; fi
+    sleep 2
+  done
+  [ "$code" = 201 ] || [ "$code" = 200 ] || { echo "{}"; return; }
+  invoice_id=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('invoiceId',''))" 2>/dev/null)
+  for _ in $(seq 1 20); do
+    k exec "$(redis_pod)" -- redis-cli XREVRANGE events:finance-settlement + - COUNT 200 > /tmp/finance-events.txt 2>/dev/null || true
+    out=$(python3 - "$order" "$invoice_id" <<'PY'
+import json, sys, re, hashlib
+order, invoice_id = sys.argv[1], sys.argv[2]
+raw=open('/tmp/finance-events.txt').read()
+for m in re.finditer(r'\{.*\}', raw):
+    try:
+        e=json.loads(m.group(0).encode().decode('unicode_escape'))
+    except Exception:
+        continue
+    if e.get('eventType') != 'InvoiceGenerated':
+        continue
+    payload=e.get('payload',{})
+    if payload.get('orderId') != order or (invoice_id and payload.get('invoiceId') != invoice_id):
+        continue
+    total=payload.get('totalAmount') or {"currency":"CNY","minorUnits":0}
+    basis={"basisType":"FINANCE_INVOICE","revenueRecognitionIds":sorted(payload.get('revenueRecognitionIds') or []),"financeInvoiceId":payload.get('invoiceId'),"taxLines":[{"taxCode":"VAT_SIM","taxRateBasisPoints":0,"taxableAmount":total,"taxAmount":{"currency":total.get('currency','CNY'),"minorUnits":0}}],"totalAmount":total}
+    basis["amountBasisHash"]="sha256:"+hashlib.sha256(json.dumps(payload,separators=(',',':')).encode()).hexdigest()
+    print(json.dumps(basis,separators=(',',':')))
+    break
 PY
+)
+    [ -n "$out" ] && { echo "$out"; return; }
+    sleep 2
+  done
+  echo "{}"
 }
 
 echo "== 23-invoicing: title, blue invoice, red flush, itinerary"
@@ -42,7 +72,7 @@ inv_req POST /api/v1/invoice-titles "{\"accountId\":\"$MAIN_ACCT\",\"titleType\"
 check_code 201 "create invoice title"
 TITLE=$(jget "['titleId']"); TVER=$(jget "['version']")
 sleep 4
-BASIS=$(amount_basis "$MAIN_ORDER")
+BASIS=$(finance_basis "$MAIN_ORDER")
 inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$MAIN_ACCT\",\"orderId\":\"$MAIN_ORDER\",\"titleId\":\"$TITLE\",\"titleVersion\":$TVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$BASIS,\"recipientEmail\":\"e2e@example.com\",\"simSeedRef\":\"accept-e2e\"}"
 check_code 201 "request blue e-invoice"
 REQ=$(jget "['invoiceRequestId']"); STATUS=$(jget "['status']"); EIN=$(jget "['eInvoiceId']")
@@ -57,7 +87,7 @@ inv_req POST /api/v1/invoice-titles "{\"accountId\":\"$REJ_ACCT\",\"titleType\":
 check_code 201 "create rejection title"
 RTITLE=$(jget "['titleId']"); RTVER=$(jget "['version']")
 sleep 4
-RBASIS=$(amount_basis "$REJ_ORDER")
+RBASIS=$(finance_basis "$REJ_ORDER")
 inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$REJ_ACCT\",\"orderId\":\"$REJ_ORDER\",\"titleId\":\"$RTITLE\",\"titleVersion\":$RTVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$RBASIS,\"simSeedRef\":\"reject-e2e\"}"
 check_code 201 "request rejected seed invoice"
 [ "$(jget "['status']")" = REJECTED ] && ok "SIM deterministic rejection resource" || bad "expected REJECTED got $(jget "['status']")"
@@ -79,7 +109,7 @@ check_code 200 "generate itinerary receipt projection"
 
 inv_req DELETE "/api/v1/invoice-titles/$TITLE" "{\"expectedVersion\":$TVER,\"reason\":\"E2E_DONE\"}"
 check_code 200 "deactivate title"
-NBASIS=$(amount_basis "$REJ_ORDER")
+NBASIS=$(finance_basis "$REJ_ORDER")
 inv_req POST /api/v1/e-invoice-requests "{\"accountId\":\"$MAIN_ACCT\",\"orderId\":\"$REJ_ORDER\",\"titleId\":\"$TITLE\",\"titleVersion\":$TVER,\"invoiceScope\":{\"scopeType\":\"ORDER\"},\"amountBasis\":$NBASIS,\"simSeedRef\":\"accept-e2e\"}"
 [ "$LAST_CODE" = 412 ] && ok "deactivated title invoice rejected 412" || bad "deactivated title got $LAST_CODE"
 summary
