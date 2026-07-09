@@ -390,6 +390,107 @@ class MessagingTest {
         assertFalse(((String) ((Map<?, ?>) opened.payload()).get("description")).contains("order-unknown-for-"));
     }
 
+    @Test
+    void walletBenefitEventsCreateCostEntriesAndDeduplicateReplay() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents,
+            new InMemoryPaymentIntentOrderReferenceRepository(),
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            projections,
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC),
+            null
+        );
+        EventEnvelope issued = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e301", "BenefitIssued", Instant.parse("2026-07-05T09:59:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e301", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e301", "wallet-promotion", 1, Map.of(
+                "benefitId", "ben-1",
+                "accountId", "acc-1",
+                "issuanceSource", "POST_SALES_COMP",
+                "caseId", "psc-1",
+                "issuedAmount", Map.of("currency", "CNY", "minorUnits", 1200),
+                "issuedAt", "2026-07-05T09:58:59Z"
+            ));
+
+        assertEquals(HandlerResult.SUCCESS, handler.handle(issued));
+        assertEquals(HandlerResult.SUCCESS, handler.handle(issued));
+
+        List<BenefitCostEntry> entries = projections.findBenefitCostEntries("acc-1", 20, 0);
+        assertEquals(1, entries.size());
+        BenefitCostEntry entry = entries.getFirst();
+        assertEquals("ben-1", entry.benefitId());
+        assertEquals("POST_SALES_COMP", entry.issuanceSource());
+        assertEquals("psc-1", entry.caseId());
+        assertEquals("BenefitIssued", entry.eventType());
+        assertEquals(Money.of("CNY", "12.00"), entry.amount());
+        assertEquals(Instant.parse("2026-07-05T09:58:59Z"), entry.occurredAt());
+    }
+
+    @Test
+    void walletTerminalEventsUseRfc3339PayloadTimestampsAndSignedAmounts() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents,
+            new InMemoryPaymentIntentOrderReferenceRepository(),
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            projections,
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC),
+            null
+        );
+
+        assertEquals(HandlerResult.SUCCESS, handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "BenefitExpired", Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "wallet-promotion", 1, Map.of(
+                "benefitId", "ben-2",
+                "accountId", "acc-2",
+                "expiredAmount", Map.of("currency", "CNY", "minorUnits", 250),
+                "expiredAt", "2026-07-05T10:00:30Z"
+            ))));
+        assertEquals(HandlerResult.SUCCESS, handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e303", "BenefitRedemptionReversed", Instant.parse("2026-07-05T10:02:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "wallet-promotion", 1, Map.of(
+                "benefitId", "ben-2",
+                "accountId", "acc-2",
+                "reversedAmount", Map.of("currency", "CNY", "minorUnits", 125),
+                "reversedAt", "2026-07-05T10:01:30Z"
+            ))));
+
+        List<BenefitCostEntry> entries = projections.findBenefitCostEntries("acc-2", 20, 0);
+        assertEquals(2, entries.size());
+        assertTrue(entries.stream().anyMatch(entry -> entry.eventType().equals("BenefitExpired")
+            && entry.amount().equals(Money.of("CNY", "-2.50"))
+            && entry.occurredAt().equals(Instant.parse("2026-07-05T10:00:30Z"))));
+        assertTrue(entries.stream().anyMatch(entry -> entry.eventType().equals("BenefitReversed")
+            && entry.amount().equals(Money.of("CNY", "-1.25"))));
+    }
+
+    @Test
+    void unknownWalletEventTypeAckSkipsWithoutCostEntry() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents,
+            new InMemoryPaymentIntentOrderReferenceRepository(),
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            projections,
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC),
+            null
+        );
+
+        HandlerResult result = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e304", "BenefitReserved", Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e302", "wallet-promotion", 1, Map.of(
+                "benefitId", "ben-2",
+                "accountId", "acc-2"
+            )));
+
+        assertEquals(HandlerResult.SUCCESS, result);
+        assertEquals(0, projections.countBenefitCostEntries("acc-2"));
+        assertEquals(1, consumedEvents.saveCount);
+    }
+
     private static final class RecordingPublisher implements EventPublisher {
         private final List<EventEnvelope> published = new ArrayList<>();
 

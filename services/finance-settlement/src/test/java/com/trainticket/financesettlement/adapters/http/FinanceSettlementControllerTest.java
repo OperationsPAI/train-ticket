@@ -7,7 +7,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.trainticket.financesettlement.application.BenefitCostEntry;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
+import com.trainticket.financesettlement.application.FinanceSettlementProjectionRepository;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
@@ -29,6 +31,9 @@ class FinanceSettlementControllerTest {
 
     @Autowired
     FinanceSettlementApplicationService service;
+
+    @Autowired
+    FinanceSettlementProjectionRepository projections;
 
     private RevenueRecognition recognition;
     private ReconciliationCase reconciliationCase;
@@ -80,6 +85,32 @@ class FinanceSettlementControllerTest {
             .andExpect(jsonPath("$.total").value(1))
             .andExpect(jsonPath("$.limit").value(20))
             .andExpect(jsonPath("$.offset").value(0));
+    }
+
+
+    @Test
+    void listsBenefitCostsForOperations() throws Exception {
+        projections.saveBenefitCostEntry(new BenefitCostEntry(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0f101",
+            "ben-test-001",
+            "acc-test-001",
+            "MANUAL_OPS",
+            null,
+            Money.of("CNY", "10.00"),
+            "BenefitIssued",
+            Instant.parse("2026-07-05T10:02:00Z")
+        ));
+
+        mockMvc.perform(get("/api/v1/benefit-costs").param("accountId", "acc-test-001").param("limit", "20").param("offset", "0"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items", hasSize(1)))
+            .andExpect(jsonPath("$.items[0].benefitId").value("ben-test-001"))
+            .andExpect(jsonPath("$.items[0].accountId").value("acc-test-001"))
+            .andExpect(jsonPath("$.items[0].issuanceSource").value("MANUAL_OPS"))
+            .andExpect(jsonPath("$.items[0].amount.currency").value("CNY"))
+            .andExpect(jsonPath("$.items[0].amount.minorUnits").value(1000))
+            .andExpect(jsonPath("$.items[0].eventType").value("BenefitIssued"))
+            .andExpect(jsonPath("$.items[0].occurredAt").value("2026-07-05T10:02:00Z"));
     }
 
     @Test

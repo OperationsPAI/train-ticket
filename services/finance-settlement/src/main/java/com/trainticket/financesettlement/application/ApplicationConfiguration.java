@@ -29,11 +29,12 @@ public class ApplicationConfiguration {
         RevenueRecognitionRepository revenueRecognitions,
         ReconciliationCaseRepository reconciliationCases,
         InvoiceRepository invoices,
+        FinanceSettlementProjectionRepository projections,
         EventPublisher eventPublisher,
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock
     ) {
-        return new FinanceSettlementApplicationService(revenueRecognitions, reconciliationCases, invoices, eventPublisher, envelopeMapper, clock);
+        return new FinanceSettlementApplicationService(revenueRecognitions, reconciliationCases, invoices, projections, eventPublisher, envelopeMapper, clock);
     }
 
     @Bean
