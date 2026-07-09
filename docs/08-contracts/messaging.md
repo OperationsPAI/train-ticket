@@ -56,6 +56,7 @@ context.
 | 7 | `journey-order` | `events:journey-order` | JourneyOrderCreated, JourneyOrderPendingPayment, JourneyOrderConfirmed, JourneyOrderCancelled, JourneyOrderAdjusted |
 | 8 | `booking-orchestration` | `events:booking-orchestration` | BookingSagaStarted, SegmentReservationRequested, SegmentReservationConfirmed, SegmentReservationFailed, SegmentTicketed, SegmentBookingCancelled |
 | 9 | `payment` | `events:payment` | PaymentIntentCreated, PaymentCaptured, PaymentIntentFailed, PaymentExpired, RefundRequested, RefundSettled, RefundFailed |
+| 9a | `payment-channel` | `events:payment-channel` | ChannelOrderCreated, ChannelOrderSubmitted, ChannelOrderAccepted, ChannelOrderSucceeded, ChannelOrderFailed, ChannelOrderMissed, ChannelOrderQueryRecorded, ChannelOrderRecoveryDetected, ChannelRefundCreated, ChannelRefundSubmitted, ChannelRefundSucceeded, ChannelRefundFailed, ChannelRefundMissed, ChannelRefundQueryRecorded, ChannelRefundRecoveryDetected, ChannelStatementGenerated, ChannelStatementFrozen, ChannelStatementLineMatched, ReconciliationDiscrepancyOpened, ReconciliationDiscrepancyLinkedToFinanceCase, ReconciliationDiscrepancyResolved |
 | 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementSuspended, EntitlementReinstated |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved, SegmentArrived, SegmentDelayed, SegmentCancelled |
@@ -246,6 +247,8 @@ plus notification/finance/reporting fan-in.
 | 18 | `events:payment` | `journey-order` | PaymentCaptured for order status advancement |
 | 19 | `events:payment` | `booking-orchestration` | PaymentCaptured to continue saga (issue ticket) |
 | 20 | `events:payment` | `finance-settlement` | PaymentCaptured/RefundSettled for reconciliation |
+| 20a | `events:payment-channel` | `payment` | ADR-0003 Wave A: Payment consumes terminal channel order/refund facts (`ChannelOrderSucceeded`, `ChannelOrderFailed`, `ChannelOrderMissed`, `ChannelOrderRecoveryDetected`, `ChannelRefundSucceeded`, `ChannelRefundFailed`, `ChannelRefundMissed`, `ChannelRefundRecoveryDetected`) to complete capture/refund handoff. Operational attempt/query facts are ack-skipped by Payment. |
+| 20b | `events:payment-channel` | `finance-settlement` | ADR-0003 Wave A: Finance Settlement consumes `ChannelStatementGenerated`, `ChannelStatementFrozen`, and discrepancy/recovery facts for daily SIM channel reconciliation. Non-statement operational facts are ack-skipped unless linked to a reconciliation discrepancy. |
 | 21 | `events:payment` | `notification` | Payment events for user notifications |
 | 22 | `events:provider-integration` | `booking-orchestration` | ProviderReservationConfirmed for saga progression |
 | 23 | `events:provider-integration` | `finance-settlement` | Provider events for settlement |
@@ -286,6 +289,19 @@ plus notification/finance/reporting fan-in.
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
 | 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. RULING (2026-07-09): for self-executed `REACCOMMODATION`, `RecoveryCompleted` for an already `RECOVERED` connection and matching `caseId` is acknowledged as an idempotent no-op. |
 
+### Payment Channel subscriptions
+
+`events:payment-channel` is registered for ADR-0003 Wave A. Payment is the only
+active platform-money consumer and consumes only terminal order/refund handoff
+facts plus recovery facts; it ack-skips statement, line-match, and discrepancy
+facts. Finance Settlement consumes daily statement generated/frozen facts and
+reconciliation discrepancy/recovery facts for channel reconciliation; it ack-skips
+order/refund operational lifecycle facts that are not tied to reconciliation.
+Notification, Journey Order, Booking Orchestration, Customer Service, and
+Reporting do not receive required Payment Channel subscriptions in this wave; any
+future dashboards or customer touchpoints must be added by a later contract
+increment rather than inferred from the stream registration.
+
 ### Cross-Cutting Consumers
 
 The following consumers subscribe to **all or most** streams for observability,
@@ -294,7 +310,7 @@ analytics, and cross-cutting concerns:
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
 | `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
-| `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion` | Revenue recognition, reconciliation, invoice generation, and Wallet / Promotion benefit-cost attribution. |
+| `finance-settlement` | `events:payment`, `events:payment-channel`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion` | Revenue recognition, reconciliation, invoice generation, Wallet / Promotion benefit-cost attribution, and ADR-0003 SIM channel statement reconciliation. |
 | `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion` | User-facing notification triggers including Wallet / Promotion issued, expired, and revoked benefit touchpoints. |
 
 ### Disruption Recovery subscriptions

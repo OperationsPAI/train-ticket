@@ -154,6 +154,7 @@ correlation IDs.
 | 25 | `wallet-promotion.md` | Wallet / Promotion | activation wave in progress |
 | 26 | `disruption-recovery.md` | Disruption Recovery | activation wave in progress |
 | 27 | `ancillary-service.md` | Ancillary Service | activation wave in progress |
+| 28 | `payment-channel.md` | Payment Channel | ADR-0003 Wave A contract |
 
 ## Open Issues
 
