@@ -12,6 +12,7 @@ from train_ticket_platform.events import EventEnvelope, rfc3339_utc
 from disruption_recovery.domain import (
     ActorRef,
     DomainError,
+    DISRUPTION_TYPES,
     PreconditionFailed,
     Evidence,
     ExecutionTarget,
@@ -199,6 +200,8 @@ class DisruptionRecoveryService:
         evidence = Evidence(**dict(data.get("evidence") or {}))
         reported_by = ActorRef(**dict(data.get("reportedBy") or {}))
         disruption_type = require_text(str(data.get("disruptionType") or ""), "disruptionType")
+        if disruption_type not in DISRUPTION_TYPES:
+            raise DomainError("disruptionType is invalid")
         service_date = require_text(str(data.get("serviceDate") or ""), "serviceDate")
         scheduled = str(data.get("scheduledServiceRef") or "").strip() or None
         segment = str(data.get("segmentRef") or "").strip() or None

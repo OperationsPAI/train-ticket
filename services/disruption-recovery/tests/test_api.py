@@ -120,3 +120,27 @@ def test_select_option_precondition_failure_maps_to_412() -> None:
     wait = case["optionSet"]["options"][0]
     response = client.post(f"/api/v1/recovery-cases/{case['caseId']}/select-option", json={"optionId": wait["optionId"], "selectedBy": {"actorType": "USER", "actorId": "acc-1"}}, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000113"})
     assert response.status_code == 412
+
+
+def test_transfer_management_missed_connection_report_values_are_accepted() -> None:
+    app = create_app(store=InMemoryStore())
+    client = TestClient(app)
+    body = {
+        "disruptionType": "MISSED_CONNECTION",
+        "segmentRef": "seg-0194f2e0-7b3e-7610-8000-000000000222",
+        "serviceDate": "2026-08-02",
+        "evidence": {
+            "evidenceRef": "con-0194f2e0-7b3e-7610-8000-000000000333",
+            "sourceSystem": "TRANSFER_MANAGEMENT",
+            "sourceRecordId": "evt-0194f2e0-7b3e-7610-8000-000000000444",
+            "summary": "Protected missed connection",
+        },
+        "affectedOrderIds": ["ord-0194f2e0-7b3e-7610-8000-000000000555"],
+        "reportedBy": {"actorType": "SYSTEM", "actorId": "transfer-management"},
+    }
+    response = client.post("/api/v1/disruptions", json=body, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000114"})
+    assert response.status_code == 202
+    data = response.json()
+    assert data["disruption"]["disruptionType"] == "MISSED_CONNECTION"
+    assert data["disruption"]["evidence"]["sourceSystem"] == "TRANSFER_MANAGEMENT"
+    assert data["disruption"]["reportedBy"]["actorType"] == "SYSTEM"
