@@ -144,3 +144,16 @@ database transaction failure.
 ## Open Issues
 
 - None.
+
+## ADR-0003 wave A identity-verification increment (需同波实现)
+
+Fare & Pricing MUST query Identity Verification's read-only eligibility-certificate endpoint before applying student, child, or military-disabled discount rules. This is a same-wave implementation requirement, not a docs-only dependency.
+
+| Touchpoint | Required change |
+|---|---|
+| Fare quote application service / outbound adapter | Call `GET /api/v1/identity-verification/eligibility-certificates` with `travelerId`, optional `eligibilityType`, `journeyDate`, and `productCode` derived from the fare quote request. |
+| Discount-rule validation | Treat absent, expired, revoked, rejected, exhausted, or unavailable certificates as ineligible facts for the relevant discount. Fare & Pricing must not reserve or confirm annual usage. |
+| Enum mapping | Map `STUDENT`, `CHILD`, and `MILITARY_DISABLED` to local discount categories. Do not add new Money fields; all monetary outputs remain `{currency, minorUnits}`. |
+| Error handling | `UNAVAILABLE` from Identity Verification degrades/blocks discount evaluation according to fare policy; it must not be converted into a fabricated eligible certificate. |
+
+The queried endpoint is read-only and returns certificate facts only. Identity Verification does not compute fare amounts, and Fare & Pricing does not emit identity-verification events.

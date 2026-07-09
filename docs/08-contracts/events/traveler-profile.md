@@ -9,7 +9,7 @@ Last updated: 2026-07-04
 | Field | Description |
 |---|---|
 | **Producer** | traveler-profile |
-| **Consumers** | offer-management, journey-order |
+| **Consumers** | offer-management, journey-order, identity-verification |
 | **Trigger** | Traveler profile data changed. |
 
 **Payload:**

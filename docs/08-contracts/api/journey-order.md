@@ -9,7 +9,20 @@ timestamps, and Money.
 
 Journey Order is the commercial order aggregate. It manages order creation,
 state transitions (pending payment, confirmed, adjusted), and order queries.
-It references but does not own payments, capacity, or entitlements.
+It references but does not own payments, capacity, entitlements, or identity-verification facts.
+
+## ADR-0003 wave A identity-verification increment (需同波实现)
+
+Journey Order MUST perform a pre-order identity-verification hook before accepting `POST /api/v1/journey-orders`. This is a same-wave implementation requirement, not a docs-only dependency.
+
+| Touchpoint | Required change |
+|---|---|
+| HTTP validator for `POST /api/v1/journey-orders` | Before aggregate creation, call `POST /api/v1/identity-verification/pre-order-checks` with `accountId`, `offerId`, `offerVersion`, `travelerRefs`, `segmentRefs`, a persisted `orderIntentId`, `journeyDate`, `productCode`, `limitPolicyVersion`, and a UUID-v7 `Idempotency-Key`. |
+| Create-order idempotency | Persist and reuse the identity pre-order check idempotency key for retries of the same Journey Order create attempt. The API header remains the direct HTTP idempotency key; internal material folding is owned by Identity Verification. |
+| Validation / error mapping | Map Identity Verification `REJECT` and `MANUAL_REVIEW_REQUIRED` results to the existing create-order rejection path: `PRECONDITION_FAILED` (412) for unacceptable verification state, `DOMAIN_RULE_VIOLATION` (422) for policy violations, `CONFLICT` (409) for protected-scope purchase-limit conflicts, and `UNAVAILABLE` (503) for hook/read-model unavailability. |
+| Enums / state machine | Do not add a new Journey Order status for identity verification. A failed hook prevents order creation; it is not an order lifecycle transition. |
+
+The hook response fields and error semantics are defined in `docs/08-contracts/api/identity-verification.md`. All timestamps are RFC3339 UTC; propagated event correlation IDs use `corr-<uuid-v7>` and command causation IDs use `cmd-<uuid-v7>` when the create command later emits events.
 
 ## Endpoints
 
