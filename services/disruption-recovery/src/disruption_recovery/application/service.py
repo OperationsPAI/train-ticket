@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import nullcontext, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from hashlib import sha256
+from uuid import UUID
 from typing import Any, Mapping
 
 from train_ticket_platform.events import EventEnvelope, rfc3339_utc
@@ -157,8 +158,13 @@ class NoopDownstream(DownstreamPort):
 
 
 def _event_id(event_type: str, aggregate_id: str, version: int) -> str:
-    digest = sha256(f"{PRODUCER}:{event_type}:{aggregate_id}:{version}".encode("utf-8")).hexdigest()[:32]
-    return f"evt-{digest}"
+    # Deterministic identity, UUID-v7-shaped per the envelope contract:
+    # sha256 material folded into a UUID with the version/variant nibbles
+    # stamped (legacy-acl ids.py precedent).
+    digest = bytearray(sha256(f"{PRODUCER}:{event_type}:{aggregate_id}:{version}".encode("utf-8")).digest()[:16])
+    digest[6] = (digest[6] & 0x0F) | 0x70
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return f"evt-{UUID(bytes=bytes(digest))}"
 
 
 def _envelope(event_type: str, aggregate_id: str, version: int, payload: Mapping[str, Any], correlation_id: str, causation_id: str, occurred_at: datetime) -> EventEnvelope:
@@ -289,22 +295,28 @@ class DisruptionRecoveryService:
     def handle_post_sales_applied(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
         if envelope.eventType != "PostSalesApplied":
             return False
-        mark = getattr(self.store, "mark_processed", None)
-        if callable(mark) and not mark(envelope.eventId, stream):
+        # The dedup claim must commit atomically with the case mutation and
+        # the outbox append: a crash after a standalone claim would ack-skip
+        # the upstream event forever and lose refund convergence.
+        transaction = getattr(self.store, "transaction", None)
+        context = transaction() if callable(transaction) else nullcontext()
+        with context:
+            mark = getattr(self.store, "mark_processed", None)
+            if callable(mark) and not mark(envelope.eventId, stream):
+                return True
+            payload = dict(envelope.payload)
+            post_sales_case_id = str(payload.get("caseId") or "")
+            case = self.store.find_case_by_post_sales_case(post_sales_case_id)
+            if case is None or case.status in TERMINAL_STATUSES:
+                return True
+            option = case.selected_option()
+            if option is None:
+                return True
+            at = now_utc()
+            case = case.complete(option, post_sales_case_id, at)
+            self.store.save_case(case)
+            self._append([self._completed_event(case, option, envelope.correlationId, envelope.eventId, at)])
             return True
-        payload = dict(envelope.payload)
-        post_sales_case_id = str(payload.get("caseId") or "")
-        case = self.store.find_case_by_post_sales_case(post_sales_case_id)
-        if case is None or case.status in TERMINAL_STATUSES:
-            return True
-        option = case.selected_option()
-        if option is None:
-            return True
-        at = now_utc()
-        case = case.complete(option, post_sales_case_id, at)
-        self.store.save_case(case)
-        self._append([self._completed_event(case, option, envelope.correlationId, envelope.eventId, at)])
-        return True
 
     def _with_refund_scope(self, option: RecoveryOption, refund_scope: Mapping[str, Any]) -> RecoveryOption:
         if option.optionType is not RecoveryOptionType.REFUND:
