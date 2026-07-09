@@ -11,6 +11,12 @@ directly modify order or entitlement state.
 Field shapes reference docs/08-contracts/shared-primitives.md for Money,
 timestamps, and cross-context IDs.
 
+ADR-0003 Wave A same-wave increment（需同波实现）: capture and refund handoff to Payment
+Channel carries `channelRef`. This is not docs-only; Payment implementation MUST
+add enum/validation for `ALIPAY_SIM`, `WECHAT_SIM`, `UNIONPAY_SIM`, capture and
+refund command DTO validation, idempotency-material folding, persistence/read
+model fields, and event serializer/deserializer support for `channelRef`.
+
 ## Endpoints
 
 ### Create Payment Intent
@@ -68,6 +74,12 @@ timestamps, and cross-context IDs.
 
 **Idempotency:** REQUIRED
 
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `channelRef` | object | yes | Payment Channel handoff reference. Fields: `channel` (`ALIPAY_SIM`, `WECHAT_SIM`, `UNIONPAY_SIM`), optional `channelOrderId`, optional `faultSeedRef`. Same-wave implementation touchpoints: command DTO validation, channel enum validation, and idempotency folding. |
+
 **Response (200):**
 
 | Field | Type | Description |
@@ -76,8 +88,9 @@ timestamps, and cross-context IDs.
 | `status` | enum | `CAPTURED` |
 | `capturedAmount` | object | Captured amount (Money). |
 | `channelTransactionId` | string | Channel transaction reference. |
+| `channelRef` | object | Payment Channel reference carrying `channel`, `channelOrderId`, and `channelTransactionId` when available. |
 
-**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `UNAVAILABLE`
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
 
 ### Request Refund
 
@@ -93,6 +106,7 @@ timestamps, and cross-context IDs.
 | `amount` | object | yes | Amount to refund (Money). |
 | `reason` | string | yes | Refund reason. |
 | `businessCaseRef` | string | no | Reference to post-sales case that authorized the refund. |
+| `channelRef` | object | yes | Original-route Payment Channel handoff reference. Fields: `channel` (`ALIPAY_SIM`, `WECHAT_SIM`, `UNIONPAY_SIM`), `channelOrderId`, `channelTransactionId`, optional `faultSeedRef`. Same-wave implementation touchpoints: refund command validation, channel enum validation, and idempotency folding. |
 
 **Response (201):**
 
@@ -102,8 +116,9 @@ timestamps, and cross-context IDs.
 | `paymentIntentId` | string | Original payment intent. |
 | `amount` | object | Refund amount (Money). |
 | `status` | enum | `REQUESTED`, `SETTLED`, `FAILED` |
+| `channelRef` | object | Payment Channel refund reference carrying `channel`, `channelOrderId`, optional `channelRefundId`, and channel transaction refs when available. |
 
-**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
 
 ### Get Payment Intent
 

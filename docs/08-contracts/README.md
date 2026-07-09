@@ -28,6 +28,7 @@ docs/08-contracts/
     ├── capacity-availability.md
     ├── fare-pricing.md
     ├── payment.md
+    ├── payment-channel.md
     ├── provider-integration.md
     ├── entitlement-ticketing.md
     ├── post-sales.md
@@ -37,6 +38,7 @@ docs/08-contracts/
     ├── waitlist.md
     ├── dispatch.md
     ├── wallet-promotion.md
+    ├── seat-assignment.md
     ├── invoicing.md
     └── finance-settlement-events.md
 ```
