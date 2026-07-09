@@ -1,6 +1,6 @@
 # Messaging Contract — Redis Streams Event Bus
 
-**Last updated:** 2026-07-03  
+**Last updated:** 2026-07-09
 **Spec version:** 1.0.0  
 **ADR:** [0001-event-bus-redis-streams.md](../adr/0001-event-bus-redis-streams.md)
 
@@ -57,7 +57,7 @@ context.
 | 8 | `booking-orchestration` | `events:booking-orchestration` | BookingSagaStarted, SegmentReservationRequested, SegmentReservationConfirmed, SegmentReservationFailed, SegmentTicketed, SegmentBookingCancelled |
 | 9 | `payment` | `events:payment` | PaymentIntentCreated, PaymentCaptured, PaymentIntentFailed, PaymentExpired, RefundRequested, RefundSettled, RefundFailed |
 | 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
-| 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementSuspended, EntitlementReinstated |
+| 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementBoarded, EntitlementSuspended, EntitlementResumed, EntitlementUsed, EntitlementIssueFailed |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved, SegmentArrived, SegmentDelayed, SegmentCancelled |
 | 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied |
 | 14 | `notification` | `events:notification` | NotificationScheduled, NotificationDispatched, NotificationDelivered, NotificationFailed, NotificationCancelled |
@@ -76,6 +76,7 @@ context.
 | 26 | `disruption-recovery` | `events:disruption-recovery` | DisruptionReported, IncidentOpened, RecoveryCaseOpened, RecoveryOptionsGenerated, RecoveryOptionSelected, RecoveryExecutionStarted, RecoveryCompleted, RecoveryFailed, RecoveryCaseClosed, ServiceAlertPublished |
 | 27 | `ancillary-service` | `events:ancillary-service` | AncillaryCatalogItemPublished, AncillaryCatalogItemSuspended, AncillaryCatalogItemSuperseded, AncillaryOfferQuoted, AncillaryOfferExpired, AncillaryOrderItemSelected, AncillaryOrderItemPendingConfirmation, AncillaryOrderItemConfirmed, AncillaryOrderItemFulfillmentReady, AncillaryOrderItemFulfilled, AncillaryOrderItemFailed, AncillaryOrderItemCancelled, AncillaryOrderItemRefundPending, AncillaryOrderItemRefunded, AncillaryFulfillmentFactRecorded |
 | 28 | `transfer-management` | `events:transfer-management` | TransferPlanCreated, TransferPlanEvaluated, TransferPlanExpired, ConnectionRegistered, TransferRiskEvaluated, TransferAtRisk, ConnectionMissed, ConnectionRecovered, ConnectionRecoveryFailed, ConnectionContractProposed, ConnectionContractConfirmed, ConnectionContractWithdrawn, MctRuleCreated, MctRulePublished, MctRuleRetired |
+| 29 | `seat-assignment` | `events:seat-assignment` | SeatMapBuilt, SeatMapBuildFailed, SeatMapVersionPublished, SeatMapVersionRetired, SeatUnitUnavailableMarked, SeatUnitReopened, AdjacencyGroupCreated, AdjacentAllocationSolved, AdjacencyDegradationAccepted, AdjacencyGroupCancelled, BerthPreferenceRecorded, BerthPreferenceApplied, BerthPreferenceCancelled, SeatAllocated, StandingAssigned, SeatAllocationConfirmed, SeatAllocationReleased, SeatAllocationExpired, SeatAllocationFailed, SeatAllocationMissed, SeatReassigned, SeatAllocationLedgerAppended, SeatAllocationCorrectionAppended, SeatAllocationDiscrepancyDetected |
 
 ### Dead-Letter Streams
 
@@ -285,6 +286,12 @@ plus notification/finance/reporting fan-in.
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
 | 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. RULING (2026-07-09): for self-executed `REACCOMMODATION`, `RecoveryCompleted` for an already `RECOVERED` connection and matching `caseId` is acknowledged as an idempotent no-op. |
+| 59 | `events:capacity-availability` | `seat-assignment` | CapacityReleased and CapacityHoldExpired release or expire matching active seat allocations by `holdId`; Seat Assignment explicitly ignores AvailabilitySnapshot/CapacityHeld/CapacityHoldConfirmed for lifecycle mutation in this wave. |
+| 60 | `events:entitlement-ticketing` | `seat-assignment` | EntitlementIssued confirms an active seat allocation; EntitlementVoided and EntitlementIssueFailed release active allocations. EntitlementBoarded/Suspended/Resumed/Used are explicitly ignored by Seat Assignment. |
+| 61 | `events:seat-assignment` | `entitlement-ticketing` | SeatAllocated/StandingAssigned/SeatAllocationFailed support issuance-path reconciliation and idempotent retry handling; Entitlement does not consume SeatMap CRUD or ledger/discrepancy events. |
+| 62 | `events:seat-assignment` | `booking-orchestration` | Seat allocation lifecycle facts inform saga observability/compensation; Booking Orchestration does not use them to replace Capacity hold/confirm/release commands. |
+| 63 | `events:seat-assignment` | `notification` | Seat assignment, standing, reassignment, release, and adjacency degradation user touchpoints; SeatMap CRUD, ledger, and discrepancy events are explicitly ignored. |
+| 64 | `events:seat-assignment` | `reporting` | SeatMap, allocation, standing, degradation, release, expiry, ledger, and discrepancy metrics/read models. |
 
 ### Cross-Cutting Consumers
 
@@ -293,9 +300,28 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves | Business metrics, funnel analysis, operational dashboards |
+| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, and `events:transfer-management` until their deferred-consumer activation waves; includes `events:seat-assignment` in ADR-0003 wave A | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion` | Revenue recognition, reconciliation, invoice generation, and Wallet / Promotion benefit-cost attribution. |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion` | User-facing notification triggers including Wallet / Promotion issued, expired, and revoked benefit touchpoints. |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:seat-assignment` | User-facing notification triggers including Wallet / Promotion issued, expired, revoked benefit touchpoints, and seat/standing/degradation changes. |
+
+
+### Seat Assignment subscriptions
+
+`events:seat-assignment` is registered in ADR-0003 wave A. Active consumers are
+Entitlement & Ticketing, Booking Orchestration, Notification, and Reporting as
+listed in rows 61-64. Entitlement consumes only allocation/standing/failure facts
+needed for issuance-path reconciliation; it explicitly excludes SeatMap CRUD,
+ledger, and discrepancy facts. Notification consumes user-visible assignment,
+standing, reassignment, release, expiry, and adjacency degradation touchpoints; it
+explicitly excludes SeatMap CRUD and ledger/discrepancy facts.
+
+Seat Assignment has two active inbound subscriptions in this wave: Capacity &
+Availability `CapacityReleased` / `CapacityHoldExpired`, and Entitlement &
+Ticketing `EntitlementIssued` / `EntitlementVoided` / `EntitlementIssueFailed`.
+It explicitly does not consume Waitlist, Dispatch, Wallet / Promotion, Disruption
+Recovery, Transfer Management, or Provider Integration streams in this wave. SIM
+composition behavior is deterministic and seed-driven through operations HTTP, not
+through a provider stream.
 
 ### Disruption Recovery subscriptions
 

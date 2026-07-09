@@ -1,6 +1,6 @@
 # Entitlement & Ticketing — Events & Commands
 
-Last updated: 2026-07-04
+Last updated: 2026-07-09
 
 ## Published Events
 
@@ -9,7 +9,7 @@ Last updated: 2026-07-04
 | Field | Description |
 |---|---|
 | **Producer** | entitlement-ticketing |
-| **Consumers** | booking-orchestration, journey-order, notification, fulfillment |
+| **Consumers** | booking-orchestration, journey-order, notification, fulfillment, seat-assignment |
 | **Trigger** | `IssueEntitlement` command processed; ticket/credential generated. |
 
 **Payload:**
@@ -25,13 +25,15 @@ Last updated: 2026-07-04
 | `credentialNo` | string | yes | Unique credential/ticket number. |
 | `credentialType` | string | yes | Type of credential: `E_TICKET`, `PAPER_TICKET`, `PICKUP_CODE`, `BOARDING_PASS`, `FERRY_TICKET`, `COACH_E_TICKET`, `RIDE_CODE`. |
 | `issuedAt` | RFC3339 UTC | yes | Issue timestamp. |
+| `seatAllocationId` | string | no | Seat Assignment allocation ID (`salloc-<uuid>`). Needs same-wave implementation; required for train/seat-assigned issuance paths. |
+| `seatRef` | object | no | Seat Assignment `SeatRef` display fact. Needs same-wave implementation; required when `seatAllocationId` is present and may carry `allocationType=STANDING`. |
 
 ### EntitlementVoided
 
 | Field | Description |
 |---|---|
 | **Producer** | entitlement-ticketing |
-| **Consumers** | booking-orchestration, notification, post-sales, capacity-availability |
+| **Consumers** | booking-orchestration, notification, post-sales, capacity-availability, seat-assignment |
 | **Trigger** | `VoidEntitlement` command processed. |
 
 **Payload:**
@@ -44,6 +46,7 @@ Last updated: 2026-07-04
 | `reason` | string | yes | Void reason: `REFUND`, `CHANGE`, `DISRUPTION`, `RISK`, `MANUAL_CORRECTION`. |
 | `policy` | string | yes | Void policy: `NORMAL` or `EXCEPTIONAL_RULE`. |
 | `businessCaseRef` | string | no | Reference to the post-sales or recovery case that authorised the void. |
+| `seatAllocationId` | string | no | Seat Assignment allocation ID (`salloc-<uuid>`) when the entitlement carries one; needs same-wave implementation for prompt release. |
 
 ### EntitlementBoarded
 
@@ -115,7 +118,7 @@ Last updated: 2026-07-04
 | Field | Description |
 |---|---|
 | **Producer** | entitlement-ticketing |
-| **Consumers** | booking-orchestration |
+| **Consumers** | booking-orchestration, seat-assignment |
 | **Trigger** | Entitlement issuance failed. |
 
 **Payload:**
@@ -127,6 +130,18 @@ Last updated: 2026-07-04
 | `failureCode` | string | yes | Machine-readable failure code. |
 | `failureMessage` | string | no | Human-readable failure description. |
 | `failedAt` | RFC3339 UTC | yes | Failure timestamp. |
+| `segmentBookingId` | `SegmentBookingId` | no | Segment booking ID when available; needs same-wave implementation so Seat Assignment can release an unconfirmed allocation. |
+| `seatAllocationId` | string | no | Seat Assignment allocation ID (`salloc-<uuid>`) when allocation already happened; needs same-wave implementation. |
+
+
+## Seat Assignment increment — needs same-wave implementation
+
+ADR-0003 wave A requires Entitlement & Ticketing code changes in the same wave as
+this contract increment. The implementation must update the IssueEntitlement
+command schema, validators, issuance application service, Seat Assignment HTTP
+client adapter, credential persistence/projection, and outbox/event serializers.
+The relevant enum validation surface is `allocationType`, `berthPosition`,
+`seatPosition`, `adjacencyPreference`, and `degradationReason`.
 
 ## Accepted Commands
 
@@ -147,6 +162,9 @@ Last updated: 2026-07-04
 | `credentialType` | string | yes | Type of credential. |
 | `providerRef` | string | no | Provider reference if externally-issued credential. |
 | `providerConfirmationNo` | string | no | Provider confirmation number. |
+| `seatPreferences` | object | no | Seat Assignment `SeatPreferences` from issue request. Needs same-wave implementation and validation before Seat Assignment call. |
+| `seatAllocationId` | string | no | Seat Assignment allocation ID returned by the issuance-path call; required before committing a seat-assigned credential. |
+| `seatRef` | object | no | Seat Assignment `SeatRef` returned by the issuance-path call; persisted on the credential and emitted with `EntitlementIssued`. |
 
 ### VoidEntitlement
 

@@ -1,6 +1,6 @@
 # Capacity & Availability — Events & Commands
 
-Last updated: 2026-07-04
+Last updated: 2026-07-09
 
 ## Published Events
 
@@ -93,7 +93,7 @@ Last updated: 2026-07-04
 | Field | Description |
 |---|---|
 | **Producer** | capacity-availability |
-| **Consumers** | booking-orchestration, waitlist |
+| **Consumers** | booking-orchestration, waitlist, seat-assignment |
 | **Trigger** | `ReleaseHold` command processed (cancellation, refund, or compensation). |
 
 **Payload:**
@@ -113,7 +113,7 @@ Last updated: 2026-07-04
 | Field | Description |
 |---|---|
 | **Producer** | capacity-availability |
-| **Consumers** | booking-orchestration |
+| **Consumers** | booking-orchestration, seat-assignment |
 | **Trigger** | Hold TTL elapsed without confirmation. |
 
 **Payload:**
