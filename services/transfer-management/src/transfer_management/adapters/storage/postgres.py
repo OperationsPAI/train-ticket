@@ -10,7 +10,7 @@ from typing import Any
 
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
-from transfer_management.application.service import InMemoryStore, NotFoundError
+from transfer_management.application.service import InMemoryStore, NotFoundError, segment_report_source_key
 from transfer_management.domain import (
     ActorRef,
     Connection,
@@ -240,10 +240,20 @@ class PostgresTransferManagementStore(InMemoryStore):
             return tuple(rule_from_json(row[0]) for row in rows)
         return self._with_conn(read)
 
-    def save_report(self, report: SegmentStatusReport) -> None:
-        def write(conn: Any) -> None:
-            conn.execute("INSERT INTO segment_status_reports(id, segment_ref, source_key, data) VALUES (%s, %s, %s, %s) ON CONFLICT (source_key) DO NOTHING", (report.segmentStatusReportId, report.segmentRef, f"{report.sourceSystem}\u001f{report.sourceRecordId}\u001f{report.segmentRef}\u001f{report.reportType.value}\u001f{report.observedAt.isoformat()}", self._json(report_to_json(report))))
-        self._with_conn(write)
+    def find_report_by_source_key(self, source_key: str) -> SegmentStatusReport | None:
+        def read(conn: Any) -> SegmentStatusReport | None:
+            row = conn.execute("SELECT data FROM segment_status_reports WHERE source_key = %s", (source_key,)).fetchone()
+            if not row:
+                return None
+            data = _json_obj(row[0])
+            return SegmentStatusReport(str(data["segmentStatusReportId"]), str(data["segmentRef"]), ReportType(str(data["reportType"])), ActorRef(**dict(data["reportedBy"])), str(data["sourceSystem"]), str(data["sourceRecordId"]), _parse(data.get("observedAt")) or datetime.now(UTC), _parse(data.get("estimatedArrivalAt")), _parse(data.get("actualArrivalAt")), _parse(data.get("cancelledAt")), data.get("reason"))
+        return self._with_conn(read)
+
+    def save_report(self, report: SegmentStatusReport) -> bool:
+        def write(conn: Any) -> bool:
+            result = conn.execute("INSERT INTO segment_status_reports(id, segment_ref, source_key, data) VALUES (%s, %s, %s, %s) ON CONFLICT (source_key) DO NOTHING", (report.segmentStatusReportId, report.segmentRef, segment_report_source_key(report), self._json(report_to_json(report))))
+            return int(getattr(result, "rowcount", 0) or 0) > 0
+        return bool(self._with_conn(write))
 
     def append_outbox(self, envelopes: Iterable[Any]) -> None:
         def write(conn: Any) -> None:

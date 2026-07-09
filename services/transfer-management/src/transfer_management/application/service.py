@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID
-from typing import Any
+from typing import Any, NoReturn
 
 from train_ticket_platform.events import EventEnvelope, canonical_correlation_id, rfc3339_utc
 from train_ticket_platform.ids import new_prefixed_uuid7
@@ -163,8 +163,19 @@ class InMemoryStore:
             items = filtered
         return tuple(sorted(items, key=lambda r: (r.mctRuleId, r.version)))
 
-    def save_report(self, report: SegmentStatusReport) -> None:
-        self.reports[report.segmentStatusReportId] = report
+    def find_report_by_source_key(self, source_key: str) -> SegmentStatusReport | None:
+        return self.reports.get(source_key)
+
+    def save_report(self, report: SegmentStatusReport) -> bool:
+        key = segment_report_source_key(report)
+        if key in self.reports:
+            return False
+        self.reports[key] = report
+        return True
+
+
+def segment_report_source_key(report: SegmentStatusReport) -> str:
+    return "\u001f".join((report.sourceSystem, report.sourceRecordId, report.segmentRef, report.reportType.value, rfc3339_utc(report.observedAt)))
 
 
 class TransferManagementService:
@@ -196,9 +207,22 @@ class TransferManagementService:
         at = optional_dt(data.get("asOf")) or now_utc()
         plan = self.store.get_plan(plan_id)
         connections = self.store.list_connections_for_plan(plan_id)
-        plan = plan.evaluated(int(data.get("planningSnapshotVersion") or plan.planningSnapshotVersion), tuple(c.connectionId for c in connections), at, False)
+        unserviceable = False
+        reasons: list[str] = []
+        for connection in connections:
+            if self._find_published_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, at) is None:
+                unserviceable = True
+                reasons.append("NO_PUBLISHED_MCT_RULE")
+                break
+        plan = plan.evaluated(int(data.get("planningSnapshotVersion") or plan.planningSnapshotVersion), tuple(c.connectionId for c in connections), at, unserviceable)
         self.store.save_plan(plan)
-        events = [_envelope("TransferPlanEvaluated", plan.transferPlanId, plan.version + 1, {"transferPlanId": plan.transferPlanId, "itineraryRef": plan.itineraryRef, "planningSnapshotVersion": plan.planningSnapshotVersion, "status": plan.status.value, "evaluationVersion": plan.evaluationVersion, "connectionIds": list(plan.connections), "riskPolicyVersion": plan.riskPolicyVersion, "evaluatedAt": rfc3339_utc(at)} | ({"journeyOrderId": plan.journeyOrderId} if plan.journeyOrderId else {}), correlation_id, causation_id, at)]
+        payload = {"transferPlanId": plan.transferPlanId, "itineraryRef": plan.itineraryRef, "planningSnapshotVersion": plan.planningSnapshotVersion, "status": plan.status.value, "evaluationVersion": plan.evaluationVersion, "connectionIds": list(plan.connections), "riskPolicyVersion": plan.riskPolicyVersion, "evaluatedAt": rfc3339_utc(at)} | ({"journeyOrderId": plan.journeyOrderId} if plan.journeyOrderId else {})
+        if reasons:
+            payload["reasons"] = reasons
+        events = [_envelope("TransferPlanEvaluated", plan.transferPlanId, plan.version + 1, payload, correlation_id, causation_id, at)]
+        if unserviceable:
+            self._append(events)
+            return self._plan_json(plan)
         for connection in connections:
             updated, risk_events = self._refresh_connection(connection, at, correlation_id, causation_id, None)
             self.store.save_connection(updated)
@@ -221,7 +245,7 @@ class TransferManagementService:
     def register_connection(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
         at = now_utc()
         plan = self.store.get_plan(require_text(data.get("transferPlanId"), "transferPlanId"))
-        rule = self._published_rule(NodeType(str(data.get("fromNodeType"))), NodeType(str(data.get("toNodeType"))), TransferCategory(str(data.get("transferCategory"))), at)
+        rule = self._require_published_rule(NodeType(str(data.get("fromNodeType"))), NodeType(str(data.get("toNodeType"))), TransferCategory(str(data.get("transferCategory"))), at)
         window_data = dict(data.get("window") or {})
         planned = parse_dt(window_data.get("plannedArrivalAt"), "window.plannedArrivalAt")
         departure = parse_dt(window_data.get("nextDepartureAt"), "window.nextDepartureAt")
@@ -251,10 +275,19 @@ class TransferManagementService:
         return {"items": items, "total": len(items), "limit": len(items), "offset": 0}
 
     def report_segment_status(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
+        pending_recovery_ids: list[str] = []
         with self.transaction():
             at = now_utc()
             report = SegmentStatusReport(new_prefixed_uuid7("tsr"), require_text(data.get("segmentRef"), "segmentRef"), ReportType(str(data.get("reportType"))), ActorRef(**dict(data.get("reportedBy") or {})), require_text(data.get("sourceSystem"), "sourceSystem"), require_text(data.get("sourceRecordId"), "sourceRecordId"), parse_dt(data.get("observedAt"), "observedAt"), optional_dt(data.get("estimatedArrivalAt")), optional_dt(data.get("actualArrivalAt")), optional_dt(data.get("cancelledAt")), str(data.get("reason") or "").strip() or None)
-            self.store.save_report(report)
+            source_key = segment_report_source_key(report)
+            find_report = getattr(self.store, "find_report_by_source_key", None)
+            existing = find_report(source_key) if callable(find_report) else None
+            if existing is not None:
+                report = existing
+            else:
+                saved = self.store.save_report(report)
+                if saved is False and callable(find_report):
+                    report = find_report(source_key) or report
             updated: list[Connection] = []
             events: list[EventEnvelope] = []
             for connection in self.store.list_connections_for_segment(report.segmentRef):
@@ -262,8 +295,13 @@ class TransferManagementService:
                 self.store.save_connection(new_connection)
                 updated.append(new_connection)
                 events.extend(risk_events)
+                if new_connection.status is ConnectionStatus.MISSED and new_connection.recovery and new_connection.recovery.recoveryTriggerStatus is RecoveryTriggerStatus.PENDING:
+                    pending_recovery_ids.append(new_connection.connectionId)
             self._append(events)
-            return {"report": report.to_json(), "updatedConnections": [c.to_json() for c in updated]}
+        if pending_recovery_ids:
+            self.open_pending_recoveries(pending_recovery_ids, correlation_id)
+            updated = [self.store.get_connection(connection_id) for connection_id in tuple(dict.fromkeys(c.connectionId for c in updated))]
+        return {"report": report.to_json(), "updatedConnections": [c.to_json() for c in updated]}
 
     def propose_contract(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
         at = now_utc()
@@ -368,12 +406,18 @@ class TransferManagementService:
         connections = tuple(c.summary_json() for c in self.store.list_connections_for_plan(plan.transferPlanId))
         return plan.to_json(connections)
 
-    def _published_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, at: datetime) -> MctRule:
+    def _find_published_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, at: datetime) -> MctRule | None:
         items = list(getattr(self.store, "mct_rules", {}).values()) if hasattr(self.store, "mct_rules") else list(self.store.list_mct_rules())
         for rule in items:
             if rule.matches(from_type, to_type, category, at):
                 return rule
-        return MctRule("mct-builtin", 1, MctRuleStatus.PUBLISHED, from_type, to_type, category, 20, {"builtin": True}, datetime(1970, 1, 1, tzinfo=UTC), None, datetime(1970, 1, 1, tzinfo=UTC))
+        return None
+
+    def _require_published_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, at: datetime) -> MctRule:
+        rule = self._find_published_rule(from_type, to_type, category, at)
+        if rule is None:
+            raise DomainError("NO_PUBLISHED_MCT_RULE")
+        return rule
 
     def _evaluate_window(self, window: ConnectionWindow, rule: MctRule, at: datetime, evaluation_id: str, extra_reasons: Iterable[str]) -> RiskEvaluation:
         reasons = list(extra_reasons)
@@ -406,7 +450,7 @@ class TransferManagementService:
                     reasons.append("PREVIOUS_SEGMENT_CANCELLED")
             elif report.segmentRef == connection.nextSegmentRef and report.reportType is ReportType.CANCELLED:
                 reasons.append("NEXT_SEGMENT_CANCELLED")
-        rule = self._published_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, at)
+        rule = self._require_published_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, at)
         evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), reasons)
         updated = connection.apply_evaluation(evaluation, window, at)
         events = [self._risk_event(updated, previous_status if previous_status != updated.status else None, correlation_id, causation_id, at, report.segmentStatusReportId if report else None)]
@@ -426,34 +470,42 @@ class TransferManagementService:
             if recovery_required:
                 missed_at = rfc3339_utc(at)
                 key = folded_uuid7(f"{updated.connectionId}:{missed_at}:{updated.version}:{updated.journeyOrderId}")
-                updated = updated.with_recovery(RecoveryCaseMapping(RecoveryTriggerStatus.PENDING, key), at)
+                if updated.recovery and updated.recovery.outboundIdempotencyKey:
+                    recovery = replace(updated.recovery, recoveryTriggerStatus=RecoveryTriggerStatus.PENDING, failureReason=None)
+                    updated = updated.with_recovery(recovery, at)
+                else:
+                    updated = updated.with_recovery(RecoveryCaseMapping(RecoveryTriggerStatus.PENDING, key), at)
             missed_event = _envelope("ConnectionMissed", updated.connectionId, updated.version + 3, {"connection": updated.ref_json(), "previousStatus": previous_status.value, "status": "MISSED", "riskLevel": "MISSED", "contractType": updated.contractType.value, "missedAt": rfc3339_utc(at), "missedCause": cause, "window": updated.window.to_json(), "recoveryRequired": recovery_required} | ({"recovery": updated.recovery.to_json()} if updated.recovery else {}), correlation_id, causation_id, at)
             events.append(missed_event)
-            if recovery_required:
-                updated, recovery_event = self._open_recovery(updated, missed_event.eventId, at, correlation_id, causation_id)
-                if recovery_event:
-                    events.append(recovery_event)
         return updated, events
 
-    def _open_recovery(self, connection: Connection, evidence_id: str, at: datetime, correlation_id: str, causation_id: str) -> tuple[Connection, EventEnvelope | None]:
+    def open_pending_recoveries(self, connection_ids: Iterable[str], correlation_id: str) -> None:
+        for connection_id in tuple(dict.fromkeys(connection_ids)):
+            connection = self.store.get_connection(connection_id)
+            if connection.status is ConnectionStatus.MISSED and connection.recovery and connection.recovery.recoveryTriggerStatus in {RecoveryTriggerStatus.PENDING, RecoveryTriggerStatus.FAILED}:
+                updated = self._open_recovery(connection, at=now_utc(), correlation_id=correlation_id)
+                self.store.save_connection(updated)
+
+    def _raise_missing_journey_order(self) -> NoReturn:
+        raise DownstreamError("journeyOrderId is required to open recovery", "MISSING_JOURNEY_ORDER")
+
+    def _open_recovery(self, connection: Connection, at: datetime, correlation_id: str) -> Connection:
         if not connection.recovery:
-            return connection, None
+            return connection
+        if connection.recovery.recoveryTriggerStatus is RecoveryTriggerStatus.OPENED:
+            return connection
         if not connection.journeyOrderId:
-            recovery = replace(connection.recovery, recoveryTriggerStatus=RecoveryTriggerStatus.FAILED, failureReason="journeyOrderId is required")
-            return connection.with_recovery(recovery, at), None
+            self._raise_missing_journey_order()
+        evidence_id = _event_id("ConnectionMissed", connection.connectionId, connection.version)
         body = {"disruptionType": "MISSED_CONNECTION", "segmentRef": connection.nextSegmentRef, "serviceDate": connection.serviceDate or at.date().isoformat(), "evidence": {"evidenceRef": connection.connectionId, "sourceSystem": "TRANSFER_MANAGEMENT", "sourceRecordId": evidence_id, "summary": "Protected transfer connection missed", "occurredAt": rfc3339_utc(at)}, "affectedOrderIds": [connection.journeyOrderId], "reportedBy": {"actorType": "SYSTEM", "actorId": "transfer-management"}, "autoRecovery": "WAIT"}
         if connection.scheduledServiceRef:
             body["scheduledServiceRef"] = connection.scheduledServiceRef
-        try:
-            response = self.downstream.report_missed_connection(body, connection.recovery.outboundIdempotencyKey, canonical_correlation_id(correlation_id))
-        except DownstreamError as exc:
-            recovery = replace(connection.recovery, recoveryTriggerStatus=RecoveryTriggerStatus.FAILED, failureReason=str(exc)[:500])
-            return connection.with_recovery(recovery, at), _envelope("ConnectionRecoveryFailed", connection.connectionId, connection.version + 4, {"connection": connection.ref_json(), "status": "MISSED", "failedAt": rfc3339_utc(at), "reason": str(exc)[:500]}, correlation_id, causation_id, at)
+        response = self.downstream.report_missed_connection(body, connection.recovery.outboundIdempotencyKey, canonical_correlation_id(correlation_id))
         disruption = dict(response.get("disruption") or {})
         incident = dict(response.get("incident") or {})
         cases = tuple(str(c.get("caseId")) for c in response.get("recoveryCases") or [] if isinstance(c, Mapping) and c.get("caseId"))
-        recovery = replace(connection.recovery, recoveryTriggerStatus=RecoveryTriggerStatus.OPENED, disruptionId=str(disruption.get("disruptionId") or "") or None, incidentId=str(incident.get("incidentId") or "") or None, caseIds=cases, openedAt=at)
-        return connection.with_recovery(recovery, at), None
+        recovery = replace(connection.recovery, recoveryTriggerStatus=RecoveryTriggerStatus.OPENED, disruptionId=str(disruption.get("disruptionId") or "") or None, incidentId=str(incident.get("incidentId") or "") or None, caseIds=cases, openedAt=at, failureReason=None)
+        return connection.with_recovery(recovery, at)
 
     def _risk_event(self, connection: Connection, previous: ConnectionStatus | None, correlation_id: str, causation_id: str, at: datetime, report_id: str | None) -> EventEnvelope:
         payload = {"connection": connection.ref_json(), "status": connection.status.value, "evaluation": connection.latestEvaluation.to_json(), "window": connection.window.to_json()}

@@ -15,12 +15,10 @@ class DownstreamError(RuntimeError):
 
 class DisruptionRecoveryClient:
     def __init__(self, base_url: str | None = None, timeout: float = 5.0) -> None:
-        self.base_url = (base_url or os.getenv("DISRUPTION_RECOVERY_URL") or "").rstrip("/")
+        self.base_url = (base_url or os.getenv("DISRUPTION_RECOVERY_URL") or "http://disruption-recovery:8080").rstrip("/")
         self.timeout = timeout
 
     def report_missed_connection(self, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
-        if not self.base_url:
-            return {"disruption": {"disruptionId": "drp-local"}, "incident": {"incidentId": "inc-local"}, "recoveryCases": []}
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(
