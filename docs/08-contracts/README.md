@@ -39,6 +39,7 @@ docs/08-contracts/
     ├── dispatch.md
     ├── wallet-promotion.md
     ├── seat-assignment.md
+    ├── invoicing.md
     └── finance-settlement-events.md
 ```
 
