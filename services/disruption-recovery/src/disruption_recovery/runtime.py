@@ -11,7 +11,7 @@ class ServiceProfile(TypedDict):
     boundary: NotRequired[str]
 
 
-SERVICE_PROFILE: ServiceProfile = {'service_id': 'disruption-recovery', 'domain': 'Disruption Recovery', 'language': 'python', 'phase': 'future-scope', 'work_packages': [], 'owns': ['RecoveryCase', 'RecoveryOption', 'CompensationDecision']}
+SERVICE_PROFILE: ServiceProfile = {"service_id": "disruption-recovery", "domain": "Disruption Recovery", "language": "python", "phase": "activation", "work_packages": ["REQ-117"], "owns": ["Incident", "RecoveryCase", "RecoveryOptionSet"]}
 
 
 def health() -> str:

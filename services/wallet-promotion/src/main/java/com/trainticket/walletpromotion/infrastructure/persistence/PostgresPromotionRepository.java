@@ -67,8 +67,8 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT data::text
               FROM promotion_instrument_snapshots
              WHERE data->>'accountId' = ?
-               AND (? IS NULL OR data->>'status' = ?)
-               AND (? IS NULL OR data->>'benefitType' = ?)
+               AND (?::text IS NULL OR data->>'status' = ?::text)
+               AND (?::text IS NULL OR data->>'benefitType' = ?::text)
              ORDER BY data->>'createdAt'
              LIMIT ? OFFSET ?
             """;
@@ -91,8 +91,8 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT count(*)
               FROM promotion_instrument_snapshots
              WHERE data->>'accountId' = ?
-               AND (? IS NULL OR data->>'status' = ?)
-               AND (? IS NULL OR data->>'benefitType' = ?)
+               AND (?::text IS NULL OR data->>'status' = ?::text)
+               AND (?::text IS NULL OR data->>'benefitType' = ?::text)
             """;
         Integer count = jdbc.queryForObject(
             sql,
@@ -112,16 +112,16 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT data::text
               FROM promotion_instrument_snapshots
              WHERE data->>'status' IN ('ISSUED', 'RESERVED', 'RELEASED')
-               AND data->>'validUntil' <= ?
-             ORDER BY data->>'validUntil'
+               AND (data->>'validUntil')::numeric <= ?
+             ORDER BY (data->>'validUntil')::numeric
              LIMIT ?
             """;
-        // RFC3339 UTC strings compare chronologically as text, matching the
-        // text-expression index (timestamptz casts are not IMMUTABLE there).
+        // Snapshots store Instants as epoch decimals (internal convention);
+        // numeric comparison matches the numeric-expression index.
         return jdbc.query(
             sql,
             (rs, rowNumber) -> read(rs.getString(1), PromotionInstrument.class),
-            java.time.format.DateTimeFormatter.ISO_INSTANT.format(now.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)),
+            java.math.BigDecimal.valueOf(now.getEpochSecond()),
             limit
         );
     }

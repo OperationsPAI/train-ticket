@@ -3,7 +3,7 @@ export {
   health,
   metadata,
   opentelemetryInstrumentationFromEnv,
-  type ErrorEnvelope,
+  type ErrorBody,
   type HealthStatus,
   type InstrumentationHooks,
   type ProbeStatus,
@@ -12,6 +12,9 @@ export {
   type ServiceMetadata,
   type TraceResult,
   type TraceSpan,
+  resetAncillaryStore,
 } from "./app.js";
-export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
+export { bootstrap, runtimeHost, runtimePort, runtimeRedisUrl, type BootstrapOptions } from "./bootstrap.js";
+export * from "./domain.js";
+export * from "./application.js";
 export { serviceProfile, type ServiceProfile } from "./profile.js";

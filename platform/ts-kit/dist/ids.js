@@ -37,6 +37,9 @@ export function newCorrelationId() {
     return prefixedId("corr");
 }
 export function canonicalEventId(value) {
+    if (value.startsWith("ancillary-service:")) {
+        return value;
+    }
     return prefixedId("evt", value);
 }
 export function canonicalCorrelationId(value) {

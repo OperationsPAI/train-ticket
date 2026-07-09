@@ -14,6 +14,12 @@ final class EventFactory {
     private EventFactory() {
     }
 
+    /** Wire payload timestamps are RFC3339 UTC strings per repo invariants;
+     * raw Instants would serialize as epoch decimals. */
+    private static String iso(Instant instant) {
+        return java.time.format.DateTimeFormatter.ISO_INSTANT.format(instant);
+    }
+
     static WalletPromotionEvent issued(PromotionInstrument benefit, WalletBalanceDelta delta, Instant occurredAt) {
         Map<String, Object> payload = basePayload(benefit, delta);
         payload.put("issuedAmount", benefit.issuedAmount());
@@ -24,9 +30,9 @@ final class EventFactory {
         payload.put("applicableScope", benefit.applicableScope());
         payload.put("redemptionRule", benefit.redemptionRule());
         payload.put("revocationRule", benefit.revocationRule());
-        payload.put("validFrom", benefit.validFrom());
-        payload.put("validUntil", benefit.validUntil());
-        payload.put("issuedAt", occurredAt);
+        payload.put("validFrom", iso(benefit.validFrom()));
+        payload.put("validUntil", iso(benefit.validUntil()));
+        payload.put("issuedAt", iso(occurredAt));
         return event("BenefitIssued", benefit, payload, occurredAt);
     }
 
@@ -39,10 +45,10 @@ final class EventFactory {
         Map<String, Object> payload = basePayload(benefit, delta);
         payload.put("reservedAmount", command.amount());
         payload.put("reservationRef", command.reservationRef());
-        payload.put("reservationExpiresAt", command.reservationExpiresAt());
+        payload.put("reservationExpiresAt", iso(command.reservationExpiresAt()));
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("totalReservedAmount", benefit.reservedAmount());
-        payload.put("reservedAt", occurredAt);
+        payload.put("reservedAt", iso(occurredAt));
         return event("BenefitReserved", benefit, payload, occurredAt);
     }
 
@@ -61,7 +67,7 @@ final class EventFactory {
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
         payload.put("totalRedeemedAmount", benefit.redeemedAmount());
-        payload.put("redeemedAt", occurredAt);
+        payload.put("redeemedAt", iso(occurredAt));
         return event("BenefitRedeemed", benefit, payload, occurredAt);
     }
 
@@ -76,7 +82,7 @@ final class EventFactory {
         payload.put("reservationRef", command.reservationRef());
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
-        payload.put("releasedAt", occurredAt);
+        payload.put("releasedAt", iso(occurredAt));
         return event("BenefitReservationReleased", benefit, payload, occurredAt);
     }
 
@@ -88,10 +94,10 @@ final class EventFactory {
     ) {
         Map<String, Object> payload = basePayload(benefit, delta);
         payload.put("expiredAmount", expiredAmount);
-        payload.put("validUntil", benefit.validUntil());
+        payload.put("validUntil", iso(benefit.validUntil()));
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
-        payload.put("expiredAt", occurredAt);
+        payload.put("expiredAt", iso(occurredAt));
         return event("BenefitExpired", benefit, payload, occurredAt);
     }
 
@@ -105,7 +111,7 @@ final class EventFactory {
         payload.put("revokedAmount", revokedAmount);
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
-        payload.put("revokedAt", occurredAt);
+        payload.put("revokedAt", iso(occurredAt));
         return event("BenefitRevoked", benefit, payload, occurredAt);
     }
 
@@ -124,7 +130,7 @@ final class EventFactory {
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
         payload.put("totalRedeemedAmount", benefit.redeemedAmount());
-        payload.put("reversedAt", occurredAt);
+        payload.put("reversedAt", iso(occurredAt));
         return event("BenefitRedemptionReversed", benefit, payload, occurredAt);
     }
 
