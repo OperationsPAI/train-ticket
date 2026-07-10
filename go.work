@@ -10,4 +10,5 @@ use (
 	./services/provider-integration
 	./services/service-plan
 	./services/supplier-catalog
+	./services/travel-insurance
 )
