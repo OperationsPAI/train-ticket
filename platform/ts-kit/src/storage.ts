@@ -36,12 +36,19 @@ export function createPostgresPool(config: PoolConfig | string = databaseUrl()):
   const pg = require("pg") as { Pool: new (config: PoolConfig) => Pool };
   const base: PoolConfig = typeof config === "string" ? { connectionString: config } : config;
   const maxPool = parseInt(process.env.PG_MAX_POOL_SIZE || "", 10);
-  return new pg.Pool({
+  const pool = new pg.Pool({
     ...base,
     max: maxPool > 0 ? maxPool : base.max ?? 10,
     idleTimeoutMillis: base.idleTimeoutMillis ?? 300_000,
     connectionTimeoutMillis: base.connectionTimeoutMillis ?? 5_000,
   });
+  pool.on("error", (err: Error) => {
+    console.error({ name: "pg.Pool", message: `background connection error: ${err.message}` });
+  });
+  pool.on("connect", () => {
+    console.log({ name: "pg.Pool", message: "new connection established" });
+  });
+  return pool;
 }
 
 export async function withTransaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>): Promise<T> {
