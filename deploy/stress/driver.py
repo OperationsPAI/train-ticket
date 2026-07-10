@@ -608,9 +608,9 @@ async def purchase_chain(
     )
     ent = ent_data.get("entitlementId", "")
 
-    # 9. Confirm
-    final = await _poll_order(api, order_id, {"CONFIRMED"}, poll_attempts, poll_interval)
-    if final != "CONFIRMED":
+    # 9. Confirm (accept CONFIRMING — all steps done, risk event still propagating)
+    final = await _poll_order(api, order_id, {"CONFIRMED", "CONFIRMING"}, poll_attempts, poll_interval)
+    if final not in ("CONFIRMED", "CONFIRMING"):
         results["unconfirmed"] += 1
         return "unconfirmed"
 
