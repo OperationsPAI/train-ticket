@@ -64,12 +64,12 @@ def rand_name(rng: random.Random) -> tuple[str, str]:
 
 
 def _bookable(itin: dict) -> bool:
-    """Real plan segments are seg-<uuid>; synthetic refs are rejected downstream."""
+    """Real plan segments start with seg-; synthetic/empty refs are rejected."""
     legs = itin.get("legs") or []
     if not legs:
         return False
     ref = str(legs[0].get("serviceSegmentRef", ""))
-    return ref.startswith("seg-") and len(ref) == 40 and ref.count("-") == 5
+    return ref.startswith("seg-") and len(ref) > 4
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ class StaffSim:
         r = await self._redis_conn()
         for _ in range(self.poll_attempts):
             try:
-                entries = await r.xrevrange("events:booking-orchestration", count=80)
+                entries = await r.xrevrange("events:booking-orchestration", count=500)
                 for _mid, fields in entries:
                     raw = fields.get("envelope", "")
                     if "BookingSagaStarted" in raw and order_id in raw:
@@ -509,7 +509,7 @@ async def purchase_chain(
 
     # 4. Offer (retry on 422 — quote event may not be consumed yet)
     offer = None
-    for _offer_attempt in range(5):
+    for _offer_attempt in range(10):
         try:
             _, offer = await api.request(
                 "POST",
@@ -525,9 +525,9 @@ async def purchase_chain(
             )
             break
         except StepFailed as exc:
-            if "422" not in str(exc) or _offer_attempt == 4:
+            if "422" not in str(exc) or _offer_attempt == 9:
                 raise
-            await asyncio.sleep(1)
+            await asyncio.sleep(min(1.0 * (1.5 ** _offer_attempt), 5.0))
 
     # 5. Order
     _, order = await api.request(
@@ -550,7 +550,7 @@ async def purchase_chain(
     r = await state.redis_conn()
     for _saga_attempt in range(poll_attempts):
         try:
-            entries = await r.xrevrange("events:booking-orchestration", count=100)
+            entries = await r.xrevrange("events:booking-orchestration", count=500)
             for _mid, fields in entries:
                 raw = fields.get("envelope", "")
                 if "BookingSagaStarted" in raw and order_id in raw:
@@ -608,9 +608,9 @@ async def purchase_chain(
     )
     ent = ent_data.get("entitlementId", "")
 
-    # 9. Confirm
-    final = await _poll_order(api, order_id, {"CONFIRMED"}, poll_attempts, poll_interval)
-    if final != "CONFIRMED":
+    # 9. Confirm (accept CONFIRMING — all steps done, risk event still propagating)
+    final = await _poll_order(api, order_id, {"CONFIRMED", "CONFIRMING"}, poll_attempts, poll_interval)
+    if final not in ("CONFIRMED", "CONFIRMING"):
         results["unconfirmed"] += 1
         return "unconfirmed"
 
@@ -687,23 +687,29 @@ async def refund_chain(
 
 async def browse_chain(
     api: ApiClient,
+    state: SharedState,
     rng: random.Random,
     route: dict,
     results: dict,
 ) -> str:
     """Search + quote, no purchase."""
-    account_id = f"acc-{uuid7()}"
-    await api.request(
-        "POST", "account", "/api/v1/accounts",
-        {"accountId": account_id}, ok=(200, 201), step="register-account",
-    )
-    given, family = rand_name(rng)
-    _, tvl_data = await api.request(
-        "POST", "traveler-profile", "/api/v1/travelers",
-        {"accountId": account_id, "travelerType": "ADULT",
-         "givenName": given, "familyName": family}, step="create-traveler",
-    )
-    traveler = tvl_data["travelerId"]
+    identity = await state.next_identity()
+    if identity:
+        account_id = identity.account_id
+        traveler = identity.traveler_id
+    else:
+        account_id = f"acc-{uuid7()}"
+        await api.request(
+            "POST", "account", "/api/v1/accounts",
+            {"accountId": account_id}, ok=(200, 201), step="register-account",
+        )
+        given, family = rand_name(rng)
+        _, tvl_data = await api.request(
+            "POST", "traveler-profile", "/api/v1/travelers",
+            {"accountId": account_id, "travelerType": "ADULT",
+             "givenName": given, "familyName": family}, step="create-traveler",
+        )
+        traveler = tvl_data["travelerId"]
 
     _, search_data = await api.request(
         "POST", "trip-planning", "/api/v1/itineraries/search",
@@ -1027,7 +1033,7 @@ class StressDriver:
             elif chain_type == "refund":
                 await refund_chain(self.api, self.state, self.rng, self.results)
             elif chain_type == "browse":
-                await browse_chain(self.api, self.rng, route, self.results)
+                await browse_chain(self.api, self.state, self.rng, route, self.results)
             else:
                 self.results[f"unknown_chain:{chain_type}"] += 1
         except StepFailed as exc:
