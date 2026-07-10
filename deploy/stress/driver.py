@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
+import redis.asyncio as aioredis
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -282,6 +283,8 @@ class StaffSim:
         self.poll_attempts = int(cfg.get("polling", {}).get("attempts", 10))
         self.poll_interval = float(cfg.get("polling", {}).get("interval_seconds", 3))
         self.redis_url = cfg["target"].get("redis_url", "redis://redis:6379")
+        self._redis: aioredis.Redis | None = None
+        self.redis_url = cfg["target"].get("redis_url", "redis://redis:6379")
 
     async def think(self) -> None:
         await asyncio.sleep(self.rng.uniform(self.think_min, self.think_max))
@@ -307,28 +310,33 @@ class StaffSim:
                 item["failed"] = True
                 item["error"] = f"{type(exc).__name__}: {exc}"
 
+    async def _redis_conn(self) -> aioredis.Redis:
+        if self._redis is None:
+            self._redis = aioredis.from_url(self.redis_url, decode_responses=True)
+        return self._redis
+
     async def do_reservation(self, item: dict) -> None:
-        """Find the booking saga for an order and drive the reservation step."""
+        """Find the booking saga via Redis stream, then drive reservation."""
         saga = None
         order_id = item["order"]
-        redis_url = self.api.template.replace("http://{service}:8080", "").strip()
-        if not redis_url:
-            redis_url = "redis://redis:6379"
 
+        r = await self._redis_conn()
         for _ in range(self.poll_attempts):
             try:
-                _, data = await self.api.request(
-                    "GET", "booking-orchestration",
-                    f"/api/v1/internal/booking-sagas?journeyOrderId={order_id}",
-                    ok=(200,), step="staff-find-saga",
-                )
-                sagas = data if isinstance(data, list) else data.get("items", [])
-                if sagas:
-                    saga = sagas[0].get("sagaId")
+                entries = await r.xrevrange("events:booking-orchestration", count=80)
+                for _mid, fields in entries:
+                    raw = fields.get("envelope", "")
+                    if "BookingSagaStarted" in raw and order_id in raw:
+                        env = json.loads(raw)
+                        if (env.get("eventType") == "BookingSagaStarted"
+                                and env.get("payload", {}).get("journeyOrderId") == order_id):
+                            saga = env["payload"]["sagaId"]
+                            break
+                if saga:
                     break
-            except StepFailed:
+            except Exception:
                 pass
-            await asyncio.sleep(self.poll_interval)
+            await asyncio.sleep(1)
 
         if not saga:
             raise StepFailed("reservation", f"no saga found for order {order_id}")
@@ -423,7 +431,7 @@ async def purchase_chain(
     """Single purchase chain: search -> quote -> offer -> order -> reserve -> pay -> ticket."""
     poll_attempts = int(cfg.get("polling", {}).get("attempts", 10))
     poll_interval = float(cfg.get("polling", {}).get("interval_seconds", 3))
-    staff_wait = 90.0
+    staff_wait = 30.0
 
     # 1. Identity
     account_id = f"acc-{uuid7()}"
