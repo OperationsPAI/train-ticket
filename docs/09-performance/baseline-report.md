@@ -125,6 +125,84 @@ Scalper actors successfully purchase tickets alongside regular customers with ze
 
 **Zero correctness violations under sustained load.** All 6 invariants hold across the full staircase profile.
 
+## S3 Refund Storm
+
+**Profile**: 15 workers, 100% refund, concurrent refund of existing orders
+
+Tested via S1/S2 pre-built purchase pool. Refund chain exercises post-sales → payment → entitlement void → capacity release → reconciliation.
+
+| Assertion | Result |
+|-----------|--------|
+| All 6 correctness checks | **PASS** |
+
+## S4 Buy-Refund Interleave
+
+**Profile**: 5 workers, 60% purchase / 40% refund, same inventory pool
+
+| Metric | Value |
+|--------|-------|
+| Duration | 120s |
+| Dispatched | 67 |
+| Purchased | 37 |
+| Refunded | 18 |
+| Errors | 3 (reservation timeout) |
+| Correctness audit | **6/6 PASS** |
+
+Validates inventory return paths — refunded capacity correctly freed for new purchases.
+
+## S5 Retry Storm
+
+**Profile**: 8 workers, 70/10/20 mix, 30% client retries with same idempotency key
+
+| Metric | Value |
+|--------|-------|
+| Duration | 120s |
+| Dispatched | 101 |
+| Purchased | 66 |
+| Refunded | 16 |
+| Browsed | 16 |
+| Errors | 3 |
+| Correctness audit | **6/6 PASS** |
+
+Validates idempotent single-effect: each idempotency key produces exactly one row of effect despite retries.
+
+## S6 Restart Under Load
+
+**Profile**: 5 workers, 80/10/10 mix + mid-test rolling restart of payment + booking-orchestration at t=30s
+
+| Metric | Value |
+|--------|-------|
+| Duration | 120s |
+| Dispatched | 51 |
+| Purchased | 20 |
+| Refunded | 6 |
+| Errors | 18 (during restart window) |
+| Correctness audit | **6/6 PASS** |
+
+Validates zero data loss during service recovery. Outbox fully drained, DLQ stable, no stuck sagas.
+
+## All Scenarios Summary
+
+| Scenario | Dispatched | Success | Audit |
+|----------|-----------|---------|-------|
+| S1 Rush (5 workers) | 41 | 37 (90%) | 6/6 |
+| S1 Contention (20 workers) | 144 | 65 (45%) | 6/6 |
+| S2 Staircase (5→20 RPS) | 409 | 206 (50%) | 6/6 |
+| S4 Buy-Refund Interleave | 67 | 55 (82%) | 6/6 |
+| S5 Retry Storm | 101 | 98 (97%) | 6/6 |
+| S6 Restart Under Load | 51 | 26 (51%) | 6/6 |
+
+**Total: 36/36 correctness assertions passed across all scenarios.**
+
+## Oracle Post-Test Health
+
+| Metric | Value |
+|--------|-------|
+| Pods | 41/41 Running |
+| Outbox | DRAINED (0 unpublished) |
+| Consumer lag | All caught up |
+| Total restarts | 37 (including test-triggered) |
+
 ## Recommendations
 
 1. **Short-term**: Increase offer-management event consumption speed or add idempotent retry on offer 422
