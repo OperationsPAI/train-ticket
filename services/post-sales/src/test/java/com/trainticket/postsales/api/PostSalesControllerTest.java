@@ -9,6 +9,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.time.Instant;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,6 +24,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+import com.trainticket.postsales.application.PostSalesRepository;
+import com.trainticket.postsales.domain.PostSalesCase;
+import com.trainticket.postsales.domain.PostSalesCaseType;
+import com.trainticket.postsales.domain.PostSalesScope;
 
 @SpringBootTest(properties = "post-sales.messaging.redis.enabled=false")
 class PostSalesControllerTest {
@@ -28,8 +39,12 @@ class PostSalesControllerTest {
     private static final String REUSED_KEY = "01890f47-9b7c-7cc2-98c4-dc0c0c073006";
     private static final String GENERATED_CORRELATION_KEY = "01890f47-9b7c-7cc2-98c4-dc0c0c073007";
     private static final String UUID4_KEY = "550e8400-e29b-41d4-a716-446655440000";
+    private static final String CONFLICT_KEY = "01890f47-9b7c-7cc2-98c4-dc0c0c073008";
+    private static final String CHANGE_RACE_KEY = "01890f47-9b7c-7cc2-98c4-dc0c0c073009";
 
     private MockMvc mockMvc;
+    @Autowired
+    private PostSalesRepository repository;
 
     @Autowired
     void setApplicationContext(WebApplicationContext context) {
@@ -91,15 +106,15 @@ class PostSalesControllerTest {
 
     @Test
     void idempotentReplayReturnsOriginalOpenResult() throws Exception {
-        MvcResult first = openCase(REPLAY_KEY).andExpect(status().isCreated()).andReturn();
-        openCase(REPLAY_KEY)
+        MvcResult first = openCase(REPLAY_KEY, "ord-replay-1").andExpect(status().isCreated()).andReturn();
+        openCase(REPLAY_KEY, "ord-replay-1")
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.caseId", equalTo(first.getResponse().getContentAsString().split("\"caseId\":\"")[1].split("\"")[0])));
     }
 
     @Test
     void idempotencyKeyReuseWithDifferentBodyReturns422() throws Exception {
-        openCase(REUSED_KEY).andExpect(status().isCreated());
+        openCase(REUSED_KEY, "ord-reused-1").andExpect(status().isCreated());
 
         mockMvc.perform(post("/api/v1/post-sales-cases")
                 .header("Idempotency-Key", REUSED_KEY)
@@ -122,6 +137,85 @@ class PostSalesControllerTest {
             .andExpect(status().isUnprocessableEntity())
             .andExpect(jsonPath("$.code", equalTo("IDEMPOTENCY_KEY_REUSED")))
             .andExpect(jsonPath("$.correlationId", equalTo("corr-test-1")));
+    }
+
+
+    @Test
+    void differentIdempotencyKeyForSameRefundOrderReturns409() throws Exception {
+        openCase(CONFLICT_KEY, "ord-conflict-1").andExpect(status().isCreated());
+
+        openCase("01890f47-9b7c-7cc2-98c4-dc0c0c073010", "ord-conflict-1")
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code", equalTo("REFUND_ALREADY_IN_PROGRESS")))
+            .andExpect(jsonPath("$.details.existingCaseId", notNullValue()));
+    }
+
+    @Test
+    void refundAndChangeRaceUsesSameOrderConflictSlot() throws Exception {
+        openCase(CHANGE_RACE_KEY, "ord-change-race-1").andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/post-sales-cases")
+                .header("Idempotency-Key", "01890f47-9b7c-7cc2-98c4-dc0c0c073011")
+                .header("X-Correlation-Id", "corr-test-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(openCaseJson("ord-change-race-1", "CHANGE")))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code", equalTo("REFUND_ALREADY_IN_PROGRESS")));
+    }
+
+    @Test
+    void concurrentRefundsForSameOrderAllowExactlyOneSuccess() throws Exception {
+        int workers = 8;
+        CountDownLatch start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(workers);
+        List<Callable<Integer>> calls = new ArrayList<>();
+        for (int i = 0; i < workers; i++) {
+            final int index = i;
+            calls.add(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return mockMvc.perform(post("/api/v1/post-sales-cases")
+                        .header("Idempotency-Key", "01890f47-9b7c-7cc2-98c4-dc0c0c0731%02d".formatted(index))
+                        .header("X-Correlation-Id", "corr-concurrent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(openCaseJson("ord-concurrent-refund-1", "REFUND")))
+                    .andReturn().getResponse().getStatus();
+            });
+        }
+
+        var futures = calls.stream().map(executor::submit).toList();
+        start.countDown();
+        List<Integer> statuses = new ArrayList<>();
+        for (var future : futures) {
+            statuses.add(future.get(10, TimeUnit.SECONDS));
+        }
+        executor.shutdownNow();
+
+        org.junit.jupiter.api.Assertions.assertEquals(1, statuses.stream().filter(status -> status == 201).count());
+        org.junit.jupiter.api.Assertions.assertEquals(workers - 1, statuses.stream().filter(status -> status == 409).count());
+    }
+
+
+    @Test
+    void evaluatingNonRefundableCaseReturns422MachineCode() throws Exception {
+        PostSalesCase postSalesCase = PostSalesCase.open(
+            "ord-non-refundable-1",
+            PostSalesCaseType.REFUND,
+            PostSalesScope.ticket("oi-non-refundable-1", "seg-non-refundable-1", "tvl-non-refundable-1", "ent-non-refundable-1"),
+            "CUSTOMER_REQUEST",
+            "acct-test-1",
+            "01890f47-9b7c-7cc2-98c4-dc0c0c073012",
+            Instant.parse("2026-07-05T10:30:00Z"),
+            "cmd-non-refundable",
+            "corr-test-1"
+        );
+        postSalesCase.reject("RULE_BLOCKED", Instant.parse("2026-07-05T10:31:00Z"), "cmd-reject", "cmd-non-refundable", "corr-test-1");
+        repository.save(postSalesCase);
+
+        mockMvc.perform(post("/api/v1/post-sales-cases/{caseId}/evaluate", "psc-" + postSalesCase.caseId())
+                .header("Idempotency-Key", "01890f47-9b7c-7cc2-98c4-dc0c0c073013")
+                .header("X-Correlation-Id", "corr-test-1"))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code", equalTo("ORDER_NOT_REFUNDABLE")));
     }
 
     @Test
@@ -205,14 +299,22 @@ class PostSalesControllerTest {
     }
 
     private org.springframework.test.web.servlet.ResultActions openCase(String idempotencyKey) throws Exception {
+        return openCase(idempotencyKey, "ord-test-1");
+    }
+
+    private org.springframework.test.web.servlet.ResultActions openCase(String idempotencyKey, String orderId) throws Exception {
         return mockMvc.perform(post("/api/v1/post-sales-cases")
             .header("Idempotency-Key", idempotencyKey)
             .header("X-Correlation-Id", "corr-test-1")
             .contentType(MediaType.APPLICATION_JSON)
-            .content("""
+            .content(openCaseJson(orderId, "REFUND")));
+    }
+
+    private static String openCaseJson(String orderId, String caseType) {
+        return """
                 {
-                  "journeyOrderId": "ord-test-1",
-                  "caseType": "REFUND",
+                  "journeyOrderId": "%s",
+                  "caseType": "%s",
                   "scope": {
                     "orderItemRefs": ["oi-test-1"],
                     "segmentRefs": ["seg-test-1"],
@@ -222,6 +324,6 @@ class PostSalesControllerTest {
                   "reasonCode": "CUSTOMER_REQUEST",
                   "actorRef": "acct-test-1"
                 }
-                """));
+                """.formatted(orderId, caseType);
     }
 }
