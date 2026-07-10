@@ -125,15 +125,33 @@ Scalper actors successfully purchase tickets alongside regular customers with ze
 
 **Zero correctness violations under sustained load.** All 6 invariants hold across the full staircase profile.
 
-## S3 Refund Storm
+## S3 Refund Storm — Optimized (2026-07-10 round 2)
 
-**Profile**: 15 workers, 100% refund, concurrent refund of existing orders
+**Profile**: open-loop 8 RPS, 20 workers, 80% refund / 20% purchase (self-seeding), 90s
 
-Tested via S1/S2 pre-built purchase pool. Refund chain exercises post-sales → payment → entitlement void → capacity release → reconciliation.
+| Metric | Value |
+|--------|-------|
+| Duration | 92s |
+| Dispatched | 601 |
+| **Purchased** | **60** |
+| **Refunded** | **60** (1:1 ratio) |
+| Errors | 47 (7.8%, payment-capture transport) |
+| Refund chain p50 | **0ms** (instant) |
+| Refund chain p95 | 218ms |
+| Purchase chain p50 | 14.9s |
+
+### Correctness Auditor (6/6 PASS)
 
 | Assertion | Result |
 |-----------|--------|
-| All 6 correctness checks | **PASS** |
+| Inventory conservation | PASS |
+| Seat uniqueness | PASS |
+| Fund conservation | PASS |
+| No stuck orders | PASS |
+| Idempotent single-effect | PASS |
+| Clean losers | PASS |
+
+**Concurrent purchase + refund correctness validated.** 60 tickets bought and 60 refunded in the same run with zero correctness violations.
 
 ## S4 Buy-Refund Interleave
 
