@@ -705,10 +705,18 @@ class CustomerSim:
         if self.chance("p_abandon_after_quote"):
             raise Abandoned()
 
-        _, offer = await self.api.request(
-            "POST", "offer-management", "/api/v1/offers",
-            {"accountId": entry["account_id"], "channelId": channel,
-             "itineraryRef": found["itinerary"], "travelerRefs": travelers}, step="offer")
+        offer = None
+        for _offer_try in range(5):
+            try:
+                _, offer = await self.api.request(
+                    "POST", "offer-management", "/api/v1/offers",
+                    {"accountId": entry["account_id"], "channelId": channel,
+                     "itineraryRef": found["itinerary"], "travelerRefs": travelers}, step="offer")
+                break
+            except StepFailed as exc:
+                if "422" not in str(exc) or _offer_try == 4:
+                    raise
+                await asyncio.sleep(min(1.0 * (1.5 ** _offer_try), 4.0))
         _, order = await self.api.request(
             "POST", "journey-order", "/api/v1/journey-orders",
             {"accountId": entry["account_id"], "offerId": offer["offerId"],
@@ -1591,12 +1599,20 @@ class ScalperSim:
              "segmentRefs": [found["segment"]]}, step="scalper-quote")
         await self.burst_pause()
 
-        # offer
-        _, offer = await self.request(
-            "POST", "offer-management", "/api/v1/offers",
-            {"accountId": acct["account_id"], "channelId": channel,
-             "itineraryRef": found["itinerary"], "travelerRefs": [tvl]},
-            step="scalper-offer")
+        # offer (retry on 422 — quote event propagation delay)
+        offer = None
+        for _so_try in range(5):
+            try:
+                _, offer = await self.request(
+                    "POST", "offer-management", "/api/v1/offers",
+                    {"accountId": acct["account_id"], "channelId": channel,
+                     "itineraryRef": found["itinerary"], "travelerRefs": [tvl]},
+                    step="scalper-offer")
+                break
+            except StepFailed as exc:
+                if "422" not in str(exc) or _so_try == 4:
+                    raise
+                await asyncio.sleep(1.0)
         await self.burst_pause()
 
         # order
