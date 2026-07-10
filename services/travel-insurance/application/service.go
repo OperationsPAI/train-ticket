@@ -214,11 +214,31 @@ func (s *InsuranceService) HandleEvent(ctx context.Context, envelope messaging.E
 			return messaging.FatalHandlerError(err)
 		}
 		return s.CreateOfferForConfirmedOrder(ctx, payload)
-	case "PostSalesApproved", "RefundApproved":
-		return s.HandleRefundTrigger(ctx, envelope)
+	case "PostSalesApproved":
+		return s.HandlePostSalesApproved(ctx, envelope)
+	case "RefundApproved":
+		return s.HandleRefundApproved(ctx, envelope)
 	default:
 		return nil
 	}
+}
+
+type PostSalesApprovedPayload struct {
+	CaseID          string                   `json:"caseId"`
+	OrderID         string                   `json:"orderId"`
+	ApprovedActions PostSalesApprovedActions `json:"approvedActions"`
+}
+
+type PostSalesApprovedActions struct {
+	DecisionKind string                 `json:"decisionKind"`
+	ApprovalRef  string                 `json:"approvalRef"`
+	Refund       *PostSalesRefundAction `json:"refund,omitempty"`
+}
+
+type PostSalesRefundAction struct {
+	OrderID         string       `json:"orderId"`
+	Amount          domain.Money `json:"amount"`
+	PaymentIntentID string       `json:"paymentIntentId,omitempty"`
 }
 
 type RefundApprovedPayload struct {
@@ -230,7 +250,47 @@ type RefundApprovedPayload struct {
 	ApprovedAmount domain.Money `json:"approvedAmount"`
 }
 
-func (s *InsuranceService) HandleRefundTrigger(ctx context.Context, envelope messaging.EventEnvelope) error {
+func (s *InsuranceService) HandlePostSalesApproved(ctx context.Context, envelope messaging.EventEnvelope) error {
+	var payload PostSalesApprovedPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return messaging.FatalHandlerError(err)
+	}
+	caseID := strings.TrimSpace(payload.CaseID)
+	orderID := strings.TrimSpace(payload.OrderID)
+	if orderID == "" && payload.ApprovedActions.Refund != nil {
+		orderID = strings.TrimSpace(payload.ApprovedActions.Refund.OrderID)
+	}
+	if caseID == "" || orderID == "" {
+		return messaging.FatalHandlerError(domain.ErrInvalidArgument)
+	}
+	if !strings.EqualFold(strings.TrimSpace(payload.ApprovedActions.DecisionKind), "REFUND") || payload.ApprovedActions.Refund == nil {
+		return nil
+	}
+	if err := payload.ApprovedActions.Refund.Amount.ValidatePositive(); err != nil {
+		return messaging.FatalHandlerError(err)
+	}
+	policies, err := s.repo.ListPoliciesByOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	for _, policy := range policies {
+		if !policy.CanFileClaim(s.clock()) || !payload.ApprovedActions.Refund.Amount.SameCurrency(policy.CoverageLimit) {
+			continue
+		}
+		amount := payload.ApprovedActions.Refund.Amount
+		if amount.MinorUnits > policy.CoverageLimit.MinorUnits {
+			amount.MinorUnits = policy.CoverageLimit.MinorUnits
+		}
+		evidenceRefs := postSalesEvidenceRefs(envelope.EventID, payload.ApprovedActions.ApprovalRef)
+		_, err := s.FileClaim(ctx, ClaimCommand{PolicyID: policy.ID, ClaimType: domain.ClaimServiceFailureManual, TriggerFactKey: postSalesRefundFactKey(caseID), SupportCaseID: caseID, EvidenceRefs: evidenceRefs, ClaimedAmount: amount})
+		if err != nil && !errors.Is(err, domain.ErrDuplicateActiveClaim) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *InsuranceService) HandleRefundApproved(ctx context.Context, envelope messaging.EventEnvelope) error {
 	var payload RefundApprovedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return messaging.FatalHandlerError(err)
@@ -255,6 +315,18 @@ func (s *InsuranceService) HandleRefundTrigger(ctx context.Context, envelope mes
 		return nil
 	}
 	return err
+}
+
+func postSalesRefundFactKey(caseID string) string {
+	return "post-sales:" + strings.TrimSpace(caseID) + ":refund"
+}
+
+func postSalesEvidenceRefs(eventID, approvalRef string) []string {
+	refs := []string{strings.TrimSpace(eventID)}
+	if approval := strings.TrimSpace(approvalRef); approval != "" {
+		refs = append(refs, "post-sales-approval:"+approval)
+	}
+	return refs
 }
 
 type JourneyOrderConfirmedPayload struct {

@@ -67,3 +67,87 @@ func TestJourneyOrderConfirmedCreatesOffer(t *testing.T) {
 		t.Fatalf("unexpected offers: %#v", offers)
 	}
 }
+
+func TestPostSalesApprovedRefundCreatesClaimFromContractPayload(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	repo := NewInMemoryRepository()
+	publisher := &recordingPublisher{}
+	svc := NewInsuranceService(repo, publisher, nil, func() time.Time { return now })
+	policy, err := svc.Issue(context.Background(), IssuePolicyCommand{ProductCode: domain.ProductDelayInsurance, JourneyOrderID: "ord-ps-1", AccountID: "acct-1", TravelerRef: "tvl-1", SegmentRefs: []string{"seg-1"}, CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	payload := PostSalesApprovedPayload{
+		CaseID:  "psc-1",
+		OrderID: "ord-ps-1",
+		ApprovedActions: PostSalesApprovedActions{
+			DecisionKind: "REFUND",
+			ApprovalRef:  "approval-1",
+			Refund:       &PostSalesRefundAction{OrderID: "ord-ps-1", Amount: domain.Money{Currency: "CNY", MinorUnits: 700}, PaymentIntentID: "pi-1"},
+		},
+	}
+	envelope, err := messaging.NewEventEnvelope("PostSalesApproved", "post-sales", ids.NewCorrelationID(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleEvent(context.Background(), envelope); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	claims, err := claimsByPolicy(repo, policy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("expected one claim, got %#v", claims)
+	}
+	claim := claims[0]
+	if claim.PolicyID != policy.ID || claim.SupportCaseID != "psc-1" || claim.TriggerFactKey != postSalesRefundFactKey("psc-1") || claim.ClaimedAmount.MinorUnits != 700 {
+		t.Fatalf("unexpected claim: %#v", claim)
+	}
+	if claim.ClaimType != domain.ClaimServiceFailureManual || claim.Status != domain.ClaimManualReview {
+		t.Fatalf("unexpected claim classification: %#v", claim)
+	}
+	if got := publisher.events[len(publisher.events)-1].EventType; got != domain.EventClaimFiled {
+		t.Fatalf("expected claim filed event, got %s", got)
+	}
+}
+
+func TestPostSalesApprovedRefundIsIdempotentForSameCase(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	repo := NewInMemoryRepository()
+	svc := NewInsuranceService(repo, nil, nil, func() time.Time { return now })
+	policy, err := svc.Issue(context.Background(), IssuePolicyCommand{ProductCode: domain.ProductDelayInsurance, JourneyOrderID: "ord-ps-2", AccountID: "acct-1", TravelerRef: "tvl-1", SegmentRefs: []string{"seg-1"}, CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	payload := PostSalesApprovedPayload{CaseID: "psc-2", OrderID: "ord-ps-2", ApprovedActions: PostSalesApprovedActions{DecisionKind: "REFUND", ApprovalRef: "approval-2", Refund: &PostSalesRefundAction{Amount: domain.Money{Currency: "CNY", MinorUnits: 700}}}}
+	envelope, err := messaging.NewEventEnvelope("PostSalesApproved", "post-sales", ids.NewCorrelationID(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleEvent(context.Background(), envelope); err != nil {
+		t.Fatalf("first handle: %v", err)
+	}
+	if err := svc.HandleEvent(context.Background(), envelope); err != nil {
+		t.Fatalf("second handle: %v", err)
+	}
+	claims, err := claimsByPolicy(repo, policy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("expected one idempotent claim, got %#v", claims)
+	}
+}
+
+func claimsByPolicy(repo *InMemoryRepository, policyID string) ([]domain.Claim, error) {
+	repo.mu.RLock()
+	defer repo.mu.RUnlock()
+	claims := make([]domain.Claim, 0)
+	for _, claim := range repo.claims {
+		if claim.PolicyID == policyID {
+			claims = append(claims, claim)
+		}
+	}
+	return claims, nil
+}
