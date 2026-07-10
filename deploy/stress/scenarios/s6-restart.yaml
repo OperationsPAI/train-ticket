@@ -1,0 +1,43 @@
+# S6 — Storm + Restart: S2-like load with mid-test rolling restart of hot services.
+#
+# Validates zero loss during recovery: DLQ zero, no stuck sagas.
+
+name: s6-restart
+description: "Steady load + mid-test rolling restart of hot services"
+
+load:
+  model: closed
+  workers: 10
+  duration_seconds: 120
+  rps: null
+
+target:
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"
+  request_timeout_seconds: 15
+
+mix:
+  purchase: 0.70
+  refund: 0.10
+  browse: 0.20
+
+constraints:
+  restart_at_seconds: 40
+  restart_services:
+    - payment
+    - booking-orchestration
+    - journey-order
+
+seed:
+  cities: ["Beijing", "Shanghai"]
+  departure_date: "2026-09-01"
+
+polling:
+  attempts: 10
+  interval_seconds: 3
+
+staff:
+  workers: 4
+  think_time_seconds: {min: 0.1, max: 0.5}
+  queue_poll_seconds: 0.3
+  p_risk_approve: 1.0
