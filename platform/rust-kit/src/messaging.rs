@@ -1107,7 +1107,7 @@ pub mod redis_runtime {
                         c
                     }
                     Err(error) => {
-                        tracing::warn!(
+                        log::warn!(
                             "Redis subscriber connection failed: {error}, reconnecting in {delay}s"
                         );
                         sleep(Duration::from_secs(delay)).await;
@@ -1132,7 +1132,7 @@ pub mod redis_runtime {
                         if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
                             return Ok(());
                         }
-                        tracing::warn!(
+                        log::warn!(
                             "Redis subscriber disconnected: {error}, reconnecting in {delay}s"
                         );
                         sleep(Duration::from_secs(delay)).await;
