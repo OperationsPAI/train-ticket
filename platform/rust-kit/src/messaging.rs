@@ -1122,7 +1122,7 @@ pub mod redis_runtime {
                         streams.clone(),
                         group.clone(),
                         consumer_name.clone(),
-                        handler,
+                        handler.as_ref(),
                         false,
                     )
                     .await
