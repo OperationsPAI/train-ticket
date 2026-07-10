@@ -32,6 +32,11 @@ journey_mix:
   ride: 5           # dispatch ride request lifecycle
   disruption: 1     # low-frequency ops disruption recovery drill
   transfer: 1        # low-frequency transfer-management drill
+  loyalty: 3         # check/enroll loyalty membership tier
+  insurance: 2       # browse travel insurance products
+  group_booking: 1   # create group booking with members
+  corporate: 1       # corporate travel agreement
+  campaign: 1        # draft marketing campaign (ops-side)
 
 # ---------------------------------------------------------------------------
 # Within-journey behavior knobs.

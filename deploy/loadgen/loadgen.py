@@ -1117,6 +1117,85 @@ class CustomerSim:
         return "support_case"
 
 
+    # -- new-service journeys ------------------------------------------------
+
+    async def journey_loyalty(self) -> str:
+        """Check membership tier and points for an existing account."""
+        entry = await self.get_or_create_account()
+        try:
+            _, member = await self.api.request(
+                "GET", "loyalty-membership",
+                f"/api/v1/members/{entry['account_id']}",
+                ok=(200, 404), step="loyalty-get-member")
+            if member and member.get("memberId"):
+                return "loyalty_checked"
+        except StepFailed:
+            pass
+        _, created = await self.api.request(
+            "POST", "loyalty-membership", "/api/v1/members",
+            {"accountId": entry["account_id"], "memberName": entry.get("given", "User")},
+            ok=(200, 201), step="loyalty-create-member")
+        return "loyalty_enrolled"
+
+    async def journey_insurance(self) -> str:
+        """Browse insurance products and optionally create a policy."""
+        try:
+            _, products = await self.api.request(
+                "GET", "travel-insurance", "/api/v1/products",
+                ok=(200, 404), step="insurance-list-products")
+        except StepFailed:
+            _, products = await self.api.request(
+                "GET", "travel-insurance", "/health",
+                ok=(200,), step="insurance-health")
+            return "insurance_browsed"
+        return "insurance_browsed"
+
+    async def journey_group_booking(self) -> str:
+        """Create a group booking with 3 members."""
+        entry = await self.get_or_create_account()
+        _, group = await self.api.request(
+            "POST", "group-booking", "/api/v1/group-bookings",
+            {"organizerAccountId": entry["account_id"],
+             "groupName": f"Group-{uuid7()[:8]}",
+             "expectedSize": 3},
+            ok=(200, 201), step="group-create")
+        group_id = group.get("groupBookingId") or group.get("id")
+        if group_id:
+            return "group_created"
+        return "group_failed"
+
+    async def journey_corporate(self) -> str:
+        """Check or create a corporate travel agreement."""
+        entry = await self.get_or_create_account()
+        try:
+            _, agreements = await self.api.request(
+                "GET", "corporate-travel",
+                f"/api/v1/agreements?accountId={entry['account_id']}",
+                ok=(200, 404), step="corporate-list")
+        except StepFailed:
+            pass
+        _, agreement = await self.api.request(
+            "POST", "corporate-travel", "/api/v1/agreements",
+            {"corporateName": f"Corp-{uuid7()[:8]}",
+             "adminAccountId": entry["account_id"],
+             "billingCurrency": "CNY"},
+            ok=(200, 201), step="corporate-create")
+        return "corporate_agreement_created"
+
+    async def journey_campaign(self) -> str:
+        """Draft a marketing campaign (ops-side journey)."""
+        _, campaign = await self.api.request(
+            "POST", "marketing-campaign", "/api/v1/campaigns",
+            {"name": f"Campaign-{uuid7()[:8]}",
+             "budget": {"currency": "CNY", "minorUnits": 1000000},
+             "window": {"validFrom": now_iso(),
+                        "validUntil": (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")}},
+            ok=(200, 201), step="campaign-draft")
+        campaign_id = campaign.get("campaignId") or campaign.get("id")
+        if campaign_id:
+            return "campaign_drafted"
+        return "campaign_failed"
+
     # -- long-tail read probes ----------------------------------------------
 
     def long_tail_enabled(self, key: str = "enabled") -> bool:
@@ -2152,6 +2231,11 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "ride": sim.journey_ride,
         "disruption": sim.journey_disruption,
         "transfer": sim.journey_transfer,
+        "loyalty": sim.journey_loyalty,
+        "insurance": sim.journey_insurance,
+        "group_booking": sim.journey_group_booking,
+        "corporate": sim.journey_corporate,
+        "campaign": sim.journey_campaign,
     }
     pause = cfg["run"]["session_pause_seconds"]
     while not stop.is_set():
