@@ -521,21 +521,29 @@ async def purchase_chain(
         },
         step="quote",
     )
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
 
-    # 4. Offer
-    _, offer = await api.request(
-        "POST",
-        "offer-management",
-        "/api/v1/offers",
-        {
-            "accountId": account_id,
-            "channelId": "WEB",
-            "itineraryRef": itin_ref,
-            "travelerRefs": [traveler],
-        },
-        step="offer",
-    )
+    # 4. Offer (retry on 422 — quote event may not be consumed yet)
+    offer = None
+    for _offer_attempt in range(5):
+        try:
+            _, offer = await api.request(
+                "POST",
+                "offer-management",
+                "/api/v1/offers",
+                {
+                    "accountId": account_id,
+                    "channelId": "WEB",
+                    "itineraryRef": itin_ref,
+                    "travelerRefs": [traveler],
+                },
+                step="offer",
+            )
+            break
+        except StepFailed as exc:
+            if "422" not in str(exc) or _offer_attempt == 4:
+                raise
+            await asyncio.sleep(1)
 
     # 5. Order
     _, order = await api.request(
