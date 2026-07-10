@@ -517,14 +517,39 @@ def test_journey_order_created_blocks_ip_high_frequency_across_accounts() -> Non
         )
         service.handle_event(envelope)
 
+    last_assessment = publisher.envelopes[-1]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-ip-frequency-10"
+    assert last_assessment.payload["decision"] == "ALLOW"
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+
+    for index in range(15, 32):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-ip-frequency-{index}",
+            f"acct-ip-frequency-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": "203.0.113.10"},
+        )
+        service.handle_event(envelope)
+
     last_assessment = publisher.envelopes[-2]
     last_block = publisher.envelopes[-1]
     assert last_assessment.eventType == "RiskAssessmentResult"
-    assert last_assessment.payload["subjectRef"] == "ord-ip-frequency-10"
+    assert last_assessment.payload["subjectRef"] == "ord-ip-frequency-31"
     assert last_assessment.payload["score"] == 900
     assert last_assessment.payload["decision"] == "DENY"
     assert last_block.eventType == "RiskBlockApplied"
-    assert last_block.payload["subjectRef"] == "ord-ip-frequency-10"
+    assert last_block.payload["subjectRef"] == "ord-ip-frequency-31"
 
 
 def test_journey_order_created_correlates_multiple_accounts_sharing_ip_pattern() -> None:
@@ -532,8 +557,8 @@ def test_journey_order_created_correlates_multiple_accounts_sharing_ip_pattern()
     service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
     source_ip = "203.0.113.11"
 
-    for index in range(6):
-        account_id = f"acct-shared-ip-{index % 3}"
+    for index in range(12):
+        account_id = f"acct-shared-ip-{index % 6}"
         envelope = journey_order_created_envelope(
             f"evt-{uuid7()}",
             f"ord-shared-ip-{index}",
@@ -555,7 +580,7 @@ def test_journey_order_created_correlates_multiple_accounts_sharing_ip_pattern()
     assert publisher.envelopes[-1].eventType == "RiskBlockApplied"
     last_assessment = publisher.envelopes[-2]
     assert last_assessment.eventType == "RiskAssessmentResult"
-    assert last_assessment.payload["subjectRef"] == "ord-shared-ip-5"
+    assert last_assessment.payload["subjectRef"] == "ord-shared-ip-11"
     assert last_assessment.payload["score"] == 900
     assert last_assessment.payload["decision"] == "DENY"
 
@@ -584,4 +609,67 @@ def test_journey_order_created_allows_low_frequency_distinct_ips() -> None:
         service.handle_event(envelope)
 
     assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
-    assert all(event.payload["decision"] == "ALLOW" for event in publisher.envelopes)
+    assert all(
+        event.payload["decision"] == "ALLOW"
+        for event in publisher.envelopes
+        if event.eventType == "RiskAssessmentResult"
+    )
+
+
+def test_ip_frequency_uses_time_decay_for_older_attempts() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    source_ip = "203.0.113.40"
+
+    for index in range(30):
+        minute = index * 10
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-decayed-ip-{index}",
+            f"acct-decayed-ip-{index}",
+            f"2026-07-05T10:{minute // 60:02d}:{minute % 60:02d}.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": source_ip},
+        )
+        service.handle_event(envelope)
+
+    last_assessment = publisher.envelopes[-1]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-decayed-ip-29"
+    assert last_assessment.payload["decision"] == "ALLOW"
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+
+
+def test_ip_frequency_whitelist_bypasses_known_good_range(monkeypatch) -> None:
+    monkeypatch.setenv("RISK_IP_WHITELIST_CIDRS", "198.51.100.0/24")
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    for index in range(30):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-whitelisted-ip-{index}",
+            f"acct-whitelisted-ip-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": "198.51.100.15"},
+        )
+        service.handle_event(envelope)
+
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0

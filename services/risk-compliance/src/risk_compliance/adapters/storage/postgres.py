@@ -6,7 +6,14 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
-from risk_compliance.application import AssessmentNotFoundError, BlockNotFoundError, FREQUENCY_WINDOW, RiskAssessmentResult, RiskBlockApplied
+from risk_compliance.application import (
+    AssessmentNotFoundError,
+    BlockNotFoundError,
+    FREQUENCY_WINDOW,
+    IP_FREQUENCY_DECAY_HALF_LIFE,
+    RiskAssessmentResult,
+    RiskBlockApplied,
+)
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
@@ -189,17 +196,22 @@ class PostgresAssessmentRepository:
             return int(row[0])
         return self.with_connection(write)
 
-    def record_ip_order_attempt(self, source_ip: str, account_id: str, occurred_at: datetime) -> tuple[int, int]:
+    def record_ip_order_attempt(self, source_ip: str, account_id: str, occurred_at: datetime) -> tuple[int, float, int]:
         occurred_at = _coerce_dt(occurred_at)
         window_start = occurred_at - FREQUENCY_WINDOW
-        def write(conn: Any) -> tuple[int, int]:
+        def write(conn: Any) -> tuple[int, float, int]:
             conn.execute(
                 "INSERT INTO risk_ip_order_attempts(source_ip, account_id, occurred_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (source_ip, account_id, occurred_at),
             )
-            row = conn.execute(
-                "SELECT count(*), count(DISTINCT account_id) FROM risk_ip_order_attempts WHERE source_ip = %s AND occurred_at >= %s AND occurred_at <= %s",
+            rows = conn.execute(
+                "SELECT account_id, occurred_at FROM risk_ip_order_attempts WHERE source_ip = %s AND occurred_at >= %s AND occurred_at <= %s",
                 (source_ip, window_start, occurred_at),
-            ).fetchone()
-            return int(row[0]), int(row[1])
+            ).fetchall()
+            half_life_seconds = IP_FREQUENCY_DECAY_HALF_LIFE.total_seconds()
+            weighted_attempts = sum(
+                0.5 ** ((occurred_at - _coerce_dt(row[1])).total_seconds() / half_life_seconds)
+                for row in rows
+            )
+            return len(rows), weighted_attempts, len({str(row[0]) for row in rows})
         return self.with_connection(write)

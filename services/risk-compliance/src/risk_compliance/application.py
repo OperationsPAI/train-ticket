@@ -30,7 +30,10 @@ SCHEMA_VERSION = 1
 DEFAULT_POLICY_VERSION = PolicyVersionRef(policy_set_id="risk-rules", version="1.0.0")
 FREQUENCY_WINDOW = timedelta(minutes=int(os.environ.get("RISK_FREQUENCY_WINDOW_MINUTES", "5")))
 FREQUENCY_THRESHOLD = int(os.environ.get("RISK_FREQUENCY_THRESHOLD", "2"))
-IP_FREQUENCY_THRESHOLD = int(os.environ.get("RISK_IP_FREQUENCY_THRESHOLD", "10"))
+IP_FREQUENCY_THRESHOLD = int(os.environ.get("RISK_IP_FREQUENCY_THRESHOLD", "25"))
+IP_FREQUENCY_DECAY_HALF_LIFE = timedelta(
+    seconds=max(1, int(os.environ.get("RISK_IP_FREQUENCY_DECAY_HALF_LIFE_SECONDS", "120")))
+)
 BLOCKING_DECISIONS = {Decision.DENY, Decision.CHALLENGE}
 BLOCKING_DECISION_VALUES = {decision.value for decision in BLOCKING_DECISIONS}
 RiskScenario: TypeAlias = str
@@ -206,21 +209,21 @@ class InMemoryAssessmentRepository:
         self._account_order_times[account_id] = attempts
         return len(attempts)
 
-    def record_ip_order_attempt(self, source_ip: str, account_id: str, occurred_at: datetime) -> tuple[int, int]:
+    def record_ip_order_attempt(self, source_ip: str, account_id: str, occurred_at: datetime) -> tuple[int, float, int]:
         attempts = [
             seen_at for seen_at in self._ip_order_times.get(source_ip, [])
-            if occurred_at - seen_at <= FREQUENCY_WINDOW
+            if timedelta(0) <= occurred_at - seen_at <= FREQUENCY_WINDOW
         ]
         attempts.append(occurred_at)
         self._ip_order_times[source_ip] = attempts
         accounts = {
             seen_account: seen_at
             for seen_account, seen_at in self._ip_accounts.get(source_ip, {}).items()
-            if occurred_at - seen_at <= FREQUENCY_WINDOW
+            if timedelta(0) <= occurred_at - seen_at <= FREQUENCY_WINDOW
         }
         accounts[account_id] = occurred_at
         self._ip_accounts[source_ip] = accounts
-        return len(attempts), len(accounts)
+        return len(attempts), _decayed_attempt_count(attempts, occurred_at), len(accounts)
 
 
 @dataclass(slots=True)
@@ -374,10 +377,16 @@ class RiskComplianceService:
         context["orderAttemptCount10m"] = self.repository.record_order_attempt(account_id, occurred_at)
         source_ip = _source_ip_from_envelope(envelope)
         if source_ip is not None:
-            ip_attempt_count, ip_account_count = self.repository.record_ip_order_attempt(source_ip, account_id, occurred_at)
             context["sourceIp"] = source_ip
-            context["sourceIpAttemptCount10m"] = ip_attempt_count
-            context["sourceIpAccountCount10m"] = ip_account_count
+            if _is_whitelisted_ip(source_ip):
+                context["sourceIpWhitelisted"] = True
+            else:
+                ip_attempt_count, ip_weighted_attempt_count, ip_account_count = self.repository.record_ip_order_attempt(
+                    source_ip, account_id, occurred_at
+                )
+                context["sourceIpAttemptCount10m"] = ip_attempt_count
+                context["sourceIpWeightedAttemptCount10m"] = round(ip_weighted_attempt_count, 3)
+                context["sourceIpAccountCount10m"] = ip_account_count
         assessment = assess_risk(
             assessment_id=assessment_id,
             subject_ref=order_id,
@@ -464,15 +473,19 @@ def _score(assessment: RiskAssessment) -> int:
     attempt_count = context.get("orderAttemptCount10m")
     if isinstance(attempt_count, int) and attempt_count > FREQUENCY_THRESHOLD:
         return 900
+    if context.get("sourceIpWhitelisted") is True:
+        digest = assessment.input_snapshot.digest
+        return int(digest[:8], 16) % 350
     ip_attempt_count = context.get("sourceIpAttemptCount10m")
-    if isinstance(ip_attempt_count, int) and ip_attempt_count > IP_FREQUENCY_THRESHOLD:
+    ip_weighted_attempt_count = context.get("sourceIpWeightedAttemptCount10m", ip_attempt_count)
+    if isinstance(ip_weighted_attempt_count, (int, float)) and ip_weighted_attempt_count > IP_FREQUENCY_THRESHOLD:
         return 900
     ip_account_count = context.get("sourceIpAccountCount10m")
     if (
         isinstance(ip_account_count, int)
-        and isinstance(ip_attempt_count, int)
-        and ip_account_count >= 3
-        and ip_attempt_count >= ip_account_count * 2
+        and isinstance(ip_weighted_attempt_count, (int, float))
+        and ip_account_count >= 5
+        and ip_weighted_attempt_count >= max(10.0, ip_account_count * 1.8)
     ):
         return 900
     digest = assessment.input_snapshot.digest
@@ -542,6 +555,32 @@ def _normalize_source_ip(value: str) -> str | None:
         return str(ipaddress.ip_address(first_hop))
     except ValueError:
         return None
+
+
+def _decayed_attempt_count(attempts: list[datetime], occurred_at: datetime) -> float:
+    half_life_seconds = IP_FREQUENCY_DECAY_HALF_LIFE.total_seconds()
+    return sum(0.5 ** ((occurred_at - seen_at).total_seconds() / half_life_seconds) for seen_at in attempts)
+
+
+def _ip_whitelist_ranges() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    ranges = []
+    for value in os.environ.get("RISK_IP_WHITELIST_CIDRS", "").split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            ranges.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            continue
+    return tuple(ranges)
+
+
+def _is_whitelisted_ip(source_ip: str) -> bool:
+    try:
+        address = ipaddress.ip_address(source_ip)
+    except ValueError:
+        return False
+    return any(address in network for network in _ip_whitelist_ranges())
 
 
 def _required_payload_text(payload: Mapping[str, Any], field_name: str) -> str:
