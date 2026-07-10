@@ -171,7 +171,7 @@ describe("EventSubscriber port — InMemoryEventSubscriber", () => {
     const received: EventEnvelope[] = [];
     const handler: EventHandler = async (env) => {
       received.push(env);
-      return "ack";
+      return "ack" as const;
     };
 
     const signal = new AbortController().signal;
@@ -183,6 +183,33 @@ describe("EventSubscriber port — InMemoryEventSubscriber", () => {
     assert.equal(result, "ack");
     assert.equal(received.length, 1);
     assert.equal(received[0].eventId, envelope.eventId);
+  });
+
+  it("invokes handleBatch once for a Redis read batch and acks each processed entry", async () => {
+    const first = makeEnvelope({ eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c222" });
+    const second = makeEnvelope({ eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c223" });
+    const redis = new FakeRedisForBatch([
+      ["5-0", ["envelope", JSON.stringify(first)]],
+      ["6-0", ["envelope", JSON.stringify(second)]],
+    ]);
+    const subscriber = new RedisEventSubscriber(redis as never);
+    const batches: (readonly EventEnvelope[])[] = [];
+    const handler = (async () => "dlq") as EventHandler;
+    handler.handleBatch = async (envelopes) => {
+      batches.push(envelopes);
+      return "ack" as const;
+    };
+
+    await (subscriber as unknown as { processMessages: (messages: unknown, group: string, consumer: string, handler: EventHandler) => Promise<void> })
+      .processMessages([[streamKey("fare-pricing"), redis.entries]], "offer-management", "offer-management-test", handler);
+
+    assert.equal(batches.length, 1);
+    assert.deepEqual(batches[0].map(({ eventId }) => eventId), [first.eventId, second.eventId]);
+    assert.deepEqual(redis.xackCalls, [
+      [streamKey("fare-pricing"), "offer-management", "5-0"],
+      [streamKey("fare-pricing"), "offer-management", "6-0"],
+    ]);
+    assert.equal(redis.xaddCalls.length, 0);
   });
 
   it("deduplicates a duplicate eventId via handler returning ack for already-seen ids", async () => {
@@ -257,6 +284,24 @@ describe("RedisEventSubscriber recovery", () => {
     assert.deepEqual(redis.xackCalls, [[sourceStream, group, "5-0"]]);
   });
 });
+
+
+class FakeRedisForBatch {
+  readonly xaddCalls: unknown[][] = [];
+  readonly xackCalls: unknown[][] = [];
+
+  constructor(readonly entries: [string, string[]][]) {}
+
+  async xadd(...args: unknown[]): Promise<string> {
+    this.xaddCalls.push(args);
+    return "7-0";
+  }
+
+  async xack(...args: unknown[]): Promise<number> {
+    this.xackCalls.push(args);
+    return 1;
+  }
+}
 
 class FakeRedisForRecovery {
   readonly xaddCalls: unknown[][] = [];

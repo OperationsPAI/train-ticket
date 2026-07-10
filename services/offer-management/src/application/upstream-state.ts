@@ -65,6 +65,7 @@ export interface UpstreamStateRepository {
   saveItinerary(itinerary: StoredItinerary): Promise<void>;
   findItinerary(itineraryRef: string): Promise<StoredItinerary | undefined>;
   saveFareQuote(fareQuote: StoredFareQuote): Promise<void>;
+  saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void>;
   findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined>;
   saveTraveler(traveler: StoredTraveler): Promise<void>;
   findTraveler(travelerId: string): Promise<StoredTraveler | undefined>;
@@ -86,7 +87,13 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
   }
 
   async saveFareQuote(fareQuote: StoredFareQuote): Promise<void> {
-    this.fareQuotesByKey.set(fareQuoteKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs), fareQuote);
+    await this.saveFareQuotes([fareQuote]);
+  }
+
+  async saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void> {
+    for (const fareQuote of fareQuotes) {
+      this.fareQuotesByKey.set(fareQuoteKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs), fareQuote);
+    }
   }
 
   async findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined> {
@@ -116,31 +123,50 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
 }
 
 export function createUpstreamEventHandler(repository: UpstreamStateRepository): EventHandler {
-  return async (envelope) => {
+  const handler = (async (envelope: EventEnvelope) => {
     await applyUpstreamEvent(repository, envelope);
     return "ack";
+  }) as EventHandler;
+  handler.handleBatch = async (envelopes) => {
+    await applyUpstreamEvents(repository, envelopes);
+    return "ack" as const;
   };
+  return handler;
 }
 
 export async function applyUpstreamEvent(repository: UpstreamStateRepository, envelope: EventEnvelope): Promise<void> {
-  switch (envelope.eventType) {
-    case "ItineraryProposed":
-      await storeItineraries(repository, envelope.payload);
-      return;
-    case "FareQuoteComputed":
-      await storeFareQuote(repository, envelope.payload);
-      return;
-    case "TravelerSnapshotUpdated":
-      await storeTravelerSnapshot(repository, envelope.payload);
-      return;
-    case "EligibilityDetermined":
-      await storeEligibility(repository, envelope.payload);
-      return;
-    case "EligibilityExpired":
-      await expireEligibility(repository, envelope.payload);
-      return;
-    default:
-      return;
+  await applyUpstreamEvents(repository, [envelope]);
+}
+
+export async function applyUpstreamEvents(repository: UpstreamStateRepository, envelopes: readonly EventEnvelope[]): Promise<void> {
+  const fareQuotes = envelopes
+    .filter((envelope) => envelope.eventType === "FareQuoteComputed")
+    .map((envelope) => parseFareQuote(envelope.payload))
+    .filter((fareQuote): fareQuote is StoredFareQuote => fareQuote !== undefined);
+
+  if (fareQuotes.length > 0) {
+    await repository.saveFareQuotes(fareQuotes);
+  }
+
+  for (const envelope of envelopes) {
+    switch (envelope.eventType) {
+      case "ItineraryProposed":
+        await storeItineraries(repository, envelope.payload);
+        break;
+      case "FareQuoteComputed":
+        break;
+      case "TravelerSnapshotUpdated":
+        await storeTravelerSnapshot(repository, envelope.payload);
+        break;
+      case "EligibilityDetermined":
+        await storeEligibility(repository, envelope.payload);
+        break;
+      case "EligibilityExpired":
+        await expireEligibility(repository, envelope.payload);
+        break;
+      default:
+        break;
+    }
   }
 }
 
@@ -272,8 +298,8 @@ async function storeItineraries(repository: UpstreamStateRepository, payload: Re
   }
 }
 
-async function storeFareQuote(repository: UpstreamStateRepository, payload: Record<string, unknown>): Promise<void> {
-  if (stringField(payload, "status") !== "QUOTED") return;
+function parseFareQuote(payload: Record<string, unknown>): StoredFareQuote | undefined {
+  if (stringField(payload, "status") !== "QUOTED") return undefined;
   const quoteId = stringField(payload, "quoteId");
   const inputHash = stringField(payload, "inputHash");
   const channelId = stringField(payload, "channel") ?? stringField(payload, "channelId");
@@ -283,7 +309,7 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
   const validUntil = dateField(payload, "validUntil");
   const breakdown = objectField(payload, "breakdown");
   const ruleSnapshot = objectField(payload, "ruleSnapshot");
-  if (!quoteId || !inputHash || !channelId || travelerRefs.length === 0 || !currency || !validFrom || !validUntil || !breakdown || !ruleSnapshot) return;
+  if (!quoteId || !inputHash || !channelId || travelerRefs.length === 0 || !currency || !validFrom || !validUntil || !breakdown || !ruleSnapshot) return undefined;
 
   const total = moneyField(breakdown, "total") ?? moneyField(payload, "total");
   // Contract RuleSnapshot (events/fare-pricing.md) carries ruleSetId/ruleSetVersion/digest;
@@ -294,9 +320,9 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
   const pricingVersion = ruleSetVersion ?? stringField(payload, "pricingVersion");
   const ruleVersion = ruleSetVersion ?? stringField(payload, "ruleVersion");
   const priceSnapshotRef = stringField(breakdown, "priceSnapshotRef") ?? stringField(payload, "priceSnapshotRef") ?? `price-snapshot:${quoteId}`;
-  if (!total || !ruleSnapshotRef || !pricingVersion || !ruleVersion) return;
+  if (!total || !ruleSnapshotRef || !pricingVersion || !ruleVersion) return undefined;
 
-  await repository.saveFareQuote({
+  return {
     quoteId,
     inputHash,
     channelId,
@@ -311,7 +337,7 @@ async function storeFareQuote(repository: UpstreamStateRepository, payload: Reco
     ruleVersion,
     priceSnapshotRef,
     guaranteeLevel: priceGuarantee(stringField(payload, "priceGuaranteeLevel") ?? stringField(breakdown, "priceGuaranteeLevel")),
-  });
+  };
 }
 
 async function storeTravelerSnapshot(repository: UpstreamStateRepository, payload: Record<string, unknown>): Promise<void> {

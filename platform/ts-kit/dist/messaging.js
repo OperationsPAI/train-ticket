@@ -152,8 +152,8 @@ export class InMemoryEventSubscriber {
         this.processedEventIds.clear();
     }
 }
-const READ_BLOCK_MS = 2_000;
-const READ_COUNT = 10;
+const READ_BLOCK_MS = 1_000;
+const READ_COUNT = 50;
 const CLAIM_MIN_IDLE_MS = 60_000;
 const MAX_DELIVERIES = 5;
 const STREAM_MAXLEN = 100_000;
@@ -301,10 +301,80 @@ export class RedisEventSubscriber {
     }
     async processMessages(messages, group, consumerName, handler) {
         for (const [stream, entries] of messages ?? []) {
+            await this.processEntries(stream, group, consumerName, entries, handler);
+        }
+    }
+    async processEntries(stream, group, consumerName, entries, handler) {
+        if (!handler.handleBatch || entries.length <= 1) {
             for (const entry of entries) {
                 await this.processEntry(stream, group, consumerName, entry, handler);
             }
+            return;
         }
+        const batch = [];
+        for (const entry of entries) {
+            const parsed = await this.parseBatchEntry(stream, group, consumerName, entry, 1);
+            if (parsed) {
+                batch.push(parsed);
+            }
+        }
+        if (batch.length === 0) {
+            return;
+        }
+        let batchResult;
+        try {
+            batchResult = await handleBatchWithConsumerSpans(handler.handleBatch, batch.map(({ envelope }) => envelope), stream, group);
+        }
+        catch (error) {
+            for (const item of batch) {
+                const result = error instanceof HandlerError
+                    ? (error.kind === "fatal" ? "dlq" : "retry")
+                    : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+                await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error);
+            }
+            return;
+        }
+        const results = Array.isArray(batchResult) ? batchResult : batch.map(() => batchResult);
+        if (results.length !== batch.length) {
+            const error = new HandlerError("fatal", `Batch handler returned ${results.length} results for ${batch.length} events`);
+            for (const item of batch) {
+                await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, "dlq", error);
+            }
+            return;
+        }
+        for (const [index, item] of batch.entries()) {
+            const rawResult = results[index];
+            await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult), failureReasonFromHandlerResult(rawResult));
+        }
+    }
+    async parseBatchEntry(stream, group, consumerName, entry, deliveryAttempts) {
+        const [entryId, fields] = entry;
+        const attempts = Math.max(1, deliveryAttempts);
+        const envelopeJson = fieldValue(fields, "envelope");
+        if (!envelopeJson) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
+            return undefined;
+        }
+        let envelope;
+        try {
+            envelope = deserializeEventEnvelope(envelopeJson);
+        }
+        catch (error) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
+            return undefined;
+        }
+        if (this.consumedEventIds.has(envelope.eventId)) {
+            console.warn({
+                service: group,
+                stream,
+                eventId: envelope.eventId,
+                deliveries: attempts,
+                message: "duplicate event already processed; acking without handler",
+            });
+            await this.redis.xack(stream, group, entryId);
+            return undefined;
+        }
+        return { entry, envelope, attempts };
     }
     async processEntry(stream, group, consumerName, entry, handler, deliveryAttempts = 1) {
         const [entryId, fields] = entry;
@@ -349,9 +419,12 @@ export class RedisEventSubscriber {
                 console.error(sanitizedErrorForLog(error));
             }
         }
+        await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
+    }
+    async finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason) {
         if (result === "ack") {
             this.consumedEventIds.add(envelope.eventId);
-            await this.redis.xack(stream, group, entryId);
+            await this.redis.xack(stream, group, entry[0]);
             return;
         }
         if (result === "dlq") {
@@ -454,6 +527,38 @@ export function dlqStreamKey(context) {
 }
 export function redisUrl() {
     return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+async function handleBatchWithConsumerSpans(handler, envelopes, stream, consumerGroup) {
+    if (envelopes.length === 0) {
+        return [];
+    }
+    const spans = envelopes.map((envelope) => startConsumerSpan({
+        stream,
+        consumerGroup,
+        eventId: envelope.eventId,
+        eventType: envelope.eventType,
+        correlationId: envelope.correlationId,
+        parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
+    }));
+    try {
+        const result = await handler(envelopes);
+        const results = Array.isArray(result) ? result : envelopes.map(() => result);
+        for (const [index, span] of spans.entries()) {
+            const rawResult = results[index];
+            const normalized = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+            if (normalized !== "ack") {
+                markSpanError(span, String(failureReasonFromHandlerResult(rawResult)));
+            }
+            endSpan(span);
+        }
+        return result;
+    }
+    catch (error) {
+        for (const span of spans) {
+            endSpanWithError(span, error);
+        }
+        throw error;
+    }
 }
 async function handleWithConsumerSpan(handler, envelope, stream, consumerGroup) {
     const span = startConsumerSpan({

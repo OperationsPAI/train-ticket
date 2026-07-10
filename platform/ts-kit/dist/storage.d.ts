@@ -59,10 +59,15 @@ export declare class OutboxRelay {
     runOnce(): Promise<number>;
     private run;
 }
+export type ProcessedEventInput = Readonly<{
+    eventId: string;
+    stream?: string;
+}>;
 export declare class ProcessedEventsGuard {
     private readonly db;
     constructor(db: Database);
     tryStart(eventId: string, stream?: string): Promise<boolean>;
+    tryStartMany(events: readonly ProcessedEventInput[]): Promise<string[]>;
     runOnce<T>(eventId: string, stream: string | undefined, handler: () => Promise<T>): Promise<T | undefined>;
 }
 export declare class PostgresIdempotencyStore implements IdempotencyStore {

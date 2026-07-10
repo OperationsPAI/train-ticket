@@ -44,16 +44,12 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   });
 
   const abortController = new AbortController();
+  const upstreamEventHandler = storage?.handleUpstreamEvent ?? createUpstreamEventHandler(upstreamRepository);
   const subscription = messaging.subscriber.subscribe(
     SUBSCRIBED_STREAMS,
     CONSUMER_GROUP,
     consumerName(options.instanceId ?? process.env.HOSTNAME),
-    async (envelope) => {
-      if (storage) {
-        return storage.handleUpstreamEvent(envelope);
-      }
-      return createUpstreamEventHandler(upstreamRepository)(envelope);
-    },
+    upstreamEventHandler,
     abortController.signal,
   );
   const subscriptionFailed = new Promise<never>((_, reject) => {

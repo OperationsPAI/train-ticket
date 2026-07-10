@@ -47,7 +47,10 @@ export type EventHandlerResult =
   | Readonly<{ ok: false; kind?: HandlerErrorKind; errorType?: HandlerErrorKind; error?: Error }>;
 export type HandlerResult = EventHandlerResult;
 export type StringHandlerResult = "ack" | "retry" | "dlq";
-export type EventHandler = (envelope: EventEnvelope) => Promise<any> | any;
+export type EventHandlerOutput = EventHandlerResult | StringHandlerResult | undefined;
+export type EventBatchHandlerOutput = EventHandlerOutput | readonly EventHandlerOutput[];
+export type EventBatchHandler = (envelopes: readonly EventEnvelope[]) => Promise<EventBatchHandlerOutput> | EventBatchHandlerOutput;
+export type EventHandler = ((envelope: EventEnvelope) => Promise<any> | any) & { handleBatch?: EventBatchHandler };
 
 export interface EventPublisher {
   publish(envelope: EventEnvelope): Promise<void>;
@@ -241,6 +244,7 @@ export type SubscriberLoopFailureHandler = (error: unknown) => void;
 
 type StreamEntry = [id: string, fields: string[]];
 type StreamMessages = [stream: string, entries: StreamEntry[]];
+type BatchEntry = Readonly<{ entry: StreamEntry; envelope: EventEnvelope; attempts: number }>;
 
 export class RedisEventPublisher implements EventPublisher {
   constructor(private readonly redis: Redis) {}
@@ -411,10 +415,96 @@ export class RedisEventSubscriber implements EventSubscriber {
 
   private async processMessages(messages: StreamMessages[] | null, group: string, consumerName: string, handler: EventHandler): Promise<void> {
     for (const [stream, entries] of messages ?? []) {
+      await this.processEntries(stream, group, consumerName, entries, handler);
+    }
+  }
+
+  private async processEntries(stream: string, group: string, consumerName: string, entries: readonly StreamEntry[], handler: EventHandler): Promise<void> {
+    if (!handler.handleBatch || entries.length <= 1) {
       for (const entry of entries) {
         await this.processEntry(stream, group, consumerName, entry, handler);
       }
+      return;
     }
+
+    const batch: BatchEntry[] = [];
+    for (const entry of entries) {
+      const parsed = await this.parseBatchEntry(stream, group, consumerName, entry, 1);
+      if (parsed) {
+        batch.push(parsed);
+      }
+    }
+    if (batch.length === 0) {
+      return;
+    }
+
+    let batchResult: EventBatchHandlerOutput;
+    try {
+      batchResult = await handleBatchWithConsumerSpans(handler.handleBatch, batch.map(({ envelope }) => envelope), stream, group);
+    } catch (error) {
+      for (const item of batch) {
+        const result = error instanceof HandlerError
+          ? (error.kind === "fatal" ? "dlq" : "retry")
+          : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+        await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error);
+      }
+      return;
+    }
+
+    const results = Array.isArray(batchResult) ? batchResult : batch.map(() => batchResult);
+    if (results.length !== batch.length) {
+      const error = new HandlerError("fatal", `Batch handler returned ${results.length} results for ${batch.length} events`);
+      for (const item of batch) {
+        await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, "dlq", error);
+      }
+      return;
+    }
+
+    for (const [index, item] of batch.entries()) {
+      const rawResult = results[index];
+      await this.finishEntry(
+        stream,
+        group,
+        consumerName,
+        item.entry,
+        item.envelope,
+        item.attempts,
+        rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult),
+        failureReasonFromHandlerResult(rawResult),
+      );
+    }
+  }
+
+  private async parseBatchEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, deliveryAttempts: number): Promise<BatchEntry | undefined> {
+    const [entryId, fields] = entry;
+    const attempts = Math.max(1, deliveryAttempts);
+    const envelopeJson = fieldValue(fields, "envelope");
+    if (!envelopeJson) {
+      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
+      return undefined;
+    }
+
+    let envelope: EventEnvelope;
+    try {
+      envelope = deserializeEventEnvelope(envelopeJson);
+    } catch (error) {
+      await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
+      return undefined;
+    }
+
+    if (this.consumedEventIds.has(envelope.eventId)) {
+      console.warn({
+        service: group,
+        stream,
+        eventId: envelope.eventId,
+        deliveries: attempts,
+        message: "duplicate event already processed; acking without handler",
+      });
+      await this.redis.xack(stream, group, entryId);
+      return undefined;
+    }
+
+    return { entry, envelope, attempts };
   }
 
   private async processEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, handler: EventHandler, deliveryAttempts = 1): Promise<void> {
@@ -462,9 +552,13 @@ export class RedisEventSubscriber implements EventSubscriber {
       }
     }
 
+    await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
+  }
+
+  private async finishEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, envelope: EventEnvelope, attempts: number, result: "ack" | "retry" | "dlq", failureReason: unknown): Promise<void> {
     if (result === "ack") {
       this.consumedEventIds.add(envelope.eventId);
-      await this.redis.xack(stream, group, entryId);
+      await this.redis.xack(stream, group, entry[0]);
       return;
     }
     if (result === "dlq") {
@@ -602,7 +696,39 @@ export function redisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
 }
 
-async function handleWithConsumerSpan(handler: EventHandler, envelope: EventEnvelope, stream: string, consumerGroup: string): Promise<EventHandlerResult | StringHandlerResult | undefined> {
+async function handleBatchWithConsumerSpans(handler: EventBatchHandler, envelopes: readonly EventEnvelope[], stream: string, consumerGroup: string): Promise<EventBatchHandlerOutput> {
+  if (envelopes.length === 0) {
+    return [];
+  }
+  const spans = envelopes.map((envelope) => startConsumerSpan({
+    stream,
+    consumerGroup,
+    eventId: envelope.eventId,
+    eventType: envelope.eventType,
+    correlationId: envelope.correlationId,
+    parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
+  }));
+  try {
+    const result = await handler(envelopes);
+    const results = Array.isArray(result) ? result : envelopes.map(() => result);
+    for (const [index, span] of spans.entries()) {
+      const rawResult = results[index];
+      const normalized = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+      if (normalized !== "ack") {
+        markSpanError(span, String(failureReasonFromHandlerResult(rawResult)));
+      }
+      endSpan(span);
+    }
+    return result;
+  } catch (error) {
+    for (const span of spans) {
+      endSpanWithError(span, error);
+    }
+    throw error;
+  }
+}
+
+async function handleWithConsumerSpan(handler: EventHandler, envelope: EventEnvelope, stream: string, consumerGroup: string): Promise<EventHandlerOutput> {
   const span = startConsumerSpan({
     stream,
     consumerGroup,
