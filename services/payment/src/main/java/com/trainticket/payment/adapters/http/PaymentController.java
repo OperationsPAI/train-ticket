@@ -40,16 +40,25 @@ public class PaymentController {
         return ResponseEntity.ok(PaymentHttpMapper.cancelResponse(service.cancelIntent(paymentIntentId, request.reason(), idempotencyKey, correlationId(httpRequest))));
     }
 
+    public ResponseEntity<?> capturePayment(String paymentIntentId, String idempotencyKey, HttpServletRequest httpRequest) {
+        return capturePayment(paymentIntentId, idempotencyKey, null, httpRequest);
+    }
+
     @PostMapping("/payment-intents/{paymentIntentId}/capture")
-    public ResponseEntity<?> capturePayment(@PathVariable String paymentIntentId, @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, HttpServletRequest httpRequest) {
-        return ResponseEntity.ok(PaymentHttpMapper.captureResponse(service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest))));
+    public ResponseEntity<?> capturePayment(@PathVariable String paymentIntentId, @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CapturePaymentRequest request, HttpServletRequest httpRequest) {
+        ChannelRefJson channelRef = request == null ? null : request.channelRef();
+        validateOptionalChannelRef(channelRef, false);
+        PaymentIntent intent = service.captureIntent(paymentIntentId, idempotencyKey, correlationId(httpRequest), PaymentHttpMapper.toChannelRef(channelRef));
+        return ResponseEntity.status(intent.channelRef() != null && intent.status().name().equals("CREATED") ? 202 : 200)
+            .body(PaymentHttpMapper.captureResponse(intent, channelRef));
     }
 
     @PostMapping("/refunds")
     public ResponseEntity<?> requestRefund(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) RequestRefundRequest request, HttpServletRequest httpRequest) {
         validateRefund(request);
-        Refund refund = service.requestRefund(request.paymentIntentId(), PaymentHttpMapper.toMoney(request.amount()), request.reason(), request.businessCaseRef(), idempotencyKey, correlationId(httpRequest));
-        return ResponseEntity.created(URI.create("/api/v1/refunds/" + refund.refundId())).body(PaymentHttpMapper.refundResponse(refund));
+        validateOptionalChannelRef(request.channelRef(), true);
+        Refund refund = service.requestRefund(request.paymentIntentId(), PaymentHttpMapper.toMoney(request.amount()), request.reason(), request.businessCaseRef(), idempotencyKey, correlationId(httpRequest), PaymentHttpMapper.toChannelRef(request.channelRef()));
+        return ResponseEntity.created(URI.create("/api/v1/refunds/" + refund.refundId())).body(PaymentHttpMapper.refundResponse(refund, request.channelRef()));
     }
 
     @GetMapping("/payment-intents/{paymentIntentId}")
@@ -70,6 +79,20 @@ public class PaymentController {
         requireText(request.purpose(), "purpose");
         PaymentHttpMapper.toMoney(request.amount());
         requireText(request.payerRef(), "payerRef");
+    }
+
+    private static void validateOptionalChannelRef(ChannelRefJson channelRef, boolean requireOriginalRoute) {
+        if (channelRef == null) {
+            return;
+        }
+        requireText(channelRef.channel(), "channelRef.channel");
+        if (!"ALIPAY_SIM".equals(channelRef.channel()) && !"WECHAT_SIM".equals(channelRef.channel()) && !"UNIONPAY_SIM".equals(channelRef.channel())) {
+            throw new ValidationException("channelRef.channel is unsupported");
+        }
+        if (requireOriginalRoute) {
+            requireText(channelRef.channelOrderId(), "channelRef.channelOrderId");
+            requireText(channelRef.channelTransactionId(), "channelRef.channelTransactionId");
+        }
     }
 
     private static void validateRefund(RequestRefundRequest request) {

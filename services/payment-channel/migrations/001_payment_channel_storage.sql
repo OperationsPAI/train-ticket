@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS channel_order_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS channel_refund_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS channel_statement_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS channel_discrepancy_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_channel_order_channel ON channel_order_snapshots ((data->>'channel'));
+CREATE INDEX IF NOT EXISTS idx_channel_refund_order ON channel_refund_snapshots ((data->>'channelOrderId'));
+CREATE INDEX IF NOT EXISTS idx_channel_statement_filters ON channel_statement_snapshots ((data->>'channel'), (data->>'statementDate'), (data->>'currency'), (data->>'status'));
+CREATE INDEX IF NOT EXISTS idx_channel_discrepancy_filters ON channel_discrepancy_snapshots ((data->>'channelStatementId'), (data->>'status'), (data->>'differenceType'));
+CREATE TABLE IF NOT EXISTS outbox (seq bigserial PRIMARY KEY, event_id text NOT NULL UNIQUE, stream text NOT NULL, envelope jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), published_at timestamptz);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished_seq ON outbox (seq) WHERE published_at IS NULL;
+CREATE TABLE IF NOT EXISTS processed_events (event_id text PRIMARY KEY, stream text, processed_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS idempotency_records (key text PRIMARY KEY, request_hash text NOT NULL, status_code int NOT NULL, response_body jsonb, created_at timestamptz NOT NULL DEFAULT now());

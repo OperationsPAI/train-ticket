@@ -20,4 +20,12 @@ public interface FinanceSettlementProjectionRepository {
     List<BenefitCostEntry> findBenefitCostEntries(String accountId, int limit, int offset);
 
     long countBenefitCostEntries(String accountId);
+
+    default void saveChannelStatement(ChannelStatementProjection statement) {}
+
+    default Optional<ChannelStatementProjection> findChannelStatement(String channelStatementId) { return Optional.empty(); }
+
+    default List<ChannelStatementProjection> findChannelStatements(String channel, String statementDate, int limit, int offset) { return List.of(); }
+
+    default long countChannelStatements(String channel, String statementDate) { return 0; }
 }

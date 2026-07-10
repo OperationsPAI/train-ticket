@@ -1,6 +1,7 @@
 package com.trainticket.financesettlement.adapters.http;
 
 import com.trainticket.financesettlement.application.BenefitCostEntry;
+import com.trainticket.financesettlement.application.ChannelStatementProjection;
 import com.trainticket.financesettlement.application.DomainEventEnvelopeMapper;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService.Page;
@@ -49,6 +50,22 @@ public class FinanceSettlementController {
         return InvoiceResponse.from(service.generateInvoice(request.orderId(), (String) httpRequest.getAttribute("X-Correlation-Id")));
     }
 
+    @GetMapping("/api/v1/channel-statements")
+    public PagedResponse<ChannelStatementResponse> listChannelStatements(
+        @RequestParam(required = false) String channel,
+        @RequestParam(required = false) String statementDate,
+        @RequestParam(defaultValue = "20") int limit,
+        @RequestParam(defaultValue = "0") int offset
+    ) {
+        var page = service.listChannelStatements(channel, statementDate, limit, offset);
+        return new PagedResponse<>(page.items().stream().map(ChannelStatementResponse::from).toList(), page.total(), page.limit(), page.offset());
+    }
+
+    @GetMapping("/api/v1/channel-statements/{channelStatementId}")
+    public ChannelStatementResponse getChannelStatement(@PathVariable String channelStatementId) {
+        return ChannelStatementResponse.from(service.getChannelStatement(channelStatementId));
+    }
+
     @GetMapping("/api/v1/benefit-costs")
     public PagedResponse<BenefitCostResponse> listBenefitCosts(
         @RequestParam(required = false) String accountId,
@@ -67,6 +84,42 @@ public class FinanceSettlementController {
     ) {
         Page<ReconciliationCase> page = service.listReconciliationCases(orderId, limit, offset);
         return new PagedResponse<>(page.items().stream().map(ReconciliationCaseResponse::from).toList(), page.total(), page.limit(), page.offset());
+    }
+
+    public record ChannelStatementResponse(
+        String channelStatementId,
+        String channel,
+        String statementDate,
+        String currency,
+        String seedVersion,
+        int lineCount,
+        Map<String, Object> grossPaymentAmount,
+        Map<String, Object> grossRefundAmount,
+        Map<String, Object> feeAmount,
+        String statementHash,
+        String status,
+        Instant generatedAt,
+        Instant frozenAt,
+        String sourceEventId
+    ) {
+        static ChannelStatementResponse from(ChannelStatementProjection statement) {
+            return new ChannelStatementResponse(
+                statement.channelStatementId(),
+                statement.channel(),
+                statement.statementDate(),
+                statement.currency(),
+                statement.seedVersion(),
+                statement.lineCount(),
+                DomainEventEnvelopeMapper.moneyPayload(statement.grossPaymentAmount()),
+                DomainEventEnvelopeMapper.moneyPayload(statement.grossRefundAmount()),
+                DomainEventEnvelopeMapper.moneyPayload(statement.feeAmount()),
+                statement.statementHash(),
+                statement.status(),
+                statement.generatedAt(),
+                statement.frozenAt(),
+                statement.sourceEventId()
+            );
+        }
     }
 
     public record RevenueRecognitionResponse(

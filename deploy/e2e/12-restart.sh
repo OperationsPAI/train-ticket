@@ -10,7 +10,7 @@
 cd "$(dirname "$0")" && . ./lib.sh
 
 PGUSER=trainticket
-SUITE="01-seed.sh 02-purchase.sh 03-refund.sh 04-change.sh 05-fulfillment.sh 06-risk.sh 07-fare-rules.sh 08-notify-support.sh 09-manual-action.sh 10-account-gate.sh 11-legacy-acl.sh 14-waitlist.sh 15-wallet.sh 16-dispatch.sh 17-disruption.sh 18-ancillary.sh 19-transfer.sh 20-seat.sh 21-identity.sh"
+SUITE="01-seed.sh 02-purchase.sh 03-refund.sh 04-change.sh 05-fulfillment.sh 06-risk.sh 07-fare-rules.sh 08-notify-support.sh 09-manual-action.sh 10-account-gate.sh 11-legacy-acl.sh 14-waitlist.sh 15-wallet.sh 16-dispatch.sh 17-disruption.sh 18-ancillary.sh 19-transfer.sh 20-seat.sh 21-identity.sh 22-paychan.sh 23-invoicing.sh"
 
 pg_pod() { k get pods -l app.kubernetes.io/name=postgres --no-headers -o custom-columns=:metadata.name 2>/dev/null | head -1; }
 pg() { local db=$1 sql=$2; k exec "$PGPOD" -- psql -U "$PGUSER" -d "$db" -Atc "$sql" 2>/dev/null; }

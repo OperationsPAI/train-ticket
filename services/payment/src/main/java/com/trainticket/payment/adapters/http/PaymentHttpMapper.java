@@ -1,5 +1,6 @@
 package com.trainticket.payment.adapters.http;
 
+import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentEvent;
 import com.trainticket.payment.domain.PaymentIntent;
@@ -28,6 +29,14 @@ final class PaymentHttpMapper {
         return new MoneyJson(money.currency().getCurrencyCode(), money.toMinorUnits());
     }
 
+    static ChannelRef toChannelRef(ChannelRefJson json) {
+        return json == null ? null : new ChannelRef(json.channel(), json.channelOrderId(), json.channelRefundId(), json.channelTransactionId(), json.channelRefundTransactionId(), json.channelStatementId(), json.faultSeedRef());
+    }
+
+    static ChannelRefJson fromChannelRef(ChannelRef ref) {
+        return ref == null ? null : new ChannelRefJson(ref.channel(), ref.channelOrderId(), ref.channelRefundId(), ref.channelTransactionId(), ref.channelRefundTransactionId(), ref.channelStatementId(), ref.faultSeedRef());
+    }
+
     static PaymentIntentResponse intentResponse(PaymentIntent intent) {
         return new PaymentIntentResponse(intent.paymentIntentId(), intent.businessRef(), money(intent.amount()), intent.status().name(), createdAt(intent));
     }
@@ -44,7 +53,8 @@ final class PaymentHttpMapper {
             intent.expiresAt(),
             money(intent.authorizedAmount()),
             money(intent.capturedAmount()),
-            money(intent.refundedAmount())
+            money(intent.refundedAmount()),
+            fromChannelRef(intent.channelRef())
         );
     }
 
@@ -52,16 +62,26 @@ final class PaymentHttpMapper {
         return new CancelPaymentIntentResponse(intent.paymentIntentId(), intent.status().name(), lastEventAt(intent));
     }
 
-    static CapturePaymentResponse captureResponse(PaymentIntent intent) {
-        return new CapturePaymentResponse(intent.paymentIntentId(), intent.status().name(), money(intent.capturedAmount()), lastChannelTransactionId(intent));
+    static CapturePaymentResponse captureResponse(PaymentIntent intent, ChannelRefJson channelRef) {
+        String txn = lastChannelTransactionId(intent);
+        ChannelRefJson ref = fromChannelRef(intent.channelRef());
+        if (ref == null && channelRef != null) {
+            ref = new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), channelRef.channelRefundId(), txn, channelRef.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        }
+        String status = intent.channelRef() != null && intent.status().name().equals("CREATED") ? "PENDING_CHANNEL" : intent.status().name();
+        return new CapturePaymentResponse(intent.paymentIntentId(), status, money(intent.capturedAmount()), txn, ref);
     }
 
-    static RefundResponse refundResponse(Refund refund) {
-        return new RefundResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name());
+    static RefundResponse refundResponse(Refund refund, ChannelRefJson channelRef) {
+        ChannelRefJson ref = fromChannelRef(refund.channelRef());
+        if (ref == null && channelRef != null) {
+            ref = new ChannelRefJson(channelRef.channel(), channelRef.channelOrderId(), refund.refundId(), channelRef.channelTransactionId(), refund.channelRefundTransactionId(), channelRef.channelStatementId(), channelRef.faultSeedRef());
+        }
+        return new RefundResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), ref);
     }
 
     static RefundDetailsResponse refundDetails(Refund refund) {
-        return new RefundDetailsResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), refund.reasonCode(), refund.sourceCaseRef(), refund.channelRefundTransactionId());
+        return new RefundDetailsResponse(refund.refundId(), refund.paymentIntentId(), money(refund.amount()), refund.status().name(), refund.reasonCode(), refund.sourceCaseRef(), refund.channelRefundTransactionId(), fromChannelRef(refund.channelRef()));
     }
 
     private static Instant createdAt(PaymentIntent intent) {
