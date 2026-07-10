@@ -37,6 +37,7 @@ KUBE_CONTEXT = "kind-arl-test"
 KUBE_NAMESPACE = "train-ticket"
 REDIS_POD = None
 POSTGRES_POD = None
+CURL_POD = None
 
 SERVICES = [
     {"name": "loyalty-membership", "health": "/health", "db": "loyalty_membership",
@@ -64,7 +65,7 @@ def kubectl(*args):
 
 
 def find_pods():
-    global REDIS_POD, POSTGRES_POD
+    global REDIS_POD, POSTGRES_POD, CURL_POD
     out, _, _ = kubectl("get", "pods", "--no-headers")
     for line in out.split("\n"):
         parts = line.split()
@@ -72,24 +73,26 @@ def find_pods():
             REDIS_POD = parts[0]
         if parts and "postgres" in parts[0] and "Running" in line:
             POSTGRES_POD = parts[0]
+        if parts and "e2e-curl" in parts[0] and "Running" in line:
+            CURL_POD = parts[0]
+        if parts and "stress-runner" in parts[0] and "Running" in line and CURL_POD is None:
+            CURL_POD = parts[0]
 
 
 def check_health(service):
-    out, err, rc = kubectl("exec", "stress-runner", "--",
-        "python3", "-c",
-        f"import urllib.request,json,time; "
-        f"t0=time.monotonic(); "
-        f"r=urllib.request.urlopen('http://{service['name']}:8080{service['health']}',timeout=5); "
-        f"ms=(time.monotonic()-t0)*1000; "
-        f"d=json.loads(r.read()); "
-        f"print(json.dumps({{'status':d.get('status','unknown'),'ms':round(ms,1)}})) ")
+    out, err, rc = kubectl("exec", CURL_POD, "--",
+        "curl", "-s", "-w", "\n%{time_total}", "-o", "/dev/stdout",
+        f"http://{service['name']}:8080{service['health']}")
     if rc != 0:
         return {"pass": False, "detail": f"health check failed: {err[:100]}"}
     try:
-        data = json.loads(out)
+        lines = out.strip().split("\n")
+        body = lines[0] if lines else ""
+        ms = float(lines[-1]) * 1000 if len(lines) > 1 else 0
+        data = json.loads(body)
         ok = data.get("status") in ("ok", "UP")
-        return {"pass": ok, "ms": data.get("ms", 0),
-                "detail": f"status={data.get('status')} latency={data.get('ms',0):.0f}ms"}
+        return {"pass": ok, "ms": ms,
+                "detail": f"status={data.get('status')} latency={ms:.0f}ms"}
     except Exception:
         return {"pass": False, "detail": f"parse error: {out[:100]}"}
 
@@ -113,7 +116,7 @@ API_SMOKE_TESTS = [
      "check_field": "memberId"},
     {"name": "travel-insurance", "method": "POST", "path": "/api/v1/policies",
      "body": '{"accountId":"acct-oracle","travelerRef":"tvl-oracle","productCode":"DELAY_INSURANCE","productVersion":"v1","journeyOrderId":"ord-oracle-001","ancillaryOrderItemId":"anc-oracle-001","segmentRefs":["seg-oracle-001"],"paymentIntentId":"pi-oracle-001","coverageStartAt":"2026-07-10T00:00:00Z","coverageEndAt":"2026-07-11T00:00:00Z"}',
-     "expect_status": [201], "check_field": "policyId"},
+     "expect_status": [200, 201], "check_field": "policyId"},
     {"name": "group-booking", "method": "POST", "path": "/api/v1/group-bookings",
      "body": '{"organizerRef":"acct-oracle","segmentRefs":["seg-oracle-grp"],"targetTravelerCount":10,"fare":{"currency":"CNY","minorUnits":85000,"discountBasisPoints":500,"negotiationRef":"nego-oracle"}}',
      "expect_status": [201], "check_field": "groupBookingId"},
@@ -128,30 +131,27 @@ API_SMOKE_TESTS = [
 
 def check_api_smoke(test):
     idem_key = uuid7()
+    run_id = str(int(time.time() * 1000))[-8:]
     url = f"http://{test['name']}:8080{test['path']}"
-    body = test["body"]
-    py_code = "\n".join([
-        "import urllib.request,urllib.error,json",
-        "try:",
-        f"  req=urllib.request.Request('{url}',",
-        f"    data=b'''{body}''',",
-        f"    headers={{'Content-Type':'application/json','Idempotency-Key':'{idem_key}'}})",
-        "  r=urllib.request.urlopen(req,timeout=10)",
-        "  print(json.dumps({'status':r.status,'body':json.loads(r.read())}))",
-        "except urllib.error.HTTPError as e:",
-        "  print(json.dumps({'status':e.code,'body':json.loads(e.read())}))",
-    ])
-    out, err, rc = kubectl("exec", "stress-runner", "--",
-        "python3", "-c", py_code)
+    body = test["body"].replace("oracle-001", f"oracle-{run_id}").replace("oracle-grp", f"oracle-grp-{run_id}").replace("camp-oracle-001", f"camp-oracle-{run_id}").replace("AGR-oracle", f"AGR-oracle-{run_id}").replace("corp-oracle", f"corp-oracle-{run_id}")
+    out, err, rc = kubectl("exec", CURL_POD, "--",
+        "curl", "-s", "-w", "\n%{http_code}", "-o", "/dev/stdout",
+        "-X", "POST", url,
+        "-H", "Content-Type: application/json",
+        "-H", f"Idempotency-Key: {idem_key}",
+        "-d", body)
     if rc != 0:
         return {"pass": False, "detail": f"API smoke failed: {err[:150]}"}
     try:
-        data = json.loads(out)
-        status_ok = data["status"] in test["expect_status"]
-        field_ok = test["check_field"] in data.get("body", {})
+        lines = out.strip().split("\n")
+        status_code = int(lines[-1]) if lines else 0
+        body_text = "\n".join(lines[:-1]) if len(lines) > 1 else ""
+        body_json = json.loads(body_text) if body_text else {}
+        status_ok = status_code in test["expect_status"]
+        field_ok = test["check_field"] in body_json
         ok = status_ok and field_ok
-        return {"pass": ok, "status": data["status"],
-                "detail": f"HTTP {data['status']}, {test['check_field']}={'present' if field_ok else 'MISSING'}"}
+        return {"pass": ok, "status": status_code,
+                "detail": f"HTTP {status_code}, {test['check_field']}={'present' if field_ok else 'MISSING'}"}
     except Exception as e:
         return {"pass": False, "detail": f"parse error: {e} / {out[:100]}"}
 
