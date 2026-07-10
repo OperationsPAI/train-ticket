@@ -18,7 +18,21 @@ export function databaseUrl() {
 export function createPostgresPool(config = databaseUrl()) {
     const require = createRequire(import.meta.url);
     const pg = require("pg");
-    return new pg.Pool(typeof config === "string" ? { connectionString: config } : config);
+    const base = typeof config === "string" ? { connectionString: config } : config;
+    const maxPool = parseInt(process.env.PG_MAX_POOL_SIZE || "", 10);
+    const pool = new pg.Pool({
+        ...base,
+        max: maxPool > 0 ? maxPool : base.max ?? 10,
+        idleTimeoutMillis: base.idleTimeoutMillis ?? 300_000,
+        connectionTimeoutMillis: base.connectionTimeoutMillis ?? 5_000,
+    });
+    pool.on("error", (err) => {
+        console.error({ name: "pg.Pool", message: `background connection error: ${err.message}` });
+    });
+    pool.on("connect", () => {
+        console.log({ name: "pg.Pool", message: "new connection established" });
+    });
+    return pool;
 }
 export async function withTransaction(pool, operation) {
     const client = await pool.connect();
@@ -212,10 +226,25 @@ export class ProcessedEventsGuard {
         this.db = db;
     }
     async tryStart(eventId, stream) {
+        const started = await this.tryStartMany([{ eventId, stream }]);
+        return started.includes(eventId);
+    }
+    async tryStartMany(events) {
+        if (events.length === 0) {
+            return [];
+        }
+        const values = [];
+        const parameters = [];
+        for (const [index, event] of events.entries()) {
+            parameters.push(event.eventId, event.stream ?? null);
+            const first = index * 2 + 1;
+            values.push(`($${first}, $${first + 1})`);
+        }
         const result = await this.db.query(`INSERT INTO processed_events (event_id, stream)
-       VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`, [eventId, stream ?? null]);
-        return (result.rowCount ?? 0) > 0;
+       VALUES ${values.join(", ")}
+       ON CONFLICT DO NOTHING
+       RETURNING event_id`, parameters);
+        return result.rows.map((row) => row.event_id);
     }
     async runOnce(eventId, stream, handler) {
         if (!await this.tryStart(eventId, stream)) {

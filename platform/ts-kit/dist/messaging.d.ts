@@ -32,7 +32,12 @@ export type EventHandlerResult = Readonly<{
 }>;
 export type HandlerResult = EventHandlerResult;
 export type StringHandlerResult = "ack" | "retry" | "dlq";
-export type EventHandler = (envelope: EventEnvelope) => Promise<any> | any;
+export type EventHandlerOutput = EventHandlerResult | StringHandlerResult | undefined;
+export type EventBatchHandlerOutput = EventHandlerOutput | readonly EventHandlerOutput[];
+export type EventBatchHandler = (envelopes: readonly EventEnvelope[]) => Promise<EventBatchHandlerOutput> | EventBatchHandlerOutput;
+export type EventHandler = ((envelope: EventEnvelope) => Promise<any> | any) & {
+    handleBatch?: EventBatchHandler;
+};
 export interface EventPublisher {
     publish(envelope: EventEnvelope): Promise<void>;
 }
@@ -127,7 +132,10 @@ export declare class RedisEventSubscriber implements EventSubscriber {
     private poll;
     private recover;
     private processMessages;
+    private processEntries;
+    private parseBatchEntry;
     private processEntry;
+    private finishEntry;
     private claimAndProcess;
     private deliveryCounts;
     private deadLetterAndAck;

@@ -278,17 +278,37 @@ export class OutboxRelay {
   }
 }
 
+export type ProcessedEventInput = Readonly<{ eventId: string; stream?: string }>;
+
 export class ProcessedEventsGuard {
   constructor(private readonly db: Database) {}
 
   async tryStart(eventId: string, stream?: string): Promise<boolean> {
+    const started = await this.tryStartMany([{ eventId, stream }]);
+    return started.includes(eventId);
+  }
+
+  async tryStartMany(events: readonly ProcessedEventInput[]): Promise<string[]> {
+    if (events.length === 0) {
+      return [];
+    }
+
+    const values: string[] = [];
+    const parameters: unknown[] = [];
+    for (const [index, event] of events.entries()) {
+      parameters.push(event.eventId, event.stream ?? null);
+      const first = index * 2 + 1;
+      values.push(`($${first}, $${first + 1})`);
+    }
+
     const result = await this.db.query(
       `INSERT INTO processed_events (event_id, stream)
-       VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`,
-      [eventId, stream ?? null],
-    );
-    return (result.rowCount ?? 0) > 0;
+       VALUES ${values.join(", ")}
+       ON CONFLICT DO NOTHING
+       RETURNING event_id`,
+      parameters,
+    ) as QueryResult<{ event_id: string }>;
+    return result.rows.map((row) => row.event_id);
   }
 
   async runOnce<T>(eventId: string, stream: string | undefined, handler: () => Promise<T>): Promise<T | undefined> {
