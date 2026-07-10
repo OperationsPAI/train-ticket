@@ -1120,27 +1120,44 @@ class CustomerSim:
     # -- new-service journeys ------------------------------------------------
 
     async def journey_loyalty(self) -> str:
-        """Check membership tier for an existing account."""
+        """Enroll (idempotent) then read membership tier."""
         entry = await self.login_or_register()
-        _, resp = await self.api.request(
-            "GET", "loyalty-membership",
-            f"/members/{entry['account_id']}",
+        aid = entry["account_id"]
+        code, member = await self.api.request(
+            "POST", "loyalty-membership", "/members/enroll",
+            {"accountId": aid},
+            ok=(200, 201), step="loyalty-enroll")
+        member_id = member.get("memberId") if isinstance(member, dict) else None
+        if not member_id:
+            return "loyalty_enroll_failed"
+        _, details = await self.api.request(
+            "GET", "loyalty-membership", f"/members/{member_id}",
             ok=(200, 404), step="loyalty-get-member")
-        if resp and isinstance(resp, dict) and resp.get("memberId"):
+        if details and isinstance(details, dict) and details.get("tier"):
             return "loyalty_checked"
-        return "loyalty_not_enrolled"
+        return "loyalty_enrolled"
 
     async def journey_insurance(self) -> str:
-        """Request a travel insurance policy."""
+        """Issue a travel insurance policy with full required fields."""
         entry = await self.login_or_register()
+        tvl = await self.obtain_traveler(entry)
+        now_dt = datetime.now(timezone.utc)
         _, policy = await self.api.request(
             "POST", "travel-insurance", "/api/v1/policies",
             {"accountId": entry["account_id"],
-             "productCode": "TRAVEL_DELAY",
-             "coverageAmount": {"currency": "CNY", "minorUnits": 50000},
-             "journeyOrderRef": f"ord-{uuid7()}"},
-            ok=(200, 201, 400, 422), step="insurance-issue-policy")
-        return "insurance_policy_requested"
+             "travelerRef": tvl,
+             "productCode": "DELAY_INSURANCE",
+             "productVersion": "v1",
+             "journeyOrderId": f"ord-{uuid7()}",
+             "ancillaryOrderItemId": f"anc-{uuid7()[:8]}",
+             "segmentRefs": [f"seg-ins-{uuid7()[:8]}"],
+             "paymentIntentId": f"pi-{uuid7()[:8]}",
+             "coverageStartAt": now_dt.isoformat(),
+             "coverageEndAt": (now_dt + timedelta(days=1)).isoformat()},
+            ok=(200, 201), step="insurance-issue-policy")
+        if isinstance(policy, dict) and policy.get("policyId"):
+            return "insurance_policy_created"
+        return "insurance_policy_failed"
 
     async def journey_group_booking(self) -> str:
         """Create a group booking for 10+ travelers."""
@@ -1160,31 +1177,48 @@ class CustomerSim:
         return "group_failed"
 
     async def journey_corporate(self) -> str:
-        """Create a corporate travel agreement."""
+        """Create a corporate travel agreement with full schema."""
         entry = await self.login_or_register()
+        now_dt = datetime.now(timezone.utc)
         _, agreement = await self.api.request(
             "POST", "corporate-travel", "/api/v1/agreements",
-            {"corporateName": f"Corp-{uuid7()[:8]}",
-             "adminAccountId": entry["account_id"],
-             "billingCurrency": "CNY",
-             "contactEmail": "corp@example.com"},
-            ok=(200, 201, 400, 422), step="corporate-create")
-        return "corporate_agreement_created"
+            {"corporateId": f"corp-{uuid7()[:8]}",
+             "agreementCode": f"AGR-{uuid7()[:8]}",
+             "legalName": f"Corp-{uuid7()[:8]} Ltd.",
+             "effectiveWindow": {
+                 "startsAt": now_dt.isoformat(),
+                 "endsAt": (now_dt + timedelta(days=365)).isoformat()},
+             "priceRef": {
+                 "fareRuleRefs": [],
+                 "ruleSetId": f"rs-{uuid7()[:8]}",
+                 "ruleSetVersion": "v1"},
+             "monthlyCreditLimit": {"currency": "CNY", "minorUnits": 5000000},
+             "billingCalendar": {
+                 "billingPeriod": "MONTHLY",
+                 "cutoffAt": (now_dt + timedelta(days=30)).isoformat(),
+                 "dueAt": (now_dt + timedelta(days=45)).isoformat()},
+             "contact": {"email": "corp@example.com", "phone": "+86-10-12345678"},
+             "activate": True},
+            ok=(200, 201), step="corporate-create")
+        if isinstance(agreement, dict) and agreement.get("agreementId"):
+            return "corporate_agreement_created"
+        return "corporate_agreement_failed"
 
     async def journey_campaign(self) -> str:
-        """Draft a marketing campaign."""
-        window_end = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        """Draft a marketing campaign with required externalKey."""
+        ext_key = f"camp-{uuid7()[:8]}"
+        now_dt = datetime.now(timezone.utc)
+        window_end = (now_dt + timedelta(days=30)).isoformat()
         _, campaign = await self.api.request(
             "POST", "marketing-campaign", "/api/v1/campaigns",
-            {"name": f"Campaign-{uuid7()[:8]}",
-             "description": "Loadgen test campaign",
-             "budget": {"currency": "CNY", "minorUnits": 1000000},
-             "window": {"validFrom": now_iso(), "validUntil": window_end}},
-            ok=(200, 201, 400, 422), step="campaign-draft")
-        campaign_id = campaign.get("campaignId") or campaign.get("id")
+            {"externalKey": ext_key,
+             "name": f"Campaign-{uuid7()[:8]}",
+             "window": {"validFrom": now_dt.isoformat(), "validUntil": window_end}},
+            ok=(200, 201), step="campaign-draft")
+        campaign_id = campaign.get("campaignId") or campaign.get("id") if isinstance(campaign, dict) else None
         if campaign_id:
             return "campaign_drafted"
-        return "campaign_submitted"
+        return "campaign_draft_failed"
 
     # -- long-tail read probes ----------------------------------------------
 

@@ -16,6 +16,22 @@ import json
 import subprocess
 import sys
 import time
+import uuid
+import struct
+
+
+def uuid7() -> str:
+    ms = int(time.time() * 1000)
+    rand_bytes = bytearray(10)
+    rand_bytes[:] = struct.pack(">Q", int.from_bytes(uuid.uuid4().bytes[:8], "big"))[:8] + uuid.uuid4().bytes[8:10]
+    b = struct.pack(">Q", ms)[2:8] + bytes(rand_bytes[:4])
+    b = bytearray(b)
+    rest = bytearray(rand_bytes[4:])
+    hi = int.from_bytes(b[:8], "big")
+    hi = (hi & ~(0xF << 12)) | (0x7 << 12)
+    lo = int.from_bytes(rest[:6].rjust(8, b'\x00'), "big")
+    lo = (lo & ~(0x3 << 62)) | (0x2 << 62)
+    return f"{hi >> 32:08x}-{(hi >> 16) & 0xFFFF:04x}-{hi & 0xFFFF:04x}-{(lo >> 48) & 0xFFFF:04x}-{lo & 0xFFFFFFFFFFFF:012x}"
 
 KUBE_CONTEXT = "kind-arl-test"
 KUBE_NAMESPACE = "train-ticket"
@@ -91,6 +107,55 @@ def check_db(service):
     return {"pass": True, "detail": f"all tables present in {db}"}
 
 
+API_SMOKE_TESTS = [
+    {"name": "loyalty-membership", "method": "POST", "path": "/members/enroll",
+     "body": '{"accountId":"oracle-smoke-001"}', "expect_status": [200, 201],
+     "check_field": "memberId"},
+    {"name": "travel-insurance", "method": "POST", "path": "/api/v1/policies",
+     "body": '{"accountId":"acct-oracle","travelerRef":"tvl-oracle","productCode":"DELAY_INSURANCE","productVersion":"v1","journeyOrderId":"ord-oracle-001","ancillaryOrderItemId":"anc-oracle-001","segmentRefs":["seg-oracle-001"],"paymentIntentId":"pi-oracle-001","coverageStartAt":"2026-07-10T00:00:00Z","coverageEndAt":"2026-07-11T00:00:00Z"}',
+     "expect_status": [201], "check_field": "policyId"},
+    {"name": "group-booking", "method": "POST", "path": "/api/v1/group-bookings",
+     "body": '{"organizerRef":"acct-oracle","segmentRefs":["seg-oracle-grp"],"targetTravelerCount":10,"fare":{"currency":"CNY","minorUnits":85000,"discountBasisPoints":500,"negotiationRef":"nego-oracle"}}',
+     "expect_status": [201], "check_field": "groupBookingId"},
+    {"name": "corporate-travel", "method": "POST", "path": "/api/v1/agreements",
+     "body": '{"corporateId":"corp-oracle","agreementCode":"AGR-oracle","legalName":"Oracle Corp Ltd.","effectiveWindow":{"startsAt":"2026-07-10T00:00:00Z","endsAt":"2027-07-10T00:00:00Z"},"priceRef":{"fareRuleRefs":[],"ruleSetId":"rs-oracle","ruleSetVersion":"v1"},"monthlyCreditLimit":{"currency":"CNY","minorUnits":5000000},"billingCalendar":{"billingPeriod":"MONTHLY","cutoffAt":"2026-08-10T00:00:00Z","dueAt":"2026-08-25T00:00:00Z"},"contact":{"email":"oracle@example.com"},"activate":true}',
+     "expect_status": [201], "check_field": "agreementId"},
+    {"name": "marketing-campaign", "method": "POST", "path": "/api/v1/campaigns",
+     "body": '{"externalKey":"camp-oracle-001","name":"Oracle Smoke Campaign","window":{"validFrom":"2026-07-10T00:00:00Z","validUntil":"2026-08-10T00:00:00Z"}}',
+     "expect_status": [201], "check_field": "campaignId"},
+]
+
+
+def check_api_smoke(test):
+    idem_key = uuid7()
+    url = f"http://{test['name']}:8080{test['path']}"
+    body = test["body"]
+    py_code = "\n".join([
+        "import urllib.request,urllib.error,json",
+        "try:",
+        f"  req=urllib.request.Request('{url}',",
+        f"    data=b'''{body}''',",
+        f"    headers={{'Content-Type':'application/json','Idempotency-Key':'{idem_key}'}})",
+        "  r=urllib.request.urlopen(req,timeout=10)",
+        "  print(json.dumps({'status':r.status,'body':json.loads(r.read())}))",
+        "except urllib.error.HTTPError as e:",
+        "  print(json.dumps({'status':e.code,'body':json.loads(e.read())}))",
+    ])
+    out, err, rc = kubectl("exec", "stress-runner", "--",
+        "python3", "-c", py_code)
+    if rc != 0:
+        return {"pass": False, "detail": f"API smoke failed: {err[:150]}"}
+    try:
+        data = json.loads(out)
+        status_ok = data["status"] in test["expect_status"]
+        field_ok = test["check_field"] in data.get("body", {})
+        ok = status_ok and field_ok
+        return {"pass": ok, "status": data["status"],
+                "detail": f"HTTP {data['status']}, {test['check_field']}={'present' if field_ok else 'MISSING'}"}
+    except Exception as e:
+        return {"pass": False, "detail": f"parse error: {e} / {out[:100]}"}
+
+
 def main():
     find_pods()
     results = {}
@@ -118,6 +183,19 @@ def main():
         status = "PASS" if d["pass"] else "FAIL"
         print(f"  db: {status} — {d['detail']}")
         if not d["pass"]:
+            all_pass = False
+
+    # API smoke tests
+    print(f"\n{'=' * 60}")
+    print("API Smoke Tests")
+    print("=" * 60)
+    for test in API_SMOKE_TESTS:
+        name = test["name"]
+        a = check_api_smoke(test)
+        results[f"{name}:api"] = a
+        status = "PASS" if a["pass"] else "FAIL"
+        print(f"  {name}: {status} — {a['detail']}")
+        if not a["pass"]:
             all_pass = False
 
     print(f"\n{'=' * 60}")
