@@ -1,11 +1,53 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { OptimisticConcurrencyConflict, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
+import { OptimisticConcurrencyConflict, OutboxRelay, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
 
 type QueryCall = Readonly<{ sql: string; params: unknown[] }>;
 
+class FakeOutboxPool {
+  public readonly calls: QueryCall[] = [];
+  private readonly rows = [
+    { seq: 1, stream: "events:order", envelope: { eventId: "evt-1", producer: "order" } },
+    { seq: 2, stream: "events:payment", envelope: { eventId: "evt-2", producer: "payment" } },
+  ];
 
+  async query(sql: string, params: unknown[]) {
+    this.calls.push({ sql, params });
+    if (sql.includes("SELECT seq, stream, envelope")) {
+      return { rows: this.rows, rowCount: this.rows.length };
+    }
+    if (sql.includes("UPDATE outbox SET published_at")) {
+      return { rows: [], rowCount: (params as unknown[]).length };
+    }
+    throw new Error(`Unexpected query ${sql}`);
+  }
+}
+
+class FakeRedisPipeline {
+  public readonly xadds: unknown[][] = [];
+  public execs = 0;
+
+  xadd(...args: unknown[]) {
+    this.xadds.push(args);
+    return this;
+  }
+
+  async exec() {
+    this.execs++;
+    return this.xadds.map(() => [null, "1-0"] as const);
+  }
+}
+
+class FakePipelineRedis {
+  public readonly pipelineInstance = new FakeRedisPipeline();
+  public pipelines = 0;
+
+  pipeline() {
+    this.pipelines++;
+    return this.pipelineInstance;
+  }
+}
 
 class FakeIdempotencyDb {
   private row: { request_hash: string; status_code: number; response_body: unknown } | undefined;
@@ -84,7 +126,6 @@ describe("SnapshotRepository", () => {
   });
 });
 
-
 describe("PostgresIdempotencyStore", () => {
   it("inserts atomically and returns the already visible record on conflict", async () => {
     const store = new PostgresIdempotencyStore(new FakeIdempotencyDb() as never);
@@ -97,5 +138,26 @@ describe("PostgresIdempotencyStore", () => {
 
     const reused = await store.set("key-1", { fingerprint: "hash-b", statusCode: 202, body: { ignored: true } });
     assert.deepEqual(reused, { fingerprint: "hash-a", statusCode: 201, body: { ok: true } });
+  });
+});
+
+describe("OutboxRelay", () => {
+  it("publishes a batch through one Redis pipeline and one outbox update", async () => {
+    const pool = new FakeOutboxPool();
+    const redis = new FakePipelineRedis();
+    const relay = new OutboxRelay(pool as never, redis as never, { batchSize: 100, streamMaxLen: 50_000 });
+
+    const count = await relay.runOnce();
+
+    assert.equal(count, 2);
+    assert.equal(redis.pipelines, 1);
+    assert.equal(redis.pipelineInstance.execs, 1);
+    assert.equal(redis.pipelineInstance.xadds.length, 2);
+    assert.deepEqual(redis.pipelineInstance.xadds[0].slice(0, 5), ["events:order", "MAXLEN", "~", "50000", "*"]);
+
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE outbox SET published_at"));
+    assert.ok(update);
+    assert.match(update.sql, /WHERE seq IN \(\$1, \$2\)/u);
+    assert.deepEqual(update.params, ["1", "2"]);
   });
 });

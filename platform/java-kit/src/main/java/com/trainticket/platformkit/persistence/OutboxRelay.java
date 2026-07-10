@@ -1,6 +1,7 @@
 package com.trainticket.platformkit.persistence;
 
 import com.trainticket.platformkit.messaging.RedisStreamOperations;
+import com.trainticket.platformkit.messaging.RedisStreamOperations.StreamMessage;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -51,11 +52,18 @@ public class OutboxRelay implements AutoCloseable {
             "SELECT seq, stream, envelope::text AS envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100",
             (rs, rowNum) -> new OutboxRow(rs.getLong("seq"), rs.getString("stream"), rs.getString("envelope"))
         );
-        for (OutboxRow row : rows) {
-            streams.publish(row.stream(), row.envelope());
-            dependencyReady = true;
-            jdbc.update("UPDATE outbox SET published_at = now() WHERE seq = ? AND published_at IS NULL", row.seq());
+        if (rows.isEmpty()) {
+            return 0;
         }
+
+        streams.publishBatch(rows.stream()
+            .map(row -> new StreamMessage(row.stream(), row.envelope()))
+            .toList());
+        dependencyReady = true;
+
+        String placeholders = String.join(", ", rows.stream().map(row -> "?").toList());
+        Object[] seqs = rows.stream().map(OutboxRow::seq).toArray();
+        jdbc.update("UPDATE outbox SET published_at = now() WHERE seq IN (" + placeholders + ") AND published_at IS NULL", seqs);
         return rows.size();
     }
 
