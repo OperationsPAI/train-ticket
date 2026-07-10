@@ -18,7 +18,8 @@ import javax.sql.DataSource;
  * service startup.
  */
 public final class LazyRedisOutboxRelayLifecycle implements AutoCloseable {
-    private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(250);
+    private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(
+        Long.parseLong(System.getenv().getOrDefault("OUTBOX_POLL_INTERVAL_MS", "50")));
     private static final String DEFAULT_REDIS_URL = "redis://localhost:6379";
 
     private final DataSource dataSource;

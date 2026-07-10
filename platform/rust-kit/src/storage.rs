@@ -322,7 +322,12 @@ pub struct OutboxRelayConfig {
 impl Default for OutboxRelayConfig {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_millis(250),
+            poll_interval: Duration::from_millis(
+                std::env::var("OUTBOX_POLL_INTERVAL_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(50),
+            ),
             batch_size: 100,
         }
     }
@@ -344,7 +349,7 @@ pub fn spawn_outbox_relay(pool: PgPool, redis_url: String) -> tokio::task::JoinH
 
 #[cfg(feature = "redis-impl")]
 pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: OutboxRelayConfig) {
-    let interval = config.poll_interval.min(Duration::from_millis(250));
+    let interval = config.poll_interval.min(Duration::from_millis(500));
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;

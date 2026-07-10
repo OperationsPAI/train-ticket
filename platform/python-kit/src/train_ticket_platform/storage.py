@@ -177,9 +177,11 @@ class OutboxAppender:
 class OutboxRelay:
     """Background Redis relay for transactional outbox rows."""
 
-    def __init__(self, pool: ConnectionPool, redis_client: Any | None = None, *, redis_url: str | None = None, poll_interval: float = 0.25) -> None:
+    def __init__(self, pool: ConnectionPool, redis_client: Any | None = None, *, redis_url: str | None = None, poll_interval: float | None = None) -> None:
         self._pool = pool
-        self._poll_interval = min(poll_interval, 0.25)
+        import os
+        default_ms = int(os.environ.get("OUTBOX_POLL_INTERVAL_MS", "50"))
+        self._poll_interval = min(poll_interval if poll_interval is not None else default_ms / 1000, 0.5)
         if redis_client is not None:
             self._redis = redis_client
         else:

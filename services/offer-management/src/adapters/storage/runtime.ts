@@ -41,7 +41,7 @@ export async function startOfferStorage(redisUrl = process.env.REDIS_URL ?? "red
   const redis = new Redis(redisUrl, { lazyConnect: true });
   await redis.connect();
   const relay = new OutboxRelay(pool, redis, {
-    pollIntervalMs: 250,
+    pollIntervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "50", 10),
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
