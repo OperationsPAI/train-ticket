@@ -55,6 +55,9 @@ class InMemoryCorporateTravelRepository:
     billing_periods: dict[str, BillingPeriod] = field(default_factory=dict)
     processed_event_ids: set[str] = field(default_factory=set)
     open_period_by_agreement: dict[tuple[str, str], str] = field(default_factory=dict)
+    order_confirmations: dict[str, EventEnvelope] = field(default_factory=dict)
+    payment_captures_by_order: dict[str, list[EventEnvelope]] = field(default_factory=dict)
+    billed_payment_event_ids: set[str] = field(default_factory=set)
 
     def save_agreement(self, agreement: CorporateAgreement) -> None:
         self.agreements[agreement.agreement_id] = agreement
@@ -84,6 +87,27 @@ class InMemoryCorporateTravelRepository:
             return False
         self.processed_event_ids.add(event_id)
         return True
+
+    def remember_order_confirmed(self, order_id: str, envelope: EventEnvelope) -> None:
+        self.order_confirmations[order_id] = envelope
+
+    def order_confirmed(self, order_id: str) -> bool:
+        return order_id in self.order_confirmations
+
+    def remember_payment_capture(self, order_id: str, envelope: EventEnvelope) -> None:
+        captures = self.payment_captures_by_order.setdefault(order_id, [])
+        if all(capture.eventId != envelope.eventId for capture in captures):
+            captures.append(envelope)
+
+    def unbilled_payment_captures(self, order_id: str) -> tuple[EventEnvelope, ...]:
+        return tuple(
+            capture
+            for capture in self.payment_captures_by_order.get(order_id, ())
+            if capture.eventId not in self.billed_payment_event_ids
+        )
+
+    def mark_payment_billed(self, event_id: str) -> None:
+        self.billed_payment_event_ids.add(event_id)
 
 
 @dataclass(slots=True)
@@ -185,6 +209,24 @@ class CorporateTravelService:
             return
         if not self.repository.try_mark_processed(envelope.eventId):
             return
+
+        order_id = order_id_from_event(envelope)
+        if order_id is None:
+            return
+
+        if envelope.eventType == "JourneyOrderConfirmed":
+            self.repository.remember_order_confirmed(order_id, envelope)
+        else:
+            self.repository.remember_payment_capture(order_id, envelope)
+
+        if not self.repository.order_confirmed(order_id):
+            return
+
+        for payment in self.repository.unbilled_payment_captures(order_id):
+            self._attach_captured_payment(payment)
+            self.repository.mark_payment_billed(payment.eventId)
+
+    def _attach_captured_payment(self, envelope: EventEnvelope) -> None:
         line = line_from_event(envelope)
         agreement = self.repository.get_agreement(str(envelope.payload["agreementId"]))
         billing_period = str(envelope.payload.get("billingPeriod") or agreement.billing_calendar.period)
@@ -228,15 +270,16 @@ class CorporateTravelService:
 
 
 def line_from_event(envelope: EventEnvelope) -> StatementLine:
+    if envelope.eventType != "PaymentCaptured":
+        raise ValueError("only PaymentCaptured events create corporate billing statement lines")
     payload = envelope.payload
-    amount = money_from_mapping(payload.get("amount") or payload.get("capturedAmount") or {})
-    order_id = _optional_text(payload.get("orderId"))
+    amount = money_from_mapping(payload["capturedAmount"])
+    order_id = order_id_from_event(envelope)
     payment_id = _optional_text(payload.get("paymentIntentId"))
-    source = StatementLineSource.JOURNEY_ORDER_CONFIRMED if envelope.eventType == "JourneyOrderConfirmed" else StatementLineSource.PAYMENT_CAPTURED
     source_ref = payment_id or order_id or envelope.eventId
     return StatementLine(
         line_id=deterministic_prefixed_id("line", envelope.eventId),
-        source_type=source,
+        source_type=StatementLineSource.PAYMENT_CAPTURED,
         source_business_ref=source_ref,
         order_id=order_id,
         payment_intent_id=payment_id,
@@ -245,6 +288,11 @@ def line_from_event(envelope: EventEnvelope) -> StatementLine:
         source_event_id=envelope.eventId,
         occurred_at=parse_rfc3339(envelope.occurredAt) if isinstance(envelope.occurredAt, str) else envelope.occurredAt,
     )
+
+
+def order_id_from_event(envelope: EventEnvelope) -> str | None:
+    payload = envelope.payload
+    return _optional_text(payload.get("orderId") or payload.get("businessRef"))
 
 
 def money_from_mapping(value: Mapping[str, Any]) -> Money:

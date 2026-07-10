@@ -30,7 +30,7 @@ def test_service_creates_active_agreement_and_publishes_activation() -> None:
     assert publisher.envelopes[1].payload["monthlyCreditLimit"] == {"currency": "USD", "minorUnits": 100000}
 
 
-def test_service_authorizes_and_closes_billing_period_from_events() -> None:
+def test_service_authorizes_and_closes_billing_period_after_order_and_payment_facts() -> None:
     publisher = InMemoryEventPublisher()
     service = CorporateTravelService(publisher=publisher)
     agreement = service.create_agreement(**agreement_payload()).agreement
@@ -49,11 +49,14 @@ def test_service_authorizes_and_closes_billing_period_from_events() -> None:
                 "agreementId": agreement.agreement_id,
                 "billingPeriod": "2026-01",
                 "orderId": "order-1",
-                "amount": {"currency": "USD", "minorUnits": 2500},
+                "monetarySummary": {"total": {"currency": "USD", "minorUnits": 2500}},
                 "authorizationSnapshotRef": auth.snapshot_ref(),
             },
         )
     )
+
+    assert service.repository.find_open_period(agreement.agreement_id, "2026-01") is None
+
     service.handle_event(
         EventEnvelope(
             eventId="evt-pay-1",
@@ -66,7 +69,7 @@ def test_service_authorizes_and_closes_billing_period_from_events() -> None:
             payload={
                 "agreementId": agreement.agreement_id,
                 "billingPeriod": "2026-01",
-                "orderId": "order-1",
+                "businessRef": "order-1",
                 "paymentIntentId": "pay-1",
                 "capturedAmount": {"currency": "USD", "minorUnits": 2500},
                 "authorizationSnapshotRef": auth.snapshot_ref(),
@@ -77,6 +80,58 @@ def test_service_authorizes_and_closes_billing_period_from_events() -> None:
     closed = service.close_billing_period(agreement_id=agreement.agreement_id, billing_period="2026-01").billing_period
 
     assert closed.status.value == "CLOSED"
-    assert closed.total_amount.minor_units == 5000
+    assert len(closed.lines) == 1
+    assert closed.lines[0].source_type.value == "PAYMENT_CAPTURED"
+    assert closed.total_amount.minor_units == 2500
     assert publisher.envelopes[-1].eventType == "CorporateBillingPeriodClosed"
     assert publisher.envelopes[-1].payload["statementHash"] == closed.statement_hash
+
+
+def test_service_waits_for_order_confirmation_before_billing_payment_capture() -> None:
+    service = CorporateTravelService()
+    agreement = service.create_agreement(**agreement_payload()).agreement
+
+    service.handle_event(
+        EventEnvelope(
+            eventId="evt-pay-early",
+            eventType="PaymentCaptured",
+            occurredAt="2026-01-10T00:05:00Z",
+            correlationId="corr-test",
+            causationId="cmd-test",
+            producer="payment",
+            schemaVersion=1,
+            payload={
+                "agreementId": agreement.agreement_id,
+                "billingPeriod": "2026-01",
+                "businessRef": "order-early",
+                "paymentIntentId": "pay-early",
+                "capturedAmount": {"currency": "USD", "minorUnits": 1200},
+            },
+        )
+    )
+
+    assert service.repository.find_open_period(agreement.agreement_id, "2026-01") is None
+
+    service.handle_event(
+        EventEnvelope(
+            eventId="evt-order-early",
+            eventType="JourneyOrderConfirmed",
+            occurredAt="2026-01-10T00:00:00Z",
+            correlationId="corr-test",
+            causationId="cmd-test",
+            producer="journey-order",
+            schemaVersion=1,
+            payload={
+                "agreementId": agreement.agreement_id,
+                "billingPeriod": "2026-01",
+                "orderId": "order-early",
+                "monetarySummary": {"total": {"currency": "USD", "minorUnits": 1200}},
+            },
+        )
+    )
+
+    period = service.repository.find_open_period(agreement.agreement_id, "2026-01")
+
+    assert period is not None
+    assert len(period.lines) == 1
+    assert period.total_amount.minor_units == 1200
