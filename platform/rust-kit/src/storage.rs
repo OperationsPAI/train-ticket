@@ -73,9 +73,14 @@ impl Storage {
         let options: PgConnectOptions = database_url
             .parse()
             .map_err(|error| StorageError::Config(format!("invalid DATABASE_URL: {error}")))?;
+        let max_conn: u32 = std::env::var("PG_MAX_POOL_SIZE")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(10);
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_conn)
             .acquire_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(300))
+            .max_lifetime(Duration::from_secs(600))
+            .test_before_acquire(true)
             .connect_with(options)
             .await?;
         Ok(Self {
