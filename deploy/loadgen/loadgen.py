@@ -1535,9 +1535,13 @@ class ScalperSim:
     # -- poll helpers (same as CustomerSim) -----------------------------------
 
     async def poll_order(self, order_id: str, want: set[str],
-                         give_up_on_block: bool = False) -> str | None:
+                         give_up_on_block: bool = False,
+                         timeout_seconds: float | None = None) -> str | None:
         status = None
-        for _ in range(self.poll_attempts):
+        deadline = time.time() + timeout_seconds if timeout_seconds is not None else None
+        attempts = 0
+        while attempts < self.poll_attempts or deadline is not None:
+            attempts += 1
             code, data = await self.request(
                 "GET", "journey-order",
                 f"/api/v1/journey-orders/{order_id}",
@@ -1548,8 +1552,78 @@ class ScalperSim:
                     return status
                 if give_up_on_block and status and "BLOCK" in status:
                     return status
+            if deadline is not None and time.time() >= deadline:
+                break
             await asyncio.sleep(self.poll_interval)
         return status
+
+    async def discover_booking_saga(self, order_id: str) -> str:
+        """Find the booking saga for an order without using staff workers."""
+        saga = None
+        for _ in range(self.poll_attempts):
+            try:
+                entries = await self.redis.xrevrange(
+                    "events:booking-orchestration", count=500)
+                for _mid, fields in entries:
+                    raw = fields.get("envelope", "")
+                    if "BookingSagaStarted" not in raw or order_id not in raw:
+                        continue
+                    try:
+                        env = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = env.get("payload", {})
+                    if env.get("eventType") == "BookingSagaStarted" and \
+                            payload.get("journeyOrderId") == order_id:
+                        saga = payload.get("sagaId")
+                        break
+                if saga:
+                    return saga
+            except Exception:
+                pass
+            await asyncio.sleep(self.poll_interval)
+        raise StepFailed("scalper-reservation", f"no BookingSagaStarted for {order_id}")
+
+    async def saga_failed_no_capacity(self, saga: str) -> bool:
+        for _ in range(self.poll_attempts):
+            code, data = await self.request(
+                "GET", "booking-orchestration",
+                f"/api/v1/internal/booking-sagas/{saga}",
+                ok=(), step="scalper-poll-reservation")
+            if code == 200:
+                text = json.dumps({
+                    "status": data.get("status"),
+                    "terminalReason": data.get("terminalReason"),
+                    "steps": data.get("steps", []),
+                })
+                if "NO_AVAILABLE_CAPACITY" in text:
+                    return True
+                if data.get("status") in {"WAITING_PAYMENT", "HELD", "TICKETING", "COMPLETED"}:
+                    return False
+            await asyncio.sleep(self.poll_interval)
+        return False
+
+    async def request_inline_reservation(self, order_id: str, segment: str,
+                                         traveler: str) -> tuple[str, str, bool]:
+        saga = await self.discover_booking_saga(order_id)
+        sb = f"sb-{uuid7()}"
+        await self.request(
+            "POST", "booking-orchestration",
+            f"/api/v1/internal/booking-sagas/{saga}/request-reservation",
+            {"segmentRef": segment, "travelerRef": traveler, "segmentBookingId": sb},
+            ok=(200,), step="scalper-reservation")
+        no_capacity = await self.saga_failed_no_capacity(saga)
+        return saga, sb, no_capacity
+
+    async def issue_inline_ticket(self, order_id: str, sb: str, segment: str,
+                                  traveler: str) -> str:
+        _, data = await self.request(
+            "POST", "entitlement-ticketing", "/api/v1/entitlements",
+            {"segmentBookingId": sb, "journeyOrderId": order_id,
+             "travelerRef": traveler, "segmentRef": segment,
+             "issuePurpose": "INITIAL"},
+            step="scalper-ticketing")
+        return data["entitlementId"]
 
     # -- core grab journey ----------------------------------------------------
 
@@ -1557,7 +1631,8 @@ class ScalperSim:
         """Single scalper grab attempt.
 
         login -> search hot segment -> quote -> offer -> order ->
-        payment -> capture -> ticketing.  Zero think time.
+        saga discovery -> reservation -> payment -> capture -> ticketing ->
+        confirm.  Zero think time and no staff workers.
         """
         self.stats.scalper_attempts += 1
         acct = self.next_account()
@@ -1601,7 +1676,7 @@ class ScalperSim:
 
         # offer (retry on 422 — quote event propagation delay)
         offer = None
-        for _so_try in range(5):
+        for _so_try in range(10):
             try:
                 _, offer = await self.request(
                     "POST", "offer-management", "/api/v1/offers",
@@ -1610,9 +1685,9 @@ class ScalperSim:
                     step="scalper-offer")
                 break
             except StepFailed as exc:
-                if "422" not in str(exc) or _so_try == 4:
+                if "422" not in str(exc) or _so_try == 9:
                     raise
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(min(1.0 * (1.5 ** _so_try), 5.0))
         await self.burst_pause()
 
         # order
@@ -1626,20 +1701,19 @@ class ScalperSim:
         order_id = order["orderId"]
         await self.burst_pause()
 
-        # risk gate
-        status = await self.poll_order(order_id, {"CONFIRMED"}, give_up_on_block=True)
+        # risk gate: do a single immediate check, then drive the chain inline.
+        status = await self.poll_order(
+            order_id, set(), give_up_on_block=True, timeout_seconds=0.0)
         if status is not None and "BLOCK" in status:
             self.stats.scalper_blocked += 1
             # try next account on risk block
             return "risk_blocked"
 
-        # reservation via staff queue
-        resv = {"kind": "reservation", "order": order_id,
-                "seg": found["segment"], "traveler": tvl}
-        self.reg.q_reservation.append(resv)
-        sb = await wait_for(resv, "sb", self.staff_wait)
+        # reservation inline: discover saga from Redis and request the hold.
+        saga, sb, no_capacity = await self.request_inline_reservation(
+            order_id, found["segment"], tvl)
 
-        if resv.get("no_capacity"):
+        if no_capacity:
             self.stats.scalper_exhausted += 1
             self.current_target += 1
             return "capacity_exhausted"
@@ -1661,19 +1735,18 @@ class ScalperSim:
             ok=(200, 201, 202), step="scalper-payment-capture")
         await self.burst_pause()
 
-        # ticketing via staff queue
-        tick = {"kind": "ticketing", "order": order_id, "sb": sb,
-                "traveler": tvl, "seg": found["segment"]}
-        self.reg.q_ticketing.append(tick)
-        ent = await wait_for(tick, "entitlement", self.staff_wait)
+        # ticketing inline: issue the entitlement directly without staff queues.
+        ent = await self.issue_inline_ticket(order_id, sb, found["segment"], tvl)
 
-        # confirm
-        final = await self.poll_order(order_id, {"CONFIRMED"})
-        if final != "CONFIRMED":
+        # confirm: CONFIRMING means the purchase chain completed and risk event
+        # propagation is still catching up, so count it as scalper success.
+        final = await self.poll_order(
+            order_id, {"CONFIRMED", "CONFIRMING"}, timeout_seconds=30.0)
+        if final not in {"CONFIRMED", "CONFIRMING"}:
             raise StepFailed("scalper-confirm", f"order {order_id} ended {final}")
 
         purchase = Purchase(
-            order=order_id, saga=resv.get("saga", ""), sb=sb,
+            order=order_id, saga=saga, sb=sb,
             seg=found["segment"], traveler=tvl,
             account=acct["account_id"], entitlement=ent,
             total_minor=total_minor, offer=offer.get("offerId", ""),
