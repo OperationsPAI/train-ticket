@@ -147,6 +147,19 @@ bootstrap:
   services_per_date: 2
   service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
 
+# ---------------------------------------------------------------------------
+# Scalper simulator — ticket scalper (黄牛) actor. Zero think time, multi-
+# account pool rotation, retry-storm on failure, hot-segment targeting.
+# ---------------------------------------------------------------------------
+scalper:
+  enabled: true
+  workers: 3                   # concurrent scalper workers
+  accounts_per_worker: 5       # pre-registered account pool per worker
+  target_segments: 2           # grab from the first N bootstrap segments
+  retry_on_failure: 0.8        # probability of immediate retry on step failure
+  retry_same_key: true         # reuse the same Idempotency-Key on retry
+  purchase_batch_size: 4       # attempts per tight loop before micro-pause
+
 # Poll tuning for asynchronous state (saga completion, order confirmation).
 polling:
   attempts: 8
