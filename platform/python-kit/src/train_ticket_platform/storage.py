@@ -62,7 +62,12 @@ class DatabasePool:
             from psycopg_pool import ConnectionPool as PsycopgConnectionPool
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise StorageError("psycopg_pool is not installed") from exc
-        self._pool = PsycopgConnectionPool(self.config.url, min_size=min_size, max_size=max_size, open=open)
+        import os
+        pool_max = int(os.environ.get("PG_MAX_POOL_SIZE", str(max_size)))
+        self._pool = PsycopgConnectionPool(
+            self.config.url, min_size=min_size, max_size=pool_max, open=open,
+            max_idle=300.0, max_lifetime=600.0, check=PsycopgConnectionPool.check_connection,
+        )
 
     def connection(self) -> Any:
         return self._pool.connection()
