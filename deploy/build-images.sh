@@ -26,6 +26,7 @@ services=(
   notification
   traveler-profile
   risk-compliance
+  corporate-travel
   account
   admin-audit
   customer-service
