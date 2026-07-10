@@ -3048,10 +3048,10 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: travel-insurance
+  name: group-booking
   namespace: train-ticket
   labels:
-    app.kubernetes.io/name: travel-insurance
+    app.kubernetes.io/name: group-booking
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
@@ -3059,16 +3059,16 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: travel-insurance
+      app.kubernetes.io/name: group-booking
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: travel-insurance
+        app.kubernetes.io/name: group-booking
         app.kubernetes.io/part-of: train-ticket
     spec:
       containers:
-        - name: travel-insurance
-          image: train-ticket/travel-insurance:local
+        - name: group-booking
+          image: train-ticket/group-booking:local
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -3081,11 +3081,11 @@ spec:
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
-              value: postgresql://trainticket:trainticket-dev@postgres:5432/travel_insurance
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/group_booking
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://otel-collector:4317
             - name: OTEL_SERVICE_NAME
-              value: travel-insurance
+              value: group-booking
             - name: OTEL_TRACES_EXPORTER
               value: otlp
             - name: OTEL_METRICS_EXPORTER
@@ -3119,10 +3119,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: travel-insurance
+  name: group-booking
   namespace: train-ticket
   labels:
-    app.kubernetes.io/name: travel-insurance
+    app.kubernetes.io/name: group-booking
     app.kubernetes.io/part-of: train-ticket
 spec:
   type: ClusterIP
@@ -3131,4 +3131,4 @@ spec:
       port: 8080
       targetPort: http
   selector:
-    app.kubernetes.io/name: travel-insurance
+    app.kubernetes.io/name: group-booking
