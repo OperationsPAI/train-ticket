@@ -84,6 +84,12 @@ public final class CampaignBudget {
         if (closed) throw new DomainException("closed budget cannot be changed");
     }
 
+    public static CampaignBudget restore(String budgetId, String campaignId, Money totalBudget, Money reservedAmount, Money consumedAmount,
+                                         boolean closed, Instant createdAt, Instant updatedAt, long version) {
+        return new CampaignBudget(budgetId, campaignId, totalBudget, reservedAmount, consumedAmount, closed, createdAt, updatedAt,
+            version, List.of());
+    }
+
     public String budgetId() { return budgetId; }
     public String campaignId() { return campaignId; }
     public Money totalBudget() { return totalBudget; }

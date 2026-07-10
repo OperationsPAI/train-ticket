@@ -100,6 +100,14 @@ public final class CouponTemplate {
         if (!campaignWindow.contains(validityWindow)) throw new DomainException("template validityWindow must be within campaign window");
     }
 
+    public static CouponTemplate restore(String templateId, String campaignId, String templateCode, int templateVersion,
+                                         CouponTemplateStatus status, Money faceValue, Money minimumSpend, String applicableScope,
+                                         String redemptionRule, CampaignWindow validityWindow, Instant createdAt, Instant updatedAt,
+                                         long version) {
+        return new CouponTemplate(templateId, campaignId, templateCode, templateVersion, status, faceValue, minimumSpend,
+            applicableScope, redemptionRule, validityWindow, createdAt, updatedAt, version, List.of());
+    }
+
     public String templateId() { return templateId; }
     public String campaignId() { return campaignId; }
     public String templateCode() { return templateCode; }
