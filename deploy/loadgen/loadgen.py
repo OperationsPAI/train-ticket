@@ -767,7 +767,7 @@ class CustomerSim:
             channel_ref["faultSeedRef"] = "MISSED_ORDER:loadgen"
         await self.api.request("POST", "payment",
                                f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
-                               {"channelRef": channel_ref}, ok=(200, 201), step="payment-capture")
+                               {"channelRef": channel_ref}, ok=(200, 201, 202), step="payment-capture")
 
         # ticket issuing is a platform/staff action — enqueue & wait
         tick = {"kind": "ticketing", "order": order_id, "sb": sb,
@@ -1524,6 +1524,7 @@ class ScalperSim:
             "POST", "fare-pricing", "/api/v1/fare-quotes",
             {"travelerRefs": [tvl], "channel": channel,
              "segmentRefs": [found["segment"]]}, step="scalper-quote")
+        await asyncio.sleep(1)
 
         # offer
         _, offer = await self.api.request(
@@ -1573,7 +1574,8 @@ class ScalperSim:
             "POST", "payment",
             f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
             {"channelRef": {"channel": "ALIPAY_SIM"}},
-            ok=(200, 201), step="scalper-payment-capture")
+            ok=(200, 201, 202), step="scalper-payment-capture")
+        await asyncio.sleep(3)
 
         # ticketing via staff queue
         tick = {"kind": "ticketing", "order": order_id, "sb": sb,
