@@ -109,6 +109,11 @@ class Stats:
         self.errors: Counter[str] = Counter()
         self.latency_ms: dict[str, list[float]] = defaultdict(list)
         self.started = time.time()
+        # scalper-specific counters
+        self.scalper_attempts: int = 0
+        self.scalper_success: int = 0
+        self.scalper_blocked: int = 0
+        self.scalper_exhausted: int = 0
 
     def record_http(self, service: str, status: int, ms: float) -> None:
         self.http[f"{service}:{status}"] += 1
@@ -131,6 +136,12 @@ class Stats:
             "http": dict(self.http),
             "errors": dict(self.errors),
             "latency_ms": lat,
+            "scalper": {
+                "attempts": self.scalper_attempts,
+                "success": self.scalper_success,
+                "blocked": self.scalper_blocked,
+                "exhausted": self.scalper_exhausted,
+            },
         }
 
 
@@ -1330,6 +1341,316 @@ class CustomerSim:
         return "legacy_completed"
 
 
+# ---------------------------------------------------------------------------
+# scalper simulator — ticket scalper (黄牛) behavior: zero think-time,
+# hot-segment targeting, multi-account rotation, retry storms
+# ---------------------------------------------------------------------------
+
+
+class ScalperSim:
+    """Simulates a ticket scalper who grabs tickets as fast as possible.
+
+    Key differences from a regular customer:
+    - Zero think time between API calls
+    - Targets only the first N bootstrap segments (hottest routes)
+    - Rotates through a pool of pre-registered accounts
+    - Retries immediately on purchase failure
+    - Keeps buying the same segment until capacity is exhausted
+    - Never triggers post-purchase journeys (hoarding)
+    - Pre-generates identity documents to avoid verification delays
+    """
+
+    def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats,
+                 rng: random.Random, worker_idx: int):
+        self.cfg = cfg
+        self.scalper_cfg = cfg.get("scalper", {})
+        self.api = api
+        self.reg = reg
+        self.stats = stats
+        self.rng = rng
+        self.worker_idx = worker_idx
+        self.poll_attempts = int(cfg["polling"]["attempts"])
+        self.poll_interval = float(cfg["polling"]["interval_seconds"])
+        self.staff_wait = float(cfg["behavior"].get("staff_wait_seconds", 90))
+        self.redis = aioredis.from_url(cfg["target"]["redis_url"], decode_responses=True)
+
+        self.accounts_per_worker = int(self.scalper_cfg.get("accounts_per_worker", 5))
+        self.target_segment_count = int(self.scalper_cfg.get("target_segments", 2))
+        self.retry_on_failure = float(self.scalper_cfg.get("retry_on_failure", 0.8))
+        self.retry_same_key = bool(self.scalper_cfg.get("retry_same_key", True))
+        self.batch_size = int(self.scalper_cfg.get("purchase_batch_size", 4))
+
+        # runtime state filled by prepare()
+        self.account_pool: list[dict] = []
+        self.account_cursor: int = 0
+        self.target_segments: list[dict] = []
+        self.current_target: int = 0
+        self.identity_cache: dict[str, dict[str, str]] = {}
+
+    # -- setup ---------------------------------------------------------------
+
+    async def prepare(self) -> None:
+        """Register accounts and pre-verify identities before the grab loop."""
+        for i in range(self.accounts_per_worker):
+            account_id = f"acc-scalper-{self.worker_idx}-{i}-{uuid7()}"
+            await self.api.request("POST", "account", "/api/v1/accounts",
+                                   {"accountId": account_id},
+                                   ok=(200, 201), step="scalper-register")
+            entry = await self.reg.add_account(account_id)
+            given, family = rand_name(self.rng)
+            _, data = await self.api.request(
+                "POST", "traveler-profile", "/api/v1/travelers",
+                {"accountId": account_id,
+                 "travelerType": "ADULT",
+                 "givenName": given, "familyName": family},
+                step="scalper-create-traveler")
+            tvl = data["travelerId"]
+            entry["travelers"].append(tvl)
+            # pre-verify identity
+            identity_refs = await self._ensure_identity_verified(tvl)
+            self.identity_cache[tvl] = identity_refs
+            self.account_pool.append(entry)
+
+        # select the hottest segments (first N bootstrap routes)
+        async with self.reg.lock:
+            routes = list(self.reg.routes)
+        self.target_segments = routes[:self.target_segment_count] if routes else []
+
+    def next_account(self) -> dict:
+        """Round-robin through the account pool."""
+        if not self.account_pool:
+            raise StepFailed("scalper-account", "no accounts in pool")
+        entry = self.account_pool[self.account_cursor % len(self.account_pool)]
+        self.account_cursor += 1
+        return entry
+
+    async def _ensure_identity_verified(self, traveler_id: str) -> dict[str, str]:
+        """Same as CustomerSim.ensure_identity_verified but without instance binding."""
+        tail = str(self.rng.randint(0, 5))
+        doc = f"loadgen-{traveler_id}-{tail}"
+        document_hash = hashlib.sha256(doc.encode()).hexdigest() + tail
+        name_hash = hashlib.sha256(("name-" + traveler_id).encode()).hexdigest()
+        valid_until = (datetime.now(timezone.utc) + timedelta(days=365)).replace(microsecond=0)
+        credential_body = {
+            "travelerId": traveler_id, "profileSnapshotVersion": "loadgen-v1",
+            "documentType": "ID_CARD",
+            "maskedDocumentNo": f"LG***********{tail}",
+            "documentHash": document_hash,
+            "canonicalNameHash": name_hash,
+            "validUntil": iso(valid_until),
+        }
+        _, credential = await self.api.request(
+            "POST", "identity-verification",
+            "/api/v1/identity-verification/credentials",
+            credential_body, ok=(200, 201), step="scalper-identity-credential")
+        material = "|".join([name_hash, "ID_CARD", document_hash, "",
+                             iso(valid_until), "", "loadgen-v1"])
+        verify_body = {
+            "travelerId": traveler_id,
+            "credentialRecordId": credential["credentialRecordId"],
+            "purpose": "ORDER_CREATION",
+            "materialFingerprint": hashlib.sha256(material.encode()).hexdigest(),
+            "simPolicyVersion": "sim-tail-v1",
+            "requestedAt": now_iso(),
+        }
+        _, case = await self.api.request(
+            "POST", "identity-verification",
+            "/api/v1/identity-verification/verification-cases",
+            verify_body, ok=(200, 201), step="scalper-identity-verify")
+        return {"identity_credential": credential["credentialRecordId"],
+                "identity_case": case["verificationCaseId"]}
+
+    # -- poll helpers (same as CustomerSim) -----------------------------------
+
+    async def poll_order(self, order_id: str, want: set[str],
+                         give_up_on_block: bool = False) -> str | None:
+        status = None
+        for _ in range(self.poll_attempts):
+            code, data = await self.api.request(
+                "GET", "journey-order",
+                f"/api/v1/journey-orders/{order_id}",
+                ok=(), step="scalper-poll-order")
+            if code == 200:
+                status = data.get("status")
+                if status in want:
+                    return status
+                if give_up_on_block and status and "BLOCK" in status:
+                    return status
+            await asyncio.sleep(self.poll_interval)
+        return status
+
+    # -- core grab journey ----------------------------------------------------
+
+    async def journey_scalper_grab(self) -> str:
+        """Single scalper grab attempt.
+
+        login -> search hot segment -> quote -> offer -> order ->
+        payment -> capture -> ticketing.  Zero think time.
+        """
+        self.stats.scalper_attempts += 1
+        acct = self.next_account()
+        tvl = acct["travelers"][0] if acct["travelers"] else None
+        if tvl is None:
+            raise StepFailed("scalper-grab", "account has no traveler")
+
+        if not self.target_segments:
+            raise StepFailed("scalper-grab", "no target segments available")
+        seg_route = self.target_segments[self.current_target % len(self.target_segments)]
+
+        channel = "WEB"
+        # search -- zero think time
+        _, search_data = await self.api.request(
+            "POST", "trip-planning", "/api/v1/itineraries/search",
+            {"originRef": seg_route["origin_place"],
+             "destinationRef": seg_route["dest_place"],
+             "departureDate": seg_route["date"],
+             "travelerRefs": [tvl], "channel": channel},
+            ok=(200,), step="scalper-search")
+        itins = [i for i in (search_data.get("itineraries") or []) if _bookable(i)]
+        if not itins:
+            self.stats.scalper_exhausted += 1
+            self.current_target += 1
+            return "no_itinerary"
+        itin = self.rng.choice(itins)
+        leg = itin["legs"][0]
+        found = {"itinerary": itin["itineraryRef"],
+                 "segment": leg["serviceSegmentRef"],
+                 "service": leg.get("servicePlanRef") or seg_route.get("scheduled_service"),
+                 "origin_node": leg.get("originStopRef") or seg_route.get("origin_node"),
+                 "dest_node": leg.get("destinationStopRef") or seg_route.get("dest_node")}
+
+        # quote -- no think time, no abandonment
+        _, fare_quote = await self.api.request(
+            "POST", "fare-pricing", "/api/v1/fare-quotes",
+            {"travelerRefs": [tvl], "channel": channel,
+             "segmentRefs": [found["segment"]]}, step="scalper-quote")
+
+        # offer
+        _, offer = await self.api.request(
+            "POST", "offer-management", "/api/v1/offers",
+            {"accountId": acct["account_id"], "channelId": channel,
+             "itineraryRef": found["itinerary"], "travelerRefs": [tvl]},
+            step="scalper-offer")
+
+        # order
+        _, order = await self.api.request(
+            "POST", "journey-order", "/api/v1/journey-orders",
+            {"accountId": acct["account_id"], "offerId": offer["offerId"],
+             "offerVersion": offer.get("offerVersion", 1),
+             "travelerRefs": [tvl], "segmentRefs": [found["segment"]],
+             "journeyDate": seg_route["date"], "productCode": "TRAIN"},
+            step="scalper-order")
+        order_id = order["orderId"]
+
+        # risk gate
+        status = await self.poll_order(order_id, {"CONFIRMED"}, give_up_on_block=True)
+        if status is not None and "BLOCK" in status:
+            self.stats.scalper_blocked += 1
+            # try next account on risk block
+            return "risk_blocked"
+
+        # reservation via staff queue
+        resv = {"kind": "reservation", "order": order_id,
+                "seg": found["segment"], "traveler": tvl}
+        self.reg.q_reservation.append(resv)
+        sb = await wait_for(resv, "sb", self.staff_wait)
+
+        if resv.get("no_capacity"):
+            self.stats.scalper_exhausted += 1
+            self.current_target += 1
+            return "capacity_exhausted"
+
+        # payment -- zero think time
+        total_minor = int(offer["total"]["minorUnits"])
+        _, intent = await self.api.request(
+            "POST", "payment", "/api/v1/payment-intents",
+            {"businessRef": order_id, "purpose": "purchase",
+             "amount": {"currency": "CNY", "minorUnits": total_minor},
+             "payerRef": acct["account_id"]}, step="scalper-payment-intent")
+
+        # capture
+        await self.api.request(
+            "POST", "payment",
+            f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
+            {"channelRef": {"channel": "ALIPAY_SIM"}},
+            ok=(200, 201), step="scalper-payment-capture")
+
+        # ticketing via staff queue
+        tick = {"kind": "ticketing", "order": order_id, "sb": sb,
+                "traveler": tvl, "seg": found["segment"]}
+        self.reg.q_ticketing.append(tick)
+        ent = await wait_for(tick, "entitlement", self.staff_wait)
+
+        # confirm
+        final = await self.poll_order(order_id, {"CONFIRMED"})
+        if final != "CONFIRMED":
+            raise StepFailed("scalper-confirm", f"order {order_id} ended {final}")
+
+        purchase = Purchase(
+            order=order_id, saga=resv.get("saga", ""), sb=sb,
+            seg=found["segment"], traveler=tvl,
+            account=acct["account_id"], entitlement=ent,
+            total_minor=total_minor, offer=offer.get("offerId", ""),
+            payment_intent=intent.get("paymentIntentId", ""),
+            itinerary=found.get("itinerary", ""),
+            quote=fare_quote.get("quoteId", ""))
+        await self.reg.add_purchase(purchase)
+        self.stats.scalper_success += 1
+        return "grabbed"
+
+    async def close(self) -> None:
+        await self.redis.aclose()
+
+
+async def scalper_worker(idx: int, cfg: dict, sim: ScalperSim,
+                         stats: Stats, stop: asyncio.Event) -> None:
+    """Run one scalper worker: prepare accounts, then grab in a tight loop."""
+    try:
+        await sim.prepare()
+    except Exception as exc:
+        print(f"[scalper{idx}] prepare failed — {type(exc).__name__}: {str(exc)[:180]}")
+        return
+
+    batch_size = int(cfg.get("scalper", {}).get("purchase_batch_size", 4))
+    retry_prob = float(cfg.get("scalper", {}).get("retry_on_failure", 0.8))
+
+    while not stop.is_set():
+        for _ in range(batch_size):
+            if stop.is_set():
+                break
+            try:
+                outcome = await sim.journey_scalper_grab()
+                stats.journeys[f"scalper:{outcome}"] += 1
+                if outcome == "capacity_exhausted" and \
+                        sim.current_target >= len(sim.target_segments):
+                    # all target segments exhausted
+                    print(f"[scalper{idx}] all target segments exhausted, idling")
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        # refresh targets from registry
+                        async with sim.reg.lock:
+                            sim.target_segments = list(sim.reg.routes)[
+                                :sim.target_segment_count]
+                        sim.current_target = 0
+                    break
+            except StepFailed as exc:
+                stats.journeys[f"scalper:failed"] += 1
+                stats.errors[f"scalper:{exc.step}"] += 1
+                print(f"[scalper{idx}] grab failed — {exc}")
+                if sim.rng.random() >= retry_prob:
+                    break  # give up for this batch
+            except Exception as exc:
+                stats.journeys["scalper:crashed"] += 1
+                print(f"[scalper{idx}] crashed — {type(exc).__name__}: {str(exc)[:180]}")
+                break
+        # minimal pause to avoid CPU spin when all segments exhausted
+        if not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=0.1)
+            except asyncio.TimeoutError:
+                pass
+
 
 # ---------------------------------------------------------------------------
 # low-frequency operations simulator — read-heavy backoffice coverage
@@ -1667,6 +1988,14 @@ async def main() -> None:
         # registry already knows rather than crash-looping the pod
         print(f"[bootstrap] failed (continuing with {len(reg.routes)} known routes): {exc}")
 
+    # scalper actors (created after bootstrap so target_segments can resolve)
+    scalper_sims: list[ScalperSim] = []
+    scalper_cfg = cfg.get("scalper", {})
+    if scalper_cfg.get("enabled", True):
+        for i in range(int(scalper_cfg.get("workers", 3))):
+            scalper_sims.append(
+                ScalperSim(cfg, api, reg, stats, random.Random(rng.random()), i))
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1681,6 +2010,8 @@ async def main() -> None:
               for i in range(int(cfg["staff"]["workers"]))]
     if ops.enabled():
         tasks.append(asyncio.create_task(ops.worker(stop)))
+    for i, sc in enumerate(scalper_sims):
+        tasks.append(asyncio.create_task(scalper_worker(i, cfg, sc, stats, stop)))
     tasks.append(asyncio.create_task(reporter(cfg, stats, reg, stop)))
 
     await stop.wait()
@@ -1689,6 +2020,8 @@ async def main() -> None:
     print("[final] " + json.dumps(stats.snapshot(), sort_keys=True), flush=True)
     await staff.close()
     await sim.close()
+    for sc in scalper_sims:
+        await sc.close()
     await api.close()
 
 
