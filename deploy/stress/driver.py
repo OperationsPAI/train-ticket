@@ -309,43 +309,29 @@ class StaffSim:
 
     async def do_reservation(self, item: dict) -> None:
         """Find the booking saga for an order and drive the reservation step."""
-        # Poll the journey-order for a saga reference instead of Redis,
-        # which is simpler for the stress driver context.
         saga = None
+        order_id = item["order"]
+        redis_url = self.api.template.replace("http://{service}:8080", "").strip()
+        if not redis_url:
+            redis_url = "redis://redis:6379"
+
         for _ in range(self.poll_attempts):
             try:
                 _, data = await self.api.request(
-                    "GET",
-                    "journey-order",
-                    f"/api/v1/journey-orders/{item['order']}",
-                    ok=(),
-                    step="staff-poll-order",
+                    "GET", "booking-orchestration",
+                    f"/api/v1/internal/booking-sagas?journeyOrderId={order_id}",
+                    ok=(200,), step="staff-find-saga",
                 )
-                saga = (data or {}).get("sagaId")
-                if saga:
+                sagas = data if isinstance(data, list) else data.get("items", [])
+                if sagas:
+                    saga = sagas[0].get("sagaId")
                     break
             except StepFailed:
                 pass
             await asyncio.sleep(self.poll_interval)
 
         if not saga:
-            # Fall back: try booking-orchestration list endpoint
-            try:
-                _, data = await self.api.request(
-                    "GET",
-                    "booking-orchestration",
-                    f"/api/v1/internal/booking-sagas?journeyOrderId={item['order']}",
-                    ok=(200,),
-                    step="staff-find-saga",
-                )
-                sagas = data if isinstance(data, list) else data.get("items", [])
-                if sagas:
-                    saga = sagas[0].get("sagaId")
-            except StepFailed:
-                pass
-
-        if not saga:
-            raise StepFailed("reservation", f"no saga found for order {item['order']}")
+            raise StepFailed("reservation", f"no saga found for order {order_id}")
 
         sb = f"sb-{uuid7()}"
         await self.api.request(
@@ -465,6 +451,33 @@ async def purchase_chain(
     )
     traveler = tvl_data["travelerId"]
 
+    # 1b. Identity verification (required before order creation)
+    import hashlib as _hashlib
+    tail = str(rng.randint(0, 5))
+    doc = f"stress-{traveler}-{tail}"
+    doc_hash = _hashlib.sha256(doc.encode()).hexdigest() + tail
+    name_hash = _hashlib.sha256(("name-" + traveler).encode()).hexdigest()
+    valid_until = "2027-07-10T00:00:00Z"
+    _, cred = await api.request(
+        "POST", "identity-verification",
+        "/api/v1/identity-verification/credentials",
+        {"travelerId": traveler, "profileSnapshotVersion": "stress-v1",
+         "documentType": "ID_CARD", "maskedDocumentNo": f"ST***{tail}",
+         "documentHash": doc_hash, "canonicalNameHash": name_hash,
+         "validUntil": valid_until},
+        ok=(200, 201), step="credential",
+    )
+    material = "|".join([name_hash, "ID_CARD", doc_hash, "", valid_until, "", "stress-v1"])
+    fingerprint = _hashlib.sha256(material.encode()).hexdigest()
+    await api.request(
+        "POST", "identity-verification",
+        "/api/v1/identity-verification/verification-cases",
+        {"travelerId": traveler, "credentialRecordId": cred["credentialRecordId"],
+         "purpose": "ORDER_CREATION", "materialFingerprint": fingerprint,
+         "simPolicyVersion": "sim-tail-v1", "requestedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+        ok=(200, 201), step="verify-identity",
+    )
+
     # 2. Search
     _, search_data = await api.request(
         "POST",
@@ -500,6 +513,7 @@ async def purchase_chain(
         },
         step="quote",
     )
+    await asyncio.sleep(2)
 
     # 4. Offer
     _, offer = await api.request(
@@ -555,9 +569,10 @@ async def purchase_chain(
         "payment",
         f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
         {},
-        ok=(200, 201),
+        ok=(200, 201, 202),
         step="payment-capture",
     )
+    await asyncio.sleep(3)
 
     # 8. Ticketing (staff-driven)
     tick = {
