@@ -48,7 +48,7 @@ public class JourneyOrderController {
 
         var appRequest = new com.trainticket.journeyorder.application.port.in.JourneyOrderRequest(
             body.accountId(), body.offerId(), body.offerVersion(),
-            body.travelerRefs(), body.segmentRefs(), body.journeyDate(), body.productCode()
+            body.travelerRefs(), body.segmentRefs(), body.journeyDate(), body.productCode(), resolveSourceIp()
         );
 
         JourneyOrderResult result = orderService.createOrder(appRequest, idempotencyKey, correlationId);
@@ -127,5 +127,16 @@ public class JourneyOrderController {
             if (fromHeader != null && !fromHeader.isBlank()) return fromHeader;
         }
         return PrefixedIds.newCorrelationId();
+    }
+
+    private String resolveSourceIp() {
+        if (request == null) return null;
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+        if (forwardedFor != null && !forwardedFor.isBlank()) {
+            return forwardedFor.split(",", 2)[0].trim();
+        }
+        String realIp = request.getHeader("X-Real-IP");
+        if (realIp != null && !realIp.isBlank()) return realIp.trim();
+        return request.getRemoteAddr();
     }
 }

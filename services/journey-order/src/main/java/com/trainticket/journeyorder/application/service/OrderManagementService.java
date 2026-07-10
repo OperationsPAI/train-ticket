@@ -130,7 +130,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         JourneyOrder order = JourneyOrder.createFromOffer(
             request.accountId(), "api", request.offerId(),
             offerRef, travelers, segments, orderItems, now,
-            sourceCommandId, correlationId
+            sourceCommandId, correlationId, request.sourceIp()
         );
 
         try {
@@ -220,15 +220,20 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private static Map<String, Object> eventPayload(JourneyOrderEvent event) {
         return switch (event) {
-            case com.trainticket.journeyorder.domain.JourneyOrderCreated created -> Map.of(
-                "orderId", created.orderId(),
-                "accountId", created.accountId(),
-                "offerId", created.offerId(),
-                "monetarySummary", monetaryPayload(created.monetarySummary()),
-                "travelerRefs", created.travelerRefs().stream().map(OrderManagementService::travelerPayload).toList(),
-                "segmentRefs", created.segmentRefs(),
-                "createdAt", created.createdAt().toString()
-            );
+            case com.trainticket.journeyorder.domain.JourneyOrderCreated created -> {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("orderId", created.orderId());
+                payload.put("accountId", created.accountId());
+                payload.put("offerId", created.offerId());
+                payload.put("monetarySummary", monetaryPayload(created.monetarySummary()));
+                payload.put("travelerRefs", created.travelerRefs().stream().map(OrderManagementService::travelerPayload).toList());
+                payload.put("segmentRefs", created.segmentRefs());
+                payload.put("createdAt", created.createdAt().toString());
+                if (created.sourceIp() != null && !created.sourceIp().isBlank()) {
+                    payload.put("sourceIp", created.sourceIp());
+                }
+                yield payload;
+            }
             case com.trainticket.journeyorder.domain.JourneyOrderPendingPayment pending -> Map.of(
                 "orderId", pending.orderId(),
                 "accountId", pending.accountId(),

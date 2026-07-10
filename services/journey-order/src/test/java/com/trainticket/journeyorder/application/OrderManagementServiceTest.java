@@ -87,6 +87,18 @@ class OrderManagementServiceTest {
         assertEquals("ADULT", travelerRefs.getFirst().get("travelerType"));
     }
 
+
+    @Test
+    void createdEventPayloadIncludesSourceIpWhenAvailable() {
+        var request = new JourneyOrderRequest("account-1", "offer-1", 1,
+            List.of("tvl-1"), List.of("seg-1"), null, null, "203.0.113.10");
+
+        service.createOrder(request, "idem-contract-created-ip", "corr-1");
+
+        Map<String, Object> payload = (Map<String, Object>) published().getFirst().payload();
+        assertEquals("203.0.113.10", payload.get("sourceIp"));
+    }
+
     @Test
     void idempotentCreateReturnsSameResult() {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,

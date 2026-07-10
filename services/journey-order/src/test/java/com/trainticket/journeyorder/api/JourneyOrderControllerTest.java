@@ -55,7 +55,7 @@ class JourneyOrderControllerTest {
     @Test
     void createOrderHappyPath() throws Exception {
         when(orderService.createOrder(
-            eq(new JourneyOrderRequest("account-1", "offer-1", 1, List.of("tvl-1"), List.of("seg-1"))),
+            eq(new JourneyOrderRequest("account-1", "offer-1", 1, List.of("tvl-1"), List.of("seg-1"), null, null, "127.0.0.1")),
             eq("0194f2e0-7b3e-7001-8284-5c26e8b0a001"),
             eq("corr-test")
         )).thenReturn(orderResult("ord-123", "account-1", "offer-1", "CREATED"));
