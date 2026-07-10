@@ -12,7 +12,8 @@ import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 public class OutboxRelay implements AutoCloseable {
-    private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(250);
+    private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(
+        Long.parseLong(System.getenv().getOrDefault("OUTBOX_POLL_INTERVAL_MS", "50")));
 
     private final JdbcOperations jdbc;
     private final RedisStreamOperations streams;
@@ -29,8 +30,8 @@ public class OutboxRelay implements AutoCloseable {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc is required");
         this.streams = Objects.requireNonNull(streams, "streams are required");
         this.pollInterval = Objects.requireNonNull(pollInterval, "pollInterval is required");
-        if (pollInterval.compareTo(DEFAULT_POLL_INTERVAL) > 0) {
-            throw new IllegalArgumentException("outbox relay poll interval must be <= 250ms");
+        if (pollInterval.toMillis() > 500) {
+            throw new IllegalArgumentException("outbox relay poll interval must be <= 500ms");
         }
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(r, "outbox-relay");
