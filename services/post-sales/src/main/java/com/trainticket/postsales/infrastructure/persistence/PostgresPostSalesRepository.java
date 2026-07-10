@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.trainticket.platformkit.persistence.SnapshotRepository;
+import com.trainticket.postsales.application.RefundAlreadyInProgressException;
 import com.trainticket.postsales.application.PostSalesRepository;
 import com.trainticket.postsales.domain.*;
 import java.time.Instant;
@@ -34,8 +35,14 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     }
 
     @Override public void save(PostSalesCase postSalesCase) {
+        if (isRefundConflictCase(postSalesCase) && isActive(postSalesCase)) {
+            reserveActiveRefundSlot(postSalesCase);
+        }
         long version = snapshots.save(postSalesCase.caseId(), postSalesCase.version(), snapshot(postSalesCase));
         postSalesCase.withVersion(version);
+        if (isRefundConflictCase(postSalesCase) && !isActive(postSalesCase)) {
+            releaseActiveRefundSlot(postSalesCase);
+        }
     }
 
     @Override public Optional<PostSalesCase> findById(String caseId) {
@@ -46,8 +53,56 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         return jdbc.query("SELECT id FROM post_sales_case_snapshots WHERE data->>'idempotencyKey' = ? LIMIT 1", rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(), idempotencyKey);
     }
 
+    @Override public Optional<PostSalesCase> findActiveRefundCaseForOrder(String journeyOrderId) {
+        return jdbc.query("""
+            SELECT s.id
+              FROM post_sales_active_refunds a
+              JOIN post_sales_case_snapshots s ON s.id = a.case_id
+             WHERE a.journey_order_id = ?
+             LIMIT 1
+            """, rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(), journeyOrderId);
+    }
+
     @Override public List<PostSalesCase> findAll() {
         return jdbc.query("SELECT version, data::text AS data FROM post_sales_case_snapshots", (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")));
+    }
+
+
+    private void reserveActiveRefundSlot(PostSalesCase postSalesCase) {
+        try {
+            jdbc.update(
+                "INSERT INTO post_sales_active_refunds (journey_order_id, case_id) VALUES (?, ?) ON CONFLICT (journey_order_id) DO UPDATE SET case_id = EXCLUDED.case_id, updated_at = now() WHERE post_sales_active_refunds.case_id = EXCLUDED.case_id",
+                postSalesCase.journeyOrderId(),
+                postSalesCase.caseId()
+            );
+        } catch (org.springframework.dao.DuplicateKeyException exception) {
+            throw new RefundAlreadyInProgressException(existingActiveRefundCaseId(postSalesCase.journeyOrderId()).orElse(null));
+        }
+        String reservedCaseId = existingActiveRefundCaseId(postSalesCase.journeyOrderId()).orElse(null);
+        if (!postSalesCase.caseId().equals(reservedCaseId)) {
+            throw new RefundAlreadyInProgressException(reservedCaseId);
+        }
+    }
+
+    private void releaseActiveRefundSlot(PostSalesCase postSalesCase) {
+        jdbc.update("DELETE FROM post_sales_active_refunds WHERE journey_order_id = ? AND case_id = ?", postSalesCase.journeyOrderId(), postSalesCase.caseId());
+    }
+
+    private Optional<String> existingActiveRefundCaseId(String journeyOrderId) {
+        return jdbc.query("SELECT case_id FROM post_sales_active_refunds WHERE journey_order_id = ?", rs -> rs.next() ? Optional.of(rs.getString("case_id")) : Optional.empty(), journeyOrderId);
+    }
+
+    private static boolean isRefundConflictCase(PostSalesCase postSalesCase) {
+        return postSalesCase.caseType() == PostSalesCaseType.REFUND
+            || postSalesCase.caseType() == PostSalesCaseType.CANCELLATION
+            || postSalesCase.caseType() == PostSalesCaseType.REBOOK
+            || postSalesCase.caseType() == PostSalesCaseType.CHANGE;
+    }
+
+    private static boolean isActive(PostSalesCase postSalesCase) {
+        return postSalesCase.status() != PostSalesCaseStatus.REJECTED
+            && postSalesCase.status() != PostSalesCaseStatus.CANCELLED
+            && postSalesCase.status() != PostSalesCaseStatus.FAILED;
     }
 
     private PostSalesSnapshot readSnapshot(String json) {

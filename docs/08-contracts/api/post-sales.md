@@ -39,7 +39,7 @@ timestamps, and Money.
 | `status` | enum | `OPENED`, `EVALUATING`, `APPROVED`, `REJECTED`, `APPLIED`, `FAILED` |
 | `createdAt` | timestamp | Creation time. |
 
-**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `REFUND_ALREADY_IN_PROGRESS`, `ORDER_NOT_REFUNDABLE`, `DOMAIN_RULE_VIOLATION`
 
 ### Evaluate Post-Sales Eligibility
 
@@ -57,7 +57,7 @@ timestamps, and Money.
 | `refundableAmount` | object | Amount refundable (Money). |
 | `amountDue` | object | Amount due (Money). |
 
-**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `UNAVAILABLE`
+**Error codes:** `NOT_FOUND`, `ORDER_NOT_REFUNDABLE`, `PRECONDITION_FAILED`, `UNAVAILABLE`
 
 ### Approve Post-Sales Case
 
@@ -72,7 +72,7 @@ timestamps, and Money.
 | `caseId` | string | Case ID. |
 | `status` | enum | `APPROVED` |
 
-**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`
+**Error codes:** `NOT_FOUND`, `ORDER_NOT_REFUNDABLE`, `PRECONDITION_FAILED`
 
 ### Get Post-Sales Case
 
