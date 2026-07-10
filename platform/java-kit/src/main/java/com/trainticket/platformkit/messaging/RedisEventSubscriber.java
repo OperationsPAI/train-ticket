@@ -10,12 +10,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class RedisEventSubscriber implements EventSubscriber {
     public static final int MAX_DELIVERY_ATTEMPTS = 5;
@@ -23,10 +26,13 @@ public class RedisEventSubscriber implements EventSubscriber {
     private static final long INITIAL_BACKOFF_SECONDS = 1;
     private static final long MAX_BACKOFF_SECONDS = 30;
     private static final int LAST_FAILURE_CACHE_SIZE = 1_024;
+    private static final int DEFAULT_CONSUMER_THREADS = 1;
+    private static final String CONSUMER_THREADS_ENV = "CONSUMER_THREADS";
 
     private final RedisStreamOperations streams;
     private final ObjectMapper objectMapper;
-    private final ExecutorService executor;
+    private final ExecutorService pollExecutor;
+    private final ExecutorService handlerExecutor;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
@@ -60,12 +66,27 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable, ConsumedEventStore consumedEvents, EventConsumerTracer eventConsumerTracer) {
+        this(streams, objectMapper, closeable, consumedEvents, eventConsumerTracer, consumerThreadsFromEnvironment());
+    }
+
+    RedisEventSubscriber(
+        RedisStreamOperations streams,
+        ObjectMapper objectMapper,
+        AutoCloseable closeable,
+        ConsumedEventStore consumedEvents,
+        EventConsumerTracer eventConsumerTracer,
+        int consumerThreads
+    ) {
+        if (consumerThreads < 1) {
+            throw new IllegalArgumentException("consumerThreads must be positive");
+        }
         this.streams = Objects.requireNonNull(streams, "streams are required");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
         this.closeable = closeable;
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents is required");
         this.eventConsumerTracer = Objects.requireNonNull(eventConsumerTracer, "eventConsumerTracer is required");
-        this.executor = Executors.newSingleThreadExecutor();
+        this.pollExecutor = Executors.newSingleThreadExecutor(namedThreadFactory("redis-subscriber-poll"));
+        this.handlerExecutor = Executors.newFixedThreadPool(consumerThreads, namedThreadFactory("redis-subscriber-handler"));
     }
 
     @Override
@@ -76,11 +97,13 @@ public class RedisEventSubscriber implements EventSubscriber {
             throw new SubscribeFailedException("at least one stream is required", null);
         }
         running.set(true);
-        executor.submit(() -> poll(streamNames, group, consumerName, handler));
+        pollExecutor.submit(() -> poll(streamNames, group, consumerName, handler));
     }
 
     public void recoverOnce(String stream, String group, String consumerName, EventHandler handler) {
-        recover(stream, group, consumerName, handler);
+        for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
+            handle(stream, group, consumerName, message, handler);
+        }
     }
 
     private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
@@ -91,7 +114,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                     streams.createGroup(stream, group);
                     recover(stream, group, consumerName, handler);
                     for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
-                        handle(stream, group, consumerName, message, handler, streams.deliveryCount(stream, group, message.id()));
+                        submitHandle(stream, group, consumerName, message, handler);
                     }
                     backoffSeconds = INITIAL_BACKOFF_SECONDS;
                 } catch (RuntimeException exception) {
@@ -108,11 +131,22 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private void recover(String stream, String group, String consumerName, EventHandler handler) {
         for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
-            handle(stream, group, consumerName, message, handler, streams.deliveryCount(stream, group, message.id()));
+            submitHandle(stream, group, consumerName, message, handler);
         }
     }
 
-    private void handle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler, int deliveryAttempts) {
+    private void submitHandle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
+        try {
+            handlerExecutor.submit(() -> handle(stream, group, consumerName, message, handler));
+        } catch (RejectedExecutionException exception) {
+            if (running.get()) {
+                throw exception;
+            }
+        }
+    }
+
+    private void handle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
+        int deliveryAttempts = streams.deliveryCount(stream, group, message.id());
         String json = message.envelopeJson();
         if (json == null) {
             moveToDlq(stream, group, consumerName, message.id(), "{}", "MissingEnvelope", deliveryAttempts);
@@ -168,8 +202,35 @@ public class RedisEventSubscriber implements EventSubscriber {
         }
     }
 
-    private static EventConsumerTracer defaultEventConsumerTracer() {
+    static EventConsumerTracer defaultEventConsumerTracer() {
         return new GlobalEventConsumerTracer(RedisEventSubscriber.class.getName());
+    }
+
+    private static int consumerThreadsFromEnvironment() {
+        String configured = System.getenv(CONSUMER_THREADS_ENV);
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_CONSUMER_THREADS;
+        }
+        try {
+            int threads = Integer.parseInt(configured.trim());
+            if (threads > 0) {
+                return threads;
+            }
+        } catch (NumberFormatException exception) {
+            LOGGER.warn("{}={} is not a valid positive integer; using default {}", CONSUMER_THREADS_ENV, configured, DEFAULT_CONSUMER_THREADS);
+            return DEFAULT_CONSUMER_THREADS;
+        }
+        LOGGER.warn("{}={} must be positive; using default {}", CONSUMER_THREADS_ENV, configured, DEFAULT_CONSUMER_THREADS);
+        return DEFAULT_CONSUMER_THREADS;
+    }
+
+    private static ThreadFactory namedThreadFactory(String prefix) {
+        AtomicInteger sequence = new AtomicInteger(1);
+        return runnable -> {
+            Thread thread = new Thread(runnable, prefix + "-" + sequence.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     private void rememberLastFailure(String stream, String messageId, RuntimeException exception) {
@@ -218,16 +279,6 @@ public class RedisEventSubscriber implements EventSubscriber {
         return value.length() <= 500 ? value : value.substring(0, 500);
     }
 
-    private static boolean isNoGroup(RuntimeException exception) {
-        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
-            String message = cause.getMessage();
-            if (message != null && message.contains("NOGROUP")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static void sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
@@ -247,9 +298,11 @@ public class RedisEventSubscriber implements EventSubscriber {
     @Override
     public void close() {
         running.set(false);
-        executor.shutdown();
+        pollExecutor.shutdownNow();
+        handlerExecutor.shutdown();
         try {
-            executor.awaitTermination(5, TimeUnit.SECONDS);
+            pollExecutor.awaitTermination(5, TimeUnit.SECONDS);
+            handlerExecutor.awaitTermination(5, TimeUnit.SECONDS);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         }

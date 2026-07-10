@@ -9,11 +9,12 @@ import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -121,6 +122,51 @@ class RedisEventSubscriberTest {
         assertThat(reconnectLogs.get(2)).contains("reconnecting in 4s");
     }
 
+
+    @Test
+    void configuredConsumerThreadsHandleMessagesInParallel() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        List<RedisStreamOperations.StreamEntry> messages = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", String.valueOf(i)));
+            messages.add(new RedisStreamOperations.StreamEntry(i + "-0", objectMapper.writeValueAsString(event)));
+        }
+        FakeRedisStreams streams = new FakeRedisStreams(messages);
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams,
+            objectMapper,
+            null,
+            new InMemoryConsumedEventStore(),
+            RedisEventSubscriber.defaultEventConsumerTracer(),
+            4
+        );
+        CountDownLatch allStarted = new CountDownLatch(messages.size());
+        CountDownLatch releaseHandlers = new CountDownLatch(1);
+
+        try {
+            subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> {
+                allStarted.countDown();
+                try {
+                    releaseHandlers.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return HandlerResult.TRANSIENT_FAILURE;
+                }
+                return HandlerResult.SUCCESS;
+            });
+
+            assertThat(allStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            releaseHandlers.countDown();
+            for (int i = 0; i < 20 && streams.acked.size() < messages.size(); i++) {
+                Thread.sleep(50);
+            }
+        } finally {
+            releaseHandlers.countDown();
+            subscriber.close();
+        }
+        assertThat(streams.acked).containsExactlyInAnyOrder("0-0", "1-0", "2-0", "3-0");
+    }
+
     @Test
     void maxDeliveryAttemptsUsesLastRuntimeExceptionAsFailureReasonWithoutRedispatching() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
@@ -148,7 +194,7 @@ class RedisEventSubscriberTest {
     private static final class FailThenSucceedStreams implements RedisStreamOperations {
         private final int failCount;
         private final List<StreamEntry> successBatch;
-        private final List<String> acked = new ArrayList<>();
+        private final List<String> acked = Collections.synchronizedList(new ArrayList<>());
         private int readGroupCalls;
         private boolean delivered;
 
@@ -179,7 +225,7 @@ class RedisEventSubscriberTest {
 
     private static final class FakeRedisStreams implements RedisStreamOperations {
         private final List<StreamEntry> firstBatch;
-        private final List<String> acked = new ArrayList<>();
+        private final List<String> acked = Collections.synchronizedList(new ArrayList<>());
         private boolean delivered;
         private boolean autoClaimEnabled;
         private int autoClaimCalls;

@@ -848,6 +848,8 @@ spec:
               value: http://otel-collector:4317
             - name: OTEL_SERVICE_NAME
               value: booking-orchestration
+            - name: CONSUMER_THREADS
+              value: "4"
             - name: OTEL_TRACES_EXPORTER
               value: otlp
             - name: OTEL_METRICS_EXPORTER
