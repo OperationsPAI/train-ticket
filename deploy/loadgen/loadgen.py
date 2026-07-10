@@ -1361,11 +1361,11 @@ class ScalperSim:
     """Simulates a ticket scalper who grabs tickets as fast as possible.
 
     Key differences from a regular customer:
-    - Zero think time between API calls
-    - Targets only the first N bootstrap segments (hottest routes)
-    - Rotates through a pool of pre-registered accounts
-    - Retries immediately on purchase failure
-    - Keeps buying the same segment until capacity is exhausted
+    - Mostly bursty pacing with occasional slowdowns to evade simple rate limits
+    - Diversifies across multiple bootstrap segments/routes
+    - Rotates through a pool of pre-registered accounts and source IPs
+    - Mixes browser/session fingerprints between grab attempts
+    - Retries quickly on purchase failure
     - Never triggers post-purchase journeys (hoarding)
     - Pre-generates identity documents to avoid verification delays
     """
@@ -1385,16 +1385,25 @@ class ScalperSim:
         self.redis = aioredis.from_url(cfg["target"]["redis_url"], decode_responses=True)
 
         self.accounts_per_worker = int(self.scalper_cfg.get("accounts_per_worker", 5))
-        self.target_segment_count = int(self.scalper_cfg.get("target_segments", 2))
+        self.target_segment_count = int(self.scalper_cfg.get("target_segments", 8))
         self.retry_on_failure = float(self.scalper_cfg.get("retry_on_failure", 0.8))
         self.retry_same_key = bool(self.scalper_cfg.get("retry_same_key", True))
         self.batch_size = int(self.scalper_cfg.get("purchase_batch_size", 4))
         self.ip_pool = self._build_ip_pool()
         self.ip_cursor = worker_idx % len(self.ip_pool)
         self.current_ip: str | None = None
-        self.user_agent = self._pick_user_agent()
+        self.user_agents = self._build_user_agents()
+        self.fingerprints = self._build_fingerprints()
+        self.current_fingerprint: dict[str, str] | None = None
         self.burst_gap_seconds = max(
             0.0, float(self.scalper_cfg.get("burst_gap_ms", 50)) / 1000.0)
+        self.slowdown_probability = max(
+            0.0, min(1.0, float(self.scalper_cfg.get("slowdown_probability", 0.12))))
+        self.slowdown_min_seconds = max(
+            0.0, float(self.scalper_cfg.get("slowdown_min_ms", 250)) / 1000.0)
+        self.slowdown_max_seconds = max(
+            self.slowdown_min_seconds,
+            float(self.scalper_cfg.get("slowdown_max_ms", 1600)) / 1000.0)
 
         # runtime state filled by prepare()
         self.account_pool: list[dict] = []
@@ -1415,7 +1424,7 @@ class ScalperSim:
         start = int(self.scalper_cfg.get("ip_start", 10))
         return [f"{prefix}.{start + offset}" for offset in range(pool_size)]
 
-    def _pick_user_agent(self) -> str:
+    def _build_user_agents(self) -> list[str]:
         configured = self.scalper_cfg.get("user_agents")
         if isinstance(configured, list):
             agents = [str(agent).strip() for agent in configured if str(agent).strip()]
@@ -1435,8 +1444,31 @@ class ScalperSim:
                 "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
             ]
-        base_agent = agents[self.worker_idx % len(agents)]
-        return f"{base_agent} tt-scalper/{self.worker_idx}"
+        return agents
+
+    def _build_fingerprints(self) -> list[dict[str, str]]:
+        languages = ["zh-CN,zh;q=0.9", "zh-CN,zh;q=0.8,en;q=0.6", "en-US,en;q=0.7"]
+        platforms = ['"Windows"', '"macOS"', '"Linux"', '"Android"', '"iOS"']
+        fingerprints = []
+        pool_size = max(len(self.user_agents), int(self.scalper_cfg.get("fingerprint_pool_size", 12)))
+        for index in range(pool_size):
+            user_agent = self.user_agents[(self.worker_idx + index) % len(self.user_agents)]
+            session_id = uuid7().replace("-", "")[:20]
+            fingerprints.append({
+                "User-Agent": user_agent,
+                "Accept-Language": languages[index % len(languages)],
+                "Sec-CH-UA-Platform": platforms[index % len(platforms)],
+                "DNT": "1" if index % 3 == 0 else "0",
+                "Cookie": f"tt_session={session_id}; tt_fp={hashlib.sha256(session_id.encode()).hexdigest()[:16]}",
+            })
+        return fingerprints
+
+    def _mix_session_fingerprint(self) -> None:
+        base = dict(self.rng.choice(self.fingerprints))
+        nonce = uuid7().replace("-", "")[:10]
+        base["Cookie"] = f"{base['Cookie']}; tt_try={nonce}"
+        base["X-Client-Trace"] = f"sc-{self.worker_idx}-{nonce}"
+        self.current_fingerprint = base
 
     def _next_headers(self, headers: dict | None = None) -> dict:
         next_ip = self.ip_pool[self.ip_cursor % len(self.ip_pool)]
@@ -1445,9 +1477,9 @@ class ScalperSim:
             self.stats.scalper_ip_rotations += 1
         self.current_ip = next_ip
 
-        merged = dict(headers or {})
+        merged = dict(self.current_fingerprint or self.rng.choice(self.fingerprints))
+        merged.update(headers or {})
         merged["X-Forwarded-For"] = next_ip
-        merged["User-Agent"] = self.user_agent
         return merged
 
     async def request(self, *args: Any, **kwargs: Any) -> tuple[int, Any]:
@@ -1455,6 +1487,9 @@ class ScalperSim:
         return await self.api.request(*args, headers=headers, **kwargs)
 
     async def burst_pause(self) -> None:
+        if self.rng.random() < self.slowdown_probability:
+            await asyncio.sleep(self.rng.uniform(self.slowdown_min_seconds, self.slowdown_max_seconds))
+            return
         if self.burst_gap_seconds <= 0:
             return
         await asyncio.sleep(self.rng.uniform(0.0, self.burst_gap_seconds))
@@ -1483,10 +1518,29 @@ class ScalperSim:
             self.identity_cache[tvl] = identity_refs
             self.account_pool.append(entry)
 
-        # select the hottest segments (first N bootstrap routes)
+        # select a diversified target set instead of hammering only the first hot routes.
         async with self.reg.lock:
             routes = list(self.reg.routes)
-        self.target_segments = routes[:self.target_segment_count] if routes else []
+        self.target_segments = self._diversified_segments(routes)
+
+    def _diversified_segments(self, routes: list[dict]) -> list[dict]:
+        if not routes:
+            return []
+        buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        for route in routes:
+            key = (str(route.get("origin_place", "")), str(route.get("dest_place", "")))
+            buckets[key].append(route)
+        diversified: list[dict] = []
+        while len(diversified) < self.target_segment_count and buckets:
+            for key in list(buckets):
+                bucket = buckets[key]
+                if bucket:
+                    diversified.append(bucket.pop(0))
+                    if len(diversified) >= self.target_segment_count:
+                        break
+                if not bucket:
+                    del buckets[key]
+        return diversified
 
     def next_account(self) -> dict:
         """Round-robin through the account pool."""
@@ -1635,6 +1689,7 @@ class ScalperSim:
         confirm.  Zero think time and no staff workers.
         """
         self.stats.scalper_attempts += 1
+        self._mix_session_fingerprint()
         acct = self.next_account()
         tvl = acct["travelers"][0] if acct["travelers"] else None
         if tvl is None:
@@ -1643,9 +1698,13 @@ class ScalperSim:
         if not self.target_segments:
             raise StepFailed("scalper-grab", "no target segments available")
         seg_route = self.target_segments[self.current_target % len(self.target_segments)]
+        if self.rng.random() < 0.25:
+            self.current_target = self.rng.randrange(len(self.target_segments))
+        else:
+            self.current_target = (self.current_target + 1) % len(self.target_segments)
 
         channel = "WEB"
-        # search -- zero think time
+        # search -- bursty pacing with occasional slowdown
         _, search_data = await self.request(
             "POST", "trip-planning", "/api/v1/itineraries/search",
             {"originRef": seg_route["origin_place"],
@@ -1667,7 +1726,7 @@ class ScalperSim:
                  "origin_node": leg.get("originStopRef") or seg_route.get("origin_node"),
                  "dest_node": leg.get("destinationStopRef") or seg_route.get("dest_node")}
 
-        # quote -- no think time, no abandonment
+        # quote -- no abandonment, evasive pacing
         _, fare_quote = await self.request(
             "POST", "fare-pricing", "/api/v1/fare-quotes",
             {"travelerRefs": [tvl], "channel": channel,
@@ -1718,7 +1777,7 @@ class ScalperSim:
             self.current_target += 1
             return "capacity_exhausted"
 
-        # payment -- zero think time
+        # payment -- evasive pacing
         total_minor = int(offer["total"]["minorUnits"])
         _, intent = await self.request(
             "POST", "payment", "/api/v1/payment-intents",
@@ -1789,8 +1848,7 @@ async def scalper_worker(idx: int, cfg: dict, sim: ScalperSim,
                     except asyncio.TimeoutError:
                         # refresh targets from registry
                         async with sim.reg.lock:
-                            sim.target_segments = list(sim.reg.routes)[
-                                :sim.target_segment_count]
+                            sim.target_segments = sim._diversified_segments(list(sim.reg.routes))
                         sim.current_target = 0
                     break
             except StepFailed as exc:
@@ -1803,7 +1861,7 @@ async def scalper_worker(idx: int, cfg: dict, sim: ScalperSim,
                 stats.journeys["scalper:crashed"] += 1
                 print(f"[scalper{idx}] crashed — {type(exc).__name__}: {str(exc)[:180]}")
                 break
-        # tight burst pacing: tiny randomized pause before the next batch.
+        # burst pacing: tiny randomized pause before the next batch.
         if not stop.is_set():
             timeout = sim.rng.uniform(0.0, sim.burst_gap_seconds)
             if timeout <= 0:
