@@ -201,10 +201,24 @@ export class OutboxRelay {
        WHERE published_at IS NULL
        ORDER BY seq
        LIMIT $1`, [this.options.batchSize ?? 100]);
-        for (const row of result.rows) {
-            await this.redis.xadd(row.stream, "MAXLEN", "~", String(this.options.streamMaxLen ?? 100_000), "*", "envelope", JSON.stringify(row.envelope));
-            await this.pool.query("UPDATE outbox SET published_at = now() WHERE seq = $1", [row.seq.toString()]);
+        if (result.rows.length === 0) {
+            return 0;
         }
+        const pipeline = this.redis.pipeline();
+        for (const row of result.rows) {
+            pipeline.xadd(row.stream, "MAXLEN", "~", String(this.options.streamMaxLen ?? 100_000), "*", "envelope", JSON.stringify(row.envelope));
+        }
+        const publishResults = await pipeline.exec();
+        if (!publishResults) {
+            throw new Error("Redis pipeline did not return publish results");
+        }
+        const publishError = publishResults.find(([error]) => error)?.[0];
+        if (publishError) {
+            throw publishError;
+        }
+        const seqs = result.rows.map((row) => row.seq.toString());
+        const placeholders = seqs.map((_, index) => `$${index + 1}`).join(", ");
+        await this.pool.query(`UPDATE outbox SET published_at = now() WHERE seq IN (${placeholders})`, seqs);
         return result.rows.length;
     }
     async run() {

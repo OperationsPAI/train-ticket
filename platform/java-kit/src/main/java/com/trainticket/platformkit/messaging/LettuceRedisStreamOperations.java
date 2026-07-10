@@ -1,10 +1,11 @@
 package com.trainticket.platformkit.messaging;
 
 import io.lettuce.core.Consumer;
+import io.lettuce.core.LettuceFutures;
 import io.lettuce.core.Limit;
 import io.lettuce.core.Range;
 import io.lettuce.core.RedisBusyException;
-import io.lettuce.core.StreamMessage;
+import io.lettuce.core.RedisFuture;
 import io.lettuce.core.XAddArgs;
 import io.lettuce.core.XAutoClaimArgs;
 import io.lettuce.core.XGroupCreateArgs;
@@ -15,6 +16,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
 
 public final class LettuceRedisStreamOperations implements RedisStreamOperations {
     private final StatefulRedisConnection<String, String> connection;
@@ -35,6 +37,42 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     @Override
     public String publish(String stream, String envelopeJson) {
         return connection.sync().xadd(stream, XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("envelope", envelopeJson));
+    }
+
+    @Override
+    public void publishBatch(List<RedisStreamOperations.StreamMessage> messages) {
+        if (messages.isEmpty()) {
+            return;
+        }
+
+        var async = connection.async();
+        connection.setAutoFlushCommands(false);
+        List<RedisFuture<String>> futures;
+        try {
+            futures = messages.stream()
+                .map(message -> async.xadd(
+                    message.stream(),
+                    XAddArgs.Builder.maxlen(100_000).approximateTrimming(),
+                    Map.of("envelope", message.envelopeJson())
+                ))
+                .toList();
+            connection.flushCommands();
+        } finally {
+            connection.setAutoFlushCommands(true);
+        }
+        if (!LettuceFutures.awaitAll(Duration.ofSeconds(10), futures.toArray(RedisFuture[]::new))) {
+            throw new IllegalStateException("timed out while publishing outbox batch to Redis");
+        }
+        for (RedisFuture<String> future : futures) {
+            try {
+                future.get();
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while publishing outbox batch to Redis", error);
+            } catch (ExecutionException error) {
+                throw new IllegalStateException("failed to publish outbox batch to Redis", error.getCause());
+            }
+        }
     }
 
     @Override
@@ -90,7 +128,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
         );
     }
 
-    private static StreamEntry toEntry(StreamMessage<String, String> message) {
+    private static StreamEntry toEntry(io.lettuce.core.StreamMessage<String, String> message) {
         return new StreamEntry(message.getId(), message.getBody().get("envelope"));
     }
 }
