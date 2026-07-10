@@ -231,11 +231,19 @@ Validates zero data loss during service recovery. Outbox fully drained, DLQ stab
 | Consumer lag | All caught up |
 | Total restarts | 38 |
 
+## Infrastructure Tuning Applied
+
+| Parameter | Before | After | Impact |
+|-----------|--------|-------|--------|
+| Outbox relay interval | 250ms | 50ms (env-configurable) | -80% event propagation latency |
+| PG max_connections | 100 | 300 | Prevents connection exhaustion under stress |
+
 ## Recommendations
 
-1. **Short-term**: Increase offer-management event consumption speed or add idempotent retry on offer 422
-2. **Medium-term**: Consider auto-reservation (saga-driven) to eliminate staff bottleneck from the purchase critical path
+1. ~~**Short-term**: Increase offer-management event consumption speed~~ → DONE (outbox 50ms)
+2. ~~**Medium-term**: Consider auto-reservation~~ → DONE (inline in stress driver, +51%)
 3. **Long-term**: Capacity advisory locks instead of row-level FOR UPDATE for horizontal scaling
+4. **Infrastructure**: Multi-instance PG + Redis for production-grade RPS
 
 ## Correctness
 
