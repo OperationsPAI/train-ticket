@@ -67,7 +67,8 @@ public final class JourneyOrder {
         List<OrderItem> orderItems,
         Instant now,
         String sourceCommandId,
-        String correlationId
+        String correlationId,
+        String sourceIp
     ) {
         Objects.requireNonNull(offerSnapshot, "offerSnapshot is required").requireValidAt(now);
         JourneyOrder order = new JourneyOrder(
@@ -89,7 +90,8 @@ public final class JourneyOrder {
             order.monetarySummary,
             order.travelers,
             order.segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),
-            now
+            now,
+            blankToNull(sourceIp)
         ));
         return order;
     }
@@ -288,6 +290,10 @@ public final class JourneyOrder {
 
     private void recordTimeline(String type, Instant occurredAt, String actor, String reason, Map<String, String> attributes) {
         timeline.add(TimelineFact.of(type, occurredAt, actor, reason, attributes));
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private static String requireText(String value, String name) {

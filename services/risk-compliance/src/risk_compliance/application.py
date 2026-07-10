@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ SCHEMA_VERSION = 1
 DEFAULT_POLICY_VERSION = PolicyVersionRef(policy_set_id="risk-rules", version="1.0.0")
 FREQUENCY_WINDOW = timedelta(minutes=int(os.environ.get("RISK_FREQUENCY_WINDOW_MINUTES", "5")))
 FREQUENCY_THRESHOLD = int(os.environ.get("RISK_FREQUENCY_THRESHOLD", "2"))
+IP_FREQUENCY_THRESHOLD = int(os.environ.get("RISK_IP_FREQUENCY_THRESHOLD", "10"))
 BLOCKING_DECISIONS = {Decision.DENY, Decision.CHALLENGE}
 BLOCKING_DECISION_VALUES = {decision.value for decision in BLOCKING_DECISIONS}
 RiskScenario: TypeAlias = str
@@ -135,6 +137,8 @@ class InMemoryAssessmentRepository:
         self._processed_event_ids: set[str] = set()
         self._account_order_times: dict[str, list[datetime]] = {}
         self._account_lifted_at: dict[str, datetime] = {}
+        self._ip_order_times: dict[str, list[datetime]] = {}
+        self._ip_accounts: dict[str, dict[str, datetime]] = {}
         self._order_accounts: dict[str, str] = {}
 
     def get(self, assessment_id: str) -> RiskAssessmentResult:
@@ -201,6 +205,22 @@ class InMemoryAssessmentRepository:
         attempts.append(occurred_at)
         self._account_order_times[account_id] = attempts
         return len(attempts)
+
+    def record_ip_order_attempt(self, source_ip: str, account_id: str, occurred_at: datetime) -> tuple[int, int]:
+        attempts = [
+            seen_at for seen_at in self._ip_order_times.get(source_ip, [])
+            if occurred_at - seen_at <= FREQUENCY_WINDOW
+        ]
+        attempts.append(occurred_at)
+        self._ip_order_times[source_ip] = attempts
+        accounts = {
+            seen_account: seen_at
+            for seen_account, seen_at in self._ip_accounts.get(source_ip, {}).items()
+            if occurred_at - seen_at <= FREQUENCY_WINDOW
+        }
+        accounts[account_id] = occurred_at
+        self._ip_accounts[source_ip] = accounts
+        return len(attempts), len(accounts)
 
 
 @dataclass(slots=True)
@@ -352,6 +372,12 @@ class RiskComplianceService:
         occurred_at = _coerce_datetime(envelope.occurredAt)
         context = dict(payload)
         context["orderAttemptCount10m"] = self.repository.record_order_attempt(account_id, occurred_at)
+        source_ip = _source_ip_from_envelope(envelope)
+        if source_ip is not None:
+            ip_attempt_count, ip_account_count = self.repository.record_ip_order_attempt(source_ip, account_id, occurred_at)
+            context["sourceIp"] = source_ip
+            context["sourceIpAttemptCount10m"] = ip_attempt_count
+            context["sourceIpAccountCount10m"] = ip_account_count
         assessment = assess_risk(
             assessment_id=assessment_id,
             subject_ref=order_id,
@@ -436,7 +462,18 @@ def _score(assessment: RiskAssessment) -> int:
     if _has_blacklisted_document(context):
         return 950
     attempt_count = context.get("orderAttemptCount10m")
-    if isinstance(attempt_count, int) and attempt_count >= FREQUENCY_THRESHOLD:
+    if isinstance(attempt_count, int) and attempt_count > FREQUENCY_THRESHOLD:
+        return 900
+    ip_attempt_count = context.get("sourceIpAttemptCount10m")
+    if isinstance(ip_attempt_count, int) and ip_attempt_count > IP_FREQUENCY_THRESHOLD:
+        return 900
+    ip_account_count = context.get("sourceIpAccountCount10m")
+    if (
+        isinstance(ip_account_count, int)
+        and isinstance(ip_attempt_count, int)
+        and ip_account_count >= 3
+        and ip_attempt_count >= ip_account_count * 2
+    ):
         return 900
     digest = assessment.input_snapshot.digest
     return int(digest[:8], 16) % 350
@@ -468,6 +505,43 @@ def _document_refs(context: Mapping[str, Any]) -> list[str]:
         if isinstance(value, str) and value.strip():
             refs.append(value)
     return refs
+
+
+def _source_ip_from_envelope(envelope: EventEnvelope) -> str | None:
+    payload_ip = _source_ip_from_mapping(envelope.payload)
+    if payload_ip is not None:
+        return payload_ip
+    envelope_data = envelope.to_json_dict()
+    source_ip = _source_ip_from_mapping(envelope_data)
+    if source_ip is not None:
+        return source_ip
+    for container_name in ("headers", "metadata"):
+        value = envelope_data.get(container_name)
+        if isinstance(value, Mapping):
+            source_ip = _source_ip_from_mapping(value)
+            if source_ip is not None:
+                return source_ip
+    return None
+
+
+def _source_ip_from_mapping(values: Mapping[str, Any]) -> str | None:
+    for header_name in ("X-Forwarded-For", "x-forwarded-for", "sourceIp", "source_ip", "clientIp", "client_ip"):
+        value = values.get(header_name)
+        if isinstance(value, str):
+            source_ip = _normalize_source_ip(value)
+            if source_ip is not None:
+                return source_ip
+    return None
+
+
+def _normalize_source_ip(value: str) -> str | None:
+    first_hop = value.split(",", 1)[0].strip()
+    if not first_hop:
+        return None
+    try:
+        return str(ipaddress.ip_address(first_hop))
+    except ValueError:
+        return None
 
 
 def _required_payload_text(payload: Mapping[str, Any], field_name: str) -> str:

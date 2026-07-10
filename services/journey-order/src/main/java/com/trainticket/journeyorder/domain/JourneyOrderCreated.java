@@ -9,7 +9,8 @@ public record JourneyOrderCreated(
     MonetarySummary monetarySummary,
     java.util.List<TravelerRef> travelerRefs,
     java.util.List<String> segmentRefs,
-    java.time.Instant createdAt
+    java.time.Instant createdAt,
+    String sourceIp
 ) implements JourneyOrderEvent {
     public JourneyOrderCreated {
         travelerRefs = java.util.List.copyOf(travelerRefs);

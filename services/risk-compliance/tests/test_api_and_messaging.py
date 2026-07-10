@@ -492,3 +492,96 @@ def test_lift_block_endpoint_publishes_lift_event() -> None:
     assert body["scope"] == "ORDER"
     assert app.state.publisher.envelopes[-1].eventType == "RiskBlockLifted"
     assert app.state.publisher.envelopes[-1].payload == body
+
+
+def test_journey_order_created_blocks_ip_high_frequency_across_accounts() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    for index in range(11):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-ip-frequency-{index}",
+            f"acct-ip-frequency-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": "203.0.113.10"},
+        )
+        service.handle_event(envelope)
+
+    last_assessment = publisher.envelopes[-2]
+    last_block = publisher.envelopes[-1]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-ip-frequency-10"
+    assert last_assessment.payload["score"] == 900
+    assert last_assessment.payload["decision"] == "DENY"
+    assert last_block.eventType == "RiskBlockApplied"
+    assert last_block.payload["subjectRef"] == "ord-ip-frequency-10"
+
+
+def test_journey_order_created_correlates_multiple_accounts_sharing_ip_pattern() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    source_ip = "203.0.113.11"
+
+    for index in range(6):
+        account_id = f"acct-shared-ip-{index % 3}"
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-shared-ip-{index}",
+            account_id,
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": source_ip},
+        )
+        service.handle_event(envelope)
+
+    assert publisher.envelopes[-1].eventType == "RiskBlockApplied"
+    last_assessment = publisher.envelopes[-2]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-shared-ip-5"
+    assert last_assessment.payload["score"] == 900
+    assert last_assessment.payload["decision"] == "DENY"
+
+
+def test_journey_order_created_allows_low_frequency_distinct_ips() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    for index in range(5):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-normal-ip-{index}",
+            f"acct-normal-ip-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": f"203.0.113.{20 + index}"},
+        )
+        service.handle_event(envelope)
+
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+    assert all(event.payload["decision"] == "ALLOW" for event in publisher.envelopes)
