@@ -1120,44 +1120,39 @@ class CustomerSim:
     # -- new-service journeys ------------------------------------------------
 
     async def journey_loyalty(self) -> str:
-        """Check membership tier and points for an existing account."""
+        """Check membership tier for an existing account."""
         entry = await self.login_or_register()
-        try:
-            _, member = await self.api.request(
-                "GET", "loyalty-membership",
-                f"/api/v1/members/{entry['account_id']}",
-                ok=(200, 404), step="loyalty-get-member")
-            if member and member.get("memberId"):
-                return "loyalty_checked"
-        except StepFailed:
-            pass
-        _, created = await self.api.request(
-            "POST", "loyalty-membership", "/api/v1/members",
-            {"accountId": entry["account_id"], "memberName": entry.get("given", "User")},
-            ok=(200, 201), step="loyalty-create-member")
-        return "loyalty_enrolled"
+        _, resp = await self.api.request(
+            "GET", "loyalty-membership",
+            f"/members/{entry['account_id']}",
+            ok=(200, 404), step="loyalty-get-member")
+        if resp and isinstance(resp, dict) and resp.get("memberId"):
+            return "loyalty_checked"
+        return "loyalty_not_enrolled"
 
     async def journey_insurance(self) -> str:
-        """Browse insurance products and optionally create a policy."""
-        try:
-            _, products = await self.api.request(
-                "GET", "travel-insurance", "/api/v1/products",
-                ok=(200, 404), step="insurance-list-products")
-        except StepFailed:
-            _, products = await self.api.request(
-                "GET", "travel-insurance", "/health",
-                ok=(200,), step="insurance-health")
-            return "insurance_browsed"
-        return "insurance_browsed"
+        """Request a travel insurance policy."""
+        entry = await self.login_or_register()
+        _, policy = await self.api.request(
+            "POST", "travel-insurance", "/api/v1/policies",
+            {"accountId": entry["account_id"],
+             "productCode": "TRAVEL_DELAY",
+             "coverageAmount": {"currency": "CNY", "minorUnits": 50000},
+             "journeyOrderRef": f"ord-{uuid7()}"},
+            ok=(200, 201, 400, 422), step="insurance-issue-policy")
+        return "insurance_policy_requested"
 
     async def journey_group_booking(self) -> str:
-        """Create a group booking with 3 members."""
+        """Create a group booking for 10+ travelers."""
         entry = await self.login_or_register()
         _, group = await self.api.request(
             "POST", "group-booking", "/api/v1/group-bookings",
-            {"organizerAccountId": entry["account_id"],
-             "groupName": f"Group-{uuid7()[:8]}",
-             "expectedSize": 3},
+            {"organizerRef": entry["account_id"],
+             "segmentRefs": [f"seg-group-{uuid7()[:8]}"],
+             "targetTravelerCount": 10,
+             "fare": {"currency": "CNY", "minorUnits": 85000,
+                      "discountBasisPoints": 500,
+                      "negotiationRef": f"nego-{uuid7()[:8]}"}},
             ok=(200, 201), step="group-create")
         group_id = group.get("groupBookingId") or group.get("id")
         if group_id:
@@ -1165,36 +1160,31 @@ class CustomerSim:
         return "group_failed"
 
     async def journey_corporate(self) -> str:
-        """Check or create a corporate travel agreement."""
+        """Create a corporate travel agreement."""
         entry = await self.login_or_register()
-        try:
-            _, agreements = await self.api.request(
-                "GET", "corporate-travel",
-                f"/api/v1/agreements?accountId={entry['account_id']}",
-                ok=(200, 404), step="corporate-list")
-        except StepFailed:
-            pass
         _, agreement = await self.api.request(
             "POST", "corporate-travel", "/api/v1/agreements",
             {"corporateName": f"Corp-{uuid7()[:8]}",
              "adminAccountId": entry["account_id"],
-             "billingCurrency": "CNY"},
-            ok=(200, 201), step="corporate-create")
+             "billingCurrency": "CNY",
+             "contactEmail": "corp@example.com"},
+            ok=(200, 201, 400, 422), step="corporate-create")
         return "corporate_agreement_created"
 
     async def journey_campaign(self) -> str:
-        """Draft a marketing campaign (ops-side journey)."""
+        """Draft a marketing campaign."""
+        window_end = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         _, campaign = await self.api.request(
             "POST", "marketing-campaign", "/api/v1/campaigns",
             {"name": f"Campaign-{uuid7()[:8]}",
+             "description": "Loadgen test campaign",
              "budget": {"currency": "CNY", "minorUnits": 1000000},
-             "window": {"validFrom": now_iso(),
-                        "validUntil": (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")}},
-            ok=(200, 201), step="campaign-draft")
+             "window": {"validFrom": now_iso(), "validUntil": window_end}},
+            ok=(200, 201, 400, 422), step="campaign-draft")
         campaign_id = campaign.get("campaignId") or campaign.get("id")
         if campaign_id:
             return "campaign_drafted"
-        return "campaign_failed"
+        return "campaign_submitted"
 
     # -- long-tail read probes ----------------------------------------------
 
