@@ -47,6 +47,12 @@ public final class Campaign {
             Require.text(budgetId, "budgetId"), approvalRef, status, createdAt, updatedAt, version, domainEvents);
     }
 
+    public Campaign withLaunchReadiness(String budgetId, String targetRuleSetId, Instant now) {
+        requireMutable();
+        return new Campaign(campaignId, externalKey, name, window, Require.text(targetRuleSetId, "targetRuleSetId"),
+            Require.text(budgetId, "budgetId"), approvalRef, status, createdAt, Objects.requireNonNull(now, "now"), version + 1, domainEvents);
+    }
+
     public Campaign submitForReview(Instant now) {
         return transition(CampaignStatus.IN_REVIEW, now, new CampaignSubmittedForReview(campaignId, now, version + 1), approvalRef);
     }
@@ -115,6 +121,13 @@ public final class Campaign {
 
     private void requireMutable() {
         if (status.isTerminal()) throw new DomainException("terminal campaign cannot be changed");
+    }
+
+    public static Campaign restore(String campaignId, String externalKey, String name, CampaignWindow window, String targetRuleSetId,
+                                   String budgetId, String approvalRef, CampaignStatus status, Instant createdAt, Instant updatedAt,
+                                   long version) {
+        return new Campaign(campaignId, externalKey, name, window, targetRuleSetId, budgetId, approvalRef, status, createdAt, updatedAt,
+            version, List.of());
     }
 
     public String campaignId() { return campaignId; }
