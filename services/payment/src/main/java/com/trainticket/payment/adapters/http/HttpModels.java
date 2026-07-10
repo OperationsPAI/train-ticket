@@ -23,7 +23,8 @@ record PaymentIntentDetailsResponse(
     Instant expiresAt,
     MoneyJson authorizedAmount,
     MoneyJson capturedAmount,
-    MoneyJson refundedAmount
+    MoneyJson refundedAmount,
+    ChannelRefJson channelRef
 ) {
 }
 
@@ -33,13 +34,22 @@ record CancelPaymentIntentRequest(String reason) {
 record CancelPaymentIntentResponse(String paymentIntentId, String status, Instant cancelledAt) {
 }
 
-record CapturePaymentResponse(String paymentIntentId, String status, MoneyJson capturedAmount, String channelTransactionId) {
+record ChannelRefJson(String channel, String channelOrderId, String channelRefundId, String channelTransactionId, String channelRefundTransactionId, String channelStatementId, String faultSeedRef) {
 }
 
-record RequestRefundRequest(String paymentIntentId, MoneyJson amount, String reason, String businessCaseRef) {
+record CapturePaymentRequest(ChannelRefJson channelRef) {
 }
 
-record RefundResponse(String refundId, String paymentIntentId, MoneyJson amount, String status) {
+record CapturePaymentResponse(String paymentIntentId, String status, MoneyJson capturedAmount, String channelTransactionId, ChannelRefJson channelRef) {
+}
+
+record RequestRefundRequest(String paymentIntentId, MoneyJson amount, String reason, String businessCaseRef, ChannelRefJson channelRef) {
+    RequestRefundRequest(String paymentIntentId, MoneyJson amount, String reason, String businessCaseRef) {
+        this(paymentIntentId, amount, reason, businessCaseRef, null);
+    }
+}
+
+record RefundResponse(String refundId, String paymentIntentId, MoneyJson amount, String status, ChannelRefJson channelRef) {
 }
 
 record RefundDetailsResponse(
@@ -49,7 +59,8 @@ record RefundDetailsResponse(
     String status,
     String reason,
     String businessCaseRef,
-    String channelRefundTransactionId
+    String channelRefundTransactionId,
+    ChannelRefJson channelRef
 ) {
 }
 

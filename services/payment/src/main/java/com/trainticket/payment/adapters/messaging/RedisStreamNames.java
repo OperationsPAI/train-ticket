@@ -3,6 +3,7 @@ package com.trainticket.payment.adapters.messaging;
 final class RedisStreamNames {
     static final String BOOKING_ORCHESTRATION_STREAM = "events:booking-orchestration";
     static final String POST_SALES_STREAM = "events:post-sales";
+    static final String PAYMENT_CHANNEL_STREAM = "events:payment-channel";
     static final String PAYMENT_GROUP = "payment";
 
     private RedisStreamNames() {

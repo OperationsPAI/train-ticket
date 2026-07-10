@@ -10,6 +10,7 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.application.EventEnvelopeMapper;
 import com.trainticket.payment.application.ReservationPaymentRequest;
 import com.trainticket.payment.domain.Money;
+import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.PaymentEvent;
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.PaymentAuthorized;
@@ -49,6 +50,15 @@ final class JacksonPaymentJson {
         root.set("refundedAmount", money(intent.refundedAmount(), objectMapper));
         ArrayNode refs = root.putArray("channelTransactionRefs");
         intent.channelTransactionRefs().stream().sorted().forEach(refs::add);
+        if (intent.channelRef() != null) {
+            root.set("channelRef", objectMapper.valueToTree(EventEnvelopeMapper.channelRef(intent.channelRef())));
+        }
+        if (intent.channelOrderIdempotencyKey() != null) {
+            root.put("channelOrderIdempotencyKey", intent.channelOrderIdempotencyKey());
+        }
+        if (intent.channelOrderSubmitIdempotencyKey() != null) {
+            root.put("channelOrderSubmitIdempotencyKey", intent.channelOrderSubmitIdempotencyKey());
+        }
         ArrayNode events = root.putArray("domainEvents");
         for (PaymentEvent event : intent.domainEvents()) {
             events.add(objectMapper.valueToTree(EventEnvelopeMapper.fromDomainEvent(event)));
@@ -75,7 +85,10 @@ final class JacksonPaymentJson {
             money(root.path("capturedAmount")),
             money(root.path("refundedAmount")),
             refs,
-            events
+            events,
+            channelRef(root.path("channelRef")),
+            root.path("channelOrderIdempotencyKey").asText(null),
+            root.path("channelOrderSubmitIdempotencyKey").asText(null)
         );
     }
 
@@ -92,6 +105,15 @@ final class JacksonPaymentJson {
             root.putNull("channelRefundTransactionId");
         } else {
             root.put("channelRefundTransactionId", refund.channelRefundTransactionId());
+        }
+        if (refund.channelRef() != null) {
+            root.set("channelRef", objectMapper.valueToTree(EventEnvelopeMapper.channelRef(refund.channelRef())));
+        }
+        if (refund.channelRefundIdempotencyKey() != null) {
+            root.put("channelRefundIdempotencyKey", refund.channelRefundIdempotencyKey());
+        }
+        if (refund.channelRefundSubmitIdempotencyKey() != null) {
+            root.put("channelRefundSubmitIdempotencyKey", refund.channelRefundSubmitIdempotencyKey());
         }
         root.put("attemptCount", refund.attemptCount());
         ArrayNode events = root.putArray("domainEvents");
@@ -115,7 +137,10 @@ final class JacksonPaymentJson {
             RefundStatus.valueOf(text(root, "status")),
             root.path("channelRefundTransactionId").isNull() ? null : root.path("channelRefundTransactionId").asText(null),
             root.path("attemptCount").asInt(0),
-            events
+            events,
+            channelRef(root.path("channelRef")),
+            root.path("channelRefundIdempotencyKey").asText(null),
+            root.path("channelRefundSubmitIdempotencyKey").asText(null)
         );
     }
 
@@ -169,6 +194,21 @@ final class JacksonPaymentJson {
         return Money.fromMinorUnits(node.path("minorUnits").asLong(), text(node, "currency"));
     }
 
+    private static ChannelRef channelRef(com.fasterxml.jackson.databind.JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        return new ChannelRef(
+            node.path("channel").asText(null),
+            node.path("channelOrderId").asText(null),
+            node.path("channelRefundId").asText(null),
+            node.path("channelTransactionId").asText(null),
+            node.path("channelRefundTransactionId").asText(null),
+            node.path("channelStatementId").asText(null),
+            node.path("faultSeedRef").asText(null)
+        );
+    }
+
     private static String text(com.fasterxml.jackson.databind.JsonNode node, String field) {
         String value = node.path(field).asText(null);
         if (value == null || value.isBlank()) {
@@ -198,12 +238,12 @@ final class JacksonPaymentJson {
         return switch (envelope.eventType()) {
             case "PaymentIntentCreated" -> new PaymentIntentCreated(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), text(payload, "purpose"), money(payload.path("amount")), text(payload, "payerRef"), text(payload, "idempotencyKey"));
             case "PaymentAuthorized" -> new PaymentAuthorized(envelope, text(payload, "paymentIntentId"), money(payload.path("authorizedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"));
-            case "PaymentCaptured" -> new PaymentCaptured(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), money(payload.path("capturedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"));
+            case "PaymentCaptured" -> new PaymentCaptured(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), money(payload.path("capturedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"), channelRef(payload.path("channelRef")));
             case "PaymentFailed" -> new PaymentFailed(envelope, text(payload, "paymentIntentId"), text(payload, "reasonCode"), payload.path("retryable").asBoolean());
             case "PaymentIntentCancelled" -> new PaymentIntentCancelled(envelope, text(payload, "paymentIntentId"), text(payload, "reason"));
             case "PaymentIntentExpired" -> new PaymentIntentExpired(envelope, text(payload, "paymentIntentId"));
             case "RefundRequested" -> new RefundRequested(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), money(payload.path("amount")), text(payload, "businessCaseRef"), text(payload, "reason"), text(payload, "idempotencyKey"));
-            case "RefundSettled" -> new RefundSettled(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), money(payload.path("amount")), text(payload, "channelRefundTransactionId"));
+            case "RefundSettled" -> new RefundSettled(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), money(payload.path("amount")), text(payload, "channelRefundTransactionId"), channelRef(payload.path("channelRef")));
             case "RefundFailed" -> new RefundFailed(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), text(payload, "reason"));
             default -> throw new IllegalStateException("unsupported persisted payment event type: " + envelope.eventType());
         };

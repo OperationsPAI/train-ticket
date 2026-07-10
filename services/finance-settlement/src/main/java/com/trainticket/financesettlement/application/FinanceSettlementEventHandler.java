@@ -158,10 +158,67 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
                 if (service != null) applyPostSales(envelope, payload);
             }
             case "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired" -> recordBenefitCostEntry(envelope, payload);
+            case "ChannelStatementGenerated", "ChannelStatementFrozen" -> recordChannelStatement(envelope, payload);
+            case "ReconciliationDiscrepancyOpened" -> openChannelDiscrepancy(envelope, payload);
+            case "ReconciliationDiscrepancyResolved" -> {
+                // Finance owns final accounting case resolution; channel-side resolution is recorded by consumed-event dedup.
+            }
             default -> {
                 // Streams contain event types that do not affect finance settlement.
             }
         }
+    }
+
+    private void recordChannelStatement(EventEnvelope envelope, Map<String, Object> payload) {
+        ChannelStatementProjection existing = projections.findChannelStatement(text(payload, "channelStatementId")).orElse(null);
+        projections.saveChannelStatement(new ChannelStatementProjection(
+            text(payload, "channelStatementId"),
+            text(payload, "channel"),
+            text(payload, "statementDate"),
+            text(payload, "currency"),
+            text(payload, "seedVersion"),
+            number(payload, "lineCount").intValue(),
+            money(payload.get("grossPaymentAmount"), "grossPaymentAmount"),
+            money(payload.get("grossRefundAmount"), "grossRefundAmount"),
+            money(payload.get("feeAmount"), "feeAmount"),
+            text(payload, "statementHash"),
+            text(payload, "status"),
+            existing == null ? Instant.parse(text(payload, "generatedAt")) : existing.generatedAt(),
+            optionalText(payload, "frozenAt").map(Instant::parse).orElse(existing == null ? null : existing.frozenAt()),
+            envelope.eventId()
+        ));
+    }
+
+    private void openChannelDiscrepancy(EventEnvelope envelope, Map<String, Object> payload) {
+        if (service == null) {
+            return;
+        }
+        ReconciliationCase open = ReconciliationCase.open(
+            optionalText(payload, "channelOrderId").orElse(optionalText(payload, "channelRefundId").orElse("")),
+            optionalText(payload, "paymentIntentId").orElse(""),
+            mapChannelDifference(text(payload, "differenceType")),
+            money(payload.get("expectedAmount"), "expectedAmount"),
+            money(payload.get("actualAmount"), "actualAmount"),
+            "Payment Channel discrepancy " + text(payload, "discrepancyId") + " on statement " + text(payload, "channelStatementId"),
+            clock.instant(),
+            causationIdOrEventId(envelope),
+            envelope.correlationId()
+        );
+        service.saveAndPublish(open);
+    }
+
+    private static String mapChannelDifference(String differenceType) {
+        return switch (differenceType) {
+            case "MISSING_IN_CHANNEL" -> "missing-in-channel";
+            case "MISSING_IN_PLATFORM" -> "missing-in-platform";
+            case "AMOUNT_MISMATCH" -> "amount-mismatch";
+            case "CURRENCY_MISMATCH" -> "currency-mismatch";
+            case "DUPLICATE" -> "duplicate";
+            case "REFUND_LAG" -> "refund-lag";
+            case "LATE_PAYMENT" -> "late-payment";
+            case "STATUS_MISMATCH" -> "status-mismatch";
+            default -> throw new IllegalArgumentException("unsupported channel differenceType " + differenceType);
+        };
     }
 
     private void recordBenefitCostEntry(EventEnvelope envelope, Map<String, Object> payload) {
@@ -410,6 +467,14 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
     private static String causationIdOrEventId(EventEnvelope envelope) {
         return envelope.causationId() == null ? envelope.eventId() : envelope.causationId();
+    }
+
+    private static Number number(Map<String, Object> payload, String name) {
+        Object value = payload.get(name);
+        if (!(value instanceof Number number)) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+        return number;
     }
 
     private static String text(Map<String, Object> payload, String name) {

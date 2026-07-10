@@ -58,6 +58,14 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             handleSegmentReservationRequested(envelope);
         } else if ("PostSalesApproved".equals(envelope.eventType())) {
             handlePostSalesApproved(envelope);
+        } else if ("ChannelOrderSucceeded".equals(envelope.eventType()) || "ChannelOrderRecoveryDetected".equals(envelope.eventType())) {
+            handleChannelOrderSucceeded(envelope);
+        } else if ("ChannelOrderFailed".equals(envelope.eventType()) || "ChannelOrderMissed".equals(envelope.eventType())) {
+            handleChannelOrderFailed(envelope);
+        } else if ("ChannelRefundSucceeded".equals(envelope.eventType()) || "ChannelRefundRecoveryDetected".equals(envelope.eventType())) {
+            handleChannelRefundSucceeded(envelope);
+        } else if ("ChannelRefundFailed".equals(envelope.eventType()) || "ChannelRefundMissed".equals(envelope.eventType())) {
+            handleChannelRefundFailed(envelope);
         }
     }
 
@@ -72,6 +80,61 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             payload.requiredText("idempotencyKey"),
             envelope.correlationId(),
             envelope.occurredAt()
+        );
+    }
+
+    private void handleChannelOrderSucceeded(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        Money amount = "ChannelOrderRecoveryDetected".equals(envelope.eventType())
+            ? payload.requiredMoney("recoveredAmount")
+            : payload.requiredMoney("succeededAmount");
+        paymentCommands.captureIntentFromChannel(
+            payload.requiredText("paymentIntentId"),
+            amount,
+            payload.requiredText("channel"),
+            payload.requiredText("channelTransactionId"),
+            payload.requiredText("channelOrderId"),
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+    }
+
+    private void handleChannelOrderFailed(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        paymentCommands.failIntentFromChannel(
+            payload.requiredText("paymentIntentId"),
+            envelope.eventType(),
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+    }
+
+    private void handleChannelRefundSucceeded(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        Money amount = "ChannelRefundRecoveryDetected".equals(envelope.eventType())
+            ? payload.requiredMoney("recoveredAmount")
+            : payload.requiredMoney("succeededAmount");
+        paymentCommands.settleRefundFromChannel(
+            payload.requiredText("refundId"),
+            payload.requiredText("paymentIntentId"),
+            amount,
+            payload.requiredText("channelRefundId"),
+            payload.optionalText("channelOrderId"),
+            payload.optionalText("channel"),
+            payload.optionalText("originalChannelTransactionId"),
+            payload.requiredText("channelRefundTransactionId"),
+            envelope.eventId(),
+            envelope.correlationId()
+        );
+    }
+
+    private void handleChannelRefundFailed(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        paymentCommands.failRefundFromChannel(
+            payload.requiredText("refundId"),
+            envelope.eventType(),
+            envelope.eventId(),
+            envelope.correlationId()
         );
     }
 
@@ -94,6 +157,19 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             // nothing to refund, so this event is a no-op for payment.
             return;
         }
+        com.trainticket.payment.domain.ChannelRef route = paymentCommands.getIntent(intentId).channelRef();
+        if (route != null && isSimChannel(route.channel()) && route.channelOrderId() != null && route.channelTransactionId() != null) {
+            paymentCommands.requestRefund(
+                intentId,
+                amount,
+                reason == null ? "post-sales-approved" : reason,
+                caseId,
+                caseId,
+                envelope.correlationId(),
+                route
+            );
+            return;
+        }
         paymentCommands.requestRefund(
             intentId,
             amount,
@@ -102,5 +178,9 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             caseId,
             envelope.correlationId()
         );
+    }
+
+    private static boolean isSimChannel(String channel) {
+        return "ALIPAY_SIM".equals(channel) || "WECHAT_SIM".equals(channel) || "UNIONPAY_SIM".equals(channel);
     }
 }

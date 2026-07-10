@@ -7,5 +7,10 @@ public record PaymentCaptured(
     String businessRef,
     Money capturedAmount,
     String channel,
-    String channelTransactionId
-) implements PaymentEvent {}
+    String channelTransactionId,
+    ChannelRef channelRef
+) implements PaymentEvent {
+    public PaymentCaptured(EventEnvelope envelope, String paymentIntentId, String businessRef, Money capturedAmount, String channel, String channelTransactionId) {
+        this(envelope, paymentIntentId, businessRef, capturedAmount, channel, channelTransactionId, new ChannelRef(channel, null, null, channelTransactionId, null, null, null));
+    }
+}

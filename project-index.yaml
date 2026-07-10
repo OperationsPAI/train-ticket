@@ -1353,3 +1353,24 @@ requirements:
     depends_on: [REQ-108, REQ-109, REQ-110, REQ-112, REQ-114, REQ-119]
     confidence: confirmed
     source: "docs/03-ddd-final/implementation-roadmap.md"
+  - {id: REQ-142, title: "Payment Channel service implementation", status: implemented, ref: services/payment-channel}
+  - id: REQ-143
+    title: "Invoicing service implementation"
+    description: "Implement Rust invoicing service, deployment, e2e, and loadgen coverage."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/invoicing
+        description: "Invoicing Rust service."
+      - path: deploy/e2e/23-invoicing.sh
+        description: "Invoicing e2e suite."
+    tests:
+      - path: services/invoicing/src/tests.rs
+        description: "Invoicing service tests."
+    docs:
+      - path: docs/02-domains/invoicing.md
+      - path: docs/08-contracts/api/invoicing.md
+      - path: docs/08-contracts/events/invoicing.md
+    depends_on: []
+    confidence: provisional
+    source: "WorkGraph REQ-143"

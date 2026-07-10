@@ -91,6 +91,31 @@ public class FinanceSettlementApplicationService {
         return new Page<>(items, reconciliationCases.count(orderId), limit, offset);
     }
 
+    public ChannelStatementProjection getChannelStatement(String channelStatementId) {
+        return projections.findChannelStatement(channelStatementId)
+            .orElseThrow(() -> new ResourceNotFoundException("channel statement not found"));
+    }
+
+    public Page<ChannelStatementProjection> listChannelStatements(String channel, String statementDate, int limit, int offset) {
+        if (limit < 1 || limit > 100) {
+            throw new ValidationException("limit must be between 1 and 100");
+        }
+        if (offset < 0) {
+            throw new ValidationException("offset must not be negative");
+        }
+        if ((channel == null || channel.isBlank()) && (statementDate == null || statementDate.isBlank())) {
+            throw new ValidationException("channel or statementDate is required");
+        }
+        int normalizedLimit = limit;
+        int normalizedOffset = offset;
+        return new Page<>(
+            projections.findChannelStatements(channel, statementDate, normalizedLimit, normalizedOffset),
+            projections.countChannelStatements(channel, statementDate),
+            normalizedLimit,
+            normalizedOffset
+        );
+    }
+
     public Page<BenefitCostEntry> listBenefitCosts(String accountId, int limit, int offset) {
         if (limit < 1 || limit > 100) {
             throw new ValidationException("limit must be between 1 and 100");

@@ -13,6 +13,7 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     private final ConcurrentMap<String, FinanceSettlementEventHandler.PaymentCaptureFact> capturesByOrderId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Money> approvedRefundsByCaseId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, BenefitCostEntry> benefitCostEntriesByEventId = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ChannelStatementProjection> channelStatementsById = new ConcurrentHashMap<>();
 
     @Override
     public Optional<FinanceSettlementEventHandler.PaymentCaptureFact> findCapture(String orderId) {
@@ -60,6 +61,35 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     public long countBenefitCostEntries(String accountId) {
         return benefitCostEntriesByEventId.values().stream()
             .filter(entry -> accountId == null || accountId.isBlank() || accountId.equals(entry.accountId()))
+            .count();
+    }
+
+    @Override
+    public void saveChannelStatement(ChannelStatementProjection statement) {
+        channelStatementsById.put(statement.channelStatementId(), statement);
+    }
+
+    @Override
+    public Optional<ChannelStatementProjection> findChannelStatement(String channelStatementId) {
+        return Optional.ofNullable(channelStatementsById.get(channelStatementId));
+    }
+
+    @Override
+    public List<ChannelStatementProjection> findChannelStatements(String channel, String statementDate, int limit, int offset) {
+        return channelStatementsById.values().stream()
+            .filter(statement -> channel == null || channel.isBlank() || channel.equals(statement.channel()))
+            .filter(statement -> statementDate == null || statementDate.isBlank() || statementDate.equals(statement.statementDate()))
+            .sorted(Comparator.comparing(ChannelStatementProjection::statementDate).reversed().thenComparing(ChannelStatementProjection::channelStatementId))
+            .skip(offset)
+            .limit(limit)
+            .toList();
+    }
+
+    @Override
+    public long countChannelStatements(String channel, String statementDate) {
+        return channelStatementsById.values().stream()
+            .filter(statement -> channel == null || channel.isBlank() || channel.equals(statement.channel()))
+            .filter(statement -> statementDate == null || statementDate.isBlank() || statementDate.equals(statement.statementDate()))
             .count();
     }
 }

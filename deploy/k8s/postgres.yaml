@@ -43,6 +43,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fulfillment')\gexec
     SELECT 'CREATE DATABASE journey_order'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'journey_order')\gexec
+    SELECT 'CREATE DATABASE invoicing'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'invoicing')\gexec
     SELECT 'CREATE DATABASE identity_verification'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'identity_verification')\gexec
     SELECT 'CREATE DATABASE legacy_acl'
@@ -53,6 +55,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'offer_management')\gexec
     SELECT 'CREATE DATABASE payment'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'payment')\gexec
+    SELECT 'CREATE DATABASE payment_channel'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'payment_channel')\gexec
     SELECT 'CREATE DATABASE place_network'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'place_network')\gexec
     SELECT 'CREATE DATABASE post_sales'

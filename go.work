@@ -5,6 +5,7 @@ use (
 	./platform/go-runtime
 	./services/dispatch
 	./services/fulfillment
+	./services/payment-channel
 	./services/place-network
 	./services/provider-integration
 	./services/service-plan

@@ -2,11 +2,13 @@ package com.trainticket.financesettlement.infrastructure.persistence;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.financesettlement.application.BenefitCostEntry;
+import com.trainticket.financesettlement.application.ChannelStatementProjection;
 import com.trainticket.financesettlement.application.FinanceSettlementEventHandler;
 import com.trainticket.financesettlement.application.FinanceSettlementProjectionRepository;
 import com.trainticket.financesettlement.domain.Money;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.Currency;
 import java.util.List;
 import java.util.Optional;
@@ -198,6 +200,80 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             ? jdbc.queryForObject("SELECT count(*) FROM benefit_cost_entries", Long.class)
             : jdbc.queryForObject("SELECT count(*) FROM benefit_cost_entries WHERE account_id = ?", Long.class, accountId);
         return count == null ? 0L : count;
+    }
+
+    @Override
+    public void saveChannelStatement(ChannelStatementProjection s) {
+        jdbc.update(
+            """
+                INSERT INTO channel_statements(channel_statement_id, channel, statement_date, currency, seed_version, line_count,
+                  gross_payment_currency, gross_payment_amount, gross_refund_currency, gross_refund_amount,
+                  fee_currency, fee_amount, statement_hash, status, generated_at, frozen_at, source_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (channel_statement_id) DO UPDATE SET
+                  line_count = EXCLUDED.line_count,
+                  gross_payment_currency = EXCLUDED.gross_payment_currency, gross_payment_amount = EXCLUDED.gross_payment_amount,
+                  gross_refund_currency = EXCLUDED.gross_refund_currency, gross_refund_amount = EXCLUDED.gross_refund_amount,
+                  fee_currency = EXCLUDED.fee_currency, fee_amount = EXCLUDED.fee_amount,
+                  statement_hash = EXCLUDED.statement_hash, status = EXCLUDED.status,
+                  frozen_at = EXCLUDED.frozen_at, source_event_id = EXCLUDED.source_event_id,
+                  updated_at = now()
+                """,
+            s.channelStatementId(), s.channel(), s.statementDate(), s.currency(), s.seedVersion(), s.lineCount(),
+            s.grossPaymentAmount().currency().getCurrencyCode(), s.grossPaymentAmount().amount(),
+            s.grossRefundAmount().currency().getCurrencyCode(), s.grossRefundAmount().amount(),
+            s.feeAmount().currency().getCurrencyCode(), s.feeAmount().amount(),
+            s.statementHash(), s.status(),
+            Timestamp.from(s.generatedAt()),
+            s.frozenAt() == null ? null : Timestamp.from(s.frozenAt()),
+            s.sourceEventId()
+        );
+    }
+
+    @Override
+    public Optional<ChannelStatementProjection> findChannelStatement(String channelStatementId) {
+        return jdbc.query(
+            "SELECT * FROM channel_statements WHERE channel_statement_id = ?",
+            rs -> rs.next() ? Optional.of(mapStatement(rs)) : Optional.empty(),
+            channelStatementId
+        );
+    }
+
+    @Override
+    public List<ChannelStatementProjection> findChannelStatements(String channel, String statementDate, int limit, int offset) {
+        return jdbc.query(
+            "SELECT * FROM channel_statements WHERE channel = ? AND statement_date = ? ORDER BY generated_at DESC LIMIT ? OFFSET ?",
+            (rs, rowNum) -> mapStatement(rs),
+            channel, statementDate, limit, offset
+        );
+    }
+
+    @Override
+    public long countChannelStatements(String channel, String statementDate) {
+        Long count = jdbc.queryForObject(
+            "SELECT count(*) FROM channel_statements WHERE channel = ? AND statement_date = ?",
+            Long.class, channel, statementDate
+        );
+        return count == null ? 0L : count;
+    }
+
+    private ChannelStatementProjection mapStatement(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new ChannelStatementProjection(
+            rs.getString("channel_statement_id"),
+            rs.getString("channel"),
+            rs.getString("statement_date"),
+            rs.getString("currency"),
+            rs.getString("seed_version"),
+            rs.getInt("line_count"),
+            money(rs.getString("gross_payment_currency"), rs.getString("gross_payment_amount")),
+            money(rs.getString("gross_refund_currency"), rs.getString("gross_refund_amount")),
+            money(rs.getString("fee_currency"), rs.getString("fee_amount")),
+            rs.getString("statement_hash"),
+            rs.getString("status"),
+            rs.getTimestamp("generated_at").toInstant(),
+            rs.getTimestamp("frozen_at") == null ? null : rs.getTimestamp("frozen_at").toInstant(),
+            rs.getString("source_event_id")
+        );
     }
 
     private static Money money(String currency, String amount) {
