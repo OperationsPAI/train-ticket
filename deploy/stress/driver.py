@@ -241,12 +241,18 @@ class PurchaseRef:
 
 
 class SharedState:
-    def __init__(self) -> None:
+    def __init__(self, redis_url: str = "redis://redis:6379") -> None:
         self.purchases: deque[PurchaseRef] = deque(maxlen=2000)
         self.lock = asyncio.Lock()
-        # Staff work queues
         self.q_reservation: deque = deque()
         self.q_ticketing: deque = deque()
+        self._redis_url = redis_url
+        self._redis: Any = None
+
+    async def redis_conn(self) -> Any:
+        if self._redis is None:
+            self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
+        return self._redis
 
     async def add_purchase(self, p: PurchaseRef) -> None:
         async with self.lock:
@@ -561,10 +567,35 @@ async def purchase_chain(
     )
     order_id = order["orderId"]
 
-    # 6. Reservation (staff-driven)
-    resv = {"kind": "reservation", "order": order_id, "seg": seg_ref, "traveler": traveler}
-    state.q_reservation.append(resv)
-    sb = await _wait_for(resv, "sb", staff_wait)
+    # 6. Reservation (inline — saga discovery + direct API call)
+    saga = None
+    r = await state.redis_conn()
+    for _saga_attempt in range(poll_attempts):
+        try:
+            entries = await r.xrevrange("events:booking-orchestration", count=100)
+            for _mid, fields in entries:
+                raw = fields.get("envelope", "")
+                if "BookingSagaStarted" in raw and order_id in raw:
+                    env = json.loads(raw)
+                    if (env.get("eventType") == "BookingSagaStarted"
+                            and env.get("payload", {}).get("journeyOrderId") == order_id):
+                        saga = env["payload"]["sagaId"]
+                        break
+            if saga:
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(poll_interval)
+    if not saga:
+        raise StepFailed("reservation", f"no saga for {order_id}")
+    sb = f"sb-{uuid7()}"
+    await api.request(
+        "POST", "booking-orchestration",
+        f"/api/v1/internal/booking-sagas/{saga}/request-reservation",
+        {"segmentRef": seg_ref, "travelerRef": traveler, "segmentBookingId": sb},
+        ok=(200,), step="reservation",
+    )
+    await asyncio.sleep(2)
 
     # 7. Payment
     total_minor = int(offer.get("total", {}).get("minorUnits", 10750))
@@ -590,16 +621,14 @@ async def purchase_chain(
     )
     await asyncio.sleep(3)
 
-    # 8. Ticketing (staff-driven)
-    tick = {
-        "kind": "ticketing",
-        "order": order_id,
-        "sb": sb,
-        "traveler": traveler,
-        "seg": seg_ref,
-    }
-    state.q_ticketing.append(tick)
-    ent = await _wait_for(tick, "entitlement", staff_wait)
+    # 8. Ticketing (inline — direct API call)
+    _, ent_data = await api.request(
+        "POST", "entitlement-ticketing", "/api/v1/entitlements",
+        {"segmentBookingId": sb, "journeyOrderId": order_id,
+         "travelerRef": traveler, "segmentRef": seg_ref, "issuePurpose": "INITIAL"},
+        step="ticketing",
+    )
+    ent = ent_data.get("entitlementId", "")
 
     # 9. Confirm
     final = await _poll_order(api, order_id, {"CONFIRMED"}, poll_attempts, poll_interval)
@@ -610,7 +639,7 @@ async def purchase_chain(
     await state.add_purchase(
         PurchaseRef(
             order_id=order_id,
-            saga_id=resv.get("saga", ""),
+            saga_id=saga or "",
             sb_id=sb,
             segment_ref=seg_ref,
             traveler_ref=traveler,
@@ -829,7 +858,7 @@ class StressDriver:
         self.report_path = report_path
         self.latency = LatencyTracker()
         self.api = ApiClient(cfg, self.latency)
-        self.state = SharedState()
+        self.state = SharedState(redis_url=cfg["target"].get("redis_url", "redis://redis:6379"))
         self.rng = random.Random(cfg.get("seed", {}).get("seed"))
         self.results: dict[str, int] = Counter()
         self.chain_latencies: dict[str, list[float]] = defaultdict(list)
