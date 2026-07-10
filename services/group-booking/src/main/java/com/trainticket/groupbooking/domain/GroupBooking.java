@@ -113,18 +113,15 @@ public final class GroupBooking {
         domainEvents.add(new GroupBookingConfirmed(groupBookingId, holdId, activeCount, activeMemberIds(), Objects.requireNonNull(now, "now is required")));
     }
 
-    public void recordCapacityHoldConfirmed(String capacityHoldId, int confirmedQuantity, Instant now) {
+    public void recordCapacityHoldConfirmed(String capacityHoldId, Instant now) {
         String holdId = GroupMember.requireText(capacityHoldId, "capacityHoldId");
-        if (confirmedQuantity < MINIMUM_GROUP_SIZE) {
-            throw new DomainRuleViolation("confirmedQuantity must be at least 10 for a group booking");
-        }
-        if (confirmedQuantity < activeMemberCount()) {
-            throw new DomainRuleViolation("confirmedQuantity cannot be less than active roster size");
+        if (this.capacityHoldId == null || !this.capacityHoldId.equals(holdId)) {
+            throw new DomainRuleViolation("capacity hold confirmation does not match this group booking");
         }
         if (status == GroupBookingStatus.DRAFT) {
             status = GroupBookingStatus.HOLD_ACTIVE;
         }
-        this.capacityHoldId = holdId;
+        Objects.requireNonNull(now, "now is required");
     }
 
     public void cancel(List<String> memberIds, String reason, Instant now) {
@@ -150,13 +147,18 @@ public final class GroupBooking {
                 if (member == null) {
                     throw new DomainRuleViolation("member not found: " + memberId);
                 }
-                member.cancel();
-                cancelled.add(member.memberId());
+                if (member.active()) {
+                    cancelled.add(member.memberId());
+                }
+            }
+            int remainingActiveCount = activeMemberCount() - cancelled.size();
+            if (remainingActiveCount < MINIMUM_GROUP_SIZE && status == GroupBookingStatus.CONFIRMED) {
+                throw new DomainRuleViolation("partial cancellation would reduce confirmed group below minimum size");
+            }
+            for (String memberId : cancelled) {
+                members.get(memberId).cancel();
             }
             if (activeMemberCount() < MINIMUM_GROUP_SIZE) {
-                if (status == GroupBookingStatus.CONFIRMED) {
-                    throw new DomainRuleViolation("partial cancellation would reduce confirmed group below minimum size");
-                }
                 status = GroupBookingStatus.CANCELLED;
                 cancellationReason = "group size below minimum after partial cancellation: " + normalizedReason;
             } else {

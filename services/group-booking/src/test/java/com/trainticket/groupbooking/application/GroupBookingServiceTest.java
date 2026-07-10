@@ -35,10 +35,11 @@ class GroupBookingServiceTest {
     }
 
     @Test
-    void consumesCapacityHoldConfirmedForKnownGroupBooking() {
+    void consumesCapacityHoldConfirmedUsingDocumentedCapacityContract() {
         BookingDetail created = service.create(new GroupBookingService.CreateGroupBookingCommand(
             "org-1", List.of("seg-1"), 10, "USD", 10_000L, 0, null), PrefixedIds.newCorrelationId());
         service.addMembers(created.groupBookingId(), new GroupBookingService.AddMembersCommand(memberCommands(10)), PrefixedIds.newCorrelationId());
+        service.confirm(created.groupBookingId(), new GroupBookingService.ConfirmGroupBookingCommand("hold-1"), PrefixedIds.newCorrelationId());
 
         EventEnvelope envelope = new EventEnvelope(
             PrefixedIds.newEventId(),
@@ -48,14 +49,20 @@ class GroupBookingServiceTest {
             null,
             "capacity-availability",
             1,
-            Map.of("groupBookingId", created.groupBookingId(), "holdId", "hold-1", "confirmedQuantity", 10)
+            Map.of(
+                "holdId", "hold-1",
+                "inventoryPoolId", "pool-1",
+                "capacityUnitRef", "unit-1",
+                "interval", Map.of("fromStationRef", "sta-1", "toStationRef", "sta-2"),
+                "confirmedAt", "2026-07-10T12:01:00Z"
+            )
         );
 
         service.handleCapacityHoldConfirmed(envelope);
 
         BookingDetail detail = service.get(created.groupBookingId());
         assertThat(detail.capacityHoldId()).isEqualTo("hold-1");
-        assertThat(detail.status()).isEqualTo("HOLD_ACTIVE");
+        assertThat(detail.status()).isEqualTo("CONFIRMED");
     }
 
     private static List<GroupBookingService.MemberCommand> memberCommands(int count) {

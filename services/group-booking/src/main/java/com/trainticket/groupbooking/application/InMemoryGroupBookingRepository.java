@@ -19,4 +19,14 @@ public class InMemoryGroupBookingRepository implements GroupBookingRepository {
     public Optional<GroupBooking> findById(String groupBookingId) {
         return Optional.ofNullable(bookings.get(groupBookingId));
     }
+
+    @Override
+    public Optional<GroupBooking> findByCapacityHoldId(String capacityHoldId) {
+        if (capacityHoldId == null || capacityHoldId.isBlank()) {
+            return Optional.empty();
+        }
+        return bookings.values().stream()
+            .filter(booking -> capacityHoldId.equals(booking.capacityHoldId()))
+            .findFirst();
+    }
 }

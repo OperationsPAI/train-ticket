@@ -6,4 +6,5 @@ import java.util.Optional;
 public interface GroupBookingRepository {
     void save(GroupBooking booking);
     Optional<GroupBooking> findById(String groupBookingId);
+    Optional<GroupBooking> findByCapacityHoldId(String capacityHoldId);
 }

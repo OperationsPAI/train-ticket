@@ -97,17 +97,20 @@ public class GroupBookingService {
             return;
         }
         Map<?, ?> payload = envelope.payload() instanceof Map<?, ?> map ? map : Map.of();
-        String groupBookingId = text(payload.get("groupBookingId"));
-        if (groupBookingId == null) {
-            groupBookingId = text(payload.get("businessRef"));
+        String holdId = text(payload.get("holdId"));
+        if (holdId == null) {
+            throw new IllegalArgumentException("CapacityHoldConfirmed requires holdId");
         }
-        String holdId = firstText(payload, "holdId", "capacityHoldId");
-        int quantity = intValue(payload.get("confirmedQuantity"), payload.get("quantity"), payload.get("heldQuantity"));
-        if (groupBookingId == null || holdId == null) {
-            throw new IllegalArgumentException("CapacityHoldConfirmed requires groupBookingId/businessRef and holdId");
+        requireText(payload, "inventoryPoolId");
+        requireText(payload, "capacityUnitRef");
+        if (!(payload.get("interval") instanceof Map<?, ?>)) {
+            throw new IllegalArgumentException("CapacityHoldConfirmed requires interval");
         }
-        GroupBooking booking = getAggregate(groupBookingId);
-        booking.recordCapacityHoldConfirmed(holdId, quantity, clock.instant());
+        requireText(payload, "confirmedAt");
+
+        GroupBooking booking = repository.findByCapacityHoldId(holdId)
+            .orElseThrow(() -> new NotFoundException("group booking not found for capacity hold: " + holdId));
+        booking.recordCapacityHoldConfirmed(holdId, clock.instant());
         repository.save(booking);
     }
 
@@ -150,22 +153,16 @@ public class GroupBookingService {
         return PrefixedIds.isCorrelationId(correlationId) ? correlationId : PrefixedIds.newCorrelationId();
     }
 
-    private static String firstText(Map<?, ?> payload, String first, String second) {
-        String value = text(payload.get(first));
-        return value == null ? text(payload.get(second)) : value;
+    private static String requireText(Map<?, ?> payload, String field) {
+        String value = text(payload.get(field));
+        if (value == null) {
+            throw new IllegalArgumentException("CapacityHoldConfirmed requires " + field);
+        }
+        return value;
     }
 
     private static String text(Object value) {
         return value instanceof String string && !string.isBlank() ? string : null;
-    }
-
-    private static int intValue(Object... values) {
-        for (Object value : values) {
-            if (value instanceof Number number) {
-                return number.intValue();
-            }
-        }
-        return 0;
     }
 
     public record CreateGroupBookingCommand(

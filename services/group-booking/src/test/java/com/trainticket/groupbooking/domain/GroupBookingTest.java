@@ -72,6 +72,22 @@ class GroupBookingTest {
         assertThat(booking.activeMemberCount()).isEqualTo(9);
     }
 
+    @Test
+    void invalidConfirmedPartialCancellationDoesNotMutateRoster() {
+        GroupBooking booking = GroupBooking.create("gb-1", "org-1", List.of("seg-1"), 10, fare(), NOW);
+        booking.addMembers(members(10), NOW);
+        booking.confirm("hold-1", NOW);
+        booking.pullEvents();
+
+        assertThatThrownBy(() -> booking.cancel(List.of("mem-1"), "traveler withdrew", NOW))
+            .isInstanceOf(DomainRuleViolation.class)
+            .hasMessageContaining("below minimum size");
+
+        assertThat(booking.status()).isEqualTo(GroupBookingStatus.CONFIRMED);
+        assertThat(booking.activeMemberCount()).isEqualTo(10);
+        assertThat(booking.pullEvents()).isEmpty();
+    }
+
     private static GroupFare fare() {
         return new GroupFare("USD", 12_500L, 750, "neg-1");
     }

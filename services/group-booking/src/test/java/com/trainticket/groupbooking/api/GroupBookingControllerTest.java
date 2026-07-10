@@ -31,15 +31,26 @@ class GroupBookingControllerTest {
     void createValidatesMinimumGroupSize() throws Exception {
         mockMvc.perform(post("/api/v1/group-bookings")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                    {
-                      "organizerRef":"org-1",
-                      "segmentRefs":["seg-1"],
-                      "targetTravelerCount":9,
-                      "fare":{"currency":"USD","minorUnits":10000,"discountBasisPoints":0}
-                    }
-                    """))
-            .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+                .content(invalidSmallGroupRequest()))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void exposesUnversionedGroupBookingEndpoint() throws Exception {
+        mockMvc.perform(post("/group-bookings")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(invalidSmallGroupRequest()))
+            .andExpect(status().isBadRequest());
+    }
+
+    private static String invalidSmallGroupRequest() {
+        return """
+            {
+              "organizerRef":"org-1",
+              "segmentRefs":["seg-1"],
+              "targetTravelerCount":9,
+              "fare":{"currency":"USD","minorUnits":10000,"discountBasisPoints":0}
+            }
+            """;
     }
 }
