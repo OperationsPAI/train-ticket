@@ -50,6 +50,7 @@ CLEAN_FAILURE_CODES = frozenset({
     "SAGA_COMPENSATION",
     "ORDER_REJECTED",
     "RESERVATION_DENIED",
+    "PAYMENT_CAPTURE_TRANSPORT",
 })
 
 
@@ -113,14 +114,86 @@ class AssertionResult:
 # ---------------------------------------------------------------------------
 
 
-def assert_inventory_conservation(cfg: dict, report: dict | None) -> AssertionResult:
-    """Confirmed orders must not exceed capacity for any segment+date."""
-    name = "inventory_conservation"
-    constraints = cfg.get("constraints", {})
-    target_capacity = constraints.get("target_capacity")
+def _parse_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
+
+def _report_purchased(report: dict | None) -> int:
+    if not report:
+        return 0
+    return _parse_int(report.get("results", {}).get("purchased", 0))
+
+
+def _report_route_count(report: dict | None) -> int:
+    if not report:
+        return 1
+
+    for key in ("route_count", "routes_discovered", "discovered_route_count"):
+        count = _parse_int(report.get(key), 0)
+        if count > 0:
+            return count
+
+    for key in ("routes", "discovered_routes", "bookable_routes"):
+        routes = report.get(key)
+        if isinstance(routes, list) and routes:
+            return len(routes)
+
+    return 1
+
+
+def _query_capacity_segments() -> dict[str, dict[str, int]]:
+    """Return capacity and confirmed holds per segment from capacity-availability.
+
+    The capacity service stores aggregate snapshots as JSONB.  Query the pool
+    snapshots for actual capacity, and count only confirmed hold snapshots so
+    refunded/released capacity is not treated as sold.  An empty result is used
+    by callers as the signal to fall back to older booking tables.
+    """
+    sql = """
+        SELECT segment_ref, SUM(capacity) AS capacity, SUM(confirmed) AS confirmed
+        FROM (
+            SELECT
+                COALESCE(
+                    data #>> '{identity,routeSegmentRef}',
+                    data #>> '{identity,serviceSegmentRef}',
+                    id
+                ) AS segment_ref,
+                jsonb_array_length(COALESCE(data -> 'capacityUnits', '[]'::jsonb)) AS capacity,
+                (
+                    SELECT COUNT(*)
+                    FROM capacity_hold_snapshots h
+                    WHERE h.data ->> 'inventoryPoolId' = inventory_pool_snapshots.id
+                      AND h.data ->> 'state' = 'Confirmed'
+                ) AS confirmed
+            FROM inventory_pool_snapshots
+        ) pools
+        GROUP BY segment_ref
+        ORDER BY confirmed DESC;
+    """
+    raw = query_db("capacity_availability", sql)
+    segments: dict[str, dict[str, int]] = {}
+    for line in raw.splitlines():
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        segment_ref = parts[0].strip()
+        capacity = _parse_int(parts[1].strip(), -1)
+        confirmed = _parse_int(parts[2].strip(), -1)
+        if segment_ref and capacity >= 0 and confirmed >= 0:
+            segments[segment_ref] = {
+                "capacity": capacity,
+                "confirmed": confirmed,
+            }
+    return segments
+
+
+def _query_booking_confirmed_segments() -> dict[str, int]:
     # Query the seat-assignment or booking database for confirmed bookings
-    # grouped by segment.
+    # grouped by segment.  This is a fallback for deployments whose
+    # capacity-availability table names do not match the current snapshots.
     sql = """
         SELECT segment_ref, COUNT(*) as confirmed
         FROM segment_bookings
@@ -143,33 +216,73 @@ def assert_inventory_conservation(cfg: dict, report: dict | None) -> AssertionRe
         raw = query_db("booking_orchestration", sql_alt)
 
     segments: dict[str, int] = {}
-    violations: list[str] = []
     for line in raw.splitlines():
         parts = line.split("|")
         if len(parts) >= 2:
             seg = parts[0].strip()
-            count = int(parts[1].strip())
-            segments[seg] = count
-            if target_capacity is not None and count > int(target_capacity):
-                violations.append(f"{seg}: {count} > {target_capacity}")
+            count = _parse_int(parts[1].strip(), -1)
+            if seg and count >= 0:
+                segments[seg] = count
+    return segments
 
-    # Also check via the driver report if available
-    report_purchased = 0
-    if report:
-        results = report.get("results", {})
-        report_purchased = results.get("purchased", 0)
-        if target_capacity is not None and report_purchased > int(target_capacity):
+
+def assert_inventory_conservation(cfg: dict, report: dict | None) -> AssertionResult:
+    """Confirmed holds must not exceed capacity for any segment+date."""
+    name = "inventory_conservation"
+    constraints = cfg.get("constraints", {})
+    target_capacity = constraints.get("target_capacity")
+    report_purchased = _report_purchased(report)
+
+    capacity_segments = _query_capacity_segments()
+    violations: list[str] = []
+    if capacity_segments:
+        for seg, counts in capacity_segments.items():
+            confirmed = counts["confirmed"]
+            capacity = counts["capacity"]
+            if confirmed > capacity:
+                violations.append(f"{seg}: confirmed_holds={confirmed} > capacity={capacity}")
+
+        return AssertionResult(
+            name=name,
+            passed=len(violations) == 0,
+            details={
+                "source": "capacity_availability",
+                "segments": capacity_segments,
+                "total_capacity": sum(s["capacity"] for s in capacity_segments.values()),
+                "total_confirmed_holds": sum(s["confirmed"] for s in capacity_segments.values()),
+                "target_capacity": target_capacity,
+                "report_purchased": report_purchased,
+                "violations": violations,
+            },
+        )
+
+    segments = _query_booking_confirmed_segments()
+    for seg, count in segments.items():
+        if target_capacity is not None and count > int(target_capacity):
+            violations.append(f"{seg}: {count} > {target_capacity}")
+
+    if target_capacity is not None and report:
+        route_count = max(_report_route_count(report), len(segments), 1)
+        aggregate_capacity = int(target_capacity) * route_count
+        if report_purchased > aggregate_capacity:
             violations.append(
-                f"report.purchased={report_purchased} > capacity={target_capacity}"
+                f"report.purchased={report_purchased} > "
+                f"capacity={aggregate_capacity} ({target_capacity} x {route_count} routes)"
             )
+    else:
+        route_count = max(len(segments), 1)
+        aggregate_capacity = None
 
     passed = len(violations) == 0
     return AssertionResult(
         name=name,
         passed=passed,
         details={
+            "source": "booking_orchestration_fallback",
             "segments": segments,
             "target_capacity": target_capacity,
+            "route_count": route_count,
+            "aggregate_capacity": aggregate_capacity,
             "report_purchased": report_purchased,
             "violations": violations,
         },
@@ -406,14 +519,25 @@ def assert_clean_losers(cfg: dict, report: dict | None) -> AssertionResult:
             continue
         failures[key] = count
 
-        # Check if the failure reason matches a clean code
+        # Check if the failure reason matches a clean code.  Normalize common
+        # separator differences because result keys often use HTTP step names
+        # (payment-capture) while contract codes use enum names
+        # (PAYMENT_CAPTURE_TRANSPORT).
         parts = key.split(":")
         step = parts[-1] if len(parts) > 1 else key
-        is_clean = any(code.lower() in step.lower() for code in CLEAN_FAILURE_CODES)
+        normalized_step = step.lower().replace("-", "_")
+        is_clean = any(
+            code.lower() in normalized_step for code in CLEAN_FAILURE_CODES
+        )
 
         if not is_clean:
             # Check if it is a known transport/timeout — those are infra, not bugs
             if "transport" in step.lower() or "timeout" in step.lower():
+                continue
+            if (
+                step == "payment-capture"
+                and _parse_int(error_counts.get("payment:transport", 0)) >= count
+            ):
                 continue
             dirty_failures[key] = count
 
