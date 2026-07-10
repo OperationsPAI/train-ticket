@@ -1117,6 +1117,109 @@ class CustomerSim:
         return "support_case"
 
 
+    # -- new-service journeys ------------------------------------------------
+
+    async def journey_loyalty(self) -> str:
+        """Enroll (idempotent) then read membership tier."""
+        entry = await self.login_or_register()
+        aid = entry["account_id"]
+        code, member = await self.api.request(
+            "POST", "loyalty-membership", "/members/enroll",
+            {"accountId": aid},
+            ok=(200, 201), step="loyalty-enroll")
+        member_id = member.get("memberId") if isinstance(member, dict) else None
+        if not member_id:
+            return "loyalty_enroll_failed"
+        _, details = await self.api.request(
+            "GET", "loyalty-membership", f"/members/{member_id}",
+            ok=(200, 404), step="loyalty-get-member")
+        if details and isinstance(details, dict) and details.get("tier"):
+            return "loyalty_checked"
+        return "loyalty_enrolled"
+
+    async def journey_insurance(self) -> str:
+        """Issue a travel insurance policy with full required fields."""
+        entry = await self.login_or_register()
+        tvl = await self.obtain_traveler(entry)
+        now_dt = datetime.now(timezone.utc)
+        _, policy = await self.api.request(
+            "POST", "travel-insurance", "/api/v1/policies",
+            {"accountId": entry["account_id"],
+             "travelerRef": tvl,
+             "productCode": "DELAY_INSURANCE",
+             "productVersion": "v1",
+             "journeyOrderId": f"ord-{uuid7()}",
+             "ancillaryOrderItemId": f"anc-{uuid7()[:8]}",
+             "segmentRefs": [f"seg-ins-{uuid7()[:8]}"],
+             "paymentIntentId": f"pi-{uuid7()[:8]}",
+             "coverageStartAt": now_dt.isoformat(),
+             "coverageEndAt": (now_dt + timedelta(days=1)).isoformat()},
+            ok=(200, 201), step="insurance-issue-policy")
+        if isinstance(policy, dict) and policy.get("policyId"):
+            return "insurance_policy_created"
+        return "insurance_policy_failed"
+
+    async def journey_group_booking(self) -> str:
+        """Create a group booking for 10+ travelers."""
+        entry = await self.login_or_register()
+        _, group = await self.api.request(
+            "POST", "group-booking", "/api/v1/group-bookings",
+            {"organizerRef": entry["account_id"],
+             "segmentRefs": [f"seg-group-{uuid7()[:8]}"],
+             "targetTravelerCount": 10,
+             "fare": {"currency": "CNY", "minorUnits": 85000,
+                      "discountBasisPoints": 500,
+                      "negotiationRef": f"nego-{uuid7()[:8]}"}},
+            ok=(200, 201), step="group-create")
+        group_id = group.get("groupBookingId") or group.get("id")
+        if group_id:
+            return "group_created"
+        return "group_failed"
+
+    async def journey_corporate(self) -> str:
+        """Create a corporate travel agreement with full schema."""
+        entry = await self.login_or_register()
+        now_dt = datetime.now(timezone.utc)
+        _, agreement = await self.api.request(
+            "POST", "corporate-travel", "/api/v1/agreements",
+            {"corporateId": f"corp-{uuid7()[:8]}",
+             "agreementCode": f"AGR-{uuid7()[:8]}",
+             "legalName": f"Corp-{uuid7()[:8]} Ltd.",
+             "effectiveWindow": {
+                 "startsAt": now_dt.isoformat(),
+                 "endsAt": (now_dt + timedelta(days=365)).isoformat()},
+             "priceRef": {
+                 "fareRuleRefs": [],
+                 "ruleSetId": f"rs-{uuid7()[:8]}",
+                 "ruleSetVersion": "v1"},
+             "monthlyCreditLimit": {"currency": "CNY", "minorUnits": 5000000},
+             "billingCalendar": {
+                 "billingPeriod": "MONTHLY",
+                 "cutoffAt": (now_dt + timedelta(days=30)).isoformat(),
+                 "dueAt": (now_dt + timedelta(days=45)).isoformat()},
+             "contact": {"email": "corp@example.com", "phone": "+86-10-12345678"},
+             "activate": True},
+            ok=(200, 201), step="corporate-create")
+        if isinstance(agreement, dict) and agreement.get("agreementId"):
+            return "corporate_agreement_created"
+        return "corporate_agreement_failed"
+
+    async def journey_campaign(self) -> str:
+        """Draft a marketing campaign with required externalKey."""
+        ext_key = f"camp-{uuid7()[:8]}"
+        now_dt = datetime.now(timezone.utc)
+        window_end = (now_dt + timedelta(days=30)).isoformat()
+        _, campaign = await self.api.request(
+            "POST", "marketing-campaign", "/api/v1/campaigns",
+            {"externalKey": ext_key,
+             "name": f"Campaign-{uuid7()[:8]}",
+             "window": {"validFrom": now_dt.isoformat(), "validUntil": window_end}},
+            ok=(200, 201), step="campaign-draft")
+        campaign_id = campaign.get("campaignId") or campaign.get("id") if isinstance(campaign, dict) else None
+        if campaign_id:
+            return "campaign_drafted"
+        return "campaign_draft_failed"
+
     # -- long-tail read probes ----------------------------------------------
 
     def long_tail_enabled(self, key: str = "enabled") -> bool:
@@ -2152,6 +2255,11 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "ride": sim.journey_ride,
         "disruption": sim.journey_disruption,
         "transfer": sim.journey_transfer,
+        "loyalty": sim.journey_loyalty,
+        "insurance": sim.journey_insurance,
+        "group_booking": sim.journey_group_booking,
+        "corporate": sim.journey_corporate,
+        "campaign": sim.journey_campaign,
     }
     pause = cfg["run"]["session_pause_seconds"]
     while not stop.is_set():

@@ -1,0 +1,39 @@
+# S7 — New Services Smoke Test
+#
+# Validates the 5 Wave B-E services respond correctly under light load.
+# Each service is tested with its primary create + read operations.
+
+name: s7-new-services
+description: "Smoke test for Wave B-E services: loyalty, insurance, group-booking, corporate, marketing"
+
+load:
+  model: open
+  workers: 10
+  duration_seconds: 60
+  rps: 5
+
+target:
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"
+  request_timeout_seconds: 10
+
+mix:
+  loyalty: 0.20
+  insurance: 0.20
+  group_booking: 0.20
+  corporate: 0.20
+  campaign: 0.20
+
+seed:
+  cities: ["Beijing", "Shanghai"]
+  departure_date: "2026-09-01"
+
+polling:
+  attempts: 5
+  interval_seconds: 2
+
+staff:
+  workers: 0
+  think_time_seconds: {min: 0.1, max: 0.3}
+  queue_poll_seconds: 0.5
+  p_risk_approve: 1.0

@@ -76,6 +76,24 @@ export class LoyaltyMembershipApplicationService {
     return memberDetails((await this.requireMember(memberId)).toSnapshot());
   }
 
+  async getMemberByAccountId(accountId: string): Promise<MemberDetailsDto> {
+    const member = await this.repository.findByAccountId(accountId);
+    if (!member) {
+      throw new ApplicationError("NOT_FOUND", `No member found for account ${accountId}`, 404);
+    }
+    return memberDetails(member.toSnapshot());
+  }
+
+  async enrollMember(accountId: string): Promise<{ member: MemberDetailsDto; created: boolean }> {
+    const existing = await this.repository.findByAccountId(accountId);
+    if (existing) {
+      return { member: memberDetails(existing.toSnapshot()), created: false };
+    }
+    const member = Member.enroll({ accountId });
+    await this.repository.save(member);
+    return { member: memberDetails(member.toSnapshot()), created: true };
+  }
+
   async redeemPoints(command: {
     memberId: string;
     points: number;
