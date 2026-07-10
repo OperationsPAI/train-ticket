@@ -114,6 +114,7 @@ class Stats:
         self.scalper_success: int = 0
         self.scalper_blocked: int = 0
         self.scalper_exhausted: int = 0
+        self.scalper_ip_rotations: int = 0
 
     def record_http(self, service: str, status: int, ms: float) -> None:
         self.http[f"{service}:{status}"] += 1
@@ -141,6 +142,7 @@ class Stats:
                 "success": self.scalper_success,
                 "blocked": self.scalper_blocked,
                 "exhausted": self.scalper_exhausted,
+                "ip_rotations": self.scalper_ip_rotations,
             },
         }
 
@@ -1379,6 +1381,12 @@ class ScalperSim:
         self.retry_on_failure = float(self.scalper_cfg.get("retry_on_failure", 0.8))
         self.retry_same_key = bool(self.scalper_cfg.get("retry_same_key", True))
         self.batch_size = int(self.scalper_cfg.get("purchase_batch_size", 4))
+        self.ip_pool = self._build_ip_pool()
+        self.ip_cursor = worker_idx % len(self.ip_pool)
+        self.current_ip: str | None = None
+        self.user_agent = self._pick_user_agent()
+        self.burst_gap_seconds = max(
+            0.0, float(self.scalper_cfg.get("burst_gap_ms", 50)) / 1000.0)
 
         # runtime state filled by prepare()
         self.account_pool: list[dict] = []
@@ -1387,18 +1395,74 @@ class ScalperSim:
         self.current_target: int = 0
         self.identity_cache: dict[str, dict[str, str]] = {}
 
+    def _build_ip_pool(self) -> list[str]:
+        configured = self.scalper_cfg.get("ip_pool")
+        if isinstance(configured, list):
+            pool = [str(ip).strip() for ip in configured if str(ip).strip()]
+            if pool:
+                return pool
+
+        pool_size = max(1, int(self.scalper_cfg.get("ip_pool_size", 24)))
+        prefix = str(self.scalper_cfg.get("ip_prefix", "203.0.113"))
+        start = int(self.scalper_cfg.get("ip_start", 10))
+        return [f"{prefix}.{start + offset}" for offset in range(pool_size)]
+
+    def _pick_user_agent(self) -> str:
+        configured = self.scalper_cfg.get("user_agents")
+        if isinstance(configured, list):
+            agents = [str(agent).strip() for agent in configured if str(agent).strip()]
+        else:
+            agents = []
+        if not agents:
+            agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 "
+                "(KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+                "Mobile/15E148 Safari/604.1",
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+            ]
+        base_agent = agents[self.worker_idx % len(agents)]
+        return f"{base_agent} tt-scalper/{self.worker_idx}"
+
+    def _next_headers(self, headers: dict | None = None) -> dict:
+        next_ip = self.ip_pool[self.ip_cursor % len(self.ip_pool)]
+        self.ip_cursor += 1
+        if self.current_ip is not None and self.current_ip != next_ip:
+            self.stats.scalper_ip_rotations += 1
+        self.current_ip = next_ip
+
+        merged = dict(headers or {})
+        merged["X-Forwarded-For"] = next_ip
+        merged["User-Agent"] = self.user_agent
+        return merged
+
+    async def request(self, *args: Any, **kwargs: Any) -> tuple[int, Any]:
+        headers = self._next_headers(kwargs.pop("headers", None))
+        return await self.api.request(*args, headers=headers, **kwargs)
+
+    async def burst_pause(self) -> None:
+        if self.burst_gap_seconds <= 0:
+            return
+        await asyncio.sleep(self.rng.uniform(0.0, self.burst_gap_seconds))
+
     # -- setup ---------------------------------------------------------------
 
     async def prepare(self) -> None:
         """Register accounts and pre-verify identities before the grab loop."""
         for i in range(self.accounts_per_worker):
             account_id = f"acc-scalper-{self.worker_idx}-{i}-{uuid7()}"
-            await self.api.request("POST", "account", "/api/v1/accounts",
+            await self.request("POST", "account", "/api/v1/accounts",
                                    {"accountId": account_id},
                                    ok=(200, 201), step="scalper-register")
             entry = await self.reg.add_account(account_id)
             given, family = rand_name(self.rng)
-            _, data = await self.api.request(
+            _, data = await self.request(
                 "POST", "traveler-profile", "/api/v1/travelers",
                 {"accountId": account_id,
                  "travelerType": "ADULT",
@@ -1439,7 +1503,7 @@ class ScalperSim:
             "canonicalNameHash": name_hash,
             "validUntil": iso(valid_until),
         }
-        _, credential = await self.api.request(
+        _, credential = await self.request(
             "POST", "identity-verification",
             "/api/v1/identity-verification/credentials",
             credential_body, ok=(200, 201), step="scalper-identity-credential")
@@ -1453,7 +1517,7 @@ class ScalperSim:
             "simPolicyVersion": "sim-tail-v1",
             "requestedAt": now_iso(),
         }
-        _, case = await self.api.request(
+        _, case = await self.request(
             "POST", "identity-verification",
             "/api/v1/identity-verification/verification-cases",
             verify_body, ok=(200, 201), step="scalper-identity-verify")
@@ -1466,7 +1530,7 @@ class ScalperSim:
                          give_up_on_block: bool = False) -> str | None:
         status = None
         for _ in range(self.poll_attempts):
-            code, data = await self.api.request(
+            code, data = await self.request(
                 "GET", "journey-order",
                 f"/api/v1/journey-orders/{order_id}",
                 ok=(), step="scalper-poll-order")
@@ -1499,13 +1563,14 @@ class ScalperSim:
 
         channel = "WEB"
         # search -- zero think time
-        _, search_data = await self.api.request(
+        _, search_data = await self.request(
             "POST", "trip-planning", "/api/v1/itineraries/search",
             {"originRef": seg_route["origin_place"],
              "destinationRef": seg_route["dest_place"],
              "departureDate": seg_route["date"],
              "travelerRefs": [tvl], "channel": channel},
             ok=(200,), step="scalper-search")
+        await self.burst_pause()
         itins = [i for i in (search_data.get("itineraries") or []) if _bookable(i)]
         if not itins:
             self.stats.scalper_exhausted += 1
@@ -1520,21 +1585,22 @@ class ScalperSim:
                  "dest_node": leg.get("destinationStopRef") or seg_route.get("dest_node")}
 
         # quote -- no think time, no abandonment
-        _, fare_quote = await self.api.request(
+        _, fare_quote = await self.request(
             "POST", "fare-pricing", "/api/v1/fare-quotes",
             {"travelerRefs": [tvl], "channel": channel,
              "segmentRefs": [found["segment"]]}, step="scalper-quote")
-        await asyncio.sleep(1)
+        await self.burst_pause()
 
         # offer
-        _, offer = await self.api.request(
+        _, offer = await self.request(
             "POST", "offer-management", "/api/v1/offers",
             {"accountId": acct["account_id"], "channelId": channel,
              "itineraryRef": found["itinerary"], "travelerRefs": [tvl]},
             step="scalper-offer")
+        await self.burst_pause()
 
         # order
-        _, order = await self.api.request(
+        _, order = await self.request(
             "POST", "journey-order", "/api/v1/journey-orders",
             {"accountId": acct["account_id"], "offerId": offer["offerId"],
              "offerVersion": offer.get("offerVersion", 1),
@@ -1542,6 +1608,7 @@ class ScalperSim:
              "journeyDate": seg_route["date"], "productCode": "TRAIN"},
             step="scalper-order")
         order_id = order["orderId"]
+        await self.burst_pause()
 
         # risk gate
         status = await self.poll_order(order_id, {"CONFIRMED"}, give_up_on_block=True)
@@ -1563,19 +1630,20 @@ class ScalperSim:
 
         # payment -- zero think time
         total_minor = int(offer["total"]["minorUnits"])
-        _, intent = await self.api.request(
+        _, intent = await self.request(
             "POST", "payment", "/api/v1/payment-intents",
             {"businessRef": order_id, "purpose": "purchase",
              "amount": {"currency": "CNY", "minorUnits": total_minor},
              "payerRef": acct["account_id"]}, step="scalper-payment-intent")
+        await self.burst_pause()
 
         # capture
-        await self.api.request(
+        await self.request(
             "POST", "payment",
             f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
             {"channelRef": {"channel": "ALIPAY_SIM"}},
             ok=(200, 201, 202), step="scalper-payment-capture")
-        await asyncio.sleep(3)
+        await self.burst_pause()
 
         # ticketing via staff queue
         tick = {"kind": "ticketing", "order": order_id, "sb": sb,
@@ -1646,12 +1714,16 @@ async def scalper_worker(idx: int, cfg: dict, sim: ScalperSim,
                 stats.journeys["scalper:crashed"] += 1
                 print(f"[scalper{idx}] crashed — {type(exc).__name__}: {str(exc)[:180]}")
                 break
-        # minimal pause to avoid CPU spin when all segments exhausted
+        # tight burst pacing: tiny randomized pause before the next batch.
         if not stop.is_set():
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=0.1)
-            except asyncio.TimeoutError:
-                pass
+            timeout = sim.rng.uniform(0.0, sim.burst_gap_seconds)
+            if timeout <= 0:
+                await asyncio.sleep(0)
+            else:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    pass
 
 
 # ---------------------------------------------------------------------------
