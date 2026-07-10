@@ -401,9 +401,11 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         } catch (NotFoundException ex) {
             return ackSkipMissingOrder(envelope);
         } catch (DataAccessException ex) {
+            LOGGER.error("DataAccessException handling {} eventId={}: {}", envelope.eventType(), envelope.eventId(), ex.getMessage(), ex);
             rollbackCurrentTransactionIfActive();
             return new EventSubscriber.TransientError(ex.getMessage());
         } catch (RuntimeException ex) {
+            LOGGER.error("RuntimeException handling {} eventId={}: {}", envelope.eventType(), envelope.eventId(), ex.getMessage(), ex);
             rollbackCurrentTransactionIfActive();
             return new EventSubscriber.TransientError(ex.getMessage());
         }

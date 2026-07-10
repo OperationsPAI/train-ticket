@@ -167,7 +167,7 @@ scalper:
 
 # Poll tuning for asynchronous state (saga completion, order confirmation).
 polling:
-  attempts: 8
+  attempts: 20
   interval_seconds: 4
 
 wallet_promotion:

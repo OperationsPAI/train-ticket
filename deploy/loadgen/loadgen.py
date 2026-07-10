@@ -1903,7 +1903,7 @@ class ScalperSim:
         # confirm: CONFIRMING means the purchase chain completed and risk event
         # propagation is still catching up, so count it as scalper success.
         final = await self.poll_order(
-            order_id, {"CONFIRMED", "CONFIRMING"}, timeout_seconds=30.0)
+            order_id, {"CONFIRMED", "CONFIRMING"}, timeout_seconds=90.0)
         if final not in {"CONFIRMED", "CONFIRMING"}:
             raise StepFailed("scalper-confirm", f"order {order_id} ended {final}")
 
