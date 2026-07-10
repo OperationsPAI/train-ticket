@@ -14,9 +14,14 @@ public final class DataSources {
         config.setJdbcUrl(parsed.jdbcUrl());
         config.setUsername(parsed.username());
         config.setPassword(parsed.password());
-        config.setMaximumPoolSize(10);
+        config.setMaximumPoolSize(Integer.parseInt(
+            System.getenv().getOrDefault("HIKARI_MAX_POOL_SIZE", "10")));
         config.setMinimumIdle(1);
         config.setPoolName("platform-java-kit-postgres");
+        config.setKeepaliveTime(30_000);
+        config.setMaxLifetime(600_000);
+        config.setConnectionTimeout(5_000);
+        config.setValidationTimeout(3_000);
         return new HikariDataSource(config);
     }
 }
