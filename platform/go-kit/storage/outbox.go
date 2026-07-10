@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -67,21 +68,43 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 		return err
 	}
 	defer rows.Close()
-	for rows.Next() {
-		var seq int64
-		var stream string
-		var envelope json.RawMessage
-		if err := rows.Scan(&seq, &stream, &envelope); err != nil {
-			return err
-		}
-		if err := r.redis.XAdd(ctx, &redis.XAddArgs{Stream: stream, MaxLen: r.maxLen, Approx: true, Values: map[string]any{messaging.EnvelopeField: string(envelope)}}).Err(); err != nil {
-			return err
-		}
-		if _, err := r.db.Exec(ctx, `UPDATE outbox SET published_at = now() WHERE seq = $1 AND published_at IS NULL`, seq); err != nil {
-			return err
-		}
+
+	type outboxRow struct {
+		seq      int64
+		stream   string
+		envelope json.RawMessage
 	}
-	return rows.Err()
+	batch := make([]outboxRow, 0, 100)
+	for rows.Next() {
+		var row outboxRow
+		if err := rows.Scan(&row.seq, &row.stream, &row.envelope); err != nil {
+			return err
+		}
+		batch = append(batch, row)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(batch) == 0 {
+		return nil
+	}
+
+	pipe := r.redis.Pipeline()
+	for _, row := range batch {
+		pipe.XAdd(ctx, &redis.XAddArgs{Stream: row.stream, MaxLen: r.maxLen, Approx: true, Values: map[string]any{messaging.EnvelopeField: string(row.envelope)}})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+
+	placeholders := make([]string, len(batch))
+	args := make([]any, len(batch))
+	for i, row := range batch {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = row.seq
+	}
+	_, err = r.db.Exec(ctx, fmt.Sprintf(`UPDATE outbox SET published_at = now() WHERE seq IN (%s) AND published_at IS NULL`, strings.Join(placeholders, ", ")), args...)
+	return err
 }
 
 type ProcessedEvents struct {
