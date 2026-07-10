@@ -155,7 +155,8 @@ class JourneyOrderTest {
             items,
             NOW,
             "cmd-create",
-            "corr-1"
+            "corr-1",
+            null
         );
     }
 

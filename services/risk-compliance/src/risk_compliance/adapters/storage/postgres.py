@@ -188,3 +188,18 @@ class PostgresAssessmentRepository:
                 row = conn.execute("SELECT count(*) FROM risk_account_order_attempts WHERE account_id = %s AND occurred_at >= %s AND occurred_at <= %s AND occurred_at > %s", (account_id, window_start, occurred_at, lifted_at)).fetchone()
             return int(row[0])
         return self.with_connection(write)
+
+    def record_ip_order_attempt(self, source_ip: str, account_id: str, occurred_at: datetime) -> tuple[int, int]:
+        occurred_at = _coerce_dt(occurred_at)
+        window_start = occurred_at - FREQUENCY_WINDOW
+        def write(conn: Any) -> tuple[int, int]:
+            conn.execute(
+                "INSERT INTO risk_ip_order_attempts(source_ip, account_id, occurred_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (source_ip, account_id, occurred_at),
+            )
+            row = conn.execute(
+                "SELECT count(*), count(DISTINCT account_id) FROM risk_ip_order_attempts WHERE source_ip = %s AND occurred_at >= %s AND occurred_at <= %s",
+                (source_ip, window_start, occurred_at),
+            ).fetchone()
+            return int(row[0]), int(row[1])
+        return self.with_connection(write)

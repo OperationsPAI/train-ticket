@@ -23,6 +23,7 @@ Last updated: 2026-07-04
 | `travelerRefs` | `TravelerRef[]` | yes | Traveler references (structured form, see shared-primitives.md section 2a). |
 | `segmentRefs` | string[] | yes | Segment references. |
 | `createdAt` | RFC3339 UTC | yes | Order creation time. |
+| `sourceIp` | string | no | First hop from `X-Forwarded-For`/real client IP when available, for downstream risk velocity analysis. |
 
 **MonetarySummary:**
 
