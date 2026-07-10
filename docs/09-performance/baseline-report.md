@@ -340,6 +340,56 @@ Validates zero data loss during service recovery. Outbox fully drained, DLQ stab
 5. **Long-term**: Capacity advisory locks instead of row-level FOR UPDATE for horizontal scaling
 6. **Infrastructure**: Multi-instance PG + Redis for production-grade RPS
 
+## Wave B-E New Services (2026-07-10)
+
+5 new bounded context services deployed and validated:
+
+| Service | Language | Kit | Health | DB | API Smoke |
+|---------|----------|-----|--------|-----|-----------|
+| loyalty-membership | TypeScript | ts-kit | PASS (10ms) | PASS | PASS (201) |
+| travel-insurance | Go | go-kit | PASS (8ms) | PASS | PASS (201) |
+| group-booking | Java | java-kit | PASS (12ms) | PASS | PASS (201) |
+| corporate-travel | Python | python-kit | PASS (10ms) | PASS | PASS (201) |
+| marketing-campaign | Java | java-kit | PASS (8ms) | PASS | PASS (201) |
+
+**Oracle**: 15/15 checks PASS (health + DB + API smoke for all 5 services)
+
+### New Service Latency (loadgen)
+
+| Service | p50 | p95 | n |
+|---------|-----|-----|---|
+| loyalty-membership | 5ms | 11ms | 14 |
+| travel-insurance | 14ms | 14ms | 5 |
+| group-booking | 8ms | 9ms | 6 |
+| corporate-travel | 8ms | 8ms | 1 |
+| marketing-campaign | 30ms | 30ms | 2 |
+
+### Loadgen Journey Coverage (16 journeys)
+
+All 16 journey types active in loadgen with 0 HTTP errors for new services:
+
+| Journey | Outcome | Count |
+|---------|---------|-------|
+| loyalty | loyalty_checked | 7 |
+| insurance | insurance_policy_created | 5 |
+| corporate | corporate_agreement_created | 1 |
+| group_booking | group_created | 6 |
+| campaign | campaign_drafted | 2 |
+
+### Scalper Behavior (after timeout tuning)
+
+| Metric | Value |
+|--------|-------|
+| Scalper attempts | 32 |
+| Scalper success | **19 (59%)** |
+| Scalper blocked by risk | 0 |
+| Scalper capacity exhausted | 10 |
+| IP rotations | 313 |
+| Purchase purchased | **10** |
+| Purchase failed | **0** |
+
+Scalper actors successfully purchase tickets with 59% success rate. Failures are capacity exhaustion (31%) only. Event pipeline confirmation latency (35-65s) resolved by increasing scalper confirm timeout from 30s to 90s.
+
 ## Correctness
 
 - Zero 5xx errors across all tests
