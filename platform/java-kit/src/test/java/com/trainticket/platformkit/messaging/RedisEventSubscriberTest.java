@@ -86,6 +86,42 @@ class RedisEventSubscriberTest {
 
 
     @Test
+    void pollBacksOffExponentiallyOnConsecutiveFailuresAndResetsOnSuccess() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        String eventJson = objectMapper.writeValueAsString(event);
+        FailThenSucceedStreams streams = new FailThenSucceedStreams(
+            3,
+            List.of(new RedisStreamOperations.StreamEntry("1-0", eventJson))
+        );
+
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+        Logger logger = (Logger) LoggerFactory.getLogger(RedisEventSubscriber.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        CountDownLatch handled = new CountDownLatch(1);
+        try {
+            subscriber.subscribe(List.of("events:payment"), "journey-order", "consumer-1", envelope -> {
+                handled.countDown();
+                return HandlerResult.SUCCESS;
+            });
+            assertThat(handled.await(15, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            subscriber.close();
+            logger.detachAppender(logs);
+        }
+        List<String> reconnectLogs = logs.list.stream()
+            .filter(e -> e.getFormattedMessage().contains("reconnecting in"))
+            .map(ILoggingEvent::getFormattedMessage)
+            .toList();
+        assertThat(reconnectLogs).hasSize(3);
+        assertThat(reconnectLogs.get(0)).contains("reconnecting in 1s");
+        assertThat(reconnectLogs.get(1)).contains("reconnecting in 2s");
+        assertThat(reconnectLogs.get(2)).contains("reconnecting in 4s");
+    }
+
+    @Test
     void maxDeliveryAttemptsUsesLastRuntimeExceptionAsFailureReasonWithoutRedispatching() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
         EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
@@ -107,6 +143,38 @@ class RedisEventSubscriberTest {
         assertThat(streams.dlqMetadata.get().failureReason()).isEqualTo("IllegalStateException: payment parse failed");
         assertThat(streams.dlqMetadata.get().attempts()).isEqualTo(RedisEventSubscriber.MAX_DELIVERY_ATTEMPTS);
         assertThat(streams.acked).contains("1-0");
+    }
+
+    private static final class FailThenSucceedStreams implements RedisStreamOperations {
+        private final int failCount;
+        private final List<StreamEntry> successBatch;
+        private final List<String> acked = new ArrayList<>();
+        private int readGroupCalls;
+        private boolean delivered;
+
+        private FailThenSucceedStreams(int failCount, List<StreamEntry> successBatch) {
+            this.failCount = failCount;
+            this.successBatch = successBatch;
+        }
+
+        @Override public void createGroup(String stream, String group) {}
+        @Override public String publish(String stream, String envelopeJson) { return "1-0"; }
+
+        @Override
+        public synchronized List<StreamEntry> readGroup(String stream, String group, String consumerName) {
+            readGroupCalls++;
+            if (readGroupCalls <= failCount) {
+                throw new RuntimeException("Connection refused (os error 111)");
+            }
+            if (delivered) return List.of();
+            delivered = true;
+            return successBatch;
+        }
+
+        @Override public List<StreamEntry> autoClaim(String stream, String group, String consumerName) { return List.of(); }
+        @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
+        @Override public void ack(String stream, String group, String messageId) { acked.add(messageId); }
+        @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {}
     }
 
     private static final class FakeRedisStreams implements RedisStreamOperations {

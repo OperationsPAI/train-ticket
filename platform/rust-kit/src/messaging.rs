@@ -1043,7 +1043,7 @@ pub mod redis_runtime {
             streams: Vec<String>,
             group: String,
             consumer_name: String,
-            handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
+            handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
             run_once: bool,
         ) -> Result<(), SubscribeFailed> {
             Self::create_groups_with_ops(ops, &streams, &group).await?;
@@ -1057,7 +1057,7 @@ pub mod redis_runtime {
                         &streams,
                         &group,
                         &consumer_name,
-                        handler.as_ref(),
+                        handler,
                     )
                     .await
                 {
@@ -1078,7 +1078,7 @@ pub mod redis_runtime {
                     }
                 };
                 for message in messages {
-                    self.process_message(ops, &group, &consumer_name, message, handler.as_ref())
+                    self.process_message(ops, &group, &consumer_name, message, handler)
                         .await?;
                 }
                 if run_once {
@@ -1096,14 +1096,50 @@ pub mod redis_runtime {
             consumer_name: String,
             handler: Box<dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync>,
         ) -> Result<(), SubscribeFailed> {
-            let connection = self
-                .client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|error| SubscribeFailed(error.to_string()))?;
-            let mut ops = RedisStreamOps { connection };
-            self.subscribe_with_ops(&mut ops, streams, group, consumer_name, handler, false)
-                .await
+            let mut delay = 1u64;
+            loop {
+                if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(());
+                }
+                let connection = match self.client.get_multiplexed_async_connection().await {
+                    Ok(c) => {
+                        delay = 1;
+                        c
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Redis subscriber connection failed: {error}, reconnecting in {delay}s"
+                        );
+                        sleep(Duration::from_secs(delay)).await;
+                        delay = (delay * 2).min(30);
+                        continue;
+                    }
+                };
+                let mut ops = RedisStreamOps { connection };
+                match self
+                    .subscribe_with_ops(
+                        &mut ops,
+                        streams.clone(),
+                        group.clone(),
+                        consumer_name.clone(),
+                        handler,
+                        false,
+                    )
+                    .await
+                {
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            return Ok(());
+                        }
+                        tracing::warn!(
+                            "Redis subscriber disconnected: {error}, reconnecting in {delay}s"
+                        );
+                        sleep(Duration::from_secs(delay)).await;
+                        delay = (delay * 2).min(30);
+                    }
+                }
+            }
         }
     }
 
