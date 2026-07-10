@@ -23,7 +23,18 @@ export class PostgresUpstreamStateRepository implements UpstreamStateRepository 
   }
 
   async saveFareQuote(fareQuote: StoredFareQuote): Promise<void> {
-    await upsertSnapshot(this.client, "offer_upstream_fare_quotes", fareQuoteStorageKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs), serializeFareQuote(fareQuote));
+    await this.saveFareQuotes([fareQuote]);
+  }
+
+  async saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void> {
+    await upsertSnapshots(
+      this.client,
+      "offer_upstream_fare_quotes",
+      fareQuotes.map((fareQuote) => ({
+        id: fareQuoteStorageKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs),
+        data: serializeFareQuote(fareQuote),
+      })),
+    );
   }
 
   async findFareQuote(inputHash: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined> {
@@ -71,12 +82,29 @@ type StoredFareQuoteSnapshot = Omit<StoredFareQuote, "validFrom" | "validUntil">
 type StoredTravelerSnapshot = StoredTraveler;
 
 async function upsertSnapshot(client: PoolClient, tableName: UpstreamTableName, id: string, data: unknown): Promise<void> {
+  await upsertSnapshots(client, tableName, [{ id, data }]);
+}
+
+async function upsertSnapshots(client: PoolClient, tableName: UpstreamTableName, snapshots: readonly UpstreamSnapshot[]): Promise<void> {
+  const uniqueSnapshots = [...new Map(snapshots.map((snapshot) => [snapshot.id, snapshot])).values()];
+  if (uniqueSnapshots.length === 0) {
+    return;
+  }
+
+  const values: string[] = [];
+  const parameters: unknown[] = [];
+  for (const [index, snapshot] of uniqueSnapshots.entries()) {
+    parameters.push(snapshot.id, snapshot.data);
+    const first = index * 2 + 1;
+    values.push(`($${first}, 1, $${first + 1})`);
+  }
+
   await client.query(
     `INSERT INTO ${tableName} (id, version, data)
-     VALUES ($1, 1, $2)
+     VALUES ${values.join(", ")}
      ON CONFLICT (id)
      DO UPDATE SET version = ${tableName}.version + 1, data = EXCLUDED.data, updated_at = now()`,
-    [id, data],
+    parameters,
   );
 }
 
@@ -147,4 +175,5 @@ function reviveTraveler(snapshot: StoredTravelerSnapshot): StoredTraveler {
   return snapshot;
 }
 
+type UpstreamSnapshot = Readonly<{ id: string; data: unknown }>;
 type UpstreamTableName = "offer_upstream_itineraries" | "offer_upstream_fare_quotes" | "offer_upstream_travelers";

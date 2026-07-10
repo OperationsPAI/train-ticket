@@ -670,6 +670,8 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/offer_management
+            - name: PG_MAX_POOL_SIZE
+              value: "15"
           resources:
             requests:
               cpu: 50m
