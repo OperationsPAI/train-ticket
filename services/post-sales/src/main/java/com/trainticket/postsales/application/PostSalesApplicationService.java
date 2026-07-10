@@ -7,10 +7,12 @@ import com.trainticket.postsales.domain.DecisionKind;
 import com.trainticket.postsales.domain.Money;
 import com.trainticket.postsales.domain.PostSalesCase;
 import com.trainticket.postsales.domain.PostSalesCaseType;
+import com.trainticket.postsales.domain.PostSalesCaseStatus;
 import com.trainticket.postsales.domain.PostSalesDecision;
 import com.trainticket.postsales.domain.PostSalesEvent;
 import com.trainticket.postsales.domain.PostSalesScope;
 import com.trainticket.postsales.domain.RuleEvaluationSnapshot;
+import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -36,27 +38,14 @@ public class PostSalesApplicationService {
 
     public PostSalesCase open(OpenCaseCommand command) {
         return repository.findByIdempotencyKey(command.idempotencyKey())
-            .orElseGet(() -> {
-                Instant now = clock.instant();
-                PostSalesCase postSalesCase = PostSalesCase.open(
-                    command.journeyOrderId(),
-                    command.caseType(),
-                    command.scope(),
-                    command.reasonCode(),
-                    command.actorRef(),
-                    command.commandId(),
-                    now,
-                    command.commandId(),
-                    command.correlationId()
-                );
-                repository.save(postSalesCase);
-                publishNewEvents(postSalesCase);
-                return postSalesCase;
-            });
+            .orElseGet(() -> openNewCase(command));
     }
 
     public PostSalesCase evaluate(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
+        if (isTerminalNonRefundable(postSalesCase)) {
+            throw new OrderNotRefundableException();
+        }
         if (postSalesCase.decision() != null) {
             return postSalesCase;
         }
@@ -78,6 +67,9 @@ public class PostSalesApplicationService {
 
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
+        if (isTerminalNonRefundable(postSalesCase)) {
+            throw new OrderNotRefundableException();
+        }
         if (postSalesCase.status().name().equals("APPROVED")) {
             return postSalesCase;
         }
@@ -94,6 +86,48 @@ public class PostSalesApplicationService {
     public PostSalesCase get(String caseId) {
         return repository.findById(PostSalesMapper.stripCasePrefix(caseId))
             .orElseThrow(() -> new CaseNotFoundException(caseId));
+    }
+
+
+    private PostSalesCase openNewCase(OpenCaseCommand command) {
+        if (requiresExclusiveRefundSlot(command.caseType())) {
+            repository.findActiveRefundCaseForOrder(command.journeyOrderId())
+                .ifPresent(existing -> {
+                    throw new RefundAlreadyInProgressException(existing.caseId());
+                });
+        }
+        Instant now = clock.instant();
+        PostSalesCase postSalesCase = PostSalesCase.open(
+            command.journeyOrderId(),
+            command.caseType(),
+            command.scope(),
+            command.reasonCode(),
+            command.actorRef(),
+            command.idempotencyKey(),
+            now,
+            command.commandId(),
+            command.correlationId()
+        );
+        try {
+            repository.save(postSalesCase);
+        } catch (OptimisticConcurrencyException exception) {
+            throw new PostSalesConcurrencyException("Concurrent post-sales update conflicted", exception);
+        }
+        publishNewEvents(postSalesCase);
+        return postSalesCase;
+    }
+
+    private static boolean requiresExclusiveRefundSlot(PostSalesCaseType caseType) {
+        return caseType == PostSalesCaseType.REFUND
+            || caseType == PostSalesCaseType.CANCELLATION
+            || caseType == PostSalesCaseType.REBOOK
+            || caseType == PostSalesCaseType.CHANGE;
+    }
+
+    private static boolean isTerminalNonRefundable(PostSalesCase postSalesCase) {
+        return postSalesCase.status() == PostSalesCaseStatus.REJECTED
+            || postSalesCase.status() == PostSalesCaseStatus.CANCELLED
+            || postSalesCase.status() == PostSalesCaseStatus.FAILED;
     }
 
     private PostSalesDecision decisionFor(PostSalesCase postSalesCase, Instant now) {
