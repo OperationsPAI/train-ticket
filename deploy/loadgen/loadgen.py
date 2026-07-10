@@ -1121,7 +1121,7 @@ class CustomerSim:
 
     async def journey_loyalty(self) -> str:
         """Check membership tier and points for an existing account."""
-        entry = await self.get_or_create_account()
+        entry = await self.login_or_register()
         try:
             _, member = await self.api.request(
                 "GET", "loyalty-membership",
@@ -1152,7 +1152,7 @@ class CustomerSim:
 
     async def journey_group_booking(self) -> str:
         """Create a group booking with 3 members."""
-        entry = await self.get_or_create_account()
+        entry = await self.login_or_register()
         _, group = await self.api.request(
             "POST", "group-booking", "/api/v1/group-bookings",
             {"organizerAccountId": entry["account_id"],
@@ -1166,7 +1166,7 @@ class CustomerSim:
 
     async def journey_corporate(self) -> str:
         """Check or create a corporate travel agreement."""
-        entry = await self.get_or_create_account()
+        entry = await self.login_or_register()
         try:
             _, agreements = await self.api.request(
                 "GET", "corporate-travel",
