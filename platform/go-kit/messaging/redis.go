@@ -179,6 +179,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 	for i := range ids {
 		ids[i] = ">"
 	}
+	backoff := time.Second
 	for {
 		select {
 		case <-ctx.Done():
@@ -197,10 +198,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			if errors.Is(err, redis.Nil) {
 				continue
 			}
-			// A non-persistent Redis loses consumer groups on restart:
-			// NOGROUP means "recreate and carry on". Every other error
-			// backs off so a dead connection never hot-spins this loop.
-			log.Printf("WARN service=%s stream=%s eventId=unknown deliveries=0 read failed; recreating group if missing and backing off: %T: %v", group, strings.Join(streams, ","), err, err)
+			log.Printf("WARN service=%s stream=%s read failed; reconnecting in %v: %T: %v", group, strings.Join(streams, ","), backoff, err, err)
 			if strings.Contains(strings.ToUpper(err.Error()), "NOGROUP") {
 				for _, s := range streams {
 					_ = b.ensureGroup(ctx, s, group)
@@ -209,10 +207,14 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Second):
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
 			}
 			continue
 		}
+		backoff = time.Second
 		for _, stream := range result {
 			for _, msg := range stream.Messages {
 				b.processMessage(ctx, stream.Stream, group, consumer, msg, handler)
