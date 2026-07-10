@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -26,8 +27,8 @@ from .domain import BlockScope, Decision, PolicyVersionRef, RiskAssessment, Risk
 PRODUCER = "risk-compliance"
 SCHEMA_VERSION = 1
 DEFAULT_POLICY_VERSION = PolicyVersionRef(policy_set_id="risk-rules", version="1.0.0")
-FREQUENCY_WINDOW = timedelta(minutes=10)
-FREQUENCY_THRESHOLD = 3
+FREQUENCY_WINDOW = timedelta(minutes=int(os.environ.get("RISK_FREQUENCY_WINDOW_MINUTES", "5")))
+FREQUENCY_THRESHOLD = int(os.environ.get("RISK_FREQUENCY_THRESHOLD", "2"))
 BLOCKING_DECISIONS = {Decision.DENY, Decision.CHALLENGE}
 BLOCKING_DECISION_VALUES = {decision.value for decision in BLOCKING_DECISIONS}
 RiskScenario: TypeAlias = str
