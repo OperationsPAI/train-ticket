@@ -1,0 +1,47 @@
+# S1 — Rush scenario: N buyers competing for K seats on the same segment.
+#
+# All workers target the same origin/destination/date, so the underlying
+# inventory (target_capacity seats) is the bottleneck.  The auditor uses
+# `constraints` to verify that exactly K orders succeed and the rest get
+# clean contractual rejections.
+
+name: s1-rush
+description: "N buyers competing for K seats on same segment"
+
+load:
+  model: closed          # closed-loop: workers fire as fast as possible
+  workers: 200           # concurrent coroutines
+  duration_seconds: 120
+  rps: null              # null = max speed (closed-loop)
+
+target:
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"
+  request_timeout_seconds: 15
+
+mix:
+  purchase: 1.0          # 100 % purchase — pure contention test
+  refund: 0.0
+  browse: 0.0
+
+constraints:
+  target_segments: 1     # all workers target the same segment
+  target_capacity: 50    # expected K seats available
+  # Auditor uses these to assert:
+  #   confirmed_orders <= target_capacity
+  #   failed_orders    >= workers - target_capacity  (roughly)
+
+seed:
+  cities: ["Beijing", "Shanghai"]
+  departure_date: "2026-09-01"
+
+# Polling tuning for saga / order-status checks.
+polling:
+  attempts: 12
+  interval_seconds: 3
+
+staff:
+  workers: 4
+  think_time_seconds: {min: 0.2, max: 1.0}
+  queue_poll_seconds: 0.3
+  p_risk_approve: 1.0     # approve everything — rush test, not risk test
