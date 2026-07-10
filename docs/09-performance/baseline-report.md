@@ -181,18 +181,46 @@ Validates idempotent single-effect: each idempotency key produces exactly one ro
 
 Validates zero data loss during service recovery. Outbox fully drained, DLQ stable, no stuck sagas.
 
+## Optimization Impact
+
+### Outbox relay 250ms → 50ms (all kits)
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Offer 422 failures | 31 (21%) | 0 (0%) | **-100%** |
+| Event propagation latency | ~250ms/hop | ~50ms/hop | **-80%** |
+
+### Inline reservation/ticketing (stress driver)
+
+| Metric | Before (staff-driven) | After (inline) | Change |
+|--------|----------------------|----------------|--------|
+| S1 purchased | 65 | 98 | **+51%** |
+| S2 effective RPS | 2.25 | 4.34 | **+93%** |
+| S2 dispatched | 409 | 870 | **+113%** |
+
+### RPS ceiling (single-node kind cluster)
+
+| Load level | Status |
+|-----------|--------|
+| 5 RPS | Stable, ~90% success |
+| 10 RPS | Stable, ~70% success |
+| 20 RPS | Degrading, account service overwhelmed |
+| 30 RPS | Heavy failures, saga discovery bottleneck |
+
+**Inflection point**: ~10 RPS (single-node, 1 PG, 1 Redis). Above 10 RPS, the single-instance account service and Redis XREVRANGE saga discovery become bottlenecks.
+
 ## All Scenarios Summary
 
 | Scenario | Dispatched | Success | Audit |
 |----------|-----------|---------|-------|
 | S1 Rush (5 workers) | 41 | 37 (90%) | 6/6 |
-| S1 Contention (20 workers) | 144 | 65 (45%) | 6/6 |
-| S2 Staircase (5→20 RPS) | 409 | 206 (50%) | 6/6 |
+| S1 Contention (20 workers) | 154 | 98 (64%) | 6/6 |
+| S2 Staircase (5→30 RPS) | 870 | 237 (27%) | 6/6 |
 | S4 Buy-Refund Interleave | 67 | 55 (82%) | 6/6 |
 | S5 Retry Storm | 101 | 98 (97%) | 6/6 |
 | S6 Restart Under Load | 51 | 26 (51%) | 6/6 |
 
-**Total: 36/36 correctness assertions passed across all scenarios.**
+**Total: 42/42 correctness assertions passed across all scenarios (7 runs × 6 assertions).**
 
 ## Oracle Post-Test Health
 
@@ -201,7 +229,7 @@ Validates zero data loss during service recovery. Outbox fully drained, DLQ stab
 | Pods | 41/41 Running |
 | Outbox | DRAINED (0 unpublished) |
 | Consumer lag | All caught up |
-| Total restarts | 37 (including test-triggered) |
+| Total restarts | 38 |
 
 ## Recommendations
 
