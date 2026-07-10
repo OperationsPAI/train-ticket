@@ -240,6 +240,11 @@ class PurchaseRef:
     total_minor: int
 
 
+@dataclass
+class IdentityRef:
+    account_id: str
+    traveler_id: str
+
 class SharedState:
     def __init__(self, redis_url: str = "redis://redis:6379") -> None:
         self.purchases: deque[PurchaseRef] = deque(maxlen=2000)
@@ -248,11 +253,22 @@ class SharedState:
         self.q_ticketing: deque = deque()
         self._redis_url = redis_url
         self._redis: Any = None
+        self.identity_pool: list[IdentityRef] = []
+        self._identity_idx = 0
+        self._identity_lock = asyncio.Lock()
 
     async def redis_conn(self) -> Any:
         if self._redis is None:
             self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
         return self._redis
+
+    async def next_identity(self) -> IdentityRef | None:
+        if not self.identity_pool:
+            return None
+        async with self._identity_lock:
+            ref = self.identity_pool[self._identity_idx % len(self.identity_pool)]
+            self._identity_idx += 1
+            return ref
 
     async def add_purchase(self, p: PurchaseRef) -> None:
         async with self.lock:
@@ -439,58 +455,20 @@ async def purchase_chain(
     poll_interval = float(cfg.get("polling", {}).get("interval_seconds", 3))
     staff_wait = 30.0
 
-    # 1. Identity
-    account_id = f"acc-{uuid7()}"
-    await api.request(
-        "POST",
-        "account",
-        "/api/v1/accounts",
-        {"accountId": account_id},
-        ok=(200, 201),
-        step="register-account",
-    )
-
-    given, family = rand_name(rng)
-    _, tvl_data = await api.request(
-        "POST",
-        "traveler-profile",
-        "/api/v1/travelers",
-        {
-            "accountId": account_id,
-            "travelerType": "ADULT",
-            "givenName": given,
-            "familyName": family,
-        },
-        step="create-traveler",
-    )
-    traveler = tvl_data["travelerId"]
-
-    # 1b. Identity verification (required before order creation)
-    import hashlib as _hashlib
-    tail = str(rng.randint(0, 5))
-    doc = f"stress-{traveler}-{tail}"
-    doc_hash = _hashlib.sha256(doc.encode()).hexdigest() + tail
-    name_hash = _hashlib.sha256(("name-" + traveler).encode()).hexdigest()
-    valid_until = "2027-07-10T00:00:00Z"
-    _, cred = await api.request(
-        "POST", "identity-verification",
-        "/api/v1/identity-verification/credentials",
-        {"travelerId": traveler, "profileSnapshotVersion": "stress-v1",
-         "documentType": "ID_CARD", "maskedDocumentNo": f"ST***{tail}",
-         "documentHash": doc_hash, "canonicalNameHash": name_hash,
-         "validUntil": valid_until},
-        ok=(200, 201), step="credential",
-    )
-    material = "|".join([name_hash, "ID_CARD", doc_hash, "", valid_until, "", "stress-v1"])
-    fingerprint = _hashlib.sha256(material.encode()).hexdigest()
-    await api.request(
-        "POST", "identity-verification",
-        "/api/v1/identity-verification/verification-cases",
-        {"travelerId": traveler, "credentialRecordId": cred["credentialRecordId"],
-         "purpose": "ORDER_CREATION", "materialFingerprint": fingerprint,
-         "simPolicyVersion": "sim-tail-v1", "requestedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-        ok=(200, 201), step="verify-identity",
-    )
+    # 1. Identity (from pre-bootstrapped pool or inline creation)
+    identity = await state.next_identity()
+    if identity:
+        account_id = identity.account_id
+        traveler = identity.traveler_id
+    else:
+        account_id = f"acc-{uuid7()}"
+        await api.request("POST", "account", "/api/v1/accounts",
+            {"accountId": account_id}, ok=(200, 201), step="register-account")
+        given, family = rand_name(rng)
+        _, tvl_data = await api.request("POST", "traveler-profile", "/api/v1/travelers",
+            {"accountId": account_id, "travelerType": "ADULT", "givenName": given, "familyName": family},
+            step="create-traveler")
+        traveler = tvl_data["travelerId"]
 
     # 2. Search
     _, search_data = await api.request(
@@ -867,6 +845,42 @@ class StressDriver:
         self.total_dispatched = 0
         self.total_errors = 0
 
+    async def _create_identity(self, idx: int) -> IdentityRef | None:
+        import hashlib as _hl
+        try:
+            acct_id = f"acc-{uuid7()}"
+            given, family = rand_name(random.Random(idx))
+            await self.api.request("POST", "account", "/api/v1/accounts",
+                {"accountId": acct_id}, ok=(200, 201), step="bootstrap-account")
+            _, tvl = await self.api.request("POST", "traveler-profile", "/api/v1/travelers",
+                {"accountId": acct_id, "travelerType": "ADULT", "givenName": given, "familyName": family},
+                step="bootstrap-traveler")
+            traveler = tvl["travelerId"]
+            tail = str(idx % 6)
+            doc = f"stress-{traveler}-{tail}"
+            doc_hash = _hl.sha256(doc.encode()).hexdigest() + tail
+            name_hash = _hl.sha256(("name-" + traveler).encode()).hexdigest()
+            valid_until = "2027-07-10T00:00:00Z"
+            _, cred = await self.api.request("POST", "identity-verification",
+                "/api/v1/identity-verification/credentials",
+                {"travelerId": traveler, "profileSnapshotVersion": "stress-v1",
+                 "documentType": "ID_CARD", "maskedDocumentNo": f"ST***{tail}",
+                 "documentHash": doc_hash, "canonicalNameHash": name_hash,
+                 "validUntil": valid_until}, ok=(200, 201), step="bootstrap-credential")
+            mat = "|".join([name_hash, "ID_CARD", doc_hash, "", valid_until, "", "stress-v1"])
+            fp = _hl.sha256(mat.encode()).hexdigest()
+            await self.api.request("POST", "identity-verification",
+                "/api/v1/identity-verification/verification-cases",
+                {"travelerId": traveler, "credentialRecordId": cred["credentialRecordId"],
+                 "purpose": "ORDER_CREATION", "materialFingerprint": fp,
+                 "simPolicyVersion": "sim-tail-v1",
+                 "requestedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                ok=(200, 201), step="bootstrap-verify")
+            return IdentityRef(account_id=acct_id, traveler_id=traveler)
+        except StepFailed as exc:
+            print(f"[bootstrap] identity {idx} failed: {exc}", flush=True)
+            return None
+
     async def run(self) -> dict:
         load = self.cfg.get("load", {})
         model = load.get("model", "closed")
@@ -879,6 +893,14 @@ class StressDriver:
             return self._build_report()
 
         mix = self.cfg.get("mix", {"purchase": 1.0})
+        if float(mix.get("purchase", 0)) > 0:
+            pool_size = min(workers * 3, 120)
+            print(f"[bootstrap] pre-creating {pool_size} identities...", flush=True)
+            for i in range(pool_size):
+                ref = await self._create_identity(i)
+                if ref:
+                    self.state.identity_pool.append(ref)
+            print(f"[bootstrap] {len(self.state.identity_pool)} identities ready", flush=True)
         # Normalize mix weights
         total_weight = sum(float(v) for v in mix.values() if float(v) > 0)
         if total_weight == 0:
