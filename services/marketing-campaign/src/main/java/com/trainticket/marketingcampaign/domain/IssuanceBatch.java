@@ -163,6 +163,13 @@ public final class IssuanceBatch {
         }
     }
 
+    public static IssuanceBatch restore(String issuanceBatchId, String campaignId, String templateId, String audienceSnapshotId,
+                                        IssuanceBatchStatus status, Map<String, IssuanceItem> itemsById, Instant plannedAt,
+                                        Instant updatedAt, long version) {
+        return new IssuanceBatch(issuanceBatchId, campaignId, templateId, audienceSnapshotId, status, itemsById, plannedAt,
+            updatedAt, version, List.of());
+    }
+
     public String issuanceBatchId() { return issuanceBatchId; }
     public String campaignId() { return campaignId; }
     public String templateId() { return templateId; }

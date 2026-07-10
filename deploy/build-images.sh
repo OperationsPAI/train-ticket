@@ -36,6 +36,7 @@ services=(
   legacy-acl
   waitlist
   wallet-promotion
+  marketing-campaign
   dispatch
   disruption-recovery
   transfer-management
