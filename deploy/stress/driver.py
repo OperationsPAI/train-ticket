@@ -205,7 +205,8 @@ class ApiClient:
                 data = {}
         except Exception as exc:
             self.error_counts[f"{service}:transport"] += 1
-            raise StepFailed(step or path, f"transport: {exc}") from exc
+            failure_step = f"{step}-transport" if step else f"{path}-transport"
+            raise StepFailed(failure_step, f"transport: {exc}") from exc
         finally:
             elapsed_ms = (time.monotonic() - t0) * 1000
             self.latency.record(endpoint_key, elapsed_ms)
@@ -843,6 +844,7 @@ class StressDriver:
         self.latency = LatencyTracker()
         self.api = ApiClient(cfg, self.latency)
         self.state = SharedState(redis_url=cfg["target"].get("redis_url", "redis://redis:6379"))
+        self.routes: list[dict] = []
         self.rng = random.Random(cfg.get("seed", {}).get("seed"))
         self.results: dict[str, int] = Counter()
         self.chain_latencies: dict[str, list[float]] = defaultdict(list)
@@ -895,6 +897,7 @@ class StressDriver:
         rps = load.get("rps")
 
         routes = await resolve_routes(self.api, self.cfg, self.rng)
+        self.routes = routes
         if not routes:
             return self._build_report()
 
@@ -1074,6 +1077,7 @@ class StressDriver:
             "endpoint_latencies": self.latency.summary(),
             "http_status_counts": dict(self.api.status_counts),
             "error_counts": dict(self.api.error_counts),
+            "route_count": len(self.routes),
         }
 
 
