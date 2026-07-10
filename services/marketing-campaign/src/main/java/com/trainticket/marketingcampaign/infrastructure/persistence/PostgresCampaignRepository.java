@@ -13,7 +13,10 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import com.trainticket.platformkit.persistence.OutboxAppender;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcOperations;
@@ -143,9 +146,93 @@ public class PostgresCampaignRepository implements CampaignRepository {
 
     private String json(Object value) {
         try {
-            return mapper.writeValueAsString(value);
+            return mapper.writeValueAsString(toSerializable(value));
         } catch (JsonProcessingException exception) {
             throw new IllegalArgumentException("value could not be encoded as JSON", exception);
         }
+    }
+
+    private static Object toSerializable(Object value) {
+        if (value instanceof Campaign c) {
+            return campaignSnapshot(c);
+        } else if (value instanceof CampaignBudget b) {
+            return budgetSnapshot(b);
+        } else if (value instanceof CouponTemplate t) {
+            return templateSnapshot(t);
+        } else if (value instanceof IssuanceBatch b) {
+            return batchSnapshot(b);
+        }
+        return value;
+    }
+
+    private static Map<String, Object> campaignSnapshot(Campaign c) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("campaignId", c.campaignId());
+        m.put("externalKey", c.externalKey());
+        m.put("name", c.name());
+        m.put("window", windowMap(c.window()));
+        m.put("targetRuleSetId", c.targetRuleSetId());
+        m.put("budgetId", c.budgetId());
+        m.put("approvalRef", c.approvalRef());
+        m.put("status", c.status().name());
+        m.put("createdAt", c.createdAt().toString());
+        m.put("updatedAt", c.updatedAt().toString());
+        m.put("version", c.version());
+        return m;
+    }
+
+    private static Map<String, Object> budgetSnapshot(CampaignBudget b) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("budgetId", b.budgetId());
+        m.put("campaignId", b.campaignId());
+        m.put("totalBudget", moneyMap(b.totalBudget()));
+        m.put("reservedAmount", moneyMap(b.reservedAmount()));
+        m.put("consumedAmount", moneyMap(b.consumedAmount()));
+        m.put("closed", b.closed());
+        m.put("createdAt", b.createdAt().toString());
+        m.put("updatedAt", b.updatedAt().toString());
+        m.put("version", b.version());
+        return m;
+    }
+
+    private static Map<String, Object> templateSnapshot(CouponTemplate t) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("templateId", t.templateId());
+        m.put("campaignId", t.campaignId());
+        m.put("templateCode", t.templateCode());
+        m.put("templateVersion", t.templateVersion());
+        m.put("status", t.status().name());
+        m.put("faceValue", moneyMap(t.faceValue()));
+        m.put("minimumSpend", moneyMap(t.minimumSpend()));
+        m.put("applicableScope", t.applicableScope());
+        m.put("redemptionRule", t.redemptionRule());
+        m.put("validityWindow", windowMap(t.validityWindow()));
+        m.put("createdAt", t.createdAt().toString());
+        m.put("updatedAt", t.updatedAt().toString());
+        m.put("version", t.version());
+        return m;
+    }
+
+    private static Map<String, Object> batchSnapshot(IssuanceBatch b) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("issuanceBatchId", b.issuanceBatchId());
+        m.put("campaignId", b.campaignId());
+        m.put("templateId", b.templateId());
+        m.put("audienceSnapshotId", b.audienceSnapshotId());
+        m.put("status", b.status().name());
+        m.put("plannedAt", b.plannedAt().toString());
+        m.put("updatedAt", b.updatedAt().toString());
+        m.put("version", b.version());
+        return m;
+    }
+
+    private static Map<String, String> windowMap(com.trainticket.marketingcampaign.domain.CampaignWindow w) {
+        if (w == null) return Map.of();
+        return Map.of("validFrom", w.validFrom().toString(), "validUntil", w.validUntil().toString());
+    }
+
+    private static Map<String, Object> moneyMap(com.trainticket.marketingcampaign.domain.Money m) {
+        if (m == null) return Map.of();
+        return Map.of("currency", m.currency(), "minorUnits", m.minorUnits());
     }
 }
