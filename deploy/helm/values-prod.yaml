@@ -1,0 +1,373 @@
+global:
+  imageRegistry: pair-cn-guangzhou.cr.volces.com
+  imageTag: latest
+  imagePullPolicy: Always
+postgres:
+  storage:
+    size: 40Gi
+    storageClass: ebs-ssd
+  credentials:
+    username: trainticket
+    password: trainticket-dev
+  instances:
+    hot:
+      databases:
+      - journey_order
+      - booking_orchestration
+      maxConnections: 300
+      sharedBuffers: 1GB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    txn:
+      databases:
+      - payment
+      - entitlement_ticketing
+      - payment_channel
+      - post_sales
+      - finance_settlement
+      maxConnections: 300
+      sharedBuffers: 1GB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    read:
+      databases:
+      - trip_planning
+      - fare_pricing
+      - offer_management
+      - capacity_availability
+      - seat_assignment
+      - service_plan
+      - place_network
+      maxConnections: 300
+      sharedBuffers: 1GB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    core:
+      databases:
+      - account
+      - traveler_profile
+      - identity_verification
+      - admin_audit
+      - ancillary_service
+      - corporate_travel
+      - customer_service
+      - dispatch
+      - disruption_recovery
+      - fulfillment
+      - group_booking
+      - invoicing
+      - legacy_acl
+      - loyalty_membership
+      - marketing_campaign
+      - notification
+      - provider_integration
+      - reporting
+      - risk_compliance
+      - supplier_catalog
+      - transfer_management
+      - travel_insurance
+      - waitlist
+      - wallet_promotion
+      maxConnections: 300
+      sharedBuffers: 512MB
+      workMem: 8MB
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+loadgen:
+  enabled: true
+  workers: 200
+services:
+  journey-order:
+    db: journey_order
+    replicas: 3
+    env:
+      IDENTITY_VERIFICATION_URL: http://identity-verification:8080
+      IDENTITY_VERIFICATION_PREORDER_ENABLED: 'true'
+      CONSUMER_THREADS: '4'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: &id001
+        cpu: 500m
+        memory: 1Gi
+      limits: &id002
+        cpu: '2'
+        memory: 6Gi
+    pgInstance: hot
+  booking-orchestration:
+    db: booking_orchestration
+    replicas: 3
+    env:
+      CONSUMER_THREADS: '4'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: hot
+  trip-planning:
+    db: trip_planning
+    replicas: 2
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  fare-pricing:
+    db: fare_pricing
+    replicas: 2
+    env:
+      IDENTITY_VERIFICATION_URL: http://identity-verification:8080
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  offer-management:
+    db: offer_management
+    replicas: 2
+    env:
+      PG_MAX_POOL_SIZE: '20'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  payment:
+    db: payment
+    replicas: 2
+    resources:
+      requests: *id001
+      limits: *id002
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    pgInstance: txn
+  entitlement-ticketing:
+    db: entitlement_ticketing
+    replicas: 2
+    env:
+      SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: txn
+  account:
+    db: account
+    replicas: 2
+    resources:
+      requests: *id001
+      limits: *id002
+  traveler-profile:
+    db: traveler_profile
+    replicas: 2
+    resources:
+      requests: *id001
+      limits: *id002
+  identity-verification:
+    db: identity_verification
+    replicas: 2
+    resources:
+      requests: *id001
+      limits: *id002
+  capacity-availability:
+    db: capacity_availability
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  risk-compliance:
+    db: risk_compliance
+    resources:
+      requests: *id001
+      limits: *id002
+  post-sales:
+    db: post_sales
+    resources:
+      requests: *id001
+      limits: *id002
+    env:
+      SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING: 'true'
+    pgInstance: txn
+  dispatch:
+    db: dispatch
+    resources:
+      requests: *id001
+      limits: *id002
+  place-network:
+    db: place_network
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  service-plan:
+    db: service_plan
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  ancillary-service:
+    db: ancillary_service
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  provider-integration:
+    db: provider_integration
+    resources:
+      requests: *id001
+      limits: *id002
+  fulfillment:
+    db: fulfillment
+    resources:
+      requests: *id001
+      limits: *id002
+  notification:
+    db: notification
+    env:
+      SMTP_URL: smtp://mailpit:1025
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  corporate-travel:
+    db: corporate_travel
+    resources:
+      requests: *id001
+      limits: *id002
+  loyalty-membership:
+    db: loyalty_membership
+    resources:
+      requests: *id001
+      limits: *id002
+  admin-audit:
+    db: admin_audit
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  customer-service:
+    db: customer_service
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  finance-settlement:
+    db: finance_settlement
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: txn
+  reporting:
+    db: reporting
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  supplier-catalog:
+    db: supplier_catalog
+    resources:
+      requests: *id001
+      limits: *id002
+  legacy-acl:
+    db: legacy_acl
+    resources:
+      requests: *id001
+      limits: *id002
+  waitlist:
+    db: waitlist
+    env:
+      MIGRATIONS_DIR: /app/migrations
+      FARE_PRICING_BASE_URL: http://fare-pricing:8080
+      OFFER_MANAGEMENT_BASE_URL: http://offer-management:8080
+      JOURNEY_ORDER_BASE_URL: http://journey-order:8080
+    resources:
+      requests: *id001
+      limits: *id002
+  wallet-promotion:
+    db: wallet_promotion
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  disruption-recovery:
+    db: disruption_recovery
+    env:
+      POST_SALES_URL: http://post-sales:8080
+      WALLET_PROMOTION_URL: http://wallet-promotion:8080
+      TRANSFER_MANAGEMENT_URL: http://transfer-management:8080
+    resources:
+      requests: *id001
+      limits: *id002
+  transfer-management:
+    db: transfer_management
+    env:
+      DISRUPTION_RECOVERY_URL: http://disruption-recovery:8080
+      PLACE_NETWORK_URL: http://place-network:8080
+    resources:
+      requests: *id001
+      limits: *id002
+  seat-assignment:
+    db: seat_assignment
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: read
+  payment-channel:
+    db: payment_channel
+    resources:
+      requests: *id001
+      limits: *id002
+    pgInstance: txn
+  invoicing:
+    db: invoicing
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  marketing-campaign:
+    db: marketing_campaign
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  group-booking:
+    db: group_booking
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    resources:
+      requests: *id001
+      limits: *id002
+  travel-insurance:
+    db: travel_insurance
+    resources:
+      requests: *id001
+      limits: *id002

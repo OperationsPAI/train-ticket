@@ -77,13 +77,30 @@ def rand_name(rng: random.Random) -> tuple[str, str]:
 
 
 def _bookable(itin: dict) -> bool:
-    """Real plan segments are seg-<uuid>; trip-planning falls back to
-    synthetic refs (seg-web-<date>-<hash>) that downstream services reject."""
+    """Bookable if the first leg has a seg-<uuid> ref (36-char UUID after prefix)."""
     legs = itin.get("legs") or []
     if not legs:
         return False
     ref = str(legs[0].get("serviceSegmentRef", ""))
-    return ref.startswith("seg-") and len(ref) == 40 and ref.count("-") == 5
+    if not ref.startswith("seg-"):
+        return False
+    uuid_part = ref[4:]
+    return len(uuid_part) == 36 and uuid_part.count("-") == 4
+
+
+def compute_departure_dates(cfg: dict) -> list[str]:
+    """Compute departure dates from config.
+
+    Backward compat: if the legacy ``departure_dates`` key is present it takes
+    precedence; otherwise a rolling window is derived from ``departure_window``.
+    """
+    bs = cfg.get("bootstrap") or {}
+    if "departure_dates" in bs:
+        return list(bs["departure_dates"])
+    window = bs.get("departure_window", {"from_days": 7, "to_days": 21})
+    today = datetime.now(timezone.utc).date()
+    return [(today + timedelta(days=d)).isoformat()
+            for d in range(int(window["from_days"]), int(window["to_days"]) + 1)]
 
 
 class Abandoned(Exception):
@@ -207,6 +224,7 @@ class Purchase:
     quote: str = ""
     post_sales_case: str = ""
     fulfillment_record: str = ""
+    journey_date: str = ""
 
 
 @dataclass
@@ -226,6 +244,7 @@ class Registry:
     purchases: list[Purchase] = field(default_factory=list)
     waitlists: list[WaitlistRef] = field(default_factory=list)
     routes: list[dict] = field(default_factory=list)
+    places: dict[str, str] = field(default_factory=dict)
     ops_entities: dict[str, list[str]] = field(default_factory=lambda: {"suppliers": [], "carriers": [], "contracts": []})
     invoice_titles: dict[str, str] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -250,6 +269,7 @@ class Registry:
                         w["account"] = ""
                     reg.waitlists.append(WaitlistRef(**w))
                 reg.routes = raw.get("routes", [])
+                reg.places = raw.get("places", {})
                 reg.ops_entities = raw.get("ops_entities", reg.ops_entities)
                 reg.invoice_titles = raw.get("invoice_titles", {})
             except Exception as exc:
@@ -265,6 +285,7 @@ class Registry:
                        "purchases": [vars(p) for p in self.purchases],
                        "waitlists": [vars(w) for w in self.waitlists],
                        "routes": self.routes,
+                       "places": self.places,
                        "ops_entities": self.ops_entities,
                        "invoice_titles": self.invoice_titles}, fh)
         os.replace(tmp, path)
@@ -339,6 +360,313 @@ async def wait_for(item: dict, key: str, timeout: float, poll: float = 1.0) -> A
             return item[key]
         await asyncio.sleep(poll)
     raise StepFailed(item.get("kind", "staff"), f"timed out waiting for {key}")
+
+
+# ---------------------------------------------------------------------------
+# providers — composable building blocks for journey orchestration
+# ---------------------------------------------------------------------------
+
+
+class Providers:
+    """Composable building blocks for journey orchestration.
+
+    Every external dependency — accounts, travelers, identity, trains,
+    quotes, offers, orders, payments — is a provider method.  Providers
+    compose: ``available_train()`` internally calls ``city_pair()`` +
+    ``departure_date()`` + search.  Each provider reads probabilities from
+    ``self.ctx``, a dict that is rebuilt every journey iteration by merging
+    global ``behavior`` defaults with an optional persona overlay.
+    """
+
+    def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats,
+                 rng: random.Random):
+        self.cfg = cfg
+        self.api = api
+        self.reg = reg
+        self.stats = stats
+        self.rng = rng
+        self._defaults = cfg.get("defaults", {})
+        self._global_behavior = dict(cfg.get("behavior", {}))
+        self._global_journey_mix = dict(cfg.get("journey_mix", {}))
+        self._personas = cfg.get("personas")
+        self.ctx: dict[str, Any] = dict(self._global_behavior)
+        self.journey_mix: dict[str, float] = dict(self._global_journey_mix)
+
+    # --- persona overlay ---------------------------------------------------
+
+    def pick_persona(self) -> dict | None:
+        """Select a persona based on configured weights (or None)."""
+        if not self._personas:
+            return None
+        weights = {n: float(p.get("weight", 1))
+                   for n, p in self._personas.items()}
+        chosen = weighted_choice(self.rng, weights)
+        return self._personas[chosen]
+
+    def apply_persona(self, persona: dict | None) -> None:
+        """Merge persona overrides on top of global behavior."""
+        self.ctx = dict(self._global_behavior)
+        self.journey_mix = dict(self._global_journey_mix)
+        if persona:
+            self.ctx.update(persona.get("overrides", {}))
+            jw = persona.get("journey_weights")
+            if jw:
+                self.journey_mix = dict(jw)
+
+    # --- config accessors --------------------------------------------------
+
+    def currency(self) -> str:
+        return str(self._defaults.get("currency", "CNY"))
+
+    def default_amount(self, key: str, fallback: int) -> int:
+        return int(self._defaults.get(key, fallback))
+
+    # --- atomic providers --------------------------------------------------
+
+    async def account(self) -> dict:
+        """Provide an account: create new or reuse existing."""
+        p_new = float(self.ctx.get("p_new_account", 0.35))
+        if self.rng.random() >= p_new:
+            entry = await self.reg.pick_account(self.rng)
+            if entry is not None:
+                code, _ = await self.api.request(
+                    "GET", "account",
+                    f"/api/v1/accounts/{entry['account_id']}",
+                    ok=(), step="login")
+                if code == 200:
+                    return entry
+        account_id = f"acc-{uuid7()}"
+        await self.api.request("POST", "account", "/api/v1/accounts",
+                               {"accountId": account_id}, ok=(200, 201),
+                               step="register-account")
+        return await self.reg.add_account(account_id)
+
+    async def traveler(self, entry: dict, exclude: tuple = ()) -> str:
+        """Provide a traveler: create new or reuse existing."""
+        p_new = float(self.ctx.get("p_new_traveler", 0.50))
+        pool = [t for t in entry["travelers"] if t not in exclude]
+        if pool and self.rng.random() >= p_new:
+            tvl = self.rng.choice(pool)
+            code, _ = await self.api.request(
+                "GET", "traveler-profile", f"/api/v1/travelers/{tvl}",
+                ok=(), step="get-traveler")
+            if code == 200:
+                return tvl
+        given, family = rand_name(self.rng)
+        traveler_types = self.ctx.get(
+            "traveler_types",
+            {"ADULT": 0.85, "CHILD": 0.10, "SENIOR": 0.05})
+        _, data = await self.api.request(
+            "POST", "traveler-profile", "/api/v1/travelers",
+            {"accountId": entry["account_id"],
+             "travelerType": weighted_choice(self.rng, traveler_types),
+             "givenName": given, "familyName": family},
+            step="create-traveler")
+        tvl = data["travelerId"]
+        entry["travelers"].append(tvl)
+        if len(entry["travelers"]) > 20:
+            entry["travelers"].pop(0)
+        return tvl
+
+    async def identity(self, traveler_id: str) -> dict[str, str]:
+        """Ensure traveler has a verified identity credential."""
+        tail = str(self.rng.randint(0, 5))
+        doc = f"loadgen-{traveler_id}-{tail}"
+        document_hash = hashlib.sha256(doc.encode()).hexdigest() + tail
+        name_hash = hashlib.sha256(
+            ("name-" + traveler_id).encode()).hexdigest()
+        valid_until = (datetime.now(timezone.utc)
+                       + timedelta(days=365)).replace(microsecond=0)
+        credential_body = {
+            "travelerId": traveler_id,
+            "profileSnapshotVersion": "loadgen-v1",
+            "documentType": "ID_CARD",
+            "maskedDocumentNo": f"LG***********{tail}",
+            "documentHash": document_hash,
+            "canonicalNameHash": name_hash,
+            "validUntil": iso(valid_until),
+        }
+        _, credential = await self.api.request(
+            "POST", "identity-verification",
+            "/api/v1/identity-verification/credentials",
+            credential_body, ok=(200, 201), step="identity-credential")
+        material = "|".join([name_hash, "ID_CARD", document_hash, "",
+                             iso(valid_until), "", "loadgen-v1"])
+        verify_body = {
+            "travelerId": traveler_id,
+            "credentialRecordId": credential["credentialRecordId"],
+            "purpose": "ORDER_CREATION",
+            "materialFingerprint": hashlib.sha256(
+                material.encode()).hexdigest(),
+            "simPolicyVersion": "sim-tail-v1",
+            "requestedAt": now_iso(),
+        }
+        _, case = await self.api.request(
+            "POST", "identity-verification",
+            "/api/v1/identity-verification/verification-cases",
+            verify_body, ok=(200, 201), step="identity-verify")
+        return {"identity_credential": credential["credentialRecordId"],
+                "identity_case": case["verificationCaseId"]}
+
+    # --- discovery providers -----------------------------------------------
+
+    def city_pair(self) -> tuple[str, str, str, str]:
+        """Pick a random origin/destination pair from known places.
+
+        Returns ``(origin_code, dest_code, origin_place_id, dest_place_id)``.
+        """
+        places = self.reg.places
+        if len(places) < 2:
+            raise StepFailed("city-pair",
+                             "fewer than 2 places in registry")
+        codes = list(places.keys())
+        origin, dest = self.rng.sample(codes, 2)
+        return origin, dest, places[origin], places[dest]
+
+    def departure_date(self) -> str:
+        """Pick a date in the booking window (config-driven)."""
+        bs = self.cfg.get("bootstrap", {})
+        if "departure_dates" in bs:
+            return self.rng.choice(bs["departure_dates"])
+        window = bs.get("departure_window",
+                        {"from_days": 7, "to_days": 21})
+        from_days = int(window.get("from_days", 7))
+        to_days = int(window.get("to_days", 21))
+        today = datetime.now(timezone.utc).date()
+        return (today + timedelta(
+            days=self.rng.randint(from_days, to_days))).isoformat()
+
+    async def available_train(self, travelers: list[str],
+                              channel: str) -> dict:
+        """Discovery-based: pick city pair + date, search for trains.
+
+        Falls back to known routes if fewer than 2 places are registered.
+        """
+        if len(self.reg.places) >= 2:
+            o_code, d_code, o_place, d_place = self.city_pair()
+            date = self.departure_date()
+            _, data = await self.api.request(
+                "POST", "trip-planning", "/api/v1/itineraries/search",
+                {"originRef": o_place, "destinationRef": d_place,
+                 "departureDate": date, "travelerRefs": travelers,
+                 "channel": channel},
+                ok=(200,), step="search")
+            itins = [i for i in (data.get("itineraries") or [])
+                     if _bookable(i)]
+            if itins:
+                itin = self.rng.choice(itins)
+                leg = itin["legs"][0]
+                return {
+                    "itinerary": itin["itineraryRef"],
+                    "segment": leg["serviceSegmentRef"],
+                    "service": leg.get("servicePlanRef"),
+                    "origin_node": leg.get("originStopRef"),
+                    "dest_node": leg.get("destinationStopRef"),
+                    "date": date,
+                    "origin_place": o_place,
+                    "dest_place": d_place,
+                }
+        # fallback to known routes
+        async with self.reg.lock:
+            routes = list(self.reg.routes)
+        if not routes:
+            raise StepFailed("available-train",
+                             "no routes and fewer than 2 places")
+        route = self.rng.choice(routes)
+        _, data = await self.api.request(
+            "POST", "trip-planning", "/api/v1/itineraries/search",
+            {"originRef": route["origin_place"],
+             "destinationRef": route["dest_place"],
+             "departureDate": route["date"],
+             "travelerRefs": travelers, "channel": channel},
+            ok=(200,), step="search")
+        itins = [i for i in (data.get("itineraries") or [])
+                 if _bookable(i)]
+        if not itins:
+            raise StepFailed(
+                "search",
+                f"no bookable itinerary for {route['date']}")
+        itin = self.rng.choice(itins)
+        leg = itin["legs"][0]
+        return {
+            "itinerary": itin["itineraryRef"],
+            "segment": leg["serviceSegmentRef"],
+            "service": (leg.get("servicePlanRef")
+                        or route.get("scheduled_service")),
+            "origin_node": (leg.get("originStopRef")
+                            or route.get("origin_node")),
+            "dest_node": (leg.get("destinationStopRef")
+                          or route.get("dest_node")),
+            "date": route["date"],
+            "origin_place": route.get("origin_place", ""),
+            "dest_place": route.get("dest_place", ""),
+        }
+
+    # --- transactional providers -------------------------------------------
+
+    async def fare_quote(self, travelers: list[str], channel: str,
+                         segments: list[str]) -> dict:
+        """Get a fare quote for the given segments."""
+        _, q = await self.api.request(
+            "POST", "fare-pricing", "/api/v1/fare-quotes",
+            {"travelerRefs": travelers, "channel": channel,
+             "segmentRefs": segments}, step="quote")
+        return q
+
+    async def offer(self, account_id: str, channel: str,
+                    itinerary: str, travelers: list[str]) -> dict:
+        """Create an offer (retries on 422 — quote event propagation)."""
+        for attempt in range(5):
+            try:
+                _, o = await self.api.request(
+                    "POST", "offer-management", "/api/v1/offers",
+                    {"accountId": account_id, "channelId": channel,
+                     "itineraryRef": itinerary,
+                     "travelerRefs": travelers},
+                    step="offer")
+                return o
+            except StepFailed as exc:
+                if "422" not in str(exc) or attempt == 4:
+                    raise
+                await asyncio.sleep(min(1.0 * (1.5 ** attempt), 4.0))
+        raise StepFailed("offer", "exhausted retries")
+
+    async def order(self, account_id: str, offer_data: dict,
+                    travelers: list[str], segments: list[str],
+                    date: str) -> dict:
+        """Create a journey order."""
+        _, o = await self.api.request(
+            "POST", "journey-order", "/api/v1/journey-orders",
+            {"accountId": account_id,
+             "offerId": offer_data["offerId"],
+             "offerVersion": offer_data.get("offerVersion", 1),
+             "travelerRefs": travelers, "segmentRefs": segments,
+             "journeyDate": date, "productCode": "TRAIN"},
+            step="order")
+        return o
+
+    async def payment_intent(self, order_id: str, amount_minor: int,
+                             payer: str) -> dict:
+        """Create a payment intent."""
+        _, intent = await self.api.request(
+            "POST", "payment", "/api/v1/payment-intents",
+            {"businessRef": order_id, "purpose": "purchase",
+             "amount": {"currency": self.currency(),
+                        "minorUnits": amount_minor},
+             "payerRef": payer}, step="payment-intent")
+        return intent
+
+    async def payment_capture(self, intent_id: str,
+                              fault_seed: str | None = None) -> None:
+        """Capture a payment intent."""
+        channel_ref: dict[str, str] = {"channel": "ALIPAY_SIM"}
+        if fault_seed:
+            channel_ref["faultSeedRef"] = fault_seed
+        await self.api.request(
+            "POST", "payment",
+            f"/api/v1/payment-intents/{intent_id}/capture",
+            {"channelRef": channel_ref}, ok=(200, 201, 202),
+            step="payment-capture")
 
 
 # ---------------------------------------------------------------------------
@@ -550,13 +878,14 @@ class StaffSim:
 
 
 class CustomerSim:
-    def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats, rng: random.Random):
+    def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats,
+                 rng: random.Random, prov: Providers):
         self.cfg = cfg
         self.api = api
         self.reg = reg
         self.stats = stats
         self.rng = rng
-        self.b = cfg["behavior"]
+        self.prov = prov
         self.poll_attempts = int(cfg["polling"]["attempts"])
         self.poll_interval = float(cfg["polling"]["interval_seconds"])
         self.staff_wait = float(cfg["behavior"].get("staff_wait_seconds", 90))
@@ -564,100 +893,37 @@ class CustomerSim:
         self.wallet_cfg = cfg.get("wallet_promotion", {})
         self.redis = aioredis.from_url(cfg["target"]["redis_url"], decode_responses=True)
 
+    @property
+    def b(self) -> dict:
+        """Active behavior context — global defaults merged with persona."""
+        return self.prov.ctx
+
     async def think(self) -> None:
-        t = self.cfg["run"]["think_time_seconds"]
+        t = self.prov.ctx.get("think_time",
+                              self.cfg["run"]["think_time_seconds"])
         await asyncio.sleep(self.rng.uniform(float(t["min"]), float(t["max"])))
 
     def chance(self, key: str) -> bool:
-        return self.rng.random() < float(self.b[key])
+        return self.rng.random() < float(self.prov.ctx[key])
 
     def optional_chance(self, key: str, default: float = 0.0) -> bool:
-        return self.rng.random() < float(self.b.get(key, default))
+        return self.rng.random() < float(self.prov.ctx.get(key, default))
 
-    # -- identity ------------------------------------------------------------
+    # -- delegators to Providers (unchanged call-sites get new behavior) -----
 
     async def login_or_register(self) -> dict:
-        entry = None
-        if not self.chance("p_new_account"):
-            entry = await self.reg.pick_account(self.rng)
-        if entry is not None:
-            code, _ = await self.api.request("GET", "account", f"/api/v1/accounts/{entry['account_id']}",
-                                             ok=(), step="login")
-            if code == 200:
-                return entry
-        account_id = f"acc-{uuid7()}"
-        await self.api.request("POST", "account", "/api/v1/accounts", {"accountId": account_id},
-                               ok=(200, 201), step="register-account")
-        return await self.reg.add_account(account_id)
-
+        return await self.prov.account()
 
     async def ensure_identity_verified(self, traveler_id: str) -> dict[str, str]:
-        tail = str(self.rng.randint(0, 5))
-        doc = f"loadgen-{traveler_id}-{tail}"
-        document_hash = hashlib.sha256(doc.encode()).hexdigest() + tail
-        name_hash = hashlib.sha256(("name-" + traveler_id).encode()).hexdigest()
-        valid_until = (datetime.now(timezone.utc) + timedelta(days=365)).replace(microsecond=0)
-        credential_body = {
-            "travelerId": traveler_id, "profileSnapshotVersion": "loadgen-v1", "documentType": "ID_CARD",
-            "maskedDocumentNo": f"LG***********{tail}", "documentHash": document_hash,
-            "canonicalNameHash": name_hash, "validUntil": iso(valid_until),
-        }
-        _, credential = await self.api.request("POST", "identity-verification", "/api/v1/identity-verification/credentials", credential_body, ok=(200, 201), step="identity-credential")
-        material = "|".join([name_hash, "ID_CARD", document_hash, "", iso(valid_until), "", "loadgen-v1"])
-        verify_body = {
-            "travelerId": traveler_id, "credentialRecordId": credential["credentialRecordId"], "purpose": "ORDER_CREATION",
-            "materialFingerprint": hashlib.sha256(material.encode()).hexdigest(), "simPolicyVersion": "sim-tail-v1", "requestedAt": now_iso(),
-        }
-        _, case = await self.api.request("POST", "identity-verification", "/api/v1/identity-verification/verification-cases", verify_body, ok=(200, 201), step="identity-verify")
-        return {"identity_credential": credential["credentialRecordId"], "identity_case": case["verificationCaseId"]}
+        return await self.prov.identity(traveler_id)
 
     async def obtain_traveler(self, entry: dict, exclude: tuple = ()) -> str:
-        # journey-order rejects duplicate travelerRefs within one order, so
-        # multi-traveler journeys exclude already-picked travelers from reuse.
-        pool = [t for t in entry["travelers"] if t not in exclude]
-        if pool and not self.chance("p_new_traveler"):
-            tvl = self.rng.choice(pool)
-            code, _ = await self.api.request("GET", "traveler-profile", f"/api/v1/travelers/{tvl}",
-                                             ok=(), step="get-traveler")
-            if code == 200:
-                return tvl
-        given, family = rand_name(self.rng)
-        _, data = await self.api.request(
-            "POST", "traveler-profile", "/api/v1/travelers",
-            {"accountId": entry["account_id"],
-             "travelerType": weighted_choice(self.rng, self.b["traveler_types"]),
-             "givenName": given, "familyName": family},
-            step="create-traveler")
-        tvl = data["travelerId"]
-        entry["travelers"].append(tvl)
-        if len(entry["travelers"]) > 20:
-            entry["travelers"].pop(0)
-        return tvl
+        return await self.prov.traveler(entry, exclude)
 
-    # -- inventory -------------------------------------------------------
-
-    async def pick_route(self) -> dict:
-        async with self.reg.lock:
-            routes = list(self.reg.routes)
-        if not routes:
-            raise StepFailed("pick-route", "no known routes (bootstrap disabled or failed)")
-        return self.rng.choice(routes)
-
-    async def search(self, route: dict, travelers: list[str], channel: str) -> dict:
-        _, data = await self.api.request(
-            "POST", "trip-planning", "/api/v1/itineraries/search",
-            {"originRef": route["origin_place"], "destinationRef": route["dest_place"],
-             "departureDate": route["date"], "travelerRefs": travelers, "channel": channel},
-            ok=(200,), step="search")
-        itins = [i for i in (data.get("itineraries") or []) if _bookable(i)]
-        if not itins:
-            raise StepFailed("search", f"no bookable itinerary for {route['date']}")
-        itin = self.rng.choice(itins)
-        leg = itin["legs"][0]
-        return {"itinerary": itin["itineraryRef"], "segment": leg["serviceSegmentRef"],
-                "service": leg.get("servicePlanRef") or route.get("scheduled_service"),
-                "origin_node": leg.get("originStopRef") or route.get("origin_node"),
-                "dest_node": leg.get("destinationStopRef") or route.get("dest_node")}
+    async def discover_and_search(self, travelers: list[str],
+                                  channel: str) -> dict:
+        """Discovery-based search — delegates to providers."""
+        return await self.prov.available_train(travelers, channel)
 
     # -- journeys ----------------------------------------------------------
 
@@ -665,13 +931,11 @@ class CustomerSim:
         entry = await self.login_or_register()
         tvl = await self.obtain_traveler(entry)
         channel = weighted_choice(self.rng, self.b["channels"])
-        found = await self.search(await self.pick_route(), [tvl], channel)
+        found = await self.discover_and_search([tvl], channel)
         await self.think()
         if self.chance("p_abandon_after_search"):
             return "browsed"
-        _, quote = await self.api.request("POST", "fare-pricing", "/api/v1/fare-quotes",
-                                          {"travelerRefs": [tvl], "channel": channel,
-                                           "segmentRefs": [found["segment"]]}, step="quote")
+        quote = await self.prov.fare_quote([tvl], channel, [found["segment"]])
         await self.maybe_read_probe({"quote": quote.get("quoteId"), "itinerary": found.get("itinerary")})
         return "browsed_with_quote"
 
@@ -691,38 +955,21 @@ class CustomerSim:
                         entry["identity_verified"].append(traveler)
                 verified = entry.get("identity_verified", [])
         channel = weighted_choice(self.rng, self.b["channels"])
-        route = await self.pick_route()
 
-        found = await self.search(route, travelers, channel)
+        found = await self.discover_and_search(travelers, channel)
         await self.think()
         if self.chance("p_abandon_after_search"):
             raise Abandoned()
 
-        _, quote = await self.api.request("POST", "fare-pricing", "/api/v1/fare-quotes",
-                                          {"travelerRefs": travelers, "channel": channel,
-                                           "segmentRefs": [found["segment"]]}, step="quote")
+        quote = await self.prov.fare_quote(travelers, channel, [found["segment"]])
         await self.think()
         if self.chance("p_abandon_after_quote"):
             raise Abandoned()
 
-        offer = None
-        for _offer_try in range(5):
-            try:
-                _, offer = await self.api.request(
-                    "POST", "offer-management", "/api/v1/offers",
-                    {"accountId": entry["account_id"], "channelId": channel,
-                     "itineraryRef": found["itinerary"], "travelerRefs": travelers}, step="offer")
-                break
-            except StepFailed as exc:
-                if "422" not in str(exc) or _offer_try == 4:
-                    raise
-                await asyncio.sleep(min(1.0 * (1.5 ** _offer_try), 4.0))
-        _, order = await self.api.request(
-            "POST", "journey-order", "/api/v1/journey-orders",
-            {"accountId": entry["account_id"], "offerId": offer["offerId"],
-             "offerVersion": offer.get("offerVersion", 1),
-             "travelerRefs": travelers, "segmentRefs": [found["segment"]],
-             "journeyDate": route["date"], "productCode": "TRAIN"}, step="order")
+        offer = await self.prov.offer(entry["account_id"], channel,
+                                      found["itinerary"], travelers)
+        order = await self.prov.order(entry["account_id"], offer, travelers,
+                                      [found["segment"]], found["date"])
         order_id = order["orderId"]
 
         # risk gate — a blocked order goes to the staff risk queue
@@ -742,42 +989,46 @@ class CustomerSim:
 
         await self.think()
         total_minor = int(offer["total"]["minorUnits"])
-        _, intent = await self.api.request(
-            "POST", "payment", "/api/v1/payment-intents",
-            {"businessRef": order_id, "purpose": "purchase",
-             "amount": {"currency": "CNY", "minorUnits": total_minor},
-             "payerRef": entry["account_id"]}, step="payment-intent")
+        intent = await self.prov.payment_intent(order_id, total_minor,
+                                                entry["account_id"])
         common_refs = {
-            "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
-            "payment_intent": intent.get("paymentIntentId"), "itinerary": found.get("itinerary"),
+            "order": order_id, "account": entry["account_id"],
+            "offer": offer.get("offerId"),
+            "payment_intent": intent.get("paymentIntentId"),
+            "itinerary": found.get("itinerary"),
             "quote": quote.get("quoteId"), "service": found.get("service"),
-            "place": route.get("origin_place"), "node": found.get("origin_node"),
+            "place": found.get("origin_place"),
+            "node": found.get("origin_node"),
         }
         ancillary_refs = await self.maybe_purchase_ancillary(order_id, travelers[0], found["segment"])
         common_refs.update(ancillary_refs)
         await self.maybe_read_probe(common_refs)
         if resv.get("no_capacity"):
             return await self.handle_no_capacity_waitlist(
-                entry["account_id"], travelers[0], found["segment"], intent["paymentIntentId"], common_refs)
+                entry["account_id"], travelers[0], found["segment"],
+                intent["paymentIntentId"], common_refs)
         if self.chance("p_abandon_before_payment"):
             if self.chance("p_cancel_payment_intent_on_abandon"):
                 await self.api.request(
-                    "POST", "payment", f"/api/v1/payment-intents/{intent['paymentIntentId']}/cancel",
-                    {"reason": "CUSTOMER_ABANDONED_CHECKOUT"}, ok=(200,), step="payment-cancel")
+                    "POST", "payment",
+                    f"/api/v1/payment-intents/{intent['paymentIntentId']}/cancel",
+                    {"reason": "CUSTOMER_ABANDONED_CHECKOUT"}, ok=(200,),
+                    step="payment-cancel")
                 return "cancelled_payment_intent"
             if self.chance("p_cancel_order_before_payment"):
                 await self.api.request(
-                    "POST", "journey-order", f"/api/v1/journey-orders/{order_id}/cancel",
-                    {"reason": "CUSTOMER_CANCELLED_BEFORE_PAYMENT"}, ok=(200,), step="order-cancel-before-payment")
+                    "POST", "journey-order",
+                    f"/api/v1/journey-orders/{order_id}/cancel",
+                    {"reason": "CUSTOMER_CANCELLED_BEFORE_PAYMENT"},
+                    ok=(200,), step="order-cancel-before-payment")
                 return "cancelled_before_payment"
             return "abandoned_before_payment"
 
-        channel_ref = {"channel": "ALIPAY_SIM"}
-        if self.chance("p_payment_channel_missed_seed"):
-            channel_ref["faultSeedRef"] = "MISSED_ORDER:loadgen"
-        await self.api.request("POST", "payment",
-                               f"/api/v1/payment-intents/{intent['paymentIntentId']}/capture",
-                               {"channelRef": channel_ref}, ok=(200, 201, 202), step="payment-capture")
+        fault_seed = ("MISSED_ORDER:loadgen"
+                      if self.chance("p_payment_channel_missed_seed")
+                      else None)
+        await self.prov.payment_capture(intent["paymentIntentId"],
+                                        fault_seed)
 
         # ticket issuing is a platform/staff action — enqueue & wait
         tick = {"kind": "ticketing", "order": order_id, "sb": sb,
@@ -789,20 +1040,27 @@ class CustomerSim:
         if final != "CONFIRMED":
             raise StepFailed("confirm", f"order {order_id} ended {final}")
         purchase = Purchase(
-            order=order_id, saga=resv.get("saga", ""), sb=sb, seg=found["segment"],
-            traveler=travelers[0], account=entry["account_id"],
-            entitlement=ent, total_minor=total_minor, offer=offer.get("offerId", ""),
-            payment_intent=intent.get("paymentIntentId", ""), itinerary=found.get("itinerary", ""),
-            quote=quote.get("quoteId", ""))
+            order=order_id, saga=resv.get("saga", ""), sb=sb,
+            seg=found["segment"], traveler=travelers[0],
+            account=entry["account_id"], entitlement=ent,
+            total_minor=total_minor, offer=offer.get("offerId", ""),
+            payment_intent=intent.get("paymentIntentId", ""),
+            itinerary=found.get("itinerary", ""),
+            quote=quote.get("quoteId", ""),
+            journey_date=found.get("date", ""))
         await self.reg.add_purchase(purchase)
         invoice_refs = await self.maybe_request_invoice(purchase)
         wallet_refs = await self.maybe_wallet_purchase_benefit(entry["account_id"])
         await self.maybe_read_probe({
-            "order": order_id, "account": entry["account_id"], "offer": offer.get("offerId"),
-            "payment_intent": intent.get("paymentIntentId"), "entitlement": ent,
-            "itinerary": found.get("itinerary"), "quote": quote.get("quoteId"),
-            "service": found.get("service"), "place": route.get("origin_place"),
-            "node": found.get("origin_node"), **invoice_refs, **wallet_refs,
+            "order": order_id, "account": entry["account_id"],
+            "offer": offer.get("offerId"),
+            "payment_intent": intent.get("paymentIntentId"),
+            "entitlement": ent, "itinerary": found.get("itinerary"),
+            "quote": quote.get("quoteId"),
+            "service": found.get("service"),
+            "place": found.get("origin_place"),
+            "node": found.get("origin_node"),
+            **invoice_refs, **wallet_refs,
         })
         return "purchased"
 
@@ -811,13 +1069,14 @@ class CustomerSim:
         if not self.optional_chance("p_invoice_after_purchase", 0.02):
             return {}
         title_id = await self.reg.ensure_invoice_title(p.account, self.api)
+        currency = self.prov.currency()
         basis = {
             "basisType": "REVENUE_RECOGNITION",
             "revenueRecognitionIds": [f"rr-loadgen-{p.order[-8:]}"],
             "taxLines": [{"taxCode": "VAT_SIM", "taxRateBasisPoints": 0,
-                           "taxableAmount": {"currency": "CNY", "minorUnits": p.total_minor},
-                           "taxAmount": {"currency": "CNY", "minorUnits": 0}}],
-            "totalAmount": {"currency": "CNY", "minorUnits": p.total_minor},
+                           "taxableAmount": {"currency": currency, "minorUnits": p.total_minor},
+                           "taxAmount": {"currency": currency, "minorUnits": 0}}],
+            "totalAmount": {"currency": currency, "minorUnits": p.total_minor},
         }
         basis["amountBasisHash"] = "sha256:" + hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
         code, req = await self.api.request("POST", "invoicing", "/api/v1/e-invoice-requests",
@@ -1019,7 +1278,7 @@ class CustomerSim:
             _, reported = await self.api.request(
                 "POST", "disruption-recovery", "/api/v1/disruptions",
                 {"disruptionType": "SERVICE_DELAY", "scheduledServiceRef": f"ssch-lg-{suffix}",
-                 "segmentRef": p.seg, "serviceDate": "2026-08-02",
+                 "segmentRef": p.seg, "serviceDate": p.journey_date or self.prov.departure_date(),
                  "evidence": {"evidenceRef": f"ev-lg-{suffix}", "sourceSystem": "ADMIN", "sourceRecordId": f"lg-{suffix}", "summary": "Loadgen disruption drill"},
                  "affectedOrderIds": [p.order], "reportedBy": {"actorType": "OPERATIONS", "actorId": "loadgen-ops"},
                  "accountId": p.account,
@@ -1120,38 +1379,60 @@ class CustomerSim:
     # -- new-service journeys ------------------------------------------------
 
     async def journey_loyalty(self) -> str:
-        """Check membership tier for an existing account."""
+        """Enroll (idempotent) then read membership tier."""
         entry = await self.login_or_register()
-        _, resp = await self.api.request(
-            "GET", "loyalty-membership",
-            f"/members/{entry['account_id']}",
+        aid = entry["account_id"]
+        code, member = await self.api.request(
+            "POST", "loyalty-membership", "/members/enroll",
+            {"accountId": aid},
+            ok=(200, 201), step="loyalty-enroll")
+        member_id = member.get("memberId") if isinstance(member, dict) else None
+        if not member_id:
+            return "loyalty_enroll_failed"
+        _, details = await self.api.request(
+            "GET", "loyalty-membership", f"/members/{member_id}",
             ok=(200, 404), step="loyalty-get-member")
-        if resp and isinstance(resp, dict) and resp.get("memberId"):
+        if details and isinstance(details, dict) and details.get("tier"):
             return "loyalty_checked"
-        return "loyalty_not_enrolled"
+        return "loyalty_enrolled"
 
     async def journey_insurance(self) -> str:
-        """Request a travel insurance policy."""
+        """Issue a travel insurance policy with full required fields."""
         entry = await self.login_or_register()
+        tvl = await self.obtain_traveler(entry)
+        now_dt = datetime.now(timezone.utc)
+        premium = self.prov.default_amount("insurance_premium_minor", 50000)
+        currency = self.prov.currency()
         _, policy = await self.api.request(
             "POST", "travel-insurance", "/api/v1/policies",
             {"accountId": entry["account_id"],
-             "productCode": "TRAVEL_DELAY",
-             "coverageAmount": {"currency": "CNY", "minorUnits": 50000},
-             "journeyOrderRef": f"ord-{uuid7()}"},
-            ok=(200, 201, 400, 422), step="insurance-issue-policy")
-        return "insurance_policy_requested"
+             "travelerRef": tvl,
+             "productCode": "DELAY_INSURANCE",
+             "productVersion": "v1",
+             "journeyOrderId": f"ord-{uuid7()}",
+             "ancillaryOrderItemId": f"anc-{uuid7()[:8]}",
+             "segmentRefs": [f"seg-ins-{uuid7()[:8]}"],
+             "paymentIntentId": f"pi-{uuid7()[:8]}",
+             "coverageStartAt": now_dt.isoformat(),
+             "coverageEndAt": (now_dt + timedelta(days=1)).isoformat()},
+            ok=(200, 201), step="insurance-issue-policy")
+        if isinstance(policy, dict) and policy.get("policyId"):
+            return "insurance_policy_created"
+        return "insurance_policy_failed"
 
     async def journey_group_booking(self) -> str:
         """Create a group booking for 10+ travelers."""
         entry = await self.login_or_register()
+        currency = self.prov.currency()
+        fare_minor = self.prov.default_amount("group_fare_minor", 85000)
+        discount_bp = self.prov.default_amount("group_discount_basis_points", 500)
         _, group = await self.api.request(
             "POST", "group-booking", "/api/v1/group-bookings",
             {"organizerRef": entry["account_id"],
              "segmentRefs": [f"seg-group-{uuid7()[:8]}"],
              "targetTravelerCount": 10,
-             "fare": {"currency": "CNY", "minorUnits": 85000,
-                      "discountBasisPoints": 500,
+             "fare": {"currency": currency, "minorUnits": fare_minor,
+                      "discountBasisPoints": discount_bp,
                       "negotiationRef": f"nego-{uuid7()[:8]}"}},
             ok=(200, 201), step="group-create")
         group_id = group.get("groupBookingId") or group.get("id")
@@ -1160,31 +1441,49 @@ class CustomerSim:
         return "group_failed"
 
     async def journey_corporate(self) -> str:
-        """Create a corporate travel agreement."""
+        """Create a corporate travel agreement with full schema."""
         entry = await self.login_or_register()
+        now_dt = datetime.now(timezone.utc)
         _, agreement = await self.api.request(
             "POST", "corporate-travel", "/api/v1/agreements",
-            {"corporateName": f"Corp-{uuid7()[:8]}",
-             "adminAccountId": entry["account_id"],
-             "billingCurrency": "CNY",
-             "contactEmail": "corp@example.com"},
-            ok=(200, 201, 400, 422), step="corporate-create")
-        return "corporate_agreement_created"
+            {"corporateId": f"corp-{uuid7()[:8]}",
+             "agreementCode": f"AGR-{uuid7()[:8]}",
+             "legalName": f"Corp-{uuid7()[:8]} Ltd.",
+             "effectiveWindow": {
+                 "startsAt": now_dt.isoformat(),
+                 "endsAt": (now_dt + timedelta(days=365)).isoformat()},
+             "priceRef": {
+                 "fareRuleRefs": [],
+                 "ruleSetId": f"rs-{uuid7()[:8]}",
+                 "ruleSetVersion": "v1"},
+             "monthlyCreditLimit": {"currency": self.prov.currency(),
+                                    "minorUnits": self.prov.default_amount("corporate_credit_limit_minor", 5000000)},
+             "billingCalendar": {
+                 "billingPeriod": "MONTHLY",
+                 "cutoffAt": (now_dt + timedelta(days=30)).isoformat(),
+                 "dueAt": (now_dt + timedelta(days=45)).isoformat()},
+             "contact": {"email": "corp@example.com", "phone": "+86-10-12345678"},
+             "activate": True},
+            ok=(200, 201), step="corporate-create")
+        if isinstance(agreement, dict) and agreement.get("agreementId"):
+            return "corporate_agreement_created"
+        return "corporate_agreement_failed"
 
     async def journey_campaign(self) -> str:
-        """Draft a marketing campaign."""
-        window_end = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        """Draft a marketing campaign with required externalKey."""
+        ext_key = f"camp-{uuid7()[:8]}"
+        now_dt = datetime.now(timezone.utc)
+        window_end = (now_dt + timedelta(days=30)).isoformat()
         _, campaign = await self.api.request(
             "POST", "marketing-campaign", "/api/v1/campaigns",
-            {"name": f"Campaign-{uuid7()[:8]}",
-             "description": "Loadgen test campaign",
-             "budget": {"currency": "CNY", "minorUnits": 1000000},
-             "window": {"validFrom": now_iso(), "validUntil": window_end}},
-            ok=(200, 201, 400, 422), step="campaign-draft")
-        campaign_id = campaign.get("campaignId") or campaign.get("id")
+            {"externalKey": ext_key,
+             "name": f"Campaign-{uuid7()[:8]}",
+             "window": {"validFrom": now_dt.isoformat(), "validUntil": window_end}},
+            ok=(200, 201), step="campaign-draft")
+        campaign_id = campaign.get("campaignId") or campaign.get("id") if isinstance(campaign, dict) else None
         if campaign_id:
             return "campaign_drafted"
-        return "campaign_submitted"
+        return "campaign_draft_failed"
 
     # -- long-tail read probes ----------------------------------------------
 
@@ -1318,7 +1617,7 @@ class CustomerSim:
         now = datetime.now(timezone.utc)
         catalog_body = {
             "serviceType": "MEAL", "displayName": f"Loadgen meal {suffix}", "attachmentScope": "SEGMENT",
-            "modalities": ["TRAIN"], "price": {"currency": "CNY", "minorUnits": 1200},
+            "modalities": ["TRAIN"], "price": {"currency": self.prov.currency(), "minorUnits": 1200},
             "salesWindow": {"startAt": iso(now - timedelta(hours=1)), "endAt": iso(now + timedelta(days=1))},
             "purchaseCutoffHoursBeforeDeparture": 1, "eligibilityRuleVersion": "min-v1",
             "requiresEntitlementRef": True, "requiresSegmentRef": True, "fulfillmentMethod": "VOUCHER",
@@ -1339,13 +1638,14 @@ class CustomerSim:
         benefit_id = issued["benefitId"]
         ref = f"ord-{uuid7()}"
         amount = issued.get("availableAmount", {}).get("minorUnits", int(self.wallet_cfg.get("purchase_benefit_minor_units", 100)))
+        currency = self.prov.currency()
         await self.api.request("POST", "wallet-promotion", f"/api/v1/benefits/{quote(benefit_id)}/reserve",
-                               {"amount": {"currency": "CNY", "minorUnits": amount}, "reservationRef": ref,
+                               {"amount": {"currency": currency, "minorUnits": amount}, "reservationRef": ref,
                                 "reservationExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "businessReason": {"reasonType": "ORDER_PURCHASE", "reasonCode": "LOADGEN_BENEFIT_RESERVE", "referenceType": "ORDER", "referenceId": ref}},
                                ok=(200,), step="wallet-reserve")
         await self.api.request("POST", "wallet-promotion", f"/api/v1/benefits/{quote(benefit_id)}/redeem",
-                               {"amount": {"currency": "CNY", "minorUnits": amount}, "redemptionRef": ref, "reservationRef": ref,
+                               {"amount": {"currency": currency, "minorUnits": amount}, "redemptionRef": ref, "reservationRef": ref,
                                 "businessReason": {"reasonType": "ORDER_PURCHASE", "reasonCode": "LOADGEN_BENEFIT_USE", "referenceType": "ORDER", "referenceId": ref}},
                                ok=(200,), step="wallet-redeem")
         self.stats.journeys["wallet:reserve_redeem"] += 1
@@ -1353,9 +1653,10 @@ class CustomerSim:
 
     async def issue_wallet_benefit(self, account_id: str, amount: int) -> dict:
         until = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        currency = self.prov.currency()
         body = {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
-                "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
-                "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+                "amount": {"currency": currency, "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+                "applicableScope": {"scopeType": "ANY_TRIP", "currency": currency},
                 "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
                 "validFrom": now_iso(), "validUntil": until,
                 "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}}
@@ -1409,7 +1710,7 @@ class CustomerSim:
         total = (d.get("total") or {}).get("minorUnits", 10750)
         await self.think()
         await legacy("pay", "/api/v1/legacy/inside_payment",
-                     {"orderId": order_id, "price": {"currency": "CNY", "minorUnits": total}})
+                     {"orderId": order_id, "price": {"currency": self.prov.currency(), "minorUnits": total}})
         await asyncio.sleep(self.poll_interval * 2)
         await legacy("ticket", "/api/v1/legacy/ticket_issue", {"orderId": order_id})
         await self.think()
@@ -1448,6 +1749,7 @@ class ScalperSim:
         self.stats = stats
         self.rng = rng
         self.worker_idx = worker_idx
+        self._discovery_prov = Providers(cfg, api, reg, stats, rng)
         self.poll_attempts = int(cfg["polling"]["attempts"])
         self.poll_interval = float(cfg["polling"]["interval_seconds"])
         self.staff_wait = float(cfg["behavior"].get("staff_wait_seconds", 90))
@@ -1587,10 +1889,14 @@ class ScalperSim:
             self.identity_cache[tvl] = identity_refs
             self.account_pool.append(entry)
 
-        # select a diversified target set instead of hammering only the first hot routes.
-        async with self.reg.lock:
-            routes = list(self.reg.routes)
-        self.target_segments = self._diversified_segments(routes)
+        # live discovery of bookable segments across popular city pairs
+        discovered = await self.discover_hot_segments()
+        if discovered:
+            self.target_segments = discovered
+        else:
+            async with self.reg.lock:
+                routes = list(self.reg.routes)
+            self.target_segments = self._diversified_segments(routes)
 
     def _diversified_segments(self, routes: list[dict]) -> list[dict]:
         if not routes:
@@ -1610,6 +1916,47 @@ class ScalperSim:
                 if not bucket:
                     del buckets[key]
         return diversified
+
+    async def discover_hot_segments(self) -> list[dict]:
+        """Scalper scouts for high-demand routes by searching popular city
+        pairs across upcoming dates.  Uses the read-only discovery provider
+        (no scalper headers — scouting is passive).
+        """
+        places = self.reg.places
+        if len(places) < 2:
+            return []
+        segments: list[dict] = []
+        codes = list(places.keys())
+        pairs = [(a, b) for a in codes for b in codes if a != b]
+        self.rng.shuffle(pairs)
+        for origin, dest in pairs[:8]:
+            date = self._discovery_prov.departure_date()
+            try:
+                _, data = await self.api.request(
+                    "POST", "trip-planning", "/api/v1/itineraries/search",
+                    {"originRef": places[origin],
+                     "destinationRef": places[dest],
+                     "departureDate": date,
+                     "travelerRefs": [f"tvl-scout-{uuid7()[:8]}"],
+                     "channel": "WEB"},
+                    ok=(200,), step="scalper-discover")
+            except StepFailed:
+                continue
+            for itin in data.get("itineraries") or []:
+                if not _bookable(itin):
+                    continue
+                leg = itin["legs"][0]
+                segments.append({
+                    "origin_place": places[origin],
+                    "dest_place": places[dest],
+                    "date": date,
+                    "scheduled_service": leg.get("servicePlanRef"),
+                    "origin_node": leg.get("originStopRef"),
+                    "dest_node": leg.get("destinationStopRef"),
+                })
+                if len(segments) >= self.target_segment_count:
+                    return segments
+        return segments
 
     def next_account(self) -> dict:
         """Round-robin through the account pool."""
@@ -1851,7 +2198,7 @@ class ScalperSim:
         _, intent = await self.request(
             "POST", "payment", "/api/v1/payment-intents",
             {"businessRef": order_id, "purpose": "purchase",
-             "amount": {"currency": "CNY", "minorUnits": total_minor},
+             "amount": {"currency": self._discovery_prov.currency(), "minorUnits": total_minor},
              "payerRef": acct["account_id"]}, step="scalper-payment-intent")
         await self.burst_pause()
 
@@ -1869,7 +2216,7 @@ class ScalperSim:
         # confirm: CONFIRMING means the purchase chain completed and risk event
         # propagation is still catching up, so count it as scalper success.
         final = await self.poll_order(
-            order_id, {"CONFIRMED", "CONFIRMING"}, timeout_seconds=30.0)
+            order_id, {"CONFIRMED", "CONFIRMING"}, timeout_seconds=90.0)
         if final not in {"CONFIRMED", "CONFIRMING"}:
             raise StepFailed("scalper-confirm", f"order {order_id} ended {final}")
 
@@ -1950,10 +2297,14 @@ async def scalper_worker(idx: int, cfg: dict, sim: ScalperSim,
 class OpsSim:
     def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats, rng: random.Random):
         self.cfg = cfg.get("ops", {})
+        self._defaults = cfg.get("defaults", {})
         self.api = api
         self.reg = reg
         self.stats = stats
         self.rng = rng
+
+    def _currency(self) -> str:
+        return str(self._defaults.get("currency", "CNY"))
 
     def enabled(self) -> bool:
         return bool(self.cfg.get("enabled", True))
@@ -2018,8 +2369,8 @@ class OpsSim:
         until = (datetime.now(timezone.utc) + timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
         _, benefit = await self.api.request("POST", "wallet-promotion", "/api/v1/benefits",
             {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
-             "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
-             "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+             "amount": {"currency": self._currency(), "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+             "applicableScope": {"scopeType": "ANY_TRIP", "currency": self._currency()},
              "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
              "validFrom": now_iso(), "validUntil": until,
              "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}},
@@ -2093,11 +2444,12 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
         if existing:
             places[city["code"]] = existing["placeId"]
         else:
-            _, p = await api.request("POST", "place-network", "/api/v1/places",
+            _, created = await api.request("POST", "place-network", "/api/v1/places",
                                      {"canonicalName": city["name"], "placeType": "CITY",
                                       "code": city["code"], "timezone": "Asia/Shanghai"},
                                      step="create-place")
-            places[city["code"]] = p["placeId"]
+            places[city["code"]] = created["placeId"]
+        reg.places[city["code"]] = places[city["code"]]
         _, n = await api.request("POST", "place-network", "/api/v1/transport-nodes",
                                  {"placeId": places[city["code"]],
                                   "displayName": f"{city['name']} Station", "servingModes": ["RAIL"]},
@@ -2108,7 +2460,7 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
     base = int(bs.get("service_number_base", 5000))
     codes = list(places.keys())
     seq = 0
-    for date in bs.get("departure_dates", []):
+    for date in compute_departure_dates(cfg):
         for _ in range(int(bs.get("services_per_date", 1))):
             a, b = rng.sample(codes, 2)
             key = (places[a], places[b], date)
@@ -2175,7 +2527,7 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
     if len(reg.routes) < int(bs.get("min_routes", 2)):
         all_places = [p.get("placeId") for p in listing.get("items", []) if p.get("placeId")]
         seen = {(r["origin_place"], r["dest_place"], r["date"]) for r in reg.routes}
-        for date in bs.get("departure_dates", []):
+        for date in compute_departure_dates(cfg):
             probes = 0
             for a_place in all_places:
                 for b_place in all_places:
@@ -2205,11 +2557,104 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
 
 
 # ---------------------------------------------------------------------------
+# schedule publisher — periodically ensures services for the rolling window
+# ---------------------------------------------------------------------------
+
+
+async def schedule_publisher(cfg: dict, api: Api, reg: Registry,
+                             rng: random.Random,
+                             stop: asyncio.Event) -> None:
+    """Ops-side: publish new scheduled services for the rolling window.
+
+    Runs hourly.  For each date in the departure window that has no known
+    routes, creates new scheduled services (same logic as bootstrap).
+    """
+    bs = cfg.get("bootstrap") or {}
+    if not bs.get("enabled", True):
+        return
+    base = int(bs.get("service_number_base", 5000))
+    services_per_date = int(bs.get("services_per_date", 1))
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=3600.0)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            dates = compute_departure_dates(cfg)
+            codes = list(reg.places.keys())
+            if len(codes) < 2:
+                continue
+            known = {(r["origin_place"], r["dest_place"], r["date"])
+                     for r in reg.routes}
+            nodes: dict[str, str] = {}
+            for code in codes:
+                place_id = reg.places[code]
+                _, n = await api.request(
+                    "POST", "place-network", "/api/v1/transport-nodes",
+                    {"placeId": place_id,
+                     "displayName": f"{code} Station",
+                     "servingModes": ["RAIL"]},
+                    step="schedule-node")
+                nodes[code] = n.get("nodeId") or n.get("transportNodeId")
+            seq = 0
+            for date in dates:
+                for _ in range(services_per_date):
+                    a, b = rng.sample(codes, 2)
+                    key = (reg.places[a], reg.places[b], date)
+                    seq += 1
+                    if key in known:
+                        continue
+                    number = f"G{base + len(reg.routes) + seq}"
+                    dep = f"{date}T{rng.randrange(6, 18):02d}:00:00Z"
+                    arr = f"{date}T{rng.randrange(19, 23):02d}:30:00Z"
+                    _, ss = await api.request(
+                        "POST", "service-plan",
+                        "/api/v1/scheduled-services",
+                        {"carrierId": f"car-{uuid7()}",
+                         "serviceNumber": number,
+                         "departureTime": dep, "arrivalTime": arr,
+                         "originNodeId": nodes[a],
+                         "destinationNodeId": nodes[b]},
+                        step="schedule-service")
+                    ss_id = (ss.get("scheduledServiceRef")
+                             or ss.get("scheduledServiceId"))
+                    await api.request(
+                        "POST", "service-plan",
+                        "/api/v1/service-segments",
+                        {"scheduledServiceRef": ss_id,
+                         "originStopRef": nodes[a],
+                         "destinationStopRef": nodes[b],
+                         "departureTime": dep,
+                         "arrivalTime": arr},
+                        step="schedule-segment")
+                    reg.routes.append({
+                        "origin_place": reg.places[a],
+                        "dest_place": reg.places[b],
+                        "date": date,
+                        "service_number": number,
+                    })
+                    known.add(key)
+            print(f"[schedule-publisher] routes: {len(reg.routes)}")
+        except Exception as exc:
+            print(f"[schedule-publisher] failed: {type(exc).__name__}: "
+                  f"{str(exc)[:180]}")
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 
-async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, stop: asyncio.Event) -> None:
+async def customer_worker(idx: int, cfg: dict, api: Api, reg: Registry,
+                          stats: Stats, seed: float,
+                          stop: asyncio.Event) -> None:
+    """Each worker gets its own Providers + CustomerSim so persona overlays
+    are isolated between concurrent workers.
+    """
+    rng = random.Random(seed)
+    prov = Providers(cfg, api, reg, stats, rng)
+    sim = CustomerSim(cfg, api, reg, stats, rng, prov)
     journeys = {
         "browse": sim.journey_browse,
         "purchase": sim.journey_purchase,
@@ -2228,25 +2673,29 @@ async def customer_worker(idx: int, cfg: dict, sim: CustomerSim, stats: Stats, s
         "campaign": sim.journey_campaign,
     }
     pause = cfg["run"]["session_pause_seconds"]
-    while not stop.is_set():
-        name = weighted_choice(sim.rng, cfg["journey_mix"])
-        try:
-            outcome = await journeys[name]()
-            stats.journeys[f"{name}:{outcome}"] += 1
-        except Abandoned:
-            stats.journeys[f"{name}:abandoned"] += 1
-        except StepFailed as exc:
-            stats.journeys[f"{name}:failed"] += 1
-            stats.errors[f"journey:{name}:{exc.step}"] += 1
-            print(f"[cust{idx}] {name} failed — {exc}")
-        except Exception as exc:
-            stats.journeys[f"{name}:crashed"] += 1
-            print(f"[cust{idx}] {name} crashed — {type(exc).__name__}: {str(exc)[:180]}")
-        try:
-            await asyncio.wait_for(stop.wait(),
-                                   timeout=sim.rng.uniform(float(pause["min"]), float(pause["max"])))
-        except asyncio.TimeoutError:
-            pass
+    try:
+        while not stop.is_set():
+            prov.apply_persona(prov.pick_persona())
+            name = weighted_choice(rng, prov.journey_mix)
+            try:
+                outcome = await journeys[name]()
+                stats.journeys[f"{name}:{outcome}"] += 1
+            except Abandoned:
+                stats.journeys[f"{name}:abandoned"] += 1
+            except StepFailed as exc:
+                stats.journeys[f"{name}:failed"] += 1
+                stats.errors[f"journey:{name}:{exc.step}"] += 1
+                print(f"[cust{idx}] {name} failed — {exc}")
+            except Exception as exc:
+                stats.journeys[f"{name}:crashed"] += 1
+                print(f"[cust{idx}] {name} crashed — {type(exc).__name__}: {str(exc)[:180]}")
+            try:
+                await asyncio.wait_for(stop.wait(),
+                                       timeout=rng.uniform(float(pause["min"]), float(pause["max"])))
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        await sim.close()
 
 
 async def reporter(cfg: dict, stats: Stats, reg: Registry, stop: asyncio.Event) -> None:
@@ -2273,15 +2722,13 @@ async def main() -> None:
     api = Api(cfg, stats)
     reg = Registry.load(cfg["run"].get("state_file") or "")
     staff = StaffSim(cfg, api, reg, stats, rng)
-    sim = CustomerSim(cfg, api, reg, stats, rng)
     ops = OpsSim(cfg, api, reg, stats, rng)
 
     try:
         await bootstrap(cfg, api, reg, rng)
     except Exception as exc:
-        # inventory guarantees are best-effort; run with whatever routes the
-        # registry already knows rather than crash-looping the pod
-        print(f"[bootstrap] failed (continuing with {len(reg.routes)} known routes): {exc}")
+        print(f"[bootstrap] failed (continuing with {len(reg.routes)} "
+              f"known routes): {exc}")
 
     # scalper actors (created after bootstrap so target_segments can resolve)
     scalper_sims: list[ScalperSim] = []
@@ -2289,7 +2736,8 @@ async def main() -> None:
     if scalper_cfg.get("enabled", True):
         for i in range(int(scalper_cfg.get("workers", 3))):
             scalper_sims.append(
-                ScalperSim(cfg, api, reg, stats, random.Random(rng.random()), i))
+                ScalperSim(cfg, api, reg, stats,
+                           random.Random(rng.random()), i))
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -2299,26 +2747,48 @@ async def main() -> None:
     if duration > 0:
         loop.call_later(duration, stop.set)
 
-    tasks = [asyncio.create_task(customer_worker(i, cfg, sim, stats, stop))
+    # per-worker CustomerSim instances — each gets its own Providers so
+    # persona overlays are isolated between concurrent workers
+    tasks = [asyncio.create_task(
+                 customer_worker(i, cfg, api, reg, stats,
+                                 rng.random(), stop))
              for i in range(int(cfg["run"]["workers"]))]
     tasks += [asyncio.create_task(staff.worker(i, stop))
               for i in range(int(cfg["staff"]["workers"]))]
     if ops.enabled():
         tasks.append(asyncio.create_task(ops.worker(stop)))
     for i, sc in enumerate(scalper_sims):
-        tasks.append(asyncio.create_task(scalper_worker(i, cfg, sc, stats, stop)))
+        tasks.append(asyncio.create_task(
+            scalper_worker(i, cfg, sc, stats, stop)))
     tasks.append(asyncio.create_task(reporter(cfg, stats, reg, stop)))
+    tasks.append(asyncio.create_task(
+        schedule_publisher(cfg, api, reg, rng, stop)))
 
     await stop.wait()
     await asyncio.gather(*tasks, return_exceptions=True)
     reg.save(cfg["run"].get("state_file") or "")
-    print("[final] " + json.dumps(stats.snapshot(), sort_keys=True), flush=True)
+    print("[final] " + json.dumps(stats.snapshot(), sort_keys=True),
+          flush=True)
     await staff.close()
-    await sim.close()
     for sc in scalper_sims:
         await sc.close()
     await api.close()
 
 
-if __name__ == "__main__":
+def _run_one() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    import multiprocessing
+    procs = int(os.environ.get("LOADGEN_PROCESSES", "1"))
+    if procs <= 1:
+        _run_one()
+    else:
+        workers = []
+        for _ in range(procs):
+            p = multiprocessing.Process(target=_run_one, daemon=True)
+            p.start()
+            workers.append(p)
+        for p in workers:
+            p.join()

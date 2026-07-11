@@ -234,8 +234,8 @@ export class InMemoryEventSubscriber implements EventSubscriber {
   }
 }
 
-const READ_BLOCK_MS = 1_000;
-const READ_COUNT = 50;
+const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "100", 10);
+const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const MAX_DELIVERIES = 5;
 const STREAM_MAXLEN = 100_000;

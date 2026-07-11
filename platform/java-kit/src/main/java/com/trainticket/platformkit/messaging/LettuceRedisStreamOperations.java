@@ -19,6 +19,9 @@ import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 
 public final class LettuceRedisStreamOperations implements RedisStreamOperations {
+    private static final long BLOCK_MS = Long.parseLong(System.getenv().getOrDefault("CONSUMER_BLOCK_MS", "100"));
+    private static final int BATCH_COUNT = Integer.parseInt(System.getenv().getOrDefault("CONSUMER_BATCH_COUNT", "100"));
+
     private final StatefulRedisConnection<String, String> connection;
 
     public LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
@@ -78,7 +81,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     @Override
     public List<StreamEntry> readGroup(String stream, String group, String consumerName) {
         return connection.sync()
-            .xreadgroup(Consumer.from(group, consumerName), XReadArgs.Builder.block(Duration.ofSeconds(2)).count(10), XReadArgs.StreamOffset.lastConsumed(stream))
+            .xreadgroup(Consumer.from(group, consumerName), XReadArgs.Builder.block(Duration.ofMillis(BLOCK_MS)).count(BATCH_COUNT), XReadArgs.StreamOffset.lastConsumed(stream))
             .stream()
             .map(LettuceRedisStreamOperations::toEntry)
             .toList();

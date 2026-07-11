@@ -15,6 +15,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 public class OutboxRelay implements AutoCloseable {
     private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(
         Long.parseLong(System.getenv().getOrDefault("OUTBOX_POLL_INTERVAL_MS", "50")));
+    private static final int CLEANUP_EVERY_N = 20;
 
     private final JdbcOperations jdbc;
     private final RedisStreamOperations streams;
@@ -22,6 +23,7 @@ public class OutboxRelay implements AutoCloseable {
     private volatile boolean dependencyReady = true;
     private final ScheduledExecutorService executor;
     private final AtomicBoolean running = new AtomicBoolean();
+    private int pollCount;
 
     public OutboxRelay(javax.sql.DataSource dataSource, RedisStreamOperations streams) {
         this(new JdbcTemplate(dataSource), streams, DEFAULT_POLL_INTERVAL);
@@ -70,9 +72,20 @@ public class OutboxRelay implements AutoCloseable {
     private void safePollOnce() {
         try {
             pollOnce();
+            if (++pollCount % CLEANUP_EVERY_N == 0) {
+                cleanup();
+            }
         } catch (RuntimeException ignored) {
             dependencyReady = false;
-            // Readiness captures dependencies; relay retries on the next tick for at-least-once delivery.
+        }
+    }
+
+    private void cleanup() {
+        try {
+            jdbc.update("DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'");
+            jdbc.update("DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'");
+            jdbc.update("DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'");
+        } catch (RuntimeException ignored) {
         }
     }
 

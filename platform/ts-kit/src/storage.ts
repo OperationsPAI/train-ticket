@@ -283,13 +283,28 @@ export class OutboxRelay {
 
   private async run(): Promise<void> {
     const interval = this.options.pollIntervalMs ?? 250;
+    let pollCount = 0;
     while (!this.stopped) {
       try {
         await this.runOnce();
+        pollCount++;
+        if (pollCount % 20 === 0) {
+          await this.cleanup();
+        }
       } catch (error) {
         this.options.onFailure?.(error);
       }
       await sleepUntil(() => this.stopped, interval);
+    }
+  }
+
+  private async cleanup(): Promise<void> {
+    try {
+      await this.pool.query(`DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'`);
+      await this.pool.query(`DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'`);
+      await this.pool.query(`DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'`);
+    } catch {
+      // best-effort cleanup
     }
   }
 }

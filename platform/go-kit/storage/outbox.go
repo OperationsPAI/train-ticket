@@ -26,10 +26,11 @@ func (a *OutboxAppender) Append(ctx context.Context, stream string, eventID stri
 }
 
 type OutboxRelay struct {
-	db       DBTX
-	redis    *redis.Client
-	interval time.Duration
-	maxLen   int64
+	db        DBTX
+	redis     *redis.Client
+	interval  time.Duration
+	maxLen    int64
+	pollCount int
 }
 
 func NewOutboxRelay(db DBTX, redisClient *redis.Client) *OutboxRelay {
@@ -51,6 +52,10 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		_ = r.PublishBatch(ctx)
+		r.pollCount++
+		if r.pollCount%20 == 0 {
+			r.cleanup(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -105,6 +110,12 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 	}
 	_, err = r.db.Exec(ctx, fmt.Sprintf(`UPDATE outbox SET published_at = now() WHERE seq IN (%s) AND published_at IS NULL`, strings.Join(placeholders, ", ")), args...)
 	return err
+}
+
+func (r *OutboxRelay) cleanup(ctx context.Context) {
+	r.db.Exec(ctx, `DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'`)
+	r.db.Exec(ctx, `DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'`)
+	r.db.Exec(ctx, `DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'`)
 }
 
 type ProcessedEvents struct {

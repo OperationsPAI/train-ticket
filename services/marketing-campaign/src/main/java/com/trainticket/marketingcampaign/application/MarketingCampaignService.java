@@ -14,6 +14,7 @@ import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -287,38 +288,42 @@ public class MarketingCampaignService {
         String campaignId,
         String externalKey,
         String name,
-        CampaignWindow window,
+        Map<String, String> window,
         String targetRuleSetId,
         String budgetId,
         String approvalRef,
         String status,
-        Instant createdAt,
-        Instant updatedAt,
+        String createdAt,
+        String updatedAt,
         long version,
         BudgetDetail budget,
         List<TemplateDetail> templates,
         List<BatchDetail> batches
     ) {
         static CampaignDetail from(Campaign campaign, BudgetDetail budget, List<TemplateDetail> templates, List<BatchDetail> batches) {
-            return new CampaignDetail(campaign.campaignId(), campaign.externalKey(), campaign.name(), campaign.window(), campaign.targetRuleSetId(), campaign.budgetId(), campaign.approvalRef(), campaign.status().name(), campaign.createdAt(), campaign.updatedAt(), campaign.version(), budget, templates, batches);
+            CampaignWindow w = campaign.window();
+            Map<String, String> windowMap = w != null ? Map.of("validFrom", w.validFrom().toString(), "validUntil", w.validUntil().toString()) : Map.of();
+            return new CampaignDetail(campaign.campaignId(), campaign.externalKey(), campaign.name(), windowMap, campaign.targetRuleSetId(), campaign.budgetId(), campaign.approvalRef(), campaign.status().name(), campaign.createdAt().toString(), campaign.updatedAt().toString(), campaign.version(), budget, templates, batches);
         }
     }
 
-    public record BudgetDetail(String budgetId, String campaignId, Money totalBudget, Money reservedAmount, Money consumedAmount, boolean closed, Instant createdAt, Instant updatedAt, long version) {
+    public record BudgetDetail(String budgetId, String campaignId, Money totalBudget, Money reservedAmount, Money consumedAmount, boolean closed, String createdAt, String updatedAt, long version) {
         static BudgetDetail from(CampaignBudget budget) {
-            return new BudgetDetail(budget.budgetId(), budget.campaignId(), budget.totalBudget(), budget.reservedAmount(), budget.consumedAmount(), budget.closed(), budget.createdAt(), budget.updatedAt(), budget.version());
+            return new BudgetDetail(budget.budgetId(), budget.campaignId(), budget.totalBudget(), budget.reservedAmount(), budget.consumedAmount(), budget.closed(), budget.createdAt().toString(), budget.updatedAt().toString(), budget.version());
         }
     }
 
-    public record TemplateDetail(String templateId, String campaignId, String templateCode, int templateVersion, String status, Money faceValue, Money minimumSpend, String applicableScope, String redemptionRule, CampaignWindow validityWindow, Instant createdAt, Instant updatedAt, long version) {
+    public record TemplateDetail(String templateId, String campaignId, String templateCode, int templateVersion, String status, Money faceValue, Money minimumSpend, String applicableScope, String redemptionRule, Map<String, String> validityWindow, String createdAt, String updatedAt, long version) {
         static TemplateDetail from(CouponTemplate template) {
-            return new TemplateDetail(template.templateId(), template.campaignId(), template.templateCode(), template.templateVersion(), template.status().name(), template.faceValue(), template.minimumSpend(), template.applicableScope(), template.redemptionRule(), template.validityWindow(), template.createdAt(), template.updatedAt(), template.version());
+            CampaignWindow vw = template.validityWindow();
+            Map<String, String> vwMap = vw != null ? Map.of("validFrom", vw.validFrom().toString(), "validUntil", vw.validUntil().toString()) : Map.of();
+            return new TemplateDetail(template.templateId(), template.campaignId(), template.templateCode(), template.templateVersion(), template.status().name(), template.faceValue(), template.minimumSpend(), template.applicableScope(), template.redemptionRule(), vwMap, template.createdAt().toString(), template.updatedAt().toString(), template.version());
         }
     }
 
-    public record BatchDetail(String issuanceBatchId, String campaignId, String templateId, String audienceSnapshotId, String status, int itemCount, Instant plannedAt, Instant updatedAt, long version) {
+    public record BatchDetail(String issuanceBatchId, String campaignId, String templateId, String audienceSnapshotId, String status, int itemCount, String plannedAt, String updatedAt, long version) {
         static BatchDetail from(IssuanceBatch batch) {
-            return new BatchDetail(batch.issuanceBatchId(), batch.campaignId(), batch.templateId(), batch.audienceSnapshotId(), batch.status().name(), batch.itemsById().size(), batch.plannedAt(), batch.updatedAt(), batch.version());
+            return new BatchDetail(batch.issuanceBatchId(), batch.campaignId(), batch.templateId(), batch.audienceSnapshotId(), batch.status().name(), batch.itemsById().size(), batch.plannedAt().toString(), batch.updatedAt().toString(), batch.version());
         }
     }
 }

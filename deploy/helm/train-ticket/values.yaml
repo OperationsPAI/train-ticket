@@ -1,0 +1,164 @@
+global:
+  imageRegistry: ""  # e.g. "pair-cn-guangzhou.cr.volces.com" for mirror
+  imageOrg: "opspai"
+  imageTag: "latest"
+  imagePullPolicy: IfNotPresent
+
+# -- Infrastructure ----------------------------------------------------------
+
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  storage:
+    size: 20Gi
+    storageClass: ""  # empty = default StorageClass
+  credentials:
+    username: trainticket
+    password: trainticket-dev
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+
+jaeger:
+  enabled: true
+  image:
+    repository: jaegertracing/all-in-one
+    tag: "1.57"
+
+otelCollector:
+  enabled: true
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.103.1"
+
+mailpit:
+  enabled: true
+  image:
+    repository: axllent/mailpit
+    tag: "v1.22.3"
+
+# -- Loadgen -----------------------------------------------------------------
+
+loadgen:
+  enabled: true
+  workers: 6
+
+# -- Microservices -----------------------------------------------------------
+# Each service follows the same pattern. Override replicas, env, resources here.
+
+services:
+  dispatch:
+    db: dispatch
+  place-network:
+    db: place_network
+  service-plan:
+    db: service_plan
+  capacity-availability:
+    db: capacity_availability
+  fare-pricing:
+    db: fare_pricing
+    env:
+      IDENTITY_VERIFICATION_URL: http://identity-verification:8080
+  trip-planning:
+    db: trip_planning
+  ancillary-service:
+    db: ancillary_service
+  offer-management:
+    db: offer_management
+    env:
+      PG_MAX_POOL_SIZE: "15"
+  journey-order:
+    db: journey_order
+    env:
+      IDENTITY_VERIFICATION_URL: http://identity-verification:8080
+      IDENTITY_VERIFICATION_PREORDER_ENABLED: "true"
+  booking-orchestration:
+    db: booking_orchestration
+    env:
+      CONSUMER_THREADS: "4"
+  identity-verification:
+    db: identity_verification
+  payment:
+    db: payment
+  provider-integration:
+    db: provider_integration
+  entitlement-ticketing:
+    db: entitlement_ticketing
+    env:
+      SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
+  fulfillment:
+    db: fulfillment
+  post-sales:
+    db: post_sales
+  notification:
+    db: notification
+    env:
+      SMTP_URL: smtp://mailpit:1025
+  traveler-profile:
+    db: traveler_profile
+  risk-compliance:
+    db: risk_compliance
+  corporate-travel:
+    db: corporate_travel
+  account:
+    db: account
+  loyalty-membership:
+    db: loyalty_membership
+  admin-audit:
+    db: admin_audit
+  customer-service:
+    db: customer_service
+  finance-settlement:
+    db: finance_settlement
+  reporting:
+    db: reporting
+  supplier-catalog:
+    db: supplier_catalog
+  legacy-acl:
+    db: legacy_acl
+  waitlist:
+    db: waitlist
+    env:
+      MIGRATIONS_DIR: /app/migrations
+      FARE_PRICING_BASE_URL: http://fare-pricing:8080
+      OFFER_MANAGEMENT_BASE_URL: http://offer-management:8080
+      JOURNEY_ORDER_BASE_URL: http://journey-order:8080
+  wallet-promotion:
+    db: wallet_promotion
+  disruption-recovery:
+    db: disruption_recovery
+    env:
+      POST_SALES_URL: http://post-sales:8080
+      WALLET_PROMOTION_URL: http://wallet-promotion:8080
+      TRANSFER_MANAGEMENT_URL: http://transfer-management:8080
+  transfer-management:
+    db: transfer_management
+    env:
+      DISRUPTION_RECOVERY_URL: http://disruption-recovery:8080
+      PLACE_NETWORK_URL: http://place-network:8080
+  seat-assignment:
+    db: seat_assignment
+  payment-channel:
+    db: payment_channel
+  invoicing:
+    db: invoicing
+  marketing-campaign:
+    db: marketing_campaign
+  group-booking:
+    db: group_booking
+  travel-insurance:
+    db: travel_insurance
+
+# -- Per-service overrides (replicas, resources, etc.) -----------------------
+# Example:
+#   services:
+#     journey-order:
+#       replicas: 2
+#       resources:
+#         requests: { cpu: 200m, memory: 256Mi }
+#         limits: { memory: 512Mi }
