@@ -87,6 +87,8 @@ def test_real_name_duplicate_blacklist_expiry_and_cache():
     first_class = service.verify_identity({**request, "documentNumber": credit_doc, "travelerId": "tvl-credit", "segmentRef": "seg-credit", "seatClass": "FIRST_CLASS"}, "corr-real", "cmd-real-5")
     assert first_class["status"] == "BLACKLISTED"
     assert first_class["reason"] == "CREDIT_DEFAULT_RESTRICTED_CLASS"
+    rejection_events = [event for event in store.take_outbox() if event.eventType == "IdentityRejected"]
+    assert rejection_events[-1].payload["reason"] == "BLACKLISTED"
     second_class = service.verify_identity({**request, "documentNumber": credit_doc, "travelerId": "tvl-credit", "segmentRef": "seg-credit-2", "seatClass": "SECOND_CLASS"}, "corr-real", "cmd-real-6")
     assert second_class["status"] == "VERIFIED"
 
@@ -116,3 +118,5 @@ def test_journey_order_and_risk_events_maintain_registries():
     assert result["status"] == "CHALLENGE"
     assert result["reason"] == "FRAUD_FLAGGED"
     assert result["restrictions"] == ["MANUAL_REVIEW_REQUIRED"]
+    rejection_events = [event for event in store.take_outbox() if event.eventType == "IdentityRejected"]
+    assert rejection_events[-1].payload["reason"] == "BLACKLISTED"
