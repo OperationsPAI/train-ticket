@@ -101,12 +101,17 @@ def test_journey_order_and_risk_events_maintain_registries():
 
     store = InMemoryStore()
     service = IdentityVerificationService(store)
-    service.handle_journey_order_event(EventEnvelope(eventId="evt-journey-created", eventType="JourneyOrderCreated", producer="journey-order", payload={"orderId": "ord-reg", "segmentRefs": ["seg-reg"], "departureDate": "2026-02-01", "travelerRefs": [{"travelerId": "tvl-reg", "documentNumber": "11010519491231002X"}]}))
+    service.verify_identity({"travelerId": "tvl-reg", "documentType": "ID_CARD", "documentNumber": "11010519491231002X", "holderName": "张三"}, "corr-risk", "cmd-verify")
+    service.register_credential({"travelerId": "tvl-reg", "profileSnapshotVersion": "snap-reg", "documentType": "ID_CARD", "maskedDocumentNo": "110105********002X", "documentHash": "doc-reg-0", "canonicalNameHash": "name-reg"}, "corr-risk", "cmd-cred")
+    credential = store.credentials_for_traveler("tvl-reg")[0]
+    store.save_credential(credential.mark_verified("ivc-reg", at=datetime(2026, 1, 1, tzinfo=UTC)))
+    service.pre_order_check({"orderIntentId": "oint-reg", "accountId": "acct-reg", "travelerRefs": ["tvl-reg"], "segmentRefs": ["seg-reg"], "journeyDate": "2026-02-01", "productCode": "TRAIN", "requestedEligibilityTypes": [], "limitPolicyVersion": "limit-v1"}, "corr-risk", "cmd-pre")
+    service.handle_journey_order_event(EventEnvelope(eventId="evt-journey-created", eventType="JourneyOrderCreated", producer="journey-order", payload={"orderId": "ord-reg", "accountId": "acct-reg", "offerId": "off-reg", "monetarySummary": {"total": {"currency": "CNY", "amount": "100.00"}, "currency": "CNY"}, "segmentRefs": ["seg-reg"], "travelerRefs": [{"travelerId": "tvl-reg", "travelerType": "ADULT", "maskedDocumentNo": "110105********002X"}], "createdAt": "2026-01-01T00:00:00Z"}))
     assert store.find_active_ticket("11010519491231002X", "seg-reg", "2026-02-01") is not None
-    service.handle_journey_order_event(EventEnvelope(eventId="evt-journey-cancelled", eventType="JourneyOrderCancelled", producer="journey-order", payload={"orderId": "ord-reg", "reason": "USER_CANCELLED"}))
+    service.handle_risk_alert_raised(EventEnvelope(eventId="evt-risk-alert", eventType="RiskAlertRaised", producer="risk-compliance", payload={"evaluationId": "rsk-reg", "orderId": "ord-reg", "accountId": "acct-reg", "score": 80, "verdict": "CHALLENGE", "triggeredRules": [{"ruleId": "velocity"}], "raisedAt": "2026-01-01T00:05:00Z"}))
+    service.handle_journey_order_event(EventEnvelope(eventId="evt-journey-cancelled", eventType="JourneyOrderCancelled", producer="journey-order", payload={"orderId": "ord-reg", "accountId": "acct-reg", "reason": "USER_CANCELLED"}))
     assert store.find_active_ticket("11010519491231002X", "seg-reg", "2026-02-01") is None
 
-    service.handle_risk_alert_raised(EventEnvelope(eventId="evt-risk-alert", eventType="RiskAlertRaised", producer="risk-compliance", payload={"documentNumber": "11010519491231002X", "reason": "fraud pattern"}))
     result = service.verify_identity({"travelerId": "tvl-risk", "documentType": "ID_CARD", "documentNumber": "11010519491231002X", "holderName": "张三", "seatClass": "SECOND_CLASS"}, "corr-risk", "cmd-risk")
     assert result["status"] == "CHALLENGE"
     assert result["reason"] == "FRAUD_FLAGGED"

@@ -297,6 +297,12 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             self._active_tickets.save(conn, ticket_id, ticket_to_json(ticket), expected)
         self._with_conn(write)
 
+    def list_active_tickets_for_order(self, order_id: str) -> tuple[ActiveTicket, ...]:
+        def read(conn: Any) -> tuple[ActiveTicket, ...]:
+            rows = conn.execute("SELECT id, version, data FROM active_ticket_snapshots WHERE data->>'orderId'=%s AND data->>'status'='ACTIVE'", (order_id,)).fetchall()
+            return tuple(ticket_from_json(row[2]) for row in rows)
+        return self._with_conn(read)
+
     def release_active_tickets_for_order(self, order_id: str) -> None:
         def write(conn: Any) -> None:
             rows = conn.execute("SELECT id, version, data FROM active_ticket_snapshots WHERE data->>'orderId'=%s", (order_id,)).fetchall()
@@ -316,6 +322,18 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             return (verified_at, expires_at) if expires_at > at else None
         return self._with_conn(read)
 
+    def find_cached_document_for_traveler(self, traveler_id: str, at: datetime) -> str | None:
+        def read(conn: Any) -> str | None:
+            rows = conn.execute("SELECT id, version, data FROM verification_cache_snapshots WHERE data->>'travelerId'=%s ORDER BY data->>'expiresAt' DESC", (traveler_id,)).fetchall()
+            for row in rows:
+                data = dict(row[2])
+                expires_at = _parse_dt(str(data.get("expiresAt") or ""))
+                if expires_at is not None and expires_at > at:
+                    self._remember("verification-cache", str(row[0]), int(row[1]))
+                    return str(data["documentNumber"])
+            return None
+        return self._with_conn(read)
+
     def save_cached_verification(self, traveler_id: str, document_number: str, verified_at: datetime, expires_at: datetime) -> None:
         cache_id = f"vcache-{traveler_id}-{document_number}"
         data = {"travelerId": traveler_id, "documentNumber": document_number, "verifiedAt": _dt(verified_at), "expiresAt": _dt(expires_at)}
@@ -331,6 +349,33 @@ class PostgresIdentityVerificationStore(InMemoryStore):
         def write(conn: Any) -> None:
             conn.execute("INSERT INTO traveler_snapshot_links(traveler_id, snapshot_version, data) VALUES (%s,%s,%s) ON CONFLICT (traveler_id) DO UPDATE SET snapshot_version=EXCLUDED.snapshot_version, data=EXCLUDED.data, updated_at=now()", (traveler_id, str(data.get("snapshotVersion") or data.get("profileSnapshotVersion") or ""), json.dumps(dict(data))))
         self._with_conn(write)
+
+    def find_reserved_pre_order_check_for_order_event(self, account_id: str, traveler_ids: tuple[str, ...], segment_refs: tuple[str, ...]) -> dict[str, Any] | None:
+        def read(conn: Any) -> dict[str, Any] | None:
+            rows = conn.execute(
+                """
+                SELECT id, version, data
+                  FROM pre_order_check_snapshots
+                 WHERE data->>'status'='RESERVED'
+                   AND data->'body'->>'result'='PASS'
+                   AND data->'body'->>'accountId'=%s
+                 ORDER BY data->'body'->>'evaluatedAt' DESC
+                """,
+                (account_id,),
+            ).fetchall()
+            traveler_set = set(traveler_ids)
+            segment_set = set(segment_refs)
+            for row in rows:
+                data = dict(row[2])
+                body = dict(data.get("body") or {})
+                if set(str(item) for item in body.get("travelerRefs") or ()) != traveler_set:
+                    continue
+                if set(str(item) for item in body.get("segmentRefs") or ()) != segment_set:
+                    continue
+                self._remember("pre-order", str(row[0]), int(row[1]))
+                return data
+            return None
+        return self._with_conn(read)
 
     def append_outbox(self, envelopes: Iterable[Any]) -> None:
         def write(conn: Any) -> None:
