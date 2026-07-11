@@ -48,3 +48,66 @@ def test_purchase_limit_fact_missed_and_failed_transitions():
     assert failed.status == "FAILED"
     assert failed.version == 2
     assert failed.failureCode == "LEDGER_CONFLICT"
+
+
+def test_real_name_duplicate_blacklist_expiry_and_cache():
+    from identity_verification.application.service import IdentityVerificationService, InMemoryStore
+    from identity_verification.domain import ActiveTicket, BlacklistEntry, BlacklistType
+
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    store = InMemoryStore()
+    service = IdentityVerificationService(store)
+    doc = "11010519491231002X"
+    request = {"travelerId": "tvl-real", "documentType": "ID_CARD", "documentNumber": doc, "holderName": "张三", "segmentRef": "seg-1", "departureDate": "2026-02-01", "seatClass": "SECOND_CLASS", "bookingValueMinor": 10000}
+    first = service.verify_identity(request, "corr-real", "cmd-real")
+    assert first["status"] == "VERIFIED"
+    assert first["duplicateTicketCheck"] == "PASS"
+    assert first["cacheHit"] is False
+    assert [event.eventType for event in store.take_outbox()] == ["IdentityVerified"]
+
+    cached = service.verify_identity(request, "corr-real", "cmd-real-2")
+    assert cached["status"] == "VERIFIED"
+    assert cached["cacheHit"] is True
+    assert store.take_outbox() == ()
+
+    store.save_active_ticket(ActiveTicket(doc, "seg-1", "2026-02-01", "ord-1"))
+    duplicate = service.verify_identity({**request, "travelerId": "tvl-other"}, "corr-real", "cmd-real-3")
+    assert duplicate["status"] == "REJECTED"
+    assert duplicate["reason"] == "DUPLICATE_TICKET"
+    assert duplicate["duplicateTicketCheck"] == "FAIL"
+
+    security_doc = "110105194912310038"
+    store.add_blacklist_entry(BlacklistEntry(security_doc, BlacklistType.SECURITY_BAN, "security", at))
+    security = service.verify_identity({**request, "documentNumber": security_doc, "travelerId": "tvl-ban", "segmentRef": "seg-ban"}, "corr-real", "cmd-real-4")
+    assert security["status"] == "BLACKLISTED"
+    assert security["restrictions"] == ["TRAVEL_BAN"]
+
+    credit_doc = "110105194912310046"
+    store.add_blacklist_entry(BlacklistEntry(credit_doc, BlacklistType.CREDIT_DEFAULT, "credit", at))
+    first_class = service.verify_identity({**request, "documentNumber": credit_doc, "travelerId": "tvl-credit", "segmentRef": "seg-credit", "seatClass": "FIRST_CLASS"}, "corr-real", "cmd-real-5")
+    assert first_class["status"] == "BLACKLISTED"
+    assert first_class["reason"] == "CREDIT_DEFAULT_RESTRICTED_CLASS"
+    second_class = service.verify_identity({**request, "documentNumber": credit_doc, "travelerId": "tvl-credit", "segmentRef": "seg-credit-2", "seatClass": "SECOND_CLASS"}, "corr-real", "cmd-real-6")
+    assert second_class["status"] == "VERIFIED"
+
+    expired = service.verify_identity({"travelerId": "tvl-passport", "documentType": "PASSPORT", "documentNumber": "E12345678", "holderName": "LI SI", "expiryDate": "2020-01-01T00:00:00Z"}, "corr-real", "cmd-real-7")
+    assert expired["status"] == "EXPIRED"
+    assert expired["reason"] == "EXPIRED_DOCUMENT"
+
+
+def test_journey_order_and_risk_events_maintain_registries():
+    from identity_verification.application.service import IdentityVerificationService, InMemoryStore
+    from train_ticket_platform.events import EventEnvelope
+
+    store = InMemoryStore()
+    service = IdentityVerificationService(store)
+    service.handle_journey_order_event(EventEnvelope(eventId="evt-journey-created", eventType="JourneyOrderCreated", producer="journey-order", payload={"orderId": "ord-reg", "segmentRefs": ["seg-reg"], "departureDate": "2026-02-01", "travelerRefs": [{"travelerId": "tvl-reg", "documentNumber": "11010519491231002X"}]}))
+    assert store.find_active_ticket("11010519491231002X", "seg-reg", "2026-02-01") is not None
+    service.handle_journey_order_event(EventEnvelope(eventId="evt-journey-cancelled", eventType="JourneyOrderCancelled", producer="journey-order", payload={"orderId": "ord-reg", "reason": "USER_CANCELLED"}))
+    assert store.find_active_ticket("11010519491231002X", "seg-reg", "2026-02-01") is None
+
+    service.handle_risk_alert_raised(EventEnvelope(eventId="evt-risk-alert", eventType="RiskAlertRaised", producer="risk-compliance", payload={"documentNumber": "11010519491231002X", "reason": "fraud pattern"}))
+    result = service.verify_identity({"travelerId": "tvl-risk", "documentType": "ID_CARD", "documentNumber": "11010519491231002X", "holderName": "张三", "seatClass": "SECOND_CLASS"}, "corr-risk", "cmd-risk")
+    assert result["status"] == "CHALLENGE"
+    assert result["reason"] == "FRAUD_FLAGGED"
+    assert result["restrictions"] == ["MANUAL_REVIEW_REQUIRED"]

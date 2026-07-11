@@ -11,15 +11,25 @@ from uuid import UUID
 from train_ticket_platform.events import EventEnvelope, canonical_correlation_id, rfc3339_utc
 
 from identity_verification.domain import (
+    ActiveTicket,
+    BlacklistChecker,
+    BlacklistEntry,
+    BlacklistType,
+    DuplicateTicketCheck,
     CredentialRecord,
     CredentialStatus,
     DomainError,
+    ExpiredDocumentError,
     EligibilityCertificate,
     PreOrderResult,
     PreconditionFailed,
     PurchaseLimitFact,
     SimOutcome,
+    VerificationCache,
     VerificationCase,
+    VerificationRequest,
+    VerificationResult,
+    VerificationResultStatus,
     VerificationStatus,
     now_utc,
 )
@@ -96,6 +106,9 @@ class InMemoryStore:
         self.pre_order_checks: dict[str, dict[str, Any]] = {}
         self.pre_order_duplicate_index: dict[str, str] = {}
         self.traveler_snapshots: dict[str, dict[str, Any]] = {}
+        self.blacklist_entries: list[BlacklistEntry] = []
+        self.active_tickets: dict[tuple[str, str, str], ActiveTicket] = {}
+        self.verification_cache = VerificationCache()
         self._outbox: list[EventEnvelope] = []
         self.processed_events: set[str] = set()
 
@@ -192,6 +205,30 @@ class InMemoryStore:
         return self.get_pre_order_check(cid) if cid else None
 
 
+    def add_blacklist_entry(self, entry: BlacklistEntry) -> None:
+        self.blacklist_entries.append(entry)
+
+    def list_blacklist_entries(self, document_number: str) -> tuple[BlacklistEntry, ...]:
+        return tuple(entry for entry in self.blacklist_entries if entry.documentNumber == document_number)
+
+    def find_active_ticket(self, document_number: str, segment_ref: str, departure_date: str) -> ActiveTicket | None:
+        return self.active_tickets.get((document_number, segment_ref, departure_date))
+
+    def save_active_ticket(self, ticket: ActiveTicket) -> None:
+        self.active_tickets[ticket.key] = ticket
+
+    def release_active_tickets_for_order(self, order_id: str) -> None:
+        for key, ticket in list(self.active_tickets.items()):
+            if ticket.orderId == order_id:
+                self.active_tickets.pop(key, None)
+
+    def get_cached_verification(self, traveler_id: str, document_number: str, at: datetime) -> tuple[datetime, datetime] | None:
+        return self.verification_cache.get_valid(traveler_id, document_number, at)
+
+    def save_cached_verification(self, traveler_id: str, document_number: str, verified_at: datetime, expires_at: datetime) -> None:
+        self.verification_cache.record(traveler_id, document_number, verified_at, expires_at)
+
+
 class DeterministicSimGateway:
     def __init__(self, seed: str = "sim-tail-v1") -> None:
         self.seed = seed
@@ -225,6 +262,76 @@ class IdentityVerificationService:
     def _append(self, envelopes: tuple[EventEnvelope, ...]) -> None:
         append = getattr(self.store, "append_outbox", None)
         if callable(append): append(envelopes)
+
+    def verify_identity(self, data: Mapping[str, Any], correlation_id: str, causation_id: str | None) -> dict[str, Any]:
+        with self.transaction():
+            at = now_utc()
+            request = VerificationRequest.from_mapping(data)
+            duplicate_check = DuplicateTicketCheck.PASS
+            envelopes: list[EventEnvelope] = []
+            try:
+                request.validate(at)
+            except ExpiredDocumentError:
+                result = VerificationResult(VerificationResultStatus.EXPIRED, "EXPIRED_DOCUMENT", None, None, duplicateTicketCheck=duplicate_check)
+                envelopes.append(self._identity_rejected_event(request.travelerId, "EXPIRED_DOCUMENT", corr=correlation_id, cause=causation_id, at=at))
+                self._append(tuple(envelopes))
+                return self._verification_response(request, result)
+
+            if request.segmentRef and request.departureDate:
+                existing_ticket = self.store.find_active_ticket(request.documentNumber, request.segmentRef, request.departureDate)
+                if existing_ticket is not None:
+                    duplicate_check = DuplicateTicketCheck.FAIL
+                    result = VerificationResult(VerificationResultStatus.REJECTED, "DUPLICATE_TICKET", None, None, duplicateTicketCheck=duplicate_check)
+                    envelopes.append(self._identity_rejected_event(request.travelerId, "DUPLICATE_TICKET", corr=correlation_id, cause=causation_id, at=at))
+                    self._append(tuple(envelopes))
+                    return self._verification_response(request, result)
+
+            blacklist_hit = self._blacklist_hit(request, at)
+            if blacklist_hit is not None:
+                entry, status, reason, restrictions = blacklist_hit
+                result = VerificationResult(status, reason, None, None, restrictions=restrictions, duplicateTicketCheck=duplicate_check)
+                envelopes.append(self._blacklist_hit_event(entry, corr=correlation_id, cause=causation_id, at=at))
+                envelopes.append(self._identity_rejected_event(request.travelerId, reason, corr=correlation_id, cause=causation_id, at=at))
+                self._append(tuple(envelopes))
+                return self._verification_response(request, result)
+
+            cache_lookup = self.store.get_cached_verification(request.travelerId, request.documentNumber, at)
+            cached = None if request.bookingValueMinor > 500_000 else cache_lookup
+            if cached is not None:
+                verified_at, expires_at = cached
+                result = VerificationResult(VerificationResultStatus.VERIFIED, None, verified_at, expires_at, duplicateTicketCheck=duplicate_check, cacheHit=True)
+                return self._verification_response(request, result)
+
+            expires_at = at + timedelta(days=request.documentType.validity_days)
+            result = VerificationResult(VerificationResultStatus.VERIFIED, None, at, expires_at, duplicateTicketCheck=duplicate_check)
+            self.store.save_cached_verification(request.travelerId, request.documentNumber, at, expires_at)
+            envelopes.append(self._identity_verified_event(request, expires_at, correlation_id, causation_id, at))
+            self._append(tuple(envelopes))
+            return self._verification_response(request, result)
+
+    def _blacklist_hit(self, request: VerificationRequest, at: datetime) -> tuple[BlacklistEntry, VerificationResultStatus, str, tuple[str, ...]] | None:
+        hit = BlacklistChecker(self.store.list_blacklist_entries(request.documentNumber)).check(request.documentNumber, request.seatClass, at)
+        if hit is None:
+            return None
+        entry, (status, reason, restrictions) = hit
+        return entry, status, reason, restrictions
+
+    def _verification_response(self, request: VerificationRequest, result: VerificationResult) -> dict[str, Any]:
+        return {"travelerId": request.travelerId, "documentType": request.documentType.value, **result.to_json()}
+
+    def _identity_verified_event(self, request: VerificationRequest, expires_at: datetime, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        payload = {"travelerId": request.travelerId, "documentType": request.documentType.value, "verifiedAt": rfc3339_utc(at), "expiresAt": rfc3339_utc(expires_at)}
+        version = int(at.timestamp() * 1_000_000)
+        return _envelope("IdentityVerified", f"{request.travelerId}:{request.documentNumber}", version, payload, corr, cause, at)
+
+    def _identity_rejected_event(self, traveler_id: str, reason: str, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        version = int(at.timestamp() * 1_000_000)
+        return _envelope("IdentityRejected", traveler_id, version, {"travelerId": traveler_id, "reason": reason, "rejectedAt": rfc3339_utc(at)}, corr, cause, at)
+
+    def _blacklist_hit_event(self, entry: BlacklistEntry, corr: str, cause: str | None, at: datetime) -> EventEnvelope:
+        payload = {"documentNumber": entry.documentNumber, "blacklistType": entry.blacklistType.value, "reason": entry.reason, "hitAt": rfc3339_utc(at)}
+        version = int(at.timestamp() * 1_000_000)
+        return _envelope("BlacklistHit", entry.documentNumber, version, payload, corr, cause, at)
 
     def register_credential(self, data: Mapping[str, Any], correlation_id: str, causation_id: str | None) -> dict[str, Any]:
         with self.transaction():
@@ -470,3 +577,47 @@ class IdentityVerificationService:
             traveler_id = str(payload.get("travelerId") or "")
             if traveler_id:
                 self.store.save_traveler_snapshot(traveler_id, payload)
+
+
+    def handle_journey_order_event(self, envelope: EventEnvelope, stream: str = "events:journey-order") -> None:
+        with self.transaction():
+            if not self.store.mark_processed(envelope.eventId, stream):
+                return
+            payload = dict(envelope.payload)
+            if envelope.eventType == "JourneyOrderCancelled":
+                order_id = str(payload.get("orderId") or "")
+                if order_id:
+                    self.store.release_active_tickets_for_order(order_id)
+                return
+            if envelope.eventType != "JourneyOrderCreated":
+                return
+            order_id = str(payload.get("orderId") or "")
+            departure_date = str(payload.get("departureDate") or payload.get("journeyDate") or payload.get("createdAt", "")[:10])
+            for traveler in payload.get("travelerRefs") or []:
+                document_number = self._document_number_from_traveler_ref(traveler)
+                if not document_number:
+                    continue
+                for segment_ref in payload.get("segmentRefs") or []:
+                    self.store.save_active_ticket(ActiveTicket(document_number, str(segment_ref), departure_date, order_id))
+
+    def handle_risk_alert_raised(self, envelope: EventEnvelope, stream: str = "events:risk-compliance") -> None:
+        with self.transaction():
+            if not self.store.mark_processed(envelope.eventId, stream):
+                return
+            if envelope.eventType != "RiskAlertRaised":
+                return
+            payload = dict(envelope.payload)
+            document_number = payload.get("documentNumber") or payload.get("documentNo")
+            if not document_number:
+                return
+            self.store.add_blacklist_entry(BlacklistEntry(str(document_number), BlacklistType.FRAUD_FLAGGED, str(payload.get("reason") or "risk alert"), now_utc()))
+
+    @staticmethod
+    def _document_number_from_traveler_ref(traveler: Any) -> str | None:
+        if isinstance(traveler, str):
+            return None
+        if isinstance(traveler, Mapping):
+            for key in ("documentNumber", "documentNo", "identityDocumentNumber"):
+                if traveler.get(key):
+                    return str(traveler[key]).upper()
+        return None

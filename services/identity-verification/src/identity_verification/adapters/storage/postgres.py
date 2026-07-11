@@ -11,7 +11,7 @@ from typing import Any
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
 from identity_verification.application.service import InMemoryStore, NotFoundError
-from identity_verification.domain import CredentialRecord, CredentialStatus, EligibilityCertificate, CertificateStatus, PurchaseLimitFact, SimOutcome, VerificationCase, VerificationStatus
+from identity_verification.domain import ActiveTicket, BlacklistEntry, BlacklistType, CredentialRecord, CredentialStatus, EligibilityCertificate, CertificateStatus, PurchaseLimitFact, SimOutcome, VerificationCase, VerificationStatus
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -26,6 +26,24 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 def _json(data: Mapping[str, Any] | str) -> Mapping[str, Any]:
     return json.loads(data) if isinstance(data, str) else data
+
+
+def blacklist_entry_to_json(entry: BlacklistEntry) -> dict[str, Any]:
+    return {"documentNumber": entry.documentNumber, "blacklistType": entry.blacklistType.value, "reason": entry.reason, "effectiveFrom": _dt(entry.effectiveFrom), "effectiveUntil": _dt(entry.effectiveUntil)}
+
+
+def blacklist_entry_from_json(data: Mapping[str, Any] | str) -> BlacklistEntry:
+    d = _json(data)
+    return BlacklistEntry(str(d["documentNumber"]), BlacklistType(str(d["blacklistType"])), str(d.get("reason") or ""), _parse_dt(str(d["effectiveFrom"])) or datetime.now(UTC), _parse_dt(d.get("effectiveUntil")))
+
+
+def ticket_to_json(ticket: ActiveTicket) -> dict[str, Any]:
+    return {"documentNumber": ticket.documentNumber, "segmentRef": ticket.segmentRef, "departureDate": ticket.departureDate, "orderId": ticket.orderId, "status": ticket.status}
+
+
+def ticket_from_json(data: Mapping[str, Any] | str) -> ActiveTicket:
+    d = _json(data)
+    return ActiveTicket(str(d["documentNumber"]), str(d["segmentRef"]), str(d["departureDate"]), str(d["orderId"]), str(d.get("status") or "ACTIVE"))
 
 
 def credential_to_json(c: CredentialRecord) -> dict[str, Any]:
@@ -91,6 +109,9 @@ class PostgresIdentityVerificationStore(InMemoryStore):
         self._certificates = SnapshotRepository("eligibility_certificate_snapshots")
         self._facts = SnapshotRepository("purchase_limit_fact_snapshots")
         self._pre_orders = SnapshotRepository("pre_order_check_snapshots")
+        self._blacklist = SnapshotRepository("identity_blacklist_snapshots")
+        self._active_tickets = SnapshotRepository("active_ticket_snapshots")
+        self._verification_cache = SnapshotRepository("verification_cache_snapshots")
         self._processed = ProcessedEventsGuard()
 
     @contextmanager
@@ -241,6 +262,70 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             if not row: return None
             self._remember("pre-order", str(row[0]), int(row[1])); return dict(row[2])
         return self._with_conn(read)
+
+    def add_blacklist_entry(self, entry: BlacklistEntry) -> None:
+        record_id = f"blk-{entry.documentNumber}-{entry.blacklistType.value}"
+        def write(conn: Any) -> None:
+            snap = self._blacklist.get(conn, record_id)
+            expected = int(snap[0]) if snap is not None else None
+            self._blacklist.save(conn, record_id, blacklist_entry_to_json(entry), expected)
+        self._with_conn(write)
+
+    def list_blacklist_entries(self, document_number: str) -> tuple[BlacklistEntry, ...]:
+        def read(conn: Any) -> tuple[BlacklistEntry, ...]:
+            rows = conn.execute("SELECT id, version, data FROM identity_blacklist_snapshots WHERE data->>'documentNumber'=%s", (document_number,)).fetchall()
+            return tuple(blacklist_entry_from_json(row[2]) for row in rows)
+        return self._with_conn(read)
+
+    def find_active_ticket(self, document_number: str, segment_ref: str, departure_date: str) -> ActiveTicket | None:
+        ticket_id = f"act-{document_number}-{segment_ref}-{departure_date}"
+        def read(conn: Any) -> ActiveTicket | None:
+            snap = self._active_tickets.get(conn, ticket_id)
+            if snap is None: return None
+            version, data = snap; self._remember("active-ticket", ticket_id, version)
+            ticket = ticket_from_json(data)
+            return ticket if ticket.status == "ACTIVE" else None
+        return self._with_conn(read)
+
+    def save_active_ticket(self, ticket: ActiveTicket) -> None:
+        ticket_id = f"act-{ticket.documentNumber}-{ticket.segmentRef}-{ticket.departureDate}"
+        def write(conn: Any) -> None:
+            expected = self._take("active-ticket", ticket_id)
+            if expected is None:
+                snap = self._active_tickets.get(conn, ticket_id)
+                expected = int(snap[0]) if snap is not None else None
+            self._active_tickets.save(conn, ticket_id, ticket_to_json(ticket), expected)
+        self._with_conn(write)
+
+    def release_active_tickets_for_order(self, order_id: str) -> None:
+        def write(conn: Any) -> None:
+            rows = conn.execute("SELECT id, version, data FROM active_ticket_snapshots WHERE data->>'orderId'=%s", (order_id,)).fetchall()
+            for row in rows:
+                data = dict(row[2]); data["status"] = "CANCELLED"
+                self._active_tickets.save(conn, str(row[0]), data, int(row[1]))
+        self._with_conn(write)
+
+    def get_cached_verification(self, traveler_id: str, document_number: str, at: datetime) -> tuple[datetime, datetime] | None:
+        cache_id = f"vcache-{traveler_id}-{document_number}"
+        def read(conn: Any) -> tuple[datetime, datetime] | None:
+            snap = self._verification_cache.get(conn, cache_id)
+            if snap is None: return None
+            version, data = snap; self._remember("verification-cache", cache_id, version)
+            verified_at = _parse_dt(str(data["verifiedAt"])) or datetime.now(UTC)
+            expires_at = _parse_dt(str(data["expiresAt"])) or datetime.now(UTC)
+            return (verified_at, expires_at) if expires_at > at else None
+        return self._with_conn(read)
+
+    def save_cached_verification(self, traveler_id: str, document_number: str, verified_at: datetime, expires_at: datetime) -> None:
+        cache_id = f"vcache-{traveler_id}-{document_number}"
+        data = {"travelerId": traveler_id, "documentNumber": document_number, "verifiedAt": _dt(verified_at), "expiresAt": _dt(expires_at)}
+        def write(conn: Any) -> None:
+            expected = self._take("verification-cache", cache_id)
+            if expected is None:
+                snap = self._verification_cache.get(conn, cache_id)
+                expected = int(snap[0]) if snap is not None else None
+            self._verification_cache.save(conn, cache_id, data, expected)
+        self._with_conn(write)
 
     def save_traveler_snapshot(self, traveler_id: str, data: Mapping[str, Any]) -> None:
         def write(conn: Any) -> None:
