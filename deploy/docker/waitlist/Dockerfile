@@ -1,22 +1,23 @@
 # syntax=docker/dockerfile:1.7
-FROM rust:1.91-bookworm AS builder
+FROM node:26-alpine AS builder
 WORKDIR /src
-COPY platform/shared-kernel-rust ./platform/shared-kernel-rust
-COPY platform/rust-kit ./platform/rust-kit
-COPY services/waitlist/Cargo.toml services/waitlist/Cargo.lock ./services/waitlist/
+COPY platform/ts-kit/package.json platform/ts-kit/package-lock.json platform/ts-kit/tsconfig.json ./platform/ts-kit/
+COPY platform/ts-kit/src ./platform/ts-kit/src
+RUN --mount=type=cache,target=/root/.npm cd platform/ts-kit && npm ci && npm run build
+COPY services/waitlist/package.json services/waitlist/package-lock.json services/waitlist/tsconfig.json ./services/waitlist/
+RUN --mount=type=cache,target=/root/.npm cd services/waitlist && npm ci --install-links
 COPY services/waitlist/src ./services/waitlist/src
 COPY services/waitlist/migrations ./services/waitlist/migrations
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/services/waitlist/target \
-    cargo build --release --manifest-path services/waitlist/Cargo.toml && \
-    cp services/waitlist/target/release/waitlist /usr/local/bin/waitlist
+RUN cd services/waitlist && npx tsc --noEmit false --outDir dist
 
-FROM debian:bookworm-slim
-RUN useradd --system --create-home --home-dir /home/app app && \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-COPY --from=builder /usr/local/bin/waitlist /usr/local/bin/waitlist
-COPY --from=builder /src/services/waitlist/migrations /app/migrations
+FROM node:26-alpine
+WORKDIR /app
+RUN addgroup -S app && adduser -S app -G app
+COPY --from=builder --chown=app:app /src/services/waitlist/package.json ./package.json
+COPY --from=builder --chown=app:app /src/services/waitlist/node_modules ./node_modules
+COPY --from=builder --chown=app:app /src/services/waitlist/dist ./dist
+COPY --from=builder --chown=app:app /src/services/waitlist/migrations ./migrations
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/waitlist"]
+CMD ["node", "./dist/main.js"]
