@@ -2295,10 +2295,14 @@ async def scalper_worker(idx: int, cfg: dict, sim: ScalperSim,
 class OpsSim:
     def __init__(self, cfg: dict, api: Api, reg: Registry, stats: Stats, rng: random.Random):
         self.cfg = cfg.get("ops", {})
+        self._defaults = cfg.get("defaults", {})
         self.api = api
         self.reg = reg
         self.stats = stats
         self.rng = rng
+
+    def _currency(self) -> str:
+        return str(self._defaults.get("currency", "CNY"))
 
     def enabled(self) -> bool:
         return bool(self.cfg.get("enabled", True))
@@ -2363,8 +2367,8 @@ class OpsSim:
         until = (datetime.now(timezone.utc) + timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
         _, benefit = await self.api.request("POST", "wallet-promotion", "/api/v1/benefits",
             {"accountId": account_id, "benefitType": "BALANCE", "balanceType": "PROMOTION_CREDIT",
-             "amount": {"currency": "CNY", "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
-             "applicableScope": {"scopeType": "ANY_TRIP", "currency": "CNY"},
+             "amount": {"currency": self._currency(), "minorUnits": amount}, "issuanceSource": "MANUAL_OPS",
+             "applicableScope": {"scopeType": "ANY_TRIP", "currency": self._currency()},
              "redemptionRule": {"singleUse": False, "requiresReservation": False}, "revocationRule": {},
              "validFrom": now_iso(), "validUntil": until,
              "businessReason": {"reasonType": "MANUAL_OPS", "reasonCode": "LOADGEN_MANUAL_OPS", "referenceType": "MANUAL_ACTION", "referenceId": f"act-{uuid7()}"}},
