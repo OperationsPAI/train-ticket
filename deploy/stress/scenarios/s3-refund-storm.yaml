@@ -10,7 +10,7 @@ description: "Concurrent refunds on batch of orders + duplicate submissions"
 load:
   model: closed
   workers: 15
-  duration_seconds: 90
+  duration_seconds: 100
   rps: null
 
 target:
@@ -30,6 +30,7 @@ constraints:
 seed:
   cities: ["Beijing", "Shanghai"]
   departure_date: "2026-09-01"
+  purchase_report: "/tmp/s3-seed-report.json"
 
 polling:
   attempts: 8

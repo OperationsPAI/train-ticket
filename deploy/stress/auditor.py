@@ -335,30 +335,56 @@ def assert_fund_conservation(cfg: dict, report: dict | None) -> AssertionResult:
     """sum(captures) = sum(order amounts); sum(refunds) <= sum(captures)."""
     name = "fund_conservation"
 
-    # Total captures
+    # Total captures from greenfield JSON snapshots, expressed in minor units.
     sql_captures = """
-        SELECT COALESCE(SUM(amount_minor), 0) FROM payment_intents
-        WHERE status = 'CAPTURED';
+        SELECT COALESCE(SUM((data->'capturedAmount'->>'minorUnits')::bigint), 0)
+        FROM payment_intent_snapshots
+        WHERE data->>'status' IN ('CAPTURED', 'REFUNDED');
     """
     raw_captures = query_db("payment", sql_captures)
-    total_captures = int(raw_captures.strip()) if raw_captures.strip().isdigit() else 0
+    if not raw_captures.strip().lstrip("-").isdigit():
+        sql_captures = """
+            SELECT COALESCE(SUM(amount_minor), 0) FROM payment_intents
+            WHERE status = 'CAPTURED';
+        """
+        raw_captures = query_db("payment", sql_captures)
+    total_captures = int(raw_captures.strip()) if raw_captures.strip().lstrip("-").isdigit() else 0
 
-    # Total order amounts
+    # Total order amounts from non-cancelled order items in greenfield snapshots.
+    # Older snapshots store Money as {amount: "100.00", currency: "CNY"};
+    # newer snapshots may store {minorUnits: 10000, currency: "CNY"}.
     sql_orders = """
-        SELECT COALESCE(SUM(total_minor), 0) FROM journey_orders
-        WHERE status IN ('CONFIRMED', 'COMPLETED');
+        SELECT COALESCE(SUM(
+            CASE
+                WHEN item->'amount' ? 'minorUnits'
+                    THEN (item->'amount'->>'minorUnits')::bigint
+                WHEN item->'amount' ? 'amount'
+                    THEN ROUND(((item->'amount'->>'amount')::numeric) * 100)::bigint
+                ELSE 0
+            END
+        ), 0)
+        FROM journey_order_snapshots
+        CROSS JOIN LATERAL jsonb_array_elements(data->'orderItems') AS item
+        WHERE data->>'status' IN ('CONFIRMED', 'CONFIRMING', 'COMPLETED', 'ADJUSTED')
+          AND COALESCE((item->>'cancelled')::boolean, false) = false;
     """
     raw_orders = query_db("journey_order", sql_orders)
-    total_orders = int(raw_orders.strip()) if raw_orders.strip().isdigit() else 0
+    if not raw_orders.strip().lstrip("-").isdigit():
+        sql_orders = """
+            SELECT COALESCE(SUM(total_minor), 0) FROM journey_orders
+            WHERE status IN ('CONFIRMED', 'COMPLETED');
+        """
+        raw_orders = query_db("journey_order", sql_orders)
+    total_orders = int(raw_orders.strip()) if raw_orders.strip().lstrip("-").isdigit() else 0
 
-    # Total refunds
+    # Total settled/requested refunds.
     sql_refunds = """
-        SELECT COALESCE(SUM(amount_minor), 0) FROM payment_intents
-        WHERE status = 'REFUNDED' OR purpose = 'refund';
+        SELECT COALESCE(SUM((data->'amount'->>'minorUnits')::bigint), 0)
+        FROM refund_snapshots
+        WHERE data->>'status' IN ('REQUESTED', 'SUBMITTED', 'SETTLED');
     """
     raw_refunds = query_db("payment", sql_refunds)
     if not raw_refunds.strip().lstrip("-").isdigit():
-        # Try alternative
         sql_refunds_alt = """
             SELECT COALESCE(SUM(refund_amount_minor), 0) FROM refunds;
         """
@@ -366,13 +392,18 @@ def assert_fund_conservation(cfg: dict, report: dict | None) -> AssertionResult:
     total_refunds = int(raw_refunds.strip()) if raw_refunds.strip().lstrip("-").isdigit() else 0
 
     violations: list[str] = []
-    # Allow a small tolerance for timing (in-flight captures not yet settled)
-    if total_captures > 0 and total_orders > 0:
-        diff = abs(total_captures - total_orders)
-        # More than 5% divergence is a problem
-        if diff > max(total_captures, total_orders) * 0.05:
+    # Allow a small tolerance for timing (in-flight captures/refunds not yet settled).
+    # Before refunds, gross captures should match payable order totals.  After
+    # refunds, post-sales may cancel order lines, so the conserved value is net
+    # captured funds (captures - refunds) against the remaining payable total.
+    conserved_funds = total_captures - total_refunds
+    if total_captures > 0:
+        expected_funds = conserved_funds if total_refunds > 0 else total_captures
+        diff = abs(expected_funds - total_orders)
+        tolerance = max(abs(expected_funds), total_orders, 1) * 0.05
+        if diff > tolerance:
             violations.append(
-                f"captures ({total_captures}) != orders ({total_orders}), diff={diff}"
+                f"net funds ({expected_funds}) != orders ({total_orders}), diff={diff}"
             )
 
     if total_refunds > total_captures:
@@ -388,6 +419,7 @@ def assert_fund_conservation(cfg: dict, report: dict | None) -> AssertionResult:
             "total_captures": total_captures,
             "total_orders": total_orders,
             "total_refunds": total_refunds,
+            "net_captures_after_refunds": total_captures - total_refunds,
             "violations": violations,
         },
     )
@@ -418,13 +450,21 @@ def assert_no_stuck_orders(cfg: dict, report: dict | None) -> AssertionResult:
         total_stuck = sum(stuck_sagas.values())
         violations.append(f"{total_stuck} non-terminal saga(s): {stuck_sagas}")
 
-    # Outbox drain check
-    for db_name in ("booking_orchestration", "journey_order", "payment"):
+    # Outbox drain check.  Greenfield services use an `outbox` table with
+    # `published_at`; keep the legacy `outbox_events` fallback for older local
+    # deployments.
+    for db_name in ("booking_orchestration", "journey_order", "payment", "post_sales"):
         sql_outbox = """
-            SELECT COUNT(*) FROM outbox_events
-            WHERE published = false OR published IS NULL;
+            SELECT COUNT(*) FROM outbox
+            WHERE published_at IS NULL;
         """
         raw = query_db(db_name, sql_outbox)
+        if not raw.strip().isdigit():
+            sql_outbox_events = """
+                SELECT COUNT(*) FROM outbox_events
+                WHERE published = false OR published IS NULL;
+            """
+            raw = query_db(db_name, sql_outbox_events)
         count = int(raw.strip()) if raw.strip().isdigit() else 0
         details[f"outbox_pending_{db_name}"] = count
         if count > 0:
@@ -450,43 +490,69 @@ def assert_idempotent_single_effect(cfg: dict, report: dict | None) -> Assertion
     """Each idempotency key must map to exactly one effect row."""
     name = "idempotent_single_effect"
 
-    # Check payment intents for duplicate idempotency keys
-    sql = """
-        SELECT idempotency_key, COUNT(*) as cnt
-        FROM payment_intents
-        WHERE idempotency_key IS NOT NULL
-        GROUP BY idempotency_key
-        HAVING COUNT(*) > 1
-        LIMIT 20;
-    """
-    raw = query_db("payment", sql)
-    duplicates: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        parts = line.split("|")
-        if len(parts) >= 2:
-            duplicates.append({
-                "idempotency_key": parts[0].strip(),
-                "count": int(parts[1].strip()),
-            })
+    duplicate_queries = [
+        (
+            "payment",
+            "payment_intent_snapshots",
+            """
+            SELECT data->>'idempotencyKey', COUNT(*) as cnt
+            FROM payment_intent_snapshots
+            WHERE data->>'idempotencyKey' IS NOT NULL
+            GROUP BY data->>'idempotencyKey'
+            HAVING COUNT(*) > 1
+            LIMIT 20;
+            """,
+        ),
+        (
+            "payment",
+            "refund_snapshots",
+            """
+            SELECT data->>'idempotencyKey', COUNT(*) as cnt
+            FROM refund_snapshots
+            WHERE data->>'idempotencyKey' IS NOT NULL
+            GROUP BY data->>'idempotencyKey'
+            HAVING COUNT(*) > 1
+            LIMIT 20;
+            """,
+        ),
+        (
+            "journey_order",
+            "journey_order_snapshots",
+            """
+            SELECT data->>'idempotencyKey', COUNT(*) as cnt
+            FROM journey_order_snapshots
+            WHERE data->>'idempotencyKey' IS NOT NULL
+            GROUP BY data->>'idempotencyKey'
+            HAVING COUNT(*) > 1
+            LIMIT 20;
+            """,
+        ),
+        (
+            "post_sales",
+            "post_sales_case_snapshots",
+            """
+            SELECT data->>'idempotencyKey', COUNT(*) as cnt
+            FROM post_sales_case_snapshots
+            WHERE data->>'idempotencyKey' IS NOT NULL
+            GROUP BY data->>'idempotencyKey'
+            HAVING COUNT(*) > 1
+            LIMIT 20;
+            """,
+        ),
+    ]
 
-    # Also check journey orders
-    sql_orders = """
-        SELECT idempotency_key, COUNT(*) as cnt
-        FROM journey_orders
-        WHERE idempotency_key IS NOT NULL
-        GROUP BY idempotency_key
-        HAVING COUNT(*) > 1
-        LIMIT 20;
-    """
-    raw_orders = query_db("journey_order", sql_orders)
-    for line in raw_orders.splitlines():
-        parts = line.split("|")
-        if len(parts) >= 2:
-            duplicates.append({
-                "idempotency_key": parts[0].strip(),
-                "count": int(parts[1].strip()),
-                "table": "journey_orders",
-            })
+    duplicates: list[dict[str, Any]] = []
+    for database, table, sql in duplicate_queries:
+        raw = query_db(database, sql)
+        for line in raw.splitlines():
+            parts = line.split("|")
+            if len(parts) >= 2:
+                duplicates.append({
+                    "database": database,
+                    "table": table,
+                    "idempotency_key": parts[0].strip(),
+                    "count": int(parts[1].strip()),
+                })
 
     passed = len(duplicates) == 0
     return AssertionResult(

@@ -28,7 +28,7 @@ import sys
 import time
 import uuid
 from collections import Counter, defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 import aiohttp
@@ -250,6 +250,7 @@ class IdentityRef:
 class SharedState:
     def __init__(self, redis_url: str = "redis://redis:6379") -> None:
         self.purchases: deque[PurchaseRef] = deque(maxlen=2000)
+        self.all_purchases: list[PurchaseRef] = []
         self.lock = asyncio.Lock()
         self.q_reservation: deque = deque()
         self.q_ticketing: deque = deque()
@@ -258,6 +259,7 @@ class SharedState:
         self.identity_pool: list[IdentityRef] = []
         self._identity_idx = 0
         self._identity_lock = asyncio.Lock()
+        self._refund_attempt_idx = 0
 
     async def redis_conn(self) -> Any:
         if self._redis is None:
@@ -272,9 +274,20 @@ class SharedState:
             self._identity_idx += 1
             return ref
 
-    async def add_purchase(self, p: PurchaseRef) -> None:
+    async def add_purchase(self, p: PurchaseRef, record: bool = True) -> None:
         async with self.lock:
             self.purchases.append(p)
+            if record:
+                self.all_purchases.append(p)
+
+    async def purchase_count(self) -> int:
+        async with self.lock:
+            return len(self.purchases)
+
+    async def next_refund_attempt_index(self) -> int:
+        async with self.lock:
+            self._refund_attempt_idx += 1
+            return self._refund_attempt_idx
 
     async def take_purchase(self, rng: random.Random) -> PurchaseRef | None:
         async with self.lock:
@@ -626,6 +639,7 @@ async def purchase_chain(
 
 async def refund_chain(
     api: ApiClient,
+    cfg: dict,
     state: SharedState,
     rng: random.Random,
     results: dict,
@@ -633,27 +647,52 @@ async def refund_chain(
     """Single refund chain: post-sales case -> evaluate -> approve."""
     p = await state.take_purchase(rng)
     if p is None:
+        if cfg.get("seed", {}).get("purchase_report"):
+            results["refund_pool_exhausted"] += 1
+            return "refund_pool_exhausted"
         results["no_purchase_to_refund"] += 1
         return "no_purchase_to_refund"
 
+    case_body = {
+        "journeyOrderId": p.order_id,
+        "caseType": "REFUND",
+        "scope": {
+            "orderItemRefs": [p.sb_id],
+            "segmentRefs": [p.segment_ref],
+            "travelerRefs": [p.traveler_ref],
+            "entitlementRefs": [p.entitlement_id],
+        },
+        "reasonCode": "CUSTOMER_REQUEST",
+        "actorRef": p.account_id,
+    }
+    case_key = uuid7()
     _, case = await api.request(
         "POST",
         "post-sales",
         "/api/v1/post-sales-cases",
-        {
-            "journeyOrderId": p.order_id,
-            "caseType": "REFUND",
-            "scope": {
-                "orderItemRefs": [p.sb_id],
-                "segmentRefs": [p.segment_ref],
-                "travelerRefs": [p.traveler_ref],
-                "entitlementRefs": [p.entitlement_id],
-            },
-            "reasonCode": "CUSTOMER_REQUEST",
-            "actorRef": p.account_id,
-        },
+        case_body,
+        headers={"Idempotency-Key": case_key},
         step="refund-case",
     )
+
+    duplicate_probability = float(
+        cfg.get("constraints", {}).get("p_duplicate_refund", 0.0) or 0.0
+    )
+    refund_attempt_idx = await state.next_refund_attempt_index()
+    duplicate_every = (
+        int(round(1.0 / duplicate_probability)) if duplicate_probability > 0 else 0
+    )
+    if duplicate_every > 0 and refund_attempt_idx % duplicate_every == 0:
+        await api.request(
+            "POST",
+            "post-sales",
+            "/api/v1/post-sales-cases",
+            case_body,
+            headers={"Idempotency-Key": case_key},
+            ok=(200, 201),
+            step="refund-case-duplicate",
+        )
+        results["duplicate_refund_submitted"] += 1
     case_id = case.get("caseId") or case.get("postSalesCaseId")
     if not case_id:
         raise StepFailed("refund-case", f"no case id: {str(case)[:150]}")
@@ -845,6 +884,34 @@ class StressDriver:
         self.end_time = 0.0
         self.total_dispatched = 0
         self.total_errors = 0
+        self.seed_purchases_loaded = 0
+
+    async def _load_purchases_from_report(self, path: str) -> None:
+        with open(path) as f:
+            report = json.load(f)
+        purchases = report.get("purchases") or []
+        if not isinstance(purchases, list):
+            raise StepFailed("seed-purchase-report", "purchases must be a list")
+
+        required = {field.name for field in fields(PurchaseRef)}
+        loaded = 0
+        for idx, raw in enumerate(purchases):
+            if not isinstance(raw, dict):
+                raise StepFailed("seed-purchase-report", f"purchase {idx} is not an object")
+            missing = sorted(required.difference(raw))
+            if missing:
+                raise StepFailed(
+                    "seed-purchase-report",
+                    f"purchase {idx} missing field(s): {', '.join(missing)}",
+                )
+            await self.state.add_purchase(
+                PurchaseRef(**{name: raw[name] for name in required}),
+                record=False,
+            )
+            loaded += 1
+        self.seed_purchases_loaded = loaded
+        self.results["seed_purchases_loaded"] += loaded
+        print(f"[bootstrap] loaded {loaded} purchase ref(s) from {path}", flush=True)
 
     async def _create_identity(self, idx: int) -> IdentityRef:
         acct_id = f"acc-{uuid7()}"
@@ -940,12 +1007,21 @@ class StressDriver:
         duration = float(load.get("duration_seconds", 120))
         rps = load.get("rps")
 
-        routes = await resolve_routes(self.api, self.cfg, self.rng)
+        mix = self.cfg.get("mix", {"purchase": 1.0})
+        if float(mix.get("refund", 0)) > 0:
+            purchase_report = self.cfg.get("seed", {}).get("purchase_report")
+            if purchase_report:
+                await self._load_purchases_from_report(purchase_report)
+
+        needs_routes = (
+            float(mix.get("purchase", 0)) > 0
+            or float(mix.get("browse", 0)) > 0
+        )
+        routes = await resolve_routes(self.api, self.cfg, self.rng) if needs_routes else []
         self.routes = routes
-        if not routes:
+        if needs_routes and not routes:
             return self._build_report()
 
-        mix = self.cfg.get("mix", {"purchase": 1.0})
         if float(mix.get("purchase", 0)) > 0:
             await self._bootstrap_identity_pool(workers * 3)
 
@@ -982,7 +1058,7 @@ class StressDriver:
             )
 
             dispatch_task = asyncio.create_task(
-                self._open_loop_dispatch(bucket, sem, stop, routes, norm_mix)
+                self._open_loop_dispatch(bucket, sem, stop, routes or [{}], norm_mix)
             )
             await stop.wait()
             dispatch_task.cancel()
@@ -993,7 +1069,7 @@ class StressDriver:
             # Closed-loop: fixed number of workers, each fires as fast as possible
             chain_tasks = [
                 asyncio.create_task(
-                    self._closed_loop_worker(i, stop, routes, norm_mix)
+                    self._closed_loop_worker(i, stop, routes or [{}], norm_mix)
                 )
                 for i in range(workers)
             ]
@@ -1052,6 +1128,13 @@ class StressDriver:
     ) -> None:
         while not stop.is_set():
             chain_type = self._pick_chain(mix)
+            if (
+                chain_type == "refund"
+                and self.seed_purchases_loaded > 0
+                and await self.state.purchase_count() == 0
+            ):
+                stop.set()
+                return
             route = self.rng.choice(routes)
             await self._run_chain(chain_type, route)
 
@@ -1073,7 +1156,7 @@ class StressDriver:
                     self.api, self.cfg, self.state, self.rng, route, self.results
                 )
             elif chain_type == "refund":
-                await refund_chain(self.api, self.state, self.rng, self.results)
+                await refund_chain(self.api, self.cfg, self.state, self.rng, self.results)
             elif chain_type == "browse":
                 await browse_chain(self.api, self.state, self.rng, route, self.results)
             else:
@@ -1117,6 +1200,9 @@ class StressDriver:
             "http_status_counts": dict(self.api.status_counts),
             "error_counts": dict(self.api.error_counts),
             "route_count": len(self.routes),
+            "seed_purchases_loaded": self.seed_purchases_loaded,
+            "purchases_remaining": len(self.state.purchases),
+            "purchases": [asdict(p) for p in self.state.all_purchases],
         }
 
 
@@ -1169,6 +1255,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override worker count from scenario",
     )
+    parser.add_argument(
+        "--purchase-report",
+        "--seed-report",
+        dest="purchase_report",
+        default=None,
+        help="Driver JSON report containing purchase refs to refund",
+    )
     return parser.parse_args()
 
 
@@ -1186,6 +1279,8 @@ async def async_main() -> None:
         cfg.setdefault("load", {})["duration_seconds"] = args.duration
     if args.workers is not None:
         cfg.setdefault("load", {})["workers"] = args.workers
+    if args.purchase_report is not None:
+        cfg.setdefault("seed", {})["purchase_report"] = args.purchase_report
 
     report_path = args.report
     if report_path is None:
