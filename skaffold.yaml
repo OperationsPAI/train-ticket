@@ -7,7 +7,7 @@ build:
   local:
     concurrency: 8
     push: true
-    useDockerCLI: false
+    useDockerCLI: true
   artifacts:
     - image: opspai/account
       context: .
