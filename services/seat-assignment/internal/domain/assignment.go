@@ -42,6 +42,9 @@ func (a *SeatAssignment) Confirm(holdId string, now time.Time) error {
 		return ErrInvalidTransition
 	}
 	t := now.UTC()
+	if !a.ExpiresAt.After(t) {
+		return ErrInvalidTransition
+	}
 	a.Status = StatusConfirmed
 	a.ConfirmedAt = &t
 	a.Version++

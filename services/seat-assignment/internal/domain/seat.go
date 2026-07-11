@@ -50,10 +50,10 @@ func positionFor(layout, letter string) string {
 		}
 		return PositionAisle
 	case "2+1":
-		if letter == "A" || letter == "C" {
-			return PositionWindow
+		if letter == "A" {
+			return PositionAisle
 		}
-		return PositionAisle
+		return PositionWindow
 	default:
 		if letter == "A" || letter == "E" {
 			return PositionWindow
