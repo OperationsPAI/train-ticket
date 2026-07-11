@@ -71,7 +71,7 @@ public class PaymentController {
         return PaymentHttpMapper.refundDetails(service.getRefund(refundId));
     }
 
-    private static void validateCreate(CreatePaymentIntentRequest request) {
+    private void validateCreate(CreatePaymentIntentRequest request) {
         if (request == null) {
             throw new ValidationException("request body is required");
         }
@@ -79,17 +79,17 @@ public class PaymentController {
         requireText(request.purpose(), "purpose");
         PaymentHttpMapper.toMoney(request.amount());
         requireText(request.payerRef(), "payerRef");
-        if (!isBlank(request.preferredChannel()) && !isSupportedChannel(request.preferredChannel())) {
+        if (!isBlank(request.preferredChannel()) && !service.isSupportedChannel(request.preferredChannel())) {
             throw new ValidationException("preferredChannel is unsupported");
         }
     }
 
-    private static void validateOptionalChannelRef(ChannelRefJson channelRef, boolean requireOriginalRoute) {
+    private void validateOptionalChannelRef(ChannelRefJson channelRef, boolean requireOriginalRoute) {
         if (channelRef == null) {
             return;
         }
         requireText(channelRef.channel(), "channelRef.channel");
-        if (!isSupportedChannel(channelRef.channel())) {
+        if (!service.isSupportedChannel(channelRef.channel())) {
             throw new ValidationException("channelRef.channel is unsupported");
         }
         if (requireOriginalRoute) {
@@ -115,16 +115,6 @@ public class PaymentController {
         return value;
     }
 
-    private static boolean isSupportedChannel(String channel) {
-        return "ALIPAY".equals(channel)
-            || "WECHAT_PAY".equals(channel)
-            || "UNIONPAY".equals(channel)
-            || "APPLE_PAY".equals(channel)
-            || "BALANCE".equals(channel)
-            || "ALIPAY_SIM".equals(channel)
-            || "WECHAT_SIM".equals(channel)
-            || "UNIONPAY_SIM".equals(channel);
-    }
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();

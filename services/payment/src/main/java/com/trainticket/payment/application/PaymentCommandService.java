@@ -47,13 +47,25 @@ public class PaymentCommandService {
         ReservationPaymentRequestRepository reservationPaymentRequestRepository,
         PaymentChannelClient paymentChannelClient
     ) {
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, paymentChannelClient, ChannelRouter.defaults());
+    }
+
+    public PaymentCommandService(
+        Clock clock,
+        EventPublisher eventPublisher,
+        PaymentIntentRepository paymentIntentRepository,
+        RefundRepository refundRepository,
+        ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        PaymentChannelClient paymentChannelClient,
+        ChannelRouter channelRouter
+    ) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
         this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
         this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
         this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
         this.paymentChannelClient = Objects.requireNonNull(paymentChannelClient, "paymentChannelClient is required");
-        this.channelRouter = ChannelRouter.defaults();
+        this.channelRouter = Objects.requireNonNull(channelRouter, "channelRouter is required");
     }
 
     public PaymentCommandService(
@@ -195,6 +207,7 @@ public class PaymentCommandService {
 
     @Transactional
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
+        Instant now = Instant.now(clock);
         Refund refund = requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
         if (originalRoute == null) {
             return refund;
@@ -204,7 +217,13 @@ public class PaymentCommandService {
         if (capturedRoute == null || capturedRoute.channel() == null || !ChannelRouter.normalize(capturedRoute.channel()).equals(ChannelRouter.normalize(originalRoute.channel()))) {
             throw new DomainRuleViolation("refund must return to original payment channel");
         }
-        channelRouter.requireEnabled(originalRoute.channel());
+        if (!channelRouter.isEnabled(originalRoute.channel())) {
+            int before = refund.domainEvents().size();
+            refund.fail("ORIGINAL_CHANNEL_UNAVAILABLE", false, now, commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+            refundRepository.save(refund);
+            publishNewEvents(refund.domainEvents(), before);
+            return refund;
+        }
         String refundKey = keyOrFold(refund.channelRefundIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":" + originalRoute.channelTransactionId(), idempotencyKey);
         String submitKey = keyOrFold(refund.channelRefundSubmitIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":submit", idempotencyKey);
         refund.rememberChannelRefundKeys(refundKey, submitKey);
@@ -276,6 +295,13 @@ public class PaymentCommandService {
 
     public ReservationPaymentRequest getReservationPaymentRequest(String segmentBookingId) {        return reservationPaymentRequestRepository.findBySegmentBookingId(requireText(segmentBookingId, "segmentBookingId"))
             .orElseThrow(() -> new NotFoundException("reservation payment request not found"));
+    }
+
+    public boolean isSupportedChannel(String channelId) {
+        if (channelId == null || channelId.isBlank()) {
+            return false;
+        }
+        return channelRouter.isSupportedChannel(channelId);
     }
 
     public PaymentIntent getIntent(String paymentIntentId) {

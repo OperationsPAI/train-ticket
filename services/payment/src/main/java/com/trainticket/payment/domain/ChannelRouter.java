@@ -1,8 +1,9 @@
 package com.trainticket.payment.domain;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.random.RandomGenerator;
 
 public final class ChannelRouter {
     private static final List<PaymentChannel> DEFAULT_CHANNELS = List.of(
@@ -42,11 +43,31 @@ public final class ChannelRouter {
     }
 
     private PaymentChannel fallback(Money amount) {
-        return channels.stream()
+        return fallback(amount, ThreadLocalRandom.current());
+    }
+
+    PaymentChannel fallback(Money amount, RandomGenerator random) {
+        List<PaymentChannel> eligible = channels.stream()
             .filter(PaymentChannel::enabled)
             .filter(channel -> amount.toMinorUnits() <= channel.maxAmountMinor())
-            .max(Comparator.comparingInt(PaymentChannel::weight).thenComparing(PaymentChannel::channelId))
-            .orElseThrow(() -> new DomainRuleViolation("AMOUNT_EXCEEDS_CHANNEL_LIMIT"));
+            .toList();
+        if (eligible.isEmpty()) {
+            throw new DomainRuleViolation("AMOUNT_EXCEEDS_CHANNEL_LIMIT");
+        }
+
+        int totalWeight = eligible.stream().mapToInt(PaymentChannel::weight).sum();
+        if (totalWeight <= 0) {
+            return eligible.get(random.nextInt(eligible.size()));
+        }
+
+        int cursor = random.nextInt(totalWeight);
+        for (PaymentChannel channel : eligible) {
+            cursor -= channel.weight();
+            if (cursor < 0) {
+                return channel;
+            }
+        }
+        return eligible.getLast();
     }
 
     public PaymentChannel requireAvailable(String channelId, Money amount) {
@@ -70,6 +91,19 @@ public final class ChannelRouter {
 
     public List<PaymentChannel> channels() {
         return channels;
+    }
+
+    public boolean isSupportedChannel(String channelId) {
+        try {
+            find(channelId);
+            return true;
+        } catch (DomainRuleViolation violation) {
+            return false;
+        }
+    }
+
+    public boolean isEnabled(String channelId) {
+        return find(channelId).enabled();
     }
 
     private PaymentChannel find(String channelId) {
