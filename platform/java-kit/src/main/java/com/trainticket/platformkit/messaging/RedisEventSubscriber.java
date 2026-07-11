@@ -26,6 +26,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     private static final long INITIAL_BACKOFF_SECONDS = 1;
     private static final long MAX_BACKOFF_SECONDS = 30;
     private static final int LAST_FAILURE_CACHE_SIZE = 1_024;
+    private static final long DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000L;
     private static final int DEFAULT_CONSUMER_THREADS = 1;
     private static final String CONSUMER_THREADS_ENV = "CONSUMER_THREADS";
 
@@ -108,6 +109,14 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
         long backoffSeconds = INITIAL_BACKOFF_SECONDS;
+        for (String stream : streamNames) {
+            try {
+                streams.createGroup(stream, group);
+                streams.pruneDeadConsumers(stream, group, consumerName, DEAD_CONSUMER_IDLE_MS);
+            } catch (RuntimeException ignored) {
+                // best-effort startup cleanup
+            }
+        }
         while (running.get()) {
             for (String stream : streamNames) {
                 try {
