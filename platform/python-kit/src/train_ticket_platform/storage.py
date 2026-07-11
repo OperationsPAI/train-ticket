@@ -211,13 +211,29 @@ class OutboxRelay:
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
 
+    _CLEANUP_EVERY = 20
+
     def run(self) -> None:
+        poll_count = 0
         while not self._stop.is_set():
             try:
                 self.relay_once()
+                poll_count += 1
+                if poll_count % self._CLEANUP_EVERY == 0:
+                    self._cleanup()
             except Exception:
                 time.sleep(self._poll_interval)
             self._stop.wait(self._poll_interval)
+
+    def _cleanup(self) -> None:
+        try:
+            with self._pool.connection() as conn:
+                conn.execute("DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'")
+                conn.execute("DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'")
+                conn.execute("DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'")
+                conn.commit()
+        except Exception:
+            pass
 
     def relay_once(self, *, limit: int = 100) -> int:
         published = 0
