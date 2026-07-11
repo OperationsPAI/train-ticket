@@ -16,4 +16,4 @@ COPY services/transfer-management/migrations /app/migrations
 ENV PATH=/opt/venv/bin:$PATH PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
 USER app
 EXPOSE 8080
-CMD ["sh", "-c", "exec uvicorn transfer_management.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "exec uvicorn transfer_management.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers ${WEB_CONCURRENCY:-4}"]

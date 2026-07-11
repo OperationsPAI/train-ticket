@@ -60,11 +60,39 @@ postgres:
         limits:
           cpu: '4'
           memory: 8Gi
-    core:
+    user:
       databases:
       - account
       - traveler_profile
       - identity_verification
+      maxConnections: 300
+      sharedBuffers: 512MB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    event:
+      databases:
+      - reporting
+      - invoicing
+      - notification
+      - risk_compliance
+      maxConnections: 300
+      sharedBuffers: 512MB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    core:
+      databases:
       - admin_audit
       - ancillary_service
       - corporate_travel
@@ -73,232 +101,242 @@ postgres:
       - disruption_recovery
       - fulfillment
       - group_booking
-      - invoicing
       - legacy_acl
       - loyalty_membership
       - marketing_campaign
-      - notification
       - provider_integration
-      - reporting
-      - risk_compliance
       - supplier_catalog
       - transfer_management
       - travel_insurance
       - waitlist
       - wallet_promotion
       maxConnections: 300
-      sharedBuffers: 512MB
+      sharedBuffers: 256MB
       workMem: 8MB
       resources:
         requests:
-          cpu: '1'
-          memory: 2Gi
+          cpu: '500m'
+          memory: 1Gi
         limits:
-          cpu: '4'
-          memory: 8Gi
+          cpu: '2'
+          memory: 4Gi
+redis:
+  maxmemory: 6gb
+  maxmemoryPolicy: allkeys-lru
+  resources:
+    requests:
+      cpu: '500m'
+      memory: 1Gi
+    limits:
+      cpu: '4'
+      memory: 8Gi
 loadgen:
   enabled: true
   workers: 200
 services:
   journey-order:
     db: journey_order
-    replicas: 3
+    replicas: 1
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
       IDENTITY_VERIFICATION_PREORDER_ENABLED: 'true'
       CONSUMER_THREADS: '4'
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: &id001
+      requests: &svc_req
         cpu: 500m
         memory: 1Gi
-      limits: &id002
+      limits: &svc_lim
         cpu: '2'
         memory: 6Gi
     pgInstance: hot
   booking-orchestration:
     db: booking_orchestration
-    replicas: 3
+    replicas: 1
     env:
       CONSUMER_THREADS: '4'
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: hot
   trip-planning:
     db: trip_planning
-    replicas: 2
+    replicas: 1
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   fare-pricing:
     db: fare_pricing
-    replicas: 2
-    env:
-      IDENTITY_VERIFICATION_URL: http://identity-verification:8080
+    replicas: 1
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   offer-management:
     db: offer_management
-    replicas: 2
+    replicas: 1
     env:
       PG_MAX_POOL_SIZE: '20'
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   payment:
     db: payment
-    replicas: 2
+    replicas: 1
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     pgInstance: txn
   entitlement-ticketing:
     db: entitlement_ticketing
-    replicas: 2
+    replicas: 1
     env:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: txn
   account:
     db: account
-    replicas: 2
+    replicas: 1
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: user
   traveler-profile:
     db: traveler_profile
-    replicas: 2
+    replicas: 1
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: user
   identity-verification:
     db: identity_verification
-    replicas: 2
+    replicas: 1
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: user
   capacity-availability:
     db: capacity_availability
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   risk-compliance:
     db: risk_compliance
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: event
   post-sales:
     db: post_sales
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     env:
       SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING: 'true'
     pgInstance: txn
   dispatch:
     db: dispatch
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   place-network:
     db: place_network
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   service-plan:
     db: service_plan
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   ancillary-service:
     db: ancillary_service
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   provider-integration:
     db: provider_integration
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   fulfillment:
     db: fulfillment
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   notification:
     db: notification
     env:
       SMTP_URL: smtp://mailpit:1025
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: event
   corporate-travel:
     db: corporate_travel
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   loyalty-membership:
     db: loyalty_membership
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   admin-audit:
     db: admin_audit
     env:
-      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'false'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   customer-service:
     db: customer_service
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   finance-settlement:
     db: finance_settlement
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: txn
   reporting:
     db: reporting
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: event
   supplier-catalog:
     db: supplier_catalog
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   legacy-acl:
     db: legacy_acl
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   waitlist:
     db: waitlist
     env:
@@ -307,15 +345,15 @@ services:
       OFFER_MANAGEMENT_BASE_URL: http://offer-management:8080
       JOURNEY_ORDER_BASE_URL: http://journey-order:8080
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   wallet-promotion:
     db: wallet_promotion
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   disruption-recovery:
     db: disruption_recovery
     env:
@@ -323,51 +361,52 @@ services:
       WALLET_PROMOTION_URL: http://wallet-promotion:8080
       TRANSFER_MANAGEMENT_URL: http://transfer-management:8080
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   transfer-management:
     db: transfer_management
     env:
       DISRUPTION_RECOVERY_URL: http://disruption-recovery:8080
       PLACE_NETWORK_URL: http://place-network:8080
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   seat-assignment:
     db: seat_assignment
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: read
   payment-channel:
     db: payment_channel
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
     pgInstance: txn
   invoicing:
     db: invoicing
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
+    pgInstance: event
   marketing-campaign:
     db: marketing_campaign
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   group-booking:
     db: group_booking
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
   travel-insurance:
     db: travel_insurance
     resources:
-      requests: *id001
-      limits: *id002
+      requests: *svc_req
+      limits: *svc_lim
