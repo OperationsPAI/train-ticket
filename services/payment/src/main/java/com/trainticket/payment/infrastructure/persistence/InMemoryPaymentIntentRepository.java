@@ -2,7 +2,9 @@ package com.trainticket.payment.infrastructure.persistence;
 
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.ports.PaymentIntentRepository;
+import java.time.Instant;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,6 +27,19 @@ public class InMemoryPaymentIntentRepository implements PaymentIntentRepository 
             .filter(intent -> intent.businessRef().equals(businessRef))
             .sorted(Comparator.comparing(PaymentIntent::paymentIntentId).reversed())
             .findFirst();
+    }
+
+    @Override
+    public List<PaymentIntent> findExpiredOpenIntents(Instant now, int limit) {
+        return intents.values().stream()
+            .filter(intent -> intent.expiresAt().compareTo(now) <= 0)
+            .filter(intent -> switch (intent.status()) {
+                case CREATED, AUTHORIZED -> true;
+                default -> false;
+            })
+            .sorted(Comparator.comparing(PaymentIntent::expiresAt))
+            .limit(limit)
+            .toList();
     }
 
     @Override

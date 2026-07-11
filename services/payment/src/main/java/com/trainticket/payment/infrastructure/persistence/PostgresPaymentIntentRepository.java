@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.ports.PaymentIntentRepository;
 import com.trainticket.platformkit.persistence.SnapshotRepository;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -48,6 +50,18 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
             "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots WHERE data->>'businessRef' = ? ORDER BY data->>'paymentIntentId' DESC LIMIT 1",
             rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(),
             businessRef
+        );
+    }
+
+    @Override
+    public List<PaymentIntent> findExpiredOpenIntents(Instant now, int limit) {
+        return jdbc.query(
+            "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots "
+                + "WHERE (data->>'expiresAt')::timestamptz <= ? AND data->>'status' IN ('CREATED','AUTHORIZED') "
+                + "ORDER BY (data->>'expiresAt')::timestamptz ASC LIMIT ?",
+            (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+            java.sql.Timestamp.from(now),
+            limit
         );
     }
 

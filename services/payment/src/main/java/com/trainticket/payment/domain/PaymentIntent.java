@@ -5,7 +5,9 @@ import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -19,6 +21,7 @@ public final class PaymentIntent {
     private final Instant expiresAt;
     private final String idempotencyKey;
     private final Set<String> channelTransactionRefs;
+    private final Map<String, RefundRecord> refundHistory;
     private final List<PaymentEvent> domainEvents;
     private ChannelRef channelRef;
     private String channelOrderIdempotencyKey;
@@ -49,6 +52,7 @@ public final class PaymentIntent {
         this.expiresAt = Objects.requireNonNull(expiresAt, "expiresAt is required");
         this.idempotencyKey = requireText(idempotencyKey, "idempotencyKey");
         this.channelTransactionRefs = new HashSet<>();
+        this.refundHistory = new LinkedHashMap<>();
         this.domainEvents = new ArrayList<>();
         this.status = PaymentIntentStatus.CREATED;
         this.authorizedAmount = Money.zero(amount.currency());
@@ -126,6 +130,32 @@ public final class PaymentIntent {
         return intent;
     }
 
+    public static PaymentIntent rehydrate(
+        String paymentIntentId,
+        String businessRef,
+        String purpose,
+        Money amount,
+        String payerRef,
+        Instant expiresAt,
+        String idempotencyKey,
+        PaymentIntentStatus status,
+        Money authorizedAmount,
+        Money capturedAmount,
+        Money refundedAmount,
+        Set<String> channelTransactionRefs,
+        List<PaymentEvent> domainEvents,
+        ChannelRef channelRef,
+        String channelOrderIdempotencyKey,
+        String channelOrderSubmitIdempotencyKey,
+        List<RefundRecord> refundHistory
+    ) {
+        PaymentIntent intent = rehydrate(paymentIntentId, businessRef, purpose, amount, payerRef, expiresAt, idempotencyKey, status, authorizedAmount, capturedAmount, refundedAmount, channelTransactionRefs, domainEvents, channelRef, channelOrderIdempotencyKey, channelOrderSubmitIdempotencyKey);
+        for (RefundRecord record : Objects.requireNonNull(refundHistory, "refundHistory is required")) {
+            intent.refundHistory.put(record.refundId(), record);
+        }
+        return intent;
+    }
+
     public PaymentIntent withVersion(long version) {
         if (version < 0) {
             throw new DomainRuleViolation("version must not be negative");
@@ -170,6 +200,7 @@ public final class PaymentIntent {
     public long version() { return version; }
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
     public Set<String> channelTransactionRefs() { return Set.copyOf(channelTransactionRefs); }
+    public List<RefundRecord> refundHistory() { return List.copyOf(refundHistory.values()); }
     public ChannelRef channelRef() { return channelRef; }
     public String channelOrderIdempotencyKey() { return channelOrderIdempotencyKey; }
     public String channelOrderSubmitIdempotencyKey() { return channelOrderSubmitIdempotencyKey; }
@@ -251,7 +282,7 @@ public final class PaymentIntent {
         status = PaymentIntentStatus.FAILED;
         domainEvents.add(new PaymentFailed(
             createEnvelope("PaymentFailed", occurredAt, causationId, correlationId),
-            paymentIntentId, requireText(reasonCode, "reasonCode"), retryable
+            paymentIntentId, businessRef, requireText(reasonCode, "reasonCode"), retryable, channelRef
         ));
     }
 
@@ -284,11 +315,28 @@ public final class PaymentIntent {
             createEnvelope("PaymentIntentExpired", occurredAt, causationId, correlationId),
             paymentIntentId
         ));
+        domainEvents.add(new PaymentTimedOut(
+            createEnvelope("PaymentTimedOut", occurredAt, causationId, correlationId),
+            paymentIntentId, businessRef, expiresAt, "TIMEOUT"
+        ));
     }
 
     void markRefunded(Money amount) {
         refundedAmount = refundedAmount.add(amount);
         if (refundedAmount.isGreaterThan(capturedAmount)) {
+            throw new DomainRuleViolation("refunded amount cannot exceed captured amount");
+        }
+    }
+
+    void recordRefund(Refund refund, ChannelRef refundChannelRef, Instant createdAt) {
+        Objects.requireNonNull(refund, "refund is required");
+        RefundRecord record = new RefundRecord(refund.refundId(), refund.amount(), refundChannelRef, refund.status(), createdAt);
+        refundHistory.put(record.refundId(), record);
+        Money total = Money.zero(capturedAmount.currency());
+        for (RefundRecord entry : refundHistory.values()) {
+            total = total.add(entry.amount());
+        }
+        if (total.isGreaterThan(capturedAmount)) {
             throw new DomainRuleViolation("refunded amount cannot exceed captured amount");
         }
     }

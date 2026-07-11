@@ -55,6 +55,8 @@ class PaymentIntentDomainTest {
 
         assertEquals(PaymentIntentStatus.EXPIRED, intent.status());
         assertInstanceOf(PaymentIntentExpired.class, intent.domainEvents().get(1));
+        PaymentTimedOut timedOut = assertInstanceOf(PaymentTimedOut.class, intent.domainEvents().get(2));
+        assertEquals("TIMEOUT", timedOut.reason());
         assertThrows(DomainRuleViolation.class,
             () -> intent.capture(Money.of("120.00", "USD"), "stripe", "capture-late", NOW.plusSeconds(902), "CapturePayment", "callback", "corr-2"));
     }
@@ -83,6 +85,19 @@ class PaymentIntentDomainTest {
         assertEquals(first.callbackRecordId(), duplicate.firstCallbackRecordId());
         assertInstanceOf(DuplicateChannelCallbackDetected.class, duplicate.auditEvent());
         assertThrows(DomainRuleViolation.class, duplicate::markApplied);
+    }
+
+    @Test
+    void routesPreferredChannelAndRejectsAmountsAboveAllChannelLimits() {
+        ChannelRouter router = ChannelRouter.defaults();
+
+        PaymentChannel alipay = router.route(Money.fromMinorUnits(12_000, "CNY"), "ALIPAY");
+
+        assertEquals("ALIPAY", alipay.channelId());
+        assertEquals(30, alipay.timeoutSeconds());
+        DomainRuleViolation violation = assertThrows(DomainRuleViolation.class,
+            () -> router.route(Money.fromMinorUnits(1_000_001, "CNY"), "ALIPAY"));
+        assertEquals("AMOUNT_EXCEEDS_CHANNEL_LIMIT", violation.getMessage());
     }
 
     private static PaymentIntent newIntent(String idempotencyKey) {

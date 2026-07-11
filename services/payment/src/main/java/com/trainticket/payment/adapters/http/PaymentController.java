@@ -28,7 +28,7 @@ public class PaymentController {
     @PostMapping("/payment-intents")
     public ResponseEntity<?> createPaymentIntent(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CreatePaymentIntentRequest request, HttpServletRequest httpRequest) {
         validateCreate(request);
-        PaymentIntent intent = service.createIntent(request.businessRef(), request.purpose(), PaymentHttpMapper.toMoney(request.amount()), request.payerRef(), idempotencyKey, correlationId(httpRequest));
+        PaymentIntent intent = service.createIntent(request.businessRef(), request.purpose(), PaymentHttpMapper.toMoney(request.amount()), request.payerRef(), idempotencyKey, correlationId(httpRequest), request.preferredChannel());
         return ResponseEntity.created(URI.create("/api/v1/payment-intents/" + intent.paymentIntentId())).body(PaymentHttpMapper.intentResponse(intent));
     }
 
@@ -79,6 +79,9 @@ public class PaymentController {
         requireText(request.purpose(), "purpose");
         PaymentHttpMapper.toMoney(request.amount());
         requireText(request.payerRef(), "payerRef");
+        if (!isBlank(request.preferredChannel()) && !isSupportedChannel(request.preferredChannel())) {
+            throw new ValidationException("preferredChannel is unsupported");
+        }
     }
 
     private static void validateOptionalChannelRef(ChannelRefJson channelRef, boolean requireOriginalRoute) {
@@ -86,7 +89,7 @@ public class PaymentController {
             return;
         }
         requireText(channelRef.channel(), "channelRef.channel");
-        if (!"ALIPAY_SIM".equals(channelRef.channel()) && !"WECHAT_SIM".equals(channelRef.channel()) && !"UNIONPAY_SIM".equals(channelRef.channel())) {
+        if (!isSupportedChannel(channelRef.channel())) {
             throw new ValidationException("channelRef.channel is unsupported");
         }
         if (requireOriginalRoute) {
@@ -110,6 +113,17 @@ public class PaymentController {
             throw new ValidationException(field + " is required");
         }
         return value;
+    }
+
+    private static boolean isSupportedChannel(String channel) {
+        return "ALIPAY".equals(channel)
+            || "WECHAT_PAY".equals(channel)
+            || "UNIONPAY".equals(channel)
+            || "APPLE_PAY".equals(channel)
+            || "BALANCE".equals(channel)
+            || "ALIPAY_SIM".equals(channel)
+            || "WECHAT_SIM".equals(channel)
+            || "UNIONPAY_SIM".equals(channel);
     }
 
     private static boolean isBlank(String value) {
