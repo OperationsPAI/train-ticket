@@ -77,12 +77,15 @@ def rand_name(rng: random.Random) -> tuple[str, str]:
 
 
 def _bookable(itin: dict) -> bool:
-    """Any itinerary whose first leg carries a real segment ref is bookable."""
+    """Bookable if the first leg has a seg-<uuid> ref (36-char UUID after prefix)."""
     legs = itin.get("legs") or []
     if not legs:
         return False
     ref = str(legs[0].get("serviceSegmentRef", ""))
-    return ref.startswith("seg-")
+    if not ref.startswith("seg-"):
+        return False
+    uuid_part = ref[4:]
+    return len(uuid_part) == 36 and uuid_part.count("-") == 4
 
 
 def compute_departure_dates(cfg: dict) -> list[str]:
