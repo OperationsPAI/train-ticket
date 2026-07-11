@@ -15,7 +15,6 @@ import com.trainticket.postsales.domain.RefundAssessment;
 import com.trainticket.postsales.domain.RefundClassification;
 import com.trainticket.postsales.domain.RefundPolicyEngine;
 import com.trainticket.postsales.domain.PostSalesEvent;
-import com.trainticket.postsales.domain.RefundWaterfall;
 import com.trainticket.postsales.domain.PostSalesScope;
 import com.trainticket.postsales.domain.RuleEvaluationSnapshot;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
@@ -32,15 +31,17 @@ public class PostSalesApplicationService {
     private final PostSalesRepository repository;
     private final EventPublisher eventPublisher;
     private final AdjustmentQuotePort adjustmentQuotePort;
+    private final PostSalesPolicyContextStore policyContextStore;
     private final Clock clock;
     private final RefundPolicyEngine refundPolicyEngine = new RefundPolicyEngine();
     private final ChangePolicyEngine changePolicyEngine = new ChangePolicyEngine();
 
     public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
-            AdjustmentQuotePort adjustmentQuotePort, Clock clock) {
+            AdjustmentQuotePort adjustmentQuotePort, PostSalesPolicyContextStore policyContextStore, Clock clock) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.adjustmentQuotePort = adjustmentQuotePort;
+        this.policyContextStore = policyContextStore;
         this.clock = clock;
     }
 
@@ -86,6 +87,11 @@ public class PostSalesApplicationService {
             postSalesCase = get(caseId);
         }
         postSalesCase.approve("http-approval", clock.instant(), sourceCommandId, sourceCommandId, correlationId);
+        if (postSalesCase.caseType() == PostSalesCaseType.CHANGE) {
+            policyContextStore.findByOrderId(postSalesCase.journeyOrderId())
+                .map(PostSalesPolicyContext::incrementAppliedChangeCount)
+                .ifPresent(policyContextStore::save);
+        }
         repository.save(postSalesCase);
         publishNewEvents(postSalesCase);
         return postSalesCase;
@@ -177,10 +183,17 @@ public class PostSalesApplicationService {
             return new PostSalesDecision(postSalesCase.caseId(), 1, kind, true, "ELIGIBLE", ruleSnapshot, amount, null, null, null, now, now.plusSeconds(900));
         }
 
+        PostSalesPolicyContext policyContext = policyContextFor(postSalesCase, now, refundable);
         if (kind == DecisionKind.CHANGE) {
-            Money originalFare = refundable.isZero() ? amountDue : refundable;
+            Money originalFare = policyContext.originalFareOr(refundable.isZero() ? amountDue : refundable);
             Money newFare = amountDue.isZero() ? originalFare : originalFare.add(amountDue);
-            ChangeAssessment assessment = changePolicyEngine.evaluateChange(originalFare, newFare, now, now.plusSeconds(60 * 60 * 24 * 20), 0);
+            ChangeAssessment assessment = changePolicyEngine.evaluateChange(
+                originalFare,
+                newFare,
+                now,
+                policyContext.departureTime(),
+                policyContext.appliedChangeCount()
+            );
             AmountDecisionSnapshot amount = assessment.netPayable().isZero() && !assessment.netRefundable().isZero()
                 ? AmountDecisionSnapshot.refund(assessment.changeFee(), assessment.netRefundable(), assessment.explanation())
                 : AmountDecisionSnapshot.extraCharge(assessment.changeFee(), assessment.netPayable(), assessment.explanation());
@@ -198,18 +211,32 @@ public class PostSalesApplicationService {
             return PostSalesDecision.change(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, changeFlowSnapshot, assessment, now, now.plusSeconds(900));
         }
 
-        Money penaltyBase = refundable.isZero() ? zero : refundable;
+        Money penaltyBase = policyContext.originalFareOr(refundable.isZero() ? zero : refundable);
         RefundAssessment assessment = refundPolicyEngine.evaluateRefund(
-            RefundWaterfall.simple(penaltyBase),
+            policyContext.waterfallFor(penaltyBase),
             penaltyBase,
             now,
-            now.plusSeconds(60 * 60 * 24 * 20),
+            policyContext.departureTime(),
             classify(postSalesCase.reasonCode()),
-            "ADULT",
-            Math.max(1, postSalesCase.scope().travelerRefs().size())
+            policyContext.travelerType(postSalesCase.scope().travelerRefs()),
+            policyContext.groupSize()
         );
         AmountDecisionSnapshot amount = AmountDecisionSnapshot.refund(assessment.penaltyAmount(), assessment.refundableAmount(), assessment.explanation(), assessment.componentDecisions());
         return PostSalesDecision.refund(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, assessment, now, now.plusSeconds(900));
+    }
+
+    private PostSalesPolicyContext policyContextFor(PostSalesCase postSalesCase, Instant now, Money fallbackAmount) {
+        return policyContextStore.findByOrderId(postSalesCase.journeyOrderId())
+            .orElseGet(() -> PostSalesPolicyContext.fallback(
+                postSalesCase.journeyOrderId(),
+                now,
+                postSalesCase.scope().travelerRefs().size(),
+                fallbackAmount
+            ));
+    }
+
+    public void recordPolicyContext(PostSalesPolicyContext context) {
+        policyContextStore.save(context);
     }
 
     private static RefundClassification classify(String reasonCode) {
