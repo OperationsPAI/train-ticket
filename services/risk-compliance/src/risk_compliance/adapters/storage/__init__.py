@@ -1,3 +1,3 @@
-from .postgres import PostgresAssessmentRepository, TransactionalOutboxPublisher
+from .postgres import PostgresAssessmentRepository, PostgresRiskEvaluationRepository, TransactionalOutboxPublisher
 
-__all__ = ["PostgresAssessmentRepository", "TransactionalOutboxPublisher"]
+__all__ = ["PostgresAssessmentRepository", "PostgresRiskEvaluationRepository", "TransactionalOutboxPublisher"]

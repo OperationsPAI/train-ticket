@@ -78,6 +78,23 @@ def test_same_route_bulk_adds_scalper_score() -> None:
     assert responses[-1].json()["verdict"] in {"CHALLENGE", "BLOCK"}
 
 
+def test_velocity_challenge_breach_raises_alert() -> None:
+    app = app_with_evaluations()
+    occurred_at = datetime.now(UTC)
+    for _ in range(6):
+        app.state.risk_evaluation_service.repository.record_payment_attempt("acct-payment-velocity", occurred_at)
+
+    response = post_eval(TestClient(app), account="acct-payment-velocity", sourceIp="203.0.113.220")
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["verdict"] == "CHALLENGE"
+    assert body["score"] < 60
+    assert any(rule["ruleId"] == "VELOCITY_ACCOUNT_PAYMENT" and rule["result"] == "CHALLENGE" for rule in body["triggeredRules"])
+    assert [event.eventType for event in app.state.publisher.envelopes][-2:] == ["RiskEvaluationCompleted", "RiskAlertRaised"]
+    assert app.state.publisher.envelopes[-1].payload["evaluationId"] == body["evaluationId"]
+
+
 def test_staff_override_lifts_block_for_evaluation() -> None:
     client = TestClient(app_with_evaluations())
     blocked = None
