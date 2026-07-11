@@ -22,6 +22,7 @@ RETRY_BACKOFF_SECONDS = (0.1, 0.3, 0.9)
 MAX_DELIVERY_ATTEMPTS = 5
 CLAIM_MIN_IDLE_MS = 60000
 CLAIM_COUNT = 100
+DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
 POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "100"))
 POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "100"))
 LOGGER = logging.getLogger(__name__)
@@ -151,6 +152,7 @@ class RedisEventSubscriber(EventSubscriber):
                 self._ensure_group(stream, group)
         except Exception as exc:
             raise SubscribeFailed("subscriber could not start Redis Streams consumer group") from exc
+        self._prune_dead_consumers(streams_tuple, group, consumer_name)
         next_recovery_at = 0.0
         self._stop_requested.clear()
         while not self._stop_requested.is_set():
@@ -229,6 +231,29 @@ class RedisEventSubscriber(EventSubscriber):
         except Exception as exc:
             if "BUSYGROUP" not in str(exc):
                 raise
+
+    def _prune_dead_consumers(self, streams: Sequence[str], group: str, self_name: str) -> None:
+        """Remove consumers idle > 5 min so their PEL entries are released instead of
+        being auto-claimed in bulk to surviving consumers on scale-down."""
+        for stream in streams:
+            try:
+                consumers = self._client.xinfo_consumers(stream, group)
+                for consumer in consumers:
+                    name = consumer.get("name") or consumer.get(b"name", b"")
+                    if isinstance(name, bytes):
+                        name = name.decode("utf-8")
+                    if name == self_name:
+                        continue
+                    idle = int(consumer.get("idle", consumer.get(b"idle", 0)))
+                    if idle > DEAD_CONSUMER_IDLE_MS:
+                        pending = int(consumer.get("pending", consumer.get(b"pending", 0)))
+                        self._client.execute_command("XGROUP", "DELCONSUMER", stream, group, name)
+                        LOGGER.info(
+                            "pruned dead consumer %s from %s/%s (idle=%dms, pending=%d)",
+                            name, stream, group, idle, pending,
+                        )
+            except Exception:
+                pass  # best-effort cleanup; stream or group may not exist yet
 
     def _recover_pending(self, streams: Sequence[str], group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         for stream in streams:

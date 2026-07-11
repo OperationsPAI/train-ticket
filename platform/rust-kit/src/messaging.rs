@@ -558,6 +558,82 @@ pub mod redis_runtime {
     use tokio::sync::mpsc;
     use tokio::time::{Duration, interval, sleep};
 
+    const DEAD_CONSUMER_IDLE_MS: u64 = 5 * 60 * 1_000;
+
+    async fn prune_dead_consumers(
+        connection: &mut redis::aio::MultiplexedConnection,
+        stream: &str,
+        group: &str,
+        self_name: &str,
+    ) {
+        let result: Result<redis::Value, _> = redis::cmd("XINFO")
+            .arg("CONSUMERS")
+            .arg(stream)
+            .arg(group)
+            .query_async(connection)
+            .await;
+        let consumers = match result {
+            Ok(redis::Value::Bulk(consumers)) => consumers,
+            _ => return, // best-effort; stream or group may not exist yet
+        };
+        for consumer_value in consumers {
+            let redis::Value::Bulk(ref fields) = consumer_value else {
+                continue;
+            };
+            let mut name: Option<String> = None;
+            let mut idle: u64 = 0;
+            let mut pending: i64 = 0;
+            let mut i = 0;
+            while i + 1 < fields.len() {
+                let key = redis_value_to_string(&fields[i]).unwrap_or_default();
+                match key.as_str() {
+                    "name" => name = redis_value_to_string(&fields[i + 1]),
+                    "idle" => {
+                        idle = match &fields[i + 1] {
+                            redis::Value::Int(v) => *v as u64,
+                            other => redis_value_to_string(other)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0),
+                        }
+                    }
+                    "pending" => {
+                        pending = match &fields[i + 1] {
+                            redis::Value::Int(v) => *v,
+                            other => redis_value_to_string(other)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0),
+                        }
+                    }
+                    _ => {}
+                }
+                i += 2;
+            }
+            let Some(ref consumer_name) = name else {
+                continue;
+            };
+            if consumer_name == self_name {
+                continue;
+            }
+            if idle > DEAD_CONSUMER_IDLE_MS {
+                let _: Result<redis::Value, _> = redis::cmd("XGROUP")
+                    .arg("DELCONSUMER")
+                    .arg(stream)
+                    .arg(group)
+                    .arg(consumer_name)
+                    .query_async(connection)
+                    .await;
+                log::info!(
+                    "pruned dead consumer {} from {}/{} (idle={}ms, pending={})",
+                    consumer_name,
+                    stream,
+                    group,
+                    idle,
+                    pending
+                );
+            }
+        }
+    }
+
     #[derive(Clone)]
     pub struct RedisEventPublisher {
         client: redis::Client,
@@ -1101,7 +1177,7 @@ pub mod redis_runtime {
                 if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
                     return Ok(());
                 }
-                let connection = match self.client.get_multiplexed_async_connection().await {
+                let mut connection = match self.client.get_multiplexed_async_connection().await {
                     Ok(c) => {
                         delay = 1;
                         c
@@ -1115,6 +1191,9 @@ pub mod redis_runtime {
                         continue;
                     }
                 };
+                for stream in &streams {
+                    prune_dead_consumers(&mut connection, stream, &group, &consumer_name).await;
+                }
                 let mut ops = RedisStreamOps { connection };
                 match self
                     .subscribe_with_ops(
