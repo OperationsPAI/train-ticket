@@ -9,6 +9,7 @@ from fare_pricing.domain import (
     AdjustmentQuote,
     AssessmentPurpose,
     FareQuote,
+    CapacitySnapshot,
     FareRuleSet,
     RuleSetStatus,
     PricingError,
@@ -38,6 +39,7 @@ class InMemoryStore:
     fare_quotes: dict[str, FareQuote] = field(default_factory=dict)
     adjustment_quotes: dict[str, AdjustmentQuote] = field(default_factory=dict)
     fare_quote_segment_links: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    capacity_snapshots: dict[tuple[str, str], CapacitySnapshot] = field(default_factory=dict)
 
     def transaction(self) -> Any:
         return nullcontext()
@@ -79,6 +81,21 @@ class InMemoryStore:
             raise AdjustmentQuoteNotFoundError(f"Adjustment quote not found: {adjustment_quote_id}")
         return self.adjustment_quotes[adjustment_quote_id]
 
+    def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
+        key = (snapshot.segment_ref, snapshot.departure_date.isoformat())
+        current = self.capacity_snapshots.get(key)
+        if current is None or snapshot.snapshot_version >= current.snapshot_version:
+            self.capacity_snapshots[key] = snapshot
+
+    def capacity_snapshots_for(self, segment_refs: list[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
+        if departure_date is None:
+            return ()
+        return tuple(
+            snapshot
+            for segment_ref in segment_refs
+            if (snapshot := self.capacity_snapshots.get((segment_ref, departure_date))) is not None
+        )
+
 
 class EligibilityCertificatePort:
     def has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
@@ -112,12 +129,17 @@ class FarePricingService:
         segment_refs: list[str] | None = None,
         quoted_at: datetime | None = None,
         ttl: timedelta | None = None,
+        seat_class: str = "SECOND_CLASS",
+        distance_km: float | str | None = None,
+        departure_time: datetime | None = None,
     ) -> FareQuote:
         now = quoted_at or datetime.now(timezone.utc)
         ttl = ttl or timedelta(minutes=15)
         rule_set = self._store.get_rule_set(rule_set_id)
 
         active_discount_types = self._active_discount_types(rule_set, traveler_refs, now.date().isoformat())
+        departure_date = departure_time.astimezone(UTC).date().isoformat() if departure_time is not None else None
+        capacity_snapshots = self.capacity_snapshots_for(segment_refs or [], departure_date)
         quote = calculate_fare_quote(
             quote_id=quote_id,
             input_hash=input_hash,
@@ -128,6 +150,10 @@ class FarePricingService:
             quoted_at=now,
             ttl=ttl,
             active_discount_types=active_discount_types,
+            seat_class=seat_class,
+            distance_km=distance_km,
+            departure_time=departure_time,
+            capacity_snapshots=capacity_snapshots,
         )
         self._store.save_quote(quote)
         self.link_fare_quote_to_segments(quote.quote_id, segment_refs or [])
@@ -279,3 +305,16 @@ class FarePricingService:
 
     def get_adjustment_quote(self, adjustment_quote_id: str) -> AdjustmentQuote:
         return self._store.get_adjustment_quote(adjustment_quote_id)
+
+    def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
+        upsert = getattr(self._store, "upsert_capacity_snapshot", None)
+        if callable(upsert):
+            upsert(snapshot)
+
+    def capacity_snapshots_for(self, segment_refs: list[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
+        if departure_date is None:
+            return ()
+        lookup = getattr(self._store, "capacity_snapshots_for", None)
+        if callable(lookup):
+            return lookup(segment_refs, departure_date)
+        return ()

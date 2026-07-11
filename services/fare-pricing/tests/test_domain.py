@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from fare_pricing import (
     AssessmentPurpose,
+    CapacitySnapshot,
     FareQuote,
     FareRule,
     FareRuleSet,
@@ -27,13 +28,25 @@ from fare_pricing import (
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
 
 
-def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True) -> FareRule:
+def rule(
+    rule_id: str,
+    kind: RuleKind,
+    amount: str,
+    *,
+    refundable: bool = True,
+    per_km_rate: str | None = None,
+    minimum_fare: str | None = None,
+) -> FareRule:
     return FareRule(
         rule_id=rule_id,
         kind=kind,
         amount=Money(amount, "USD"),
         explanation=PriceExplanation(f"fare.{rule_id}", {"rule": rule_id}),
         refundable=refundable,
+        per_km_rate=Decimal(per_km_rate) if per_km_rate is not None else None,
+        minimum_fare=Money(minimum_fare, "USD") if minimum_fare is not None else None,
+        distance_discount_threshold_km=Decimal("500") if per_km_rate is not None else None,
+        distance_discount_pct=10 if per_km_rate is not None else 0,
     )
 
 
@@ -111,6 +124,71 @@ class FarePricingDomainTest(unittest.TestCase):
         )
         self.assertEqual(failed.status, QuoteStatus.FAILED)
         self.assertEqual(failed.failed_reason, "requested currency does not match fare rule set currency")
+
+
+    def test_advance_purchase_peak_and_seat_class_components(self) -> None:
+        quote = calculate_fare_quote(
+            quote_id="quote-dynamic",
+            input_hash="hash-dynamic",
+            traveler_refs=("traveler-1",),
+            channel="web",
+            rule_set=published_rule_set(),
+            requested_currency="USD",
+            quoted_at=NOW,
+            ttl=timedelta(minutes=15),
+            seat_class="FIRST_CLASS",
+            departure_time=NOW + timedelta(days=25),
+        )
+
+        assert quote.breakdown is not None
+        self.assertEqual(quote.breakdown.pricing_components["seatClassMultiplier"]["multiplier"], "1.6")
+        self.assertEqual(quote.breakdown.pricing_components["advancePurchaseTier"]["tierName"], "ADVANCE_PURCHASE_TIER_1")
+        self.assertEqual(quote.breakdown.pricing_components["peakAdjustment"]["totalAdjustmentPct"], -10)
+        self.assertIn("ADVANCE_PURCHASE_TIER_1", {explanation.code for explanation in quote.explanations})
+        self.assertEqual(quote.breakdown.base_fare, Money("100.80", "USD"))
+
+    def test_peak_hour_applies_fifteen_percent_surcharge(self) -> None:
+        quote = calculate_fare_quote(
+            quote_id="quote-peak",
+            input_hash="hash-peak",
+            traveler_refs=("traveler-1",),
+            channel="web",
+            rule_set=published_rule_set(),
+            requested_currency="USD",
+            quoted_at=NOW,
+            ttl=timedelta(minutes=15),
+            seat_class="FIRST_CLASS",
+            departure_time=datetime(2026, 7, 6, 8, 0, tzinfo=UTC),
+        )
+
+        assert quote.breakdown is not None
+        self.assertEqual(quote.breakdown.pricing_components["advancePurchaseTier"]["tierName"], "ADVANCE_PURCHASE_TIER_4")
+        self.assertEqual(quote.breakdown.pricing_components["peakAdjustment"]["hourAdjustment"], 15)
+        self.assertEqual(quote.breakdown.base_fare, Money("184.00", "USD"))
+
+    def test_distance_fare_and_capacity_dynamic_surcharge(self) -> None:
+        rule_set = draft_rule_set(
+            rule("base", RuleKind.BASE_FARE, "100.00", per_km_rate="0.15", minimum_fare="5.00"),
+        ).publish(NOW)
+        quote = calculate_fare_quote(
+            quote_id="quote-capacity",
+            input_hash="hash-capacity",
+            traveler_refs=("traveler-1",),
+            channel="web",
+            rule_set=rule_set,
+            requested_currency="USD",
+            quoted_at=NOW,
+            ttl=timedelta(minutes=15),
+            distance_km=Decimal("600"),
+            departure_time=NOW + timedelta(days=4),
+            capacity_snapshots=(CapacitySnapshot("seg-1", (NOW + timedelta(days=4)).date(), 100, 8, 1),),
+        )
+
+        assert quote.breakdown is not None
+        self.assertIn("baseDistanceFare", quote.breakdown.pricing_components)
+        self.assertEqual(quote.breakdown.pricing_components["dynamicCapacityAdjustment"]["adjustmentPct"], 50)
+        self.assertEqual(quote.breakdown.base_fare, Money("79.65", "USD"))
+        self.assertEqual(quote.breakdown.total, Money("119.48", "USD"))
 
     def test_rule_snapshot_and_quoted_values_are_immutable(self) -> None:
         quote = quoted()
