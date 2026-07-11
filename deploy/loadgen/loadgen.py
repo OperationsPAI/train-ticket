@@ -2775,5 +2775,20 @@ async def main() -> None:
     await api.close()
 
 
-if __name__ == "__main__":
+def _run_one() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    import multiprocessing
+    procs = int(os.environ.get("LOADGEN_PROCESSES", "1"))
+    if procs <= 1:
+        _run_one()
+    else:
+        workers = []
+        for _ in range(procs):
+            p = multiprocessing.Process(target=_run_one, daemon=True)
+            p.start()
+            workers.append(p)
+        for p in workers:
+            p.join()
