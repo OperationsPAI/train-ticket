@@ -180,6 +180,11 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public boolean isEventProcessed(String eventId) {
+        return events.isProcessed(eventId);
+    }
+
+    @Override
     public boolean recordProcessedEvent(String eventId, String stream) {
         return events.recordIfNew(eventId, stream);
     }

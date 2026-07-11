@@ -246,7 +246,7 @@ class OrderManagementServiceTest {
     void dataAccessExceptionReturnsTransientError() {
         JourneyOrderStateRepositoryAdapter failingRepository = new JourneyOrderStateRepositoryAdapter() {
             @Override
-            public boolean recordProcessedEvent(String eventId, String stream) {
+            public boolean isEventProcessed(String eventId) {
                 throw new TransientDataAccessResourceException("database unavailable");
             }
         };
@@ -258,6 +258,71 @@ class OrderManagementServiceTest {
         ));
 
         assertTrue(result instanceof EventSubscriber.TransientError);
+    }
+
+    @Test
+    void handlerFailureDoesNotMarkEventProcessedAllowingRetry() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService orderService = new OrderManagementService(
+            envelope -> published.add(envelope), FIXED_CLOCK, repository);
+
+        JourneyOrderResult created = orderService.createOrder(
+            new JourneyOrderRequest("account-retry", "offer-retry", 1,
+                List.of("tvl-1"), List.of("seg-1")),
+            "idem-retry", "corr-1");
+        published.clear();
+
+        String eventId = "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cf01";
+        EventEnvelope paymentEvent = new EventEnvelope(
+            eventId, "PaymentCaptured",
+            Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cf02",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0cf03",
+            "payment", 1,
+            Map.of(
+                "orderId", created.orderId(),
+                "businessRef", created.orderId(),
+                "paymentIntentId", "pi-retry",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 10000),
+                "channel", "SIM",
+                "channelTransactionId", "ch-retry"
+            )
+        );
+
+        // Wrap the repository so saveOrder fails on the first call for this order
+        JourneyOrderStateRepositoryAdapter failOnceRepository = new JourneyOrderStateRepositoryAdapter() {
+            private boolean failedOnce = false;
+            {
+                // Seed the order so the handler can find it
+                saveOrder(repository.findOrder(created.orderId()).orElseThrow().order(),
+                    repository.findOrder(created.orderId()).orElseThrow().idempotencyKey());
+            }
+
+            @Override
+            public void saveOrder(com.trainticket.journeyorder.domain.JourneyOrder order, String idempotencyKey) {
+                if (!failedOnce && order.orderId().equals(created.orderId())
+                    && order.state() != com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_CONFIRMATION) {
+                    failedOnce = true;
+                    throw new RuntimeException("simulated OCC conflict");
+                }
+                super.saveOrder(order, idempotencyKey);
+            }
+        };
+        OrderManagementService retryService = new OrderManagementService(
+            envelope -> published.add(envelope), FIXED_CLOCK, failOnceRepository);
+
+        // First attempt: handler fails on saveOrder, event must NOT be marked processed
+        EventSubscriber.HandlerResult firstResult = retryService.handle(paymentEvent);
+        assertTrue(firstResult instanceof EventSubscriber.TransientError,
+            "first attempt should return TransientError on saveOrder failure");
+        assertTrue(!failOnceRepository.isEventProcessed(eventId),
+            "event must not be marked processed when handler fails");
+
+        // Second attempt: handler succeeds, order state advances
+        EventSubscriber.HandlerResult secondResult = retryService.handle(paymentEvent);
+        assertEquals(new EventSubscriber.Success(), secondResult);
+        assertTrue(failOnceRepository.isEventProcessed(eventId),
+            "event must be marked processed after successful handler");
     }
 
     @Test
