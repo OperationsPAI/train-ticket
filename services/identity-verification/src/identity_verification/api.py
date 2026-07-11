@@ -14,11 +14,14 @@ from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRe
 from train_ticket_platform.ids import new_uuid7
 
 from .adapters.messaging import TRAVELER_PROFILE_STREAM
+
+JOURNEY_ORDER_STREAM = "events:journey-order"
+RISK_COMPLIANCE_STREAM = "events:risk-compliance"
 from .adapters.storage.postgres import PostgresIdentityVerificationStore
 from .application.service import DeterministicSimGateway, IdentityVerificationService, InMemoryStore
 from .runtime import health, profile
 from .web.errors import register_exception_handlers
-from .web.handlers import router as identity_router
+from .web.handlers import compatibility_router, router as identity_router
 
 REQUEST_ID_HEADER = "X-Request-ID"
 CORRELATION_ID_HEADER = "X-Correlation-Id"
@@ -102,8 +105,9 @@ def configure_identity_routes(app: FastAPI, store: Any | None = None, idempotenc
         async def identity_unit_of_work_middleware(request: Request, call_next: Any):
             with unit_of_work(): return await call_next(request)
     app.state.identity_verification_service = service; app.state.identity_verification_store = store
-    configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/identity-verification/credentials", "/api/v1/identity-verification/verification-cases", "/api/v1/identity-verification/eligibility-certificates", "/api/v1/identity-verification/pre-order-checks", "/api/v1/identity-verification/purchase-limit-facts"))
+    configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/identity-verification/credentials", "/api/v1/identity-verification/verification-cases", "/api/v1/identity-verification/eligibility-certificates", "/api/v1/identity-verification/pre-order-checks", "/api/v1/identity-verification/purchase-limit-facts", "/api/v1/identity-verification/verifications", "/api/v1/verifications"))
     for route in identity_router.routes: app.router.routes.append(route)
+    for route in compatibility_router.routes: app.router.routes.append(route)
 
 
 def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None]:
@@ -115,8 +119,15 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     run_migrations(pool, migrations_dir, readiness)
     store = PostgresIdentityVerificationStore(pool); relay = OutboxRelay(pool); relay.start()
     subscriber = RedisEventSubscriber(); holder: dict[str, Any] = {}
-    def handle(envelope: Any) -> None: holder["service"].handle_traveler_snapshot_updated(envelope, TRAVELER_PROFILE_STREAM)
-    thread = subscriber.start_in_background((TRAVELER_PROFILE_STREAM,), "identity-verification", handle)
+    def handle(envelope: Any) -> None:
+        service = holder["service"]
+        if envelope.eventType in {"JourneyOrderCreated", "JourneyOrderCancelled"}:
+            service.handle_journey_order_event(envelope, JOURNEY_ORDER_STREAM)
+        elif envelope.eventType == "RiskAlertRaised":
+            service.handle_risk_alert_raised(envelope, RISK_COMPLIANCE_STREAM)
+        else:
+            service.handle_traveler_snapshot_updated(envelope, TRAVELER_PROFILE_STREAM)
+    thread = subscriber.start_in_background((TRAVELER_PROFILE_STREAM, JOURNEY_ORDER_STREAM, RISK_COMPLIANCE_STREAM), "identity-verification", handle)
     app.state.outbox_relay = relay; app.state.event_subscriber = subscriber; app.state.event_subscriber_thread = thread; app.state._identity_service_holder = holder
     return store, PostgresIdempotencyStore(pool)
 

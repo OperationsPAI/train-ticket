@@ -149,3 +149,23 @@ def test_credential_status_uses_store_interface_not_cases_attribute():
     response = client.get(f"/api/v1/identity-verification/credentials/{cred['credentialRecordId']}/verification-status")
     assert response.status_code == 200
     assert response.json()["verificationStatus"] == "PASSED"
+
+
+def test_real_name_verification_api_contract_and_events():
+    store = InMemoryStore(); client = TestClient(create_app(store=store))
+    response = client.post("/api/v1/identity-verification/verifications", json={"travelerId": "tvl-api", "documentType": "ID_CARD", "documentNumber": "11010519491231002X", "holderName": "张三", "segmentRef": "seg-api", "departureDate": "2026-02-01", "seatClass": "SECOND_CLASS", "bookingValueMinor": 10000}, headers={"Idempotency-Key": key(90)})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "VERIFIED"
+    assert body["restrictions"] == []
+    assert body["duplicateTicketCheck"] == "PASS"
+    assert store.take_outbox()[0].eventType == "IdentityVerified"
+    compat = client.post("/api/v1/verifications", json={"travelerId": "tvl-api-compat", "documentType": "ID_CARD", "documentNumber": "110105199001010010", "holderName": "张三", "segmentRef": "seg-api-compat", "departureDate": "2026-02-01", "seatClass": "SECOND_CLASS", "bookingValueMinor": 10000}, headers={"Idempotency-Key": key(92)})
+    assert compat.status_code == 201
+    assert compat.json()["status"] == "VERIFIED"
+
+    store.save_active_ticket(__import__("identity_verification.domain", fromlist=["ActiveTicket"]).ActiveTicket("11010519491231002X", "seg-api", "2026-02-01", "ord-api"))
+    rejected = client.post("/api/v1/identity-verification/verifications", json={"travelerId": "tvl-api-2", "documentType": "ID_CARD", "documentNumber": "11010519491231002X", "holderName": "张三", "segmentRef": "seg-api", "departureDate": "2026-02-01", "seatClass": "SECOND_CLASS", "bookingValueMinor": 10000}, headers={"Idempotency-Key": key(91)})
+    assert rejected.status_code == 201
+    assert rejected.json()["reason"] == "DUPLICATE_TICKET"
+    assert rejected.json()["duplicateTicketCheck"] == "FAIL"

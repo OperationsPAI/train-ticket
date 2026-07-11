@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, Self
+import re
+from typing import Any, Mapping, Self
 
 from train_ticket_platform.events import rfc3339_utc
 
@@ -58,6 +59,237 @@ class PreOrderResult(StrEnum):
     DEGRADED = "DEGRADED"
 
 
+class DocumentType(StrEnum):
+    ID_CARD = "ID_CARD"
+    PASSPORT = "PASSPORT"
+    HK_MACAU_PERMIT = "HK_MACAU_PERMIT"
+    TW_PERMIT = "TW_PERMIT"
+    RESIDENCE_PERMIT = "RESIDENCE_PERMIT"
+
+    @property
+    def validity_days(self) -> int:
+        if self is DocumentType.ID_CARD:
+            return 30
+        if self is DocumentType.PASSPORT:
+            return 7
+        return 14
+
+    def validate_number(self, document_number: str) -> bool:
+        value = document_number.strip().upper()
+        patterns = {
+            DocumentType.ID_CARD: r"^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[0-9X]$",
+            DocumentType.PASSPORT: r"^[A-Z0-9]{5,17}$",
+            DocumentType.HK_MACAU_PERMIT: r"^[HMhm][0-9]{8,10}$",
+            DocumentType.TW_PERMIT: r"^[Tt][0-9]{8,10}$",
+            DocumentType.RESIDENCE_PERMIT: r"^[A-Z]{3}[0-9]{12}$",
+        }
+        if re.fullmatch(patterns[self], value) is None:
+            return False
+        return self is not DocumentType.ID_CARD or _valid_chinese_id_checksum(value)
+
+    def names_match(self, submitted: str, registered: str | None = None) -> bool:
+        if registered is None:
+            return True
+        submitted_norm = _normalize_name(submitted)
+        registered_norm = _normalize_name(registered)
+        if self is DocumentType.PASSPORT:
+            return submitted_norm == registered_norm or submitted_norm.replace(" ", "") == registered_norm.replace(" ", "")
+        return submitted.strip() == registered.strip()
+
+
+def _valid_chinese_id_checksum(value: str) -> bool:
+    weights = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
+    checks = "10X98765432"
+    total = sum(int(value[index]) * weight for index, weight in enumerate(weights))
+    return checks[total % 11] == value[-1].upper()
+
+
+def _normalize_name(value: str) -> str:
+    return " ".join(value.strip().upper().replace(",", " ").split())
+
+
+class VerificationResultStatus(StrEnum):
+    VERIFIED = "VERIFIED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    BLACKLISTED = "BLACKLISTED"
+    CHALLENGE = "CHALLENGE"
+
+
+class DuplicateTicketCheck(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+class BlacklistType(StrEnum):
+    CREDIT_DEFAULT = "CREDIT_DEFAULT"
+    SECURITY_BAN = "SECURITY_BAN"
+    FRAUD_FLAGGED = "FRAUD_FLAGGED"
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationRequest:
+    travelerId: str
+    documentType: DocumentType
+    documentNumber: str
+    holderName: str
+    expiryDate: datetime | None = None
+    segmentRef: str | None = None
+    departureDate: str | None = None
+    seatClass: str | None = None
+    bookingValueMinor: int = 0
+    expectedHolderName: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "VerificationRequest":
+        doc_type = DocumentType(str(data["documentType"]))
+        expiry = data.get("expiryDate")
+        if isinstance(expiry, str):
+            expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00")).astimezone(UTC)
+        return cls(
+            travelerId=require_text(data.get("travelerId"), "travelerId"),
+            documentType=doc_type,
+            documentNumber=require_text(data.get("documentNumber"), "documentNumber").upper(),
+            holderName=require_text(data.get("holderName"), "holderName"),
+            expiryDate=expiry,
+            segmentRef=str(data["segmentRef"]) if data.get("segmentRef") else None,
+            departureDate=str(data["departureDate"]) if data.get("departureDate") else None,
+            seatClass=str(data["seatClass"]) if data.get("seatClass") else None,
+            bookingValueMinor=int(data.get("bookingValueMinor") or 0),
+            expectedHolderName=str(data["expectedHolderName"]) if data.get("expectedHolderName") else None,
+        )
+
+    def validate(self, at: datetime) -> None:
+        if not self.documentType.validate_number(self.documentNumber):
+            raise DomainError("documentNumber format is invalid")
+        if not self.documentType.names_match(self.holderName, self.expectedHolderName):
+            raise DomainError("holderName does not match document")
+        if self.documentType is not DocumentType.ID_CARD:
+            if self.expiryDate is None:
+                raise DomainError("expiryDate is required for this documentType")
+            if self.expiryDate <= at:
+                raise ExpiredDocumentError("document is expired")
+
+
+class ExpiredDocumentError(DomainError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationResult:
+    status: VerificationResultStatus
+    reason: str | None
+    verifiedAt: datetime | None
+    expiresAt: datetime | None
+    restrictions: tuple[str, ...] = ()
+    duplicateTicketCheck: DuplicateTicketCheck = DuplicateTicketCheck.PASS
+    cacheHit: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "status": self.status.value,
+            "restrictions": list(self.restrictions),
+            "duplicateTicketCheck": self.duplicateTicketCheck.value,
+            "cacheHit": self.cacheHit,
+        }
+        if self.reason: data["reason"] = self.reason
+        if self.verifiedAt: data["verifiedAt"] = rfc3339_utc(self.verifiedAt)
+        if self.expiresAt: data["expiresAt"] = rfc3339_utc(self.expiresAt)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class BlacklistEntry:
+    documentNumber: str
+    blacklistType: BlacklistType
+    reason: str
+    effectiveFrom: datetime
+    effectiveUntil: datetime | None = None
+
+    def active_at(self, at: datetime) -> bool:
+        return self.effectiveFrom <= at and (self.effectiveUntil is None or self.effectiveUntil > at)
+
+    def restriction_for(self, seat_class: str | None) -> tuple[VerificationResultStatus, str, tuple[str, ...]] | None:
+        seat = (seat_class or "SECOND_CLASS").upper()
+        if self.blacklistType is BlacklistType.SECURITY_BAN:
+            return VerificationResultStatus.BLACKLISTED, "BLACKLISTED", ("TRAVEL_BAN",)
+        if self.blacklistType is BlacklistType.CREDIT_DEFAULT and seat not in {"SECOND_CLASS", "SECOND"}:
+            return VerificationResultStatus.BLACKLISTED, "CREDIT_DEFAULT_RESTRICTED_CLASS", ("SECOND_CLASS_ONLY",)
+        if self.blacklistType is BlacklistType.CREDIT_DEFAULT:
+            return None
+        return VerificationResultStatus.CHALLENGE, "FRAUD_FLAGGED", ("MANUAL_REVIEW_REQUIRED",)
+
+
+class BlacklistChecker:
+    def __init__(self, entries: tuple[BlacklistEntry, ...] = ()) -> None:
+        self._entries = entries
+
+    def check(self, document_number: str, seat_class: str | None, at: datetime) -> tuple[BlacklistEntry, tuple[VerificationResultStatus, str, tuple[str, ...]]] | None:
+        for entry in self._entries:
+            if entry.documentNumber == document_number and entry.active_at(at):
+                restriction = entry.restriction_for(seat_class)
+                if restriction is not None:
+                    return entry, restriction
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveTicket:
+    documentNumber: str
+    segmentRef: str
+    departureDate: str
+    orderId: str
+    status: str = "ACTIVE"
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.documentNumber, self.segmentRef, self.departureDate)
+
+
+class ActiveTicketRegistry:
+    def __init__(self, tickets: tuple[ActiveTicket, ...] = ()) -> None:
+        self._tickets = {ticket.key: ticket for ticket in tickets if ticket.status == "ACTIVE"}
+
+    def checkDuplicateTicket(self, documentNumber: str, segmentRef: str, departureDate: str) -> bool:
+        return (documentNumber, segmentRef, departureDate) in self._tickets
+
+    def record_created(self, documentNumber: str, segmentRef: str, departureDate: str, orderId: str) -> None:
+        self._tickets[(documentNumber, segmentRef, departureDate)] = ActiveTicket(documentNumber, segmentRef, departureDate, orderId)
+
+    def record_cancelled(self, orderId: str) -> None:
+        for key, ticket in list(self._tickets.items()):
+            if ticket.orderId == orderId:
+                self._tickets.pop(key, None)
+
+
+class VerificationCache:
+    def __init__(self, entries: Mapping[tuple[str, str], tuple[datetime, datetime]] | None = None) -> None:
+        self._entries = dict(entries or {})
+
+    def record(self, travelerId: str, documentNumber: str, verifiedAt: datetime, expiresAt: datetime) -> None:
+        self._entries[(travelerId, documentNumber)] = (verifiedAt, expiresAt)
+
+    def get_valid(self, travelerId: str, documentNumber: str, at: datetime) -> tuple[datetime, datetime] | None:
+        entry = self._entries.get((travelerId, documentNumber))
+        if entry is None:
+            return None
+        return entry if entry[1] > at else None
+
+    def find_valid_document_for_traveler(self, travelerId: str, at: datetime) -> str | None:
+        candidates = [
+            (document_number, expires_at)
+            for (cached_traveler_id, document_number), (_verified_at, expires_at) in self._entries.items()
+            if cached_traveler_id == travelerId and expires_at > at
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[1])[0]
+
+    def needsReverification(self, travelerId: str, documentNumber: str, bookingValueMinor: int, at: datetime | None = None) -> bool:
+        if bookingValueMinor > 500_000:
+            return True
+        return self.get_valid(travelerId, documentNumber, at or now_utc()) is None
+
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -94,7 +326,7 @@ class CredentialRecord:
 
     @classmethod
     def register(cls, *, credential_id: str, traveler_id: str, profile_snapshot_version: str, document_type: str, masked_document_no: str, document_hash: str, material_fingerprint: str, canonical_name_hash: str, birth_date_hash: str | None, valid_until: datetime | None, evidence_hash: str | None, identity_cluster_id: str, at: datetime) -> "CredentialRecord":
-        if document_type not in {"ID_CARD", "PASSPORT"}:
+        if document_type not in {item.value for item in DocumentType}:
             raise DomainError("documentType is invalid")
         if valid_until is not None and valid_until <= at:
             raise DomainError("validUntil must be in the future")
