@@ -23,10 +23,11 @@ spec:
         app.kubernetes.io/part-of: train-ticket
     spec:
       {{- if $db }}
+      {{- $pgHost := printf "postgres-%s" ($svc.pgInstance | default "core") }}
       initContainers:
         - name: wait-postgres
           image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" "busybox" "tag" "1.37") }}
-          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done']
+          command: ['sh', '-c', 'until nc -z {{ $pgHost }} 5432; do echo "waiting for {{ $pgHost }}..."; sleep 2; done']
         - name: wait-redis
           image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" "busybox" "tag" "1.37") }}
           command: ['sh', '-c', 'until nc -z redis 6379; do echo "waiting for redis..."; sleep 2; done']
