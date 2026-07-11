@@ -156,24 +156,33 @@ Scalper actors successfully purchase tickets alongside regular customers with ze
 
 ## S3 Refund Storm — Seeded Refund-Only Validation (REQ-152)
 
-**Profile**: S1 seed run (5 workers, 60s) created the refundable purchase pool; S3 then ran 15 closed-loop refund workers for up to 100s against those exact purchases, with deterministic 10% duplicate refund submissions using the same `Idempotency-Key`.
+**Profile**: S1 seed run (5 workers, 60s request; in-flight chains drained before report write) created the refundable purchase pool. S3 then ran 15 closed-loop refund workers against those exact purchases, with deterministic 10% duplicate refund submissions using the same `Idempotency-Key`. The shared ARL pod has no `kind-arl-test` kubeconfig, so the auditor was executed in the same namespace with direct PostgreSQL/Redis connections and the same six assertion functions.
 
 | Metric | Value |
 |--------|-------|
 | Seed workers | 5 |
-| Seed duration | 60s |
-| Seed purchased | 20+ target |
+| Seed requested duration | 60s |
+| Seed actual duration | 80.36s (chain drain included) |
+| Seed dispatched | 12 |
+| **Seed purchased** | **12** |
+| Seed errors | 0 |
 | S3 workers | 15 |
-| S3 duration | 100s max (stops early when seeded pool is exhausted) |
+| S3 duration limit | 100s max; stopped early when seeded pool exhausted |
+| S3 actual duration | 3.53s |
+| S3 dispatched | 12 |
 | Refund mix | 100% refund |
-| Duplicate refund submissions | 10% deterministic replay |
-| Refund success acceptance | At least 10 |
-| Correctness auditor | 6/6 PASS required |
+| Seed purchases loaded by S3 | 12 |
+| **Refunded** | **12** |
+| Duplicate refund submissions | 1 (8.3%; deterministic every 10th refund attempt) |
+| S3 errors | 0 |
+| S3 effective RPS | 3.40 |
+| Refund chain p50 / p95 / max | 3.23s / 3.33s / 3.53s |
+| Correctness auditor | **6/6 PASS** |
 
-### Correctness Auditor Gate
+### Correctness Auditor Evidence
 
-| Assertion | Expected Result |
-|-----------|-----------------|
+| Assertion | Result |
+|-----------|--------|
 | Inventory conservation | PASS |
 | Seat uniqueness | PASS |
 | Fund conservation | PASS |
@@ -181,14 +190,16 @@ Scalper actors successfully purchase tickets alongside regular customers with ze
 | Idempotent single-effect | PASS |
 | Clean losers | PASS |
 
+**Acceptance**: 12 refund successes satisfies the ≥10 requirement, and the duplicate replay produced no duplicate effect rows (`idempotent_single_effect` PASS). The seed produced fewer than the 20+ target in this shared sandbox, but still provided enough refundable purchases for the S3 acceptance threshold.
+
 **Run commands**:
 
 ```bash
-python3 deploy/stress/driver.py --scenario deploy/stress/scenarios/s1-rush.yaml \
+python3 deploy/stress/driver.py --scenario /tmp/s1-req152.yaml \
     --workers 5 --duration 60 --report /tmp/s3-seed-report.json
-python3 deploy/stress/driver.py --scenario deploy/stress/scenarios/s3-refund-storm.yaml \
+python3 deploy/stress/driver.py --scenario /tmp/s3-req152.yaml \
     --report /tmp/s3-report.json
-python3 deploy/stress/auditor.py --scenario deploy/stress/scenarios/s3-refund-storm.yaml \
+python3 deploy/stress/auditor.py --scenario /tmp/s3-req152.yaml \
     --report /tmp/s3-report.json --output /tmp/s3-audit.json
 ```
 
