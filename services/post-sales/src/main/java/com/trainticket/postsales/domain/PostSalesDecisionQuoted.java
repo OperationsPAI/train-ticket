@@ -5,5 +5,7 @@ public record PostSalesDecisionQuoted(
     DecisionKind decisionKind,
     boolean eligible,
     String ruleSnapshotRef,
+    RefundAssessment refundAssessment,
+    ChangeAssessment changeAssessment,
     EventMetadata metadata
 ) implements PostSalesEvent { }

@@ -7,6 +7,9 @@ import com.trainticket.postsales.domain.DecisionKind;
 import com.trainticket.postsales.domain.EventMetadata;
 import com.trainticket.postsales.domain.Money;
 import com.trainticket.postsales.domain.ChangeApplied;
+import com.trainticket.postsales.domain.ChangeFeeAssessed;
+import com.trainticket.postsales.domain.RefundComponentDecision;
+import com.trainticket.postsales.domain.RefundFeeAssessed;
 import com.trainticket.postsales.domain.PostSalesApplied;
 import com.trainticket.postsales.domain.PostSalesApproved;
 import com.trainticket.postsales.domain.PostSalesCase;
@@ -147,6 +150,16 @@ public final class PostSalesMapper {
             payload.put("decisionKind", quoted.decisionKind().name());
             payload.put("eligible", quoted.eligible());
             payload.put("ruleSnapshotRef", quoted.ruleSnapshotRef());
+            if (quoted.refundAssessment() != null) {
+                payload.put("refundAssessment", refundAssessment(quoted.refundAssessment()));
+            }
+            if (quoted.changeAssessment() != null) {
+                payload.put("changeAssessment", changeAssessment(quoted.changeAssessment()));
+            }
+        } else if (event instanceof RefundFeeAssessed assessed) {
+            payload.put("refundAssessment", refundAssessment(assessed.assessment()));
+        } else if (event instanceof ChangeFeeAssessed assessed) {
+            payload.put("changeAssessment", changeAssessment(assessed.assessment()));
         } else if (event instanceof PostSalesApproved approved) {
             payload.put("orderId", approved.journeyOrderId());
             payload.put("approvedActions", approvedActions(approved, sourceCase));
@@ -231,8 +244,47 @@ public final class PostSalesMapper {
         body.put("adjustmentQuoteId", decision.ruleSnapshot().farePricingEvaluationRef());
         body.put("refundableAmount", money(amount.refundAmount()));
         body.put("amountDue", money(amount.extraChargeAmount()));
+        if (decision.refundAssessment() != null) {
+            body.put("refundAssessment", refundAssessment(decision.refundAssessment()));
+        }
+        if (decision.changeAssessment() != null) {
+            body.put("changeAssessment", changeAssessment(decision.changeAssessment()));
+        }
         body.put("quotedAt", decision.quotedAt().toString());
         body.put("expiresAt", decision.expiresAt().toString());
+        return body;
+    }
+
+    private static Map<String, Object> refundAssessment(com.trainticket.postsales.domain.RefundAssessment assessment) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("refundableAmount", money(assessment.refundableAmount()));
+        body.put("penaltyAmount", money(assessment.penaltyAmount()));
+        body.put("penaltyPct", assessment.penaltyPct().toPlainString());
+        body.put("tierApplied", assessment.tierApplied());
+        body.put("classification", assessment.classification().name());
+        body.put("explanation", assessment.explanation());
+        body.put("components", assessment.componentDecisions().stream().map(PostSalesMapper::componentDecision).toList());
+        return body;
+    }
+
+    private static Map<String, Object> componentDecision(RefundComponentDecision decision) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("componentType", decision.componentType());
+        body.put("originalAmount", money(decision.originalAmount()));
+        body.put("refundableAmount", money(decision.refundableAmount()));
+        body.put("retainedAmount", money(decision.retainedAmount()));
+        body.put("refundable", decision.refundable());
+        body.put("retainReason", decision.retainReason());
+        return body;
+    }
+
+    private static Map<String, Object> changeAssessment(com.trainticket.postsales.domain.ChangeAssessment assessment) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("changeFee", money(assessment.changeFee()));
+        body.put("fareDifference", money(assessment.fareDifference()));
+        body.put("netPayable", money(assessment.netPayable()));
+        body.put("netRefundable", money(assessment.netRefundable()));
+        body.put("explanation", assessment.explanation());
         return body;
     }
 

@@ -1,15 +1,21 @@
 package com.trainticket.postsales.application;
 
 import com.trainticket.postsales.domain.AmountDecisionSnapshot;
+import com.trainticket.postsales.domain.ChangeAssessment;
 import com.trainticket.postsales.domain.ChangeFinancialAction;
 import com.trainticket.postsales.domain.ChangeFlowSnapshot;
+import com.trainticket.postsales.domain.ChangePolicyEngine;
 import com.trainticket.postsales.domain.DecisionKind;
 import com.trainticket.postsales.domain.Money;
 import com.trainticket.postsales.domain.PostSalesCase;
 import com.trainticket.postsales.domain.PostSalesCaseType;
 import com.trainticket.postsales.domain.PostSalesCaseStatus;
 import com.trainticket.postsales.domain.PostSalesDecision;
+import com.trainticket.postsales.domain.RefundAssessment;
+import com.trainticket.postsales.domain.RefundClassification;
+import com.trainticket.postsales.domain.RefundPolicyEngine;
 import com.trainticket.postsales.domain.PostSalesEvent;
+import com.trainticket.postsales.domain.RefundWaterfall;
 import com.trainticket.postsales.domain.PostSalesScope;
 import com.trainticket.postsales.domain.RuleEvaluationSnapshot;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
@@ -27,6 +33,8 @@ public class PostSalesApplicationService {
     private final EventPublisher eventPublisher;
     private final AdjustmentQuotePort adjustmentQuotePort;
     private final Clock clock;
+    private final RefundPolicyEngine refundPolicyEngine = new RefundPolicyEngine();
+    private final ChangePolicyEngine changePolicyEngine = new ChangePolicyEngine();
 
     public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
             AdjustmentQuotePort adjustmentQuotePort, Clock clock) {
@@ -164,23 +172,61 @@ public class PostSalesApplicationService {
         String explanation = quote
             .map(q -> "fare-pricing adjustment quote " + q.adjustmentQuoteId())
             .orElse("fare-pricing unavailable; zero-amount fallback");
-        AmountDecisionSnapshot amount = switch (kind) {
-            case REFUND, CANCELLATION, COMPENSATION -> AmountDecisionSnapshot.refund(zero, refundable, explanation);
-            case CHANGE -> amountDue.isZero() && !refundable.isZero()
-                ? AmountDecisionSnapshot.refund(zero, refundable, explanation)
-                : AmountDecisionSnapshot.extraCharge(zero, amountDue, explanation);
-        };
-        ChangeFlowSnapshot changeFlowSnapshot = kind == DecisionKind.CHANGE
-            ? new ChangeFlowSnapshot(
+        if (kind == DecisionKind.COMPENSATION) {
+            AmountDecisionSnapshot amount = AmountDecisionSnapshot.refund(zero, refundable, explanation);
+            return new PostSalesDecision(postSalesCase.caseId(), 1, kind, true, "ELIGIBLE", ruleSnapshot, amount, null, null, null, now, now.plusSeconds(900));
+        }
+
+        if (kind == DecisionKind.CHANGE) {
+            Money originalFare = refundable.isZero() ? amountDue : refundable;
+            Money newFare = amountDue.isZero() ? originalFare : originalFare.add(amountDue);
+            ChangeAssessment assessment = changePolicyEngine.evaluateChange(originalFare, newFare, now, now.plusSeconds(60 * 60 * 24 * 20), 0);
+            AmountDecisionSnapshot amount = assessment.netPayable().isZero() && !assessment.netRefundable().isZero()
+                ? AmountDecisionSnapshot.refund(assessment.changeFee(), assessment.netRefundable(), assessment.explanation())
+                : AmountDecisionSnapshot.extraCharge(assessment.changeFee(), assessment.netPayable(), assessment.explanation());
+            ChangeFinancialAction financialAction = assessment.netPayable().isZero()
+                ? (assessment.netRefundable().isZero() ? ChangeFinancialAction.NONE : ChangeFinancialAction.REQUEST_ASYNC_REFUND)
+                : ChangeFinancialAction.COLLECT_DIFFERENCE_PAYMENT;
+            ChangeFlowSnapshot changeFlowSnapshot = new ChangeFlowSnapshot(
                 "change-offer-" + postSalesCase.caseId(),
                 "capacity-hold-" + postSalesCase.caseId(),
-                ChangeFinancialAction.NONE,
+                financialAction,
                 "void-old-entitlement-" + postSalesCase.caseId(),
                 "issue-new-entitlement-" + postSalesCase.caseId(),
                 "release-old-capacity-" + postSalesCase.caseId()
-            )
-            : null;
-        return new PostSalesDecision(postSalesCase.caseId(), 1, kind, true, "ELIGIBLE", ruleSnapshot, amount, changeFlowSnapshot, now, now.plusSeconds(900));
+            );
+            return PostSalesDecision.change(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, changeFlowSnapshot, assessment, now, now.plusSeconds(900));
+        }
+
+        Money penaltyBase = refundable.isZero() ? zero : refundable;
+        RefundAssessment assessment = refundPolicyEngine.evaluateRefund(
+            RefundWaterfall.simple(penaltyBase),
+            penaltyBase,
+            now,
+            now.plusSeconds(60 * 60 * 24 * 20),
+            classify(postSalesCase.reasonCode()),
+            "ADULT",
+            Math.max(1, postSalesCase.scope().travelerRefs().size())
+        );
+        AmountDecisionSnapshot amount = AmountDecisionSnapshot.refund(assessment.penaltyAmount(), assessment.refundableAmount(), assessment.explanation(), assessment.componentDecisions());
+        return PostSalesDecision.refund(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, assessment, now, now.plusSeconds(900));
+    }
+
+    private static RefundClassification classify(String reasonCode) {
+        String reason = reasonCode == null ? "" : reasonCode.toUpperCase(java.util.Locale.ROOT);
+        if (reason.contains("CARRIER") || reason.contains("TRAIN_CANCEL") || reason.contains("TRAIN_CANCELLED")) {
+            return RefundClassification.INVOLUNTARY_CARRIER;
+        }
+        if (reason.contains("DELAY")) {
+            return RefundClassification.INVOLUNTARY_DELAY;
+        }
+        if (reason.contains("FORCE") || reason.contains("MAJEURE")) {
+            return RefundClassification.INVOLUNTARY_FORCE_MAJEURE;
+        }
+        if (reason.contains("PLATFORM") || reason.contains("ERROR")) {
+            return RefundClassification.INVOLUNTARY_PLATFORM;
+        }
+        return RefundClassification.VOLUNTARY;
     }
 
     /**
