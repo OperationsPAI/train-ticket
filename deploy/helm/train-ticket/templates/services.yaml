@@ -22,6 +22,15 @@ spec:
         app.kubernetes.io/name: {{ $name }}
         app.kubernetes.io/part-of: train-ticket
     spec:
+      {{- if $db }}
+      initContainers:
+        - name: wait-postgres
+          image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" "busybox" "tag" "1.37") }}
+          command: ['sh', '-c', 'until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done']
+        - name: wait-redis
+          image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" "busybox" "tag" "1.37") }}
+          command: ['sh', '-c', 'until nc -z redis 6379; do echo "waiting for redis..."; sleep 2; done']
+      {{- end }}
       containers:
         - name: {{ $name }}
           image: {{ include "train-ticket.image" (dict "global" $.Values.global "name" $name) }}
@@ -58,18 +67,25 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 15
             periodSeconds: 30
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /ready
               port: http
-            initialDelaySeconds: 10
             periodSeconds: 10
+            failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service

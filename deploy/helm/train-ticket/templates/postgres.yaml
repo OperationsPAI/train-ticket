@@ -78,6 +78,20 @@ spec:
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           args: ["-c", "max_connections=300"]
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.credentials.username }}"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.credentials.username }}"]
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.credentials.username }}"]
+            periodSeconds: 10
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
@@ -85,9 +99,11 @@ spec:
               mountPath: /docker-entrypoint-initdb.d
           resources:
             requests:
-              memory: 512Mi
-            limits:
+              cpu: 500m
               memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 2Gi
       volumes:
         - name: data
           persistentVolumeClaim:
