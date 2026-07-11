@@ -153,6 +153,47 @@ Scalper actors successfully purchase tickets alongside regular customers with ze
 
 **Concurrent purchase + refund correctness validated.** 60 tickets bought and 60 refunded in the same run with zero correctness violations.
 
+
+## S3 Refund Storm — Seeded Refund-Only Validation (REQ-152)
+
+**Profile**: S1 seed run (5 workers, 60s) created the refundable purchase pool; S3 then ran 15 closed-loop refund workers for up to 100s against those exact purchases, with deterministic 10% duplicate refund submissions using the same `Idempotency-Key`.
+
+| Metric | Value |
+|--------|-------|
+| Seed workers | 5 |
+| Seed duration | 60s |
+| Seed purchased | 20+ target |
+| S3 workers | 15 |
+| S3 duration | 100s max (stops early when seeded pool is exhausted) |
+| Refund mix | 100% refund |
+| Duplicate refund submissions | 10% deterministic replay |
+| Refund success acceptance | At least 10 |
+| Correctness auditor | 6/6 PASS required |
+
+### Correctness Auditor Gate
+
+| Assertion | Expected Result |
+|-----------|-----------------|
+| Inventory conservation | PASS |
+| Seat uniqueness | PASS |
+| Fund conservation | PASS |
+| No stuck orders | PASS |
+| Idempotent single-effect | PASS |
+| Clean losers | PASS |
+
+**Run commands**:
+
+```bash
+python3 deploy/stress/driver.py --scenario deploy/stress/scenarios/s1-rush.yaml \
+    --workers 5 --duration 60 --report /tmp/s3-seed-report.json
+python3 deploy/stress/driver.py --scenario deploy/stress/scenarios/s3-refund-storm.yaml \
+    --report /tmp/s3-report.json
+python3 deploy/stress/auditor.py --scenario deploy/stress/scenarios/s3-refund-storm.yaml \
+    --report /tmp/s3-report.json --output /tmp/s3-audit.json
+```
+
+The S3 driver now consumes purchase refs captured in the seed report instead of relying on in-memory state from a previous process, preventing the previous `no_purchase_to_refund` outcome.
+
 ## S4 Buy-Refund Interleave
 
 **Profile**: 5 workers, 60% purchase / 40% refund, same inventory pool

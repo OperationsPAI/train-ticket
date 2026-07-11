@@ -22,6 +22,11 @@ From the e2e-curl pod (in-cluster) or from the host with port-forward:
 # Rush scenario: 200 workers competing for 50 seats, closed-loop
 python3 driver.py --scenario scenarios/s1-rush.yaml --report /tmp/s1-report.json
 
+# Refund storm: seed purchases first, then refund those exact order refs
+python3 driver.py --scenario scenarios/s1-rush.yaml \
+    --workers 5 --duration 60 --report /tmp/s3-seed-report.json
+python3 driver.py --scenario scenarios/s3-refund-storm.yaml --report /tmp/s3-report.json
+
 # Staircase scenario: open-loop with stepped RPS from 10 to 150
 python3 driver.py --scenario scenarios/s2-staircase.yaml --report /tmp/s2-report.json
 ```
@@ -107,5 +112,6 @@ The driver writes a JSON report with:
 - Per-endpoint latency histograms
 - HTTP status code counts
 - Outcome tallies (purchased, refunded, failed, etc.)
+- Successful purchase refs (`purchases`) that can seed follow-up refund-only runs
 
 The auditor writes a JSON audit report with pass/fail for each assertion.
