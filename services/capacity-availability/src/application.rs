@@ -338,20 +338,28 @@ impl CapacityService {
                 "v1",
             )
             .unwrap();
-            // Create some capacity units based on quantity
-            let units: Vec<CapacityUnitRef> = (0..req.quantity.max(10))
+            // Create a default segment/class pool; each class is isolated by pool_key.
+            let units: Vec<CapacityUnitRef> = (0..req.quantity.max(100))
                 .map(|i| {
                     let seat = format!("{:02}{}", ((i / 4) + 1), ['A', 'B', 'C', 'D'][i % 4]);
                     CapacityUnitRef::new(seat).unwrap()
                 })
                 .collect();
-            InventoryPool::new(identity, units).unwrap()
+            InventoryPool::new(identity, units)
+                .unwrap()
+                .with_overbooking_policy(OverbookingPolicy {
+                    max_overbooking_pct: 5.0,
+                    no_show_rate: 3.0,
+                    safety_margin_pct: 1.0,
+                })
         });
 
-        // Find a unit that is actually free for the requested interval.
+        // Use a concrete unit while physical seats remain; during overbooking, reuse a
+        // stable virtual unit and let aggregate-level effective-capacity rules decide.
         let interval = StationInterval::new(0, 1).map_err(|e| AppError::Internal(e.to_string()))?;
         let unit_ref = pool
             .find_available_unit(&interval, now)
+            .or_else(|| pool.capacity_unit_refs().into_iter().next())
             .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?;
 
         // Create the hold
@@ -377,13 +385,21 @@ impl CapacityService {
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
         match pool.request_hold(hold, now) {
-            Ok(event) => {
-                self.publish_domain_event(&event, correlation_id)
+            Ok(events) => {
+                self.publish_domain_events(&events, correlation_id)
                     .map_err(AppError::from_publish_failed)?;
+                let status = if events
+                    .iter()
+                    .any(|event| matches!(event, DomainEvent::CapacityHeld(_)))
+                {
+                    "HELD"
+                } else {
+                    "WAITLISTED"
+                };
                 let resp = HoldCapacityResponse {
                     hold_id,
                     segment_ref: req.segment_ref.clone(),
-                    status: "HELD".to_string(),
+                    status: status.to_string(),
                     held_until: unix_millis_to_rfc3339(now + 300000),
                 };
                 self.store_idempotency_response(idempotency_key, fingerprint, &resp)?;
@@ -432,8 +448,8 @@ impl CapacityService {
                         .map_err(|_| AppError::NotFound("hold not found".into()))?,
                     now,
                 ) {
-                    Ok(event) => {
-                        self.publish_domain_event(&event, correlation_id)
+                    Ok(events) => {
+                        self.publish_domain_events(&events, correlation_id)
                             .map_err(AppError::from_publish_failed)?;
                         let resp = ConfirmHoldResponse {
                             hold_id: hold_id.to_string(),
@@ -530,8 +546,8 @@ impl CapacityService {
                     now,
                     release_reason,
                 ) {
-                    Ok(event) => {
-                        self.publish_domain_event(&event, correlation_id)
+                    Ok(events) => {
+                        self.publish_domain_events(&events, correlation_id)
                             .map_err(AppError::from_publish_failed)?;
                         let resp = ReleaseHoldResponse {
                             hold_id: hold_id.to_string(),
@@ -657,6 +673,75 @@ impl CapacityService {
         Err(AppError::NotFound("hold not found".into()))
     }
 
+    /// Query dynamic capacity snapshot for a service segment with class breakdown.
+    pub fn query_capacity_snapshot(
+        &self,
+        segment_ref: &str,
+    ) -> Result<CapacitySnapshotResponse, AppError> {
+        if segment_ref.trim().is_empty() {
+            return Err(AppError::ValidationFailed("segmentRef is required".into()));
+        }
+
+        let pools = self
+            .pools
+            .lock()
+            .map_err(|e| AppError::Internal(format!("lock error: {}", e)))?;
+        let mut snapshots: Vec<CapacitySnapshot> = pools
+            .values()
+            .filter(|pool| {
+                pool.identity.service_segment_ref == segment_ref
+                    || pool.identity.route_segment_ref == segment_ref
+            })
+            .map(InventoryPool::snapshot)
+            .collect();
+
+        if snapshots.is_empty() {
+            return Err(AppError::NotFound("capacity segment not found".into()));
+        }
+        snapshots.sort_by(|a, b| a.classes[0].class_ref.cmp(&b.classes[0].class_ref));
+
+        let total_capacity = snapshots.iter().map(|s| s.total_capacity).sum();
+        let remaining_capacity = snapshots.iter().map(|s| s.remaining_capacity).sum();
+        let physical_capacity = snapshots.iter().map(|s| s.physical_capacity).sum();
+        let hold_count = snapshots.iter().map(|s| s.hold_count).sum();
+        let confirmed_count = snapshots.iter().map(|s| s.confirmed_count).sum();
+        let utilization_pct = if total_capacity == 0 {
+            0.0
+        } else {
+            ((hold_count + confirmed_count) as f64 / total_capacity as f64) * 100.0
+        };
+        let classes = snapshots.iter().flat_map(|s| s.classes.clone()).collect();
+
+        Ok(CapacitySnapshotResponse {
+            segment_ref: segment_ref.to_string(),
+            departure_date: snapshots[0].departure_date.clone(),
+            total_capacity,
+            remaining_capacity,
+            physical_capacity,
+            hold_count,
+            confirmed_count,
+            utilization_pct,
+            snapshot_version: snapshots
+                .iter()
+                .map(|s| s.snapshot_version.as_str())
+                .max()
+                .unwrap_or("0")
+                .to_string(),
+            classes,
+        })
+    }
+
+    fn publish_domain_events(
+        &self,
+        events: &[DomainEvent],
+        correlation_id: &str,
+    ) -> Result<(), PublishFailed> {
+        for event in events {
+            self.publish_domain_event(event, correlation_id)?;
+        }
+        Ok(())
+    }
+
     fn publish_domain_event(
         &self,
         event: &DomainEvent,
@@ -726,6 +811,35 @@ impl CapacityService {
                 }
                 ("CapacityHoldFailed", payload)
             }
+            DomainEvent::CapacitySnapshotUpdated(e) => (
+                "CapacitySnapshotUpdated",
+                capacity_snapshot_payload(&e.snapshot),
+            ),
+            DomainEvent::OverbookingThresholdReached(e) => (
+                "OverbookingThresholdReached",
+                json!({
+                    "poolId": e.pool_id.to_string(),
+                    "physicalCapacity": e.physical_capacity,
+                    "confirmedCount": e.confirmed_count,
+                    "overbookingPct": e.overbooking_pct,
+                }),
+            ),
+            DomainEvent::WaitlistActivated(e) => (
+                "WaitlistActivated",
+                json!({
+                    "segmentRef": e.segment_ref,
+                    "departureDate": e.departure_date,
+                    "queuePosition": e.queue_position,
+                }),
+            ),
+            DomainEvent::WaitlistCapacityFreed(e) => (
+                "WaitlistCapacityFreed",
+                json!({
+                    "segmentRef": e.segment_ref,
+                    "departureDate": e.departure_date,
+                    "freedSlots": e.freed_slots,
+                }),
+            ),
         };
 
         let envelope = WireEnvelope::try_new(
@@ -766,6 +880,20 @@ pub struct RemainingByClass {
     pub class_ref: String,
     pub total: usize,
     pub available: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CapacitySnapshotResponse {
+    pub segment_ref: String,
+    pub departure_date: String,
+    pub total_capacity: u32,
+    pub remaining_capacity: u32,
+    pub physical_capacity: u32,
+    pub hold_count: u32,
+    pub confirmed_count: u32,
+    pub utilization_pct: f64,
+    pub snapshot_version: String,
+    pub classes: Vec<ClassCapacity>,
 }
 
 #[derive(Debug, Clone)]
@@ -886,6 +1014,33 @@ impl AppError {
             AppError::Internal(m) => m,
         }
     }
+}
+
+fn capacity_snapshot_payload(snapshot: &CapacitySnapshot) -> Value {
+    json!({
+        "segmentRef": snapshot.segment_ref,
+        "departureDate": snapshot.departure_date,
+        "totalCapacity": snapshot.total_capacity,
+        "remainingCapacity": snapshot.remaining_capacity,
+        "physicalCapacity": snapshot.physical_capacity,
+        "holdCount": snapshot.hold_count,
+        "confirmedCount": snapshot.confirmed_count,
+        "utilizationPct": snapshot.utilization_pct,
+        "snapshotVersion": snapshot.snapshot_version,
+        "classes": snapshot.classes.iter().map(|class| json!({
+            "classRef": class.class_ref,
+            "physicalCapacity": class.physical_capacity,
+            "effectiveCapacity": class.effective_capacity,
+            "holdCount": class.hold_count,
+            "confirmedCount": class.confirmed_count,
+            "remainingCapacity": class.remaining_capacity,
+            "overbookingPolicy": {
+                "maxOverbookingPct": class.overbooking_policy.max_overbooking_pct,
+                "noShowRate": class.overbooking_policy.no_show_rate,
+                "safetyMarginPct": class.overbooking_policy.safety_margin_pct,
+            }
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn quantity_field(value: &Value) -> Option<usize> {
