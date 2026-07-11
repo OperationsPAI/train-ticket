@@ -2,6 +2,8 @@ package com.trainticket.payment.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.ChannelRef;
+import com.trainticket.payment.domain.ChannelRouter;
+import com.trainticket.payment.domain.PaymentChannel;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentEvent;
@@ -34,6 +36,7 @@ public class PaymentCommandService {
     private final RefundRepository refundRepository;
     private final ReservationPaymentRequestRepository reservationPaymentRequestRepository;
     private final PaymentChannelClient paymentChannelClient;
+    private final ChannelRouter channelRouter;
 
     @org.springframework.beans.factory.annotation.Autowired
     public PaymentCommandService(
@@ -50,6 +53,7 @@ public class PaymentCommandService {
         this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
         this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
         this.paymentChannelClient = Objects.requireNonNull(paymentChannelClient, "paymentChannelClient is required");
+        this.channelRouter = ChannelRouter.defaults();
     }
 
     public PaymentCommandService(
@@ -88,8 +92,15 @@ public class PaymentCommandService {
 
     @Transactional
     public PaymentIntent createIntent(String businessRef, String purpose, Money amount, String payerRef, String idempotencyKey, String correlationId) {
+        return createIntent(businessRef, purpose, amount, payerRef, idempotencyKey, correlationId, null);
+    }
+
+    @Transactional
+    public PaymentIntent createIntent(String businessRef, String purpose, Money amount, String payerRef, String idempotencyKey, String correlationId, String preferredChannel) {
         Instant now = Instant.now(clock);
-        PaymentIntent intent = PaymentIntent.create(businessRef, purpose, amount, payerRef, now.plusSeconds(900), idempotencyKey, now, commandId(idempotencyKey), correlationId);
+        PaymentChannel channel = channelRouter.route(amount, preferredChannel);
+        PaymentIntent intent = PaymentIntent.create(businessRef, purpose, amount, payerRef, now.plusSeconds(channel.timeoutSeconds()), idempotencyKey, now, commandId(idempotencyKey), correlationId);
+        intent.recordChannelHandoff(new ChannelRef(channel.channelId(), null, null, null, null, null, null));
         paymentIntentRepository.save(intent);
         publish(intent.domainEvents());
         return intent;
@@ -113,8 +124,11 @@ public class PaymentCommandService {
     @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, String requestedChannel) {
         PaymentIntent intent = getIntent(paymentIntentId);
-        String channel = requestedChannel == null || requestedChannel.isBlank() ? DEFAULT_CHANNEL : requestedChannel;
-        validateSimChannel(channel);
+        String channel = requestedChannel == null || requestedChannel.isBlank()
+            ? (intent.channelRef() == null || intent.channelRef().channel() == null ? DEFAULT_CHANNEL : intent.channelRef().channel())
+            : requestedChannel;
+        PaymentChannel selectedChannel = channelRouter.requireAvailable(channel, intent.amount());
+        channel = selectedChannel.channelId();
         ChannelRef requestedRef = new ChannelRef(channel, null, null, null, null, null, null);
         String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
         String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
@@ -138,8 +152,9 @@ public class PaymentCommandService {
         if (requestedRef == null) {
             return captureIntent(paymentIntentId, idempotencyKey, correlationId, (String) null);
         }
-        validateSimChannel(requestedRef.channel());
         PaymentIntent intent = getIntent(paymentIntentId);
+        PaymentChannel selectedChannel = channelRouter.requireAvailable(requestedRef.channel(), intent.amount());
+        requestedRef = new ChannelRef(selectedChannel.channelId(), requestedRef.channelOrderId(), requestedRef.channelRefundId(), requestedRef.channelTransactionId(), requestedRef.channelRefundTransactionId(), requestedRef.channelStatementId(), requestedRef.faultSeedRef());
         String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
         String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
         intent.rememberChannelOrderKeys(orderKey, submitKey);
@@ -153,8 +168,10 @@ public class PaymentCommandService {
     @Transactional
     public PaymentIntent authorizeIntent(String paymentIntentId, String idempotencyKey, String correlationId, String channelTransactionRef) {
         PaymentIntent intent = getIntent(paymentIntentId);
+        String channel = intent.channelRef() == null || intent.channelRef().channel() == null ? DEFAULT_CHANNEL : intent.channelRef().channel();
+        channel = channelRouter.requireAvailable(channel, intent.amount()).channelId();
         int before = intent.domainEvents().size();
-        intent.authorize(intent.amount(), DEFAULT_CHANNEL, "auth-" + requireText(channelTransactionRef, "channelTransactionRef"), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+        intent.authorize(intent.amount(), channel, "auth-" + requireText(channelTransactionRef, "channelTransactionRef"), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
@@ -182,8 +199,12 @@ public class PaymentCommandService {
         if (originalRoute == null) {
             return refund;
         }
-        validateSimChannel(originalRoute.channel());
         PaymentIntent intent = getIntent(paymentIntentId);
+        ChannelRef capturedRoute = intent.channelRef();
+        if (capturedRoute == null || capturedRoute.channel() == null || !ChannelRouter.normalize(capturedRoute.channel()).equals(ChannelRouter.normalize(originalRoute.channel()))) {
+            throw new DomainRuleViolation("refund must return to original payment channel");
+        }
+        channelRouter.requireEnabled(originalRoute.channel());
         String refundKey = keyOrFold(refund.channelRefundIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":" + originalRoute.channelTransactionId(), idempotencyKey);
         String submitKey = keyOrFold(refund.channelRefundSubmitIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":submit", idempotencyKey);
         refund.rememberChannelRefundKeys(refundKey, submitKey);
@@ -197,8 +218,9 @@ public class PaymentCommandService {
 
     @Transactional
     public PaymentIntent captureIntentFromChannel(String paymentIntentId, Money amount, String channel, String channelTransactionId, String channelOrderId, String causationId, String correlationId) {
-        validateSimChannel(channel);
         PaymentIntent intent = getIntent(paymentIntentId);
+        PaymentChannel selectedChannel = channelRouter.requireAvailable(channel, amount);
+        channel = selectedChannel.channelId();
         if (intent.status().name().equals("CAPTURED")) {
             return intent;
         }
@@ -232,7 +254,8 @@ public class PaymentCommandService {
         }
         int beforeRefund = refund.domainEvents().size();
         if (channel != null && !channel.isBlank() && refund.channelRef() == null) {
-            refund.recordChannelHandoff(new ChannelRef(channel, channelOrderId, channelRefundId, originalChannelTransactionId, null, null, null));
+            channelRouter.requireEnabled(channel);
+            refund.recordChannelHandoff(new ChannelRef(ChannelRouter.normalize(channel), channelOrderId, channelRefundId, originalChannelTransactionId, null, null, null));
         }
         refund.settle(intent, channelRefundTransactionId, Instant.now(clock), commandId(causationId), causationId, correlationId);
         paymentIntentRepository.save(intent);
@@ -258,6 +281,20 @@ public class PaymentCommandService {
     public PaymentIntent getIntent(String paymentIntentId) {
         return paymentIntentRepository.findById(requireText(paymentIntentId, "paymentIntentId"))
             .orElseThrow(() -> new NotFoundException("payment intent not found"));
+    }
+
+    @Transactional
+    public int expireDuePaymentIntents(String idempotencyKey, String correlationId, int limit) {
+        int expired = 0;
+        Instant now = Instant.now(clock);
+        for (PaymentIntent intent : paymentIntentRepository.findExpiredOpenIntents(now, limit)) {
+            int before = intent.domainEvents().size();
+            intent.expire(now, commandId(idempotencyKey + ":" + intent.paymentIntentId()), commandId(idempotencyKey), correlationId);
+            paymentIntentRepository.save(intent);
+            publishNewEvents(intent.domainEvents(), before);
+            expired++;
+        }
+        return expired;
     }
 
     public Refund getRefund(String refundId) {
@@ -299,21 +336,12 @@ public class PaymentCommandService {
         }
     }
 
-    private static String stripCommandPrefix(String value) {
-        String trimmed = requireText(value, "idempotencyKey");
-        return trimmed.startsWith("cmd-") ? trimmed.substring(4) : trimmed;
-    }
 
     private static String commandId(String idempotencyKey) {
-        String value = requireText(idempotencyKey, "idempotencyKey");
+        String value = idempotencyKey == null || idempotencyKey.isBlank() ? java.util.UUID.randomUUID().toString() : idempotencyKey;
         return value.startsWith("cmd-") || value.startsWith("evt-") ? value : "cmd-" + value;
     }
 
-    private static void validateSimChannel(String channel) {
-        if (!"ALIPAY_SIM".equals(channel) && !"WECHAT_SIM".equals(channel) && !"UNIONPAY_SIM".equals(channel)) {
-            throw new DomainRuleViolation("unsupported payment channel");
-        }
-    }
 
     private static String requireText(String value, String name) {
         if (Objects.requireNonNull(value, name + " is required").isBlank()) {

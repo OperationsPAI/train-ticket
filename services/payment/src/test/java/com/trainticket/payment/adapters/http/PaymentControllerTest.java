@@ -108,7 +108,7 @@ class PaymentControllerTest {
         request.addHeader(RequestContextFilter.CORRELATION_ID_HEADER, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a001");
         request.setAttribute(com.trainticket.platformkit.http.CorrelationIds.CORRELATION_ATTRIBUTE, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a001");
         try {
-            controller.createPaymentIntent("idem-invalid", new CreatePaymentIntentRequest("ord-1", null, null, null), request);
+            controller.createPaymentIntent("idem-invalid", new CreatePaymentIntentRequest("ord-1", null, null, null, null), request);
         } catch (ValidationException exception) {
             ResponseEntity<ApiError> response = exceptionHandler.handleApi(exception, request);
             assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
@@ -119,7 +119,7 @@ class PaymentControllerTest {
     }
 
     private ResponseEntity<?> createIntent(String key, String businessRef) {
-        return controller.createPaymentIntent(key, new CreatePaymentIntentRequest(businessRef, "purchase", new MoneyJson("CNY", 35000L), "acct-1"), request("/api/v1/payment-intents"));
+        return controller.createPaymentIntent(key, new CreatePaymentIntentRequest(businessRef, "purchase", new MoneyJson("CNY", 35000L), "acct-1", null), request("/api/v1/payment-intents"));
     }
 
     private static PaymentCommandService testPaymentCommandService(Clock clock, EventPublisher publisher) {

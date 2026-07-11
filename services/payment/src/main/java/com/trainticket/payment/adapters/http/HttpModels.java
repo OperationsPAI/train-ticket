@@ -6,10 +6,10 @@ import java.util.Map;
 record MoneyJson(String currency, Long minorUnits) {
 }
 
-record CreatePaymentIntentRequest(String businessRef, String purpose, MoneyJson amount, String payerRef) {
+record CreatePaymentIntentRequest(String businessRef, String purpose, MoneyJson amount, String payerRef, String preferredChannel) {
 }
 
-record PaymentIntentResponse(String paymentIntentId, String businessRef, MoneyJson amount, String status, Instant createdAt) {
+record PaymentIntentResponse(String paymentIntentId, String businessRef, MoneyJson amount, String status, Instant createdAt, Instant expiresAt, ChannelRefJson channelRef) {
 }
 
 record PaymentIntentDetailsResponse(
@@ -24,7 +24,8 @@ record PaymentIntentDetailsResponse(
     MoneyJson authorizedAmount,
     MoneyJson capturedAmount,
     MoneyJson refundedAmount,
-    ChannelRefJson channelRef
+    ChannelRefJson channelRef,
+    MoneyJson refundableBalance
 ) {
 }
 

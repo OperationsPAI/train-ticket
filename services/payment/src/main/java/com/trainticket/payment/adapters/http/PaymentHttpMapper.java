@@ -38,7 +38,7 @@ final class PaymentHttpMapper {
     }
 
     static PaymentIntentResponse intentResponse(PaymentIntent intent) {
-        return new PaymentIntentResponse(intent.paymentIntentId(), intent.businessRef(), money(intent.amount()), intent.status().name(), createdAt(intent));
+        return new PaymentIntentResponse(intent.paymentIntentId(), intent.businessRef(), money(intent.amount()), intent.status().name(), createdAt(intent), intent.expiresAt(), fromChannelRef(intent.channelRef()));
     }
 
     static PaymentIntentDetailsResponse intentDetails(PaymentIntent intent) {
@@ -54,7 +54,8 @@ final class PaymentHttpMapper {
             money(intent.authorizedAmount()),
             money(intent.capturedAmount()),
             money(intent.refundedAmount()),
-            fromChannelRef(intent.channelRef())
+            fromChannelRef(intent.channelRef()),
+            money(intent.refundableBalance())
         );
     }
 
