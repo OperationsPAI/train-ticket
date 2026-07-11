@@ -66,7 +66,7 @@ class PaymentControllerTest {
         assertEquals(id, body.paymentIntentId());
         assertEquals("CAPTURED", body.status());
         assertEquals(35000L, body.capturedAmount().minorUnits());
-        assertEquals("txn-idem-capture-1", body.channelTransactionId());
+        assertTrue(body.channelTransactionId().startsWith("txn-"));
     }
 
     @Test

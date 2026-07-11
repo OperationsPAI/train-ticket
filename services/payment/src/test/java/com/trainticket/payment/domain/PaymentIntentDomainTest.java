@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.random.RandomGenerator;
 import org.junit.jupiter.api.Test;
 
 class PaymentIntentDomainTest {
@@ -100,6 +101,19 @@ class PaymentIntentDomainTest {
         assertEquals("AMOUNT_EXCEEDS_CHANNEL_LIMIT", violation.getMessage());
     }
 
+
+    @Test
+    void fallbackRoutingUsesConfiguredWeights() {
+        ChannelRouter router = new ChannelRouter(List.of(
+            new PaymentChannel("SMALL", "SMALL", 10_000, 30, true, 1),
+            new PaymentChannel("LARGE", "LARGE", 10_000, 30, true, 3)
+        ));
+
+        assertEquals("SMALL", router.fallback(Money.fromMinorUnits(1_000, "CNY"), fixedRandom(0)).channelId());
+        assertEquals("LARGE", router.fallback(Money.fromMinorUnits(1_000, "CNY"), fixedRandom(1)).channelId());
+        assertEquals("LARGE", router.fallback(Money.fromMinorUnits(1_000, "CNY"), fixedRandom(3)).channelId());
+    }
+
     private static PaymentIntent newIntent(String idempotencyKey) {
         return PaymentIntent.create(
             "order-123",
@@ -113,4 +127,19 @@ class PaymentIntentDomainTest {
             "corr-1"
         );
     }
+
+    private static RandomGenerator fixedRandom(int value) {
+        return new RandomGenerator() {
+            @Override
+            public long nextLong() {
+                return value;
+            }
+
+            @Override
+            public int nextInt(int bound) {
+                return value;
+            }
+        };
+    }
+
 }
