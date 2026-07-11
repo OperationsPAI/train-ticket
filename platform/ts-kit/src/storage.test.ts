@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
 
-import { OptimisticConcurrencyConflict, OutboxRelay, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
+import { createPostgresPool, OptimisticConcurrencyConflict, OutboxRelay, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
 
 type QueryCall = Readonly<{ sql: string; params: unknown[] }>;
 
@@ -97,6 +98,63 @@ class FakeSnapshotDb {
     throw new Error(`Unexpected query ${sql}`);
   }
 }
+
+describe("createPostgresPool", () => {
+  it("attaches background error and connect listeners without replacing pg.Pool reconnect behavior", async () => {
+    const pool = createPostgresPool({ connectionString: "postgres://localhost:1/test", max: 1 });
+    const loggedErrors: unknown[] = [];
+    const loggedInfos: unknown[] = [];
+    const originalConsoleError = console.error;
+    const originalConsoleInfo = console.info;
+
+    console.error = (value?: unknown) => {
+      loggedErrors.push(value);
+    };
+    console.info = (value?: unknown) => {
+      loggedInfos.push(value);
+    };
+
+    try {
+      assert.equal(pool.listenerCount("error"), 1);
+      assert.equal(pool.listenerCount("connect"), 1);
+
+      const backgroundError = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+        code: "ECONNREFUSED",
+      });
+      pool.emit("error", backgroundError, new EventEmitter());
+      pool.emit("connect", new EventEmitter());
+
+      await assert.rejects(
+        () => pool.connect(),
+        (error: unknown) => error instanceof Error
+          && error.name === "AggregateError"
+          && "code" in error
+          && error.code === "ECONNREFUSED",
+      );
+    } finally {
+      console.error = originalConsoleError;
+      console.info = originalConsoleInfo;
+      await pool.end();
+    }
+
+    assert.equal(loggedErrors.length, 1);
+    assert.deepEqual(loggedErrors[0], {
+      name: "pg.Pool",
+      message: "background PostgreSQL connection error; idle client will be replaced on demand",
+      error: { name: "Error", message: "connect ECONNREFUSED 127.0.0.1:5432", code: "ECONNREFUSED" },
+      totalCount: 0,
+      idleCount: 0,
+      waitingCount: 0,
+    });
+    assert.deepEqual(loggedInfos[0], {
+      name: "pg.Pool",
+      message: "PostgreSQL pool connection re-established after background error",
+      totalCount: 0,
+      idleCount: 0,
+      waitingCount: 0,
+    });
+  });
+});
 
 describe("SnapshotRepository", () => {
   it("inserts new snapshots, updates by expected version, and detects optimistic conflicts", async () => {

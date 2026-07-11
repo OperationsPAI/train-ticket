@@ -42,11 +42,32 @@ export function createPostgresPool(config: PoolConfig | string = databaseUrl()):
     idleTimeoutMillis: base.idleTimeoutMillis ?? 300_000,
     connectionTimeoutMillis: base.connectionTimeoutMillis ?? 5_000,
   });
+  let backgroundErrorCount = 0;
   pool.on("error", (err: Error) => {
-    console.error({ name: "pg.Pool", message: `background connection error: ${err.message}` });
+    backgroundErrorCount += 1;
+    console.error({
+      name: "pg.Pool",
+      message: "background PostgreSQL connection error; idle client will be replaced on demand",
+      error: sanitizedPostgresPoolError(err),
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount,
+    });
   });
   pool.on("connect", () => {
-    console.log({ name: "pg.Pool", message: "new connection established" });
+    const reconnected = backgroundErrorCount > 0;
+    if (reconnected) {
+      backgroundErrorCount = 0;
+    }
+    console.info({
+      name: "pg.Pool",
+      message: reconnected
+        ? "PostgreSQL pool connection re-established after background error"
+        : "PostgreSQL pool connection established",
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount,
+    });
   });
   return pool;
 }
@@ -382,6 +403,15 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
     }
     return existing;
   }
+}
+
+function sanitizedPostgresPoolError(error: Error): Readonly<{ name: string; message: string; code?: string }> {
+  const errorWithCode = error as Error & { code?: unknown };
+  return {
+    name: error.name || "Error",
+    message: error.message || "PostgreSQL pool connection error",
+    code: typeof errorWithCode.code === "string" ? errorWithCode.code : undefined,
+  };
 }
 
 function assertSqlIdentifier(identifier: string, label: string): string {
