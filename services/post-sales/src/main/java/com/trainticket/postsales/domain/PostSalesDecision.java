@@ -12,6 +12,8 @@ public record PostSalesDecision(
     RuleEvaluationSnapshot ruleSnapshot,
     AmountDecisionSnapshot amountSnapshot,
     ChangeFlowSnapshot changeFlowSnapshot,
+    RefundAssessment refundAssessment,
+    ChangeAssessment changeAssessment,
     Instant quotedAt,
     Instant expiresAt
 ) {
@@ -29,6 +31,18 @@ public record PostSalesDecision(
         if (!expiresAt.isAfter(quotedAt)) {
             throw new DomainRuleViolation("decision quote must expire after quotedAt");
         }
+        if (kind == DecisionKind.REFUND && refundAssessment == null) {
+            throw new DomainRuleViolation("refund decisions must include a refund assessment");
+        }
+        if (kind != DecisionKind.REFUND && refundAssessment != null) {
+            throw new DomainRuleViolation("only refund decisions may include a refund assessment");
+        }
+        if (kind == DecisionKind.CHANGE && changeAssessment == null) {
+            throw new DomainRuleViolation("change decisions must include a change assessment");
+        }
+        if (kind != DecisionKind.CHANGE && changeAssessment != null) {
+            throw new DomainRuleViolation("only change decisions may include a change assessment");
+        }
         if (kind == DecisionKind.CHANGE && changeFlowSnapshot == null) {
             throw new DomainRuleViolation("change decisions must include a conservative change flow snapshot");
         }
@@ -38,10 +52,20 @@ public record PostSalesDecision(
     }
 
     public static PostSalesDecision refund(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, Instant quotedAt, Instant expiresAt) {
-        return new PostSalesDecision(caseId, 1, DecisionKind.REFUND, eligible, reasonCode, ruleSnapshot, amountSnapshot, null, quotedAt, expiresAt);
+        RefundAssessment assessment = new RefundAssessment(amountSnapshot.refundAmount(), amountSnapshot.feeAmount(), java.math.BigDecimal.ZERO, "LEGACY", amountSnapshot.explanation(), RefundClassification.VOLUNTARY, amountSnapshot.componentDecisions());
+        return refund(caseId, eligible, reasonCode, ruleSnapshot, amountSnapshot, assessment, quotedAt, expiresAt);
+    }
+
+    public static PostSalesDecision refund(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, RefundAssessment refundAssessment, Instant quotedAt, Instant expiresAt) {
+        return new PostSalesDecision(caseId, 1, DecisionKind.REFUND, eligible, reasonCode, ruleSnapshot, amountSnapshot, null, refundAssessment, null, quotedAt, expiresAt);
     }
 
     public static PostSalesDecision change(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, ChangeFlowSnapshot changeFlowSnapshot, Instant quotedAt, Instant expiresAt) {
-        return new PostSalesDecision(caseId, 1, DecisionKind.CHANGE, eligible, reasonCode, ruleSnapshot, amountSnapshot, changeFlowSnapshot, quotedAt, expiresAt);
+        ChangeAssessment assessment = new ChangeAssessment(amountSnapshot.feeAmount(), amountSnapshot.extraChargeAmount().isZero() ? amountSnapshot.refundAmount() : amountSnapshot.extraChargeAmount(), amountSnapshot.extraChargeAmount(), amountSnapshot.refundAmount(), amountSnapshot.explanation());
+        return change(caseId, eligible, reasonCode, ruleSnapshot, amountSnapshot, changeFlowSnapshot, assessment, quotedAt, expiresAt);
+    }
+
+    public static PostSalesDecision change(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, ChangeFlowSnapshot changeFlowSnapshot, ChangeAssessment changeAssessment, Instant quotedAt, Instant expiresAt) {
+        return new PostSalesDecision(caseId, 1, DecisionKind.CHANGE, eligible, reasonCode, ruleSnapshot, amountSnapshot, changeFlowSnapshot, null, changeAssessment, quotedAt, expiresAt);
     }
 }

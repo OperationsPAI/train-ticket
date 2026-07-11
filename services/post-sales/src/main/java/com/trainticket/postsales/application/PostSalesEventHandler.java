@@ -55,7 +55,11 @@ public class PostSalesEventHandler {
             if (!consumedEventLog.recordIfFirstSeen(envelope.eventId())) {
                 return EventSubscriber.HandlerResult.SUCCESS;
             }
-            if ("CapacityReleased".equals(envelope.eventType())) {
+            if ("JourneyOrderCreated".equals(envelope.eventType()) || "JourneyOrderConfirmed".equals(envelope.eventType())) {
+                policyContext(envelope.payload()).ifPresent(applicationService::recordPolicyContext);
+            } else if ("JourneyOrderPostSalesAdjusted".equals(envelope.eventType())) {
+                policyContext(envelope.payload()).ifPresent(applicationService::recordPolicyContext);
+            } else if ("CapacityReleased".equals(envelope.eventType())) {
                 String segmentBookingRef = segmentBookingRef(envelope.payload());
                 if (segmentBookingRef != null) {
                     applicationService.applyForSegmentBooking(segmentBookingRef, envelope.eventId(), envelope.correlationId());
@@ -68,6 +72,13 @@ public class PostSalesEventHandler {
             }
             return EventSubscriber.HandlerResult.TRANSIENT_FAILURE;
         }
+    }
+
+    private static Optional<PostSalesPolicyContext> policyContext(Object payload) {
+        if (!(payload instanceof Map<?, ?> map)) {
+            return Optional.empty();
+        }
+        return PostSalesPolicyContextMapper.fromEventPayload(map);
     }
 
     private static String segmentBookingRef(Object payload) {
