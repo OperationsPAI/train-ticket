@@ -83,6 +83,250 @@ class EvidenceType(str, Enum):
     CHALLENGE_RESULT = "challenge_result"
 
 
+class RiskVerdict(str, Enum):
+    PASS = "PASS"
+    CHALLENGE = "CHALLENGE"
+    BLOCK = "BLOCK"
+
+    @property
+    def recommended_action(self) -> str:
+        return {
+            RiskVerdict.PASS: "PROCEED",
+            RiskVerdict.CHALLENGE: "VERIFY_IDENTITY",
+            RiskVerdict.BLOCK: "REJECT",
+        }[self]
+
+
+class VelocityDimension(str, Enum):
+    ACCOUNT = "ACCOUNT"
+    TRAVELER = "TRAVELER"
+    IP = "IP"
+    DEVICE = "DEVICE"
+
+
+class ScalperPattern(str, Enum):
+    SAME_ROUTE_BULK = "SAME_ROUTE_BULK"
+    RAPID_SEARCH_THEN_BOOK = "RAPID_SEARCH_THEN_BOOK"
+    RESALE_REFUND_CYCLE = "RESALE_REFUND_CYCLE"
+
+
+@dataclass(frozen=True, slots=True)
+class RuleResult:
+    rule_id: str
+    result: RiskVerdict
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not self.rule_id.strip():
+            raise RiskComplianceError("rule_id is required")
+        if not self.detail.strip():
+            raise RiskComplianceError("detail is required")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"ruleId": self.rule_id, "result": self.result.value, "detail": self.detail}
+
+
+@dataclass(frozen=True, slots=True)
+class VelocityRule:
+    rule_id: str
+    dimension: VelocityDimension
+    threshold: int
+    window_seconds: int
+    action: RiskVerdict
+
+    def __post_init__(self) -> None:
+        if not self.rule_id.strip():
+            raise RiskComplianceError("rule_id is required")
+        if self.threshold < 1:
+            raise RiskComplianceError("threshold must be positive")
+        if self.window_seconds < 1:
+            raise RiskComplianceError("window_seconds must be positive")
+        if self.action is RiskVerdict.PASS:
+            raise RiskComplianceError("velocity breach action must be CHALLENGE or BLOCK")
+
+    def evaluate(self, count: int) -> RuleResult:
+        if count < 0:
+            raise RiskComplianceError("count cannot be negative")
+        result = self.action if self.is_breached(count) else RiskVerdict.PASS
+        return RuleResult(self.rule_id, result, f"{count}/{self.threshold} in window")
+
+    def is_breached(self, count: int) -> bool:
+        return count > self.threshold
+
+
+@dataclass(frozen=True, slots=True)
+class VelocityCounter:
+    dimension: VelocityDimension
+    key: str
+    count: int
+    window_seconds: int
+
+    def __post_init__(self) -> None:
+        if not self.key.strip():
+            raise RiskComplianceError("velocity counter key is required")
+        if self.count < 0:
+            raise RiskComplianceError("count cannot be negative")
+        if self.window_seconds < 1:
+            raise RiskComplianceError("window_seconds must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class RiskSignal:
+    signal_type: str
+    raw_value: object
+    normalized_score: int
+
+    def __post_init__(self) -> None:
+        if not self.signal_type.strip():
+            raise RiskComplianceError("signal_type is required")
+        if not 0 <= self.normalized_score <= 100:
+            raise RiskComplianceError("normalized_score must be between 0 and 100")
+
+
+class RiskScoreCalculator:
+    DEFAULT_WEIGHTS: Mapping[str, int] = {
+        "velocity_score": 30,
+        "account_age_score": 15,
+        "traveler_mismatch": 20,
+        "high_value_order": 10,
+        "known_scalper_pattern": 25,
+    }
+
+    def __init__(self, weights: Mapping[str, int] | None = None) -> None:
+        configured = dict(weights or self.DEFAULT_WEIGHTS)
+        if any(weight < 0 for weight in configured.values()):
+            raise RiskComplianceError("risk signal weights cannot be negative")
+        self._weights = configured
+
+    def calculate(self, signals: list[RiskSignal] | tuple[RiskSignal, ...]) -> int:
+        total = 0.0
+        for signal in signals:
+            weight = self._weights.get(signal.signal_type, 0)
+            total += weight * (signal.normalized_score / 100)
+        return max(0, min(100, int(round(total))))
+
+
+@dataclass(frozen=True, slots=True)
+class DetectedPattern:
+    pattern_type: ScalperPattern
+    detection_window_seconds: int
+    threshold: int
+    score_contribution: int
+    detail: str
+
+    def to_signal(self) -> RiskSignal:
+        normalized = 100 if self.score_contribution >= 25 else int(round(self.score_contribution * 100 / 25))
+        return RiskSignal("known_scalper_pattern", self.pattern_type.value, min(100, normalized))
+
+
+@dataclass(frozen=True, slots=True)
+class RiskEvaluation:
+    evaluation_id: str
+    order_id: str
+    account_id: str
+    triggered_rules: tuple[RuleResult, ...]
+    verdict: RiskVerdict
+    score: int
+    signals: tuple[RiskSignal, ...] = field(default_factory=tuple)
+    evaluated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    overridden_by: str | None = None
+    override_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.evaluation_id.strip():
+            raise RiskComplianceError("evaluation_id is required")
+        if not self.order_id.strip():
+            raise RiskComplianceError("order_id is required")
+        if not self.account_id.strip():
+            raise RiskComplianceError("account_id is required")
+        if not 0 <= self.score <= 100:
+            raise RiskComplianceError("score must be between 0 and 100")
+        if (self.overridden_by is None) != (self.override_reason is None):
+            raise RiskComplianceError("override actor and reason must be recorded together")
+
+    @classmethod
+    def complete(
+        cls,
+        *,
+        evaluation_id: str,
+        order_id: str,
+        account_id: str,
+        triggered_rules: tuple[RuleResult, ...],
+        score: int,
+        signals: tuple[RiskSignal, ...] = (),
+        evaluated_at: datetime | None = None,
+    ) -> "RiskEvaluation":
+        verdict = verdict_for_score(score)
+        for result in triggered_rules:
+            verdict = strongest_verdict(verdict, result.result)
+        return cls(
+            evaluation_id=evaluation_id,
+            order_id=order_id,
+            account_id=account_id,
+            triggered_rules=triggered_rules,
+            verdict=verdict,
+            score=score,
+            signals=signals,
+            evaluated_at=evaluated_at or datetime.now(UTC),
+        )
+
+    def override(self, *, staff_id: str, reason: str) -> "RiskEvaluation":
+        if not staff_id.strip():
+            raise RiskComplianceError("staff_id is required")
+        if not reason.strip():
+            raise RiskComplianceError("override reason is required")
+        return RiskEvaluation(
+            evaluation_id=self.evaluation_id,
+            order_id=self.order_id,
+            account_id=self.account_id,
+            triggered_rules=self.triggered_rules,
+            verdict=RiskVerdict.PASS,
+            score=self.score,
+            signals=self.signals,
+            evaluated_at=self.evaluated_at,
+            overridden_by=staff_id,
+            override_reason=reason,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "evaluationId": self.evaluation_id,
+            "verdict": self.verdict.value,
+            "score": self.score,
+            "triggeredRules": [rule.to_dict() for rule in self.triggered_rules],
+            "recommendedAction": self.verdict.recommended_action,
+        }
+
+    def to_event_payload(self) -> dict[str, object]:
+        return {
+            **self.to_dict(),
+            "orderId": self.order_id,
+            "accountId": self.account_id,
+            "signals": [
+                {"signalType": signal.signal_type, "rawValue": signal.raw_value, "normalizedScore": signal.normalized_score}
+                for signal in self.signals
+            ],
+            "evaluatedAt": self.evaluated_at.isoformat().replace("+00:00", "Z"),
+            "overriddenBy": self.overridden_by,
+            "overrideReason": self.override_reason,
+        }
+
+
+def verdict_for_score(score: int) -> RiskVerdict:
+    if not 0 <= score <= 100:
+        raise RiskComplianceError("score must be between 0 and 100")
+    if score >= 60:
+        return RiskVerdict.BLOCK
+    if score >= 30:
+        return RiskVerdict.CHALLENGE
+    return RiskVerdict.PASS
+
+
+def strongest_verdict(left: RiskVerdict, right: RiskVerdict) -> RiskVerdict:
+    order = {RiskVerdict.PASS: 0, RiskVerdict.CHALLENGE: 1, RiskVerdict.BLOCK: 2}
+    return left if order[left] >= order[right] else right
+
+
 # ── Value Objects ────────────────────────────────────────────────────────────
 
 
