@@ -1,0 +1,167 @@
+apiVersion: skaffold/v4beta9
+kind: Config
+metadata:
+  name: train-ticket
+build:
+  platforms: ["linux/amd64"]
+  local:
+    concurrency: 8
+    push: true
+    useDockerCLI: false
+  artifacts:
+    - image: opspai/account
+      context: .
+      docker:
+        dockerfile: deploy/docker/account/Dockerfile
+    - image: opspai/admin-audit
+      context: .
+      docker:
+        dockerfile: deploy/docker/admin-audit/Dockerfile
+    - image: opspai/ancillary-service
+      context: .
+      docker:
+        dockerfile: deploy/docker/ancillary-service/Dockerfile
+    - image: opspai/booking-orchestration
+      context: .
+      docker:
+        dockerfile: deploy/docker/booking-orchestration/Dockerfile
+    - image: opspai/capacity-availability
+      context: .
+      docker:
+        dockerfile: deploy/docker/capacity-availability/Dockerfile
+    - image: opspai/corporate-travel
+      context: .
+      docker:
+        dockerfile: deploy/docker/corporate-travel/Dockerfile
+    - image: opspai/customer-service
+      context: .
+      docker:
+        dockerfile: deploy/docker/customer-service/Dockerfile
+    - image: opspai/dispatch
+      context: .
+      docker:
+        dockerfile: deploy/docker/dispatch/Dockerfile
+    - image: opspai/disruption-recovery
+      context: .
+      docker:
+        dockerfile: deploy/docker/disruption-recovery/Dockerfile
+    - image: opspai/entitlement-ticketing
+      context: .
+      docker:
+        dockerfile: deploy/docker/entitlement-ticketing/Dockerfile
+    - image: opspai/fare-pricing
+      context: .
+      docker:
+        dockerfile: deploy/docker/fare-pricing/Dockerfile
+    - image: opspai/finance-settlement
+      context: .
+      docker:
+        dockerfile: deploy/docker/finance-settlement/Dockerfile
+    - image: opspai/fulfillment
+      context: .
+      docker:
+        dockerfile: deploy/docker/fulfillment/Dockerfile
+    - image: opspai/group-booking
+      context: .
+      docker:
+        dockerfile: deploy/docker/group-booking/Dockerfile
+    - image: opspai/identity-verification
+      context: .
+      docker:
+        dockerfile: deploy/docker/identity-verification/Dockerfile
+    - image: opspai/invoicing
+      context: .
+      docker:
+        dockerfile: deploy/docker/invoicing/Dockerfile
+    - image: opspai/journey-order
+      context: .
+      docker:
+        dockerfile: deploy/docker/journey-order/Dockerfile
+    - image: opspai/legacy-acl
+      context: .
+      docker:
+        dockerfile: deploy/docker/legacy-acl/Dockerfile
+    - image: opspai/loadgen
+      context: .
+      docker:
+        dockerfile: deploy/docker/loadgen/Dockerfile
+    - image: opspai/loyalty-membership
+      context: .
+      docker:
+        dockerfile: deploy/docker/loyalty-membership/Dockerfile
+    - image: opspai/marketing-campaign
+      context: .
+      docker:
+        dockerfile: deploy/docker/marketing-campaign/Dockerfile
+    - image: opspai/notification
+      context: .
+      docker:
+        dockerfile: deploy/docker/notification/Dockerfile
+    - image: opspai/offer-management
+      context: .
+      docker:
+        dockerfile: deploy/docker/offer-management/Dockerfile
+    - image: opspai/payment-channel
+      context: .
+      docker:
+        dockerfile: deploy/docker/payment-channel/Dockerfile
+    - image: opspai/payment
+      context: .
+      docker:
+        dockerfile: deploy/docker/payment/Dockerfile
+    - image: opspai/place-network
+      context: .
+      docker:
+        dockerfile: deploy/docker/place-network/Dockerfile
+    - image: opspai/post-sales
+      context: .
+      docker:
+        dockerfile: deploy/docker/post-sales/Dockerfile
+    - image: opspai/provider-integration
+      context: .
+      docker:
+        dockerfile: deploy/docker/provider-integration/Dockerfile
+    - image: opspai/reporting
+      context: .
+      docker:
+        dockerfile: deploy/docker/reporting/Dockerfile
+    - image: opspai/risk-compliance
+      context: .
+      docker:
+        dockerfile: deploy/docker/risk-compliance/Dockerfile
+    - image: opspai/seat-assignment
+      context: .
+      docker:
+        dockerfile: deploy/docker/seat-assignment/Dockerfile
+    - image: opspai/service-plan
+      context: .
+      docker:
+        dockerfile: deploy/docker/service-plan/Dockerfile
+    - image: opspai/supplier-catalog
+      context: .
+      docker:
+        dockerfile: deploy/docker/supplier-catalog/Dockerfile
+    - image: opspai/transfer-management
+      context: .
+      docker:
+        dockerfile: deploy/docker/transfer-management/Dockerfile
+    - image: opspai/travel-insurance
+      context: .
+      docker:
+        dockerfile: deploy/docker/travel-insurance/Dockerfile
+    - image: opspai/traveler-profile
+      context: .
+      docker:
+        dockerfile: deploy/docker/traveler-profile/Dockerfile
+    - image: opspai/trip-planning
+      context: .
+      docker:
+        dockerfile: deploy/docker/trip-planning/Dockerfile
+    - image: opspai/waitlist
+      context: .
+      docker:
+        dockerfile: deploy/docker/waitlist/Dockerfile
+    - image: opspai/wallet-promotion
+      context: .
+      docker:
+        dockerfile: deploy/docker/wallet-promotion/Dockerfile
