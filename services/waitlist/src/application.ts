@@ -1,6 +1,6 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
-import { HttpCapacityAvailabilityClient, HttpFarePricingClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
+import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistEntryAccepted, waitlistEntryCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
@@ -13,6 +13,7 @@ export type JoinWaitlistRequest = Readonly<{
   tripCount?: number;
   daysBefore?: number;
   specialStatus?: PriorityInput["specialStatus"];
+  itineraryRef?: string;
 }>;
 
 export type AcceptPromotionRequest = Readonly<{ paymentMethodRef?: string }>;
@@ -26,26 +27,26 @@ export interface JourneyOrderClient {
 export class HttpJourneyOrderClient implements JourneyOrderClient {
   constructor(private readonly baseUrl = process.env.JOURNEY_ORDER_URL ?? process.env.JOURNEY_ORDER_BASE_URL ?? "http://journey-order") {}
 
-  async createOrder(entry: WaitlistEntry, paymentMethodRef?: string): Promise<AcceptPromotionResponse> {
+  async createOrder(entry: WaitlistEntry, _paymentMethodRef?: string): Promise<AcceptPromotionResponse> {
+    if (!entry.offerId || !entry.offerVersion) {
+      throw new DomainError("PRECONDITION_FAILED", "Waitlist entry does not have an orderable offer");
+    }
     const response = await fetch(`${this.baseUrl.replace(/\/+$/u, "")}/api/v1/journey-orders`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "Idempotency-Key": entry.journeyOrderIdempotencyKey },
       body: JSON.stringify({
-        source: "WAITLIST",
-        entryId: entry.entryId,
         accountId: entry.accountId,
+        offerId: entry.offerId,
+        offerVersion: entry.offerVersion,
         travelerRefs: entry.travelerRefs,
-        segmentRef: entry.segmentRef,
-        departureDate: entry.departureDate,
-        seatClass: entry.seatClass,
-        fareQuoteId: entry.fareQuoteId,
-        capacityHoldId: entry.capacityHoldId,
-        paymentMethodRef,
+        segmentRefs: [entry.segmentRef],
+        journeyDate: entry.departureDate,
+        productCode: "rail-standard",
       }),
     });
     if (!response.ok) throw new Error(`Journey order request failed with status ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
-    return { orderId: String(body.orderId ?? body.id ?? `ord-${entry.entryId}`), seatAssignment: body.seatAssignment ?? null };
+    return { orderId: String(body.orderId ?? body.id ?? `ord-${entry.entryId}`), seatAssignment: null };
   }
 }
 
@@ -105,8 +106,9 @@ export class WaitlistApplicationService {
     capacityAvailability: CapacityAvailabilityClient = new HttpCapacityAvailabilityClient(),
     private readonly journeyOrder: JourneyOrderClient = new HttpJourneyOrderClient(),
     private readonly now: () => Date = () => new Date(),
+    offerManagement: OfferManagementClient = new HttpOfferManagementClient(),
   ) {
-    this.promotion = new PromotionOrchestrator(repository, farePricing, capacityAvailability, publisher ?? { publish: async () => undefined }, now);
+    this.promotion = new PromotionOrchestrator(repository, farePricing, capacityAvailability, publisher ?? { publish: async () => undefined }, offerManagement, now);
   }
 
   async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistEntrySnapshot & { estimatedWaitMinutes: number }> {
@@ -130,8 +132,10 @@ export class WaitlistApplicationService {
 
   async accept(entryId: string, request: AcceptPromotionRequest = {}, correlationId?: string): Promise<AcceptPromotionResponse> {
     const entry = await this.requireEntry(entryId);
-    entry.accept(this.now());
+    const now = this.now();
+    entry.ensureOfferAcceptable(now);
     const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
+    entry.accept(now);
     const snapshot = await this.repository.save(entry);
     if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, order.seatAssignment, correlationId)]);
     return order;
@@ -158,6 +162,7 @@ export class WaitlistApplicationService {
       segmentRef: request.segmentRef,
       departureDate: request.departureDate,
       seatClass: request.seatClass,
+      itineraryRef: request.itineraryRef ?? request.segmentRef,
       priority: {
         loyaltyTier: request.loyaltyTier ?? "NONE",
         tripCount: request.tripCount ?? 0,

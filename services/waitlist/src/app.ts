@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
 import { InMemoryWaitlistRepository, WaitlistApplicationService, type JourneyOrderClient } from "./application.js";
-import type { CapacityAvailabilityClient, FarePricingClient, WaitlistRepository } from "./promotion.js";
+import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
 
 type AppStorage = Readonly<{
@@ -17,6 +17,7 @@ export type AppDependencies = Readonly<{
   farePricing?: FarePricingClient;
   capacityAvailability?: CapacityAvailabilityClient;
   journeyOrder?: JourneyOrderClient;
+  offerManagement?: OfferManagementClient;
   now?: () => Date;
   storage?: AppStorage;
 }>;
@@ -39,6 +40,7 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
     dependencies.capacityAvailability,
     dependencies.journeyOrder,
     dependencies.now,
+    dependencies.offerManagement,
   );
   const idempotencyStore = dependencies.idempotencyStore ?? defaultIdempotency;
 
