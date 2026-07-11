@@ -5,7 +5,8 @@
 #[cfg(feature = "redis-impl")]
 use crate::adapters::storage::PostgresCapacityService;
 use crate::application::{
-    AppError, AvailabilitySnapshotResponse, CapacityService, HoldCapacityRequest,
+    AppError, AvailabilitySnapshotResponse, CapacityService, CapacitySnapshotResponse,
+    HoldCapacityRequest,
 };
 
 use axum::{
@@ -22,6 +23,11 @@ pub fn router(service: Arc<CapacityService>) -> Router {
     Router::new()
         .route("/api/v1/availability-snapshots", get(query_availability))
         .route("/api/v1/capacity-holds", post(hold_capacity))
+        .route("/api/v1/capacity/holds", post(hold_capacity))
+        .route(
+            "/api/v1/capacity/segments/{segment_ref}/snapshot",
+            get(get_capacity_snapshot),
+        )
         .route(
             "/api/v1/capacity-holds/{hold_id}/confirm",
             post(confirm_hold),
@@ -39,6 +45,7 @@ pub fn postgres_router(service: Arc<PostgresCapacityService>) -> Router {
     Router::new()
         .route("/api/v1/availability-snapshots", get(query_availability_pg))
         .route("/api/v1/capacity-holds", post(hold_capacity_pg))
+        .route("/api/v1/capacity/holds", post(hold_capacity_pg))
         .route(
             "/api/v1/capacity-holds/{hold_id}/confirm",
             post(confirm_hold_pg),
@@ -124,6 +131,48 @@ fn to_availability_json(r: AvailabilitySnapshotResponse) -> AvailabilitySnapshot
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacitySnapshotJson {
+    pub segment_ref: String,
+    pub departure_date: String,
+    pub total_capacity: u32,
+    pub remaining_capacity: u32,
+    pub physical_capacity: u32,
+    pub hold_count: u32,
+    pub confirmed_count: u32,
+    pub utilization_pct: f64,
+    pub snapshot_version: String,
+    pub classes: Vec<crate::domain::ClassCapacity>,
+}
+
+async fn get_capacity_snapshot(
+    Extension(service): Extension<Arc<CapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    axum::extract::Path(segment_ref): axum::extract::Path<String>,
+) -> Result<Json<CapacitySnapshotJson>, AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let result = service
+        .query_capacity_snapshot(&segment_ref)
+        .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
+    Ok(Json(to_capacity_snapshot_json(result)))
+}
+
+fn to_capacity_snapshot_json(r: CapacitySnapshotResponse) -> CapacitySnapshotJson {
+    CapacitySnapshotJson {
+        segment_ref: r.segment_ref,
+        departure_date: r.departure_date,
+        total_capacity: r.total_capacity,
+        remaining_capacity: r.remaining_capacity,
+        physical_capacity: r.physical_capacity,
+        hold_count: r.hold_count,
+        confirmed_count: r.confirmed_count,
+        utilization_pct: r.utilization_pct,
+        snapshot_version: r.snapshot_version,
+        classes: r.classes,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/v1/capacity-holds
 // ---------------------------------------------------------------------------
@@ -133,7 +182,8 @@ fn to_availability_json(r: AvailabilitySnapshotResponse) -> AvailabilitySnapshot
 pub struct HoldCapacityJson {
     pub segment_ref: String,
     pub traveler_ref: String,
-    pub class_ref: String,
+    pub class_ref: Option<String>,
+    pub seat_class: Option<String>,
     pub quantity: usize,
     pub segment_booking_id: String,
 }
@@ -165,7 +215,10 @@ async fn hold_capacity(
     let req = HoldCapacityRequest {
         segment_ref: body.segment_ref,
         traveler_ref: body.traveler_ref,
-        class_ref: body.class_ref,
+        class_ref: body
+            .class_ref
+            .or(body.seat_class)
+            .unwrap_or_else(|| "standard".to_string()),
         quantity: body.quantity,
         segment_booking_id: body.segment_booking_id,
     };
@@ -313,7 +366,10 @@ async fn hold_capacity_pg(
             HoldCapacityRequest {
                 segment_ref: body.segment_ref,
                 traveler_ref: body.traveler_ref,
-                class_ref: body.class_ref,
+                class_ref: body
+                    .class_ref
+                    .or(body.seat_class)
+                    .unwrap_or_else(|| "standard".to_string()),
                 quantity: body.quantity,
                 segment_booking_id: body.segment_booking_id,
             },

@@ -193,6 +193,7 @@ impl PostgresCapacityService {
         let interval = StationInterval::new(0, 1).map_err(to_internal)?;
         let unit_ref = pool
             .find_available_unit(&interval, now)
+            .or_else(|| pool.capacity_unit_refs().into_iter().next())
             .ok_or_else(|| AppError::Unavailable("No capacity units available in pool".into()))?;
         let hold = CapacityHold::request(
             HoldId::new(&hold_id).map_err(to_internal)?,
@@ -214,13 +215,13 @@ impl PostgresCapacityService {
             now + 300_000,
         )
         .map_err(to_internal)?;
-        let event = pool.request_hold(hold, now).map_err(|error| match error {
+        let events = pool.request_hold(hold, now).map_err(|error| match error {
             DomainError::IdempotencyConflict { .. } => AppError::IdempotencyKeyReused(
                 "Idempotency-Key was reused with a different request body".into(),
             ),
             error => AppError::DomainRuleViolation(error.to_string()),
         })?;
-        let envelope = domain_event_to_wire(&event, correlation_id)?;
+        let envelopes = domain_events_to_wire(&events, correlation_id)?;
         self.inventory_repo
             .save(
                 &mut tx,
@@ -242,13 +243,23 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(to_app_storage)?;
-        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
-            .await
-            .map_err(to_app_storage)?;
+        for envelope in envelopes {
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
+                .await
+                .map_err(to_app_storage)?;
+        }
+        let status = if events
+            .iter()
+            .any(|event| matches!(event, DomainEvent::CapacityHeld(_)))
+        {
+            "HELD"
+        } else {
+            "WAITLISTED"
+        };
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
-            status: "HELD".to_string(),
+            status: status.to_string(),
             held_until: unix_millis_to_rfc3339(now + 300_000),
         };
         self.finish_idempotency(
@@ -358,8 +369,8 @@ impl PostgresCapacityService {
     ) -> Result<T, AppError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
-        R: Fn(&DomainEvent) -> T,
+        M: Fn(&mut InventoryPool, u64) -> Result<Vec<DomainEvent>, AppError>,
+        R: Fn(&[DomainEvent]) -> T,
     {
         for attempt in 0..MAX_RETRIES {
             let result = async {
@@ -383,8 +394,8 @@ impl PostgresCapacityService {
                     .map_err(to_app_storage)?
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
                 let mut pool = loaded_pool.data.try_into_domain()?;
-                let event = mutate(&mut pool, now_millis())?;
-                let envelope = domain_event_to_wire(&event, correlation_id)?;
+                let events = mutate(&mut pool, now_millis())?;
+                let envelopes = domain_events_to_wire(&events, correlation_id)?;
                 self.inventory_repo
                     .save(
                         &mut tx,
@@ -398,10 +409,12 @@ impl PostgresCapacityService {
                     .hold(&HoldId::new(hold_id).map_err(to_internal)?)
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
                 self.upsert_hold_snapshot(&mut tx, hold_id, hold).await?;
-                OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
-                    .await
-                    .map_err(to_app_storage)?;
-                let resp = response(&event);
+                for envelope in envelopes {
+                    OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
+                        .await
+                        .map_err(to_app_storage)?;
+                }
+                let resp = response(&events);
                 self.finish_idempotency(
                     &mut tx,
                     idempotency_key,
@@ -818,13 +831,13 @@ impl PostgresCapacityService {
             now + 300_000,
         )
         .map_err(inbound_fatal)?;
-        let event = pool.request_hold(hold, now).map_err(|error| match error {
+        let events = pool.request_hold(hold, now).map_err(|error| match error {
             DomainError::IdempotencyConflict { .. } => {
                 InboundEventError::Fatal("IDEMPOTENCY_KEY_REUSED".into())
             }
             error => InboundEventError::Fatal(error.to_string()),
         })?;
-        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+        let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
@@ -847,13 +860,23 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(inbound_transient)?;
-        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
-            .await
-            .map_err(inbound_transient)?;
+        for envelope in outbound {
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
+                .await
+                .map_err(inbound_transient)?;
+        }
+        let status = if events
+            .iter()
+            .any(|event| matches!(event, DomainEvent::CapacityHeld(_)))
+        {
+            "HELD"
+        } else {
+            "WAITLISTED"
+        };
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
-            status: "HELD".to_string(),
+            status: status.to_string(),
             held_until: unix_millis_to_rfc3339(now + 300_000),
         };
         self.finish_idempotency(
@@ -1040,11 +1063,11 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
-        let event = pool
+        let events = pool
             .confirm_hold(&hold_id_value, now_millis())
             .map_err(map_hold_mutation_error)
             .map_err(inbound_from_app_error)?;
-        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+        let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
@@ -1061,9 +1084,11 @@ impl PostgresCapacityService {
         self.upsert_hold_snapshot(&mut tx, &hold_id, hold)
             .await
             .map_err(inbound_from_app_error)?;
-        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
-            .await
-            .map_err(inbound_transient)?;
+        for envelope in outbound {
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
+                .await
+                .map_err(inbound_transient)?;
+        }
         let resp = ConfirmHoldResponse {
             hold_id,
             status: "CONFIRMED".to_string(),
@@ -1280,11 +1305,11 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
-        let event = pool
+        let events = pool
             .release_hold(&hold_id_value, now_millis(), release_reason)
             .map_err(map_hold_mutation_error)
             .map_err(inbound_from_app_error)?;
-        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+        let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
@@ -1301,9 +1326,11 @@ impl PostgresCapacityService {
         self.upsert_hold_snapshot(&mut tx, &hold_id, hold)
             .await
             .map_err(inbound_from_app_error)?;
-        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
-            .await
-            .map_err(inbound_transient)?;
+        for envelope in outbound {
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
+                .await
+                .map_err(inbound_transient)?;
+        }
         let resp = ReleaseHoldResponse {
             hold_id,
             status: "RELEASED".to_string(),
@@ -1334,8 +1361,8 @@ impl PostgresCapacityService {
     ) -> Result<(), InboundEventError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
-        R: Fn(&DomainEvent) -> T,
+        M: Fn(&mut InventoryPool, u64) -> Result<Vec<DomainEvent>, AppError>,
+        R: Fn(&[DomainEvent]) -> T,
     {
         let stream = stream_for_producer(&envelope.producer);
         for attempt in 0..MAX_RETRIES {
@@ -1380,8 +1407,8 @@ impl PostgresCapacityService {
     ) -> Result<(), InboundEventError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        M: Fn(&mut InventoryPool, u64) -> Result<DomainEvent, AppError>,
-        R: Fn(&DomainEvent) -> T,
+        M: Fn(&mut InventoryPool, u64) -> Result<Vec<DomainEvent>, AppError>,
+        R: Fn(&[DomainEvent]) -> T,
     {
         let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
@@ -1423,15 +1450,15 @@ impl PostgresCapacityService {
             .data
             .try_into_domain()
             .map_err(inbound_from_app_error)?;
-        let event = match mutate(&mut pool, now_millis()) {
-            Ok(event) => event,
+        let events = match mutate(&mut pool, now_millis()) {
+            Ok(events) => events,
             Err(AppError::NotFound(_)) | Err(AppError::PreconditionFailed(_)) => {
                 tx.commit().await.map_err(inbound_transient)?;
                 return Ok(());
             }
             Err(error) => return Err(inbound_from_app_error(error)),
         };
-        let outbound = domain_event_to_wire(&event, &envelope.correlation_id)
+        let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
@@ -1448,10 +1475,12 @@ impl PostgresCapacityService {
         self.upsert_hold_snapshot(&mut tx, hold_id, hold)
             .await
             .map_err(inbound_from_app_error)?;
-        OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
-            .await
-            .map_err(inbound_transient)?;
-        let resp = response(&event);
+        for envelope in outbound {
+            OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
+                .await
+                .map_err(inbound_transient)?;
+        }
+        let resp = response(&events);
         self.finish_idempotency(
             &mut tx,
             idempotency_key,
@@ -1498,6 +1527,7 @@ struct InventoryPoolSnapshot {
     identity: InventoryPoolIdentitySnapshot,
     capacity_units: Vec<String>,
     holds: Vec<CapacityHoldSnapshot>,
+    overbooking_policy: Option<OverbookingPolicy>,
 }
 
 impl InventoryPoolSnapshot {
@@ -1518,6 +1548,7 @@ impl InventoryPoolSnapshot {
             identity: InventoryPoolIdentitySnapshot::from_domain(&pool.identity),
             capacity_units,
             holds,
+            overbooking_policy: Some(pool.overbooking_policy()),
         }
     }
 
@@ -1531,6 +1562,9 @@ impl InventoryPoolSnapshot {
                 .map_err(to_internal)?,
         )
         .map_err(to_internal)?;
+        if let Some(policy) = self.overbooking_policy {
+            pool.set_overbooking_policy(policy);
+        }
         for hold in self.holds {
             pool.restore_hold(hold.try_into_domain()?)
                 .map_err(to_internal)?;
@@ -1708,11 +1742,19 @@ fn new_pool(pool_id: &str, req: &HoldCapacityRequest) -> Result<InventoryPool, A
         "v1",
     )
     .map_err(to_internal)?;
-    let units = (0..req.quantity.max(10))
+    let units = (0..req.quantity.max(100))
         .map(|i| CapacityUnitRef::new(format!("{:02}{}", (i / 4) + 1, ['A', 'B', 'C', 'D'][i % 4])))
         .collect::<Result<Vec<_>, _>>()
         .map_err(to_internal)?;
-    InventoryPool::new(identity, units).map_err(to_internal)
+    InventoryPool::new(identity, units)
+        .map(|pool| {
+            pool.with_overbooking_policy(OverbookingPolicy {
+                max_overbooking_pct: 5.0,
+                no_show_rate: 3.0,
+                safety_margin_pct: 1.0,
+            })
+        })
+        .map_err(to_internal)
 }
 
 fn validate_hold_request(req: &HoldCapacityRequest) -> Result<(), AppError> {
@@ -1759,6 +1801,16 @@ fn replay_capacity_held_envelope(
         }),
     )
     .map_err(inbound_fatal)
+}
+
+fn domain_events_to_wire(
+    events: &[DomainEvent],
+    correlation_id: &str,
+) -> Result<Vec<WireEnvelope>, AppError> {
+    events
+        .iter()
+        .map(|event| domain_event_to_wire(event, correlation_id))
+        .collect()
 }
 
 fn domain_event_to_wire(
@@ -1830,6 +1882,35 @@ fn domain_event_to_wire(
             }
             ("CapacityHoldFailed", payload)
         }
+        DomainEvent::CapacitySnapshotUpdated(e) => (
+            "CapacitySnapshotUpdated",
+            capacity_snapshot_payload(&e.snapshot),
+        ),
+        DomainEvent::OverbookingThresholdReached(e) => (
+            "OverbookingThresholdReached",
+            json!({
+                "poolId": e.pool_id.to_string(),
+                "physicalCapacity": e.physical_capacity,
+                "confirmedCount": e.confirmed_count,
+                "overbookingPct": e.overbooking_pct,
+            }),
+        ),
+        DomainEvent::WaitlistActivated(e) => (
+            "WaitlistActivated",
+            json!({
+                "segmentRef": e.segment_ref,
+                "departureDate": e.departure_date,
+                "queuePosition": e.queue_position,
+            }),
+        ),
+        DomainEvent::WaitlistCapacityFreed(e) => (
+            "WaitlistCapacityFreed",
+            json!({
+                "segmentRef": e.segment_ref,
+                "departureDate": e.departure_date,
+                "freedSlots": e.freed_slots,
+            }),
+        ),
     };
     WireEnvelope::try_new(
         event_type,
@@ -1840,6 +1921,33 @@ fn domain_event_to_wire(
         payload,
     )
     .map_err(|error| AppError::Internal(error.to_string()))
+}
+
+fn capacity_snapshot_payload(snapshot: &CapacitySnapshot) -> Value {
+    json!({
+        "segmentRef": snapshot.segment_ref,
+        "departureDate": snapshot.departure_date,
+        "totalCapacity": snapshot.total_capacity,
+        "remainingCapacity": snapshot.remaining_capacity,
+        "physicalCapacity": snapshot.physical_capacity,
+        "holdCount": snapshot.hold_count,
+        "confirmedCount": snapshot.confirmed_count,
+        "utilizationPct": snapshot.utilization_pct,
+        "snapshotVersion": snapshot.snapshot_version,
+        "classes": snapshot.classes.iter().map(|class| json!({
+            "classRef": class.class_ref,
+            "physicalCapacity": class.physical_capacity,
+            "effectiveCapacity": class.effective_capacity,
+            "holdCount": class.hold_count,
+            "confirmedCount": class.confirmed_count,
+            "remainingCapacity": class.remaining_capacity,
+            "overbookingPolicy": {
+                "maxOverbookingPct": class.overbooking_policy.max_overbooking_pct,
+                "noShowRate": class.overbooking_policy.no_show_rate,
+                "safetyMarginPct": class.overbooking_policy.safety_margin_pct,
+            }
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn parse_state(state: &str) -> Result<CapacityHoldState, AppError> {

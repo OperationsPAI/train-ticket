@@ -476,13 +476,17 @@ impl EventEnvelope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DomainEvent {
     CapacityHeld(CapacityHeld),
     CapacityHoldConfirmed(CapacityHoldConfirmed),
     CapacityReleased(CapacityReleased),
     CapacityHoldExpired(CapacityHoldExpired),
     CapacityHoldFailed(CapacityHoldFailed),
+    CapacitySnapshotUpdated(CapacitySnapshotUpdated),
+    OverbookingThresholdReached(OverbookingThresholdReached),
+    WaitlistActivated(WaitlistActivated),
+    WaitlistCapacityFreed(WaitlistCapacityFreed),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,6 +581,107 @@ impl HoldFailureReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverbookingPolicy {
+    pub max_overbooking_pct: f64,
+    pub no_show_rate: f64,
+    pub safety_margin_pct: f64,
+}
+
+impl OverbookingPolicy {
+    pub fn none() -> Self {
+        Self {
+            max_overbooking_pct: 0.0,
+            no_show_rate: 0.0,
+            safety_margin_pct: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitlistState {
+    Inactive,
+    Active { queue_size: u32 },
+}
+
+impl WaitlistState {
+    fn queue_size(&self) -> u32 {
+        match self {
+            WaitlistState::Inactive => 0,
+            WaitlistState::Active { queue_size } => *queue_size,
+        }
+    }
+
+    fn activate_next(&mut self) -> u32 {
+        let next = self.queue_size().saturating_add(1);
+        *self = WaitlistState::Active { queue_size: next };
+        next
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(self, WaitlistState::Active { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassCapacity {
+    pub class_ref: String,
+    pub physical_capacity: u32,
+    pub effective_capacity: u32,
+    pub hold_count: u32,
+    pub confirmed_count: u32,
+    pub remaining_capacity: u32,
+    pub overbooking_policy: OverbookingPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacitySnapshot {
+    pub segment_ref: String,
+    pub departure_date: String,
+    pub total_capacity: u32,
+    pub remaining_capacity: u32,
+    pub physical_capacity: u32,
+    pub hold_count: u32,
+    pub confirmed_count: u32,
+    pub utilization_pct: f64,
+    pub snapshot_version: String,
+    pub classes: Vec<ClassCapacity>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapacitySnapshotUpdated {
+    pub envelope: EventEnvelope,
+    pub snapshot: CapacitySnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverbookingThresholdReached {
+    pub envelope: EventEnvelope,
+    pub pool_id: InventoryPoolId,
+    pub physical_capacity: u32,
+    pub confirmed_count: u32,
+    pub overbooking_pct: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaitlistActivated {
+    pub envelope: EventEnvelope,
+    pub segment_ref: String,
+    pub departure_date: String,
+    pub queue_position: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaitlistCapacityFreed {
+    pub envelope: EventEnvelope,
+    pub segment_ref: String,
+    pub departure_date: String,
+    pub freed_slots: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryPoolState {
     Initialized,
@@ -586,7 +691,7 @@ pub enum InventoryPoolState {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InventoryPool {
     pub identity: InventoryPoolIdentity,
     pub(crate) capacity_units: HashSet<CapacityUnitRef>,
@@ -594,6 +699,8 @@ pub struct InventoryPool {
     idempotency_index: HashMap<IdempotencyKey, HoldId>,
     version: u64,
     state: InventoryPoolState,
+    overbooking_policy: OverbookingPolicy,
+    waitlist_state: WaitlistState,
 }
 
 impl InventoryPool {
@@ -614,6 +721,8 @@ impl InventoryPool {
             idempotency_index: HashMap::new(),
             version: 1,
             state: InventoryPoolState::Initialized,
+            overbooking_policy: OverbookingPolicy::none(),
+            waitlist_state: WaitlistState::Inactive,
         })
     }
 
@@ -623,6 +732,34 @@ impl InventoryPool {
 
     pub fn state(&self) -> InventoryPoolState {
         self.state
+    }
+
+    pub fn with_overbooking_policy(mut self, policy: OverbookingPolicy) -> Self {
+        self.overbooking_policy = policy;
+        self
+    }
+
+    pub fn set_overbooking_policy(&mut self, policy: OverbookingPolicy) {
+        self.overbooking_policy = policy;
+        self.version += 1;
+    }
+
+    pub fn overbooking_policy(&self) -> OverbookingPolicy {
+        self.overbooking_policy
+    }
+
+    pub fn physical_capacity(&self) -> u32 {
+        self.capacity_units.len() as u32
+    }
+
+    pub fn effective_capacity(&self) -> u32 {
+        let physical = self.physical_capacity() as f64;
+        (physical * (1.0 + self.overbooking_policy.max_overbooking_pct.max(0.0) / 100.0)).floor()
+            as u32
+    }
+
+    pub fn waitlist_state(&self) -> &WaitlistState {
+        &self.waitlist_state
     }
 
     pub fn total_units(&self) -> usize {
@@ -649,7 +786,11 @@ impl InventoryPool {
         Ok(())
     }
 
-    pub fn request_hold(&mut self, mut hold: CapacityHold, now: u64) -> DomainResult<DomainEvent> {
+    pub fn request_hold(
+        &mut self,
+        mut hold: CapacityHold,
+        now: u64,
+    ) -> DomainResult<Vec<DomainEvent>> {
         self.ensure_unit_known(&hold.scope.capacity_unit_ref)?;
 
         if let Some(existing_hold_id) = self.idempotency_index.get(&hold.idempotency_key) {
@@ -658,7 +799,9 @@ impl InventoryPool {
                 .get(existing_hold_id)
                 .expect("idempotency index references an existing hold");
             if same_hold_request(existing, &hold) {
-                return Ok(DomainEvent::CapacityHeld(existing.to_capacity_held(true)));
+                return Ok(vec![DomainEvent::CapacityHeld(
+                    existing.to_capacity_held(true),
+                )]);
             }
             return Err(DomainError::IdempotencyConflict {
                 idempotency_key: hold.idempotency_key.to_string(),
@@ -666,34 +809,51 @@ impl InventoryPool {
             });
         }
 
-        if let Some(conflict) = self.conflicting_hold(
-            &hold.hold_id,
-            &hold.scope.capacity_unit_ref,
-            &hold.scope.station_interval,
-            now,
-        ) {
-            let event = CapacityHoldFailed {
-                envelope: EventEnvelope::new(
-                    "CapacityHoldFailed",
-                    now,
-                    &hold.scope.references.source_context,
-                    None::<String>,
-                    "capacity-availability",
-                ),
-                requested_hold_id: hold.hold_id.clone(),
-                inventory_pool_id: self.identity.pool_id.clone(),
-                capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
-                interval: hold.scope.station_interval.clone(),
-                idempotency_key: hold.idempotency_key.clone(),
-                reason: HoldFailureReason::OverlappingHold {
-                    conflicting_hold_id: conflict.hold_id.clone(),
-                },
-                references: hold.scope.references.clone(),
-            };
+        let occupied = self.occupied_count_at(&hold.scope.station_interval, now);
+        if occupied >= self.effective_capacity() {
             hold.state = CapacityHoldState::Failed;
+            let queue_position = self.waitlist_state.activate_next();
             self.holds.insert(hold.hold_id.clone(), hold);
             self.version += 1;
-            return Ok(DomainEvent::CapacityHoldFailed(event));
+            return Ok(vec![
+                self.waitlist_activated_event(now, queue_position),
+                self.snapshot_updated_event(now),
+            ]);
+        }
+
+        if occupied < self.physical_capacity() {
+            if let Some(conflict) = self.conflicting_hold(
+                &hold.hold_id,
+                &hold.scope.capacity_unit_ref,
+                &hold.scope.station_interval,
+                now,
+            ) {
+                let event = CapacityHoldFailed {
+                    envelope: EventEnvelope::new(
+                        "CapacityHoldFailed",
+                        now,
+                        &hold.scope.references.source_context,
+                        None::<String>,
+                        "capacity-availability",
+                    ),
+                    requested_hold_id: hold.hold_id.clone(),
+                    inventory_pool_id: self.identity.pool_id.clone(),
+                    capacity_unit_ref: hold.scope.capacity_unit_ref.clone(),
+                    interval: hold.scope.station_interval.clone(),
+                    idempotency_key: hold.idempotency_key.clone(),
+                    reason: HoldFailureReason::OverlappingHold {
+                        conflicting_hold_id: conflict.hold_id.clone(),
+                    },
+                    references: hold.scope.references.clone(),
+                };
+                hold.state = CapacityHoldState::Failed;
+                self.holds.insert(hold.hold_id.clone(), hold);
+                self.version += 1;
+                return Ok(vec![
+                    DomainEvent::CapacityHoldFailed(event),
+                    self.snapshot_updated_event(now),
+                ]);
+            }
         }
 
         hold.mark_held();
@@ -702,10 +862,10 @@ impl InventoryPool {
             .insert(hold.idempotency_key.clone(), hold.hold_id.clone());
         self.holds.insert(hold.hold_id.clone(), hold);
         self.version += 1;
-        Ok(event)
+        Ok(vec![event, self.snapshot_updated_event(now)])
     }
 
-    pub fn confirm_hold(&mut self, hold_id: &HoldId, now: u64) -> DomainResult<DomainEvent> {
+    pub fn confirm_hold(&mut self, hold_id: &HoldId, now: u64) -> DomainResult<Vec<DomainEvent>> {
         let event = {
             let hold = self
                 .holds
@@ -729,7 +889,25 @@ impl InventoryPool {
             })
         };
         self.version += 1;
-        Ok(event)
+        let mut events = vec![event, self.snapshot_updated_event(now)];
+        if self.confirmed_count() > self.physical_capacity() {
+            events.push(DomainEvent::OverbookingThresholdReached(
+                OverbookingThresholdReached {
+                    envelope: EventEnvelope::new(
+                        "OverbookingThresholdReached",
+                        now,
+                        &self.identity.service_segment_ref,
+                        None::<String>,
+                        "capacity-availability",
+                    ),
+                    pool_id: self.identity.pool_id.clone(),
+                    physical_capacity: self.physical_capacity(),
+                    confirmed_count: self.confirmed_count(),
+                    overbooking_pct: self.overbooking_policy.max_overbooking_pct,
+                },
+            ));
+        }
+        Ok(events)
     }
 
     pub fn release_hold(
@@ -737,8 +915,9 @@ impl InventoryPool {
         hold_id: &HoldId,
         now: u64,
         release_reason: impl Into<String>,
-    ) -> DomainResult<DomainEvent> {
+    ) -> DomainResult<Vec<DomainEvent>> {
         let release_reason = non_empty(release_reason, "release_reason")?;
+        let before_remaining = self.remaining_capacity();
         let event = {
             let hold = self
                 .holds
@@ -764,10 +943,17 @@ impl InventoryPool {
             })
         };
         self.version += 1;
-        Ok(event)
+        let mut events = vec![event, self.snapshot_updated_event(now)];
+        let after_remaining = self.remaining_capacity();
+        if self.waitlist_state.is_active() && after_remaining > before_remaining {
+            events
+                .push(self.waitlist_capacity_freed_event(now, after_remaining - before_remaining));
+        }
+        Ok(events)
     }
 
-    pub fn expire_hold(&mut self, hold_id: &HoldId, now: u64) -> DomainResult<DomainEvent> {
+    pub fn expire_hold(&mut self, hold_id: &HoldId, now: u64) -> DomainResult<Vec<DomainEvent>> {
+        let before_remaining = self.remaining_capacity();
         let event = {
             let hold = self
                 .holds
@@ -791,7 +977,13 @@ impl InventoryPool {
             })
         };
         self.version += 1;
-        Ok(event)
+        let mut events = vec![event, self.snapshot_updated_event(now)];
+        let after_remaining = self.remaining_capacity();
+        if self.waitlist_state.is_active() && after_remaining > before_remaining {
+            events
+                .push(self.waitlist_capacity_freed_event(now, after_remaining - before_remaining));
+        }
+        Ok(events)
     }
 
     pub fn availability_snapshot(
@@ -850,6 +1042,112 @@ impl InventoryPool {
             status,
             explanations,
         }
+    }
+
+    pub fn snapshot(&self) -> CapacitySnapshot {
+        let physical_capacity = self.physical_capacity();
+        let total_capacity = self.effective_capacity();
+        let hold_count = self.held_count();
+        let confirmed_count = self.confirmed_count();
+        let remaining_capacity = total_capacity.saturating_sub(hold_count + confirmed_count);
+        let utilization_pct = if total_capacity == 0 {
+            0.0
+        } else {
+            ((hold_count + confirmed_count) as f64 / total_capacity as f64) * 100.0
+        };
+        let class = ClassCapacity {
+            class_ref: self.identity.seat_class_or_cabin_ref.clone(),
+            physical_capacity,
+            effective_capacity: total_capacity,
+            hold_count,
+            confirmed_count,
+            remaining_capacity,
+            overbooking_policy: self.overbooking_policy,
+        };
+
+        CapacitySnapshot {
+            segment_ref: self.identity.service_segment_ref.clone(),
+            departure_date: self.identity.service_date.clone(),
+            total_capacity,
+            remaining_capacity,
+            physical_capacity,
+            hold_count,
+            confirmed_count,
+            utilization_pct,
+            snapshot_version: self.version.to_string(),
+            classes: vec![class],
+        }
+    }
+
+    pub fn remaining_capacity(&self) -> u32 {
+        self.effective_capacity()
+            .saturating_sub(self.held_count() + self.confirmed_count())
+    }
+
+    fn held_count(&self) -> u32 {
+        self.holds
+            .values()
+            .filter(|hold| matches!(hold.state, CapacityHoldState::Held))
+            .count() as u32
+    }
+
+    fn confirmed_count(&self) -> u32 {
+        self.holds
+            .values()
+            .filter(|hold| matches!(hold.state, CapacityHoldState::Confirmed))
+            .count() as u32
+    }
+
+    fn occupied_count_at(&self, interval: &StationInterval, now: u64) -> u32 {
+        self.holds
+            .values()
+            .filter(|hold| {
+                hold.is_blocking_at(now) && hold.scope.station_interval.overlaps(interval)
+            })
+            .count() as u32
+    }
+
+    fn snapshot_updated_event(&self, now: u64) -> DomainEvent {
+        DomainEvent::CapacitySnapshotUpdated(CapacitySnapshotUpdated {
+            envelope: EventEnvelope::new(
+                "CapacitySnapshotUpdated",
+                now,
+                &self.identity.service_segment_ref,
+                None::<String>,
+                "capacity-availability",
+            ),
+            snapshot: self.snapshot(),
+        })
+    }
+
+    fn waitlist_activated_event(&self, now: u64, queue_position: u32) -> DomainEvent {
+        DomainEvent::WaitlistActivated(WaitlistActivated {
+            envelope: EventEnvelope::new(
+                "WaitlistActivated",
+                now,
+                &self.identity.service_segment_ref,
+                None::<String>,
+                "capacity-availability",
+            ),
+            segment_ref: self.identity.service_segment_ref.clone(),
+            departure_date: self.identity.service_date.clone(),
+            queue_position,
+        })
+    }
+
+    fn waitlist_capacity_freed_event(&self, now: u64, freed_slots: u32) -> DomainEvent {
+        DomainEvent::WaitlistCapacityFreed(WaitlistCapacityFreed {
+            envelope: EventEnvelope::new(
+                "WaitlistCapacityFreed",
+                now,
+                &self.identity.service_segment_ref,
+                None::<String>,
+                "capacity-availability",
+            ),
+            segment_ref: self.identity.service_segment_ref.clone(),
+            departure_date: self.identity.service_date.clone(),
+            freed_slots,
+        })
     }
 
     fn ensure_unit_known(&self, unit: &CapacityUnitRef) -> DomainResult<()> {
@@ -1163,15 +1461,13 @@ mod tests {
     fn overlapping_holds_on_same_unit_are_rejected() {
         let mut pool = pool();
         let first = request("hold-1", "01A", 1, 3, "idem-1", 10, 70);
-        assert!(matches!(
-            pool.request_hold(first, 10).unwrap(),
-            DomainEvent::CapacityHeld(_)
-        ));
+        let events = pool.request_hold(first, 10).unwrap();
+        assert!(matches!(events.first(), Some(DomainEvent::CapacityHeld(_))));
 
         let overlap = request("hold-2", "01A", 2, 4, "idem-2", 11, 71);
         let failed = pool.request_hold(overlap, 11).unwrap();
-        match failed {
-            DomainEvent::CapacityHoldFailed(event) => assert!(matches!(
+        match failed.first() {
+            Some(DomainEvent::CapacityHoldFailed(event)) => assert!(matches!(
                 event.reason,
                 HoldFailureReason::OverlappingHold { .. }
             )),
@@ -1197,18 +1493,27 @@ mod tests {
         pool.request_hold(request("hold-1", "01A", 1, 3, "idem-1", 10, 70), 10)
             .unwrap();
         let confirmed = pool.confirm_hold(&hold_id("hold-1"), 20).unwrap();
-        assert!(matches!(confirmed, DomainEvent::CapacityHoldConfirmed(_)));
+        assert!(matches!(
+            confirmed.first(),
+            Some(DomainEvent::CapacityHoldConfirmed(_))
+        ));
         assert!(pool.expire_hold(&hold_id("hold-1"), 80).is_err());
         let released = pool
             .release_hold(&hold_id("hold-1"), 90, "post-sales-void")
             .unwrap();
-        assert!(matches!(released, DomainEvent::CapacityReleased(_)));
+        assert!(matches!(
+            released.first(),
+            Some(DomainEvent::CapacityReleased(_))
+        ));
 
         pool.request_hold(request("hold-2", "01A", 1, 3, "idem-2", 100, 110), 100)
             .unwrap();
         assert!(pool.expire_hold(&hold_id("hold-2"), 109).is_err());
         let expired = pool.expire_hold(&hold_id("hold-2"), 110).unwrap();
-        assert!(matches!(expired, DomainEvent::CapacityHoldExpired(_)));
+        assert!(matches!(
+            expired.first(),
+            Some(DomainEvent::CapacityHoldExpired(_))
+        ));
     }
 
     #[test]
@@ -1217,8 +1522,8 @@ mod tests {
         let first = request("hold-1", "01A", 1, 3, "idem-1", 10, 70);
         pool.request_hold(first.clone(), 10).unwrap();
         let replay = pool.request_hold(first, 11).unwrap();
-        match replay {
-            DomainEvent::CapacityHeld(event) => assert!(event.idempotent_replay),
+        match replay.first() {
+            Some(DomainEvent::CapacityHeld(event)) => assert!(event.idempotent_replay),
             _ => panic!("expected held replay"),
         }
 
@@ -1248,6 +1553,130 @@ mod tests {
         assert_eq!(after_expiry.available_count, 2);
     }
 
+    fn large_pool(size: u32, overbooking_pct: f64) -> InventoryPool {
+        let units = (0..size)
+            .map(|i| unit(&format!("{:03}", i)))
+            .collect::<Vec<_>>();
+        InventoryPool::new(identity(), units)
+            .unwrap()
+            .with_overbooking_policy(OverbookingPolicy {
+                max_overbooking_pct: overbooking_pct,
+                no_show_rate: 3.0,
+                safety_margin_pct: 1.0,
+            })
+    }
+
+    #[test]
+    fn overbooking_limit_accepts_105th_and_waitlists_106th_for_100_seats() {
+        let mut pool = large_pool(100, 5.0);
+        for i in 0..105 {
+            let seat = format!("{:03}", i.min(99));
+            let events = pool
+                .request_hold(
+                    request(
+                        &format!("hold-{i}"),
+                        &seat,
+                        1,
+                        2,
+                        &format!("idem-{i}"),
+                        10 + i as u64,
+                        1_000 + i as u64,
+                    ),
+                    10 + i as u64,
+                )
+                .unwrap();
+            assert!(matches!(events[0], DomainEvent::CapacityHeld(_)));
+        }
+        assert_eq!(pool.snapshot().remaining_capacity, 0);
+
+        let waitlisted = pool
+            .request_hold(
+                request("hold-106", "099", 1, 2, "idem-106", 200, 1_200),
+                200,
+            )
+            .unwrap();
+        assert!(
+            waitlisted
+                .iter()
+                .any(|event| matches!(event, DomainEvent::WaitlistActivated(_)))
+        );
+        assert!(matches!(
+            pool.waitlist_state(),
+            WaitlistState::Active { queue_size: 1 }
+        ));
+    }
+
+    #[test]
+    fn snapshot_updated_emitted_with_correct_counts_on_mutations() {
+        let mut pool = large_pool(2, 0.0);
+        let events = pool
+            .request_hold(request("hold-snap", "000", 1, 2, "idem-snap", 10, 20), 10)
+            .unwrap();
+        let snapshot = events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::CapacitySnapshotUpdated(event) => Some(&event.snapshot),
+                _ => None,
+            })
+            .expect("snapshot event");
+        assert_eq!(snapshot.total_capacity, 2);
+        assert_eq!(snapshot.remaining_capacity, 1);
+        assert_eq!(snapshot.hold_count, 1);
+        assert_eq!(snapshot.confirmed_count, 0);
+
+        let events = pool.confirm_hold(&hold_id("hold-snap"), 11).unwrap();
+        let snapshot = events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::CapacitySnapshotUpdated(event) => Some(&event.snapshot),
+                _ => None,
+            })
+            .expect("snapshot event");
+        assert_eq!(snapshot.remaining_capacity, 1);
+        assert_eq!(snapshot.hold_count, 0);
+        assert_eq!(snapshot.confirmed_count, 1);
+
+        let events = pool
+            .release_hold(&hold_id("hold-snap"), 12, "test-release")
+            .unwrap();
+        let snapshot = events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::CapacitySnapshotUpdated(event) => Some(&event.snapshot),
+                _ => None,
+            })
+            .expect("snapshot event");
+        assert_eq!(snapshot.remaining_capacity, 2);
+        assert_eq!(snapshot.hold_count, 0);
+        assert_eq!(snapshot.confirmed_count, 0);
+    }
+
+    #[test]
+    fn overbooking_threshold_and_waitlist_freed_are_emitted() {
+        let mut pool = large_pool(1, 100.0);
+        pool.request_hold(request("hold-a", "000", 1, 2, "idem-a", 10, 50), 10)
+            .unwrap();
+        pool.request_hold(request("hold-b", "000", 1, 2, "idem-b", 11, 51), 11)
+            .unwrap();
+        pool.request_hold(request("hold-c", "000", 1, 2, "idem-c", 12, 52), 12)
+            .unwrap();
+
+        pool.confirm_hold(&hold_id("hold-a"), 20).unwrap();
+        let events = pool.confirm_hold(&hold_id("hold-b"), 21).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, DomainEvent::OverbookingThresholdReached(_)))
+        );
+        let events = pool
+            .release_hold(&hold_id("hold-a"), 30, "test-release")
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, DomainEvent::WaitlistCapacityFreed(_)))
+        );
+    }
     #[test]
     fn unix_millis_to_rfc3339_round_trip() {
         // Known timestamp: 2027-01-01T00:00:00.000Z
