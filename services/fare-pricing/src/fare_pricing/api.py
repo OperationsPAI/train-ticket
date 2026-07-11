@@ -25,7 +25,9 @@ from .application.service import FarePricingService, InMemoryStore
 from .identity import HttpEligibilityCertificateAdapter
 from .adapters.storage import PostgresFarePricingStore
 from .adapters.messaging.publisher import RedisEventPublisher
+from train_ticket_platform.messaging import RedisEventSubscriber, default_consumer_name
 from .ports.messaging import EventPublisher
+from .handlers import CAPACITY_STREAM, handle_capacity_snapshot_updated
 from .web.errors import register_exception_handlers
 from .web.handlers import router as fare_pricing_router
 
@@ -188,6 +190,15 @@ def configure_fare_pricing_routes(
         require_key=True,
         include_path_prefixes=("/api/v1/fare-quotes", "/api/v1/adjustment-quotes", "/api/v1/fare-rule-sets"),
     )
+    if isinstance(store, PostgresFarePricingStore) and os.getenv("FARE_PRICING_DISABLE_SUBSCRIBER", "").lower() not in {"1", "true", "yes"}:
+        subscriber = RedisEventSubscriber()
+        subscriber.start_in_background(
+            (CAPACITY_STREAM,),
+            "fare-pricing",
+            lambda envelope: handle_capacity_snapshot_updated(service, envelope),
+            consumer_name=default_consumer_name("fare-pricing"),
+        )
+        app.state.capacity_subscriber = subscriber
     app.include_router(fare_pricing_router)
 
 
@@ -228,6 +239,10 @@ def _install_default_rule_sets(store: Any) -> None:
                     kind=RuleKind.BASE_FARE,
                     amount=Money(Decimal("100.00"), "CNY"),
                     explanation=PriceExplanation("fare.base", {"rule": "base"}),
+                    per_km_rate=Decimal("0.15"),
+                    minimum_fare=Money(Decimal("5.00"), "CNY"),
+                    distance_discount_threshold_km=Decimal("500"),
+                    distance_discount_pct=10,
                 ),
                 FareRule(
                     rule_id="tax",
@@ -297,6 +312,9 @@ def create_app(
         relay = getattr(app.state, "outbox_relay", None)
         if relay is not None:
             relay.stop()
+        subscriber = getattr(app.state, "capacity_subscriber", None)
+        if subscriber is not None:
+            subscriber.stop()
         pool = getattr(app.state, "database_pool", None)
         if pool is not None:
             pool.close()

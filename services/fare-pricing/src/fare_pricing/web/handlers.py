@@ -61,7 +61,9 @@ def _breakdown_to_schema(bd: FareBreakdown) -> dict[str, Any]:
         "taxes": [_component_to_schema(t) for t in bd.taxes],
         "fees": [_component_to_schema(f) for f in bd.fees],
         "discounts": [_component_to_schema(d) for d in bd.discounts],
+        "dynamicAdjustments": [_component_to_schema(d) for d in bd.dynamic_adjustments],
         "total": _money_to_schema(bd.total),
+        **dict(bd.pricing_components),
     }
 
 
@@ -259,6 +261,9 @@ def compute_fare_quote(
                 rule_set_id=rule_set_id,
                 requested_currency="CNY",
                 segment_refs=req.segmentRefs,
+                seat_class=req.seatClass,
+                distance_km=req.distanceKm,
+                departure_time=_effective_datetime(req.departureTime) if req.departureTime is not None else None,
             )
             envelope = _event_envelope(request, "FareQuoteComputed", causation_id, _fare_quote_event_payload(quote))
             service.append_outbox((envelope,))

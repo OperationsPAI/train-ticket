@@ -39,6 +39,13 @@ class FareBreakdownSchema(BaseModel):
     taxes: list[PriceComponentSchema] = Field(default_factory=list)
     fees: list[PriceComponentSchema] = Field(default_factory=list)
     discounts: list[PriceComponentSchema] = Field(default_factory=list)
+    dynamicAdjustments: list[PriceComponentSchema] = Field(default_factory=list)
+    baseDistanceFare: dict[str, Any] | None = None
+    baseFlat: dict[str, Any] | None = None
+    seatClassMultiplier: dict[str, Any] | None = None
+    advancePurchaseTier: dict[str, Any] | None = None
+    peakAdjustment: dict[str, Any] | None = None
+    dynamicCapacityAdjustment: dict[str, Any] | None = None
     total: MoneySchema
 
 
@@ -85,6 +92,9 @@ class FareQuoteRequest(BaseModel):
     segmentRefs: list[str] = Field(..., min_length=1)
     productCode: str = Field(default="rail-standard", min_length=1)
     fareRuleRefs: list[str] | None = None
+    seatClass: str = Field(default="SECOND_CLASS", min_length=1)
+    distanceKm: float | None = Field(default=None, ge=0)
+    departureTime: datetime | None = None
 
 
 class FareQuoteResponse(BaseModel):

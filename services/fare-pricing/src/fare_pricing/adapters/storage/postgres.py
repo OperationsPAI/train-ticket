@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import json
 from typing import Any
 
@@ -13,6 +13,8 @@ from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppe
 from fare_pricing.domain import (
     AdjustmentQuote,
     AssessmentPurpose,
+    AdvancePurchaseTier,
+    CapacitySnapshot,
     FareBreakdown,
     FareQuote,
     FareRule,
@@ -22,6 +24,8 @@ from fare_pricing.domain import (
     PriceComponent,
     PriceExplanation,
     QuoteStatus,
+    DEFAULT_ADVANCE_PURCHASE_TIERS,
+    DEFAULT_SEAT_CLASS_MULTIPLIERS,
     RuleKind,
     RuleSetStatus,
     RuleSnapshot,
@@ -82,6 +86,8 @@ def _breakdown_to_json(breakdown: FareBreakdown | None) -> dict[str, Any] | None
         "taxes": [_component_to_json(item) for item in breakdown.taxes],
         "fees": [_component_to_json(item) for item in breakdown.fees],
         "discounts": [_component_to_json(item) for item in breakdown.discounts],
+        "dynamicAdjustments": [_component_to_json(item) for item in breakdown.dynamic_adjustments],
+        "pricingComponents": dict(breakdown.pricing_components),
     }
 
 
@@ -93,6 +99,8 @@ def _breakdown_from_json(data: Mapping[str, Any] | None) -> FareBreakdown | None
         tuple(_component_from_json(item) for item in data.get("taxes", ())),
         tuple(_component_from_json(item) for item in data.get("fees", ())),
         tuple(_component_from_json(item) for item in data.get("discounts", ())),
+        tuple(_component_from_json(item) for item in data.get("dynamicAdjustments", ())),
+        data.get("pricingComponents") or {},
     )
 
 
@@ -129,6 +137,11 @@ def _rule_to_json(rule: FareRule) -> dict[str, Any]:
         "amount": _money_to_json(rule.amount),
         "explanation": _explanation_to_json(rule.explanation),
         "refundable": rule.refundable,
+        "seatClassMultipliers": {key: str(value) for key, value in rule.seat_class_multipliers.items()},
+        "perKmRate": str(rule.per_km_rate) if rule.per_km_rate is not None else None,
+        "minimumFare": _money_to_json(rule.minimum_fare) if rule.minimum_fare is not None else None,
+        "distanceDiscountThresholdKm": str(rule.distance_discount_threshold_km) if rule.distance_discount_threshold_km is not None else None,
+        "distanceDiscountPct": rule.distance_discount_pct,
     }
 
 
@@ -139,6 +152,11 @@ def _rule_from_json(data: Mapping[str, Any]) -> FareRule:
         amount=_money_from_json(data["amount"]),
         explanation=_explanation_from_json(data["explanation"]),
         refundable=bool(data["refundable"]),
+        seat_class_multipliers={str(key): value for key, value in (data.get("seatClassMultipliers") or DEFAULT_SEAT_CLASS_MULTIPLIERS).items()},
+        per_km_rate=data.get("perKmRate"),
+        minimum_fare=_money_from_json(data["minimumFare"]) if data.get("minimumFare") else None,
+        distance_discount_threshold_km=data.get("distanceDiscountThresholdKm"),
+        distance_discount_pct=int(data.get("distanceDiscountPct") or 0),
     )
 
 
@@ -155,6 +173,15 @@ def _rule_set_to_json(rule_set: FareRuleSet) -> dict[str, Any]:
         "rules": [_rule_to_json(rule) for rule in rule_set.rules],
         "status": rule_set.status.value,
         "publishedAt": _dt(rule_set.published_at) if rule_set.published_at else None,
+        "advancePurchaseTiers": [
+            {
+                "minDaysBefore": tier.min_days_before,
+                "maxDaysBefore": tier.max_days_before,
+                "multiplier": str(tier.multiplier),
+                "explanationCode": tier.explanation_code,
+            }
+            for tier in rule_set.advance_purchase_tiers
+        ],
     }
 
 
@@ -177,6 +204,15 @@ def _rule_set_from_json(data: Mapping[str, Any] | str) -> FareRuleSet:
         status=RuleSetStatus(str(data["status"])),
         published_at=_parse_dt(str(data["publishedAt"])) if data.get("publishedAt") else None,
         contract_id=str(data.get("contractId") or ""),
+        advance_purchase_tiers=tuple(
+            AdvancePurchaseTier(
+                int(item["minDaysBefore"]),
+                int(item["maxDaysBefore"]) if item.get("maxDaysBefore") is not None else None,
+                item["multiplier"],
+                str(item["explanationCode"]),
+            )
+            for item in data.get("advancePurchaseTiers", ())
+        ) or DEFAULT_ADVANCE_PURCHASE_TIERS,
     )
 
 
@@ -475,6 +511,45 @@ class PostgresFarePricingStore:
                 (list(refs), len(refs)),
             ).fetchone()
             return str(row[0]) if row else None
+
+        return self._with_conn(read)
+
+    def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
+        def write(conn: Any) -> None:
+            conn.execute(
+                "INSERT INTO capacity_snapshot_cache(segment_ref, departure_date, total_capacity, remaining_capacity, snapshot_version) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (segment_ref, departure_date) DO UPDATE SET "
+                "total_capacity = EXCLUDED.total_capacity, remaining_capacity = EXCLUDED.remaining_capacity, "
+                "snapshot_version = EXCLUDED.snapshot_version, updated_at = now() "
+                "WHERE capacity_snapshot_cache.snapshot_version <= EXCLUDED.snapshot_version",
+                (
+                    snapshot.segment_ref,
+                    snapshot.departure_date,
+                    snapshot.total_capacity,
+                    snapshot.remaining_capacity,
+                    snapshot.snapshot_version,
+                ),
+            )
+
+        self._with_conn(write)
+
+    def capacity_snapshots_for(self, segment_refs: Iterable[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
+        refs = tuple(sorted({ref.strip() for ref in segment_refs if ref.strip()}))
+        if not refs or departure_date is None:
+            return ()
+        target_date = date.fromisoformat(departure_date)
+
+        def read(conn: Any) -> tuple[CapacitySnapshot, ...]:
+            rows = conn.execute(
+                "SELECT segment_ref, departure_date, total_capacity, remaining_capacity, snapshot_version "
+                "FROM capacity_snapshot_cache WHERE segment_ref = ANY(%s) AND departure_date = %s",
+                (list(refs), target_date),
+            ).fetchall()
+            return tuple(
+                CapacitySnapshot(str(row[0]), row[1], int(row[2]), int(row[3]), int(row[4]))
+                for row in rows
+            )
 
         return self._with_conn(read)
 
