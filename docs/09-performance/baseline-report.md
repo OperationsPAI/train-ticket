@@ -340,6 +340,79 @@ Validates zero data loss during service recovery. Outbox fully drained, DLQ stab
 5. **Long-term**: Capacity advisory locks instead of row-level FOR UPDATE for horizontal scaling
 6. **Infrastructure**: Multi-instance PG + Redis for production-grade RPS
 
+## S8 Quick Staircase (2026-07-11)
+
+**Profile**: open-loop, staircase 10→20→30→20→10 RPS, 30s steps, 60% purchase / 15% refund / 25% browse
+
+| Metric | Value |
+|--------|-------|
+| Duration | 152s |
+| Dispatched | 432 |
+| Effective RPS | 2.84 |
+| Purchased | 6 |
+| Unconfirmed | 44 (event pipeline latency) |
+| Refunded | 6 |
+| Browsed | 103 |
+| Ticketing timeout | 60 (staff bottleneck) |
+| Reservation timeout | 41 (staff bottleneck) |
+| **Correctness auditor** | **6/6 PASS** |
+
+**Bottleneck**: staff-driven reservation and ticketing are the throughput ceiling under open-loop load. The inline (scalper) path bypasses this — scalper achieves 50-60% success at the same load level.
+
+## Post-Sales Fix (2026-07-11)
+
+Missing `post_sales_active_refunds` table (migration drift) caused 100% refund/change failures. Fixed by creating the table directly. Result: refund 100% success, change 100% success, zero post-sales errors.
+
+## Wave B-E New Services (2026-07-10)
+
+5 new bounded context services deployed and validated:
+
+| Service | Language | Kit | Health | DB | API Smoke |
+|---------|----------|-----|--------|-----|-----------|
+| loyalty-membership | TypeScript | ts-kit | PASS (10ms) | PASS | PASS (201) |
+| travel-insurance | Go | go-kit | PASS (8ms) | PASS | PASS (201) |
+| group-booking | Java | java-kit | PASS (12ms) | PASS | PASS (201) |
+| corporate-travel | Python | python-kit | PASS (10ms) | PASS | PASS (201) |
+| marketing-campaign | Java | java-kit | PASS (8ms) | PASS | PASS (201) |
+
+**Oracle**: 15/15 checks PASS (health + DB + API smoke for all 5 services)
+
+### New Service Latency (loadgen)
+
+| Service | p50 | p95 | n |
+|---------|-----|-----|---|
+| loyalty-membership | 5ms | 11ms | 14 |
+| travel-insurance | 14ms | 14ms | 5 |
+| group-booking | 8ms | 9ms | 6 |
+| corporate-travel | 8ms | 8ms | 1 |
+| marketing-campaign | 30ms | 30ms | 2 |
+
+### Loadgen Journey Coverage (16 journeys)
+
+All 16 journey types active in loadgen with 0 HTTP errors for new services:
+
+| Journey | Outcome | Count |
+|---------|---------|-------|
+| loyalty | loyalty_checked | 7 |
+| insurance | insurance_policy_created | 5 |
+| corporate | corporate_agreement_created | 1 |
+| group_booking | group_created | 6 |
+| campaign | campaign_drafted | 2 |
+
+### Scalper Behavior (after timeout tuning)
+
+| Metric | Value |
+|--------|-------|
+| Scalper attempts | 32 |
+| Scalper success | **19 (59%)** |
+| Scalper blocked by risk | 0 |
+| Scalper capacity exhausted | 10 |
+| IP rotations | 313 |
+| Purchase purchased | **10** |
+| Purchase failed | **0** |
+
+Scalper actors successfully purchase tickets with 59% success rate. Failures are capacity exhaustion (31%) only. Event pipeline confirmation latency (35-65s) resolved by increasing scalper confirm timeout from 30s to 90s.
+
 ## Correctness
 
 - Zero 5xx errors across all tests

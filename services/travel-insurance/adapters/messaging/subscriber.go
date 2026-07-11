@@ -28,14 +28,25 @@ func (h *InboundHandler) Handle(ctx context.Context, envelope kitmsg.EventEnvelo
 	}
 }
 
+type travelerRefEntry struct {
+	TravelerID   string `json:"travelerId"`
+	TravelerType string `json:"travelerType"`
+}
+
+type monetarySummary struct {
+	Total domain.Money `json:"total"`
+}
+
 type journeyOrderConfirmed struct {
-	JourneyOrderID  string    `json:"journeyOrderId"`
-	OrderID         string    `json:"orderId"`
-	AccountID       string    `json:"accountId"`
-	TravelerRef     string    `json:"travelerRef"`
-	SegmentRefs     []string  `json:"segmentRefs"`
-	PaymentIntentID string    `json:"paymentIntentId"`
-	ConfirmedAt     time.Time `json:"confirmedAt"`
+	JourneyOrderID  string           `json:"journeyOrderId"`
+	OrderID         string           `json:"orderId"`
+	AccountID       string           `json:"accountId"`
+	TravelerRef     string           `json:"travelerRef"`
+	TravelerRefs    []travelerRefEntry `json:"travelerRefs"`
+	SegmentRefs     []string         `json:"segmentRefs"`
+	PaymentIntentID string           `json:"paymentIntentId"`
+	MonetarySummary *monetarySummary `json:"monetarySummary"`
+	ConfirmedAt     time.Time        `json:"confirmedAt"`
 }
 
 func (h *InboundHandler) handleJourneyOrderConfirmed(ctx context.Context, envelope kitmsg.EventEnvelope) error {
@@ -44,15 +55,35 @@ func (h *InboundHandler) handleJourneyOrderConfirmed(ctx context.Context, envelo
 		return nil
 	}
 	orderID := firstNonBlank(payload.JourneyOrderID, payload.OrderID)
-	if orderID == "" || payload.AccountID == "" || payload.TravelerRef == "" || payload.PaymentIntentID == "" || len(payload.SegmentRefs) == 0 {
+	if orderID == "" || payload.AccountID == "" || len(payload.SegmentRefs) == 0 {
 		return nil
+	}
+	travelerRef := resolveTravelerRef(payload)
+	if travelerRef == "" {
+		return nil
+	}
+	paymentIntentID := payload.PaymentIntentID
+	if paymentIntentID == "" {
+		paymentIntentID = "auto-pi:" + orderID
 	}
 	start := payload.ConfirmedAt
 	if start.IsZero() {
 		start = envelope.OccurredAt
 	}
-	_, err := h.service.IssuePolicy(ctx, application.IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: orderID, AncillaryOrderItemID: "auto-offer:" + orderID, AccountID: payload.AccountID, TravelerRef: payload.TravelerRef, SegmentRefs: payload.SegmentRefs, PaymentIntentID: payload.PaymentIntentID, CoverageStartAt: start.UTC(), CoverageEndAt: start.UTC().Add(48 * time.Hour), CorrelationID: envelope.CorrelationID, CausationID: envelope.EventID})
+	_, err := h.service.IssuePolicy(ctx, application.IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: orderID, AncillaryOrderItemID: "auto-offer:" + orderID, AccountID: payload.AccountID, TravelerRef: travelerRef, SegmentRefs: payload.SegmentRefs, PaymentIntentID: paymentIntentID, CoverageStartAt: start.UTC(), CoverageEndAt: start.UTC().Add(48 * time.Hour), CorrelationID: envelope.CorrelationID, CausationID: envelope.EventID})
 	return err
+}
+
+func resolveTravelerRef(payload journeyOrderConfirmed) string {
+	if ref := strings.TrimSpace(payload.TravelerRef); ref != "" {
+		return ref
+	}
+	if len(payload.TravelerRefs) > 0 {
+		if id := strings.TrimSpace(payload.TravelerRefs[0].TravelerID); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 type refundApproved struct {

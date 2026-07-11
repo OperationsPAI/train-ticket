@@ -89,6 +89,11 @@ public class InMemoryJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public boolean isEventProcessed(String eventId) {
+        return events.contains(eventId);
+    }
+
+    @Override
     public boolean recordProcessedEvent(String eventId, String stream) {
         return events.add(eventId);
     }

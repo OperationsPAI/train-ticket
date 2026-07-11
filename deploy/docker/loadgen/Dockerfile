@@ -7,5 +7,5 @@ COPY deploy/loadgen/loadgen.py /app/loadgen.py
 COPY deploy/loadgen/config.yaml /app/config.yaml
 RUN mkdir /data && chown app /data
 USER app
-ENV LOADGEN_CONFIG=/app/config.yaml
+ENV LOADGEN_CONFIG=/app/config.yaml LOADGEN_PROCESSES=8
 CMD ["python", "/app/loadgen.py"]

@@ -40,9 +40,9 @@ abstract class CampaignApiSupport {
         }
     }
 
-    record WindowRequest(Instant validFrom, Instant validUntil) {
+    record WindowRequest(String validFrom, String validUntil) {
         CampaignWindow toWindow() {
-            return new CampaignWindow(validFrom, validUntil);
+            return new CampaignWindow(Instant.parse(validFrom), Instant.parse(validUntil));
         }
     }
 }

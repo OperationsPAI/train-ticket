@@ -1,0 +1,137 @@
+{{- if .Values.jaeger.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: jaeger
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.jaeger.image.repository "tag" .Values.jaeger.image.tag) }}
+          ports:
+            - containerPort: 16686
+            - containerPort: 4317
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+spec:
+  selector:
+    app.kubernetes.io/name: jaeger
+  ports:
+    - name: ui
+      port: 16686
+    - name: otlp-grpc
+      port: 4317
+{{- end }}
+---
+{{- if .Values.otelCollector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger:4317
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp/jaeger]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: otel-collector
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.otelCollector.image.repository "tag" .Values.otelCollector.image.tag) }}
+          args: ["--config=/etc/otelcol/config.yaml"]
+          ports:
+            - containerPort: 4317
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+spec:
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+{{- end }}
+---
+{{- if .Values.mailpit.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mailpit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mailpit
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: mailpit
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.mailpit.image.repository "tag" .Values.mailpit.image.tag) }}
+          ports:
+            - containerPort: 1025
+            - containerPort: 8025
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+spec:
+  selector:
+    app.kubernetes.io/name: mailpit
+  ports:
+    - name: smtp
+      port: 1025
+    - name: ui
+      port: 8025
+{{- end }}

@@ -145,6 +145,30 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   app.get("/ready", async (_request, reply) => readyBody(reply, appOptions.storage));
   app.get("/readyz", async (_request, reply) => readyBody(reply, appOptions.storage));
 
+  app.post("/members/enroll", async (request, reply) => {
+    try {
+      const body = objectBody(request.body);
+      const accountId = requiredString(body.accountId, "accountId");
+      const result = await runWithService((application) => application.enrollMember(accountId));
+      reply.status(result.created ? 201 : 200);
+      return result.member;
+    } catch (error) {
+      sendApplicationError(reply, mapError(error), requestContext(request));
+    }
+  });
+
+  app.get("/members/by-account/:accountId", async (request, reply) => {
+    try {
+      const params = request.params as { accountId?: unknown };
+      if (typeof params.accountId !== "string" || params.accountId.trim().length === 0) {
+        throw new ApplicationError("VALIDATION_FAILED", "accountId is required", 400, { field: "accountId" });
+      }
+      return await runWithService((application) => application.getMemberByAccountId(params.accountId as string));
+    } catch (error) {
+      sendApplicationError(reply, mapError(error), requestContext(request));
+    }
+  });
+
   app.get("/members/:id", async (request, reply) => {
     try {
       return await runWithService((application) => application.getMember(memberIdParam(request)));
@@ -234,6 +258,13 @@ function objectBody(body: unknown): Record<string, unknown> {
     throw new ApplicationError("VALIDATION_FAILED", "Request body must be an object", 400);
   }
   return body as Record<string, unknown>;
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ApplicationError("VALIDATION_FAILED", `${field} is required`, 400, { field });
+  }
+  return value;
 }
 
 function requiredInteger(value: unknown, field: string): number {
