@@ -156,15 +156,46 @@ func findTogether(seats []Seat, count int, prefs []SeatPreference) []Seat {
 	blocks := [][]Seat{}
 	for _, rowSeats := range byRow {
 		sort.Slice(rowSeats, func(i, j int) bool { return rowSeats[i].Letter < rowSeats[j].Letter })
-		if len(rowSeats) >= count {
-			blocks = append(blocks, rowSeats[:count])
+		for start := 0; start+count <= len(rowSeats); start++ {
+			candidate := rowSeats[start : start+count]
+			if seatsAreAdjacent(candidate) {
+				blocks = append(blocks, append([]Seat(nil), candidate...))
+			}
 		}
 	}
 	if len(blocks) == 0 {
 		return nil
 	}
-	sort.Slice(blocks, func(i, j int) bool { return blockScore(blocks[i], prefs) > blockScore(blocks[j], prefs) })
+	sort.Slice(blocks, func(i, j int) bool {
+		si, sj := blockScore(blocks[i], prefs), blockScore(blocks[j], prefs)
+		if si == sj {
+			return blocks[i][0].SeatId < blocks[j][0].SeatId
+		}
+		return si > sj
+	})
 	return blocks[0]
+}
+
+func seatsAreAdjacent(seats []Seat) bool {
+	if len(seats) == 0 {
+		return false
+	}
+	for idx := 1; idx < len(seats); idx++ {
+		if seats[idx].CarNumber != seats[0].CarNumber || seats[idx].Row != seats[0].Row {
+			return false
+		}
+		if letterIndex(seats[idx].Letter)-letterIndex(seats[idx-1].Letter) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func letterIndex(letter string) int {
+	if letter == "" {
+		return -1
+	}
+	return int(letter[0] - 'A')
 }
 func blockScore(seats []Seat, prefs []SeatPreference) int {
 	total := 0

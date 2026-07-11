@@ -29,8 +29,9 @@ func (i *SeatInventory) HoldSeat(seatId, travelerRef, holdId string, now time.Ti
 }
 
 func (i *SeatInventory) ConfirmSeat(seatId, holdId string, now time.Time) (*SeatAssignment, error) {
+	i.ExpireHolds(now)
 	a := i.Assignments[seatId]
-	if a == nil {
+	if a == nil || a.Status == StatusReleased {
 		return nil, ErrSeatUnavailable
 	}
 	if err := a.Confirm(holdId, now); err != nil {
