@@ -1,21 +1,20 @@
 # syntax=docker/dockerfile:1.7
-FROM rust:1.91-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 WORKDIR /src
-COPY platform/shared-kernel-rust ./platform/shared-kernel-rust
-COPY platform/rust-kit ./platform/rust-kit
-COPY services/seat-assignment/Cargo.toml services/seat-assignment/Cargo.lock ./services/seat-assignment/
-COPY services/seat-assignment/src ./services/seat-assignment/src
-COPY services/seat-assignment/migrations ./services/seat-assignment/migrations
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/services/seat-assignment/target \
-    cargo build --release --manifest-path services/seat-assignment/Cargo.toml && \
-    cp services/seat-assignment/target/release/seat-assignment /usr/local/bin/seat-assignment
+COPY platform/go-kit ./platform/go-kit
+COPY platform/go-runtime ./platform/go-runtime
+COPY services/seat-assignment/go.mod services/seat-assignment/go.sum ./services/seat-assignment/
+COPY services/seat-assignment/internal ./services/seat-assignment/internal
+COPY services/seat-assignment/cmd ./services/seat-assignment/cmd
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    cd services/seat-assignment && go build -o /usr/local/bin/seat-assignment ./cmd/seat-assignment
 
 FROM debian:bookworm-slim
 RUN useradd --system --create-home --home-dir /home/app app && \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/seat-assignment /usr/local/bin/seat-assignment
-COPY --from=builder /src/services/seat-assignment/migrations /app/migrations
+COPY services/seat-assignment/migrations /app/migrations
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
 EXPOSE 8080
