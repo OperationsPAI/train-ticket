@@ -117,6 +117,14 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     fareQuoteId: row.fare_quote_id ?? (typeof data.fareQuoteId === "string" ? data.fareQuoteId : undefined),
     capacityHoldId: row.capacity_hold_id ?? (typeof data.capacityHoldId === "string" ? data.capacityHoldId : undefined),
     offerId: typeof data.offerId === "string" ? data.offerId : undefined,
+    offerVersion: typeof data.offerVersion === "number" ? data.offerVersion : undefined,
+    itineraryRef: typeof data.itineraryRef === "string" ? data.itineraryRef : undefined,
+    fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
+    offerIdempotencyKey: typeof data.offerIdempotencyKey === "string" ? data.offerIdempotencyKey : undefined,
+    capacityHoldIdempotencyKey: typeof data.capacityHoldIdempotencyKey === "string" ? data.capacityHoldIdempotencyKey : undefined,
+    capacityReleaseIdempotencyKey: typeof data.capacityReleaseIdempotencyKey === "string" ? data.capacityReleaseIdempotencyKey : undefined,
+    journeyOrderIdempotencyKey: typeof data.journeyOrderIdempotencyKey === "string" ? data.journeyOrderIdempotencyKey : undefined,
+    capacitySegmentBookingId: typeof data.capacitySegmentBookingId === "string" ? data.capacitySegmentBookingId : undefined,
   });
 }
 
