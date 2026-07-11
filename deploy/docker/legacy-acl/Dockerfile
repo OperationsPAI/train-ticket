@@ -15,4 +15,4 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH PORT=8080 REDIS_URL=redis://localhost:6379
 USER app
 EXPOSE 8080
-CMD ["sh", "-c", "exec uvicorn legacy_acl.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "exec uvicorn legacy_acl.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers ${WEB_CONCURRENCY:-4}"]

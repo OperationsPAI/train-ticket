@@ -616,7 +616,7 @@ class Providers:
     async def offer(self, account_id: str, channel: str,
                     itinerary: str, travelers: list[str]) -> dict:
         """Create an offer (retries on 422 — quote event propagation)."""
-        for attempt in range(5):
+        for attempt in range(8):
             try:
                 _, o = await self.api.request(
                     "POST", "offer-management", "/api/v1/offers",
@@ -626,9 +626,9 @@ class Providers:
                     step="offer")
                 return o
             except StepFailed as exc:
-                if "422" not in str(exc) or attempt == 4:
+                if "422" not in str(exc) or attempt == 7:
                     raise
-                await asyncio.sleep(min(1.0 * (1.5 ** attempt), 4.0))
+                await asyncio.sleep(min(0.5 * (1.4 ** attempt), 5.0))
         raise StepFailed("offer", "exhausted retries")
 
     async def order(self, account_id: str, offer_data: dict,
@@ -715,7 +715,7 @@ class StaffSim:
         """Find the booking saga for an order and drive its reservation step."""
         saga = None
         for _ in range(self.poll_attempts):
-            entries = await self.redis.xrevrange("events:booking-orchestration", count=200)
+            entries = await self.redis.xrevrange("events:booking-orchestration", count=10000)
             for _id, fields in entries:
                 raw = fields.get("envelope")
                 if not raw:
@@ -1666,7 +1666,7 @@ class CustomerSim:
 
     async def find_refund_id(self, case_id: str) -> str | None:
         for _ in range(self.poll_attempts):
-            entries = await self.redis.xrevrange("events:payment", count=200)
+            entries = await self.redis.xrevrange("events:payment", count=10000)
             for _id, fields in entries:
                 raw = fields.get("envelope")
                 if not raw:
@@ -2033,7 +2033,7 @@ class ScalperSim:
         for _ in range(self.poll_attempts):
             try:
                 entries = await self.redis.xrevrange(
-                    "events:booking-orchestration", count=500)
+                    "events:booking-orchestration", count=10000)
                 for _mid, fields in entries:
                     raw = fields.get("envelope", "")
                     if "BookingSagaStarted" not in raw or order_id not in raw:

@@ -237,6 +237,7 @@ export class InMemoryEventSubscriber implements EventSubscriber {
 const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "100", 10);
 const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
+const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
 const MAX_DELIVERIES = 5;
 const STREAM_MAXLEN = 100_000;
 
@@ -311,6 +312,7 @@ export class RedisEventSubscriber implements EventSubscriber {
     try {
       await this.ensureConnected();
       await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+      await this.pruneDeadConsumers(streams, group, consumerName);
       this.resolveStarted();
       this.startLoop(this.poll(streams, group, consumerName, handler, signal));
       this.startLoop(this.recover(streams, group, consumerName, handler, signal));
@@ -645,6 +647,35 @@ export class RedisEventSubscriber implements EventSubscriber {
     } catch (error) {
       if (!String(error).includes("BUSYGROUP")) {
         throw error;
+      }
+    }
+  }
+
+  private async pruneDeadConsumers(streams: readonly string[], group: string, consumerName: string): Promise<void> {
+    for (const stream of streams) {
+      try {
+        const result = await (this.redis as unknown as { call: (...args: unknown[]) => Promise<unknown> }).call("XINFO", "CONSUMERS", stream, group) as unknown[][];
+        if (!Array.isArray(result)) continue;
+        for (const entry of result) {
+          if (!Array.isArray(entry)) continue;
+          const name = fieldValue(entry as string[], "name");
+          if (!name || name === consumerName) continue;
+          const idle = parseInt(fieldValue(entry as string[], "idle") ?? "0", 10);
+          if (idle > DEAD_CONSUMER_IDLE_MS) {
+            const pending = fieldValue(entry as string[], "pending") ?? "0";
+            await this.redis.xgroup("DELCONSUMER", stream, group, name);
+            console.info({
+              service: group,
+              stream,
+              consumer: name,
+              idle,
+              pending: parseInt(pending, 10),
+              message: "pruned dead consumer",
+            });
+          }
+        }
+      } catch {
+        // best-effort cleanup; stream or group may not exist yet
       }
     }
   }

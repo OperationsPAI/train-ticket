@@ -23,7 +23,13 @@ spec:
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
             - containerPort: 6379
-          args: ["--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+          args:
+            - "--maxmemory"
+            - {{ .Values.redis.maxmemory | default "6gb" | quote }}
+            - "--maxmemory-policy"
+            - {{ .Values.redis.maxmemoryPolicy | default "allkeys-lru" | quote }}
+            - "--save"
+            - ""
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
@@ -34,11 +40,11 @@ spec:
             periodSeconds: 30
           resources:
             requests:
-              cpu: 200m
-              memory: 256Mi
+              cpu: {{ (.Values.redis.resources).requests.cpu | default "500m" | quote }}
+              memory: {{ (.Values.redis.resources).requests.memory | default "1Gi" }}
             limits:
-              cpu: "2"
-              memory: 1Gi
+              cpu: {{ (.Values.redis.resources).limits.cpu | default "4" | quote }}
+              memory: {{ (.Values.redis.resources).limits.memory | default "8Gi" }}
 ---
 apiVersion: v1
 kind: Service
