@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from hashlib import sha256
@@ -43,6 +43,31 @@ class QuoteStatus(str, Enum):
 class AssessmentPurpose(str, Enum):
     REFUND = "refund"
     CHANGE = "change"
+
+
+DEFAULT_SEAT_CLASS_MULTIPLIERS: Mapping[str, Decimal] = MappingProxyType(
+    {
+        "SECOND_CLASS": Decimal("1.0"),
+        "FIRST_CLASS": Decimal("1.6"),
+        "BUSINESS_CLASS": Decimal("2.8"),
+        "STANDING": Decimal("0.7"),
+        "SLEEPER_HARD": Decimal("1.8"),
+        "SLEEPER_SOFT": Decimal("2.5"),
+    }
+)
+
+
+class SeatClassMultiplier(str, Enum):
+    SECOND_CLASS = "SECOND_CLASS"
+    FIRST_CLASS = "FIRST_CLASS"
+    BUSINESS_CLASS = "BUSINESS_CLASS"
+    STANDING = "STANDING"
+    SLEEPER_HARD = "SLEEPER_HARD"
+    SLEEPER_SOFT = "SLEEPER_SOFT"
+
+    @property
+    def multiplier(self) -> Decimal:
+        return DEFAULT_SEAT_CLASS_MULTIPLIERS[self.value]
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,18 +144,154 @@ class PriceExplanation:
 
 
 @dataclass(frozen=True, slots=True)
+class AdvancePurchaseTier:
+    min_days_before: int
+    max_days_before: int | None
+    multiplier: Decimal
+    explanation_code: str
+
+    def __post_init__(self) -> None:
+        if self.min_days_before < 0:
+            raise PricingError("advance purchase tier minimum days cannot be negative")
+        if self.max_days_before is not None and self.max_days_before < self.min_days_before:
+            raise PricingError("advance purchase tier maximum days must be >= minimum days")
+        object.__setattr__(self, "multiplier", Decimal(str(self.multiplier)))
+        if self.multiplier < Decimal("0.00"):
+            raise PricingError("advance purchase multiplier cannot be negative")
+        if not self.explanation_code.strip():
+            raise PricingError("advance purchase explanation code is required")
+
+    def matches(self, days_before_departure: int) -> bool:
+        return days_before_departure >= self.min_days_before and (
+            self.max_days_before is None or days_before_departure <= self.max_days_before
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PeakPricingRule:
+    date_ranges: tuple[tuple[date, date], ...] = field(default_factory=tuple)
+    hour_ranges: tuple[tuple[int, int], ...] = ((7, 9), (17, 19))
+    date_surcharge_pct: int = 30
+    hour_surcharge_pct: int = 15
+    offpeak_discount_pct: int = 10
+
+    def __post_init__(self) -> None:
+        for start, end in self.date_ranges:
+            if end < start:
+                raise PricingError("peak date range must end on or after its start")
+        for start_hour, end_hour in self.hour_ranges:
+            if not 0 <= start_hour <= 23 or not 0 <= end_hour <= 24 or end_hour <= start_hour:
+                raise PricingError("peak hour range must be within 00-24 and end after start")
+        for pct in (self.date_surcharge_pct, self.hour_surcharge_pct, self.offpeak_discount_pct):
+            if pct < 0:
+                raise PricingError("peak pricing percentages cannot be negative")
+
+    def is_peak_date(self, departure_date: date) -> bool:
+        return departure_date.weekday() >= 5 or any(start <= departure_date <= end for start, end in self.date_ranges)
+
+    def is_peak_hour(self, departure_time: time) -> bool:
+        return any(start <= departure_time.hour < end for start, end in self.hour_ranges)
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicPricingBand:
+    min_remaining_pct: Decimal
+    max_remaining_pct: Decimal
+    adjustment_pct: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "min_remaining_pct", Decimal(str(self.min_remaining_pct)))
+        object.__setattr__(self, "max_remaining_pct", Decimal(str(self.max_remaining_pct)))
+        if self.min_remaining_pct < Decimal("0") or self.max_remaining_pct > Decimal("100"):
+            raise PricingError("dynamic pricing bands must stay within 0-100 percent")
+        if self.max_remaining_pct < self.min_remaining_pct:
+            raise PricingError("dynamic pricing band max must be >= min")
+        if self.adjustment_pct < 0:
+            raise PricingError("dynamic pricing adjustment cannot be negative")
+
+    def matches(self, remaining_pct: Decimal) -> bool:
+        return self.min_remaining_pct <= remaining_pct < self.max_remaining_pct
+
+
+@dataclass(frozen=True, slots=True)
+class CapacitySnapshot:
+    segment_ref: str
+    departure_date: date
+    total_capacity: int
+    remaining_capacity: int
+    snapshot_version: int
+
+    def __post_init__(self) -> None:
+        if not self.segment_ref.strip():
+            raise PricingError("capacity snapshot segment ref is required")
+        if self.total_capacity <= 0:
+            raise PricingError("capacity snapshot total capacity must be positive")
+        if self.remaining_capacity < 0 or self.remaining_capacity > self.total_capacity:
+            raise PricingError("capacity snapshot remaining capacity must be within total capacity")
+        if self.snapshot_version < 0:
+            raise PricingError("capacity snapshot version cannot be negative")
+
+    @property
+    def remaining_pct(self) -> Decimal:
+        return (Decimal(self.remaining_capacity) * Decimal("100") / Decimal(self.total_capacity)).quantize(Decimal("0.01"))
+
+
+DEFAULT_ADVANCE_PURCHASE_TIERS: tuple[AdvancePurchaseTier, ...] = (
+    AdvancePurchaseTier(21, None, Decimal("0.70"), "ADVANCE_PURCHASE_TIER_1"),
+    AdvancePurchaseTier(14, 20, Decimal("0.80"), "ADVANCE_PURCHASE_TIER_2"),
+    AdvancePurchaseTier(7, 13, Decimal("0.90"), "ADVANCE_PURCHASE_TIER_3"),
+    AdvancePurchaseTier(3, 6, Decimal("1.00"), "ADVANCE_PURCHASE_TIER_4"),
+    AdvancePurchaseTier(0, 2, Decimal("1.20"), "ADVANCE_PURCHASE_TIER_5"),
+)
+
+
+DEFAULT_PEAK_PRICING = PeakPricingRule(
+    date_ranges=(
+        (date(2026, 2, 15), date(2026, 2, 23)),
+        (date(2026, 5, 1), date(2026, 5, 5)),
+        (date(2026, 10, 1), date(2026, 10, 7)),
+    )
+)
+
+
+DEFAULT_DYNAMIC_PRICING_BANDS: tuple[DynamicPricingBand, ...] = (
+    DynamicPricingBand(Decimal("0"), Decimal("10"), 50),
+    DynamicPricingBand(Decimal("10"), Decimal("30"), 30),
+    DynamicPricingBand(Decimal("30"), Decimal("50"), 15),
+    DynamicPricingBand(Decimal("50"), Decimal("70.01"), 5),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class FareRule:
     rule_id: str
     kind: RuleKind
     amount: Money
     explanation: PriceExplanation
     refundable: bool = True
+    seat_class_multipliers: Mapping[str, Decimal] = field(default_factory=lambda: dict(DEFAULT_SEAT_CLASS_MULTIPLIERS))
+    per_km_rate: Decimal | None = None
+    minimum_fare: Money | None = None
+    distance_discount_threshold_km: Decimal | None = None
+    distance_discount_pct: int = 0
 
     def __post_init__(self) -> None:
         if not self.rule_id.strip():
             raise PricingError("fare rule id is required")
         if self.amount.amount < Decimal("0.00"):
             raise PricingError("fare rule amount cannot be negative")
+        if self.minimum_fare is not None and self.minimum_fare.currency != self.amount.currency:
+            raise PricingError("minimum fare currency must match rule amount currency")
+        if self.per_km_rate is not None and self.per_km_rate < Decimal("0.00"):
+            raise PricingError("per-km rate cannot be negative")
+        if self.distance_discount_threshold_km is not None and self.distance_discount_threshold_km < Decimal("0.00"):
+            raise PricingError("distance discount threshold cannot be negative")
+        if self.distance_discount_pct < 0 or self.distance_discount_pct > 100:
+            raise PricingError("distance discount percentage must be between 0 and 100")
+        normalized = {str(key).strip().upper(): Decimal(str(value)) for key, value in self.seat_class_multipliers.items()}
+        if any(value < Decimal("0.00") for value in normalized.values()):
+            raise PricingError("seat class multipliers cannot be negative")
+        object.__setattr__(self, "seat_class_multipliers", MappingProxyType(normalized))
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,12 +308,17 @@ class FareBreakdown:
     taxes: tuple[PriceComponent, ...] = field(default_factory=tuple)
     fees: tuple[PriceComponent, ...] = field(default_factory=tuple)
     discounts: tuple[PriceComponent, ...] = field(default_factory=tuple)
+    dynamic_adjustments: tuple[PriceComponent, ...] = field(default_factory=tuple)
+    pricing_components: Mapping[str, object] = field(default_factory=dict)
     total: Money = field(init=False)
 
     def __post_init__(self) -> None:
         currency = self.base_fare.currency
+        if isinstance(self.dynamic_adjustments, Mapping):
+            object.__setattr__(self, "pricing_components", self.dynamic_adjustments)
+            object.__setattr__(self, "dynamic_adjustments", ())
         total = self.base_fare
-        for component in self.taxes + self.fees + self.discounts:
+        for component in self.taxes + self.fees + self.discounts + self.dynamic_adjustments:
             if component.amount.currency != currency:
                 raise PricingError("all fare breakdown components must share one currency")
             if component.amount.amount < Decimal("0.00"):
@@ -163,8 +329,11 @@ class FareBreakdown:
             total = total + fee.amount
         for discount in self.discounts:
             total = total - discount.amount
+        for adjustment in self.dynamic_adjustments:
+            total = total + adjustment.amount
         if total.amount < Decimal("0.00"):
             raise PricingError("fare breakdown total cannot be negative")
+        object.__setattr__(self, "pricing_components", MappingProxyType(dict(self.pricing_components)))
         object.__setattr__(self, "total", total)
 
 
@@ -181,6 +350,9 @@ class FareRuleSet:
     status: RuleSetStatus = RuleSetStatus.DRAFT
     published_at: datetime | None = None
     contract_id: str = ""
+    advance_purchase_tiers: tuple[AdvancePurchaseTier, ...] = DEFAULT_ADVANCE_PURCHASE_TIERS
+    peak_pricing: PeakPricingRule | None = DEFAULT_PEAK_PRICING
+    dynamic_pricing_bands: tuple[DynamicPricingBand, ...] = DEFAULT_DYNAMIC_PRICING_BANDS
 
     def __post_init__(self) -> None:
         required_fields = {
@@ -214,6 +386,9 @@ class FareRuleSet:
             RuleSetStatus.DRAFT,
             None,
             self.contract_id,
+            self.advance_purchase_tiers,
+            self.peak_pricing,
+            self.dynamic_pricing_bands,
         )
 
     def validate_for_publication(self) -> Self:
@@ -230,6 +405,9 @@ class FareRuleSet:
             RuleSetStatus.VALIDATED,
             None,
             self.contract_id,
+            self.advance_purchase_tiers,
+            self.peak_pricing,
+            self.dynamic_pricing_bands,
         )
 
     def publish(self, approved_at: datetime | None = None) -> Self:
@@ -247,6 +425,9 @@ class FareRuleSet:
             RuleSetStatus.PUBLISHED,
             published_at,
             self.contract_id,
+            self.advance_purchase_tiers,
+            self.peak_pricing,
+            self.dynamic_pricing_bands,
         )
 
     def supersede(self) -> Self:
@@ -264,6 +445,9 @@ class FareRuleSet:
             RuleSetStatus.SUPERSEDED,
             self.published_at,
             self.contract_id,
+            self.advance_purchase_tiers,
+            self.peak_pricing,
+            self.dynamic_pricing_bands,
         )
 
     def is_effective(self, when: datetime) -> bool:
@@ -433,6 +617,10 @@ def calculate_fare_quote(
     quoted_at: datetime,
     ttl: timedelta,
     active_discount_types: set[str] | None = None,
+    seat_class: str = "SECOND_CLASS",
+    distance_km: Decimal | int | str | None = None,
+    departure_time: datetime | None = None,
+    capacity_snapshots: Iterable[CapacitySnapshot] | None = None,
 ) -> FareQuote:
     normalized_currency = requested_currency.strip().upper()
     quote_until = min(quoted_at + ttl, rule_set.effective_window.ends_at)
@@ -454,11 +642,53 @@ def calculate_fare_quote(
         )
 
     base_rule = next(rule for rule in rule_set.rules if rule.kind is RuleKind.BASE_FARE)
+    base_fare, pricing_components = _base_fare_for_distance(base_rule, distance_km)
+    explanations: list[PriceExplanation] = [rule.explanation for rule in rule_set.rules]
+
+    seat_class_code = (seat_class or "SECOND_CLASS").strip().upper()
+    seat_multiplier = _seat_class_multiplier(base_rule, seat_class_code)
+    base_fare = _multiply_money(base_fare, seat_multiplier)
+    pricing_components["seatClassMultiplier"] = {"seatClass": seat_class_code, "multiplier": str(seat_multiplier)}
+    explanations.append(PriceExplanation("SEAT_CLASS_MULTIPLIER", {"seatClass": seat_class_code, "multiplier": seat_multiplier}))
+
+    advance_tier = _advance_purchase_tier(rule_set, quoted_at, departure_time)
+    if advance_tier is not None:
+        base_fare = _multiply_money(base_fare, advance_tier.multiplier)
+        pricing_components["advancePurchaseTier"] = {
+            "tierName": advance_tier.explanation_code,
+            "multiplier": str(advance_tier.multiplier),
+        }
+        explanations.append(
+            PriceExplanation(
+                advance_tier.explanation_code,
+                {"minDaysBefore": advance_tier.min_days_before, "multiplier": advance_tier.multiplier},
+            )
+        )
+    else:
+        pricing_components["advancePurchaseTier"] = None
+
+    peak_adjustment_pct = _peak_adjustment_pct(rule_set.peak_pricing, departure_time)
+    if peak_adjustment_pct is not None:
+        base_fare = _multiply_money(base_fare, Decimal("1") + (Decimal(peak_adjustment_pct["totalAdjustmentPct"]) / Decimal("100")))
+        pricing_components["peakAdjustment"] = peak_adjustment_pct
+        explanations.append(PriceExplanation("PEAK_PRICING_ADJUSTMENT", peak_adjustment_pct))
+    else:
+        pricing_components["peakAdjustment"] = None
+
     taxes = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.TAX)
     fees = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.FEE)
     active_discount_types = active_discount_types or set()
     discounts = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.DISCOUNT and _discount_allowed(rule, active_discount_types))
-    breakdown = FareBreakdown(base_rule.amount, taxes, fees, discounts)
+    subtotal = FareBreakdown(base_fare, taxes, fees, discounts, pricing_components=pricing_components).total
+    dynamic_adjustment, capacity_component = _dynamic_capacity_adjustment(subtotal, rule_set.dynamic_pricing_bands, capacity_snapshots)
+    if dynamic_adjustment is not None:
+        explanations.append(dynamic_adjustment.explanation)
+        pricing_components["dynamicCapacityAdjustment"] = capacity_component
+        dynamic_adjustments = (dynamic_adjustment,)
+    else:
+        pricing_components["dynamicCapacityAdjustment"] = capacity_component
+        dynamic_adjustments = ()
+    breakdown = FareBreakdown(base_fare, taxes, fees, discounts, dynamic_adjustments, pricing_components)
     snapshot = RuleSnapshot.from_rule_set(rule_set, quoted_at)
     return FareQuote(
         quote_id,
@@ -472,7 +702,101 @@ def calculate_fare_quote(
         quote_until,
         snapshot,
         breakdown,
-        tuple(rule.explanation for rule in rule_set.rules),
+        tuple(explanations),
+    )
+
+
+def _multiply_money(money: Money, multiplier: Decimal) -> Money:
+    return Money(money.amount * multiplier, money.currency)
+
+
+def _base_fare_for_distance(base_rule: FareRule, distance_km: Decimal | int | str | None) -> tuple[Money, dict[str, object]]:
+    if base_rule.per_km_rate is None or distance_km is None:
+        return base_rule.amount, {"baseFlat": {"amount": base_rule.amount.amount_minor, "currency": base_rule.amount.currency}}
+    distance = Decimal(str(distance_km))
+    if distance < Decimal("0"):
+        raise PricingError("distance_km cannot be negative")
+    threshold = base_rule.distance_discount_threshold_km
+    discount_pct = Decimal(base_rule.distance_discount_pct) / Decimal("100")
+    charged_km = distance
+    discounted_km = Decimal("0")
+    if threshold is not None and distance > threshold and discount_pct > Decimal("0"):
+        discounted_km = distance - threshold
+        charged_km = threshold + (discounted_km * (Decimal("1") - discount_pct))
+    distance_amount = charged_km * base_rule.per_km_rate
+    minimum = base_rule.minimum_fare or Money.zero(base_rule.amount.currency)
+    fare = Money(max(distance_amount, minimum.amount), base_rule.amount.currency)
+    return fare, {
+        "baseDistanceFare": {
+            "distanceKm": str(distance),
+            "perKmRate": str(base_rule.per_km_rate),
+            "minimumFare": minimum.amount_minor,
+            "discountThresholdKm": str(threshold) if threshold is not None else None,
+            "discountPct": base_rule.distance_discount_pct,
+        }
+    }
+
+
+def _seat_class_multiplier(base_rule: FareRule, seat_class: str) -> Decimal:
+    try:
+        return Decimal(str(base_rule.seat_class_multipliers[seat_class]))
+    except KeyError as exc:
+        raise PricingError(f"unsupported seat class: {seat_class}") from exc
+
+
+def _advance_purchase_tier(rule_set: FareRuleSet, quoted_at: datetime, departure_time: datetime | None) -> AdvancePurchaseTier | None:
+    if departure_time is None:
+        return None
+    departure = departure_time.astimezone(UTC) if departure_time.tzinfo is not None else departure_time.replace(tzinfo=UTC)
+    quoted = quoted_at.astimezone(UTC) if quoted_at.tzinfo is not None else quoted_at.replace(tzinfo=UTC)
+    days_before = max((departure.date() - quoted.date()).days, 0)
+    return next((tier for tier in rule_set.advance_purchase_tiers if tier.matches(days_before)), None)
+
+
+def _peak_adjustment_pct(peak_pricing: PeakPricingRule | None, departure_time: datetime | None) -> dict[str, int] | None:
+    if peak_pricing is None or departure_time is None:
+        return None
+    departure = departure_time.astimezone(UTC) if departure_time.tzinfo is not None else departure_time.replace(tzinfo=UTC)
+    date_adjustment = peak_pricing.date_surcharge_pct if peak_pricing.is_peak_date(departure.date()) else 0
+    hour_adjustment = peak_pricing.hour_surcharge_pct if peak_pricing.is_peak_hour(departure.time()) else 0
+    offpeak_discount = peak_pricing.offpeak_discount_pct if date_adjustment == 0 and hour_adjustment == 0 else 0
+    total = date_adjustment + hour_adjustment - offpeak_discount
+    return {
+        "dateAdjustment": date_adjustment,
+        "hourAdjustment": hour_adjustment,
+        "offpeakDiscount": offpeak_discount,
+        "totalAdjustmentPct": total,
+    }
+
+
+def _dynamic_capacity_adjustment(
+    subtotal: Money,
+    bands: tuple[DynamicPricingBand, ...],
+    capacity_snapshots: Iterable[CapacitySnapshot] | None,
+) -> tuple[PriceComponent | None, dict[str, object] | None]:
+    snapshots = tuple(capacity_snapshots or ())
+    if not snapshots:
+        return None, None
+    lowest = min(snapshots, key=lambda item: item.remaining_pct)
+    remaining_pct = lowest.remaining_pct
+    band = next((candidate for candidate in bands if candidate.matches(remaining_pct)), None)
+    adjustment_pct = band.adjustment_pct if band is not None else 0
+    component_data = {
+        "segmentRef": lowest.segment_ref,
+        "remainingPct": str(remaining_pct),
+        "adjustmentPct": adjustment_pct,
+    }
+    if adjustment_pct == 0:
+        return None, component_data
+    amount = _multiply_money(subtotal, Decimal(adjustment_pct) / Decimal("100"))
+    return (
+        PriceComponent(
+            "dynamic-capacity",
+            amount,
+            PriceExplanation("DYNAMIC_CAPACITY_ADJUSTMENT", component_data),
+            False,
+        ),
+        component_data,
     )
 
 

@@ -3,6 +3,11 @@ from __future__ import annotations
 from .api import create_app
 from .domain import (
     AdjustmentQuote,
+    SeatClassMultiplier,
+    PeakPricingRule,
+    DynamicPricingBand,
+    CapacitySnapshot,
+    AdvancePurchaseTier,
     AssessmentPurpose,
     FareBreakdown,
     FareQuote,
@@ -26,6 +31,11 @@ from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
 
 __all__ = [
     'AdjustmentQuote',
+    'SeatClassMultiplier',
+    'PeakPricingRule',
+    'DynamicPricingBand',
+    'CapacitySnapshot',
+    'AdvancePurchaseTier',
     'AssessmentPurpose',
     'FareBreakdown',
     'FareQuote',
