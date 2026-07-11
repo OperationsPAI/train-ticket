@@ -317,7 +317,7 @@ class IdentityVerificationService:
                 entry, status, reason, restrictions = blacklist_hit
                 result = VerificationResult(status, reason, None, None, restrictions=restrictions, duplicateTicketCheck=duplicate_check)
                 envelopes.append(self._blacklist_hit_event(entry, corr=correlation_id, cause=causation_id, at=at))
-                envelopes.append(self._identity_rejected_event(request.travelerId, reason, corr=correlation_id, cause=causation_id, at=at))
+                envelopes.append(self._identity_rejected_event(request.travelerId, "BLACKLISTED", corr=correlation_id, cause=causation_id, at=at))
                 self._append(tuple(envelopes))
                 return self._verification_response(request, result)
 
