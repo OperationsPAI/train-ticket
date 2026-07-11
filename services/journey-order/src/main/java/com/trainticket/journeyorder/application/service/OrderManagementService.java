@@ -375,10 +375,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     @Transactional
     public synchronized EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
         try {
-            if (!stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer())) {
+            if (stateRepository.isEventProcessed(envelope.eventId())) {
                 return new EventSubscriber.Success();
             }
-            return switch (envelope.eventType()) {
+            EventSubscriber.HandlerResult result = switch (envelope.eventType()) {
                 case "PaymentCaptured" -> handlePaymentCaptured(envelope);
                 case "PaymentExpired" -> handlePaymentExpired(envelope);
                 case "PostSalesApplied" -> handlePostSalesApplied(envelope);
@@ -396,6 +396,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                     "SessionOpened", "SessionRevoked", "PreferenceUpdated" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.Success();
             };
+            stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer());
+            return result;
         } catch (InvalidEventPayload ex) {
             return new EventSubscriber.FatalError(ex.getMessage());
         } catch (NotFoundException ex) {
