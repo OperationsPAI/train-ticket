@@ -160,8 +160,15 @@ public final class PostSalesCase {
             throw new DomainRuleViolation("decision kind must match post-sales case type");
         }
         this.decision = decision;
+        EventMetadata quoteMetadata = metadata(occurredAt, sourceCommandId, causationId, correlationId, PostSalesCaseStatus.ELIGIBILITY_CHECKING);
         domainEvents.add(new PostSalesDecisionQuoted(caseId, decision.kind(), decision.eligible(), decision.ruleSnapshot().farePricingEvaluationRef(),
-            metadata(occurredAt, sourceCommandId, causationId, correlationId, PostSalesCaseStatus.ELIGIBILITY_CHECKING)));
+            decision.refundAssessment(), decision.changeAssessment(), quoteMetadata));
+        if (decision.refundAssessment() != null) {
+            domainEvents.add(new RefundFeeAssessed(caseId, decision.refundAssessment(), quoteMetadata));
+        }
+        if (decision.changeAssessment() != null) {
+            domainEvents.add(new ChangeFeeAssessed(caseId, decision.changeAssessment(), quoteMetadata));
+        }
         if (!decision.eligible()) {
             reject(decision.reasonCode(), occurredAt, sourceCommandId, causationId, correlationId);
             return;

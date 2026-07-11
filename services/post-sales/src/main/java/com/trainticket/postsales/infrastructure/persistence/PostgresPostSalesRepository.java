@@ -102,7 +102,8 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     private static boolean isActive(PostSalesCase postSalesCase) {
         return postSalesCase.status() != PostSalesCaseStatus.REJECTED
             && postSalesCase.status() != PostSalesCaseStatus.CANCELLED
-            && postSalesCase.status() != PostSalesCaseStatus.FAILED;
+            && postSalesCase.status() != PostSalesCaseStatus.FAILED
+            && postSalesCase.status() != PostSalesCaseStatus.APPLIED;
     }
 
     private PostSalesSnapshot readSnapshot(String json) {
@@ -126,10 +127,83 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         return PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of());
     }
 
-    private ObjectNode decision(PostSalesDecision d) { ObjectNode n=objectMapper.createObjectNode(); n.put("caseId",d.caseId()); n.put("version",d.version()); n.put("kind",d.kind().name()); n.put("eligible",d.eligible()); n.put("reasonCode",d.reasonCode()); n.set("ruleSnapshot", objectMapper.valueToTree(d.ruleSnapshot())); n.set("amountSnapshot", amount(d.amountSnapshot())); if(d.changeFlowSnapshot()==null)n.putNull("changeFlowSnapshot"); else n.set("changeFlowSnapshot", objectMapper.valueToTree(d.changeFlowSnapshot())); n.put("quotedAt",d.quotedAt().toString()); n.put("expiresAt",d.expiresAt().toString()); return n; }
-    private PostSalesDecision decision(JsonNode n) { return new PostSalesDecision(text(n,"caseId"), n.path("version").asInt(), DecisionKind.valueOf(text(n,"kind")), n.path("eligible").asBoolean(), text(n,"reasonCode"), objectMapper.convertValue(n.path("ruleSnapshot"), RuleEvaluationSnapshot.class), amount(n.path("amountSnapshot")), n.path("changeFlowSnapshot").isNull()?null:objectMapper.convertValue(n.path("changeFlowSnapshot"), ChangeFlowSnapshot.class), Instant.parse(text(n,"quotedAt")), Instant.parse(text(n,"expiresAt"))); }
-    private ObjectNode amount(AmountDecisionSnapshot a){ ObjectNode n=objectMapper.createObjectNode(); n.set("feeAmount", money(a.feeAmount())); n.set("refundAmount", money(a.refundAmount())); n.set("extraChargeAmount", money(a.extraChargeAmount())); n.put("explanation", a.explanation()); return n; }
-    private AmountDecisionSnapshot amount(JsonNode n){ return new AmountDecisionSnapshot(money(n.path("feeAmount")), money(n.path("refundAmount")), money(n.path("extraChargeAmount")), text(n,"explanation")); }
+    private ObjectNode decision(PostSalesDecision decision) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("caseId", decision.caseId());
+        node.put("version", decision.version());
+        node.put("kind", decision.kind().name());
+        node.put("eligible", decision.eligible());
+        node.put("reasonCode", decision.reasonCode());
+        node.set("ruleSnapshot", objectMapper.valueToTree(decision.ruleSnapshot()));
+        node.set("amountSnapshot", amount(decision.amountSnapshot()));
+        if (decision.changeFlowSnapshot() == null) {
+            node.putNull("changeFlowSnapshot");
+        } else {
+            node.set("changeFlowSnapshot", objectMapper.valueToTree(decision.changeFlowSnapshot()));
+        }
+        if (decision.refundAssessment() == null) {
+            node.putNull("refundAssessment");
+        } else {
+            node.set("refundAssessment", objectMapper.valueToTree(decision.refundAssessment()));
+        }
+        if (decision.changeAssessment() == null) {
+            node.putNull("changeAssessment");
+        } else {
+            node.set("changeAssessment", objectMapper.valueToTree(decision.changeAssessment()));
+        }
+        node.put("quotedAt", decision.quotedAt().toString());
+        node.put("expiresAt", decision.expiresAt().toString());
+        return node;
+    }
+    private PostSalesDecision decision(JsonNode node) {
+        AmountDecisionSnapshot amount = amount(node.path("amountSnapshot"));
+        RefundAssessment refundAssessment = node.path("refundAssessment").isMissingNode() || node.path("refundAssessment").isNull()
+            ? legacyRefund(node, amount)
+            : objectMapper.convertValue(node.path("refundAssessment"), RefundAssessment.class);
+        ChangeAssessment changeAssessment = node.path("changeAssessment").isMissingNode() || node.path("changeAssessment").isNull()
+            ? legacyChange(node, amount)
+            : objectMapper.convertValue(node.path("changeAssessment"), ChangeAssessment.class);
+        return new PostSalesDecision(
+            text(node, "caseId"),
+            node.path("version").asInt(),
+            DecisionKind.valueOf(text(node, "kind")),
+            node.path("eligible").asBoolean(),
+            text(node, "reasonCode"),
+            objectMapper.convertValue(node.path("ruleSnapshot"), RuleEvaluationSnapshot.class),
+            amount,
+            node.path("changeFlowSnapshot").isNull() ? null : objectMapper.convertValue(node.path("changeFlowSnapshot"), ChangeFlowSnapshot.class),
+            refundAssessment,
+            changeAssessment,
+            Instant.parse(text(node, "quotedAt")),
+            Instant.parse(text(node, "expiresAt"))
+        );
+    }
+    private ObjectNode amount(AmountDecisionSnapshot amount) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.set("feeAmount", money(amount.feeAmount()));
+        node.set("refundAmount", money(amount.refundAmount()));
+        node.set("extraChargeAmount", money(amount.extraChargeAmount()));
+        node.put("explanation", amount.explanation());
+        node.set("componentDecisions", objectMapper.valueToTree(amount.componentDecisions()));
+        return node;
+    }
+    private AmountDecisionSnapshot amount(JsonNode node) {
+        List<RefundComponentDecision> componentDecisions = node.path("componentDecisions").isMissingNode()
+            ? List.of()
+            : objectMapper.convertValue(node.path("componentDecisions"), objectMapper.getTypeFactory().constructCollectionType(List.class, RefundComponentDecision.class));
+        return new AmountDecisionSnapshot(money(node.path("feeAmount")), money(node.path("refundAmount")), money(node.path("extraChargeAmount")), text(node, "explanation"), componentDecisions);
+    }
+    private RefundAssessment legacyRefund(JsonNode node, AmountDecisionSnapshot amount) {
+        return DecisionKind.valueOf(text(node, "kind")) == DecisionKind.REFUND
+            ? new RefundAssessment(amount.refundAmount(), amount.feeAmount(), java.math.BigDecimal.ZERO, "LEGACY", amount.explanation(), RefundClassification.VOLUNTARY, amount.componentDecisions())
+            : null;
+    }
+
+    private ChangeAssessment legacyChange(JsonNode node, AmountDecisionSnapshot amount) {
+        return DecisionKind.valueOf(text(node, "kind")) == DecisionKind.CHANGE
+            ? new ChangeAssessment(amount.feeAmount(), amount.extraChargeAmount().isZero() ? amount.refundAmount() : amount.extraChargeAmount(), amount.extraChargeAmount(), amount.refundAmount(), amount.explanation())
+            : null;
+    }
     private ObjectNode money(Money m){ ObjectNode n=objectMapper.createObjectNode(); n.put("currency", m.currency().getCurrencyCode()); n.put("minorUnits", m.toMinorUnits()); return n; }
     private Money money(JsonNode n){ return Money.fromMinorUnits(n.path("minorUnits").asLong(), text(n,"currency")); }
     private ObjectNode step(PostSalesStep s){ ObjectNode n=objectMapper.createObjectNode(); n.put("type",s.type().name()); n.put("targetContext",s.targetContext()); n.put("idempotencyKey",s.idempotencyKey()); n.put("maxRetries",s.maxRetries()); n.put("status",s.status().name()); if(s.externalRef()==null)n.putNull("externalRef"); else n.put("externalRef",s.externalRef()); if(s.failureReason()==null)n.putNull("failureReason"); else n.put("failureReason",s.failureReason()); if(s.completedAt()==null)n.putNull("completedAt"); else n.put("completedAt",s.completedAt().toString()); return n; }

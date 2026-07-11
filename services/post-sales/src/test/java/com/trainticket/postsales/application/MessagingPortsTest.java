@@ -113,7 +113,7 @@ class MessagingPortsTest {
     @Test
     void subscriberHandlerDeduplicatesDuplicateEventId() {
         RecordingConsumedEventLog log = new RecordingConsumedEventLog();
-        PostSalesEventHandler handler = new PostSalesEventHandler(log, null);
+        PostSalesEventHandler handler = new PostSalesEventHandler(log, new NoOpPostSalesApplicationService());
         EventEnvelope envelope = new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d001",
             "JourneyOrderCancelled",
@@ -212,6 +212,12 @@ class MessagingPortsTest {
             if (result == EventSubscriber.HandlerResult.FATAL_FAILURE) {
                 dlq.add(envelope);
             }
+        }
+    }
+
+    private static final class NoOpPostSalesApplicationService extends PostSalesApplicationService {
+        NoOpPostSalesApplicationService() {
+            super(new InMemoryPostSalesRepository(), ignored -> { }, ignored -> java.util.Optional.empty(), new InMemoryPostSalesPolicyContextStore(), java.time.Clock.systemUTC());
         }
     }
 
