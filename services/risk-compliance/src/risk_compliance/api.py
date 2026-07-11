@@ -27,7 +27,7 @@ from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, I
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
 from .runtime import health, profile
-from .evaluation import EvaluationNotFoundError, RiskEvaluationRequest, RiskEvaluationService, Route
+from .evaluation import EvaluationNotFoundError, RiskEvaluationRepository, RiskEvaluationRequest, RiskEvaluationService, Route
 
 REQUEST_ID_HEADER = "X-Request-ID"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
@@ -249,11 +249,11 @@ def _storage_ready(app: FastAPI) -> bool:
         return False
 
 
-def _configure_postgres(app: FastAPI) -> tuple[InMemoryAssessmentRepository, IdempotencyStore | None, Any | None]:
+def _configure_postgres(app: FastAPI) -> tuple[InMemoryAssessmentRepository, Any | None, IdempotencyStore | None, Any | None]:
     config = DatabaseConfig.from_env()
     if config is None:
-        return InMemoryAssessmentRepository(), None, None
-    from .adapters.storage import PostgresAssessmentRepository, TransactionalOutboxPublisher
+        return InMemoryAssessmentRepository(), None, None, None
+    from .adapters.storage import PostgresAssessmentRepository, PostgresRiskEvaluationRepository, TransactionalOutboxPublisher
 
     readiness = ReadinessGate()
     pool = DatabasePool(config)
@@ -263,11 +263,12 @@ def _configure_postgres(app: FastAPI) -> tuple[InMemoryAssessmentRepository, Ide
     migrations_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parents[2] / "migrations"
     run_migrations(pool, migrations_dir, readiness)
     repository = PostgresAssessmentRepository(pool)
+    evaluation_repository = PostgresRiskEvaluationRepository(pool)
     publisher = TransactionalOutboxPublisher(repository)
     relay = OutboxRelay(pool)
     relay.start()
     app.state.outbox_relay = relay
-    return repository, PostgresIdempotencyStore(pool), publisher
+    return repository, evaluation_repository, PostgresIdempotencyStore(pool), publisher
 
 def configure_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
@@ -419,7 +420,7 @@ def create_app(
 
     app = FastAPI(title="Risk & Compliance", version="0.1.0", lifespan=lifespan)
     init_opentelemetry(profile()["service_id"], app=app)
-    repository, postgres_idempotency_store, postgres_publisher = _configure_postgres(app)
+    repository, evaluation_repository, postgres_idempotency_store, postgres_publisher = _configure_postgres(app)
     store = store or postgres_idempotency_store or BoundedInMemoryIdempotencyStore()
     app.state.assessment_repository = repository
     if service is None:
@@ -440,7 +441,11 @@ def create_app(
             idempotency_store=store,
         )
         app.state.subscriber = RedisEventSubscriber()
-        app.state.risk_evaluation_service = RiskEvaluationService(app.state.publisher, velocity_counter=VelocityRedisCounter())
+        app.state.risk_evaluation_service = RiskEvaluationService(
+            app.state.publisher,
+            repository=evaluation_repository or RiskEvaluationRepository(),
+            velocity_counter=VelocityRedisCounter(),
+        )
         subscriber_config = {
             "subscriptions": RISK_COMPLIANCE_SUBSCRIPTIONS,
             "consumer_group": RISK_COMPLIANCE_CONSUMER_GROUP,

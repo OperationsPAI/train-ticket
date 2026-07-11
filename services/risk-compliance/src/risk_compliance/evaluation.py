@@ -178,7 +178,7 @@ class RiskEvaluationService:
         self.repository.save(evaluation)
         self._record_order_history(request, now)
         self._publish_completed(evaluation, correlation_id)
-        if evaluation.score >= 60 or evaluation.verdict is RiskVerdict.BLOCK:
+        if evaluation.score >= 60 or _has_velocity_breach(evaluation):
             self.publisher.publish(_alert_envelope(evaluation, correlation_id, f"risk-evaluation:{evaluation.evaluation_id}"))
         return evaluation
 
@@ -272,6 +272,10 @@ class RiskEvaluationService:
 
     def _publish_completed(self, evaluation: RiskEvaluation, correlation_id: str) -> None:
         self.publisher.publish(_completed_envelope(evaluation, correlation_id, f"risk-evaluation:{evaluation.evaluation_id}"))
+
+
+def _has_velocity_breach(evaluation: RiskEvaluation) -> bool:
+    return any(rule.result is not RiskVerdict.PASS for rule in evaluation.triggered_rules)
 
 
 def request_from_payload(payload: Mapping[str, Any]) -> RiskEvaluationRequest:
