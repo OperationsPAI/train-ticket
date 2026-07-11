@@ -206,9 +206,32 @@ def configure_corporate_travel_endpoints(app: FastAPI, service: CorporateTravelS
 
 
 def create_app(service: CorporateTravelService | None = None) -> FastAPI:
+    import os
+    from .messaging import (
+        CORPORATE_TRAVEL_CONSUMER_GROUP,
+        CORPORATE_TRAVEL_SUBSCRIPTIONS,
+        RedisEventSubscriber,
+        corporate_travel_consumer_name,
+        handle_event,
+    )
+
+    subscriber: RedisEventSubscriber | None = None
+    redis_url = os.environ.get("REDIS_URL", "")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal subscriber
+        if redis_url:
+            subscriber = RedisEventSubscriber()
+            subscriber.start_in_background(
+                CORPORATE_TRAVEL_SUBSCRIPTIONS,
+                CORPORATE_TRAVEL_CONSUMER_GROUP,
+                handle_event,
+                consumer_name=corporate_travel_consumer_name(),
+            )
         yield
+        if subscriber is not None:
+            subscriber.stop()
 
     app = FastAPI(title="Corporate Travel", version="0.1.0", lifespan=lifespan)
     init_opentelemetry(profile()["service_id"], app=app)
