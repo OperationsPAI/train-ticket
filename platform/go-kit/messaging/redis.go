@@ -18,8 +18,9 @@ const (
 	EnvelopeField       = "envelope"
 	StreamPrefix        = "events:"
 	DeadLetterSuffix    = ":dlq"
-	MaxLen              = 100000
-	MaxDeliveryAttempts = int64(5)
+	MaxLen               = 100000
+	MaxDeliveryAttempts  = int64(5)
+	DeadConsumerMaxIdle  = 5 * time.Minute
 )
 
 type RedisConfig struct {
@@ -172,7 +173,26 @@ func (b *RedisEventBus) ensureGroup(ctx context.Context, stream, group string) e
 	}
 	return fmt.Errorf("create consumer group %s/%s: %w", stream, group, err)
 }
+func (b *RedisEventBus) pruneDeadConsumers(ctx context.Context, stream, group, selfName string) {
+	consumers, err := b.client.XInfoConsumers(ctx, stream, group).Result()
+	if err != nil {
+		return // best-effort; stream or group may not exist yet
+	}
+	for _, c := range consumers {
+		if c.Name == selfName {
+			continue
+		}
+		if c.Idle > DeadConsumerMaxIdle {
+			pending := c.Pending
+			_ = b.client.XGroupDelConsumer(ctx, stream, group, c.Name).Err()
+			log.Printf("INFO pruned dead consumer %s from %s/%s (idle=%v, pending=%d)", c.Name, stream, group, c.Idle, pending)
+		}
+	}
+}
 func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group, consumer string, handler Handler) {
+	for _, s := range streams {
+		b.pruneDeadConsumers(ctx, s, group, consumer)
+	}
 	ticker := time.NewTicker(b.cfg.RecoveryEvery)
 	defer ticker.Stop()
 	ids := make([]string, len(streams))
