@@ -27,6 +27,7 @@ from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, I
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
 from .runtime import health, profile
+from .evaluation import EvaluationNotFoundError, RiskEvaluationRequest, RiskEvaluationService, Route
 
 REQUEST_ID_HEADER = "X-Request-ID"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
@@ -58,6 +59,34 @@ class LiftRiskBlockRequest(BaseModel):
     subjectRef: str = Field(min_length=1)
     scope: str = Field(pattern="^(ORDER|PAYMENT|ACCOUNT)$")
     reasonCode: str = Field(min_length=1)
+
+
+class RouteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    origin: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+
+
+class EvaluateRiskRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    orderId: str = Field(min_length=1)
+    accountId: str = Field(min_length=1)
+    travelerRefs: list[Any] = Field(default_factory=list)
+    totalAmountMinor: int = Field(default=0, ge=0)
+    currency: str = Field(default="CNY", min_length=1)
+    route: RouteRequest | None = None
+    departureDate: str = ""
+    sourceIp: str | None = None
+    channelId: str = ""
+
+
+class OverrideRiskEvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    staffId: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
 
 
 class ErrorBody(BaseModel):
@@ -307,6 +336,57 @@ def configure_risk_endpoints(app: FastAPI, service: RiskComplianceService) -> No
         return JSONResponse(status_code=201, content=lifted.to_dict())
 
 
+def _risk_evaluation_request(payload: EvaluateRiskRequest) -> RiskEvaluationRequest:
+    data = payload.model_dump()
+    route = None if payload.route is None else Route(payload.route.origin, payload.route.destination)
+    traveler_refs = []
+    for value in payload.travelerRefs:
+        if isinstance(value, str) and value.strip():
+            traveler_refs.append(value.strip())
+        elif isinstance(value, Mapping):
+            for key in ("travelerRef", "travelerId", "id"):
+                found = value.get(key)
+                if isinstance(found, str) and found.strip():
+                    traveler_refs.append(found.strip())
+                    break
+    return RiskEvaluationRequest(
+        order_id=payload.orderId,
+        account_id=payload.accountId,
+        traveler_refs=tuple(traveler_refs),
+        total_amount_minor=payload.totalAmountMinor,
+        currency=payload.currency,
+        route=route,
+        departure_date=payload.departureDate,
+        source_ip=payload.sourceIp,
+        channel_id=payload.channelId,
+        context=data,
+    )
+
+
+def configure_risk_evaluation_endpoints(app: FastAPI, service: RiskEvaluationService) -> None:
+    @app.post("/api/v1/risk-evaluations", status_code=201, response_model=None)
+    def evaluate_risk(request: Request, payload: EvaluateRiskRequest) -> JSONResponse:
+        try:
+            evaluation = service.evaluate(_risk_evaluation_request(payload), correlation_id=request.state.correlation_id)
+        except PublishFailed:
+            return error_response(request, 503, "UNAVAILABLE", "Risk evaluation event could not be published")
+        return JSONResponse(status_code=201, content=evaluation.to_dict())
+
+    @app.get("/api/v1/risk-evaluations/{evaluationId}", response_model=None)
+    def get_risk_evaluation(request: Request, evaluationId: str) -> dict[str, Any] | JSONResponse:
+        try:
+            return service.get(evaluationId).to_dict()
+        except EvaluationNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Risk evaluation was not found")
+
+    @app.post("/api/v1/risk-evaluations/{evaluationId}/override", response_model=None)
+    def override_risk_evaluation(request: Request, evaluationId: str, payload: OverrideRiskEvaluationRequest) -> dict[str, Any] | JSONResponse:
+        try:
+            return service.override(evaluationId, staff_id=payload.staffId, reason=payload.reason, correlation_id=request.state.correlation_id).to_dict()
+        except EvaluationNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Risk evaluation was not found")
+
+
 def create_app(
     tracer: TraceHook | None = None,
     otel_tracer: RuntimeTracer | None = None,
@@ -322,7 +402,7 @@ def create_app(
             app.state.subscriber.start_in_background(
                 subscriber_config["subscriptions"],
                 subscriber_config["consumer_group"],
-                app.state.risk_service.handle_event,
+                app.state.handle_risk_event,
                 consumer_name=subscriber_config["consumer_name"],
             )
         try:
@@ -352,12 +432,15 @@ def create_app(
         )
 
         app.state.publisher = postgres_publisher or RedisEventPublisher()
+        from .adapters.redis import VelocityRedisCounter
+
         app.state.risk_service = RiskComplianceService(
             publisher=app.state.publisher,
             repository=app.state.assessment_repository,
             idempotency_store=store,
         )
         app.state.subscriber = RedisEventSubscriber()
+        app.state.risk_evaluation_service = RiskEvaluationService(app.state.publisher, velocity_counter=VelocityRedisCounter())
         subscriber_config = {
             "subscriptions": RISK_COMPLIANCE_SUBSCRIPTIONS,
             "consumer_group": RISK_COMPLIANCE_CONSUMER_GROUP,
@@ -366,15 +449,23 @@ def create_app(
     else:
         app.state.risk_service = service
         app.state.publisher = service.publisher
+        app.state.risk_evaluation_service = RiskEvaluationService(app.state.publisher)
         app.state.risk_service.idempotency_store = store
+
+    def handle_risk_event(envelope: Any) -> None:
+        app.state.risk_service.handle_event(envelope)
+        app.state.risk_evaluation_service.handle_event(envelope)
+
+    app.state.handle_risk_event = handle_risk_event
     configure_error_handlers(app)
     configure_runtime_endpoints(app, tracer, otel_tracer or opentelemetry_tracer_from_env(profile()["service_id"]))
     configure_idempotency_middleware(
         app,
         store,
         require_key=True,
-        include_path_prefixes=("/api/v1/risk-assessments", "/api/v1/risk-blocks"),
+        include_path_prefixes=("/api/v1/risk-assessments", "/api/v1/risk-blocks", "/api/v1/risk-evaluations"),
         error_body_factory=_risk_error_body,
     )
     configure_risk_endpoints(app, app.state.risk_service)
+    configure_risk_evaluation_endpoints(app, app.state.risk_evaluation_service)
     return app
