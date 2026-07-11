@@ -275,6 +275,16 @@ class VerificationCache:
             return None
         return entry if entry[1] > at else None
 
+    def find_valid_document_for_traveler(self, travelerId: str, at: datetime) -> str | None:
+        candidates = [
+            (document_number, expires_at)
+            for (cached_traveler_id, document_number), (_verified_at, expires_at) in self._entries.items()
+            if cached_traveler_id == travelerId and expires_at > at
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[1])[0]
+
     def needsReverification(self, travelerId: str, documentNumber: str, bookingValueMinor: int, at: datetime | None = None) -> bool:
         if bookingValueMinor > 500_000:
             return True

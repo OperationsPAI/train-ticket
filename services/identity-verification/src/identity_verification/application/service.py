@@ -212,18 +212,44 @@ class InMemoryStore:
         return tuple(entry for entry in self.blacklist_entries if entry.documentNumber == document_number)
 
     def find_active_ticket(self, document_number: str, segment_ref: str, departure_date: str) -> ActiveTicket | None:
-        return self.active_tickets.get((document_number, segment_ref, departure_date))
+        ticket = self.active_tickets.get((document_number, segment_ref, departure_date))
+        return ticket if ticket is not None and ticket.status == "ACTIVE" else None
 
     def save_active_ticket(self, ticket: ActiveTicket) -> None:
         self.active_tickets[ticket.key] = ticket
 
+    def list_active_tickets_for_order(self, order_id: str) -> tuple[ActiveTicket, ...]:
+        return tuple(ticket for ticket in self.active_tickets.values() if ticket.orderId == order_id and ticket.status == "ACTIVE")
+
     def release_active_tickets_for_order(self, order_id: str) -> None:
         for key, ticket in list(self.active_tickets.items()):
             if ticket.orderId == order_id:
-                self.active_tickets.pop(key, None)
+                self.active_tickets[key] = ActiveTicket(ticket.documentNumber, ticket.segmentRef, ticket.departureDate, ticket.orderId, "CANCELLED")
+
+    def find_reserved_pre_order_check_for_order_event(self, account_id: str, traveler_ids: tuple[str, ...], segment_refs: tuple[str, ...]) -> dict[str, Any] | None:
+        traveler_set = set(traveler_ids)
+        segment_set = set(segment_refs)
+        candidates = []
+        for record in self.pre_order_checks.values():
+            body = dict(record.get("body") or {})
+            if record.get("status") != "RESERVED" or body.get("result") != PreOrderResult.PASS.value:
+                continue
+            if body.get("accountId") != account_id:
+                continue
+            if set(str(item) for item in body.get("travelerRefs") or ()) != traveler_set:
+                continue
+            if set(str(item) for item in body.get("segmentRefs") or ()) != segment_set:
+                continue
+            candidates.append(record)
+        if not candidates:
+            return None
+        return dict(max(candidates, key=lambda item: str((item.get("body") or {}).get("evaluatedAt") or "")))
 
     def get_cached_verification(self, traveler_id: str, document_number: str, at: datetime) -> tuple[datetime, datetime] | None:
         return self.verification_cache.get_valid(traveler_id, document_number, at)
+
+    def find_cached_document_for_traveler(self, traveler_id: str, at: datetime) -> str | None:
+        return self.verification_cache.find_valid_document_for_traveler(traveler_id, at)
 
     def save_cached_verification(self, traveler_id: str, document_number: str, verified_at: datetime, expires_at: datetime) -> None:
         self.verification_cache.record(traveler_id, document_number, verified_at, expires_at)
@@ -592,13 +618,23 @@ class IdentityVerificationService:
             if envelope.eventType != "JourneyOrderCreated":
                 return
             order_id = str(payload.get("orderId") or "")
-            departure_date = str(payload.get("departureDate") or payload.get("journeyDate") or payload.get("createdAt", "")[:10])
-            for traveler in payload.get("travelerRefs") or []:
-                document_number = self._document_number_from_traveler_ref(traveler)
-                if not document_number:
+            account_id = str(payload.get("accountId") or "")
+            segment_refs = tuple(str(item) for item in payload.get("segmentRefs") or () if str(item))
+            traveler_ids = self._traveler_ids_from_refs(payload.get("travelerRefs") or ())
+            pre_order = self.store.find_reserved_pre_order_check_for_order_event(account_id, traveler_ids, segment_refs)
+            if not order_id or pre_order is None:
+                return
+            body = dict(pre_order.get("body") or {})
+            departure_date = str(body.get("journeyDate") or "")
+            if not departure_date:
+                return
+            for fact_id in pre_order.get("purchaseLimitFactIds") or ():
+                fact = self.store.get_fact(str(fact_id))
+                document_number = self.store.find_cached_document_for_traveler(fact.travelerId, now_utc())
+                if document_number is None:
                     continue
-                for segment_ref in payload.get("segmentRefs") or []:
-                    self.store.save_active_ticket(ActiveTicket(document_number, str(segment_ref), departure_date, order_id))
+                for segment_ref in fact.segmentRefs:
+                    self.store.save_active_ticket(ActiveTicket(document_number, segment_ref, departure_date, order_id))
 
     def handle_risk_alert_raised(self, envelope: EventEnvelope, stream: str = "events:risk-compliance") -> None:
         with self.transaction():
@@ -607,17 +643,30 @@ class IdentityVerificationService:
             if envelope.eventType != "RiskAlertRaised":
                 return
             payload = dict(envelope.payload)
-            document_number = payload.get("documentNumber") or payload.get("documentNo")
-            if not document_number:
+            order_id = str(payload.get("orderId") or "")
+            if not order_id:
                 return
-            self.store.add_blacklist_entry(BlacklistEntry(str(document_number), BlacklistType.FRAUD_FLAGGED, str(payload.get("reason") or "risk alert"), now_utc()))
+            reason = self._risk_alert_reason(payload)
+            at = _parse_dt(str(payload.get("raisedAt") or "")) or now_utc()
+            for ticket in self.store.list_active_tickets_for_order(order_id):
+                self.store.add_blacklist_entry(BlacklistEntry(ticket.documentNumber, BlacklistType.FRAUD_FLAGGED, reason, at))
 
     @staticmethod
-    def _document_number_from_traveler_ref(traveler: Any) -> str | None:
-        if isinstance(traveler, str):
-            return None
-        if isinstance(traveler, Mapping):
-            for key in ("documentNumber", "documentNo", "identityDocumentNumber"):
-                if traveler.get(key):
-                    return str(traveler[key]).upper()
-        return None
+    def _traveler_ids_from_refs(traveler_refs: Any) -> tuple[str, ...]:
+        traveler_ids: list[str] = []
+        for traveler in traveler_refs:
+            if isinstance(traveler, str):
+                traveler_ids.append(traveler)
+            elif isinstance(traveler, Mapping) and traveler.get("travelerId"):
+                traveler_ids.append(str(traveler["travelerId"]))
+        return tuple(traveler_ids)
+
+    @staticmethod
+    def _risk_alert_reason(payload: Mapping[str, Any]) -> str:
+        triggered_rules = payload.get("triggeredRules")
+        if isinstance(triggered_rules, list) and triggered_rules:
+            rule_ids = [str(rule.get("ruleId") or rule.get("id")) for rule in triggered_rules if isinstance(rule, Mapping) and (rule.get("ruleId") or rule.get("id"))]
+            if rule_ids:
+                return "risk alert: " + ",".join(rule_ids)
+        verdict = str(payload.get("verdict") or "").strip()
+        return f"risk alert: {verdict}" if verdict else "risk alert"
