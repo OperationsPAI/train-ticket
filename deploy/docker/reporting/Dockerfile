@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-FROM ghcr.io/astral-sh/uv:0.9-python3.12-bookworm-slim AS builder
+FROM python:3.12-bookworm AS builder
+RUN pip install --no-cache-dir uv
 WORKDIR /src
 ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 COPY platform/python-kit ./platform/python-kit
