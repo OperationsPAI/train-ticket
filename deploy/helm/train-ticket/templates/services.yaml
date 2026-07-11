@@ -46,8 +46,9 @@ spec:
             - name: REDIS_URL
               value: redis://redis.{{ $.Release.Namespace }}.svc.cluster.local:6379
             {{- if $db }}
+            {{- $pgHost := $svc.pgInstance | default "core" }}
             - name: DATABASE_URL
-              value: postgresql://{{ $.Values.postgres.credentials.username }}:{{ $.Values.postgres.credentials.password }}@postgres:5432/{{ $db }}
+              value: postgresql://{{ $.Values.postgres.credentials.username }}:{{ $.Values.postgres.credentials.password }}@postgres-{{ $pgHost }}:5432/{{ $db }}
             {{- end }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://otel-collector:4317
