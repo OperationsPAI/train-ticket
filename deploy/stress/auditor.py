@@ -351,8 +351,18 @@ def assert_fund_conservation(cfg: dict, report: dict | None) -> AssertionResult:
     total_captures = int(raw_captures.strip()) if raw_captures.strip().lstrip("-").isdigit() else 0
 
     # Total order amounts from non-cancelled order items in greenfield snapshots.
+    # Older snapshots store Money as {amount: "100.00", currency: "CNY"};
+    # newer snapshots may store {minorUnits: 10000, currency: "CNY"}.
     sql_orders = """
-        SELECT COALESCE(SUM((item->'amount'->>'minorUnits')::bigint), 0)
+        SELECT COALESCE(SUM(
+            CASE
+                WHEN item->'amount' ? 'minorUnits'
+                    THEN (item->'amount'->>'minorUnits')::bigint
+                WHEN item->'amount' ? 'amount'
+                    THEN ROUND(((item->'amount'->>'amount')::numeric) * 100)::bigint
+                ELSE 0
+            END
+        ), 0)
         FROM journey_order_snapshots
         CROSS JOIN LATERAL jsonb_array_elements(data->'orderItems') AS item
         WHERE data->>'status' IN ('CONFIRMED', 'CONFIRMING', 'COMPLETED', 'ADJUSTED')
