@@ -735,21 +735,21 @@
       "id": "waitlist",
       "path": "services/waitlist",
       "domain": "Waitlist",
-      "language": "rust",
-      "runtime": "rust",
-      "phase": "future-scope",
-      "status": "placeholder-skeleton",
+      "language": "typescript",
+      "runtime": "node",
+      "phase": "phase-1-activation",
+      "status": "implemented",
       "priority": "P1",
-      "workPackages": [],
+      "workPackages": ["REQ-305"],
       "docs": [
         "docs/02-domains/waitlist.md"
       ],
       "owns": [
-        "WaitlistRequest",
-        "QueuePolicy",
-        "FulfillmentWindow"
+        "WaitlistEntry",
+        "WaitlistQueue",
+        "WaitlistOffer"
       ],
-      "rationale": "Rust fits fairness, mutual-exclusion, and queue-order invariants."
+      "rationale": "TypeScript aligns waitlist activation with the surrounding Node service runtime and ts-kit messaging/outbox primitives."
     },
     {
       "id": "wallet-promotion",
