@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from identity_verification.application.service import IdentityVerificationService
 
 router = APIRouter(prefix="/api/v1/identity-verification")
+compatibility_router = APIRouter(prefix="/api/v1")
 
 
 class LooseModel(BaseModel):
@@ -22,6 +23,18 @@ class RegisterCredentialRequest(LooseModel):
     birthDateHash: str | None = None
     validUntil: str | None = None
     evidenceHash: str | None = None
+
+
+class RealNameVerificationRequest(LooseModel):
+    travelerId: str
+    documentType: str
+    documentNumber: str
+    holderName: str
+    expiryDate: str | None = None
+    segmentRef: str | None = None
+    departureDate: str | None = None
+    seatClass: str | None = None
+    bookingValueMinor: int = 0
 
 
 class StartVerificationRequest(LooseModel):
@@ -97,6 +110,20 @@ def _cause(request: Request) -> str:
 @router.post("/credentials", status_code=201)
 def register_credential(body: RegisterCredentialRequest, request: Request) -> dict[str, Any]:
     return _service(request).register_credential(body.model_dump(exclude_none=True), _corr(request), _cause(request))
+
+
+def _verify_identity_response(body: RealNameVerificationRequest, request: Request) -> dict[str, Any]:
+    return _service(request).verify_identity(body.model_dump(exclude_none=True), _corr(request), _cause(request))
+
+
+@router.post("/verifications", status_code=201)
+def verify_identity(body: RealNameVerificationRequest, request: Request) -> dict[str, Any]:
+    return _verify_identity_response(body, request)
+
+
+@compatibility_router.post("/verifications", status_code=201)
+def verify_identity_compatibility(body: RealNameVerificationRequest, request: Request) -> dict[str, Any]:
+    return _verify_identity_response(body, request)
 
 
 @router.post("/verification-cases", status_code=201)
