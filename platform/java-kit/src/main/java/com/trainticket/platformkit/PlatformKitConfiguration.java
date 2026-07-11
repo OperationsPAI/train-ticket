@@ -1,6 +1,7 @@
 package com.trainticket.platformkit;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import org.springframework.context.annotation.Primary;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -60,6 +61,7 @@ public class PlatformKitConfiguration {
 
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
+    @Primary
     @ConditionalOnProperty(prefix = "platform.java-kit.redis", name = "enabled", havingValue = "true")
     RedisEventPublisher redisEventPublisher(@Value("${REDIS_URL:redis://localhost:6379}") String redisUrl, ObjectMapper objectMapper) {
         return RedisEventPublisher.fromUrl(redisUrl, objectMapper);
