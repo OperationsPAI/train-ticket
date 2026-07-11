@@ -9,6 +9,93 @@ postgres:
   credentials:
     username: trainticket
     password: trainticket-dev
+  instances:
+    hot:
+      databases:
+      - journey_order
+      - booking_orchestration
+      maxConnections: 300
+      sharedBuffers: 1GB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    txn:
+      databases:
+      - payment
+      - entitlement_ticketing
+      - payment_channel
+      - post_sales
+      - finance_settlement
+      maxConnections: 300
+      sharedBuffers: 1GB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    read:
+      databases:
+      - trip_planning
+      - fare_pricing
+      - offer_management
+      - capacity_availability
+      - seat_assignment
+      - service_plan
+      - place_network
+      maxConnections: 300
+      sharedBuffers: 1GB
+      workMem: 16MB
+      resources:
+        requests:
+          cpu: '2'
+          memory: 4Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
+    core:
+      databases:
+      - account
+      - traveler_profile
+      - identity_verification
+      - admin_audit
+      - ancillary_service
+      - corporate_travel
+      - customer_service
+      - dispatch
+      - disruption_recovery
+      - fulfillment
+      - group_booking
+      - invoicing
+      - legacy_acl
+      - loyalty_membership
+      - marketing_campaign
+      - notification
+      - provider_integration
+      - reporting
+      - risk_compliance
+      - supplier_catalog
+      - transfer_management
+      - travel_insurance
+      - waitlist
+      - wallet_promotion
+      maxConnections: 300
+      sharedBuffers: 512MB
+      workMem: 8MB
+      resources:
+        requests:
+          cpu: '1'
+          memory: 2Gi
+        limits:
+          cpu: '4'
+          memory: 8Gi
 loadgen:
   enabled: true
   workers: 200
@@ -28,6 +115,7 @@ services:
       limits: &id002
         cpu: '2'
         memory: 6Gi
+    pgInstance: hot
   booking-orchestration:
     db: booking_orchestration
     replicas: 3
@@ -37,12 +125,14 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: hot
   trip-planning:
     db: trip_planning
     replicas: 2
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   fare-pricing:
     db: fare_pricing
     replicas: 2
@@ -51,6 +141,7 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   offer-management:
     db: offer_management
     replicas: 2
@@ -60,6 +151,7 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   payment:
     db: payment
     replicas: 2
@@ -68,6 +160,7 @@ services:
       limits: *id002
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+    pgInstance: txn
   entitlement-ticketing:
     db: entitlement_ticketing
     replicas: 2
@@ -77,6 +170,7 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: txn
   account:
     db: account
     replicas: 2
@@ -100,6 +194,7 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   risk-compliance:
     db: risk_compliance
     resources:
@@ -112,6 +207,7 @@ services:
       limits: *id002
     env:
       SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING: 'true'
+    pgInstance: txn
   dispatch:
     db: dispatch
     resources:
@@ -122,11 +218,13 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   service-plan:
     db: service_plan
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   ancillary-service:
     db: ancillary_service
     env:
@@ -183,6 +281,7 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: txn
   reporting:
     db: reporting
     env:
@@ -239,11 +338,13 @@ services:
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: read
   payment-channel:
     db: payment_channel
     resources:
       requests: *id001
       limits: *id002
+    pgInstance: txn
   invoicing:
     db: invoicing
     env:
