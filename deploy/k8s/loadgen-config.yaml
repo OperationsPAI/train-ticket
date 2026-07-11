@@ -148,8 +148,8 @@ bootstrap:
     - { name: Hangzhou, code: HGH }
   # scheduled services are ensured between consecutive random city pairs for
   # each date below (created only if the registry doesn't know the tuple).
-  departure_dates: ["2026-08-01", "2026-08-02"]
-  services_per_date: 2
+  departure_dates: ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"]
+  services_per_date: 3
   service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
 
 # ---------------------------------------------------------------------------
