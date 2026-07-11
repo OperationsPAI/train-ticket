@@ -2437,14 +2437,13 @@ async def bootstrap(cfg: dict, api: Api, reg: Registry, rng: random.Random) -> N
         existing = by_code.get(city["code"])
         if existing:
             places[city["code"]] = existing["placeId"]
-            reg.places[city["code"]] = existing["placeId"]
         else:
-            _, p = await api.request("POST", "place-network", "/api/v1/places",
+            _, created = await api.request("POST", "place-network", "/api/v1/places",
                                      {"canonicalName": city["name"], "placeType": "CITY",
                                       "code": city["code"], "timezone": "Asia/Shanghai"},
                                      step="create-place")
-            places[city["code"]] = p["placeId"]
-        reg.places[city["code"]] = p["placeId"]
+            places[city["code"]] = created["placeId"]
+        reg.places[city["code"]] = places[city["code"]]
         _, n = await api.request("POST", "place-network", "/api/v1/transport-nodes",
                                  {"placeId": places[city["code"]],
                                   "displayName": f"{city['name']} Station", "servingModes": ["RAIL"]},
