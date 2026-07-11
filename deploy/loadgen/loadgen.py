@@ -715,7 +715,7 @@ class StaffSim:
         """Find the booking saga for an order and drive its reservation step."""
         saga = None
         for _ in range(self.poll_attempts):
-            entries = await self.redis.xrevrange("events:booking-orchestration", count=2000)
+            entries = await self.redis.xrevrange("events:booking-orchestration", count=10000)
             for _id, fields in entries:
                 raw = fields.get("envelope")
                 if not raw:
@@ -1666,7 +1666,7 @@ class CustomerSim:
 
     async def find_refund_id(self, case_id: str) -> str | None:
         for _ in range(self.poll_attempts):
-            entries = await self.redis.xrevrange("events:payment", count=2000)
+            entries = await self.redis.xrevrange("events:payment", count=10000)
             for _id, fields in entries:
                 raw = fields.get("envelope")
                 if not raw:
@@ -2033,7 +2033,7 @@ class ScalperSim:
         for _ in range(self.poll_attempts):
             try:
                 entries = await self.redis.xrevrange(
-                    "events:booking-orchestration", count=2000)
+                    "events:booking-orchestration", count=10000)
                 for _mid, fields in entries:
                     raw = fields.get("envelope", "")
                     if "BookingSagaStarted" not in raw or order_id not in raw:

@@ -99,9 +99,9 @@ behavior:
 # risk review, support case handling.
 # ---------------------------------------------------------------------------
 staff:
-  workers: 2
-  think_time_seconds: { min: 0.5, max: 2.0 }   # agent reaction time
-  queue_poll_seconds: 0.5
+  workers: 4
+  think_time_seconds: { min: 0.1, max: 0.5 }   # agent reaction time
+  queue_poll_seconds: 0.3
   p_risk_approve: 0.50        # manual review lifts the block, else rejected
   p_support_assign: 0.80
   p_support_resolve: 0.60
