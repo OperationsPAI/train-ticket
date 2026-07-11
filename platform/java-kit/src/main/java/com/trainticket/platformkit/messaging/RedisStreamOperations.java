@@ -21,6 +21,8 @@ public interface RedisStreamOperations {
 
     void ack(String stream, String group, String messageId);
 
+    default void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {}
+
     void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata);
 
     record StreamMessage(String stream, String envelopeJson) {

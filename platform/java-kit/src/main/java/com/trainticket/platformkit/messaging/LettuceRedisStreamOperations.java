@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
+import org.slf4j.LoggerFactory;
 
 public final class LettuceRedisStreamOperations implements RedisStreamOperations {
     private static final long BLOCK_MS = Long.parseLong(System.getenv().getOrDefault("CONSUMER_BLOCK_MS", "100"));
@@ -113,6 +114,27 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     @Override
     public void ack(String stream, String group, String messageId) {
         connection.sync().xack(stream, group, messageId);
+    }
+
+    @Override
+    public void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {
+        try {
+            var consumers = connection.sync().xinfoConsumers(stream, group);
+            for (var consumer : consumers) {
+                if (consumer.getName().equals(selfName)) {
+                    continue;
+                }
+                if (consumer.getIdle() > maxIdleMillis) {
+                    long pending = consumer.getPending();
+                    connection.sync().xgroupDelconsumer(stream, Consumer.from(group, consumer.getName()));
+                    LoggerFactory.getLogger(LettuceRedisStreamOperations.class)
+                        .info("pruned dead consumer {} from {}/{} (idle={}ms, pending={})",
+                            consumer.getName(), stream, group, consumer.getIdle(), pending);
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // best-effort cleanup; stream or group may not exist yet
+        }
     }
 
     @Override
