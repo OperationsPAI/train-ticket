@@ -2,7 +2,7 @@
 
 **Date**: 2026-07-10
 **Cluster**: kind-arl-test (single-node, 40 pods)
-**Services**: 33 business + infra
+**Services**: 38 business + infra
 
 ## Test Environment
 
@@ -363,9 +363,9 @@ Validates zero data loss during service recovery. Outbox fully drained, DLQ stab
 
 Missing `post_sales_active_refunds` table (migration drift) caused 100% refund/change failures. Fixed by creating the table directly. Result: refund 100% success, change 100% success, zero post-sales errors.
 
-## Wave B-E New Services (2026-07-10)
+## Wave B-E Services (2026-07-10)
 
-5 new bounded context services deployed and validated:
+5 new bounded context services deployed and validated. All 5 pods were healthy and all service databases were reachable. The oracle initially reached **14/15 PASS**: health and DB checks passed for every service and API smoke passed for 4/5 services, with only `marketing-campaign` API smoke failing because Jackson serialization rejected `Instant` fields in the campaign DTO path. The marketing-campaign fix changed request/response DTO date fields to String-boundary values and parses them internally; the follow-up oracle run completed **15/15 PASS**.
 
 | Service | Language | Kit | Health | DB | API Smoke |
 |---------|----------|-----|--------|-----|-----------|
@@ -373,45 +373,60 @@ Missing `post_sales_active_refunds` table (migration drift) caused 100% refund/c
 | travel-insurance | Go | go-kit | PASS (8ms) | PASS | PASS (201) |
 | group-booking | Java | java-kit | PASS (12ms) | PASS | PASS (201) |
 | corporate-travel | Python | python-kit | PASS (10ms) | PASS | PASS (201) |
-| marketing-campaign | Java | java-kit | PASS (8ms) | PASS | PASS (201) |
+| marketing-campaign | Java | java-kit | PASS (8ms) | PASS | PASS after DTO date fix (201) |
 
-**Oracle**: 15/15 checks PASS (health + DB + API smoke for all 5 services)
+**Oracle**: 14/15 PASS before the marketing-campaign DTO fix; 15/15 PASS after the fix (health + DB + API smoke for all 5 services).
 
-### New Service Latency (loadgen)
+### New Service Latency Profiles (loadgen)
 
-| Service | p50 | p95 | n |
-|---------|-----|-----|---|
-| loyalty-membership | 5ms | 11ms | 14 |
-| travel-insurance | 14ms | 14ms | 5 |
-| group-booking | 8ms | 9ms | 6 |
-| corporate-travel | 8ms | 8ms | 1 |
-| marketing-campaign | 30ms | 30ms | 2 |
+| Service | p50 | p95 | Samples | Outcome |
+|---------|-----|-----|---------|---------|
+| loyalty-membership | 5ms | 11ms | 14 | `loyalty_checked` |
+| travel-insurance | 14ms | 14ms | 5 | `insurance_policy_created` |
+| group-booking | 8ms | 9ms | 6 | `group_created` |
+| corporate-travel | 8ms | 8ms | 1 | `corporate_agreement_created` |
+| marketing-campaign | 30ms | 30ms | 2 | `campaign_drafted` |
+
+**New-service loadgen result**: 28/28 Wave B-E journey operations completed with **0 HTTP errors** after the loadgen request-shape fixes and marketing-campaign DTO fix.
 
 ### Loadgen Journey Coverage (16 journeys)
 
-All 16 journey types active in loadgen with 0 HTTP errors for new services:
+The load generator now covers 16 journey types: the original 10 customer journeys, 5 Wave B-E service journeys, and the scalper grab journey. The configured customer journey mix totals 135 weighted units; scalper workers run on a separate zero-think-time loop.
 
-| Journey | Outcome | Count |
-|---------|---------|-------|
-| loyalty | loyalty_checked | 7 |
-| insurance | insurance_policy_created | 5 |
-| corporate | corporate_agreement_created | 1 |
-| group_booking | group_created | 6 |
-| campaign | campaign_drafted | 2 |
+| Journey | Scope | Configured weight | Coverage status | Observed metric |
+|---------|-------|-------------------|-----------------|-----------------|
+| browse | Core pre-sales | 30 | Active | Covered in S1/S2/S8 browse traffic |
+| purchase | Core purchase chain | 40 | Active | 10 regular purchases completed in the Wave B-E/scalper validation run |
+| refund | Post-sales | 8 | Active | Covered in S3/S4/S5/S6/S8 refund traffic |
+| change | Post-sales | 5 | Active | Post-sales fix validated 100% change success |
+| fulfillment | Ride/ticket lifecycle | 7 | Active | Covered by fulfillment/ride scenarios |
+| support | Customer support | 4 | Active | Support journey present in active mix |
+| legacy | Legacy ACL lifecycle | 6 | Active | Legacy journey present in active mix |
+| ride | Ground transport | 5 | Active | Ride journey present in active mix |
+| disruption | Ops recovery | 1 | Active | Disruption journey present in active mix |
+| transfer | Transfer management | 1 | Active | Transfer journey present in active mix |
+| loyalty | Wave B-E | 8 | Active | 7 `loyalty_checked` |
+| insurance | Wave B-E | 6 | Active | 5 `insurance_policy_created` |
+| group_booking | Wave B-E | 5 | Active | 6 `group_created` |
+| corporate | Wave B-E | 5 | Active | 1 `corporate_agreement_created` |
+| campaign | Wave B-E | 4 | Active | 2 `campaign_drafted` |
+| scalper_grab | Adversarial purchase | separate workers | Active | 32 attempts, 19 successes |
 
-### Scalper Behavior (after timeout tuning)
+**Coverage metrics**: 16/16 journey types configured and active; 5/5 Wave B-E journeys produced successful domain outcomes; 0 new-service HTTP errors; oracle coverage 15/15 after the marketing-campaign fix.
+
+### Scalper Behavior (after fixes)
 
 | Metric | Value |
 |--------|-------|
 | Scalper attempts | 32 |
 | Scalper success | **19 (59%)** |
 | Scalper blocked by risk | 0 |
-| Scalper capacity exhausted | 10 |
+| Scalper capacity exhausted | 10 (31%) |
 | IP rotations | 313 |
 | Purchase purchased | **10** |
 | Purchase failed | **0** |
 
-Scalper actors successfully purchase tickets with 59% success rate. Failures are capacity exhaustion (31%) only. Event pipeline confirmation latency (35-65s) resolved by increasing scalper confirm timeout from 30s to 90s.
+Scalper actors successfully purchase tickets with 59% success rate after the confirm-timeout tuning. Failures are capacity exhaustion only; no risk blocks or scalper-path service errors were observed. Event pipeline confirmation latency (35-65s) was absorbed by increasing the scalper confirmation timeout from 30s to 90s.
 
 ## Correctness
 
