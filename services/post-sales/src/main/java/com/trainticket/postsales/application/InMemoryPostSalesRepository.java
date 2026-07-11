@@ -66,6 +66,7 @@ public class InMemoryPostSalesRepository implements PostSalesRepository {
     private static boolean isActive(PostSalesCase postSalesCase) {
         return postSalesCase.status() != PostSalesCaseStatus.REJECTED
             && postSalesCase.status() != PostSalesCaseStatus.CANCELLED
-            && postSalesCase.status() != PostSalesCaseStatus.FAILED;
+            && postSalesCase.status() != PostSalesCaseStatus.FAILED
+            && postSalesCase.status() != PostSalesCaseStatus.APPLIED;
     }
 }
