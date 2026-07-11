@@ -1,0 +1,39 @@
+{{- if .Values.loadgen.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loadgen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadgen
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: loadgen
+          image: {{ include "train-ticket.image" (dict "global" .Values.global "name" "loadgen") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: state
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: loadgen-config
+        - name: state
+          emptyDir: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadgen-config
+data:
+  {{- (.Files.Glob "loadgen-config.yaml").AsConfig | nindent 2 }}
+{{- end }}

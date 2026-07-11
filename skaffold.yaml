@@ -2,6 +2,9 @@ apiVersion: skaffold/v4beta9
 kind: Config
 metadata:
   name: train-ticket
+
+# Build: push to docker.io (opspai/<service>)
+# Deploy: images pulled via mirror pair-cn-guangzhou.cr.volces.com
 build:
   platforms: ["linux/amd64"]
   local:
@@ -101,14 +104,14 @@ build:
       context: .
       docker:
         dockerfile: deploy/docker/offer-management/Dockerfile
-    - image: opspai/payment-channel
-      context: .
-      docker:
-        dockerfile: deploy/docker/payment-channel/Dockerfile
     - image: opspai/payment
       context: .
       docker:
         dockerfile: deploy/docker/payment/Dockerfile
+    - image: opspai/payment-channel
+      context: .
+      docker:
+        dockerfile: deploy/docker/payment-channel/Dockerfile
     - image: opspai/place-network
       context: .
       docker:
@@ -165,3 +168,7 @@ build:
       context: .
       docker:
         dockerfile: deploy/docker/wallet-promotion/Dockerfile
+
+# Deploy: use k8s-prod manifests (images rewritten to mirror registry)
+# Usage: skaffold build --tag latest   (build + push to docker.io)
+#        kubectl apply -f deploy/k8s-prod/ -n train-ticket-prod  (deploy via mirror)
