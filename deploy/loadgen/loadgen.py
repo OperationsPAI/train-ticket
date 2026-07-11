@@ -1410,7 +1410,6 @@ class CustomerSim:
              "ancillaryOrderItemId": f"anc-{uuid7()[:8]}",
              "segmentRefs": [f"seg-ins-{uuid7()[:8]}"],
              "paymentIntentId": f"pi-{uuid7()[:8]}",
-             "premium": {"currency": currency, "minorUnits": premium},
              "coverageStartAt": now_dt.isoformat(),
              "coverageEndAt": (now_dt + timedelta(days=1)).isoformat()},
             ok=(200, 201), step="insurance-issue-policy")
