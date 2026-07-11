@@ -1,11 +1,7 @@
-# Production values — 20-node VKE cluster with ample resources
-# Usage: helm upgrade train-ticket deploy/helm/train-ticket/ -f deploy/helm/values-prod.yaml
-
 global:
-  imageRegistry: "pair-cn-guangzhou.cr.volces.com"
-  imageTag: "latest"
+  imageRegistry: pair-cn-guangzhou.cr.volces.com
+  imageTag: latest
   imagePullPolicy: Always
-
 postgres:
   storage:
     size: 40Gi
@@ -13,116 +9,158 @@ postgres:
   credentials:
     username: trainticket
     password: trainticket-dev
-
-# Loadgen — aggressive for stress testing
 loadgen:
   enabled: true
   workers: 20
-
-# --- Core purchase chain (high traffic) — scale up --------------------------
 services:
   journey-order:
     db: journey_order
     replicas: 3
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
-      IDENTITY_VERIFICATION_PREORDER_ENABLED: "true"
-      CONSUMER_THREADS: "4"
+      IDENTITY_VERIFICATION_PREORDER_ENABLED: 'true'
+      CONSUMER_THREADS: '4'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: { cpu: 500m, memory: 512Mi }
-      limits: { cpu: "2", memory: 1Gi }
-
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: '2'
+        memory: 1Gi
   booking-orchestration:
     db: booking_orchestration
     replicas: 3
     env:
-      CONSUMER_THREADS: "4"
+      CONSUMER_THREADS: '4'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: { cpu: 500m, memory: 512Mi }
-      limits: { cpu: "2", memory: 1Gi }
-
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: '2'
+        memory: 1Gi
   trip-planning:
     db: trip_planning
     replicas: 2
     resources:
-      requests: { cpu: 300m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 300m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   fare-pricing:
     db: fare_pricing
     replicas: 2
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
     resources:
-      requests: { cpu: 300m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 300m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   offer-management:
     db: offer_management
     replicas: 2
     env:
-      PG_MAX_POOL_SIZE: "20"
+      PG_MAX_POOL_SIZE: '20'
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: { cpu: 300m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 300m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   payment:
     db: payment
     replicas: 2
     resources:
-      requests: { cpu: 300m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 300m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   entitlement-ticketing:
     db: entitlement_ticketing
     replicas: 2
     env:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
-      requests: { cpu: 300m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 300m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   account:
     db: account
     replicas: 2
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   traveler-profile:
     db: traveler_profile
     replicas: 2
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   identity-verification:
     db: identity_verification
     replicas: 2
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
-  # --- Secondary services — standard resources ------------------------------
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   capacity-availability:
     db: capacity_availability
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   risk-compliance:
     db: risk_compliance
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
   post-sales:
     db: post_sales
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: "1", memory: 512Mi }
-
-  # --- All other services inherit defaults from values.yaml -----------------
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 512Mi
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+      SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING: 'true'
   dispatch:
     db: dispatch
   place-network:
@@ -131,6 +169,8 @@ services:
     db: service_plan
   ancillary-service:
     db: ancillary_service
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   provider-integration:
     db: provider_integration
   fulfillment:
@@ -139,18 +179,27 @@ services:
     db: notification
     env:
       SMTP_URL: smtp://mailpit:1025
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   corporate-travel:
     db: corporate_travel
   loyalty-membership:
     db: loyalty_membership
   admin-audit:
     db: admin_audit
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   customer-service:
     db: customer_service
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   finance-settlement:
     db: finance_settlement
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   reporting:
     db: reporting
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   supplier-catalog:
     db: supplier_catalog
   legacy-acl:
@@ -164,6 +213,8 @@ services:
       JOURNEY_ORDER_BASE_URL: http://journey-order:8080
   wallet-promotion:
     db: wallet_promotion
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   disruption-recovery:
     db: disruption_recovery
     env:
@@ -181,9 +232,15 @@ services:
     db: payment_channel
   invoicing:
     db: invoicing
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   marketing-campaign:
     db: marketing_campaign
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   group-booking:
     db: group_booking
+    env:
+      PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
   travel-insurance:
     db: travel_insurance
