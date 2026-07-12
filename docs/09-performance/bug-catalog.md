@@ -160,6 +160,70 @@ group with `XGROUP DESTROY` + `XGROUP CREATE $` to clear backlog.
 
 ---
 
+## BUG-008: Invoicing Missing Booking-Orchestration Subscription
+
+**Severity**: Critical (blocks saga completion at INVOICING step)
+**Service**: invoicing (Rust)
+
+**Symptom**: Booking sagas accumulate in INVOICING status and never reach
+COMPLETED. Regular customer purchases never fully complete.
+
+**Root Cause**: Invoicing service did not subscribe to
+`events:booking-orchestration` stream. When booking-orchestration
+published `InvoiceRequested` events, invoicing never received them.
+Additionally, the `paymentRef` field was required but
+booking-orchestration's `paymentRefForSaga()` returns null when no
+payment_intent_saga_ref exists for the saga.
+
+**Fix**:
+1. Add `events:booking-orchestration` to `subscribed_streams()`
+2. Make `paymentRef` optional in `handle_saga_invoice_requested()`
+
+**Commit**: `21d4360c`
+
+**Reproduce**: Revert the commit, run the full purchase flow. Sagas will
+stall at INVOICING status indefinitely.
+
+---
+
+## BUG-009: Redis Liveness Probe Too Aggressive
+
+**Severity**: Medium (causes unnecessary Redis restarts)
+**Service**: Redis
+
+**Symptom**: Redis restarts 8+ times in 11 hours. All consumer groups
+and stream positions are lost on restart (save disabled), causing
+services to re-read 100K+ historical events.
+
+**Root Cause**: Default liveness probe timeout (1s) and failure
+threshold (3) are too tight. Under load, `redis-cli ping` takes >1s
+occasionally, triggering false positives.
+
+**Fix**: Increase `timeoutSeconds: 5` and `failureThreshold: 5`.
+
+**Commit**: `8ce213f5`
+
+---
+
+## BUG-010: PG Fresh PVC Missing Remote Access
+
+**Severity**: High (new PG instances reject pod connections)
+**Service**: All PostgreSQL shards
+
+**Symptom**: After PVC recreation (e.g., postgres-event), services get
+`no pg_hba.conf entry for host` errors and CrashLoopBackOff.
+
+**Root Cause**: Docker postgres entrypoint normally adds
+`host all all all scram-sha-256` to pg_hba.conf, but edge cases
+(PGDATA on PVC with partial init) can leave this entry missing.
+
+**Fix**: Add pg_hba.conf check to initdb script to ensure
+`host all all 0.0.0.0/0 md5` is present.
+
+**Commit**: `8ce213f5`
+
+---
+
 ## Performance Findings (Not Bugs)
 
 ### PERF-001: Python Single Uvicorn Worker
