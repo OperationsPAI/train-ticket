@@ -15,17 +15,24 @@ from train_ticket_platform.ids import new_prefixed_uuid7
 from transfer_management.domain import (
     ActorRef,
     Connection,
+    ConnectionGuarantee,
+    ConnectionValidator,
+    CrossModeTransfer,
     ConnectionContract,
     ConnectionStatus,
     ConnectionWindow,
     ContractStatus,
     ContractType,
     DomainError,
+    MinimumConnectionTime,
+    MissedConnectionDetector,
     MctRule,
     MctRuleStatus,
     NodeType,
     PreconditionFailed,
     RecoveryCaseMapping,
+    RebookingRequest,
+    RebookingSuggestion,
     RecoveryTriggerStatus,
     ReportType,
     RiskEvaluation,
@@ -34,7 +41,9 @@ from transfer_management.domain import (
     RiskThresholds,
     SegmentStatusReport,
     TransferCategory,
+    TransferMode,
     TransferPlan,
+    TransferProposal,
     TransferRiskPolicy,
     TransferPlanStatus,
     now_utc,
@@ -48,6 +57,8 @@ from transfer_management.topology import PlaceNetworkClient, PlaceNetworkUnavail
 PRODUCER = "transfer-management"
 PROTECTED_TYPES = {ContractType.PROTECTED, ContractType.SUPPLIER_PROTECTED}
 FULFILLMENT_SEGMENT_EVENT_TYPES = {"SegmentArrived", "SegmentDelayed", "SegmentCancelled"}
+DISRUPTION_SEGMENT_EVENT_TYPES = {"TrainDelayed", "TrainCancelled"}
+AUTO_REBOOKING_WINDOW = timedelta(hours=4)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -224,6 +235,49 @@ def _replacement_window_json(window: Mapping[str, Any]) -> dict[str, Any]:
 
 
 
+def _mode(value: Any, default: TransferMode = TransferMode.TRAIN) -> TransferMode:
+    return TransferMode(str(value or default.value).upper())
+
+
+def _same_platform(data: Mapping[str, Any], category: TransferCategory) -> bool:
+    if data.get("samePlatform") is not None:
+        return bool(data.get("samePlatform"))
+    return category is TransferCategory.IN_STATION
+
+
+def _cross_mode_from_data(data: Mapping[str, Any], from_mode: TransferMode, to_mode: TransferMode, from_node_ref: str, to_node_ref: str) -> CrossModeTransfer:
+    walking = int(data.get("walkingMinutes") if data.get("walkingMinutes") is not None else (0 if from_node_ref == to_node_ref else 10))
+    override = data.get("mctOverride")
+    return CrossModeTransfer(from_mode, to_mode, from_node_ref, to_node_ref, walking, int(override) if override is not None else None)
+
+
+def _can_use_builtin_mct(data: Mapping[str, Any], from_mode: TransferMode, to_mode: TransferMode, station_ref: str, same_platform: bool) -> bool:
+    return (
+        from_mode is not to_mode
+        or same_platform
+        or data.get("stationSize") == "SMALL_STATION"
+        or station_ref in {"北京南", "上海虹桥", "广州南", "南京南", "武汉", "成都东"}
+        or data.get("mctOverride") is not None
+    )
+
+
+def _leg_ref(leg: Mapping[str, Any], index: int) -> str:
+    return str(leg.get("serviceSegmentRef") or leg.get("segmentRef") or leg.get("servicePlanRef") or f"leg-{index}")
+
+
+def _itinerary_transfer_hint(itinerary: Mapping[str, Any], index: int) -> Mapping[str, Any]:
+    transfers = itinerary.get("transfers") or itinerary.get("transferHints") or ()
+    if isinstance(transfers, Iterable) and not isinstance(transfers, (str, bytes, Mapping)):
+        items = tuple(item for item in transfers if isinstance(item, Mapping))
+        if index - 1 < len(items):
+            return items[index - 1]
+    return {}
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
 def segment_status_report_from_fulfillment_event(envelope: EventEnvelope) -> dict[str, Any]:
     payload = dict(envelope.payload or {})
     event_type = envelope.eventType
@@ -244,6 +298,34 @@ def segment_status_report_from_fulfillment_event(envelope: EventEnvelope) -> dic
     else:
         data["cancelledAt"] = rfc3339_utc(parse_dt(payload.get("cancelledAt"), "cancelledAt"))
     return data
+
+
+def segment_status_report_from_disruption_event(envelope: EventEnvelope) -> dict[str, Any]:
+    payload = dict(envelope.payload or {})
+    event_type = envelope.eventType
+    observed_at = payload.get("observedAt") or envelope.occurredAt
+    data: dict[str, Any] = {
+        "segmentRef": require_text(payload.get("segmentRef") or payload.get("serviceRef") or payload.get("trainRef"), "payload.segmentRef"),
+        "reportType": "DELAY" if event_type == "TrainDelayed" else "CANCELLED",
+        "reportedBy": {"actorType": "SYSTEM", "actorId": "disruption-recovery"},
+        "sourceSystem": "FULFILLMENT-EVENT",
+        "sourceRecordId": envelope.eventId,
+        "observedAt": rfc3339_utc(parse_dt(observed_at, "observedAt")),
+    }
+    if event_type == "TrainDelayed":
+        estimated = payload.get("actualArrivalAt") or payload.get("estimatedArrivalAt") or payload.get("estimatedNewArrival") or payload.get("estimatedNewDeparture")
+        if estimated is None and payload.get("delayMinutes") is not None:
+            estimated = parse_dt(observed_at, "observedAt") + timedelta(minutes=int(payload.get("delayMinutes") or 0))
+        data["estimatedArrivalAt"] = rfc3339_utc(parse_dt(estimated, "estimatedArrivalAt"))
+    else:
+        data["cancelledAt"] = rfc3339_utc(parse_dt(payload.get("cancelledAt") or observed_at, "cancelledAt"))
+    for key in ("rebookingSuggestions", "alternativeConnections"):
+        if payload.get(key):
+            data["rebookingSuggestions"] = payload[key]
+            break
+    return data
+
+
 
 class TransferManagementService:
     def __init__(self, store: Any, downstream: DisruptionRecoveryClient | None = None, topology: PlaceNetworkClient | None = None) -> None:
@@ -327,23 +409,40 @@ class TransferManagementService:
         except PlaceNetworkUnavailable:
             topology = None
             degraded_reasons = ("PLACE_NETWORK_UNAVAILABLE",)
-        rule = self._require_published_rule(from_node_type, to_node_type, TransferCategory(str(data.get("transferCategory"))), at)
+        category = TransferCategory(str(data.get("transferCategory")))
+        from_mode = _mode(data.get("fromMode"))
+        to_mode = _mode(data.get("toMode"))
+        cross_mode = _cross_mode_from_data(data, from_mode, to_mode, from_node_ref, to_node_ref)
+        override = data.get("mctOverride")
+        same_platform = _same_platform(data, category)
+        mct = MinimumConnectionTime.default_for(to_node_ref, from_mode, to_mode, same_platform, int(override) if override is not None else None)
+        rule = self._find_published_rule(from_node_type, to_node_type, category, at)
+        if rule is None:
+            if not _can_use_builtin_mct(data, from_mode, to_mode, to_node_ref, same_platform):
+                raise DomainError("NO_PUBLISHED_MCT_RULE")
+            rule = self._default_mct_rule(from_node_type, to_node_type, category, mct, at)
         window_data = dict(data.get("window") or {})
         planned = parse_dt(window_data.get("plannedArrivalAt"), "window.plannedArrivalAt")
         departure = parse_dt(window_data.get("nextDepartureAt"), "window.nextDepartureAt")
         cutoff = parse_dt(window_data.get("nextCutoffAt") or window_data.get("nextDepartureAt"), "window.nextCutoffAt")
-        window = ConnectionWindow.build(planned, departure, cutoff, int(window_data.get("mctMinutes") or rule.minimumMinutes), optional_dt(window_data.get("actualArrivalAt")))
+        requested_mct = int(window_data.get("mctMinutes") or max(mct.minutes, rule.minimumMinutes))
+        required_mct = max(requested_mct, mct.minutes, rule.minimumMinutes)
+        mct = MinimumConnectionTime(mct.stationRef, mct.fromMode, mct.toMode, required_mct)
+        validation = ConnectionValidator().ensure_valid(planned, departure, mct)
+        window = ConnectionWindow.build(planned, departure, cutoff, validation.requiredMinutes, optional_dt(window_data.get("actualArrivalAt")))
         evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), (), topology.placeGraphVersion if topology else None, degraded_reasons)
         contract_id = require_text(data.get("contractId"), "contractId")
         contract_type = ContractType(str(data.get("contractType")))
         status = ConnectionStatus.FEASIBLE if evaluation.riskLevel is RiskLevel.FEASIBLE else ConnectionStatus.TIGHT if evaluation.riskLevel is RiskLevel.TIGHT else ConnectionStatus.AT_RISK
-        connection = Connection(new_prefixed_uuid7("con"), plan.transferPlanId, require_text(data.get("itineraryRef"), "itineraryRef"), require_text(data.get("previousSegmentRef"), "previousSegmentRef"), require_text(data.get("nextSegmentRef"), "nextSegmentRef"), tuple(str(x) for x in data.get("travelerRefs") or []), from_node_ref, to_node_ref, from_node_type, to_node_type, TransferCategory(str(data.get("transferCategory"))), contract_id, contract_type, ConnectionStatus.PLANNED, evaluation, window, at, at, str(data.get("journeyOrderId") or plan.journeyOrderId or "").strip() or None, serviceDate=str(data.get("serviceDate") or cutoff.date().isoformat()), scheduledServiceRef=str(data.get("scheduledServiceRef") or "").strip() or None)
+        guaranteed = bool(data.get("guaranteed") if data.get("guaranteed") is not None else (contract_type in PROTECTED_TYPES and plan.itineraryRef == require_text(data.get("itineraryRef"), "itineraryRef")))
+        connection = Connection(new_prefixed_uuid7("con"), plan.transferPlanId, require_text(data.get("itineraryRef"), "itineraryRef"), require_text(data.get("previousSegmentRef"), "previousSegmentRef"), require_text(data.get("nextSegmentRef"), "nextSegmentRef"), tuple(str(x) for x in data.get("travelerRefs") or []), from_node_ref, to_node_ref, from_node_type, to_node_type, category, contract_id, contract_type, ConnectionStatus.PLANNED, evaluation, window, at, at, str(data.get("journeyOrderId") or plan.journeyOrderId or "").strip() or None, serviceDate=str(data.get("serviceDate") or cutoff.date().isoformat()), scheduledServiceRef=str(data.get("scheduledServiceRef") or "").strip() or None, fromMode=from_mode, toMode=to_mode, guaranteed=guaranteed, transferInstructions=cross_mode.instructions, walkingDistanceMeters=cross_mode.walkingDistanceMeters)
         connection = connection.transition(status, at)
         plan = plan.add_connection(connection.connectionId, at)
         self.store.save_plan(plan)
         self.store.save_connection(connection)
         events = [
             _envelope("ConnectionRegistered", connection.connectionId, 1, connection.to_json() | {"registeredAt": rfc3339_utc(at)}, correlation_id, causation_id, at),
+            _envelope("ConnectionValidated", connection.connectionId, 1, {"connection": connection.ref_json(), "validation": validation.to_json(), "minimumConnectionTime": mct.to_json(), "guarantee": ConnectionGuarantee(connection.connectionId, guaranteed, connection.itineraryRef).to_json(), "validatedAt": rfc3339_utc(at)}, correlation_id, causation_id, at),
             self._risk_event(connection, None, correlation_id, causation_id, at, None),
         ]
         self._append(events)
@@ -402,11 +501,18 @@ class TransferManagementService:
                     report = find_report(source_key) or report
             updated: list[Connection] = []
             events: list[EventEnvelope] = []
+            suggestions = self._rebooking_suggestions(data.get("rebookingSuggestions") or data.get("alternativeConnections") or ())
             for connection in self.store.list_connections_for_segment(report.segmentRef):
                 new_connection, risk_events = self._refresh_connection(connection, at, correlation_id, causation_id, report)
+                events.extend(risk_events)
+                if new_connection.status is ConnectionStatus.MISSED and suggestions and self._carrier_responsible(new_connection):
+                    new_connection, rebooked, rebooking_events = self._auto_rebook(new_connection, suggestions, at, correlation_id, causation_id)
+                    events.extend(rebooking_events)
+                    updated.extend(rebooked)
+                elif new_connection.status is ConnectionStatus.MISSED and self._carrier_responsible(new_connection):
+                    events.append(self._rebooking_failed_event(new_connection, at, correlation_id, causation_id, "NO_ALTERNATIVE_WITHIN_4_HOURS"))
                 self.store.save_connection(new_connection)
                 updated.append(new_connection)
-                events.extend(risk_events)
                 if new_connection.status is ConnectionStatus.MISSED and new_connection.recovery and new_connection.recovery.recoveryTriggerStatus is RecoveryTriggerStatus.PENDING:
                     pending_recovery_ids.append(new_connection.connectionId)
             self._append(events)
@@ -537,7 +643,27 @@ class TransferManagementService:
             LOGGER.warning("fulfillment segment event processing hit downstream error eventId=%s eventType=%s: %s", envelope.eventId, envelope.eventType, exc)
             raise
 
+    def handle_trip_planning_event(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType != "ItineraryProposed":
+            return False
+        at = now_utc()
+        with self.transaction():
+            events = self._validate_itinerary_proposed(envelope, at)
+            mark = getattr(self.store, "mark_processed", None)
+            if callable(mark) and not mark(envelope.eventId, stream):
+                return True
+            self._append(events)
+        return True
+
     def handle_recovery_event(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType in DISRUPTION_SEGMENT_EVENT_TYPES:
+            with self.transaction():
+                mark = getattr(self.store, "mark_processed", None)
+                if callable(mark) and not mark(envelope.eventId, stream):
+                    return True
+                report_data = segment_status_report_from_disruption_event(envelope)
+                self.report_segment_status(report_data, envelope.correlationId, envelope.eventId)
+            return True
         if envelope.eventType not in {"RecoveryCompleted", "RecoveryFailed"}:
             return False
         with self.transaction():
@@ -563,6 +689,101 @@ class TransferManagementService:
             self.store.save_connection(connection)
             self._append([event])
             return True
+
+    def _validate_itinerary_proposed(self, envelope: EventEnvelope, at: datetime) -> list[EventEnvelope]:
+        payload = dict(envelope.payload or {})
+        events: list[EventEnvelope] = []
+        intent_ref = str(payload.get("intentRef") or "") or None
+        for itinerary in payload.get("itineraries") or ():
+            if not isinstance(itinerary, Mapping):
+                continue
+            itinerary_ref = require_text(itinerary.get("itineraryRef"), "itinerary.itineraryRef")
+            traveler_refs = tuple(str(ref) for ref in itinerary.get("travelerRefs") or payload.get("travelerRefs") or ())
+            legs = tuple(leg for leg in itinerary.get("legs") or () if isinstance(leg, Mapping))
+            for index, (previous_leg, next_leg) in enumerate(zip(legs, legs[1:]), start=1):
+                previous_segment_ref = _leg_ref(previous_leg, index)
+                next_segment_ref = _leg_ref(next_leg, index + 1)
+                from_station_ref = require_text(previous_leg.get("destinationStopRef") or previous_leg.get("destinationStationRef"), "leg.destinationStopRef")
+                to_station_ref = require_text(next_leg.get("originStopRef") or next_leg.get("originStationRef"), "leg.originStopRef")
+                arrival_at = parse_dt(previous_leg.get("arrivalTime") or previous_leg.get("arrivalAt"), "leg.arrivalTime")
+                departure_at = parse_dt(next_leg.get("departureTime") or next_leg.get("departureAt"), "leg.departureTime")
+                transfer_hint = _itinerary_transfer_hint(itinerary, index)
+                from_mode = _mode(previous_leg.get("mode") or transfer_hint.get("fromMode"))
+                to_mode = _mode(next_leg.get("mode") or transfer_hint.get("toMode"))
+                same_platform = bool(transfer_hint.get("samePlatform")) if transfer_hint.get("samePlatform") is not None else False
+                override = _optional_int(transfer_hint.get("mctOverride") if transfer_hint.get("mctOverride") is not None else transfer_hint.get("mctMinutes"))
+                station_ref = to_station_ref or from_station_ref
+                category = TransferCategory(str(transfer_hint.get("transferCategory") or ("SAME_STATION" if from_station_ref == to_station_ref else "CROSS_STATION")))
+                mct = MinimumConnectionTime.default_for(station_ref, from_mode, to_mode, same_platform, override)
+                validation = ConnectionValidator().validate(arrival_at, departure_at, mct)
+                transfer_id = f"{itinerary_ref}:transfer:{index}"
+                proposal = TransferProposal(transfer_id, (validation,))
+                rejected = False
+                try:
+                    proposal.validateConnectionTimes()
+                except DomainError:
+                    rejected = True
+                connection_ref = {"connectionId": transfer_id, "itineraryRef": itinerary_ref, "previousSegmentRef": previous_segment_ref, "nextSegmentRef": next_segment_ref, "travelerRefs": list(traveler_refs)}
+                event_type = "ConnectionValidationRejected" if rejected else "ConnectionValidated"
+                event_payload: dict[str, Any] = {
+                    "connection": connection_ref,
+                    "intentRef": intent_ref,
+                    "itineraryRef": itinerary_ref,
+                    "transferIndex": index,
+                    "fromStationRef": from_station_ref,
+                    "toStationRef": to_station_ref,
+                    "fromMode": from_mode.value,
+                    "toMode": to_mode.value,
+                    "transferCategory": category.value,
+                    "validation": validation.to_json(),
+                    "minimumConnectionTime": mct.to_json(),
+                    "validatedAt": rfc3339_utc(at),
+                }
+                if rejected:
+                    event_payload["rejectionReason"] = validation.reason or "CONNECTION_VALIDATION_FAILED"
+                events.append(_envelope(event_type, transfer_id, 1, event_payload, envelope.correlationId, envelope.eventId, at))
+        return events
+
+    def _default_mct_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, mct: MinimumConnectionTime, at: datetime) -> MctRule:
+        return MctRule(f"mct-default-{mct.fromMode.value.lower()}-{mct.toMode.value.lower()}-{category.value.lower()}", 1, MctRuleStatus.PUBLISHED, from_type, to_type, category, mct.minutes, {"source": "BUILTIN_STATION_POLICY", "stationRef": mct.stationRef}, at, publishedAt=at)
+
+    def _carrier_responsible(self, connection: Connection) -> bool:
+        return connection.guaranteed or connection.contractType in PROTECTED_TYPES
+
+    def _rebooking_suggestions(self, raw_items: Any) -> tuple[RebookingSuggestion, ...]:
+        suggestions: list[RebookingSuggestion] = []
+        for item in raw_items or ():
+            if not isinstance(item, Mapping):
+                continue
+            segment_ref = item.get("newSegmentRef") or item.get("segmentRef") or item.get("scheduledServiceRef")
+            departure = item.get("newDepartureTime") or item.get("departureAt") or item.get("nextDepartureAt")
+            if not segment_ref or not departure:
+                continue
+            suggestions.append(RebookingSuggestion(str(segment_ref), parse_dt(departure, "rebookingSuggestion.newDepartureTime"), int(item.get("additionalCost") or 0)))
+        return tuple(suggestions)
+
+    def _auto_rebook(self, connection: Connection, suggestions: Iterable[RebookingSuggestion], at: datetime, correlation_id: str, causation_id: str) -> tuple[Connection, list[Connection], list[EventEnvelope]]:
+        actual_arrival = connection.window.actualArrivalAt or connection.window.plannedArrivalAt
+        request = RebookingRequest(connection.connectionId, connection.nextSegmentRef, AUTO_REBOOKING_WINDOW)
+        suggestion = MissedConnectionDetector().choose_rebooking(request, actual_arrival, tuple(suggestions))
+        if suggestion is None:
+            return connection, [], [self._rebooking_failed_event(connection, at, correlation_id, causation_id, "NO_ALTERNATIVE_WITHIN_4_HOURS")]
+        no_charge = replace(suggestion, additionalCost=0)
+        window = ConnectionWindow.build(actual_arrival, no_charge.newDepartureTime, no_charge.newDepartureTime, connection.window.mctMinutes)
+        evaluation = RiskEvaluation(new_prefixed_uuid7("tre"), RiskLevel.FEASIBLE if window.bufferMinutes >= 0 else RiskLevel.AT_RISK, connection.latestEvaluation.mctRuleId, connection.latestEvaluation.mctRuleVersion, window.availableMinutes, connection.latestEvaluation.requiredMinutes, ("AUTO_REBOOKING",), at, connection.latestEvaluation.riskPolicyVersion, connection.latestEvaluation.placeGraphVersion, connection.latestEvaluation.degraded, connection.latestEvaluation.degradedReasons)
+        replacement_connection = Connection(new_prefixed_uuid7("con"), connection.transferPlanId, connection.itineraryRef, connection.previousSegmentRef, no_charge.newSegmentRef, connection.travelerRefs, connection.fromNodeRef, connection.toNodeRef, connection.fromNodeType, connection.toNodeType, connection.transferCategory, connection.contractId, connection.contractType, ConnectionStatus.PLANNED, evaluation, window, at, at, connection.journeyOrderId, serviceDate=connection.serviceDate, scheduledServiceRef=no_charge.newSegmentRef, replacementOfConnectionId=connection.connectionId, fromMode=connection.fromMode, toMode=connection.toMode, guaranteed=connection.guaranteed, transferInstructions=connection.transferInstructions, walkingDistanceMeters=connection.walkingDistanceMeters).transition(ConnectionStatus.FEASIBLE if evaluation.riskLevel is RiskLevel.FEASIBLE else ConnectionStatus.AT_RISK, at)
+        plan = self.store.get_plan(connection.transferPlanId).add_connection(replacement_connection.connectionId, at)
+        recovered = connection.recover_with_replacement(replacement_connection.connectionId, at)
+        self.store.save_plan(plan)
+        self.store.save_connection(replacement_connection)
+        event = _envelope("AutoRebookingCompleted", recovered.connectionId, recovered.version + 1, {"connection": recovered.ref_json(), "rebookingRequest": request.to_json(), "rebookingSuggestion": no_charge.to_json(), "replacementConnectionId": replacement_connection.connectionId, "additionalCost": 0, "carrierResponsible": True, "completedAt": rfc3339_utc(at)}, correlation_id, causation_id, at)
+        registered = _envelope("ConnectionRegistered", replacement_connection.connectionId, 1, replacement_connection.to_json() | {"registeredAt": rfc3339_utc(at), "autoRebooking": True}, correlation_id, causation_id, at)
+        return recovered, [replacement_connection], [registered, event]
+
+    def _rebooking_failed_event(self, connection: Connection, at: datetime, correlation_id: str, causation_id: str, reason: str) -> EventEnvelope:
+        request = RebookingRequest(connection.connectionId, connection.nextSegmentRef, AUTO_REBOOKING_WINDOW)
+        payload = {"connection": connection.ref_json(), "rebookingRequest": request.to_json(), "reason": reason, "refundOffered": self._carrier_responsible(connection), "refundScope": "REMAINING_LEGS" if self._carrier_responsible(connection) else "VOLUNTARY_CHANGE_RULES", "failedAt": rfc3339_utc(at)}
+        return _envelope("RebookingFailed", connection.connectionId, connection.version + 4, payload, correlation_id, causation_id, at)
 
     def _plan_json(self, plan: TransferPlan) -> dict[str, Any]:
         connections = tuple(c.summary_json() for c in self.store.list_connections_for_plan(plan.transferPlanId))
@@ -614,7 +835,8 @@ class TransferManagementService:
                     reasons.append("PREVIOUS_SEGMENT_CANCELLED")
             elif report.segmentRef == connection.nextSegmentRef and report.reportType is ReportType.CANCELLED:
                 reasons.append("NEXT_SEGMENT_CANCELLED")
-        rule = self._require_published_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, at)
+        mct = MinimumConnectionTime.default_for(connection.toNodeRef, connection.fromMode, connection.toMode, connection.transferCategory is TransferCategory.IN_STATION)
+        rule = self._find_published_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, at) or self._default_mct_rule(connection.fromNodeType, connection.toNodeType, connection.transferCategory, mct, at)
         place_graph_version = connection.latestEvaluation.placeGraphVersion
         degraded_reasons: tuple[str, ...] = ()
         try:
@@ -623,6 +845,10 @@ class TransferManagementService:
                 place_graph_version = topology.placeGraphVersion
         except (PlaceNetworkUnavailable, PlaceNetworkValidationError):
             degraded_reasons = ("PLACE_NETWORK_UNAVAILABLE",)
+        actual_arrival = window.actualArrivalAt or window.plannedArrivalAt
+        effective_mct = MinimumConnectionTime(connection.toNodeRef, connection.fromMode, connection.toMode, window.mctMinutes)
+        if MissedConnectionDetector().is_missed(actual_arrival, window.nextDepartureAt, effective_mct):
+            reasons.append("MISSED_CONNECTION_MCT_VIOLATION")
         evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), reasons, place_graph_version, degraded_reasons)
         updated = connection.apply_evaluation(evaluation, window, at)
         events = [self._risk_event(updated, previous_status if previous_status != updated.status else None, correlation_id, causation_id, at, report.segmentStatusReportId if report else None)]
