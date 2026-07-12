@@ -14,7 +14,7 @@ from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 from train_ticket_platform.ids import new_uuid7
 
-from .adapters.messaging import DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM
+from .adapters.messaging import DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM, TRIP_PLANNING_STREAM
 from .adapters.storage.postgres import PostgresTransferManagementStore
 from .application.service import InMemoryStore, TransferManagementService
 from .downstream import DisruptionRecoveryClient, DownstreamError
@@ -161,11 +161,15 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     def handle(envelope: Any) -> None:
         try:
             handled_fulfillment = holder["service"].handle_fulfillment_event(envelope, FULFILLMENT_STREAM)
+            if handled_fulfillment:
+                return
+            handled_planning = holder["service"].handle_trip_planning_event(envelope, TRIP_PLANNING_STREAM)
+            if handled_planning:
+                return
+            holder["service"].handle_recovery_event(envelope, DISRUPTION_RECOVERY_STREAM)
         except DownstreamError as exc:
             raise TransientHandlerError(str(exc)) from exc
-        if not handled_fulfillment:
-            holder["service"].handle_recovery_event(envelope, DISRUPTION_RECOVERY_STREAM)
-    thread = subscriber.start_in_background((DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM), "transfer-management", handle)
+    thread = subscriber.start_in_background((DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM, TRIP_PLANNING_STREAM), "transfer-management", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
     app.state.event_subscriber_thread = thread
