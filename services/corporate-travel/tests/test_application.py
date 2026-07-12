@@ -80,3 +80,84 @@ def test_service_authorizes_and_closes_billing_period_from_events() -> None:
     assert closed.total_amount.minor_units == 5000
     assert publisher.envelopes[-1].eventType == "CorporateBillingPeriodClosed"
     assert publisher.envelopes[-1].payload["statementHash"] == closed.statement_hash
+
+
+def test_policy_check_reserves_budget_and_publishes_outbox_events() -> None:
+    publisher = InMemoryEventPublisher()
+    service = CorporateTravelService(publisher=publisher)
+    agreement = service.create_agreement(**agreement_payload()).agreement
+
+    result = service.check_policy_and_reserve(
+        agreement_id=agreement.agreement_id,
+        booking_ref="book-policy-1",
+        employee_ref="emp-1",
+        department_ref="dep-1",
+        origin="BJS",
+        destination="SHA",
+        seat_class="SECOND_CLASS",
+        amount={"currency": "USD", "minorUnits": 1200},
+        requested_at="2026-01-01T00:00:00Z",
+        departure_at="2026-01-05T00:00:00Z",
+        trip_duration_minutes=300,
+    )
+
+    assert result.policy_result.decision.value == "COMPLIANT"
+    assert result.approval_request is not None
+    assert result.approval_request.status.value == "APPROVED"
+    assert any(pool.reserved_minor == 1200 for pool in result.budget_pools)
+    assert "TravelPolicyChecked" in [event.eventType for event in publisher.envelopes]
+    assert "ApprovalGranted" in [event.eventType for event in publisher.envelopes]
+    assert service.repository.outbox[-1].stream == "events:corporate-travel"
+
+
+def test_department_budget_exceeded_is_blocked_without_finance_approval() -> None:
+    publisher = InMemoryEventPublisher()
+    service = CorporateTravelService(publisher=publisher)
+    agreement = service.create_agreement(**agreement_payload()).agreement
+
+    result = service.check_policy_and_reserve(
+        agreement_id=agreement.agreement_id,
+        booking_ref="book-policy-2",
+        employee_ref="emp-1",
+        department_ref="dep-1",
+        origin="BJS",
+        destination="SHA",
+        seat_class="SECOND_CLASS",
+        amount={"currency": "USD", "minorUnits": 10000100},
+        requested_at="2026-01-01T00:00:00Z",
+        departure_at="2026-01-05T00:00:00Z",
+        trip_duration_minutes=300,
+    )
+
+    assert result.policy_result.decision.value == "REJECTED"
+    assert result.approval_request is not None
+    assert result.approval_request.current_level.value == 3
+    assert all(pool.reserved_minor == 0 for pool in result.budget_pools)
+    assert publisher.envelopes[-1].eventType == "ApprovalRequested"
+
+
+def test_payment_commits_and_cancellation_releases_budget_reservation() -> None:
+    service = CorporateTravelService(publisher=InMemoryEventPublisher())
+    agreement = service.create_agreement(**agreement_payload()).agreement
+    service.check_policy_and_reserve(
+        agreement_id=agreement.agreement_id,
+        booking_ref="book-policy-3",
+        employee_ref="emp-1",
+        department_ref="dep-1",
+        origin="BJS",
+        destination="SHA",
+        seat_class="SECOND_CLASS",
+        amount={"currency": "USD", "minorUnits": 1200},
+        requested_at="2026-01-01T00:00:00Z",
+        departure_at="2026-01-05T00:00:00Z",
+        trip_duration_minutes=300,
+    )
+
+    committed = service.commit_budget_reservations(booking_ref="book-policy-3")
+    released = service.release_budget_reservations(booking_ref="book-policy-3")
+
+    assert committed
+    assert all(pool.reserved_minor == 0 for pool in committed)
+    assert any(pool.committed_minor == 1200 for pool in committed)
+    assert released
+    assert all(pool.committed_minor == 0 for pool in released)

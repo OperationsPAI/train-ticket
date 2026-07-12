@@ -8,17 +8,33 @@ from uuid import NAMESPACE_URL, uuid5
 from train_ticket_platform.events import EventEnvelope, envelope_factory
 from train_ticket_platform.ids import new_prefixed_uuid7, new_uuid7
 from train_ticket_platform.messaging import EventPublisher, InMemoryEventPublisher
+from train_ticket_platform.storage import OutboxAppender
 
 from .domain import (
     AgreementPriceRef,
+    ApprovalLevel,
+    ApprovalRequest,
     AuthorizedTraveler,
     BillingCalendar,
     BillingPeriod,
+    BookingRequest,
+    BudgetDimension,
+    BudgetPool,
     CorporateAgreement,
+    CorporateTravelError,
     EffectiveWindow,
+    EmployeeLevel,
+    EmployeeProfile,
+    InvoiceLineItem,
     Money,
+    MonthlyInvoice,
+    PolicyChecker,
+    PolicyDecision,
+    PolicyResult,
+    SeatClass,
     StatementLine,
     StatementLineSource,
+    TravelPolicy,
 )
 
 PRODUCER = "corporate-travel"
@@ -31,6 +47,36 @@ class AgreementNotFoundError(KeyError):
 
 class BillingPeriodNotFoundError(KeyError):
     pass
+
+
+@dataclass(slots=True)
+class OutboxEventRecord:
+    event_id: str
+    stream: str
+    envelope: EventEnvelope
+    published_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class PolicyCheckResult:
+    policy_result: PolicyResult
+    approval_request: ApprovalRequest | None
+    budget_pools: tuple[BudgetPool, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.policy_result.to_dict(),
+            "approvalRequest": self.approval_request.to_dict() if self.approval_request else None,
+            "budgetPools": [pool.to_dict() for pool in self.budget_pools],
+        }
+
+
+@dataclass(slots=True)
+class InvoiceResult:
+    invoice: MonthlyInvoice
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.invoice.to_dict()
 
 
 @dataclass(slots=True)
@@ -55,6 +101,28 @@ class InMemoryCorporateTravelRepository:
     billing_periods: dict[str, BillingPeriod] = field(default_factory=dict)
     processed_event_ids: set[str] = field(default_factory=set)
     open_period_by_agreement: dict[tuple[str, str], str] = field(default_factory=dict)
+    policies: dict[str, TravelPolicy] = field(default_factory=dict)
+    approval_requests: dict[str, ApprovalRequest] = field(default_factory=dict)
+    budget_pools: dict[str, BudgetPool] = field(default_factory=dict)
+    outbox: list[OutboxEventRecord] = field(default_factory=list)
+    invoice_lines: dict[tuple[str, str], list[InvoiceLineItem]] = field(default_factory=dict)
+
+    def enqueue_outbox(self, envelope: EventEnvelope) -> None:
+        if any(record.event_id == envelope.eventId for record in self.outbox):
+            return
+        self.outbox.append(OutboxEventRecord(envelope.eventId, f"events:{envelope.producer}", envelope))
+
+    def save_policy(self, policy: TravelPolicy) -> None:
+        self.policies[policy.agreement_id] = policy
+
+    def get_policy(self, agreement_id: str) -> TravelPolicy:
+        return self.policies.get(agreement_id) or TravelPolicy.default(agreement_id)
+
+    def save_approval_request(self, request: ApprovalRequest) -> None:
+        self.approval_requests[request.request_id] = request
+
+    def save_budget_pool(self, pool: BudgetPool) -> None:
+        self.budget_pools[pool.pool_id] = pool
 
     def save_agreement(self, agreement: CorporateAgreement) -> None:
         self.agreements[agreement.agreement_id] = agreement
@@ -136,11 +204,11 @@ class CorporateTravelService:
             agreement = agreement.activate()
             activated_event = _agreement_event("CorporateAgreementActivated", agreement, correlation_id, created_event.eventId)
             self.repository.save_agreement(agreement)
-            self.publisher.publish(created_event)
-            self.publisher.publish(activated_event)
+            self._publish(created_event)
+            self._publish(activated_event)
             return CorporateAgreementResult(agreement)
         self.repository.save_agreement(agreement)
-        self.publisher.publish(created_event)
+        self._publish(created_event)
         return CorporateAgreementResult(agreement)
 
     def get_agreement(self, agreement_id: str) -> CorporateAgreementResult:
@@ -177,16 +245,23 @@ class CorporateTravelService:
         )
         updated = agreement.authorize_traveler(traveler)
         self.repository.save_agreement(updated)
-        self.publisher.publish(_authorization_event(traveler, correlation_id, causation_id))
+        self._publish(_authorization_event(traveler, correlation_id, causation_id))
         return traveler
 
     def handle_event(self, envelope: EventEnvelope) -> None:
-        if envelope.eventType not in {"JourneyOrderConfirmed", "PaymentCaptured"}:
+        if envelope.eventType not in {"JourneyOrderConfirmed", "PaymentCaptured", "PostSalesRefundCompleted", "TripCancelled"}:
             return
         if not self.repository.try_mark_processed(envelope.eventId):
             return
+        if envelope.eventType in {"PostSalesRefundCompleted", "TripCancelled"}:
+            booking_ref = str(envelope.payload.get("bookingRef") or envelope.payload.get("orderId") or "")
+            self.release_budget_reservations(booking_ref=booking_ref, correlation_id=envelope.correlationId, causation_id=envelope.eventId)
+            return
         line = line_from_event(envelope)
         agreement = self.repository.get_agreement(str(envelope.payload["agreementId"]))
+        booking_ref = str(envelope.payload.get("bookingRef") or envelope.payload.get("orderId") or "")
+        if envelope.eventType == "PaymentCaptured" and booking_ref:
+            self.commit_budget_reservations(booking_ref=booking_ref, correlation_id=envelope.correlationId, causation_id=envelope.eventId)
         billing_period = str(envelope.payload.get("billingPeriod") or agreement.billing_calendar.period)
         period = self.repository.find_open_period(agreement.agreement_id, billing_period)
         if period is None:
@@ -200,6 +275,154 @@ class CorporateTravelService:
                 due_at=agreement.billing_calendar.due_at,
             )
         self.repository.save_billing_period(period.attach_line(line))
+
+    def check_policy_and_reserve(
+        self,
+        *,
+        agreement_id: str,
+        employee_ref: str,
+        department_ref: str,
+        origin: str,
+        destination: str,
+        seat_class: str,
+        amount: Mapping[str, Any],
+        requested_at: str,
+        departure_at: str,
+        trip_duration_minutes: int,
+        employee_level: str = "STAFF",
+        manager_ref: str | None = None,
+        emergency: bool = False,
+        booking_ref: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> PolicyCheckResult:
+        agreement = self.repository.get_agreement(agreement_id)
+        money = money_from_mapping(amount)
+        if money.currency != agreement.monthly_credit_limit.currency:
+            raise CorporateTravelError("booking amount currency must match agreement currency")
+        booking = BookingRequest(
+            booking_ref=booking_ref or prefixed_id("book"),
+            agreement_id=agreement_id,
+            employee_ref=employee_ref,
+            department_ref=department_ref,
+            origin=origin,
+            destination=destination,
+            seat_class=SeatClass(seat_class),
+            amount=money,
+            requested_at=parse_rfc3339(requested_at),
+            departure_at=parse_rfc3339(departure_at),
+            trip_duration_minutes=trip_duration_minutes,
+            emergency=emergency,
+        )
+        employee = EmployeeProfile(employee_ref=employee_ref, department_ref=department_ref, level=EmployeeLevel(employee_level), manager_ref=manager_ref)
+        month_start = datetime(booking.departure_at.year, booking.departure_at.month, 1, tzinfo=UTC)
+        month_end = _next_month(month_start)
+        employee_pool = self._budget_pool(BudgetDimension.EMPLOYEE, agreement_id, employee_ref, month_start, month_end, 800_000)
+        department_pool = self._budget_pool(BudgetDimension.DEPARTMENT, agreement_id, department_ref, month_start, month_end, 10_000_000)
+        quarter_start = _quarter_start(booking.departure_at)
+        agreement_pool = self._budget_pool(
+            BudgetDimension.AGREEMENT,
+            agreement_id,
+            agreement_id,
+            quarter_start,
+            _add_months(quarter_start, 3),
+            agreement.monthly_credit_limit.minor_units * 3,
+        )
+        context = {
+            "employeeMonthlyUsedMinor": employee_pool.utilized_minor,
+            "departmentMonthlyUsedMinor": department_pool.utilized_minor,
+        }
+        result = PolicyChecker().check(booking, employee, self.repository.get_policy(agreement_id), context)
+        self._publish(_policy_checked_event(booking, result, correlation_id, causation_id))
+        approval_request: ApprovalRequest | None = None
+        if result.decision is PolicyDecision.COMPLIANT:
+            approval_request = ApprovalRequest.for_policy_result(prefixed_id("appr"), booking.booking_ref, employee_ref, result)
+            self.repository.save_approval_request(approval_request)
+            self._publish(_approval_event("ApprovalGranted", approval_request, correlation_id, causation_id))
+            pools = self._reserve_budget(booking, (employee_pool, department_pool, agreement_pool), allow_over_limit=False, correlation_id=correlation_id, causation_id=causation_id)
+        elif result.requires_level is ApprovalLevel.FINANCE:
+            approval_request = ApprovalRequest.for_policy_result(prefixed_id("appr"), booking.booking_ref, employee_ref, result)
+            self.repository.save_approval_request(approval_request)
+            self._publish(_approval_event("ApprovalRequested", approval_request, correlation_id, causation_id))
+            pools = (employee_pool, department_pool, agreement_pool)
+        else:
+            approval_request = ApprovalRequest.for_policy_result(prefixed_id("appr"), booking.booking_ref, employee_ref, result)
+            self.repository.save_approval_request(approval_request)
+            self._publish(_approval_event("ApprovalRequested", approval_request, correlation_id, causation_id))
+            pools = self._reserve_budget(booking, (employee_pool, department_pool, agreement_pool), allow_over_limit=True, correlation_id=correlation_id, causation_id=causation_id)
+        return PolicyCheckResult(result, approval_request, pools)
+
+    def commit_budget_reservations(self, *, booking_ref: str, correlation_id: str | None = None, causation_id: str | None = None) -> tuple[BudgetPool, ...]:
+        updated = []
+        for pool in tuple(self.repository.budget_pools.values()):
+            committed = pool.commit(booking_ref)
+            if committed is not pool:
+                self.repository.save_budget_pool(committed)
+                updated.append(committed)
+        return tuple(updated)
+
+    def release_budget_reservations(self, *, booking_ref: str, correlation_id: str | None = None, causation_id: str | None = None) -> tuple[BudgetPool, ...]:
+        updated = []
+        for pool in tuple(self.repository.budget_pools.values()):
+            released = pool.release(booking_ref)
+            if released is not pool:
+                self.repository.save_budget_pool(released)
+                updated.append(released)
+        if updated:
+            self._publish(_budget_released_event(booking_ref, updated, correlation_id, causation_id))
+        return tuple(updated)
+
+    def generate_monthly_invoice(
+        self,
+        *,
+        agreement_id: str,
+        period: str,
+        line_items: list[Mapping[str, Any]],
+        discount_rate_bps: int = 0,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> InvoiceResult:
+        self.repository.get_agreement(agreement_id)
+        items = tuple(
+            InvoiceLineItem(
+                booking_ref=str(item["bookingRef"]),
+                employee_name=str(item["employeeName"]),
+                route=str(item["route"]),
+                travel_date=parse_rfc3339(item["travelDate"]),
+                amount_minor=int(item["amountMinor"]),
+            )
+            for item in line_items
+        )
+        invoice = MonthlyInvoice.generate(prefixed_id("inv"), agreement_id, period, items, discount_rate_bps)
+        self._publish(_invoice_event(invoice, correlation_id, causation_id))
+        return InvoiceResult(invoice)
+
+    def _budget_pool(self, dimension: BudgetDimension, agreement_id: str, subject_ref: str, period_start: datetime, period_end: datetime, limit_minor: int) -> BudgetPool:
+        pool_id = deterministic_prefixed_id("budget", agreement_id, dimension.value, subject_ref, period_start.strftime("%Y-%m"))
+        pool = self.repository.budget_pools.get(pool_id)
+        if pool:
+            return pool
+        pool = BudgetPool(pool_id, dimension, period_start, period_end, limit_minor)
+        self.repository.save_budget_pool(pool)
+        return pool
+
+    def _reserve_budget(self, booking: BookingRequest, pools: tuple[BudgetPool, ...], *, allow_over_limit: bool, correlation_id: str | None, causation_id: str | None) -> tuple[BudgetPool, ...]:
+        updated = []
+        for pool in pools:
+            reserved = pool.reserve(deterministic_prefixed_id("resv", pool.pool_id, booking.booking_ref), booking.booking_ref, booking.amount.minor_units, allow_over_limit=allow_over_limit)
+            self.repository.save_budget_pool(reserved)
+            updated.append(reserved)
+            threshold = reserved.alert_threshold()
+            if threshold is not None:
+                self._publish(_budget_alert_event(reserved, threshold, correlation_id, causation_id))
+        return tuple(updated)
+
+    def _publish(self, envelope: EventEnvelope) -> None:
+        self.repository.enqueue_outbox(envelope)
+        self.publisher.publish(envelope)
+
+    def append_outbox(self, conn: Any, envelope: EventEnvelope) -> None:
+        OutboxAppender().append(conn, envelope)
 
     def close_billing_period(
         self,
@@ -223,7 +446,7 @@ class CorporateTravelService:
             )
         closed = period.freeze().close()
         self.repository.save_billing_period(closed)
-        self.publisher.publish(_billing_event(closed, correlation_id, causation_id))
+        self._publish(_billing_event(closed, correlation_id, causation_id))
         return BillingPeriodResult(closed)
 
 
@@ -305,6 +528,77 @@ def _billing_event(period: BillingPeriod, correlation_id: str | None, causation_
         occurred_at=period.closed_at,
         schema_version=SCHEMA_VERSION,
     )
+
+
+def _policy_checked_event(booking: BookingRequest, result: PolicyResult, correlation_id: str | None, causation_id: str | None) -> EventEnvelope:
+    return envelope_factory(
+        event_type="TravelPolicyChecked",
+        producer=PRODUCER,
+        payload={"booking": booking.to_dict(), **result.to_dict()},
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _approval_event(event_type: str, request: ApprovalRequest, correlation_id: str | None, causation_id: str | None) -> EventEnvelope:
+    return envelope_factory(
+        event_type=event_type,
+        producer=PRODUCER,
+        payload=request.to_dict(),
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _budget_alert_event(pool: BudgetPool, threshold: int, correlation_id: str | None, causation_id: str | None) -> EventEnvelope:
+    return envelope_factory(
+        event_type="BudgetAlertTriggered",
+        producer=PRODUCER,
+        payload={"thresholdPercent": threshold, "pool": pool.to_dict()},
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _budget_released_event(booking_ref: str, pools: tuple[BudgetPool, ...], correlation_id: str | None, causation_id: str | None) -> EventEnvelope:
+    return envelope_factory(
+        event_type="BudgetReservationReleased",
+        producer=PRODUCER,
+        payload={"bookingRef": booking_ref, "budgetPools": [pool.to_dict() for pool in pools]},
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _invoice_event(invoice: MonthlyInvoice, correlation_id: str | None, causation_id: str | None) -> EventEnvelope:
+    return envelope_factory(
+        event_type="ConsolidatedInvoiceGenerated",
+        producer=PRODUCER,
+        payload=invoice.to_dict(),
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _next_month(value: datetime) -> datetime:
+    return _add_months(value, 1)
+
+
+def _quarter_start(value: datetime) -> datetime:
+    month = ((value.month - 1) // 3) * 3 + 1
+    return datetime(value.year, month, 1, tzinfo=UTC)
+
+
+def _add_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    return datetime(year, month, 1, tzinfo=UTC)
 
 
 def _optional_text(value: object) -> str | None:
