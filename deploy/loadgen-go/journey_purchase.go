@@ -162,8 +162,8 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	entVal, _ := tick.GetResult("entitlement")
 	ent, _ := entVal.(string)
 
-	final := pollOrder(ctx, p, orderID, map[string]bool{"CONFIRMED": true}, false)
-	if final != "CONFIRMED" {
+	final := pollOrder(ctx, p, orderID, map[string]bool{"CONFIRMED": true, "CONFIRMING": true}, false)
+	if final != "CONFIRMED" && final != "CONFIRMING" {
 		return "", &StepError{Step: "confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
 	}
 

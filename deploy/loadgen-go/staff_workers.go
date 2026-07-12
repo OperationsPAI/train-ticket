@@ -46,7 +46,7 @@ func (s *StaffSim) think(ctx context.Context) {
 	}
 }
 
-// Worker runs a staff worker that polls all queues.
+// Worker runs a staff worker that fairly drains all queues.
 func (s *StaffSim) Worker(ctx context.Context, idx int) {
 	pollDuration := time.Duration(s.cfg.Staff.QueuePollSeconds * float64(time.Second))
 	for {
@@ -59,28 +59,16 @@ func (s *StaffSim) Worker(ctx context.Context, idx int) {
 		var item *WorkItem
 		select {
 		case item = <-s.reg.QReservation:
+		case item = <-s.reg.QTicketing:
+		case item = <-s.reg.QRisk:
+		case item = <-s.reg.QSupport:
+		case item = <-s.reg.QDispatch:
 		default:
 			select {
-			case item = <-s.reg.QTicketing:
-			default:
-				select {
-				case item = <-s.reg.QRisk:
-				default:
-					select {
-					case item = <-s.reg.QSupport:
-					default:
-						select {
-						case item = <-s.reg.QDispatch:
-						default:
-							select {
-							case <-ctx.Done():
-								return
-							case <-time.After(pollDuration):
-								continue
-							}
-						}
-					}
-				}
+			case <-ctx.Done():
+				return
+			case <-time.After(pollDuration):
+				continue
 			}
 		}
 
