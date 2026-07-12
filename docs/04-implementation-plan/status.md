@@ -94,3 +94,53 @@ Earlier revisions of this file tracked the pre-implementation WP-01 brief cycle
 - REQ-104: loadgen long-tail prober — real-ID read probes, payment-cancel /
   order-cancel / support lifecycle branches, low-frequency ops actor
   (reporting, finance reads, supplier-catalog).
+
+## Phase 3 — Domain Enrichment (ADR-0003 Wave 3+)
+
+Last updated: 2026-07-12. All tasks merged to `refactor/greenfield-ddd`.
+
+### Infrastructure & stress fixes
+
+| Task | Scope | PR |
+|---|---|---|
+| REQ-150 | ts-kit pg.Pool auto-reconnect (error event + recovery logging) | #310 |
+| REQ-151 | Stress driver identity pool pre-creation (eliminate register bottleneck) | #309 |
+| REQ-152 | S3 refund storm live run + correctness verification | #317 |
+| REQ-232 | Baseline report update with Wave B-E services | #307 |
+
+### Wave 3 — Core domain enrichment (DONE)
+
+| Task | Service | Language | Scope | PR |
+|---|---|---|---|---|
+| REQ-300 | fare-pricing | Python | Dynamic pricing engine (advance/peak/class/distance/capacity) | #311 |
+| REQ-301 | risk-compliance | Python | Fraud detection, velocity rules, scalper patterns, 0-100 scoring | #312 |
+| REQ-302 | capacity-availability | Rust | Overbooking policy, capacity snapshots, waitlist signals | #315 |
+| REQ-303 | post-sales | Java | Refund/change policy engine with time-based tiers | #313 |
+| REQ-304 | seat-assignment | Rust | Full seat selection with preference scoring, hold lifecycle | #314 |
+| REQ-305 | waitlist | TypeScript | Auto-promotion saga, priority queue, downstream chain integration | #316 |
+
+### Wave 4 — Service enrichment (DONE)
+
+| Task | Service | Language | Scope | PR |
+|---|---|---|---|---|
+| REQ-306 | identity-verification | Python | Multi-document, blacklist, duplicate-ticket, name matching | #318 |
+| REQ-307 | payment | Java | Multi-channel routing, weighted fallback, timeout handling | #319 |
+| REQ-308 | transfer-management | Python | MCT enforcement, auto-rebooking, segment-status integration | #321 |
+| REQ-309 | loyalty-membership | Java | Points earning/redemption, tier system, benefits catalog | #320 |
+| REQ-310 | disruption-recovery | Python | Auto-rerouting, compensation via wallet, ops-reported signals | #322 |
+| REQ-311 | notification | TypeScript | Multi-channel delivery (SMTP/IN_APP), fallback, rate limiting | #323 |
+| REQ-312 | service-plan | Go | Seasonal schedules, delay propagation, timetable versioning | #324 |
+| REQ-313 | travel-insurance | TypeScript | Multi-product catalog, claims processing, payout advice | #326 |
+| REQ-314 | corporate-travel | Java | Approval workflow, budget control, policy enforcement | #325 |
+| REQ-315 | customer-service | TypeScript | Ticket escalation, SLA tracking, resolution workflow | #327 |
+| REQ-316 | reporting | Python | Real-time metrics aggregation, anomaly detection | #328 |
+| REQ-317 | finance-settlement | Java | Daily reconciliation, supplier settlement, invoice generation | #329 |
+
+### Summary
+
+22 domain-enrichment tasks completed via AgentM WorkGraph automation on
+2026-07-12. Total done/=187 (from 165 at session start). All queues empty.
+Services span 5 languages: Java (6), Python (5), TypeScript (4), Rust (3),
+Go (1). Each enrichment adds real-world business logic to the existing
+event-driven service skeleton while maintaining backward compatibility with
+existing APIs and loadgen flows.
