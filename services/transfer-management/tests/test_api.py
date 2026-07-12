@@ -224,7 +224,7 @@ def test_reaccommodate_precondition_and_self_completion_skip() -> None:
     assert [e for e in store.take_outbox() if e.eventType == "ConnectionRecovered"] == []
 
 
-def test_fulfillment_segment_delayed_event_marks_connection_at_risk() -> None:
+def test_fulfillment_segment_delayed_event_marks_connection_missed_when_mct_is_violated() -> None:
     from datetime import UTC, datetime
     from train_ticket_platform.events import EventEnvelope
     from transfer_management.application.service import TransferManagementService
@@ -242,7 +242,7 @@ def test_fulfillment_segment_delayed_event_marks_connection_at_risk() -> None:
 
     assert service.handle_fulfillment_event(envelope, "events:fulfillment") is True
     updated = service.get_connection(connection["connectionId"])
-    assert updated["status"] == "AT_RISK"
+    assert updated["status"] == "MISSED"
     assert store.mark_processed(envelope.eventId, "events:fulfillment") is False
 
 
@@ -313,3 +313,48 @@ def test_failed_activation_does_not_retire_the_active_policy() -> None:
     assert res.status_code == 412, res.text
     res = client.get("/api/v1/risk-policies/active")
     assert res.json()["riskPolicyId"] == p2, res.text
+
+
+def test_connection_missed_auto_rebooks_with_no_charge() -> None:
+    client, store, downstream = setup_client()
+    con = create_plan_and_connection(client)
+    now = datetime.now(UTC).replace(microsecond=0)
+    res = client.post("/api/v1/segment-status-reports", headers={"Idempotency-Key": idem(), "X-Correlation-Id": f"corr-{idem()}"}, json={"segmentRef": "seg-a", "reportType": "DELAY", "reportedBy": {"actorType": "SYSTEM", "actorId": "sys"}, "sourceSystem": "OPERATIONS", "sourceRecordId": "r-auto", "observedAt": rfc3339_utc(now), "estimatedArrivalAt": rfc3339_utc(now + timedelta(hours=2)), "rebookingSuggestions": [{"newSegmentRef": "seg-c", "newDepartureTime": rfc3339_utc(now + timedelta(hours=3)), "additionalCost": 2500}]})
+    assert res.status_code == 202, res.text
+    updated = res.json()["updatedConnections"]
+    recovered = [item for item in updated if item["connectionId"] == con["connectionId"]][0]
+    assert recovered["status"] == "RECOVERED"
+    assert recovered["replacementConnectionId"]
+    assert downstream.calls == []
+    events = [event for event in store.take_outbox() if event.eventType == "AutoRebookingCompleted"]
+    assert events[-1].payload["additionalCost"] == 0
+    assert events[-1].payload["rebookingSuggestion"]["newSegmentRef"] == "seg-c"
+
+
+def test_guaranteed_missed_without_alternative_offers_remaining_leg_refund() -> None:
+    client, store, _ = setup_client()
+    con = create_plan_and_connection(client)
+    now = datetime.now(UTC).replace(microsecond=0)
+    res = client.post("/api/v1/segment-status-reports", headers={"Idempotency-Key": idem(), "X-Correlation-Id": f"corr-{idem()}"}, json={"segmentRef": "seg-a", "reportType": "DELAY", "reportedBy": {"actorType": "SYSTEM", "actorId": "sys"}, "sourceSystem": "OPERATIONS", "sourceRecordId": "r-refund", "observedAt": rfc3339_utc(now), "estimatedArrivalAt": rfc3339_utc(now + timedelta(hours=2))})
+    assert res.status_code == 202, res.text
+    assert client.get(f"/api/v1/connections/{con['connectionId']}").json()["status"] == "MISSED"
+    failed = [event for event in store.take_outbox() if event.eventType == "RebookingFailed"]
+    assert failed[-1].payload["refundOffered"] is True
+    assert failed[-1].payload["refundScope"] == "REMAINING_LEGS"
+
+
+def test_disruption_train_delayed_event_consumed_as_missed_connection() -> None:
+    from transfer_management.application.service import TransferManagementService
+
+    store = InMemoryStore()
+    downstream = FakeDownstream()
+    service = TransferManagementService(store, downstream)
+    rule = service.create_mct_rule({"fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "minimumMinutes": 20, "conditions": {}, "validFrom": "2025-01-01T00:00:00Z"}, "corr-test", "cmd-test")
+    service.publish_mct_rule(rule["mctRuleId"], {"publishedBy": {"actorType": "OPERATIONS", "actorId": "ops"}, "publishReason": "test"}, "corr-test", "cmd-test")
+    plan = service.create_plan({"itineraryRef": "iti-delay", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"], "journeyOrderId": "jo-delay"}, "corr-test", "cmd-test")
+    now = datetime.now(UTC).replace(microsecond=0)
+    con = service.register_connection({"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-delay", "journeyOrderId": "jo-delay", "previousSegmentRef": "train-a", "nextSegmentRef": "train-b", "travelerRefs": ["trav-1"], "fromNodeRef": "sta", "toNodeRef": "sta", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-delay", "contractType": "PROTECTED", "window": {"plannedArrivalAt": rfc3339_utc(now), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=60))}}, "corr-test", "cmd-test")
+    env = EventEnvelope(eventId="evt-" + idem(), eventType="TrainDelayed", producer="disruption-recovery", correlationId="corr-" + idem(), causationId="evt-" + idem(), payload={"segmentRef": "train-a", "estimatedArrivalAt": rfc3339_utc(now + timedelta(hours=2)), "observedAt": rfc3339_utc(now)})
+    assert service.handle_recovery_event(env, "events:disruption-recovery") is True
+    assert service.get_connection(con["connectionId"])["status"] == "MISSED"
+    assert any(event.eventType == "ConnectionMissed" for event in store.take_outbox())

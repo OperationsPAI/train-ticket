@@ -46,6 +46,12 @@ class RegisterConnectionRequest(LooseModel):
     journeyOrderId: str | None = None
     serviceDate: str | None = None
     scheduledServiceRef: str | None = None
+    fromMode: str | None = None
+    toMode: str | None = None
+    samePlatform: bool | None = None
+    walkingMinutes: int | None = None
+    mctOverride: int | None = None
+    guaranteed: bool | None = None
 
 
 class ReaccommodateConnectionRequest(LooseModel):
