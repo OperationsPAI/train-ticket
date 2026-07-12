@@ -2,8 +2,10 @@ package com.trainticket.payment;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
+@EnableScheduling
 public class Application {
 
     public static void main(String[] args) {
@@ -15,9 +17,9 @@ public class Application {
             "payment",
             "Payment",
             "java",
-            "phase-1-domain-foundation",
-            "REQ-012-Payment-domain-foundation",
-            "PaymentIntent aggregate, Refund aggregate, ChannelCallbackRecord idempotency, LatePaymentCase facts, original-route refund lifecycle"
+            "domain-enrichment-payment-multichannel",
+            "REQ-307-payment-multichannel-routing-timeout-partial-refund",
+            "PaymentIntent multi-channel routing, channel-specific timeout, outbox timeout events, original-route partial refund lifecycle"
         );
     }
 }

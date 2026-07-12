@@ -20,6 +20,9 @@ import com.trainticket.payment.domain.PaymentIntentCancelled;
 import com.trainticket.payment.domain.PaymentIntentCreated;
 import com.trainticket.payment.domain.PaymentIntentExpired;
 import com.trainticket.payment.domain.PaymentIntentStatus;
+import com.trainticket.payment.domain.PaymentRefunded;
+import com.trainticket.payment.domain.PaymentTimedOut;
+import com.trainticket.payment.domain.RefundRecord;
 import com.trainticket.payment.domain.RefundFailed;
 import com.trainticket.payment.domain.RefundRequested;
 import com.trainticket.payment.domain.RefundSettled;
@@ -59,6 +62,17 @@ final class JacksonPaymentJson {
         if (intent.channelOrderSubmitIdempotencyKey() != null) {
             root.put("channelOrderSubmitIdempotencyKey", intent.channelOrderSubmitIdempotencyKey());
         }
+        ArrayNode refundHistory = root.putArray("refundHistory");
+        for (RefundRecord record : intent.refundHistory()) {
+            ObjectNode refund = refundHistory.addObject();
+            refund.put("refundId", record.refundId());
+            refund.set("amount", money(record.amount(), objectMapper));
+            if (record.channelRef() != null) {
+                refund.set("channelRef", objectMapper.valueToTree(EventEnvelopeMapper.channelRef(record.channelRef())));
+            }
+            refund.put("status", record.status().name());
+            refund.put("createdAt", record.createdAt().toString());
+        }
         ArrayNode events = root.putArray("domainEvents");
         for (PaymentEvent event : intent.domainEvents()) {
             events.add(objectMapper.valueToTree(EventEnvelopeMapper.fromDomainEvent(event)));
@@ -72,6 +86,14 @@ final class JacksonPaymentJson {
         root.path("channelTransactionRefs").forEach(node -> refs.add(node.asText()));
         List<PaymentEvent> events = new ArrayList<>();
         root.path("domainEvents").forEach(node -> events.add(toPaymentEvent(objectMapper.convertValue(node, EventEnvelope.class), node.path("payload"))));
+        List<RefundRecord> refundHistory = new ArrayList<>();
+        root.path("refundHistory").forEach(node -> refundHistory.add(new RefundRecord(
+            text(node, "refundId"),
+            money(node.path("amount")),
+            channelRef(node.path("channelRef")),
+            RefundStatus.valueOf(text(node, "status")),
+            Instant.parse(text(node, "createdAt"))
+        )));
         return PaymentIntent.rehydrate(
             text(root, "paymentIntentId"),
             text(root, "businessRef"),
@@ -88,7 +110,8 @@ final class JacksonPaymentJson {
             events,
             channelRef(root.path("channelRef")),
             root.path("channelOrderIdempotencyKey").asText(null),
-            root.path("channelOrderSubmitIdempotencyKey").asText(null)
+            root.path("channelOrderSubmitIdempotencyKey").asText(null),
+            refundHistory
         );
     }
 
@@ -239,11 +262,13 @@ final class JacksonPaymentJson {
             case "PaymentIntentCreated" -> new PaymentIntentCreated(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), text(payload, "purpose"), money(payload.path("amount")), text(payload, "payerRef"), text(payload, "idempotencyKey"));
             case "PaymentAuthorized" -> new PaymentAuthorized(envelope, text(payload, "paymentIntentId"), money(payload.path("authorizedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"));
             case "PaymentCaptured" -> new PaymentCaptured(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), money(payload.path("capturedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"), channelRef(payload.path("channelRef")));
-            case "PaymentFailed" -> new PaymentFailed(envelope, text(payload, "paymentIntentId"), text(payload, "reasonCode"), payload.path("retryable").asBoolean());
+            case "PaymentFailed" -> new PaymentFailed(envelope, text(payload, "paymentIntentId"), payload.path("businessRef").asText(null), text(payload, "reasonCode"), payload.path("retryable").asBoolean(), channelRef(payload.path("channelRef")));
             case "PaymentIntentCancelled" -> new PaymentIntentCancelled(envelope, text(payload, "paymentIntentId"), text(payload, "reason"));
             case "PaymentIntentExpired" -> new PaymentIntentExpired(envelope, text(payload, "paymentIntentId"));
+            case "PaymentTimedOut" -> new PaymentTimedOut(envelope, text(payload, "paymentIntentId"), payload.path("businessRef").asText(null), Instant.parse(text(payload, "expiresAt")), text(payload, "reason"));
             case "RefundRequested" -> new RefundRequested(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), money(payload.path("amount")), text(payload, "businessCaseRef"), text(payload, "reason"), text(payload, "idempotencyKey"));
-            case "RefundSettled" -> new RefundSettled(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), money(payload.path("amount")), text(payload, "channelRefundTransactionId"), channelRef(payload.path("channelRef")));
+            case "RefundSettled" -> new RefundSettled(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), payload.path("businessRef").asText(null), money(payload.path("amount")), text(payload, "channelRefundTransactionId"), channelRef(payload.path("channelRef")));
+            case "PaymentRefunded" -> new PaymentRefunded(envelope, text(payload, "paymentIntentId"), payload.path("businessRef").asText(null), text(payload, "refundId"), money(payload.path("amount")), channelRef(payload.path("channelRef")));
             case "RefundFailed" -> new RefundFailed(envelope, text(payload, "refundId"), text(payload, "paymentIntentId"), text(payload, "reason"));
             default -> throw new IllegalStateException("unsupported persisted payment event type: " + envelope.eventType());
         };

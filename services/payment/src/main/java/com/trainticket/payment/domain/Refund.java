@@ -119,10 +119,14 @@ public final class Refund {
         if (capturedIntent.status() != PaymentIntentStatus.CAPTURED) {
             throw new DomainRuleViolation("refund requires a captured payment intent");
         }
+        if (capturedIntent.channelRef() == null || capturedIntent.channelRef().channel() == null || capturedIntent.channelRef().channel().isBlank()) {
+            throw new DomainRuleViolation("refund requires original payment channel");
+        }
         if (amount.isGreaterThan(capturedIntent.refundableBalance())) {
             throw new DomainRuleViolation("refund amount cannot exceed captured-and-not-refunded balance");
         }
         Refund refund = new Refund("rf-" + UUID.randomUUID(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
+        refund.channelRef = capturedIntent.channelRef();
         refund.domainEvents.add(new RefundRequested(
             createEnvelope("RefundRequested", occurredAt, sourceCommandId, correlationId),
             refund.refundId, refund.paymentIntentId, refund.amount, refund.sourceCaseRef, refund.reasonCode, refund.idempotencyKey
@@ -199,12 +203,23 @@ public final class Refund {
             throw new DomainRuleViolation("refund settlement payment intent mismatch");
         }
         this.channelRefundTransactionId = requireText(channelRefundTransactionId, "channelRefundTransactionId");
-        this.channelRef = (this.channelRef == null ? new ChannelRef(null, null, null, null, this.channelRefundTransactionId, null, null) : this.channelRef.withRefundTransaction(this.channelRefundTransactionId));
+        if (this.channelRef == null) {
+            this.channelRef = capturedIntent.channelRef();
+        }
+        if (this.channelRef == null || !Objects.equals(this.channelRef.channel(), capturedIntent.channelRef().channel())) {
+            throw new DomainRuleViolation("refund must return to original payment channel");
+        }
+        this.channelRef = this.channelRef.withRefundTransaction(this.channelRefundTransactionId);
         capturedIntent.markRefunded(amount);
         this.status = RefundStatus.SETTLED;
+        capturedIntent.recordRefund(this, this.channelRef, occurredAt);
         domainEvents.add(new RefundSettled(
             createEnvelope("RefundSettled", occurredAt, causationId, correlationId),
-            refundId, paymentIntentId, amount, this.channelRefundTransactionId, this.channelRef
+            refundId, paymentIntentId, capturedIntent.businessRef(), amount, this.channelRefundTransactionId, this.channelRef
+        ));
+        domainEvents.add(new PaymentRefunded(
+            createEnvelope("PaymentRefunded", occurredAt, causationId, correlationId),
+            paymentIntentId, capturedIntent.businessRef(), refundId, amount, this.channelRef
         ));
     }
 
