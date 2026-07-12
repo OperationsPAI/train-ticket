@@ -24,7 +24,7 @@ func TestPolicyAndClaimHTTPFlow(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &policy); err != nil {
 		t.Fatal(err)
 	}
-	if policy.PolicyID == "" || policy.Status != "ACTIVE" {
+	if policy.PolicyID == "" || policy.Status != "ISSUED" {
 		t.Fatalf("policy response: %#v", policy)
 	}
 	w = performJSON(router, http.MethodGet, "/api/v1/policies/"+policy.PolicyID, nil)
@@ -47,7 +47,7 @@ func TestPolicyAndClaimHTTPFlow(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &claimResp); err != nil {
 		t.Fatal(err)
 	}
-	if claimResp.Claim.Status != "PAYOUT_RECOMMENDED" || claimResp.PayoutAdvice == nil {
+	if claimResp.Claim.Status != "PAID_OUT" || claimResp.PayoutAdvice == nil {
 		t.Fatalf("claim response: %#v", claimResp)
 	}
 }
