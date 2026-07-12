@@ -106,7 +106,18 @@ function domainEventPayload(event: CustomerServiceDomainEvent): Readonly<Record<
         reason: event.reason,
         escalatedBy: event.escalatedBy,
       };
+    case "TicketEscalated":
+      return {
+        caseId: event.caseId,
+        targetQueue: event.targetQueue,
+        reason: event.reason,
+        escalatedBy: event.escalatedBy,
+        fromLevel: event.fromLevel,
+        toLevel: event.toLevel,
+        triggerCondition: event.triggerCondition,
+      };
     case "SupportCaseResolved":
+    case "TicketResolved":
       return {
         caseId: event.caseId,
         summary: event.summary,
@@ -120,10 +131,41 @@ function domainEventPayload(event: CustomerServiceDomainEvent): Readonly<Record<
         closedBy: event.closedBy,
       };
     case "SupportCaseReopened":
+    case "TicketReopened":
       return {
         caseId: event.caseId,
         reason: event.reason,
         requesterRef: event.requesterRef,
+      };
+    case "SlaBreach":
+      return {
+        ticketId: event.ticketId,
+        breachType: event.breachType,
+        breachedAt: event.breachedAt.toISOString(),
+        priority: event.priority,
+        targetMinutes: event.targetMinutes,
+      };
+    case "CompensationOffered":
+      return {
+        offerId: event.offerId,
+        ticketId: event.ticketId,
+        compensationType: event.compensationType,
+        amountMinor: event.amountMinor,
+        authorizationLevel: event.authorizationLevel,
+        status: event.status,
+      };
+    case "CompensationAccepted":
+      return {
+        offerId: event.offerId,
+        ticketId: event.ticketId,
+      };
+    case "CompensationIssued":
+      return {
+        offerId: event.offerId,
+        ticketId: event.ticketId,
+        compensationType: event.compensationType,
+        amountMinor: event.amountMinor,
+        authorizationLevel: event.authorizationLevel,
       };
     case "CaseTimelineEntryAppended":
       return {

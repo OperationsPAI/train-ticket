@@ -10,6 +10,7 @@ import {
   type CloseCaseRequest,
   type EscalateCaseRequest,
   type OpenSupportCaseRequest,
+  type OfferCompensationRequest,
   type ReopenCaseRequest,
   type ResolveCaseRequest,
   type RequestManualActionRequest,
@@ -95,6 +96,10 @@ type OTelTracer = Readonly<{
 
 const channels = ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"] as const;
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
+const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
+const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;
+const escalationTriggerConditions = ["CUSTOMER_REQUEST", "MANUAL"] as const;
+const compensationTypes = ["POINTS", "VOUCHER", "CASH", "UPGRADE"] as const;
 const evidenceTypes = ["SCREENSHOT", "CALL_RECORDING", "CHAT_TRANSCRIPT", "EMAIL", "CHANNEL_RECEIPT", "PROVIDER_SUMMARY", "DOCUMENT", "OTHER"] as const;
 const accessLevels = ["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"] as const;
 const closeReasons = ["RESOLVED", "ESCALATED", "DUPLICATE", "NO_FURTHER_ACTION", "CUSTOMER_CLOSED"] as const;
@@ -262,6 +267,34 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
     return reply.status(response!.statusCode).send(response!.body);
   });
 
+  app.post("/api/v1/support-cases/:caseId/compensation-offers", async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const response = await withIdempotency(request, idempotencyStore, { caseId, body: request.body ?? null }, async () => {
+      const body = validateOfferCompensation(request.body);
+      const offer = await runWithApplication((service) => service.offerCompensation(caseId, body, requestContext(request).correlationId, newCommandId()));
+      return { statusCode: 201, body: compensationOfferResponse(offer) };
+    });
+    return reply.status(response!.statusCode).send(response!.body);
+  });
+
+  app.post("/api/v1/compensation-offers/:offerId/accept", async (request, reply) => {
+    const { offerId } = request.params as { offerId: string };
+    const response = await withIdempotency(request, idempotencyStore, { offerId }, async () => {
+      const offer = await runWithApplication((service) => service.acceptCompensation(offerId, requestContext(request).correlationId, newCommandId()));
+      return { statusCode: 200, body: compensationOfferResponse(offer) };
+    });
+    return reply.status(response!.statusCode).send(response!.body);
+  });
+
+  app.post("/api/v1/compensation-offers/:offerId/issue", async (request, reply) => {
+    const { offerId } = request.params as { offerId: string };
+    const response = await withIdempotency(request, idempotencyStore, { offerId }, async () => {
+      const offer = await runWithApplication((service) => service.issueCompensation(offerId, requestContext(request).correlationId, newCommandId()));
+      return { statusCode: 200, body: compensationOfferResponse(offer) };
+    });
+    return reply.status(response!.statusCode).send(response!.body);
+  });
+
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
   });
@@ -350,6 +383,7 @@ function validateOpenSupportCase(value: unknown): OpenSupportCaseRequest {
     priority: optionalEnumValue(body, "priority", priorities),
     description: requiredString(body, "description"),
     businessReferences: optionalStringRecord(body, "businessReferences"),
+    customerTier: optionalEnumValue(body, "customerTier", customerTiers),
   };
 }
 
@@ -376,7 +410,11 @@ function validateAssign(value: unknown): AssignSupportCaseRequest {
 
 function validateEscalate(value: unknown): EscalateCaseRequest {
   const body = objectBody(value);
-  return { targetQueue: requiredString(body, "targetQueue"), reason: requiredString(body, "reason") };
+  return {
+    targetQueue: requiredString(body, "targetQueue"),
+    reason: requiredString(body, "reason"),
+    triggerCondition: optionalEnumValue(body, "triggerCondition", escalationTriggerConditions),
+  };
 }
 
 function validateResolve(value: unknown): ResolveCaseRequest {
@@ -404,6 +442,16 @@ function validateRequestManualAction(value: unknown): RequestManualActionRequest
     evidenceRefs: optionalStringArray(body, "evidenceRefs"),
     description: requiredString(body, "description"),
     requiresApproval: requiredBoolean(body, "requiresApproval"),
+  };
+}
+
+function validateOfferCompensation(value: unknown): OfferCompensationRequest {
+  const body = objectBody(value);
+  return {
+    type: enumValue(body, "type", compensationTypes),
+    amountMinor: requiredInteger(body, "amountMinor"),
+    authorizationLevel: enumValue(body, "authorizationLevel", escalationLevels),
+    offeredBy: requiredString(body, "offeredBy"),
   };
 }
 
@@ -439,6 +487,14 @@ function requiredBoolean(body: Record<string, unknown>, field: string): boolean 
     throw new ValidationError(`${field} is required`, { field });
   }
   return value;
+}
+
+function requiredInteger(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (!Number.isInteger(value)) {
+    throw new ValidationError(`${field} is required`, { field });
+  }
+  return value as number;
 }
 
 function optionalStringArray(body: Record<string, unknown>, field: string): readonly string[] | undefined {
@@ -497,6 +553,8 @@ function openSupportCaseResponse(snapshot: Parameters<typeof supportCaseResponse
     channel: snapshot.channel,
     priority: snapshot.priority ?? "NORMAL",
     status: apiStatus(snapshot.status),
+    escalationLevel: snapshot.escalationLevel,
+    customerTier: snapshot.customerTier,
     createdAt: snapshot.openedAt.toISOString(),
   };
 }
@@ -520,6 +578,12 @@ function supportCaseResponse(snapshot: {
   closeReason?: string;
   evidence?: readonly unknown[];
   timeline?: readonly unknown[];
+  escalationLevel?: string;
+  customerTier?: string;
+  escalationHistory?: readonly unknown[];
+  slaTracker?: unknown;
+  slaBreaches?: readonly unknown[];
+  slaMetrics?: unknown;
 }) {
   return {
     caseId: snapshot.caseId,
@@ -538,8 +602,25 @@ function supportCaseResponse(snapshot: {
     escalation: snapshot.escalation,
     closedAt: snapshot.closedAt?.toISOString(),
     closeReason: snapshot.closeReason,
+    escalationLevel: snapshot.escalationLevel,
+    customerTier: snapshot.customerTier,
+    escalationHistory: snapshot.escalationHistory,
+    slaTracker: snapshot.slaTracker,
+    slaBreaches: snapshot.slaBreaches,
+    slaMetrics: snapshot.slaMetrics,
     evidence: snapshot.evidence,
     timeline: snapshot.timeline,
+  };
+}
+
+function compensationOfferResponse(offer: { offerId: string; ticketId: string; type: string; amountMinor: number; authorizationLevel: string; status: string }) {
+  return {
+    offerId: offer.offerId,
+    ticketId: offer.ticketId,
+    type: offer.type,
+    amountMinor: offer.amountMinor,
+    authorizationLevel: offer.authorizationLevel,
+    status: offer.status,
   };
 }
 

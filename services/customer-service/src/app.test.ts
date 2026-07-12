@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { InMemoryEventPublisher } from "./application/messaging.js";
+import { CustomerServiceApplication } from "./application/customer-service.js";
+import { InMemoryEventPublisher, newCorrelationId } from "./application/messaging.js";
 import { createApp } from "./index.js";
 
 const openBody = {
@@ -181,6 +182,23 @@ describe("customer-service HTTP API", () => {
     assert.equal(response.json().status, "IN_PROGRESS");
   });
 
+  it("supports customer-requested immediate escalation", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({ publisher });
+    const caseId = await openedCase(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/escalate`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0c018" },
+      payload: { targetQueue: "tier2", reason: "customer requested escalation", triggerCondition: "CUSTOMER_REQUEST" },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().escalationLevel, "L2_SPECIALIST");
+    assert.equal(publisher.findByEventType("TicketEscalated").at(-1)?.payload.triggerCondition, "CUSTOMER_REQUEST");
+  });
+
   it("resolves, closes, and reopens a support case", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
@@ -321,6 +339,25 @@ describe("customer-service HTTP API", () => {
     assert.equal(replay.statusCode, 202);
     assert.deepEqual(publisher.findByEventType("ManualActionRequested").map((event) => event.payload.caseId), [caseId]);
     assert.equal(publisher.findByEventType("ManualActionRequested")[0].payload.targetDomain, "post-sales");
+  });
+
+  it("offers compensation when resolution SLA breaches", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const application = new CustomerServiceApplication(publisher);
+    const correlationId = newCorrelationId();
+    const opened = await application.openSupportCase({
+      requesterRef: openBody.requesterRef,
+      channel: "APP",
+      priority: "URGENT",
+      description: openBody.description,
+    }, correlationId);
+
+    await application.evaluateEscalationAndSla(opened.caseId, new Date(opened.openedAt.getTime() + 31 * 60_000), correlationId);
+
+    assert.equal(publisher.findByEventType("SlaBreach").some((event) => event.payload.breachType === "RESOLUTION"), true);
+    const compensationEvents = publisher.findByEventType("CompensationOffered");
+    assert.equal(compensationEvents.length, 1);
+    assert.equal(compensationEvents[0].payload.ticketId, opened.caseId);
   });
 
   it("returns NOT_FOUND for unknown cases", async () => {
