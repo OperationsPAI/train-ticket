@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/trainticket/greenfield/platform/go-kit/storage"
@@ -46,8 +47,8 @@ func (r *Repository) FindPolicy(ctx context.Context, id string) (domain.Policy, 
 	var policy domain.Policy
 	return policy, json.Unmarshal(snap.Data, &policy)
 }
-func (r *Repository) FindPolicyByUniqueness(ctx context.Context, ancillaryID, travelerRef, segmentScopeHash, productVersion string) (domain.Policy, error) {
-	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM policy_snapshots WHERE data->>'ancillaryOrderItemId' = $1 AND data->>'travelerRef' = $2 AND data->>'productVersion' = $3`, strings.TrimSpace(ancillaryID), strings.TrimSpace(travelerRef), strings.TrimSpace(productVersion))
+func (r *Repository) FindPolicyByUniqueness(ctx context.Context, productCode domain.ProductCode, ancillaryID, travelerRef, segmentScopeHash, productVersion string) (domain.Policy, error) {
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM policy_snapshots WHERE data->>'productCode' = $1 AND data->>'ancillaryOrderItemId' = $2 AND data->>'travelerRef' = $3 AND data->>'productVersion' = $4`, string(productCode), strings.TrimSpace(ancillaryID), strings.TrimSpace(travelerRef), strings.TrimSpace(productVersion))
 	if err != nil {
 		return domain.Policy{}, err
 	}
@@ -61,7 +62,7 @@ func (r *Repository) FindPolicyByUniqueness(ctx context.Context, ancillaryID, tr
 		if err := json.Unmarshal(raw, &policy); err != nil {
 			return domain.Policy{}, err
 		}
-		if policy.SegmentScopeHash() == segmentScopeHash {
+		if policy.ProductCode == productCode && policy.SegmentScopeHash() == segmentScopeHash {
 			return policy, nil
 		}
 	}
@@ -70,6 +71,41 @@ func (r *Repository) FindPolicyByUniqueness(ctx context.Context, ancillaryID, tr
 	}
 	return domain.Policy{}, application.ErrNotFound
 }
+
+func (r *Repository) FindIssuedPoliciesForSegment(ctx context.Context, code domain.ProductCode, segmentRef string, occurredAt time.Time) ([]domain.Policy, error) {
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM policy_snapshots WHERE data->>'productCode' = $1 AND data->>'status' = $2 AND data->'segmentRefs' ? $3 AND (data->>'coverageStartAt')::timestamptz <= $4 AND (data->>'coverageEndAt')::timestamptz >= $4`, string(code), string(domain.PolicyIssued), strings.TrimSpace(segmentRef), occurredAt.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	policies := []domain.Policy{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var policy domain.Policy
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			return nil, err
+		}
+		policies = append(policies, policy)
+	}
+	return policies, rows.Err()
+}
+
+func (r *Repository) FindIssuedPolicyByJourneyOrder(ctx context.Context, journeyOrderID string) (domain.Policy, error) {
+	row := r.db.DBFor(ctx).QueryRow(ctx, `SELECT data FROM policy_snapshots WHERE data->>'journeyOrderId' = $1 AND data->>'status' = $2 LIMIT 1`, strings.TrimSpace(journeyOrderID), string(domain.PolicyIssued))
+	var raw json.RawMessage
+	if err := row.Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Policy{}, application.ErrNotFound
+		}
+		return domain.Policy{}, err
+	}
+	var policy domain.Policy
+	return policy, json.Unmarshal(raw, &policy)
+}
+
 func (r *Repository) SaveClaim(ctx context.Context, claim domain.Claim) error {
 	return saveJSON(ctx, r.db.DBFor(ctx), "claim_snapshots", claim.ID, claim)
 }
