@@ -10,7 +10,7 @@ target:
   request_timeout_seconds: 10
 
 run:
-  workers: 100                # concurrent virtual customers
+  workers: 200                # concurrent virtual customers
   duration_seconds: 0         # 0 = run until stopped
   seed: null                  # set an int for reproducible randomness
   think_time_seconds: { min: 0, max: 0 }        # zero think time for stress test
@@ -99,7 +99,7 @@ behavior:
 # risk review, support case handling.
 # ---------------------------------------------------------------------------
 staff:
-  workers: 100
+  workers: 200
   think_time_seconds: { min: 0, max: 0 }        # zero think time for stress test
   queue_poll_seconds: 0.1
   p_risk_approve: 0.50        # manual review lifts the block, else rejected
@@ -172,9 +172,9 @@ defaults:
 # ---------------------------------------------------------------------------
 scalper:
   enabled: true
-  workers: 8                   # concurrent scalper workers
+  workers: 16                  # concurrent scalper workers
   accounts_per_worker: 10      # pre-registered account pool per worker
-  target_segments: 10          # grab from the first N bootstrap segments
+  target_segments: 15          # grab from the first N bootstrap segments
   retry_on_failure: 0.8        # probability of immediate retry on step failure
   retry_same_key: true         # reuse the same Idempotency-Key on retry
   purchase_batch_size: 4       # attempts per tight loop before micro-pause
