@@ -12,15 +12,30 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from train_ticket_platform.messaging import InMemoryEventPublisher
 from train_ticket_platform.observability import init_opentelemetry
+from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, run_migrations
 
 from train_ticket_platform.ids import is_uuid7
 
-from .application import AgreementNotFoundError, CorporateTravelService, InMemoryCorporateTravelRepository, uuid7
+from .application import AgreementNotFoundError, CorporateTravelService, InMemoryCorporateTravelRepository, PostgresCorporateTravelRepository, uuid7
 from .domain import CorporateTravelError
 from .runtime import health, profile
 
 REQUEST_ID_HEADER = "X-Request-ID"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
+
+_default_service: CorporateTravelService | None = None
+
+
+def get_default_service() -> CorporateTravelService:
+    global _default_service
+    if _default_service is None:
+        _default_service = CorporateTravelService(publisher=InMemoryEventPublisher(), repository=InMemoryCorporateTravelRepository())
+    return _default_service
+
+
+def set_default_service(service: CorporateTravelService) -> None:
+    global _default_service
+    _default_service = service
 
 
 class MoneyModel(BaseModel):
@@ -79,6 +94,44 @@ class AuthorizeTravelerRequest(BaseModel):
     canDelegateBooking: bool = False
     validFrom: str | None = None
     validUntil: str | None = None
+
+
+
+
+class PolicyCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    employeeRef: str = Field(min_length=1)
+    departmentRef: str = Field(min_length=1)
+    origin: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+    seatClass: str = "SECOND_CLASS"
+    amount: MoneyModel
+    requestedAt: str = Field(min_length=1)
+    departureAt: str = Field(min_length=1)
+    tripDurationMinutes: int = Field(ge=0)
+    employeeLevel: str = "STAFF"
+    managerRef: str | None = None
+    emergency: bool = False
+    bookingRef: str | None = None
+
+
+class InvoiceLineItemModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bookingRef: str = Field(min_length=1)
+    employeeName: str = Field(min_length=1)
+    route: str = Field(min_length=1)
+    travelDate: str = Field(min_length=1)
+    amountMinor: int = Field(ge=0)
+
+
+class GenerateInvoiceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    period: str = Field(min_length=1)
+    lineItems: list[InvoiceLineItemModel]
+    discountRateBps: int = Field(default=0, ge=0, le=10000)
 
 
 class ErrorBody(BaseModel):
@@ -204,6 +257,52 @@ def configure_corporate_travel_endpoints(app: FastAPI, service: CorporateTravelS
             return error_response(request, 400, "CORPORATE_TRAVEL_INVARIANT_VIOLATION", str(exc))
         return JSONResponse(status_code=201, content=traveler.to_dict())
 
+    @app.post("/agreements/{agreementId}/policy-checks", status_code=201, response_model=None)
+    @app.post("/api/v1/agreements/{agreementId}/policy-checks", status_code=201, response_model=None)
+    def check_policy(request: Request, agreementId: str, payload: PolicyCheckRequest) -> JSONResponse:
+        try:
+            result = service.check_policy_and_reserve(
+                agreement_id=agreementId,
+                employee_ref=payload.employeeRef,
+                department_ref=payload.departmentRef,
+                origin=payload.origin,
+                destination=payload.destination,
+                seat_class=payload.seatClass,
+                amount=payload.amount.model_dump(),
+                requested_at=payload.requestedAt,
+                departure_at=payload.departureAt,
+                trip_duration_minutes=payload.tripDurationMinutes,
+                employee_level=payload.employeeLevel,
+                manager_ref=payload.managerRef,
+                emergency=payload.emergency,
+                booking_ref=payload.bookingRef,
+                correlation_id=request.state.correlation_id,
+                causation_id=request.headers.get("Idempotency-Key") or request.state.request_id,
+            )
+        except AgreementNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Corporate agreement was not found")
+        except (CorporateTravelError, ValueError) as exc:
+            return error_response(request, 400, "CORPORATE_TRAVEL_INVARIANT_VIOLATION", str(exc))
+        return JSONResponse(status_code=201, content=result.to_dict())
+
+    @app.post("/agreements/{agreementId}/monthly-invoices", status_code=201, response_model=None)
+    @app.post("/api/v1/agreements/{agreementId}/monthly-invoices", status_code=201, response_model=None)
+    def generate_invoice(request: Request, agreementId: str, payload: GenerateInvoiceRequest) -> JSONResponse:
+        try:
+            result = service.generate_monthly_invoice(
+                agreement_id=agreementId,
+                period=payload.period,
+                line_items=[item.model_dump() for item in payload.lineItems],
+                discount_rate_bps=payload.discountRateBps,
+                correlation_id=request.state.correlation_id,
+                causation_id=request.headers.get("Idempotency-Key") or request.state.request_id,
+            )
+        except AgreementNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Corporate agreement was not found")
+        except CorporateTravelError as exc:
+            return error_response(request, 400, "CORPORATE_TRAVEL_INVARIANT_VIOLATION", str(exc))
+        return JSONResponse(status_code=201, content=result.to_dict())
+
 
 def create_app(service: CorporateTravelService | None = None) -> FastAPI:
     import os
@@ -212,33 +311,48 @@ def create_app(service: CorporateTravelService | None = None) -> FastAPI:
         CORPORATE_TRAVEL_SUBSCRIPTIONS,
         RedisEventSubscriber,
         corporate_travel_consumer_name,
-        handle_event,
+        build_event_handler,
     )
 
     subscriber: RedisEventSubscriber | None = None
+    relay: OutboxRelay | None = None
+    pool: DatabasePool | None = None
     redis_url = os.environ.get("REDIS_URL", "")
+    database_config = DatabaseConfig.from_env()
+    app_service = service or CorporateTravelService(publisher=InMemoryEventPublisher(), repository=InMemoryCorporateTravelRepository())
+    if database_config is not None and service is None:
+        pool = DatabasePool(database_config)
+        migrations_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "migrations")
+        run_migrations(pool, migrations_dir)
+        repository = PostgresCorporateTravelRepository(pool)
+        app_service = CorporateTravelService(repository=repository, unit_of_work=repository.transaction)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        nonlocal subscriber
+        nonlocal subscriber, relay, pool
+        if redis_url and pool is not None:
+            relay = OutboxRelay(pool, redis_url=redis_url)
+            relay.start()
         if redis_url:
             subscriber = RedisEventSubscriber()
             subscriber.start_in_background(
                 CORPORATE_TRAVEL_SUBSCRIPTIONS,
                 CORPORATE_TRAVEL_CONSUMER_GROUP,
-                handle_event,
+                build_event_handler(app.state.corporate_travel_service),
                 consumer_name=corporate_travel_consumer_name(),
             )
         yield
         if subscriber is not None:
             subscriber.stop()
+        if relay is not None:
+            relay.stop()
+        if pool is not None:
+            pool.close()
 
     app = FastAPI(title="Corporate Travel", version="0.1.0", lifespan=lifespan)
     init_opentelemetry(profile()["service_id"], app=app)
-    app.state.corporate_travel_service = service or CorporateTravelService(
-        publisher=InMemoryEventPublisher(),
-        repository=InMemoryCorporateTravelRepository(),
-    )
+    app.state.corporate_travel_service = app_service
+    set_default_service(app_service)
     configure_error_handlers(app)
     configure_runtime_endpoints(app)
     configure_corporate_travel_endpoints(app, app.state.corporate_travel_service)
