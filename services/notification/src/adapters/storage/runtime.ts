@@ -17,13 +17,14 @@ import {
 } from "@trainticket/ts-kit";
 
 import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
-import { type NotificationTask } from "../../domain.js";
+import { NotificationAggregator, RateLimitExceeded, type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
-import { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
+import { PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
 
 export type NotificationStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   failure: () => unknown;
+  getNotificationTrail: (notificationId: string) => Promise<Readonly<{ notificationId: string; status: string; attempts: readonly Readonly<{ channelUsed: string; attemptedAt: string; status: string; reason?: string }>[] }> | undefined>;
   handleExternalTrigger: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">;
   stop: () => Promise<void>;
 }>;
@@ -45,9 +46,28 @@ export async function startNotificationStorage(channelGateway: NotificationChann
   });
   relay.start();
 
+  const aggregator = new NotificationAggregator();
+
   return {
     ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
     failure: () => migrations.failure,
+    getNotificationTrail: async (notificationId) => withTransaction(pool, async (client) => {
+      const record = await new PostgresNotificationTaskRepository(client).get(notificationId);
+      if (!record) {
+        return undefined;
+      }
+      const snapshot = record.data;
+      return {
+        notificationId,
+        status: snapshot.status,
+        attempts: snapshot.receipts.map((receipt) => ({
+          channelUsed: receipt.channel,
+          attemptedAt: new Date(receipt.recordedAt).toISOString(),
+          status: receipt.outcome === "Delivered" ? "DELIVERED" : receipt.outcome === "Bounced" ? "BOUNCED" : "FAILED",
+          ...(receipt.providerCode ? { reason: receipt.providerCode } : {}),
+        })),
+      };
+    }),
     handleExternalTrigger: async (envelope, stream) => withTransaction(pool, async (client) => {
       const guard = new ProcessedEventsGuard(client);
       if (!await guard.tryStart(envelope.eventId, stream)) {
@@ -61,6 +81,9 @@ export async function startNotificationStorage(channelGateway: NotificationChann
         new PostgresUserPreferenceRepository(client),
         channelGateway,
         new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
+        new PostgresRecipientContactRepository(client),
+        new PostgresRateLimitRepository(client),
+        aggregator,
       );
 
       try {
@@ -69,6 +92,9 @@ export async function startNotificationStorage(channelGateway: NotificationChann
       } catch (error) {
         if (error instanceof NonConformantNotificationTrigger) {
           return "dlq";
+        }
+        if (error instanceof RateLimitExceeded) {
+          throw error;
         }
         if (error instanceof OptimisticConcurrencyConflict && await sameBusinessTaskExists(client, envelope)) {
           return "ack";
@@ -140,7 +166,7 @@ function templateCodeFor(eventType: string): string | undefined {
     case "JourneyOrderPaymentRecorded":
       return "order_payment_recorded";
     case "JourneyOrderConfirmed":
-      return "order_confirmed";
+      return "ORDER_CONFIRMED";
     case "JourneyOrderCancelled":
       return "order_cancelled";
     case "JourneyOrderPostSalesAdjusted":
@@ -153,11 +179,17 @@ function templateCodeFor(eventType: string): string | undefined {
       return "payment_failed";
     case "PaymentIntentExpired":
     case "PaymentExpired":
-      return "payment_expired";
+      return "PAYMENT_REMINDER";
     case "RefundSettled":
-      return "refund_settled";
+      return "REFUND_COMPLETED";
     case "EntitlementIssued":
-      return "ticket_issued";
+      return "TICKET_ISSUED";
+    case "WaitlistFulfilled":
+      return "WAITLIST_PROMOTED";
+    case "ServiceAlertPublished":
+      return "DELAY_ALERT";
+    case "RecoveryCompleted":
+      return "DISRUPTION_REBOOK";
     case "PostSalesEligibilityEvaluated":
       return "post_sales_eligibility";
     case "PostSalesDecisionQuoted":
@@ -182,7 +214,15 @@ function templateCodeFor(eventType: string): string | undefined {
 }
 
 function recipientRefFor(payload: Record<string, unknown>): string | undefined {
-  return stringValue(payload.recipientRef) ?? stringValue(payload.travelerId) ?? stringValue(payload.accountId) ?? stringValue(payload.actorRef) ?? stringValue(payload.travelerRef) ?? recipientFromTravelerRefs(payload.travelerRefs);
+  return stringValue(payload.recipientRef)
+    ?? stringValue(payload.travelerId)
+    ?? stringValue(payload.accountId)
+    ?? stringValue(payload.actorRef)
+    ?? stringValue(payload.travelerRef)
+    ?? firstString(payload.affectedOrderIds)
+    ?? stringValue(payload.journeyOrderId)
+    ?? stringValue(payload.serviceAlertId)
+    ?? recipientFromTravelerRefs(payload.travelerRefs);
 }
 
 function recipientFromTravelerRefs(value: unknown): string | undefined {
@@ -214,9 +254,20 @@ function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.benefitId)
     ?? stringValue(payload.segmentBookingId)
     ?? stringValue(payload.caseId)
+    ?? stringValue(payload.serviceAlertId)
+    ?? stringValue(payload.incidentId)
+    ?? stringValue(payload.waitlistRequestId)
+    ?? stringValue(payload.journeyOrderRef)
     ?? stringValue(payload.postSalesCaseId)
     ?? stringValue(payload.businessRef);
   return direct ? `${envelope.eventType}:${direct}` : undefined;
+}
+
+function firstString(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
 }
 
 function stringValue(value: unknown): string | undefined {

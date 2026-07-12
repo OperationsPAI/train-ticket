@@ -341,4 +341,136 @@ describe("notification messaging integration surface", () => {
     assert.equal(publisher.envelopes.length, 0);
   });
 
+
+  it("falls back from unavailable PUSH to SMS", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const sentChannels: string[] = [];
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      { send: (task) => { sentChannels.push(task.channel); return { ok: true }; } },
+      undefined,
+      { getContactProfile: () => ({ phoneNumber: "+8613800000000", emailAddress: "u@example.test" }) },
+    );
+
+    assert.equal(await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c229",
+      eventType: "JourneyOrderConfirmed",
+      schemaVersion: 1,
+      producer: "journey-order",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        orderId: "ord-test-001",
+        accountId: "acc-test-001",
+        monetarySummary: {},
+        confirmedAt: "2026-07-05T10:00:00.000Z",
+        origin: "北京",
+        destination: "上海",
+        departureTime: "12:00",
+      },
+    }), "delivered");
+    assert.deepEqual(sentChannels, ["SMS"]);
+  });
+
+  it("falls back from failed SMS to EMAIL", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const sentChannels: string[] = [];
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      { send: (task) => {
+        sentChannels.push(task.channel);
+        return task.channel === "SMS" ? { ok: false, outcome: "Rejected" } : { ok: true };
+      } },
+      undefined,
+      { getContactProfile: () => ({ phoneNumber: "+8613800000000", emailAddress: "u@example.test", preferredChannel: "SMS" }) },
+    );
+
+    assert.equal(await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c230",
+      eventType: "RefundSettled",
+      schemaVersion: 1,
+      producer: "post-sales",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: { recipientRef: "usr-test-001", refundId: "ref-1", paymentIntentId: "pi-1", amount: { currency: "CNY", minorUnits: 1200 } },
+    }), "delivered");
+    assert.deepEqual(sentChannels, ["SMS", "EMAIL"]);
+    assert.deepEqual(publisher.envelopes.map((envelope) => envelope.eventType), ["NotificationScheduled", "NotificationDispatched", "NotificationFailed", "NotificationDelivered"]);
+  });
+
+  it("maps documented waitlist and disruption recovery events", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+
+    await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c231",
+      eventType: "WaitlistFulfilled",
+      schemaVersion: 1,
+      producer: "waitlist",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        waitlistRequestId: "wlr-1",
+        accountId: "acc-1",
+        travelerRef: "tvl-1",
+        segmentRef: "seg-1",
+        journeyOrderRef: "ord-1",
+        fulfilledAt: "2026-07-05T10:00:00.000Z",
+        status: "FULFILLED",
+      },
+    });
+    await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c232",
+      eventType: "ServiceAlertPublished",
+      schemaVersion: 1,
+      producer: "disruption-recovery",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:01:00.000Z",
+      payload: {
+        serviceAlertId: "sal-1",
+        incidentId: "inc-1",
+        disruptionType: "DELAY",
+        scheduledServiceRef: "G123",
+        serviceDate: "2026-07-05",
+        audience: "AFFECTED_ORDERS",
+        affectedOrderIds: ["ord-2"],
+        messageSummary: "列车晚点",
+        publishedAt: "2026-07-05T10:01:00.000Z",
+      },
+    });
+    await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c233",
+      eventType: "RecoveryCompleted",
+      schemaVersion: 1,
+      producer: "disruption-recovery",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      occurredAt: "2026-07-05T10:02:00.000Z",
+      payload: {
+        caseId: "rcv-1",
+        incidentId: "inc-1",
+        journeyOrderId: "ord-3",
+        optionId: "rop-1",
+        optionType: "REACCOMMODATION",
+        executionId: "rex-1",
+        externalRef: "conn-2",
+        completedAt: "2026-07-05T10:02:00.000Z",
+        status: "RECOVERED",
+      },
+    });
+
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => envelope.payload.templateType),
+      ["WAITLIST_PROMOTED", "DELAY_ALERT", "DISRUPTION_REBOOK"],
+    );
+  });
+
 });

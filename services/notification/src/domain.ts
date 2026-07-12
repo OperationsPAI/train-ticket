@@ -34,6 +34,7 @@ export type TemplateId = string;         // "tpl-<uuid>"
 export type TemplateCode = string;       // human-readable key, e.g. "order_confirmed"
 export type RecipientRef = string;       // "tvl-<uuid>" or "usr-<uuid>"
 export type ChannelType = "EMAIL" | "SMS" | "PUSH" | "IN_APP";
+export type NotificationChannel = Exclude<ChannelType, "IN_APP">;
 export type IntentType = string;         // e.g. "PAYMENT_RESULT", "TICKET_ISSUED", "REFUND_SETTLED"
 export type EventId = string;            // "evt-<uuid>"
 export type ReceiptId = string;          // "rct-<uuid>"
@@ -62,6 +63,19 @@ export type DeliveryReceiptOutcome =
   | "Rejected"
   | "Timeout"
   | "Expired";
+
+export type DeliveryAttemptStatus = "SENT" | "DELIVERED" | "FAILED" | "BOUNCED";
+
+export type NotificationStatus = "QUEUED" | "SENDING" | "SENT" | "DELIVERED" | "FAILED";
+
+export type NotificationTemplateType =
+  | "ORDER_CONFIRMED"
+  | "PAYMENT_REMINDER"
+  | "TICKET_ISSUED"
+  | "DELAY_ALERT"
+  | "REFUND_COMPLETED"
+  | "WAITLIST_PROMOTED"
+  | "DISRUPTION_REBOOK";
 
 // ─── Value Objects ─────────────────────────────────────────────────────────────
 
@@ -113,6 +127,7 @@ export type RecordDeliveryReceipt = Readonly<{
   providerCode?: string;
   providerMessage?: string;
   recordedAt: Date;
+  finalFailure?: boolean;
 }>;
 
 export type CancelNotification = Readonly<{
@@ -338,7 +353,11 @@ export class NotificationTask {
     const receipts = [...this.snapshot.receipts, receipt.toSnapshot()];
 
     const isDelivered = command.outcome === "Delivered";
-    const newStatus: NotificationTaskStatus = isDelivered ? "Delivered" : "Failed";
+    const newStatus: NotificationTaskStatus = isDelivered
+      ? "Delivered"
+      : command.finalFailure === false
+        ? "Delivering"
+        : "Failed";
 
     const newSnapshot: NotificationTaskSnapshot = deepFreeze({
       ...this.snapshot,
@@ -693,6 +712,188 @@ export class DeliveryReceipt {
 
   toSnapshot(): DeliveryReceiptSnapshot {
     return deepFreeze(cloneForSnapshot(this.snapshot));
+  }
+}
+
+// ─── REQ-311 Multi-channel delivery, templates, rate limits ─────────────────────
+
+export type DeliveryAttempt = Readonly<{
+  channelUsed: NotificationChannel;
+  attemptedAt: Date;
+  status: DeliveryAttemptStatus;
+  reason?: string;
+}>;
+
+export class ChannelFallbackChain {
+  private static readonly priority: readonly NotificationChannel[] = Object.freeze(["PUSH", "SMS", "EMAIL"]);
+  private readonly channels: readonly NotificationChannel[];
+
+  constructor(primary: NotificationChannel = "PUSH", availableChannels: readonly NotificationChannel[] = ChannelFallbackChain.priority) {
+    const unique = new Set<NotificationChannel>();
+    unique.add(primary);
+    for (const channel of ChannelFallbackChain.priority) {
+      unique.add(channel);
+    }
+    this.channels = Object.freeze([...unique].filter((channel) => availableChannels.includes(channel)));
+    if (this.channels.length === 0) {
+      throw new DomainError("NO_AVAILABLE_CHANNELS", "At least one notification channel must be available");
+    }
+    Object.freeze(this);
+  }
+
+  toArray(): readonly NotificationChannel[] {
+    return this.channels;
+  }
+}
+
+export type NotificationTemplate = Readonly<{
+  templateId: string;
+  templateType: NotificationTemplateType;
+  channel: NotificationChannel;
+  subjectTemplate?: string;
+  bodyTemplate: string;
+  pushTitleTemplate?: string;
+}>;
+
+export type RenderedNotification = Readonly<{
+  subject?: string;
+  title?: string;
+  body: string;
+}>;
+
+export class TemplateRenderer {
+  constructor(private readonly templates: readonly NotificationTemplate[] = builtInNotificationTemplates()) {}
+
+  render(templateType: NotificationTemplateType, channel: NotificationChannel, variables: Readonly<Record<string, string>>): RenderedNotification {
+    const template = this.templates.find((candidate) => candidate.templateType === templateType && candidate.channel === channel);
+    if (!template) {
+      throw new DomainError("TEMPLATE_NOT_FOUND", `Template ${templateType} for ${channel} is not registered`);
+    }
+    return deepFreeze({
+      ...(template.subjectTemplate ? { subject: renderTemplate(template.subjectTemplate, variables) } : {}),
+      ...(template.pushTitleTemplate ? { title: renderTemplate(template.pushTitleTemplate, variables) } : {}),
+      body: renderTemplate(template.bodyTemplate, variables),
+    });
+  }
+}
+
+export class RateLimitExceeded extends Error {
+  constructor(
+    public readonly recipientRef: string,
+    public readonly channel: NotificationChannel,
+    public readonly retryAfter: Date,
+    message = `Rate limit exceeded for ${recipientRef} on ${channel}`,
+  ) {
+    super(message);
+    this.name = "RateLimitExceeded";
+  }
+}
+
+export type RateLimitDecision = Readonly<{ allowed: true } | { allowed: false; retryAfter: Date }>;
+
+export class RateLimiter {
+  private readonly events: Array<Readonly<{ recipientRef: string; channel: NotificationChannel; at: Date }>> = [];
+
+  checkAndRecord(recipientRef: string, channel: NotificationChannel, at: Date = new Date()): RateLimitDecision {
+    this.prune(at);
+    const perUser = this.limitFor(channel);
+    const windowStart = new Date(at.getTime() - perUser.windowMs);
+    const userEvents = this.events.filter((event) => event.recipientRef === recipientRef && event.channel === channel && event.at > windowStart);
+    if (userEvents.length >= perUser.max) {
+      return { allowed: false, retryAfter: new Date(Math.min(...userEvents.map((event) => event.at.getTime())) + perUser.windowMs) };
+    }
+    if (channel === "SMS") {
+      const globalWindowStart = new Date(at.getTime() - 60_000);
+      const smsEvents = this.events.filter((event) => event.channel === "SMS" && event.at > globalWindowStart);
+      if (smsEvents.length >= 1000) {
+        return { allowed: false, retryAfter: new Date(Math.min(...smsEvents.map((event) => event.at.getTime())) + 60_000) };
+      }
+    }
+    this.events.push(Object.freeze({ recipientRef, channel, at: new Date(at) }));
+    return { allowed: true };
+  }
+
+  private limitFor(channel: NotificationChannel): Readonly<{ max: number; windowMs: number }> {
+    switch (channel) {
+      case "PUSH":
+        return { max: 10, windowMs: 60 * 60 * 1000 };
+      case "SMS":
+        return { max: 5, windowMs: 24 * 60 * 60 * 1000 };
+      case "EMAIL":
+        return { max: 20, windowMs: 24 * 60 * 60 * 1000 };
+    }
+  }
+
+  private prune(at: Date): void {
+    const cutoff = at.getTime() - 24 * 60 * 60 * 1000;
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      if (this.events[index].at.getTime() < cutoff) {
+        this.events.splice(index, 1);
+      }
+    }
+  }
+}
+
+export type AggregatableNotification = Readonly<{
+  recipientRef: string;
+  orderRef: string;
+  templateType: NotificationTemplateType;
+  occurredAt: Date;
+}>;
+
+export class NotificationAggregator {
+  private readonly seen = new Map<string, AggregatableNotification>();
+
+  shouldSuppress(candidate: AggregatableNotification): boolean {
+    const key = `${candidate.recipientRef}:${candidate.orderRef}`;
+    const previous = this.seen.get(key);
+    this.seen.set(key, candidate);
+    if (!previous) {
+      return false;
+    }
+    const withinWindow = Math.abs(candidate.occurredAt.getTime() - previous.occurredAt.getTime()) <= 5 * 60 * 1000;
+    return withinWindow && aggregationPriority(previous.templateType) <= aggregationPriority(candidate.templateType);
+  }
+}
+
+export function builtInNotificationTemplates(): readonly NotificationTemplate[] {
+  return Object.freeze([
+    templateSet("ORDER_CONFIRMED", "订单已确认", "您的订单 {orderId} 已确认，{origin}→{destination}，{departureTime} 出发", "订单{orderId}已确认 {origin}→{destination}", "订单已确认"),
+    templateSet("PAYMENT_REMINDER", "待支付提醒", "订单 {orderId} 待支付，请在 {expiresAt} 前完成付款", "订单{orderId}待支付，请尽快付款", "待支付提醒"),
+    templateSet("TICKET_ISSUED", "电子客票已出票", "电子客票已出票：{trainNumber} {seatInfo}，请凭身份证进站", "{trainNumber}{seatInfo}已出票", "电子客票"),
+    templateSet("DELAY_ALERT", "列车晚点提醒", "您乘坐的 {trainNumber} 次列车预计晚点 {delayMinutes} 分钟", "{trainNumber}晚点{delayMinutes}分钟", "列车晚点"),
+    templateSet("REFUND_COMPLETED", "退款到账提醒", "退款 {amount} 元已原路返回，预计 {arrivalDays} 个工作日到账", "退款{amount}元已返回", "退款完成"),
+    templateSet("WAITLIST_PROMOTED", "候补购票成功", "候补购票成功！{origin}→{destination} {departureDate}，请在 15 分钟内确认", "候补成功，请15分钟内确认", "候补成功"),
+    templateSet("DISRUPTION_REBOOK", "列车取消改签", "由于列车取消，已为您改签至 {newTrainNumber} {newDepartureTime}", "已改签至{newTrainNumber}", "已为您改签"),
+  ].flat());
+}
+
+function templateSet(type: NotificationTemplateType, subject: string, body: string, smsBody: string, pushTitle: string): NotificationTemplate[] {
+  return [
+    { templateId: `${type}:EMAIL`, templateType: type, channel: "EMAIL", subjectTemplate: subject, bodyTemplate: body },
+    { templateId: `${type}:SMS`, templateType: type, channel: "SMS", bodyTemplate: smsBody },
+    { templateId: `${type}:PUSH`, templateType: type, channel: "PUSH", pushTitleTemplate: pushTitle, bodyTemplate: body },
+  ];
+}
+
+function renderTemplate(template: string, variables: Readonly<Record<string, string>>): string {
+  return template.replace(/\{([A-Za-z0-9_]+)\}/g, (_placeholder, key: string) => variables[key] ?? "");
+}
+
+function aggregationPriority(type: NotificationTemplateType): number {
+  switch (type) {
+    case "ORDER_CONFIRMED":
+      return 1;
+    case "TICKET_ISSUED":
+      return 2;
+    case "DISRUPTION_REBOOK":
+      return 3;
+    case "DELAY_ALERT":
+    case "REFUND_COMPLETED":
+    case "WAITLIST_PROMOTED":
+      return 4;
+    case "PAYMENT_REMINDER":
+      return 5;
   }
 }
 
