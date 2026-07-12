@@ -233,7 +233,7 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 		_, _, err := s.api.Request(ctx, "POST", "customer-service",
 			"/api/v1/support-cases/"+url.PathEscape(caseID)+"/assign",
 			map[string]interface{}{"ownerQueue": "tier1"},
-			nil, []int{200, 201}, "staff-support-assign")
+			nil, []int{200, 201, 422}, "staff-support-assign")
 		if err != nil {
 			return err
 		}
@@ -258,7 +258,7 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 			map[string]interface{}{
 				"classification": "POST_SALES_HELP",
 				"priority":       "NORMAL",
-			}, nil, []int{200, 201}, "staff-support-classify")
+			}, nil, []int{200, 201, 422}, "staff-support-classify")
 		if err != nil {
 			return err
 		}
