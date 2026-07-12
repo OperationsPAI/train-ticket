@@ -43,8 +43,8 @@ journey_mix:
 # ---------------------------------------------------------------------------
 behavior:
   # identity
-  p_new_account: 0.35         # else: reuse an account from the registry (re-validated via GET)
-  p_new_traveler: 0.50        # else: reuse one of the account's travelers (GET-validated)
+  p_new_account: 0.05         # mostly reuse accounts for stress test
+  p_new_traveler: 0.10        # mostly reuse travelers for stress test
   p_second_traveler: 0.15     # purchase for two travelers instead of one
 
   # funnel abandonment (customer walks away without error)

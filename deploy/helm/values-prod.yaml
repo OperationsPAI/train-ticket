@@ -132,7 +132,7 @@ redis:
       memory: 8Gi
 loadgen:
   enabled: true
-  replicas: 3
+  replicas: 50
   workers: 200
 defaults:
   env:
@@ -211,7 +211,7 @@ services:
     pgInstance: txn
   account:
     db: account
-    replicas: 1
+    replicas: 2
     resources:
       requests: *svc_req
       limits: *svc_lim
