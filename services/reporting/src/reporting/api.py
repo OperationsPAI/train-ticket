@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from train_ticket_platform.observability import init_opentelemetry
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
-from .domain import DashboardReadModel, MetricCategory, MetricDefinition, ReportingError
+from .domain import AnomalyDetected, DashboardReadModel, MetricCategory, MetricDefinition, MetricSnapshot, ReportingError, RevenueReport, RouteMetrics
 from train_ticket_platform.idempotency import configure_idempotency_middleware
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
@@ -101,6 +101,68 @@ def _error_body(request: Request, code: str, message: str, details: Mapping[str,
 
 def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
+
+
+def money_to_json(money: Any) -> dict[str, object]:
+    return {"amount": str(money.amount), "currency": money.currency}
+
+
+def route_metrics_to_json(route: RouteMetrics) -> dict[str, object]:
+    return {
+        "routeId": route.route_id,
+        "serviceDate": route.service_date.isoformat(),
+        "routeRevenue": money_to_json(route.route_revenue),
+        "routeDemand": route.route_demand,
+        "bookings": route.bookings,
+        "searches": route.searches,
+        "confirmed": route.confirmed,
+        "capacity": route.capacity,
+        "fillRate": route.fill_rate,
+        "seatUtilizationByClass": dict(route.seat_utilization_by_class),
+    }
+
+
+def operational_snapshot_to_json(snapshot: MetricSnapshot) -> dict[str, object]:
+    return {
+        "generatedAt": rfc3339_utc(snapshot.generated_at),
+        "orders_per_second": snapshot.orders_per_second,
+        "revenue_per_hour": money_to_json(snapshot.revenue_per_hour),
+        "fill_rate_by_route": dict(snapshot.fill_rate_by_route),
+        "avg_booking_latency": dict(snapshot.avg_booking_latency),
+        "refund_rate": snapshot.refund_rate,
+        "scalper_block_rate": snapshot.scalper_block_rate,
+        "routeMetrics": [route_metrics_to_json(route) for route in snapshot.route_metrics],
+    }
+
+
+def revenue_report_to_json(report: RevenueReport) -> dict[str, object]:
+    return {
+        "generatedAt": rfc3339_utc(report.generated_at),
+        "groupBy": report.group_by,
+        "totalRevenue": money_to_json(report.total_revenue),
+        "items": [
+            {
+                "dimension": item.dimension,
+                "value": item.value,
+                "revenue": money_to_json(item.revenue),
+                "count": item.count,
+                "yieldPerKm": str(item.yield_per_km),
+                "ancillaryAttachRate": item.ancillary_attach_rate,
+                "insuranceAttachRate": item.insurance_attach_rate,
+            }
+            for item in report.items
+        ],
+    }
+
+
+def anomaly_to_json(anomaly: AnomalyDetected) -> dict[str, object]:
+    return {
+        "ruleId": anomaly.rule_id,
+        "currentValue": str(anomaly.current_value),
+        "threshold": str(anomaly.threshold),
+        "severity": anomaly.severity.value,
+        "detectedAt": rfc3339_utc(anomaly.detected_at),
+    }
 
 
 def metric_to_json(metric: MetricDefinition) -> dict[str, object]:
@@ -235,6 +297,30 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
 
 
 def configure_reporting_endpoints(app: FastAPI, service: ReportingApplicationService) -> None:
+    @app.get("/api/v1/metrics/operational")
+    def get_operational_metrics() -> dict[str, object]:
+        return operational_snapshot_to_json(service.operational_metrics())
+
+    @app.get("/api/v1/metrics/routes")
+    def get_route_metrics(limit: int = Query(20), offset: int = Query(0)) -> dict[str, object]:
+        _validate_pagination(limit, offset)
+        routes = [route_metrics_to_json(route) for route in service.route_metrics()]
+        return _paginated(routes[offset : offset + limit], len(routes), limit, offset)
+
+    @app.get("/api/v1/metrics/revenue")
+    def get_revenue_report(groupBy: str = "route", limit: int = Query(20)) -> dict[str, object]:
+        _validate_pagination(limit, 0)
+        return revenue_report_to_json(service.revenue_report(group_by=groupBy, limit=limit))
+
+    @app.get("/api/v1/metrics/anomalies")
+    def get_anomalies() -> dict[str, object]:
+        anomalies = [anomaly_to_json(anomaly) for anomaly in service.list_anomalies()]
+        return {"items": anomalies, "total": len(anomalies)}
+
+    @app.get("/api/v1/metrics/trends")
+    def get_trends() -> dict[str, object]:
+        return service.trends()
+
     @app.get("/api/v1/metrics")
     def list_metrics(
         category: str | None = None,
