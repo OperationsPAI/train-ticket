@@ -810,6 +810,18 @@ func (p ServicePlan) Cancellations() []ServiceCancellation {
 	return copyServiceCancellations(p.cancellations)
 }
 
+func (p ServicePlan) WithOperationalState(temporaryServices []TemporaryService, cancellations []ServiceCancellation) (ServicePlan, error) {
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(temporaryServices)
+	next.cancellations = copyServiceCancellations(cancellations)
+	if err := next.Validate(); err != nil {
+		return ServicePlan{}, err
+	}
+	return next, nil
+}
+
 func (p ServicePlan) Validate() error {
 	if strings.TrimSpace(string(p.id)) == "" {
 		return fmt.Errorf("service plan id is required")
@@ -1104,6 +1116,16 @@ func (s ScheduledService) ServiceDate() time.Time         { return s.serviceDate
 func (s ScheduledService) Status() ScheduledServiceStatus { return s.status }
 func (s ScheduledService) Segments() []ServiceSegment     { return copySegments(s.segments) }
 func (s ScheduledService) DelayRecords() []DelayRecord    { return copyDelayRecords(s.delayRecords) }
+
+func (s ScheduledService) WithDelayRecords(records []DelayRecord) (ScheduledService, error) {
+	next := s
+	next.segments = copySegments(s.segments)
+	next.delayRecords = copyDelayRecords(records)
+	if err := next.Validate(); err != nil {
+		return ScheduledService{}, err
+	}
+	return next, nil
+}
 
 func (s ScheduledService) RecordDelay(segmentRef ServiceSegmentID, delayMinutes int, scheduledDepartures map[ServiceSegmentID]time.Time) (ScheduledService, []TrainDelayedEvent, error) {
 	if delayMinutes < 0 {

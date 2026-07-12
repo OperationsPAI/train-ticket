@@ -31,17 +31,46 @@ var (
 )
 
 type ScheduledService struct {
-	ScheduledServiceRef string    `json:"scheduledServiceRef"`
-	ServiceNumber       string    `json:"serviceNumber"`
-	Status              string    `json:"status"`
-	CarrierID           string    `json:"carrierId"`
-	DepartureTime       time.Time `json:"departureTime"`
-	ArrivalTime         time.Time `json:"arrivalTime"`
-	OriginNodeID        string    `json:"originNodeId"`
-	DestinationNodeID   string    `json:"destinationNodeId"`
-	SchedulePeriod      string    `json:"schedulePeriod,omitempty"`
-	CapacityMultiplier  float64   `json:"capacityMultiplier,omitempty"`
-	Bookable            bool      `json:"bookable"`
+	ScheduledServiceRef string                        `json:"scheduledServiceRef"`
+	ServiceNumber       string                        `json:"serviceNumber"`
+	Status              string                        `json:"status"`
+	CarrierID           string                        `json:"carrierId"`
+	DepartureTime       time.Time                     `json:"departureTime"`
+	ArrivalTime         time.Time                     `json:"arrivalTime"`
+	OriginNodeID        string                        `json:"originNodeId"`
+	DestinationNodeID   string                        `json:"destinationNodeId"`
+	SchedulePeriod      string                        `json:"schedulePeriod,omitempty"`
+	CapacityMultiplier  float64                       `json:"capacityMultiplier,omitempty"`
+	Bookable            bool                          `json:"bookable"`
+	TemporaryServices   []TemporaryServiceSnapshot    `json:"temporaryServices,omitempty"`
+	Cancellations       []ServiceCancellationSnapshot `json:"cancellations,omitempty"`
+	DelayRecords        []DelayRecordSnapshot         `json:"delayRecords,omitempty"`
+}
+
+type TemporaryServiceSnapshot struct {
+	TempServiceRef   string     `json:"tempServiceRef"`
+	BaseServiceRef   string     `json:"baseServiceRef"`
+	TempTrainNumber  string     `json:"tempTrainNumber"`
+	PeriodRef        string     `json:"periodRef"`
+	StopsSubset      []string   `json:"stopsSubset"`
+	AvailableClasses []string   `json:"availableClasses"`
+	ExpiredAt        *time.Time `json:"expiredAt,omitempty"`
+}
+
+type ServiceCancellationSnapshot struct {
+	ServiceRef  string     `json:"serviceRef"`
+	Date        time.Time  `json:"date"`
+	Reason      string     `json:"reason"`
+	CancelledAt time.Time  `json:"cancelledAt"`
+	RestoredAt  *time.Time `json:"restoredAt,omitempty"`
+}
+
+type DelayRecordSnapshot struct {
+	SegmentRef    string    `json:"segmentRef"`
+	ScheduledTime time.Time `json:"scheduledTime"`
+	EstimatedTime time.Time `json:"estimatedTime"`
+	DelayMinutes  int       `json:"delayMinutes"`
+	Source        string    `json:"source"`
 }
 
 type ServiceSegment struct {
@@ -502,18 +531,10 @@ func (s *Service) AddTemporaryService(ctx context.Context, command AddTemporaryS
 		return AddTemporaryServiceResult{}, err
 	}
 	envelope := s.newEnvelope(ctx, "TemporaryServiceAdded", command.CorrelationID, command.CausationID, payload)
-	if err := s.within(ctx, func(txCtx context.Context) error {
-		if err := s.publisher.Publish(txCtx, envelope); err != nil {
-			return fmt.Errorf("%w: %v", ErrPublish, err)
-		}
-		return nil
-	}); err != nil {
+	state.plan = plan
+	if err := s.persistStateAndPublish(ctx, state, envelope); err != nil {
 		return AddTemporaryServiceResult{}, err
 	}
-	state.plan = plan
-	s.mu.Lock()
-	s.scheduledServices[state.view.ScheduledServiceRef] = state
-	s.mu.Unlock()
 	return AddTemporaryServiceResult{TempServiceRef: string(tempService.TempServiceRef), BaseServiceRef: string(tempService.BaseServiceRef), TempTrainNumber: tempService.TempTrainNumber, Period: string(tempService.PeriodRef)}, nil
 }
 
@@ -552,20 +573,10 @@ func (s *Service) RecordDelay(ctx context.Context, command RecordDelayCommand) (
 		}
 		envelopes = append(envelopes, s.newEnvelope(ctx, "TrainDelayed", command.CorrelationID, command.CausationID, payload))
 	}
-	if err := s.within(ctx, func(txCtx context.Context) error {
-		for _, envelope := range envelopes {
-			if err := s.publisher.Publish(txCtx, envelope); err != nil {
-				return fmt.Errorf("%w: %v", ErrPublish, err)
-			}
-		}
-		return nil
-	}); err != nil {
+	state.aggregate = aggregate
+	if err := s.persistStateAndPublish(ctx, state, envelopes...); err != nil {
 		return RecordDelayResult{}, err
 	}
-	state.aggregate = aggregate
-	s.mu.Lock()
-	s.scheduledServices[state.view.ScheduledServiceRef] = state
-	s.mu.Unlock()
 	return result, nil
 }
 
@@ -643,31 +654,24 @@ func (s *Service) ExpireTemporaryServices(ctx context.Context, serviceRef string
 		envelopes = append(envelopes, s.newEnvelope(ctx, "TemporaryServiceExpired", correlationID, causationID, payload))
 	}
 	state.plan = plan
-	if err := s.within(ctx, func(txCtx context.Context) error {
-		for _, envelope := range envelopes {
-			if err := s.publisher.Publish(txCtx, envelope); err != nil {
-				return fmt.Errorf("%w: %v", ErrPublish, err)
-			}
-		}
-		return nil
-	}); err != nil {
+	if err := s.persistStateAndPublish(ctx, state, envelopes...); err != nil {
 		return 0, err
 	}
-	s.mu.Lock()
-	s.scheduledServices[state.view.ScheduledServiceRef] = state
-	s.mu.Unlock()
 	return len(events), nil
 }
 
-func (s *Service) persistStateAndPublish(ctx context.Context, state scheduledServiceState, envelope EventEnvelope) error {
+func (s *Service) persistStateAndPublish(ctx context.Context, state scheduledServiceState, envelopes ...EventEnvelope) error {
+	state.view = viewWithOperationalState(state)
 	if err := s.within(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
 			if err := s.repository.SaveScheduledService(txCtx, state.view); err != nil {
 				return err
 			}
 		}
-		if err := s.publisher.Publish(txCtx, envelope); err != nil {
-			return fmt.Errorf("%w: %v", ErrPublish, err)
+		for _, envelope := range envelopes {
+			if err := s.publisher.Publish(txCtx, envelope); err != nil {
+				return fmt.Errorf("%w: %v", ErrPublish, err)
+			}
 		}
 		return nil
 	}); err != nil {
@@ -719,7 +723,138 @@ func (s *Service) stateFromScheduledService(service ScheduledService) (scheduled
 		return scheduledServiceState{}, err
 	}
 	state.view = normalizeScheduledServiceView(service)
+	plan, err := state.plan.WithOperationalState(toDomainTemporaryServices(state.view.TemporaryServices), toDomainCancellations(state.view.Cancellations))
+	if err != nil {
+		return scheduledServiceState{}, domainRule(err)
+	}
+	aggregate, err := state.aggregate.WithDelayRecords(toDomainDelayRecords(state.view.DelayRecords))
+	if err != nil {
+		return scheduledServiceState{}, domainRule(err)
+	}
+	state.plan = plan
+	state.aggregate = aggregate
 	return state, nil
+}
+
+func viewWithOperationalState(state scheduledServiceState) ScheduledService {
+	view := state.view
+	view.TemporaryServices = temporaryServiceSnapshots(state.plan.TemporaryServices())
+	view.Cancellations = serviceCancellationSnapshots(state.plan.Cancellations())
+	view.DelayRecords = delayRecordSnapshots(state.aggregate.DelayRecords())
+	return view
+}
+
+func temporaryServiceSnapshots(services []domain.TemporaryService) []TemporaryServiceSnapshot {
+	if len(services) == 0 {
+		return nil
+	}
+	snapshots := make([]TemporaryServiceSnapshot, 0, len(services))
+	for _, service := range services {
+		stops := make([]string, 0, len(service.StopsSubset))
+		for _, stop := range service.StopsSubset {
+			stops = append(stops, string(stop))
+		}
+		snapshots = append(snapshots, TemporaryServiceSnapshot{
+			TempServiceRef:   string(service.TempServiceRef),
+			BaseServiceRef:   string(service.BaseServiceRef),
+			TempTrainNumber:  service.TempTrainNumber,
+			PeriodRef:        string(service.PeriodRef),
+			StopsSubset:      stops,
+			AvailableClasses: append([]string{}, service.AvailableClasses...),
+			ExpiredAt:        copyTimePtr(service.ExpiredAt),
+		})
+	}
+	return snapshots
+}
+
+func serviceCancellationSnapshots(cancellations []domain.ServiceCancellation) []ServiceCancellationSnapshot {
+	if len(cancellations) == 0 {
+		return nil
+	}
+	snapshots := make([]ServiceCancellationSnapshot, 0, len(cancellations))
+	for _, cancellation := range cancellations {
+		snapshots = append(snapshots, ServiceCancellationSnapshot{
+			ServiceRef:  string(cancellation.ServiceRef),
+			Date:        cancellation.Date,
+			Reason:      cancellation.Reason,
+			CancelledAt: cancellation.CancelledAt,
+			RestoredAt:  copyTimePtr(cancellation.RestoredAt),
+		})
+	}
+	return snapshots
+}
+
+func delayRecordSnapshots(records []domain.DelayRecord) []DelayRecordSnapshot {
+	if len(records) == 0 {
+		return nil
+	}
+	snapshots := make([]DelayRecordSnapshot, 0, len(records))
+	for _, record := range records {
+		snapshots = append(snapshots, DelayRecordSnapshot{
+			SegmentRef:    string(record.SegmentRef),
+			ScheduledTime: record.ScheduledTime,
+			EstimatedTime: record.EstimatedTime,
+			DelayMinutes:  record.DelayMinutes,
+			Source:        string(record.Source),
+		})
+	}
+	return snapshots
+}
+
+func toDomainTemporaryServices(snapshots []TemporaryServiceSnapshot) []domain.TemporaryService {
+	services := make([]domain.TemporaryService, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		stops := make([]domain.TransportNodeID, 0, len(snapshot.StopsSubset))
+		for _, stop := range snapshot.StopsSubset {
+			stops = append(stops, domain.TransportNodeID(stop))
+		}
+		services = append(services, domain.TemporaryService{
+			TempServiceRef:   domain.TemporaryServiceID(snapshot.TempServiceRef),
+			BaseServiceRef:   domain.ScheduledServiceID(snapshot.BaseServiceRef),
+			TempTrainNumber:  snapshot.TempTrainNumber,
+			PeriodRef:        domain.SchedulePeriodType(snapshot.PeriodRef),
+			StopsSubset:      stops,
+			AvailableClasses: append([]string{}, snapshot.AvailableClasses...),
+			ExpiredAt:        copyTimePtr(snapshot.ExpiredAt),
+		})
+	}
+	return services
+}
+
+func toDomainCancellations(snapshots []ServiceCancellationSnapshot) []domain.ServiceCancellation {
+	cancellations := make([]domain.ServiceCancellation, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		cancellations = append(cancellations, domain.ServiceCancellation{
+			ServiceRef:  domain.ScheduledServiceID(snapshot.ServiceRef),
+			Date:        serviceDate(snapshot.Date),
+			Reason:      snapshot.Reason,
+			CancelledAt: snapshot.CancelledAt.UTC(),
+			RestoredAt:  copyTimePtr(snapshot.RestoredAt),
+		})
+	}
+	return cancellations
+}
+
+func toDomainDelayRecords(snapshots []DelayRecordSnapshot) []domain.DelayRecord {
+	records := make([]domain.DelayRecord, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		records = append(records, domain.DelayRecord{
+			SegmentRef:    domain.ServiceSegmentID(snapshot.SegmentRef),
+			ScheduledTime: snapshot.ScheduledTime,
+			EstimatedTime: snapshot.EstimatedTime,
+			DelayMinutes:  snapshot.DelayMinutes,
+			Source:        domain.DelaySource(snapshot.Source),
+		})
+	}
+	return records
+}
+
+func copyTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copied := value.UTC()
+	return &copied
 }
 
 func (s *Service) resolveDomainSegmentRef(segmentRef string, state scheduledServiceState) domain.ServiceSegmentID {

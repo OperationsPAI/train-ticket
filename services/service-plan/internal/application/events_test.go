@@ -421,3 +421,60 @@ func TestTemporaryServiceAddedAndExpiredEvents(t *testing.T) {
 		t.Fatalf("expected expiration event, expired=%d", expired)
 	}
 }
+
+func TestRepositoryBackedSeasonalStateSurvivesReloads(t *testing.T) {
+	publisher := &recordingPublisher{}
+	repository := newMemoryRepository()
+	service := NewService(publisher).WithRepository(repository)
+	ctx := context.Background()
+	serviceRef := "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c225"
+
+	_, err := service.CreateScheduledService(ctx, CreateScheduledServiceCommand{
+		ServiceRef:        serviceRef,
+		CarrierID:         "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001",
+		ServiceNumber:     "G1234",
+		DepartureTime:     time.Date(2026, 2, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:       time.Date(2026, 2, 5, 12, 30, 0, 0, time.UTC),
+		OriginNodeID:      "node-a",
+		DestinationNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("create scheduled service: %v", err)
+	}
+
+	_, err = service.CancelForDate(ctx, CancelServiceCommand{ScheduledServiceRef: serviceRef, Date: time.Date(2026, 2, 5, 0, 0, 0, 0, time.UTC), Reason: "WEATHER"})
+	if err != nil {
+		t.Fatalf("cancel with repository: %v", err)
+	}
+	_, err = service.RestoreForDate(ctx, RestoreServiceCommand{ScheduledServiceRef: serviceRef, Date: time.Date(2026, 2, 5, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("restore after repository-backed cancel should succeed: %v", err)
+	}
+
+	_, err = service.AddTemporaryService(ctx, AddTemporaryServiceCommand{BaseServiceRef: serviceRef, TempServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c226", TempTrainNumber: "L1234", Period: "SPRING_RUSH", StopsSubset: []string{"node-a", "node-b"}, AvailableClasses: []string{"SECOND_CLASS"}})
+	if err != nil {
+		t.Fatalf("add temporary service with repository: %v", err)
+	}
+	expired, err := service.ExpireTemporaryServices(ctx, serviceRef, time.Date(2026, 3, 11, 0, 0, 0, 0, time.UTC), "", "")
+	if err != nil {
+		t.Fatalf("expire repository-backed temporary service: %v", err)
+	}
+	if expired != 1 {
+		t.Fatalf("expected one expired temporary service, got %d", expired)
+	}
+
+	_, err = service.RecordDelay(ctx, RecordDelayCommand{ScheduledServiceRef: serviceRef, SegmentRef: "node-a:node-b", DelayMinutes: 12})
+	if err != nil {
+		t.Fatalf("record delay with repository: %v", err)
+	}
+	stored := repository.services[serviceRef]
+	if len(stored.Cancellations) != 1 || stored.Cancellations[0].RestoredAt == nil {
+		t.Fatalf("expected restored cancellation snapshot, got %#v", stored.Cancellations)
+	}
+	if len(stored.TemporaryServices) != 1 || stored.TemporaryServices[0].ExpiredAt == nil {
+		t.Fatalf("expected expired temporary service snapshot, got %#v", stored.TemporaryServices)
+	}
+	if len(stored.DelayRecords) == 0 {
+		t.Fatalf("expected persisted delay records")
+	}
+}
