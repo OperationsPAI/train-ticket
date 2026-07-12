@@ -916,7 +916,20 @@ export class SupportCase {
         `SupportCase ${this.id} in ${this.status} cannot be resolved`,
       );
     }
+    return this.applyResolution(command);
+  }
 
+  resolveBySimulation(command: ResolveCase): { case: SupportCase; event: SupportCaseResolved } {
+    if (isTerminalCaseStatus(this.snapshot.status)) {
+      throw new DomainError(
+        "CASE_NOT_RESOLVABLE",
+        `SupportCase ${this.id} in ${this.status} cannot be resolved`,
+      );
+    }
+    return this.applyResolution(command);
+  }
+
+  private applyResolution(command: ResolveCase): { case: SupportCase; event: SupportCaseResolved } {
     const resolution: Resolution = deepFreeze({
       summary: command.summary,
       resolutionCode: command.resolutionCode,
@@ -1184,6 +1197,38 @@ export class EscalationPolicy {
   }
 }
 
+
+export type SimulatedResolutionAction = "RESOLVE" | "ESCALATE";
+
+export type SimulatedResolutionDecision = Readonly<{
+  level: EscalationLevel;
+  action: SimulatedResolutionAction;
+  dueAt: Date;
+  successProbabilityPercent: number;
+}>;
+
+export class SimulatedResolutionPolicy {
+  static decisionAt(now: Date, snapshot: SupportCaseSnapshot): SimulatedResolutionDecision | undefined {
+    if (isTerminalCaseStatus(snapshot.status)) {
+      return undefined;
+    }
+    const plan = planForLevel(snapshot.escalationLevel);
+    const levelStartedAt = snapshot.escalationHistory.at(-1)?.escalatedAt ?? snapshot.openedAt;
+    const dueAt = new Date(levelStartedAt.getTime() + plan.dueSeconds * 1_000);
+    if (now.getTime() < dueAt.getTime()) {
+      return undefined;
+    }
+    const bucket = deterministicBucket(`${snapshot.caseId}:${snapshot.escalationLevel}`);
+    if (bucket < plan.resolvePercent) {
+      return Object.freeze({ level: snapshot.escalationLevel, action: "RESOLVE" as const, dueAt, successProbabilityPercent: plan.resolvePercent });
+    }
+    if (plan.escalatePercent > 0 && bucket < plan.resolvePercent + plan.escalatePercent) {
+      return Object.freeze({ level: snapshot.escalationLevel, action: "ESCALATE" as const, dueAt, successProbabilityPercent: plan.resolvePercent });
+    }
+    return undefined;
+  }
+}
+
 export class SlaPolicy {
   private constructor(
     public readonly priority: CasePriority,
@@ -1348,9 +1393,7 @@ export class CompensationOffer {
   }
 
   accept(command: AcceptCompensation): { offer: CompensationOffer; event: CompensationAccepted } {
-    if (command.offerId !== this.id) {
-      throw new DomainError("COMPENSATION_OFFER_MISMATCH", `Command offerId ${command.offerId} does not match compensation ${this.id}`);
-    }
+    this.requireMatchingOffer(command.offerId);
     if (this.snapshot.status !== "OFFERED") {
       throw new DomainError("COMPENSATION_NOT_ACCEPTABLE", `Compensation ${this.id} in ${this.snapshot.status} cannot be accepted`);
     }
@@ -1363,9 +1406,7 @@ export class CompensationOffer {
   }
 
   issue(command: IssueCompensation): { offer: CompensationOffer; event: CompensationIssued } {
-    if (command.offerId !== this.id) {
-      throw new DomainError("COMPENSATION_OFFER_MISMATCH", `Command offerId ${command.offerId} does not match compensation ${this.id}`);
-    }
+    this.requireMatchingOffer(command.offerId);
     if (this.snapshot.status !== "ACCEPTED") {
       throw new DomainError("COMPENSATION_NOT_ISSUABLE", `Compensation ${this.id} in ${this.snapshot.status} cannot be issued`);
     }
@@ -1375,6 +1416,12 @@ export class CompensationOffer {
       occurredAt: new Date(command.issuedAt), correlationId: command.correlationId, causationId: command.causationId, producer: "customer-service", offerId: this.id, ticketId: this.snapshot.ticketId, compensationType: this.snapshot.type, amountMinor: this.snapshot.amountMinor, authorizationLevel: this.snapshot.authorizationLevel, boundaryProof,
     });
     return { offer: new CompensationOffer(snapshot), event };
+  }
+
+  private requireMatchingOffer(offerId: string): void {
+    if (offerId !== this.id) {
+      throw new DomainError("COMPENSATION_OFFER_MISMATCH", `Command offerId  does not match compensation `);
+    }
   }
 
   get id(): string { return this.snapshot.offerId; }
@@ -1721,6 +1768,25 @@ function requireNonBlank(value: string | undefined, label: string): void {
   if (!value || value.trim().length === 0) {
     throw new DomainError("MISSING_REQUIRED_FIELD", `${label} is required`);
   }
+}
+
+
+type SimulatedResolutionPlan = Readonly<{ dueSeconds: number; resolvePercent: number; escalatePercent: number }>;
+
+function planForLevel(level: EscalationLevel): SimulatedResolutionPlan {
+  switch (level) {
+    case "L1_AGENT": return { dueSeconds: 10, resolvePercent: 70, escalatePercent: 30 };
+    case "L2_SPECIALIST": return { dueSeconds: 30, resolvePercent: 80, escalatePercent: 20 };
+    case "L3_SUPERVISOR": return { dueSeconds: 60, resolvePercent: 95, escalatePercent: 0 };
+  }
+}
+
+function deterministicBucket(value: string): number {
+  let hash = 0;
+  for (const character of value) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash % 100;
 }
 
 function initialEscalationLevel(customerTier: CustomerTier | undefined): EscalationLevel {

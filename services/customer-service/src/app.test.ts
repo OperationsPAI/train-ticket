@@ -232,6 +232,30 @@ describe("customer-service HTTP API", () => {
     assert.equal(reopened.json().status, "IN_PROGRESS");
   });
 
+  it("supports customer-request escalation and SLA evaluation endpoints", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const app = createApp({ publisher });
+    const caseId = await openedCase(app);
+
+    const escalated = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/request-escalation`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d101" },
+      payload: { targetQueue: "tier2", reason: "customer asked for escalation" },
+    });
+    assert.equal(escalated.statusCode, 200);
+    assert.equal(escalated.json().escalationHistory.at(-1).triggerCondition, "CUSTOMER_REQUEST");
+
+    const evaluated = await app.inject({
+      method: "POST",
+      url: "/api/v1/support-cases/evaluate-sla",
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d102" },
+      payload: {},
+    });
+    assert.equal(evaluated.statusCode, 202);
+    assert.equal(evaluated.json().evaluated, 1);
+  });
+
   it("surfaces non-precondition aggregate invariant violations as DOMAIN_RULE_VIOLATION", async () => {
     const app = createApp();
     const caseId = await openedCase(app);

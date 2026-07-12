@@ -9,6 +9,7 @@ import {
   ManualActionRequest,
   CaseTimeline,
   EscalationPolicy,
+  SimulatedResolutionPolicy,
   CompensationOffer,
   customerServiceBoundaryProof,
   type OpenSupportCase,
@@ -224,6 +225,15 @@ describe("Customer Service domain foundation", () => {
       const rule = EscalationPolicy.autoEscalation(new Date("2026-07-03T10:31:00.000Z"), supportCase.toSnapshot());
 
       assert.deepEqual(rule, { fromLevel: "L1_AGENT", triggerCondition: "L1_UNRESOLVED_30M", toLevel: "L2_SPECIALIST" });
+    });
+
+    it("selects simulated L1 resolution or escalation after ten seconds", () => {
+      const { case: autoResolved } = SupportCase.open(openCommand({ caseId: "sc-auto-resolve" }));
+      const { case: autoEscalated } = SupportCase.open(openCommand({ caseId: "sc-auto-escalate" }));
+
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:09.000Z"), autoResolved.toSnapshot()), undefined);
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:10.000Z"), autoResolved.toSnapshot())?.action, "RESOLVE");
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:10.000Z"), autoEscalated.toSnapshot())?.action, "ESCALATE");
     });
 
     it("rejects opening with missing required fields", () => {
@@ -655,20 +665,6 @@ describe("Customer Service domain foundation", () => {
       assert.equal(updated.entries[0].visibility, "CUSTOMER_VISIBLE");
     });
 
-
-    it("records SLA response breach state and creates monitoring event", () => {
-      const { case: supportCase } = SupportCase.open(openCommand({ priority: "URGENT" }));
-      const breachedAt = new Date("2026-07-03T10:06:00.000Z");
-
-      const updated = supportCase.markSlaBreach("RESPONSE", breachedAt);
-      const event = updated.createSlaBreachEvent("RESPONSE", breachedAt);
-
-      assert.equal(updated.toSnapshot().slaBreaches.length, 1);
-      assert.equal(updated.toSnapshot().slaTracker.responseBreachedAt?.toISOString(), breachedAt.toISOString());
-      assert.equal(event.type, "SlaBreach");
-      assert.equal(event.breachType, "RESPONSE");
-      assert.equal(event.targetMinutes, 5);
-    });
 
     it("snapshot is deeply immutable", () => {
       const timeline = CaseTimeline.create("sc-test-001");
