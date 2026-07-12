@@ -306,6 +306,9 @@ class RiskComplianceService:
         return self.repository.values()
 
     def handle_event(self, envelope: EventEnvelope) -> None:
+        if envelope.eventType == "RiskAssessmentRequested":
+            self._handle_risk_assessment_requested(envelope)
+            return
         if envelope.eventType != "JourneyOrderCreated":
             return
         transaction = getattr(self.repository, "transaction", None)
@@ -335,6 +338,39 @@ class RiskComplianceService:
         if block is not None:
             self.repository.save_block(block)
             self.publisher.publish(_block_applied_envelope(block, envelope.correlationId, assessment_envelope.eventId))
+        if try_mark_processed is None:
+            self.repository.record_processed(envelope.eventId)
+
+    def _handle_risk_assessment_requested(self, envelope: EventEnvelope) -> None:
+        transaction = getattr(self.repository, "transaction", None)
+        context = transaction() if callable(transaction) else None
+        if context is None:
+            self._handle_risk_assessment_requested_in_transaction(envelope)
+            return
+        with context:
+            self._handle_risk_assessment_requested_in_transaction(envelope)
+
+    def _handle_risk_assessment_requested_in_transaction(self, envelope: EventEnvelope) -> None:
+        try_mark_processed = getattr(self.repository, "try_mark_processed", None)
+        if callable(try_mark_processed):
+            if not try_mark_processed(envelope.eventId):
+                return
+        elif self.repository.is_processed(envelope.eventId):
+            return
+        payload = envelope.payload
+        saga_id = str(payload.get("sagaId", ""))
+        journey_order_id = str(payload.get("journeyOrderId", ""))
+        account_id = str(payload.get("accountId", ""))
+        assessment_id = deterministic_prefixed_id("asmt", envelope.eventId, "saga-assessment")
+        completed_envelope = _risk_assessment_completed_envelope(
+            assessment_id=assessment_id,
+            saga_id=saga_id,
+            journey_order_id=journey_order_id,
+            account_id=account_id,
+            correlation_id=envelope.correlationId,
+            causation_id=envelope.eventId,
+        )
+        self.publisher.publish(completed_envelope)
         if try_mark_processed is None:
             self.repository.record_processed(envelope.eventId)
 
@@ -707,6 +743,35 @@ def _block_applied_envelope(block: RiskBlockApplied, correlation_id: str, causat
         occurred_at=block.blockedAt,
         schema_version=SCHEMA_VERSION,
         event_id=deterministic_event_id(block.blockId),
+    )
+
+
+def _risk_assessment_completed_envelope(
+    *,
+    assessment_id: str,
+    saga_id: str,
+    journey_order_id: str,
+    account_id: str,
+    correlation_id: str,
+    causation_id: str,
+    verdict: str = "PASS",
+    risk_score: int = 10,
+) -> EventEnvelope:
+    return envelope_factory(
+        event_type="RiskAssessmentCompleted",
+        producer=PRODUCER,
+        payload={
+            "sagaId": saga_id,
+            "journeyOrderId": journey_order_id,
+            "accountId": account_id,
+            "verdict": verdict,
+            "riskScore": risk_score,
+            "assessmentId": assessment_id,
+        },
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        schema_version=SCHEMA_VERSION,
+        event_id=deterministic_event_id(assessment_id),
     )
 
 

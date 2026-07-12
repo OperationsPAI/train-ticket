@@ -79,7 +79,7 @@ class BookingOrchestrationControllerTest {
         assertNotNull(body.sagaId());
         assertTrue(body.sagaId().startsWith("saga-"));
         assertEquals("ord-0194f2e0-7b3e-7610-8284-5c26e8b0c123", body.journeyOrderId());
-        assertEquals("RESERVING", body.status());
+        assertEquals("RISK_CHECKING", body.status());
         assertNotNull(body.startedAt());
         assertTrue(eventPublisher.getPublished().size() >= 1);
     }

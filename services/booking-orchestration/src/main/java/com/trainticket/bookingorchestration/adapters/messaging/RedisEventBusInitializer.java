@@ -37,7 +37,10 @@ public class RedisEventBusInitializer {
             "events:journey-order",
             "events:payment",
             "events:provider-integration",
-            "events:entitlement-ticketing"
+            "events:entitlement-ticketing",
+            "events:risk-compliance",
+            "events:seat-assignment",
+            "events:invoicing"
         );
 
         SubscriberConfig config = new SubscriberConfig(
