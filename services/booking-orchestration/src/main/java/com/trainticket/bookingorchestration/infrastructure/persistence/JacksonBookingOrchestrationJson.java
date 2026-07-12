@@ -87,6 +87,7 @@ final class JacksonBookingOrchestrationJson {
         booking.entitlementId().ifPresent(value -> node.put("entitlementId", value));
         booking.failureReason().ifPresent(value -> node.put("failureReason", value));
         booking.cancellationReason().ifPresent(value -> node.put("cancellationReason", value));
+        booking.seatAllocationRef().ifPresent(value -> node.put("seatAllocationRef", value));
         booking.providerReference().ifPresent(ref -> {
             ObjectNode provider = node.putObject("providerReference");
             provider.put("providerId", ref.providerId());
@@ -107,7 +108,8 @@ final class JacksonBookingOrchestrationJson {
             node.path("segmentBookingId").asText(), node.path("journeyOrderId").asText(), node.path("offerItemRef").asText(),
             node.path("segmentRef").asText(), node.path("travelerRef").asText(), node.path("bookingPurpose").asText(),
             SegmentBookingStatus.valueOf(node.path("status").asText()), textOrNull(node, "capacityHoldId"), providerReference,
-            textOrNull(node, "entitlementId"), textOrNull(node, "failureReason"), textOrNull(node, "cancellationReason"), Clock.systemUTC());
+            textOrNull(node, "entitlementId"), textOrNull(node, "failureReason"), textOrNull(node, "cancellationReason"),
+            textOrNull(node, "seatAllocationRef"), Clock.systemUTC());
     }
 
     private static String textOrNull(ObjectNode node, String field) { return node.has(field) && !node.get(field).isNull() ? node.get(field).asText() : null; }

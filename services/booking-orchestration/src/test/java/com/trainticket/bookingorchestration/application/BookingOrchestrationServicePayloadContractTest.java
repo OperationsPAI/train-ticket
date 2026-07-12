@@ -256,6 +256,9 @@ class BookingOrchestrationServicePayloadContractTest {
             "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0c701"),
             "idem-reservation-capacity-duplicate", "corr-start");
 
+        // Pass risk assessment first to advance from RISK_CHECKING to RESERVING
+        passRiskAssessment(service, start.sagaId());
+
         assertInstanceOf(HandlerResult.Success.class, service.handleUpstreamEvent(new EventEnvelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c702", "CapacityHeld", Instant.parse("2026-07-05T10:03:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c707", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c703", "capacity-availability", 1, Map.of(
             "holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0c704",
             "inventoryPoolId", "pool-123",
@@ -276,7 +279,7 @@ class BookingOrchestrationServicePayloadContractTest {
             "idempotentReplay", true))));
 
         assertTrue(published.getPublished().isEmpty());
-        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertEquals("SEAT_ASSIGNING", service.getSaga(start.sagaId()).orElseThrow().status());
     }
 
     @Test
@@ -490,6 +493,9 @@ class BookingOrchestrationServicePayloadContractTest {
         service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
             "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d301"),
             "idem-reservation-provider-confirmed", "corr-start");
+
+        // Pass risk assessment first to advance from RISK_CHECKING to RESERVING
+        passRiskAssessment(service, start.sagaId());
         published.clear();
 
         var result = service.handleUpstreamEvent(new EventEnvelope(
@@ -504,7 +510,7 @@ class BookingOrchestrationServicePayloadContractTest {
         assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("SegmentReservationConfirmed")));
         assertTrue(published.getPublished().stream().noneMatch(envelope -> envelope.eventType().equals("SegmentReservationFailed")));
         assertTrue(published.getPublished().stream().noneMatch(envelope -> envelope.eventType().equals("SegmentBookingCancelled")));
-        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertEquals("SEAT_ASSIGNING", service.getSaga(start.sagaId()).orElseThrow().status());
     }
 
     @Test
@@ -524,6 +530,195 @@ class BookingOrchestrationServicePayloadContractTest {
         assertTrue(published.getPublished().isEmpty());
     }
 
+
+    @Test
+    void riskAssessmentPassAdvancesSagaFromRiskCheckingToReserving() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-risk-pass", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-risk-pass", "corr-start");
+
+        assertEquals("RISK_CHECKING", service.getSaga(start.sagaId()).orElseThrow().status());
+        published.clear();
+
+        passRiskAssessment(service, start.sagaId());
+
+        assertEquals("RESERVING", service.getSaga(start.sagaId()).orElseThrow().status());
+    }
+
+    @Test
+    void riskAssessmentBlockFailsSaga() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-risk-block", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-risk-block", "corr-start");
+        published.clear();
+
+        var result = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-bbb000000001", "RiskAssessmentCompleted",
+            Instant.parse("2026-07-05T10:00:30Z"), "corr-0194f2e0-7b3e-7610-8284-bbb000000002", "cmd-0194f2e0-7b3e-7610-8284-bbb000000003",
+            "risk-compliance", 1, Map.of("sagaId", start.sagaId(), "verdict", "BLOCK")));
+
+        assertInstanceOf(HandlerResult.Success.class, result);
+        assertEquals("FAILED", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertEquals("risk-blocked", service.getSaga(start.sagaId()).orElseThrow().terminalReason());
+        assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("BookingSagaFailed")));
+    }
+
+    @Test
+    void seatAllocatedAdvancesSagaFromSeatAssigningToAwaitingPayment() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-seat", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-seat", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-ccc000000001"),
+            "idem-reservation-seat", "corr-start");
+
+        passRiskAssessment(service, start.sagaId());
+
+        // Reserve step succeeds via CapacityHeld -> saga moves to SEAT_ASSIGNING
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ccc000000002", "CapacityHeld",
+            Instant.parse("2026-07-05T10:01:00Z"), "corr-0194f2e0-7b3e-7610-8284-ccc000000003", "cmd-0194f2e0-7b3e-7610-8284-ccc000000004",
+            "capacity-availability", 1, Map.of(
+                "holdId", "hold-0194f2e0-7b3e-7610-8284-ccc000000005",
+                "inventoryPoolId", "pool-123",
+                "capacityUnitRef", "cu-123",
+                "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+                "idempotencyKey", "ord-seat:seg-001:tvl-123:purchase",
+                "expiresAt", "2026-07-05T10:08:00Z",
+                "idempotentReplay", false)));
+        assertEquals("SEAT_ASSIGNING", service.getSaga(start.sagaId()).orElseThrow().status());
+        published.clear();
+
+        // SeatAllocated -> saga moves to WAITING_PAYMENT
+        var result = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ccc000000006", "SeatAllocated",
+            Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-ccc000000007", "cmd-0194f2e0-7b3e-7610-8284-ccc000000008",
+            "seat-assignment", 1, Map.of(
+                "sagaId", start.sagaId(),
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-ccc000000001",
+                "seatAllocationRef", "seat-12A")));
+
+        assertInstanceOf(HandlerResult.Success.class, result);
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
+    }
+
+    @Test
+    void invoiceGeneratedCompletesSaga() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        var start = service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-invoice", "acc-123", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-invoice", "corr-start");
+        service.requestReservation(start.sagaId(), new BookingOrchestrationService.RequestReservationCommand(
+            "seg-001", "tvl-123", "sb-0194f2e0-7b3e-7610-8284-ddd000000001"),
+            "idem-reservation-invoice", "corr-start");
+
+        passRiskAssessment(service, start.sagaId());
+
+        // Reserve step succeeds
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000002", "CapacityHeld",
+            Instant.parse("2026-07-05T10:01:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000003", "cmd-0194f2e0-7b3e-7610-8284-ddd000000004",
+            "capacity-availability", 1, Map.of(
+                "holdId", "hold-0194f2e0-7b3e-7610-8284-ddd000000005",
+                "inventoryPoolId", "pool-123",
+                "capacityUnitRef", "cu-123",
+                "interval", Map.of("fromStationRef", "BJP", "toStationRef", "SHH"),
+                "idempotencyKey", "ord-invoice:seg-001:tvl-123:purchase",
+                "expiresAt", "2026-07-05T10:08:00Z",
+                "idempotentReplay", false)));
+
+        // Provider confirms reservation (moves booking from HOLDING to CONFIRMED)
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000021", "ProviderReservationConfirmed",
+            Instant.parse("2026-07-05T10:01:30Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000022", "cmd-0194f2e0-7b3e-7610-8284-ddd000000023",
+            "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-ddd000000001",
+                "providerReference", Map.of("providerId", "provider-1", "reservationId", "res-1", "displayReference", "PNR1"),
+                "normalizedEvidence", "provider confirmed")));
+
+        // Seat assign succeeds
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000006", "SeatAllocated",
+            Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000007", "cmd-0194f2e0-7b3e-7610-8284-ddd000000008",
+            "seat-assignment", 1, Map.of(
+                "sagaId", start.sagaId(),
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-ddd000000001",
+                "seatAllocationRef", "seat-15B")));
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
+
+        // PaymentCaptured -> TICKETING
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000009", "PaymentIntentCreated",
+            Instant.parse("2026-07-05T10:03:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000010", "cmd-0194f2e0-7b3e-7610-8284-ddd000000011",
+            "payment", 1, Map.of(
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-8284-ddd000000012",
+                "businessRef", "ord-invoice",
+                "purpose", "purchase",
+                "amount", Map.of("currency", "CNY", "minorUnits", 35000),
+                "payerRef", "acc-123",
+                "idempotencyKey", "payment-idem-invoice",
+                "createdAt", "2026-07-05T10:03:00Z")));
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000013", "PaymentCaptured",
+            Instant.parse("2026-07-05T10:04:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000010", "evt-0194f2e0-7b3e-7610-8284-ddd000000009",
+            "payment", 1, Map.of(
+                "paymentIntentId", "pi-0194f2e0-7b3e-7610-8284-ddd000000012",
+                "capturedAmount", Map.of("currency", "CNY", "minorUnits", 35000),
+                "channel", "wechat_pay",
+                "channelTransactionId", "wx_txn_invoice")));
+        assertEquals("TICKETING", service.getSaga(start.sagaId()).orElseThrow().status());
+
+        // EntitlementIssued -> INVOICING
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000014", "EntitlementIssued",
+            Instant.parse("2026-07-05T10:05:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000015", "cmd-0194f2e0-7b3e-7610-8284-ddd000000016",
+            "entitlement-ticketing", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-ddd000000001",
+                "entitlementId", "ent-0194f2e0-7b3e-7610-8284-ddd000000017")));
+        assertEquals("INVOICING", service.getSaga(start.sagaId()).orElseThrow().status());
+        published.clear();
+
+        // InvoiceGenerated -> COMPLETED
+        var result = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-ddd000000018", "InvoiceGenerated",
+            Instant.parse("2026-07-05T10:06:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000019", "cmd-0194f2e0-7b3e-7610-8284-ddd000000020",
+            "invoicing", 1, Map.of("sagaId", start.sagaId(), "invoiceId", "inv-001")));
+
+        assertInstanceOf(HandlerResult.Success.class, result);
+        assertEquals("COMPLETED", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("BookingSagaCompleted")));
+    }
+
+    @Test
+    void startSagaPublishesRiskAssessmentRequestedEvent() {
+        var published = new TestEventPublisher();
+        var service = new BookingOrchestrationService(
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
+        service.startSaga(new BookingOrchestrationService.StartSagaCommand(
+            "ord-risk-req", "acc-risk-req", "off-123", List.of("tvl-123"), List.of("seg-001")),
+            "idem-start-risk-req", "corr-start");
+
+        assertTrue(published.getPublished().stream().anyMatch(envelope ->
+            envelope.eventType().equals("RiskAssessmentRequested")));
+    }
+
+    private static void passRiskAssessment(BookingOrchestrationService service, String sagaId) {
+        service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-aaa000000001", "RiskAssessmentCompleted",
+            Instant.parse("2026-07-05T10:00:30Z"), "corr-0194f2e0-7b3e-7610-8284-aaa000000002", "cmd-0194f2e0-7b3e-7610-8284-aaa000000003",
+            "risk-compliance", 1, Map.of("sagaId", sagaId, "verdict", "PASS")));
+    }
 
     private static final class TestEventPublisher implements com.trainticket.bookingorchestration.application.EventPublisher {
         private final java.util.List<com.trainticket.platformkit.messaging.EventEnvelope> published = new java.util.ArrayList<>();

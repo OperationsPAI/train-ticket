@@ -31,6 +31,7 @@ public final class SegmentBooking {
     private String entitlementId;
     private String failureReason;
     private String cancellationReason;
+    private String seatAllocationRef;
     private long version;
 
     private SegmentBooking(String segmentBookingId, String journeyOrderId, String offerItemRef, String segmentRef,
@@ -61,6 +62,16 @@ public final class SegmentBooking {
                                            SegmentBookingStatus status, String capacityHoldId,
                                            ProviderReference providerReference, String entitlementId,
                                            String failureReason, String cancellationReason, Clock clock) {
+        return rehydrate(segmentBookingId, journeyOrderId, offerItemRef, segmentRef, travelerRef, bookingPurpose,
+            status, capacityHoldId, providerReference, entitlementId, failureReason, cancellationReason, null, clock);
+    }
+
+    public static SegmentBooking rehydrate(String segmentBookingId, String journeyOrderId, String offerItemRef,
+                                           String segmentRef, String travelerRef, String bookingPurpose,
+                                           SegmentBookingStatus status, String capacityHoldId,
+                                           ProviderReference providerReference, String entitlementId,
+                                           String failureReason, String cancellationReason,
+                                           String seatAllocationRef, Clock clock) {
         SegmentBooking booking = new SegmentBooking(segmentBookingId, journeyOrderId, offerItemRef, segmentRef,
             travelerRef, bookingPurpose, clock);
         booking.status = java.util.Objects.requireNonNull(status, "status is required");
@@ -69,6 +80,7 @@ public final class SegmentBooking {
         booking.entitlementId = entitlementId;
         booking.failureReason = failureReason;
         booking.cancellationReason = cancellationReason;
+        booking.seatAllocationRef = seatAllocationRef;
         return booking;
     }
 
@@ -134,6 +146,14 @@ public final class SegmentBooking {
 
     public Optional<String> cancellationReason() {
         return Optional.ofNullable(cancellationReason);
+    }
+
+    public Optional<String> seatAllocationRef() {
+        return Optional.ofNullable(seatAllocationRef);
+    }
+
+    public void assignSeat(String seatAllocationRef) {
+        this.seatAllocationRef = requireText(seatAllocationRef, "seatAllocationRef");
     }
 
     public void markCapacityHolding(String capacityHoldId) {
