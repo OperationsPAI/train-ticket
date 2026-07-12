@@ -53,6 +53,7 @@ function domainEventPayload(event: NotificationDomainEvent): Record<string, unkn
         recipientRef: event.recipientRef,
         channel: event.channel,
         intent: event.intent,
+        ...(isReq311Template(event.templateCode) ? { templateType: event.templateCode } : {}),
         transactionRequired: event.transactionRequired,
         scheduledAt: event.scheduledAt.toISOString(),
       };
@@ -93,4 +94,16 @@ function domainEventPayload(event: NotificationDomainEvent): Record<string, unkn
         cancelledAt: event.cancelledAt.toISOString(),
       };
   }
+}
+
+function isReq311Template(templateCode: string): boolean {
+  return [
+    "ORDER_CONFIRMED",
+    "PAYMENT_REMINDER",
+    "TICKET_ISSUED",
+    "DELAY_ALERT",
+    "REFUND_COMPLETED",
+    "WAITLIST_PROMOTED",
+    "DISRUPTION_REBOOK",
+  ].includes(templateCode);
 }

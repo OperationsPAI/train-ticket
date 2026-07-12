@@ -1,5 +1,6 @@
 import { DeduplicatingEventHandler, fatalHandling, successfulHandling } from "../../application/messaging.js";
 import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
+import { NotificationAggregator, RateLimitExceeded } from "../../domain.js";
 import { startNotificationStorage, type NotificationStorageRuntime } from "../storage/runtime.js";
 import { RedisStreamEventPublisher } from "./publisher.js";
 import { RedisStreamEventSubscriber } from "./subscriber.js";
@@ -23,7 +24,7 @@ export async function startNotificationMessaging(
   const storage = existingStorage ?? await optionalStorageRuntime(channelGateway);
   const publisher = storage ? undefined : new RedisStreamEventPublisher();
   const subscriber = new RedisStreamEventSubscriber();
-  const application = publisher ? new NotificationApplicationService(publisher, undefined, channelGateway) : undefined;
+  const application = publisher ? new NotificationApplicationService(publisher, undefined, channelGateway, undefined, undefined, undefined, new NotificationAggregator()) : undefined;
   const handler = new DeduplicatingEventHandler(async (envelope) => {
     try {
       if (storage) {
@@ -38,6 +39,9 @@ export async function startNotificationMessaging(
     } catch (error) {
       if (error instanceof NonConformantNotificationTrigger) {
         return fatalHandling(error);
+      }
+      if (error instanceof RateLimitExceeded) {
+        throw error;
       }
       throw error;
     }

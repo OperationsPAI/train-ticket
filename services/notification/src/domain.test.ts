@@ -14,6 +14,10 @@ import {
   type DispatchNotification,
   type RecordDeliveryReceipt,
   type CancelNotification,
+  ChannelFallbackChain,
+  NotificationAggregator,
+  RateLimiter,
+  TemplateRenderer,
 } from "./domain.js";
 
 const scheduledAt = new Date("2026-07-03T10:00:00.000Z");
@@ -505,5 +509,38 @@ describe("Notification domain foundation", () => {
       const differentTemplate = idempotencyKey("evt-payment-001", "tvl-user-001", "payment_failed");
       assert.notEqual(key, differentTemplate);
     });
+  });
+});
+
+describe("REQ-311 notification enrichment domain", () => {
+  it("orders PUSH, SMS, EMAIL fallback by primary preference and availability", () => {
+    const chain = new ChannelFallbackChain("PUSH", ["SMS", "EMAIL"]);
+    assert.deepEqual(chain.toArray(), ["SMS", "EMAIL"]);
+  });
+
+  it("renders built-in template variables without unresolved placeholders", () => {
+    const rendered = new TemplateRenderer().render("ORDER_CONFIRMED", "PUSH", {
+      orderId: "ord-1",
+      origin: "北京",
+      destination: "上海",
+      departureTime: "10:00",
+    });
+    assert.equal(rendered.body, "您的订单 ord-1 已确认，北京→上海，10:00 出发");
+  });
+
+  it("rate limits the eleventh push notification in an hour", () => {
+    const limiter = new RateLimiter();
+    const at = new Date("2026-07-05T10:00:00Z");
+    for (let index = 0; index < 10; index += 1) {
+      assert.deepEqual(limiter.checkAndRecord("usr-1", "PUSH", new Date(at.getTime() + index)), { allowed: true });
+    }
+    assert.equal(limiter.checkAndRecord("usr-1", "PUSH", new Date(at.getTime() + 10)).allowed, false);
+  });
+
+  it("suppresses lower-priority events for the same order within five minutes", () => {
+    const aggregator = new NotificationAggregator();
+    const at = new Date("2026-07-05T10:00:00Z");
+    assert.equal(aggregator.shouldSuppress({ recipientRef: "usr-1", orderRef: "ord-1", templateType: "ORDER_CONFIRMED", occurredAt: at }), false);
+    assert.equal(aggregator.shouldSuppress({ recipientRef: "usr-1", orderRef: "ord-1", templateType: "PAYMENT_REMINDER", occurredAt: new Date(at.getTime() + 60_000) }), true);
   });
 });

@@ -57,3 +57,27 @@ CREATE TABLE IF NOT EXISTS notification_templates (
   data          jsonb NOT NULL,
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+
+CREATE TABLE IF NOT EXISTS recipient_contacts (
+  recipient_ref     text PRIMARY KEY,
+  device_token      text,
+  phone_number      text,
+  email_address     text,
+  preferred_channel text,
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notification_rate_limits (
+  id            bigserial PRIMARY KEY,
+  recipient_ref text NOT NULL,
+  channel       text NOT NULL,
+  occurred_at   timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS notification_rate_limits_user_channel_time_idx
+  ON notification_rate_limits (recipient_ref, channel, occurred_at DESC);
+
+CREATE INDEX IF NOT EXISTS notification_rate_limits_sms_time_idx
+  ON notification_rate_limits (occurred_at DESC)
+  WHERE channel = 'SMS';
