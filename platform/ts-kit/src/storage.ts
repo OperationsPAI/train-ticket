@@ -39,8 +39,8 @@ export function createPostgresPool(config: PoolConfig | string = databaseUrl()):
   const pool = new pg.Pool({
     ...base,
     max: maxPool > 0 ? maxPool : base.max ?? 10,
-    idleTimeoutMillis: base.idleTimeoutMillis ?? 300_000,
-    connectionTimeoutMillis: base.connectionTimeoutMillis ?? 5_000,
+    idleTimeoutMillis: base.idleTimeoutMillis ?? 30_000,
+    connectionTimeoutMillis: base.connectionTimeoutMillis ?? 10_000,
   });
   let backgroundErrorCount = 0;
   pool.on("error", (err: Error) => {
@@ -93,11 +93,13 @@ export async function withTransaction<T>(pool: Pool, operation: (client: PoolCli
 
 export async function checkPostgresReadiness(pool: Pool, timeoutMs = 200): Promise<boolean> {
   let client: PoolClient | undefined;
+  const connectPromise = pool.connect();
   try {
-    client = await withTimeout(pool.connect(), timeoutMs);
+    client = await withTimeout(connectPromise, timeoutMs);
     await withTimeout(client.query("SELECT 1"), timeoutMs);
     return true;
   } catch {
+    connectPromise.then((c) => c.release()).catch(() => {});
     return false;
   } finally {
     client?.release();
