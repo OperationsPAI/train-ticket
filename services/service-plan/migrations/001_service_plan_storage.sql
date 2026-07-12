@@ -37,3 +37,5 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
   response_body jsonb,
   created_at   timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_scheduled_service_period ON scheduled_service_snapshots ((data->>'schedulePeriod'));
+CREATE INDEX IF NOT EXISTS idx_scheduled_service_bookable ON scheduled_service_snapshots ((data->>'bookable'));
