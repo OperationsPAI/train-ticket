@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS policy_snapshots (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_policy_uniqueness ON policy_snapshots ((data->>'ancillaryOrderItemId'), (data->>'travelerRef'), (data->>'productVersion'));
+CREATE INDEX IF NOT EXISTS idx_policy_delay_segment ON policy_snapshots ((data->>'productCode'), (data->>'status'));
+CREATE INDEX IF NOT EXISTS idx_policy_journey_status ON policy_snapshots ((data->>'journeyOrderId'), (data->>'status'));
 
 CREATE TABLE IF NOT EXISTS claim_snapshots (
   id text PRIMARY KEY,
