@@ -110,6 +110,20 @@ export type PointsExpired = Readonly<{
   correlationId?: string;
 }>;
 
+
+export type PointsRestored = Readonly<{
+  type: "PointsRestored";
+  occurredAt: Date;
+  memberId: MemberId;
+  accountId: AccountId;
+  points: number;
+  orderId: string;
+  sourceFactRef: SourceFactRef;
+  businessReason: BusinessReason;
+  balanceAfter: number;
+  correlationId?: string;
+}>;
+
 export type MemberTierUpgraded = Readonly<{
   type: "MemberTierUpgraded";
   occurredAt: Date;
@@ -146,7 +160,7 @@ export type TierEvaluationCompleted = Readonly<{
   correlationId?: string;
 }>;
 
-export type LoyaltyDomainEvent = PointsEarned | PointsRedeemed | PointsExpired | MemberTierUpgraded | MemberTierDowngraded | TierEvaluationCompleted;
+export type LoyaltyDomainEvent = PointsEarned | PointsRedeemed | PointsRestored | PointsExpired | MemberTierUpgraded | MemberTierDowngraded | TierEvaluationCompleted;
 
 export type AccruePointsCommand = Readonly<{
   orderId: string;
@@ -267,6 +281,15 @@ export class PointsLedger {
     return { ledger: new PointsLedger([...this.entries, entry], consumeLots(this.lots, input.points)), entry };
   }
 
+  restore(input: { memberId: MemberId; points: number; sourceFactRef: SourceFactRef; businessReason: BusinessReason; idempotencyKey: string; occurredAt: Date; expiresAt?: Date }): { ledger: PointsLedger; entry: PointsLedgerEntrySnapshot; lot: PointsLotSnapshot } {
+    assertPositiveInteger(input.points, "points");
+    if (this.hasSourceFact(input.sourceFactRef.eventId) || this.entries.some((entry) => entry.idempotencyKey === input.idempotencyKey)) throw new DomainError("POINTS_ALREADY_RESTORED", "Source fact has already restored redeemed points");
+    const expiresAt = input.expiresAt ?? addUtcMonths(input.occurredAt, 24);
+    const entry: PointsLedgerEntrySnapshot = freeze({ entryId: newLedgerEntryId(), memberId: input.memberId, type: "ADJUSTED", points: input.points, sourceFactRef: cloneSourceFact(input.sourceFactRef), businessReason: input.businessReason, idempotencyKey: input.idempotencyKey, occurredAt: new Date(input.occurredAt), expiresAt });
+    const lot: PointsLotSnapshot = freeze({ lotId: newPointsLotId(), memberId: input.memberId, sourceEntryId: entry.entryId, originalPoints: input.points, remainingPoints: input.points, tierEligiblePoints: 0, validFrom: new Date(input.occurredAt), expiresAt });
+    return { ledger: new PointsLedger([...this.entries, entry], [...this.lots, lot]), entry, lot };
+  }
+
   expirePoints(memberId: MemberId, now: Date): { ledger: PointsLedger; expired: readonly ExpiredBatch[] } {
     const expiredLots = this.lots.filter((lot) => lot.remainingPoints > 0 && lot.expiresAt <= now);
     if (expiredLots.length === 0) return { ledger: this, expired: [] };
@@ -310,7 +333,7 @@ export class Member {
     const businessReason = freeze({ reasonType: "ORDER_ACCRUAL" as const, reasonCode: command.sourceEventType ?? "PAYMENT_CAPTURED", referenceType: "JOURNEY_ORDER", referenceId: command.orderId });
     const { ledger: accruedLedger, lot } = ledger.accrue({ memberId: this.id, points, tierEligiblePoints: points, sourceFactRef, businessReason, idempotencyKey: `${this.id}:${command.sourceEventId}`, occurredAt: command.confirmedAt, expiresAt: addUtcMonths(command.confirmedAt, this.snapshot.tier === "DIAMOND" ? 36 : 24) });
     const year = command.confirmedAt.getUTCFullYear();
-    const membershipYears = upsertMembershipYear(this.membershipYears(), year, (membershipYear) => freeze({ ...membershipYear, qualifyingPoints: membershipYear.qualifyingPoints + points, tripCount: membershipYear.tripCount + (command.tripCount ?? 1) }));
+    const membershipYears = upsertMembershipYear(this.membershipYears(), year, (membershipYear) => freeze({ ...membershipYear, qualifyingPoints: membershipYear.qualifyingPoints + points, tripCount: membershipYear.tripCount + (command.tripCount ?? 0) }));
     const currentYear = membershipYears.find((membershipYear) => membershipYear.year === year) ?? newMembershipYear(year, this.snapshot.tier);
     const targetTier = Tier.of(TierEvaluator.evaluate(currentYear.qualifyingPoints, currentYear.tripCount));
     const currentTier = Tier.of(this.snapshot.tier);
@@ -338,6 +361,24 @@ export class Member {
     return { member: new Member(freeze({ ...this.snapshot, tier: nextTier, updatedAt: now, membershipYears: nextMembershipYears })), events };
   }
 
+  qualifyingPointsForOrder(orderId: string): number {
+    required(orderId, "orderId");
+    return this.snapshot.ledger
+      .filter((entry) => entry.type === "EARNED" && entry.businessReason.referenceType === "JOURNEY_ORDER" && entry.businessReason.referenceId === orderId)
+      .reduce((total, entry) => total + Math.max(0, entry.points), 0);
+  }
+
+  redeemedTicketPointsForOrder(orderId: string): number {
+    required(orderId, "orderId");
+    const ticketRedemptions = this.snapshot.ledger
+      .filter((entry) => entry.type === "REDEEMED" && entry.businessReason.referenceType === "JOURNEY_ORDER" && entry.businessReason.referenceId === orderId)
+      .reduce((total, entry) => total + Math.max(0, -entry.points), 0);
+    const restoredRedemptions = this.snapshot.ledger
+      .filter((entry) => entry.type === "ADJUSTED" && entry.businessReason.reasonCode === "ORDER_CANCELLED_POINTS_RESTORED" && entry.businessReason.referenceType === "JOURNEY_ORDER" && entry.businessReason.referenceId === orderId)
+      .reduce((total, entry) => total + Math.max(0, entry.points), 0);
+    return Math.max(0, ticketRedemptions - restoredRedemptions);
+  }
+
   adjustQualifyingPointsForRefund(input: { occurredAt: Date; qualifyingPoints: number }, now = new Date()): Member {
     this.assertActive();
     assertWholeNonNegative(input.qualifyingPoints, "qualifyingPoints");
@@ -345,6 +386,22 @@ export class Member {
     const membershipYears = upsertMembershipYear(this.membershipYears(), year, (membershipYear) => freeze({ ...membershipYear, qualifyingPoints: Math.max(0, membershipYear.qualifyingPoints - input.qualifyingPoints) }));
     const currentYear = membershipYears.find((membershipYear) => membershipYear.year === year) ?? newMembershipYear(year, this.snapshot.tier);
     return new Member(freeze({ ...this.snapshot, tierPoints: currentYear.qualifyingPoints, updatedAt: now, membershipYears }));
+  }
+
+  restoreRedeemedTicketPoints(input: { orderId: string; sourceEventId: string; cancelledAt: Date; correlationId?: string; sourceStream?: string; sourceEventType?: string }, now = new Date()): { member: Member; events: readonly PointsRestored[] } {
+    this.assertActive();
+    const orderId = required(input.orderId, "orderId");
+    const sourceEventId = required(input.sourceEventId, "sourceEventId");
+    const ledger = PointsLedger.fromSnapshots(this.snapshot.ledger, this.snapshot.lots);
+    if (ledger.hasSourceFact(sourceEventId)) return { member: this, events: [] };
+    const points = this.redeemedTicketPointsForOrder(orderId);
+    if (points === 0) return { member: this, events: [] };
+    const sourceFactRef = freeze({ stream: input.sourceStream ?? "events:journey-order", eventType: input.sourceEventType ?? "JOURNEY_ORDER_CANCELLED", eventId: sourceEventId, aggregateId: orderId, occurredAt: input.cancelledAt });
+    const businessReason = freeze({ reasonType: "REVERSAL" as const, reasonCode: "ORDER_CANCELLED_POINTS_RESTORED", referenceType: "JOURNEY_ORDER", referenceId: orderId });
+    const { ledger: restoredLedger } = ledger.restore({ memberId: this.id, points, sourceFactRef, businessReason, idempotencyKey: `${this.id}:restore:${orderId}:${sourceEventId}`, occurredAt: input.cancelledAt, expiresAt: addUtcMonths(input.cancelledAt, this.snapshot.tier === "DIAMOND" ? 36 : 24) });
+    const ledgerSnapshot = restoredLedger.toSnapshot();
+    const nextSnapshot = freeze({ ...this.snapshot, redeemablePoints: restoredLedger.balance, lifetimePoints: restoredLedger.lifetimePoints, updatedAt: now, ledger: ledgerSnapshot.entries, lots: ledgerSnapshot.lots });
+    return { member: new Member(nextSnapshot), events: [freeze({ type: "PointsRestored", occurredAt: now, memberId: this.id, accountId: this.accountId, points, orderId, sourceFactRef, businessReason, balanceAfter: restoredLedger.balance, correlationId: input.correlationId })] };
   }
 
   redeem(command: RedeemPointsCommand, now = new Date()): { member: Member; event: PointsRedeemed } {

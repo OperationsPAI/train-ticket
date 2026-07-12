@@ -91,6 +91,7 @@ describe("Member aggregate", () => {
 
     assert.equal(updated.redeemablePoints, 500);
     assert.equal(updated.tier, "SILVER");
+    assert.equal(updated.toSnapshot().membershipYears?.[0]?.tripCount, 0);
     const earned = events[0];
     assert.equal(earned.type, "PointsEarned");
     if (earned.type !== "PointsEarned") throw new Error("expected PointsEarned");
@@ -116,7 +117,7 @@ describe("Member aggregate", () => {
     assert.ok(events.some((event) => event.type === "MemberTierDowngraded"));
   });
 
-  it("redeems ticket points and reduces balance", () => {
+  it("redeems ticket points and restores them when the order is cancelled", () => {
     const member = Member.enroll({ accountId: "acct-004", memberId: "mem-004" });
     const { member: accrued } = member.accrueFromConfirmedOrder({ ...confirmedOrder, accountId: "acct-004", sourceEventId: "evt-redeem", ticketPrice: { currency: "CNY", minorUnits: 100_000 } });
 
@@ -125,6 +126,12 @@ describe("Member aggregate", () => {
     assert.equal(result.discountAmountMinor, 1_000);
     assert.equal(redeemed.redeemablePoints, 0);
     expectDomainError(() => redeemed.redeem({ memberId: redeemed.id, points: 5 }), "INSUFFICIENT_POINTS");
+
+    const { member: restored, events } = redeemed.restoreRedeemedTicketPoints({ orderId: "ord-ticket", sourceEventId: "evt-cancel", cancelledAt: new Date("2026-07-10T10:05:00.000Z") });
+
+    assert.equal(restored.redeemablePoints, 1_000);
+    assert.equal(events[0]?.type, "PointsRestored");
+    assert.equal(restored.redeemedTicketPointsForOrder("ord-ticket"), 0);
   });
 
   it("expires points earned 25 months ago in monthly batch", () => {
