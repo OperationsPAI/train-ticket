@@ -38,6 +38,8 @@ spec:
             exec:
               command: ["redis-cli", "ping"]
             periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
           resources:
             requests:
               cpu: {{ (.Values.redis.resources).requests.cpu | default "500m" | quote }}
