@@ -145,22 +145,6 @@ func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
 
 	item.SetResult("saga", saga)
 	item.SetResult("sb", sb)
-
-	// Quick no-capacity check: poll saga once after a short delay
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-time.After(3 * time.Second):
-	}
-	code, data, _ := s.api.Request(ctx, "GET", "booking-orchestration",
-		"/api/v1/internal/booking-sagas/"+url.PathEscape(saga),
-		nil, nil, nil, "staff-poll-reservation")
-	if code == 200 {
-		b, _ := json.Marshal(data)
-		if containsStr(string(b), "NO_AVAILABLE_CAPACITY") {
-			item.SetResult("no_capacity", true)
-		}
-	}
 	return nil
 }
 
