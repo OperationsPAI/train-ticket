@@ -2,193 +2,173 @@ apiVersion: skaffold/v4beta9
 kind: Config
 metadata:
   name: train-ticket
+
+# Build: push to docker.io (opspai/<service>)
+# Deploy: images pulled via mirror pair-cn-guangzhou.cr.volces.com
 build:
   platforms: ["linux/amd64"]
   local:
-    concurrency: 16
+    concurrency: 8
     push: true
-    useDockerCLI: false
-  # tagPolicy:
-  #   envTemplate:
-  #     template: "{{.IMAGE_NAME}}:latest"
+    useDockerCLI: true
   artifacts:
-    - image: ts-admin-basic-info-service
-      context: ts-admin-basic-info-service
+    - image: opspai/account
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-admin-order-service
-      context: ts-admin-order-service
+        dockerfile: deploy/docker/account/Dockerfile
+    - image: opspai/admin-audit
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-admin-route-service
-      context: ts-admin-route-service
+        dockerfile: deploy/docker/admin-audit/Dockerfile
+    - image: opspai/ancillary-service
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-admin-travel-service
-      context: ts-admin-travel-service
+        dockerfile: deploy/docker/ancillary-service/Dockerfile
+    - image: opspai/booking-orchestration
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-admin-user-service
-      context: ts-admin-user-service
+        dockerfile: deploy/docker/booking-orchestration/Dockerfile
+    - image: opspai/capacity-availability
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-assurance-service
-      context: ts-assurance-service
+        dockerfile: deploy/docker/capacity-availability/Dockerfile
+    - image: opspai/corporate-travel
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-auth-service
-      context: ts-auth-service
+        dockerfile: deploy/docker/corporate-travel/Dockerfile
+    - image: opspai/customer-service
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-avatar-service
-      context: ts-avatar-service
+        dockerfile: deploy/docker/customer-service/Dockerfile
+    - image: opspai/dispatch
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-basic-service
-      context: ts-basic-service
+        dockerfile: deploy/docker/dispatch/Dockerfile
+    - image: opspai/disruption-recovery
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-cancel-service
-      context: ts-cancel-service
+        dockerfile: deploy/docker/disruption-recovery/Dockerfile
+    - image: opspai/entitlement-ticketing
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-config-service
-      context: ts-config-service
+        dockerfile: deploy/docker/entitlement-ticketing/Dockerfile
+    - image: opspai/fare-pricing
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-consign-price-service
-      context: ts-consign-price-service
+        dockerfile: deploy/docker/fare-pricing/Dockerfile
+    - image: opspai/finance-settlement
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-consign-service
-      context: ts-consign-service
+        dockerfile: deploy/docker/finance-settlement/Dockerfile
+    - image: opspai/fulfillment
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-contacts-service
-      context: ts-contacts-service
+        dockerfile: deploy/docker/fulfillment/Dockerfile
+    - image: opspai/group-booking
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-delivery-service
-      context: ts-delivery-service
+        dockerfile: deploy/docker/group-booking/Dockerfile
+    - image: opspai/identity-verification
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-execute-service
-      context: ts-execute-service
+        dockerfile: deploy/docker/identity-verification/Dockerfile
+    - image: opspai/invoicing
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-food-delivery-service
-      context: ts-food-delivery-service
+        dockerfile: deploy/docker/invoicing/Dockerfile
+    - image: opspai/journey-order
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-food-service
-      context: ts-food-service
+        dockerfile: deploy/docker/journey-order/Dockerfile
+    - image: opspai/legacy-acl
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-inside-payment-service
-      context: ts-inside-payment-service
+        dockerfile: deploy/docker/legacy-acl/Dockerfile
+    - image: opspai/loadgen
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-news-service
-      context: ts-news-service
+        dockerfile: deploy/docker/loadgen/Dockerfile
+    - image: opspai/loyalty-membership
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-notification-service
-      context: ts-notification-service
+        dockerfile: deploy/docker/loyalty-membership/Dockerfile
+    - image: opspai/marketing-campaign
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-order-other-service
-      context: ts-order-other-service
+        dockerfile: deploy/docker/marketing-campaign/Dockerfile
+    - image: opspai/notification
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-order-service
-      context: ts-order-service
+        dockerfile: deploy/docker/notification/Dockerfile
+    - image: opspai/offer-management
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-payment-service
-      context: ts-payment-service
+        dockerfile: deploy/docker/offer-management/Dockerfile
+    - image: opspai/payment
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-preserve-other-service
-      context: ts-preserve-other-service
+        dockerfile: deploy/docker/payment/Dockerfile
+    - image: opspai/payment-channel
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-preserve-service
-      context: ts-preserve-service
+        dockerfile: deploy/docker/payment-channel/Dockerfile
+    - image: opspai/place-network
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-price-service
-      context: ts-price-service
+        dockerfile: deploy/docker/place-network/Dockerfile
+    - image: opspai/post-sales
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-rebook-service
-      context: ts-rebook-service
+        dockerfile: deploy/docker/post-sales/Dockerfile
+    - image: opspai/provider-integration
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-route-plan-service
-      context: ts-route-plan-service
+        dockerfile: deploy/docker/provider-integration/Dockerfile
+    - image: opspai/reporting
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-route-service
-      context: ts-route-service
+        dockerfile: deploy/docker/reporting/Dockerfile
+    - image: opspai/risk-compliance
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-seat-service
-      context: ts-seat-service
+        dockerfile: deploy/docker/risk-compliance/Dockerfile
+    - image: opspai/seat-assignment
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-security-service
-      context: ts-security-service
+        dockerfile: deploy/docker/seat-assignment/Dockerfile
+    - image: opspai/service-plan
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-station-food-service
-      context: ts-station-food-service
+        dockerfile: deploy/docker/service-plan/Dockerfile
+    - image: opspai/supplier-catalog
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-station-service
-      context: ts-station-service
+        dockerfile: deploy/docker/supplier-catalog/Dockerfile
+    - image: opspai/transfer-management
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-ticket-office-service
-      context: ts-ticket-office-service
+        dockerfile: deploy/docker/transfer-management/Dockerfile
+    - image: opspai/travel-insurance
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-train-food-service
-      context: ts-train-food-service
+        dockerfile: deploy/docker/travel-insurance/Dockerfile
+    - image: opspai/traveler-profile
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-train-service
-      context: ts-train-service
+        dockerfile: deploy/docker/traveler-profile/Dockerfile
+    - image: opspai/trip-planning
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-travel-plan-service
-      context: ts-travel-plan-service
+        dockerfile: deploy/docker/trip-planning/Dockerfile
+    - image: opspai/waitlist
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-travel-service
-      context: ts-travel-service
+        dockerfile: deploy/docker/waitlist/Dockerfile
+    - image: opspai/wallet-promotion
+      context: .
       docker:
-        dockerfile: Dockerfile
-    - image: ts-travel2-service
-      context: ts-travel2-service
-      docker:
-        dockerfile: Dockerfile
-    - image: ts-ui-dashboard
-      context: ts-ui-dashboard
-      docker:
-        dockerfile: Dockerfile
-    - image: ts-user-service
-      context: ts-user-service
-      docker:
-        dockerfile: Dockerfile
-    - image: ts-verification-code-service
-      context: ts-verification-code-service
-      docker:
-        dockerfile: Dockerfile
-    - image: ts-voucher-service
-      context: ts-voucher-service
-      docker:
-        dockerfile: Dockerfile
-    - image: ts-wait-order-service
-      context: ts-wait-order-service
-      docker:
-        dockerfile: Dockerfile
+        dockerfile: deploy/docker/wallet-promotion/Dockerfile
+
+# Deploy: use k8s-prod manifests (images rewritten to mirror registry)
+# Usage: skaffold build --tag latest   (build + push to docker.io)
+#        kubectl apply -f deploy/k8s-prod/ -n train-ticket-prod  (deploy via mirror)

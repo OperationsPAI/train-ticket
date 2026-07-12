@@ -1,0 +1,686 @@
+import { Redis } from "ioredis";
+import { activeTraceContext, endSpan, endSpanWithError, markSpanError, remoteTraceContext, startConsumerSpan } from "./observability.js";
+import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
+export class PublishFailed extends Error {
+    constructor(message, options) {
+        super(message, options);
+        this.name = "PublishFailed";
+    }
+}
+export class SubscribeFailed extends Error {
+    constructor(message, options) {
+        super(message, options);
+        this.name = "SubscribeFailed";
+    }
+}
+export class HandlerError extends Error {
+    kind;
+    constructor(kind, message, options) {
+        super(message, options);
+        this.kind = kind;
+        this.name = "HandlerError";
+    }
+}
+export function createEventEnvelope(input) {
+    const traceContext = activeTraceContext();
+    return Object.freeze({
+        eventId: input.eventId ? canonicalEventId(input.eventId) : newEventId(),
+        eventType: input.eventType,
+        schemaVersion: input.schemaVersion ?? 1,
+        producer: input.producer,
+        causationId: input.causationId ? canonicalCausationId(input.causationId) : newCommandId(),
+        correlationId: input.correlationId ? canonicalCorrelationId(input.correlationId) : newCorrelationId(),
+        occurredAt: occurredAt(input.occurredAt),
+        payload: Object.freeze(omitUndefined(input.payload)),
+        ...traceContext,
+    });
+}
+export async function publishAfterCommit(transaction, publisher, envelopes) {
+    const result = await transaction();
+    const toPublish = typeof envelopes === "function" ? await envelopes(result) : envelopes;
+    for (const envelope of toPublish) {
+        await publisher.publish(envelope);
+    }
+    return result;
+}
+export function successfulHandling() {
+    return { ok: true };
+}
+export function transientHandling(error) {
+    return { ok: false, kind: "transient", error };
+}
+export function fatalHandling(error) {
+    return { ok: false, kind: "fatal", error };
+}
+export class InMemoryEventPublisher {
+    envelopes = [];
+    published = this.envelopes;
+    failNext = false;
+    async publish(envelope) {
+        if (this.failNext) {
+            this.failNext = false;
+            throw new PublishFailed("Simulated publish failure");
+        }
+        this.envelopes.push(structuredClone(envelope));
+    }
+    findByProducer(producer) {
+        return this.envelopes.filter((envelope) => envelope.producer === producer);
+    }
+    findByEventType(eventType) {
+        return this.envelopes.filter((envelope) => envelope.eventType === eventType);
+    }
+    reset() {
+        this.envelopes.length = 0;
+        this.failNext = false;
+    }
+}
+export class DeduplicatingEventHandler {
+    delegate;
+    consumedEventIds = new Set();
+    constructor(delegate) {
+        this.delegate = delegate;
+    }
+    async handle(envelope) {
+        if (this.consumedEventIds.has(envelope.eventId)) {
+            return successfulHandling();
+        }
+        const result = await this.delegate(envelope);
+        if (result === undefined || handlerSucceeded(result)) {
+            this.consumedEventIds.add(envelope.eventId);
+        }
+        return result ?? successfulHandling();
+    }
+    hasConsumed(eventId) {
+        return this.consumedEventIds.has(eventId);
+    }
+}
+export class ConsumedEventDeduplicator {
+    consumedEventIds = new Set();
+    async handle(envelope, handler) {
+        if (this.consumedEventIds.has(envelope.eventId)) {
+            return false;
+        }
+        await handler(envelope);
+        this.consumedEventIds.add(envelope.eventId);
+        return true;
+    }
+}
+export class InMemoryEventSubscriber {
+    received = [];
+    handler;
+    processedEventIds = new Set();
+    async subscribe(_streams, _group, _consumerName, handler, _signal) {
+        this.handler = handler;
+    }
+    async simulateEvent(envelope) {
+        this.received.push(envelope);
+        if (this.processedEventIds.has(envelope.eventId)) {
+            return "ack";
+        }
+        if (!this.handler) {
+            this.processedEventIds.add(envelope.eventId);
+            return "ack";
+        }
+        const rawResult = await handleWithConsumerSpan(this.handler, envelope, "in-memory", "in-memory");
+        const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+        if (result === "ack") {
+            this.processedEventIds.add(envelope.eventId);
+        }
+        return result;
+    }
+    async emit(envelope) {
+        if (!this.handler) {
+            throw new SubscribeFailed("Subscriber has not been started");
+        }
+        if (this.processedEventIds.has(envelope.eventId)) {
+            return false;
+        }
+        const rawResult = await handleWithConsumerSpan(this.handler, envelope, "in-memory", "in-memory");
+        const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+        if (result === "ack") {
+            this.processedEventIds.add(envelope.eventId);
+            return true;
+        }
+        if (result === "dlq") {
+            return true;
+        }
+        return false;
+    }
+    reset() {
+        this.received.length = 0;
+        this.handler = undefined;
+        this.processedEventIds.clear();
+    }
+}
+const READ_BLOCK_MS = 1_000;
+const READ_COUNT = 50;
+const CLAIM_MIN_IDLE_MS = 60_000;
+const MAX_DELIVERIES = 5;
+const STREAM_MAXLEN = 100_000;
+export class RedisEventPublisher {
+    redis;
+    constructor(redis) {
+        this.redis = redis;
+    }
+    async publish(envelope) {
+        const stream = streamForProducer(envelope.producer);
+        const serialized = JSON.stringify(envelope);
+        let lastError;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            try {
+                await this.redis.xadd(stream, "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", serialized);
+                return;
+            }
+            catch (error) {
+                lastError = error;
+                if (attempt < 3) {
+                    await sleep(25 * 2 ** (attempt - 1));
+                }
+            }
+        }
+        throw new PublishFailed(`Failed to publish ${envelope.eventType}`, { cause: lastError });
+    }
+    async close() {
+        this.redis.disconnect();
+    }
+}
+export class RedisStreamEventPublisher extends RedisEventPublisher {
+    constructor(redis = new Redis(redisUrl(), { lazyConnect: true })) {
+        super(redis);
+    }
+}
+export class RedisEventSubscriber {
+    redis;
+    onLoopFailure;
+    options;
+    stopped = false;
+    consumedEventIds = new Set();
+    loops = new Set();
+    startedPromise;
+    resolveStarted;
+    rejectStarted;
+    constructor(redis = new Redis(redisUrl(), { lazyConnect: true }), onLoopFailure = defaultLoopFailureHandler, options = {}) {
+        this.redis = redis;
+        this.onLoopFailure = onLoopFailure;
+        this.options = options;
+        this.startedPromise = new Promise((resolve, reject) => {
+            this.resolveStarted = resolve;
+            this.rejectStarted = reject;
+        });
+    }
+    started() {
+        return this.startedPromise;
+    }
+    async subscribe(streams, group, consumerName, handler, signal) {
+        try {
+            await this.ensureConnected();
+            await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+            this.resolveStarted();
+            this.startLoop(this.poll(streams, group, consumerName, handler, signal));
+            this.startLoop(this.recover(streams, group, consumerName, handler, signal));
+        }
+        catch (error) {
+            this.stopped = true;
+            this.rejectStarted(error);
+            throw new SubscribeFailed("Failed to subscribe to event streams", { cause: error });
+        }
+    }
+    async stop() {
+        this.stopped = true;
+        this.redis.disconnect();
+        await Promise.allSettled([...this.loops]);
+    }
+    async close() {
+        await this.stop();
+    }
+    startLoop(loop) {
+        this.loops.add(loop);
+        loop.catch((error) => {
+            if (!this.stopped) {
+                this.onLoopFailure(new SubscribeFailed("Redis subscriber background loop failed", { cause: error }));
+            }
+        }).finally(() => this.loops.delete(loop));
+    }
+    async poll(streams, group, consumerName, handler, signal) {
+        while (!this.stopped && !signal?.aborted) {
+            const redisWithRead = this.redis;
+            const read = redisWithRead.call?.bind(this.redis) ?? redisWithRead.xreadgroup?.bind(this.redis);
+            if (!read) {
+                throw new TypeError("Redis client does not support XREADGROUP");
+            }
+            try {
+                const messages = await read("XREADGROUP", "GROUP", group, consumerName, "BLOCK", READ_BLOCK_MS, "COUNT", READ_COUNT, "STREAMS", ...streams, ...streams.map(() => ">"));
+                await this.processMessages(messages, group, consumerName, handler);
+            }
+            catch (error) {
+                // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
+                console.warn({
+                    service: group,
+                    stream: streams.join(","),
+                    eventId: "unknown",
+                    deliveries: 0,
+                    error: sanitizedErrorForLog(error),
+                    message: "poll read failed; recreating group if missing and backing off",
+                });
+                if (String(error).includes("NOGROUP")) {
+                    await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+                }
+                if (!isRecoverableRedisReadError(error)) {
+                    // Unknown errors are reported, never fatal: an unlisted driver
+                    // message must not silently kill the subscriber loop.
+                    this.onLoopFailure(error);
+                }
+                await sleep(1_000);
+            }
+        }
+    }
+    async recover(streams, group, consumerName, handler, signal) {
+        while (!this.stopped && !signal?.aborted) {
+            await sleepUntil(() => this.stopped || signal?.aborted === true, CLAIM_MIN_IDLE_MS);
+            if (this.stopped || signal?.aborted) {
+                return;
+            }
+            for (const stream of streams) {
+                try {
+                    await this.claimAndProcess(stream, group, consumerName, handler);
+                }
+                catch (error) {
+                    // One stream's XAUTOCLAIM failure must not kill the whole
+                    // recovery loop; log with context and keep recovering.
+                    console.warn({
+                        service: group,
+                        stream,
+                        eventId: "unknown",
+                        deliveries: 0,
+                        error: sanitizedErrorForLog(error),
+                        message: "pending-entry recovery failed; will retry next cycle",
+                    });
+                }
+            }
+        }
+    }
+    async processMessages(messages, group, consumerName, handler) {
+        for (const [stream, entries] of messages ?? []) {
+            await this.processEntries(stream, group, consumerName, entries, handler);
+        }
+    }
+    async processEntries(stream, group, consumerName, entries, handler) {
+        if (!handler.handleBatch || entries.length <= 1) {
+            for (const entry of entries) {
+                await this.processEntry(stream, group, consumerName, entry, handler);
+            }
+            return;
+        }
+        const batch = [];
+        for (const entry of entries) {
+            const parsed = await this.parseBatchEntry(stream, group, consumerName, entry, 1);
+            if (parsed) {
+                batch.push(parsed);
+            }
+        }
+        if (batch.length === 0) {
+            return;
+        }
+        let batchResult;
+        try {
+            batchResult = await handleBatchWithConsumerSpans(handler.handleBatch, batch.map(({ envelope }) => envelope), stream, group);
+        }
+        catch (error) {
+            for (const item of batch) {
+                const result = error instanceof HandlerError
+                    ? (error.kind === "fatal" ? "dlq" : "retry")
+                    : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+                await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error);
+            }
+            return;
+        }
+        const results = Array.isArray(batchResult) ? batchResult : batch.map(() => batchResult);
+        if (results.length !== batch.length) {
+            const error = new HandlerError("fatal", `Batch handler returned ${results.length} results for ${batch.length} events`);
+            for (const item of batch) {
+                await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, "dlq", error);
+            }
+            return;
+        }
+        for (const [index, item] of batch.entries()) {
+            const rawResult = results[index];
+            await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult), failureReasonFromHandlerResult(rawResult));
+        }
+    }
+    async parseBatchEntry(stream, group, consumerName, entry, deliveryAttempts) {
+        const [entryId, fields] = entry;
+        const attempts = Math.max(1, deliveryAttempts);
+        const envelopeJson = fieldValue(fields, "envelope");
+        if (!envelopeJson) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
+            return undefined;
+        }
+        let envelope;
+        try {
+            envelope = deserializeEventEnvelope(envelopeJson);
+        }
+        catch (error) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
+            return undefined;
+        }
+        if (this.consumedEventIds.has(envelope.eventId)) {
+            console.warn({
+                service: group,
+                stream,
+                eventId: envelope.eventId,
+                deliveries: attempts,
+                message: "duplicate event already processed; acking without handler",
+            });
+            await this.redis.xack(stream, group, entryId);
+            return undefined;
+        }
+        return { entry, envelope, attempts };
+    }
+    async processEntry(stream, group, consumerName, entry, handler, deliveryAttempts = 1) {
+        const [entryId, fields] = entry;
+        const attempts = Math.max(1, deliveryAttempts);
+        const envelopeJson = fieldValue(fields, "envelope");
+        if (!envelopeJson) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
+            return;
+        }
+        let envelope;
+        try {
+            envelope = deserializeEventEnvelope(envelopeJson);
+        }
+        catch (error) {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
+            return;
+        }
+        if (this.consumedEventIds.has(envelope.eventId)) {
+            console.warn({
+                service: group,
+                stream,
+                eventId: envelope.eventId,
+                deliveries: attempts,
+                message: "duplicate event already processed; acking without handler",
+            });
+            await this.redis.xack(stream, group, entryId);
+            return;
+        }
+        let result;
+        let failureReason = "HandlerResult.dlq";
+        try {
+            const rawResult = await handleWithConsumerSpan(handler, envelope, stream, group);
+            result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+            failureReason = failureReasonFromHandlerResult(rawResult);
+        }
+        catch (error) {
+            result = error instanceof HandlerError
+                ? (error.kind === "fatal" ? "dlq" : "retry")
+                : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+            failureReason = error;
+            if (result === "dlq") {
+                console.error(sanitizedErrorForLog(error));
+            }
+        }
+        await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
+    }
+    async finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason) {
+        if (result === "ack") {
+            this.consumedEventIds.add(envelope.eventId);
+            await this.redis.xack(stream, group, entry[0]);
+            return;
+        }
+        if (result === "dlq") {
+            await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
+            return;
+        }
+        console.warn({
+            service: group,
+            stream,
+            eventId: envelope.eventId,
+            deliveries: attempts,
+            reason: failureReasonForLog(failureReason),
+            message: "handler transient failure; message stays pending for retry",
+        });
+    }
+    async claimAndProcess(stream, group, consumerName, handler) {
+        const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, "0", "COUNT", 100);
+        const entries = (Array.isArray(claimed[1]) ? claimed[1] : []);
+        const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
+        for (const entry of entries) {
+            if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
+                await this.deadLetterAndAck(stream, group, consumerName, entry, "MaxDeliveries", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
+            }
+            else {
+                await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
+            }
+        }
+    }
+    async deliveryCounts(stream, group, entryIds) {
+        const counts = new Map();
+        await Promise.all(entryIds.map(async (entryId) => {
+            const pending = await this.redis.xpending(stream, group, entryId, entryId, 1);
+            const row = pending[0];
+            const deliveries = row?.[3];
+            if (typeof deliveries === "number") {
+                counts.set(entryId, deliveries);
+            }
+        }));
+        return counts;
+    }
+    async deadLetterAndAck(stream, group, consumerName, entry, reason, attempts) {
+        const envelopeJson = fieldValue(entry[1], "envelope") ?? JSON.stringify({});
+        const failureReason = truncateFailureReason(reason);
+        const safeAttempts = Math.max(1, attempts);
+        const deadLetteredAt = new Date().toISOString();
+        console.warn({
+            service: group,
+            stream,
+            eventId: eventIdForLog(envelopeJson),
+            deliveries: safeAttempts,
+            consumerGroup: group,
+            failureReason,
+            attempts: safeAttempts,
+            deadLetteredAt,
+            message: "moving message to DLQ",
+        });
+        await this.redis.xadd(dlqForStream(stream), "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", envelopeJson, "consumerGroup", group, "consumerName", consumerName, "failureReason", failureReason, "attempts", String(safeAttempts), "deadLetteredAt", deadLetteredAt);
+        await this.redis.xack(stream, group, entry[0]);
+    }
+    async createGroup(stream, group) {
+        try {
+            await this.redis.xgroup("CREATE", stream, group, "$", "MKSTREAM");
+        }
+        catch (error) {
+            if (!String(error).includes("BUSYGROUP")) {
+                throw error;
+            }
+        }
+    }
+    async ensureConnected() {
+        const status = this.redis.status;
+        if (status === "wait") {
+            await this.redis.connect();
+        }
+    }
+}
+export class RedisStreamEventSubscriber extends RedisEventSubscriber {
+}
+export async function createRedisMessagingAdapters(url = redisUrl()) {
+    const publisherRedis = new Redis(url, { lazyConnect: true });
+    const subscriberRedis = new Redis(url, { lazyConnect: true });
+    await Promise.all([publisherRedis.connect(), subscriberRedis.connect()]);
+    return {
+        publisher: new RedisEventPublisher(publisherRedis),
+        subscriber: new RedisEventSubscriber(subscriberRedis),
+        close: async () => {
+            await Promise.allSettled([publisherRedis.quit(), subscriberRedis.quit()]);
+        },
+    };
+}
+export function streamForProducer(producer) {
+    return `events:${producer}`;
+}
+export const streamKey = streamForProducer;
+export function dlqForStream(stream) {
+    return `${stream}:dlq`;
+}
+export function dlqStreamKey(context) {
+    return `events:${context}:dlq`;
+}
+export function redisUrl() {
+    return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+async function handleBatchWithConsumerSpans(handler, envelopes, stream, consumerGroup) {
+    if (envelopes.length === 0) {
+        return [];
+    }
+    const spans = envelopes.map((envelope) => startConsumerSpan({
+        stream,
+        consumerGroup,
+        eventId: envelope.eventId,
+        eventType: envelope.eventType,
+        correlationId: envelope.correlationId,
+        parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
+    }));
+    try {
+        const result = await handler(envelopes);
+        const results = Array.isArray(result) ? result : envelopes.map(() => result);
+        for (const [index, span] of spans.entries()) {
+            const rawResult = results[index];
+            const normalized = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+            if (normalized !== "ack") {
+                markSpanError(span, String(failureReasonFromHandlerResult(rawResult)));
+            }
+            endSpan(span);
+        }
+        return result;
+    }
+    catch (error) {
+        for (const span of spans) {
+            endSpanWithError(span, error);
+        }
+        throw error;
+    }
+}
+async function handleWithConsumerSpan(handler, envelope, stream, consumerGroup) {
+    const span = startConsumerSpan({
+        stream,
+        consumerGroup,
+        eventId: envelope.eventId,
+        eventType: envelope.eventType,
+        correlationId: envelope.correlationId,
+        parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
+    });
+    try {
+        const result = await handler(envelope);
+        const normalized = result === undefined ? "ack" : normalizeHandlerResult(result);
+        if (normalized !== "ack") {
+            markSpanError(span, String(failureReasonFromHandlerResult(result)));
+        }
+        endSpan(span);
+        return result;
+    }
+    catch (error) {
+        endSpanWithError(span, error);
+        throw error;
+    }
+}
+function deserializeEventEnvelope(envelopeJson) {
+    const raw = JSON.parse(envelopeJson);
+    return Object.freeze({ ...raw, payload: Object.freeze(raw.payload ?? {}) });
+}
+function truncateFailureReason(reason) {
+    const text = reason instanceof Error
+        ? `${reason.name || "Error"}: ${reason.message || "Handler failed"}`
+        : String(reason || "unknown");
+    return text.length > 500 ? text.slice(0, 500) : text;
+}
+function eventIdForLog(envelopeJson) {
+    try {
+        const envelope = JSON.parse(envelopeJson);
+        return typeof envelope.eventId === "string" ? envelope.eventId : "unknown";
+    }
+    catch {
+        return "unknown";
+    }
+}
+function isRecoverableRedisReadError(error) {
+    const message = String(error);
+    return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
+}
+function sanitizedErrorForLog(error) {
+    if (error instanceof Error) {
+        return { name: error.name || "Error", message: error.message || "Handler failed", stack: error.stack };
+    }
+    return { name: typeof error, message: String(error || "Handler failed") };
+}
+function failureReasonForLog(reason) {
+    if (reason instanceof Error) {
+        return sanitizedErrorForLog(reason);
+    }
+    return { name: typeof reason, message: String(reason || "HandlerResult.retry") };
+}
+function normalizeHandlerResult(result) {
+    if (result === "ack" || result === "retry" || result === "dlq") {
+        return result;
+    }
+    if (result.ok) {
+        return "ack";
+    }
+    const kind = result.kind ?? result.errorType;
+    return kind === "fatal" ? "dlq" : "retry";
+}
+function handlerSucceeded(result) {
+    return normalizeHandlerResult(result) === "ack";
+}
+function failureReasonFromHandlerResult(result) {
+    if (result === undefined || result === "ack" || result === "retry") {
+        return "HandlerResult.dlq";
+    }
+    if (result === "dlq") {
+        return "HandlerResult.dlq";
+    }
+    if (!result.ok) {
+        return result.error ?? `HandlerResult.${result.kind ?? result.errorType ?? "transient"}`;
+    }
+    return "HandlerResult.dlq";
+}
+function occurredAt(value) {
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    if (typeof value === "string") {
+        return new Date(value).toISOString();
+    }
+    return new Date().toISOString();
+}
+function omitUndefined(values) {
+    const payload = {};
+    for (const [key, value] of Object.entries(values)) {
+        if (value !== undefined) {
+            payload[key] = value;
+        }
+    }
+    return payload;
+}
+function fieldValue(fields, name) {
+    for (let index = 0; index < fields.length; index += 2) {
+        if (fields[index] === name) {
+            return fields[index + 1];
+        }
+    }
+    return undefined;
+}
+function sleep(milliseconds) {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, milliseconds);
+        timer.unref?.();
+    });
+}
+async function sleepUntil(stopped, milliseconds) {
+    const deadline = Date.now() + milliseconds;
+    while (!stopped() && Date.now() < deadline) {
+        await sleep(Math.min(100, deadline - Date.now()));
+    }
+}
+function defaultLoopFailureHandler(error) {
+    console.error(sanitizedErrorForLog(error));
+}

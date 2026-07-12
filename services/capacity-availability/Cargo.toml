@@ -1,0 +1,33 @@
+[package]
+name = "capacity-availability"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "capacity_availability"
+path = "src/lib.rs"
+
+[dependencies]
+opentelemetry = "0.32.0"
+axum = "0.8.9"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+shared-kernel = { path = "../../platform/shared-kernel-rust" }
+rust-kit = { path = "../../platform/rust-kit" }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "json"] }
+tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "net"] }
+uuid = { version = "1.0", features = ["v7", "fast-rng"] }
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+
+[features]
+default = []
+redis-impl = ["redis", "rust-kit/redis-impl"]
+
+[dependencies.redis]
+version = "0.25"
+features = ["tokio-comp", "connection-manager"]
+optional = true

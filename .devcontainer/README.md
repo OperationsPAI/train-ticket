@@ -1,67 +1,68 @@
-# Train Ticket Dev Container
+# Train Ticket Greenfield Dev Container
 
-This container is the development and automation image for Train Ticket. It
-contains the tools needed by an AgentM/ARL worker to edit, build, validate, and
-deploy this repository:
+This image is a neutral development and AgentM/ARL worker environment for the
+greenfield DDD rebuild. It intentionally does not assume the old Maven reactor,
+Helm chart, or Skaffold project still exists.
 
-- Debian 13/trixie with Java 17 and Maven for the Spring Boot reactor.
-- Node 20 for `ts-ticket-office-service`.
-- Python 3 with native build libraries for the Python services.
-- Docker CLI, kubectl, Helm, Skaffold, yq, jq, git-lfs, and uv.
+Included tools:
+
+- Temurin JDK 25 and Maven, for Java/Spring Boot service skeletons.
+- Go 1.26.x, for Gin adapter, ingestion, and high-throughput service skeletons.
+- Node 26 and TypeScript 6, for Fastify service skeletons.
+- Python 3 and uv, for scripting or Python services.
+- rustup stable, Cargo, rustfmt, and clippy, for Axum invariant-heavy service
+  skeletons.
+- Docker CLI, GitHub CLI (`gh`), kubectl, Helm, Skaffold, yq, jq, git-lfs,
+  and rsync.
 
 ## Build
 
 ```bash
-docker build -f .devcontainer/Dockerfile -t train-ticket-dev:local .
+make build-devcontainer
 ```
 
-VS Code or the Dev Containers CLI can also open the repository directly from
-`.devcontainer/devcontainer.json`.
+The container workdir is `/workspace/train-ticket`, owned by the non-root
+`vscode` user so ARL can clone or upload a repository snapshot into it.
 
-The devcontainer mounts `/var/run/docker.sock` so `skaffold build --push=false`
-can use the host or ARL-provided Docker daemon. If the ARL runtime uses a remote
-builder instead, provide the matching Docker context before running image
-builds.
+## AgentM / ARL Worker Snapshot
 
-When running the image directly, the container defaults to the non-root
-`vscode` user. If Docker image builds need the host socket, add the socket group
-seen inside the container or run that job as root. For Docker Desktop/OrbStack
-this is often:
+Build a worker image that includes the current repository snapshot:
 
 ```bash
-docker run --rm --group-add 0 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$PWD:/workspace/train-ticket" \
-  -w /workspace/train-ticket \
-  train-ticket-dev:local .devcontainer/scripts/check.sh images
+make build-agent-env-image
+make check-agent-env-image
 ```
 
-## Automation entrypoints
+Use `train-ticket-agent-env:local` as `AGENTM_AGENT_ENV_IMAGE` when running an
+AgentM scenario with the `agent_env` operations backend against local OrbStack
+Kubernetes. The snapshot image keeps repository files owned by `vscode`, but
+uses root as the default image user so ARL's workspace-seeding init container
+can populate the sandbox volume.
 
-Use the check script as the stable AgentM/ARL contract:
+## Smoke Check
 
 ```bash
-.devcontainer/scripts/check.sh smoke    # toolchain + Helm dependency/lint/template
-.devcontainer/scripts/check.sh package  # smoke + Maven package
-.devcontainer/scripts/check.sh images   # Skaffold image build, requires Docker
-.devcontainer/scripts/check.sh all      # package + Helm validation + image build
+.devcontainer/scripts/check.sh
 ```
 
-The Makefile wraps the same checks:
+The check verifies the base toolchain, the DDD document layout, and the
+polyglot skeleton catalog.
+
+## Full Repository Check
+
+Use the devcontainer as the standard development environment for the rewrite.
+From the host, run the authoritative strict validation inside the local image:
 
 ```bash
-make smoke
-make check
-make skaffold-build
-make deploy NS=ts PORT=30080
+make check-devcontainer
 ```
 
-For daily release automation, a conservative one-day loop is:
+Inside the container, run:
 
-1. Start from a clean checkout inside this image.
-2. Run `make smoke` before edits to verify the environment.
-3. Apply the code change.
-4. Run `make check`.
-5. Run `make skaffold-build` when Docker is available.
-6. Deploy with `make deploy NS=<namespace> PORT=<nodePort>` or the equivalent
-   `helm upgrade --install` command for the target cluster.
+```bash
+make check-strict
+```
+
+`make check-strict` is the authoritative skeleton validation gate because it
+fails when required language toolchains are missing. Host `make check` is only an
+adaptive smoke test and may skip languages that are not installed locally.

@@ -1,0 +1,296 @@
+package http
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/trainticket/greenfield/platform/go-kit/httpkit"
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
+	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
+
+	"github.com/trainticket/greenfield/services/service-plan/internal/application"
+	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
+)
+
+type Handler struct {
+	service *application.Service
+}
+
+type createScheduledServiceRequest struct {
+	ServiceRef        string    `json:"serviceRef"`
+	CarrierID         string    `json:"carrierId"`
+	ServiceNumber     string    `json:"serviceNumber"`
+	DepartureTime     time.Time `json:"departureTime"`
+	ArrivalTime       time.Time `json:"arrivalTime"`
+	OriginNodeID      string    `json:"originNodeId"`
+	DestinationNodeID string    `json:"destinationNodeId"`
+	Status            string    `json:"status"`
+}
+
+type createServiceSegmentRequest struct {
+	ScheduledServiceRef string    `json:"scheduledServiceRef"`
+	OriginStopRef       string    `json:"originStopRef"`
+	DestinationStopRef  string    `json:"destinationStopRef"`
+	DepartureTime       time.Time `json:"departureTime"`
+	ArrivalTime         time.Time `json:"arrivalTime"`
+}
+
+type addTemporaryServiceRequest struct {
+	TempServiceRef   string   `json:"tempServiceRef"`
+	TempTrainNumber  string   `json:"tempTrainNumber"`
+	Period           string   `json:"period"`
+	StopsSubset      []string `json:"stopsSubset"`
+	AvailableClasses []string `json:"availableClasses"`
+}
+
+type recordDelayRequest struct {
+	SegmentRef   string `json:"segmentRef"`
+	DelayMinutes int    `json:"delayMinutes"`
+}
+
+type cancelServiceRequest struct {
+	Date   time.Time `json:"date"`
+	Reason string    `json:"reason"`
+}
+
+type restoreServiceRequest struct {
+	Date time.Time `json:"date"`
+}
+
+func Router() *gin.Engine {
+	return RouterWithService(application.NewService(application.NoopPublisher{}))
+}
+
+func RouterWithService(service *application.Service) *gin.Engine {
+	return RouterWithServiceAndIdempotency(service, idempotency.NewMemoryStore())
+}
+
+func RouterWithServiceAndIdempotency(service *application.Service, store idempotency.Store) *gin.Engine {
+	profile := domain.Profile()
+	router := goruntime.NewGinRouter(goruntime.GinConfig{
+		ServiceID:    profile.ServiceID,
+		Metadata:     profile,
+		HealthStatus: domain.Health(),
+		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
+	})
+	RegisterRoutes(router, service, store)
+	return router
+}
+
+func RegisterRoutes(router gin.IRouter, service *application.Service, store idempotency.Store) {
+	if store == nil {
+		store = idempotency.NewMemoryStore()
+	}
+	handler := Handler{service: service}
+	idempotent := idempotency.Middleware(store)
+	api := router.Group("/api/v1")
+	api.POST("/scheduled-services", idempotent, handler.createScheduledService)
+	api.GET("/scheduled-services/:serviceRef", handler.getScheduledService)
+	api.GET("/scheduled-services", handler.listScheduledServices)
+	api.POST("/service-segments", idempotent, handler.createServiceSegment)
+	api.POST("/scheduled-services/:serviceRef/temporary-services", idempotent, handler.addTemporaryService)
+	api.POST("/scheduled-services/:serviceRef/delays", idempotent, handler.recordDelay)
+	api.POST("/scheduled-services/:serviceRef/cancellations", idempotent, handler.cancelServiceForDate)
+	api.POST("/scheduled-services/:serviceRef/restorations", idempotent, handler.restoreServiceForDate)
+}
+
+func (h Handler) createScheduledService(ctx *gin.Context) {
+	var request createScheduledServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.CreateScheduledService(ctx.Request.Context(), application.CreateScheduledServiceCommand{
+		ServiceRef:        request.ServiceRef,
+		CarrierID:         request.CarrierID,
+		ServiceNumber:     request.ServiceNumber,
+		DepartureTime:     request.DepartureTime,
+		ArrivalTime:       request.ArrivalTime,
+		OriginNodeID:      request.OriginNodeID,
+		DestinationNodeID: request.DestinationNodeID,
+		Status:            request.Status,
+		CorrelationID:     httpkit.CorrelationID(ctx),
+		CausationID:       ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, result)
+}
+
+func (h Handler) getScheduledService(ctx *gin.Context) {
+	service, err := h.service.GetScheduledService(ctx.Request.Context(), ctx.Param("serviceRef"))
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, service)
+}
+
+func (h Handler) listScheduledServices(ctx *gin.Context) {
+	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, 100)
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "limit must be an integer between 1 and 100", nil)
+		return
+	}
+	offset, err := parseBoundedInt(ctx.Query("offset"), 0, 0, int(^uint(0)>>1))
+	if err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "offset must be a non-negative integer", nil)
+		return
+	}
+	page, err := h.service.ListScheduledServices(ctx.Request.Context(), application.ListScheduledServicesQuery{Limit: limit, Offset: offset, CarrierID: strings.TrimSpace(ctx.Query("carrierId"))})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, page)
+}
+
+func (h Handler) createServiceSegment(ctx *gin.Context) {
+	var request createServiceSegmentRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.CreateServiceSegment(ctx.Request.Context(), application.CreateServiceSegmentCommand{
+		ScheduledServiceRef: request.ScheduledServiceRef,
+		OriginStopRef:       request.OriginStopRef,
+		DestinationStopRef:  request.DestinationStopRef,
+		DepartureTime:       request.DepartureTime,
+		ArrivalTime:         request.ArrivalTime,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, result)
+}
+
+func (h Handler) addTemporaryService(ctx *gin.Context) {
+	var request addTemporaryServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.AddTemporaryService(ctx.Request.Context(), application.AddTemporaryServiceCommand{
+		BaseServiceRef:   ctx.Param("serviceRef"),
+		TempServiceRef:   request.TempServiceRef,
+		TempTrainNumber:  request.TempTrainNumber,
+		Period:           request.Period,
+		StopsSubset:      request.StopsSubset,
+		AvailableClasses: request.AvailableClasses,
+		CorrelationID:    httpkit.CorrelationID(ctx),
+		CausationID:      ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, result)
+}
+
+func (h Handler) recordDelay(ctx *gin.Context) {
+	var request recordDelayRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.RecordDelay(ctx.Request.Context(), application.RecordDelayCommand{
+		ScheduledServiceRef: ctx.Param("serviceRef"),
+		SegmentRef:          request.SegmentRef,
+		DelayMinutes:        request.DelayMinutes,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
+}
+
+func (h Handler) cancelServiceForDate(ctx *gin.Context) {
+	var request cancelServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.CancelForDate(ctx.Request.Context(), application.CancelServiceCommand{
+		ScheduledServiceRef: ctx.Param("serviceRef"),
+		Date:                request.Date,
+		Reason:              request.Reason,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
+}
+
+func (h Handler) restoreServiceForDate(ctx *gin.Context) {
+	var request restoreServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.RestoreForDate(ctx.Request.Context(), application.RestoreServiceCommand{
+		ScheduledServiceRef: ctx.Param("serviceRef"),
+		Date:                request.Date,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
+}
+
+func bindBody(ctx *gin.Context, target any) error {
+	body, err := io.ReadAll(ctx.Request.Body)
+	if err != nil || len(strings.TrimSpace(string(body))) == 0 {
+		return errors.New("request body is required")
+	}
+	ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return jsonUnmarshalStrict(body, target)
+}
+
+func writeMappedError(ctx *gin.Context, err error) {
+	switch {
+	case errors.Is(err, application.ErrValidation):
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
+	case errors.Is(err, application.ErrNotFound):
+		httpkit.WriteError(ctx, http.StatusNotFound, httpkit.NotFound, err.Error(), nil)
+	case errors.Is(err, application.ErrConflict):
+		httpkit.WriteError(ctx, http.StatusConflict, httpkit.Conflict, err.Error(), nil)
+	case errors.Is(err, application.ErrDomainRule):
+		httpkit.WriteError(ctx, http.StatusUnprocessableEntity, httpkit.DomainRuleViolation, err.Error(), nil)
+	case errors.Is(err, application.ErrPublish):
+		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Service is temporarily unavailable", nil)
+	default:
+		httpkit.WriteError(ctx, http.StatusInternalServerError, httpkit.Unavailable, "internal error", nil)
+	}
+}
+
+func parseBoundedInt(raw string, defaultValue, minValue, maxValue int) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minValue || value > maxValue {
+		return 0, errors.New("invalid integer")
+	}
+	return value, nil
+}

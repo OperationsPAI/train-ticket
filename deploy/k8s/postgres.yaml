@@ -1,0 +1,199 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: train-ticket
+type: Opaque
+stringData:
+  POSTGRES_USER: trainticket
+  POSTGRES_PASSWORD: trainticket-dev
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: train-ticket
+data:
+  01-create-service-databases.sql: |
+    SELECT 'CREATE DATABASE account'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'account')\gexec
+    SELECT 'CREATE DATABASE admin_audit'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'admin_audit')\gexec
+    SELECT 'CREATE DATABASE ancillary_service'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'ancillary_service')\gexec
+    SELECT 'CREATE DATABASE booking_orchestration'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'booking_orchestration')\gexec
+    SELECT 'CREATE DATABASE capacity_availability'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'capacity_availability')\gexec
+    SELECT 'CREATE DATABASE customer_service'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'customer_service')\gexec
+    SELECT 'CREATE DATABASE entitlement_ticketing'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'entitlement_ticketing')\gexec
+    SELECT 'CREATE DATABASE fare_pricing'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fare_pricing')\gexec
+    SELECT 'CREATE DATABASE finance_settlement'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'finance_settlement')\gexec
+    SELECT 'CREATE DATABASE fulfillment'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fulfillment')\gexec
+    SELECT 'CREATE DATABASE journey_order'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'journey_order')\gexec
+    SELECT 'CREATE DATABASE invoicing'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'invoicing')\gexec
+    SELECT 'CREATE DATABASE identity_verification'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'identity_verification')\gexec
+    SELECT 'CREATE DATABASE legacy_acl'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'legacy_acl')\gexec
+    SELECT 'CREATE DATABASE notification'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'notification')\gexec
+    SELECT 'CREATE DATABASE offer_management'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'offer_management')\gexec
+    SELECT 'CREATE DATABASE payment'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'payment')\gexec
+    SELECT 'CREATE DATABASE payment_channel'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'payment_channel')\gexec
+    SELECT 'CREATE DATABASE place_network'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'place_network')\gexec
+    SELECT 'CREATE DATABASE post_sales'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'post_sales')\gexec
+    SELECT 'CREATE DATABASE provider_integration'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'provider_integration')\gexec
+    SELECT 'CREATE DATABASE reporting'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'reporting')\gexec
+    SELECT 'CREATE DATABASE risk_compliance'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'risk_compliance')\gexec
+    SELECT 'CREATE DATABASE seat_assignment'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'seat_assignment')\gexec
+    SELECT 'CREATE DATABASE service_plan'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'service_plan')\gexec
+    SELECT 'CREATE DATABASE supplier_catalog'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'supplier_catalog')\gexec
+    SELECT 'CREATE DATABASE traveler_profile'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'traveler_profile')\gexec
+    SELECT 'CREATE DATABASE trip_planning'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'trip_planning')\gexec
+    SELECT 'CREATE DATABASE waitlist'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'waitlist')\gexec
+    SELECT 'CREATE DATABASE wallet_promotion'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'wallet_promotion')\gexec
+    SELECT 'CREATE DATABASE dispatch'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'dispatch')\gexec
+    SELECT 'CREATE DATABASE disruption_recovery'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'disruption_recovery')\gexec
+    SELECT 'CREATE DATABASE transfer_management'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'transfer_management')\gexec
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - trainticket
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: postgres-initdb
+          configMap:
+            name: postgres-initdb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    app.kubernetes.io/name: postgres

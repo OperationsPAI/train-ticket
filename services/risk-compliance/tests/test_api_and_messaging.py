@@ -1,0 +1,797 @@
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from risk_compliance import (
+    EventEnvelope,
+    InMemoryAssessmentRepository,
+    InMemoryEventPublisher,
+    InMemoryEventSubscriber,
+    PublishFailed,
+    RiskComplianceService,
+    create_app,
+)
+from risk_compliance.application import deterministic_event_id, deterministic_prefixed_id, is_prefixed_uuid7, is_uuid7, uuid7
+
+
+def fake_app():
+    return create_app(service=RiskComplianceService(InMemoryEventPublisher(), InMemoryAssessmentRepository()))
+
+
+def test_assess_risk_happy_path_and_get() -> None:
+    app = fake_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 120}},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body == {
+        "assessmentId": body["assessmentId"],
+        "subjectRef": "ord-123",
+        "scenario": "order_risk",
+        "decision": "ALLOW",
+        "score": 120,
+        "level": "LOW",
+        "policyVersion": "1.0.0",
+        "reasonCode": "PASSED_RISK_CHECKS",
+        "reasonExplanation": "All configured risk checks passed",
+        "assessedAt": body["assessedAt"],
+    }
+    assert body["assessmentId"].startswith("asmt-")
+    assert body["assessedAt"].endswith("Z")
+
+    fetched = client.get(f"/api/v1/risk-assessments/{body['assessmentId']}")
+    assert fetched.status_code == 200
+    assert fetched.json() == body
+
+
+def test_injected_app_assess_risk_smoke_uses_platform_fake_publisher() -> None:
+    app = fake_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-default", "scenario": "order_risk", "context": {"riskScore": 10}},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["subjectRef"] == "ord-default"
+    [envelope] = app.state.publisher.envelopes
+    assert envelope.to_json_dict()["eventType"] == "RiskAssessmentResult"
+    assert envelope.payload["assessmentId"] == body["assessmentId"]
+
+
+def test_default_app_wires_redis_publisher_and_journey_order_subscriber() -> None:
+    app = create_app()
+
+    assert app.state.publisher.__class__.__name__ == "RedisEventPublisher"
+    assert app.state.subscriber.__class__.__name__ == "RedisEventSubscriber"
+
+
+def test_get_unknown_assessment_returns_not_found_error_body() -> None:
+    response = TestClient(fake_app()).get("/api/v1/risk-assessments/asmt-missing", headers={"X-Correlation-Id": str(uuid7())})
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["code"] == "NOT_FOUND"
+    assert body["message"] == "Risk assessment was not found"
+    assert body["correlationId"] == response.headers["X-Correlation-Id"]
+    assert is_uuid7(body["correlationId"])
+    assert body["details"] == {}
+
+
+def test_validation_failure_uses_canonical_400_body() -> None:
+    response = TestClient(fake_app()).post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-123", "scenario": "invalid", "context": {}},
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "VALIDATION_FAILED"
+    assert body["message"] == "Request validation failed"
+    assert is_uuid7(body["correlationId"])
+    assert "errors" in body["details"]
+
+
+def test_missing_idempotency_key_is_validation_error() -> None:
+    response = TestClient(fake_app()).post(
+        "/api/v1/risk-assessments",
+        headers={"X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "VALIDATION_FAILED"
+
+
+def journey_order_created_envelope(event_id: str, order_id: str, account_id: str, occurred_at: str = "2026-07-05T10:30:00.000Z") -> EventEnvelope:
+    return EventEnvelope(
+        eventId=event_id,
+        eventType="JourneyOrderCreated",
+        occurredAt=occurred_at,
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="journey-order",
+        schemaVersion=1,
+        payload={
+            "orderId": order_id,
+            "accountId": account_id,
+            "offerId": "offer-1",
+            "travelerRefs": [{"travelerId": "tvl-1", "maskedDocumentRef": "11***0001", "travelerType": "ADULT"}],
+            "segmentRefs": ["seg-1"],
+            "createdAt": occurred_at,
+        },
+    )
+
+
+class FailingPublisher(InMemoryEventPublisher):
+    def publish(self, envelope: EventEnvelope) -> None:
+        raise PublishFailed("downstream unavailable")
+
+
+class FlakyPublisher(InMemoryEventPublisher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def publish(self, envelope: EventEnvelope) -> None:
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise PublishFailed("downstream unavailable")
+        super().publish(envelope)
+
+
+def test_malformed_idempotency_key_is_validation_error() -> None:
+    response = TestClient(fake_app()).post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-uuid-v7", "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "VALIDATION_FAILED"
+    assert body["message"] == "Idempotency-Key must be a UUID v7"
+    assert is_uuid7(body["correlationId"])
+    assert body["details"] == {}
+
+
+def test_publish_failure_returns_unavailable_body_after_save() -> None:
+    repository = InMemoryAssessmentRepository()
+    app = create_app(service=RiskComplianceService(FailingPublisher(), repository))
+
+    response = TestClient(app).post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 120}},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "UNAVAILABLE"
+    assert response.json()["details"] == {"deliverySemantics": "AT_LEAST_ONCE"}
+    assert repository.count() == 1
+
+
+def test_publish_failure_retry_same_key_publishes_and_returns_created() -> None:
+    repository = InMemoryAssessmentRepository()
+    publisher = FlakyPublisher()
+    app = create_app(service=RiskComplianceService(publisher, repository))
+    client = TestClient(app)
+    headers = {"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())}
+    payload = {"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 120}}
+
+    first = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
+    retry = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
+
+    assert first.status_code == 503
+    assert retry.status_code == 201
+    assert repository.count() == 1
+    assert len(publisher.envelopes) == 1
+    assert retry.json() == repository.values()[0].to_dict()
+
+
+def test_idempotent_replay_returns_original_result() -> None:
+    client = TestClient(fake_app())
+    headers = {"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())}
+    payload = {"subjectRef": "pi-123", "scenario": "payment_risk", "context": {"riskScore": 910}}
+
+    created = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
+    replayed = client.post("/api/v1/risk-assessments", headers=headers, json=payload)
+
+    assert created.status_code == 201
+    assert replayed.status_code == 201
+    assert replayed.json() == created.json()
+    assert replayed.headers["X-Request-Id"]
+    assert replayed.headers["X-Correlation-Id"]
+
+
+def test_idempotency_key_reused_with_different_body_is_rejected() -> None:
+    client = TestClient(fake_app())
+    headers = {"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())}
+    first = {"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 10}}
+    second = {"subjectRef": "ord-456", "scenario": "order_risk", "context": {"riskScore": 10}}
+
+    assert client.post("/api/v1/risk-assessments", headers=headers, json=first).status_code == 201
+    response = client.post("/api/v1/risk-assessments", headers=headers, json=second)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "IDEMPOTENCY_KEY_REUSED"
+
+
+def test_publisher_wraps_domain_event_in_contract_envelope() -> None:
+    app = fake_app()
+    client = TestClient(app)
+    valid_correlation_id = str(uuid7())
+
+    response = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": valid_correlation_id},
+        json={"subjectRef": "acct-123", "scenario": "account_risk", "context": {"riskScore": 650}},
+    )
+
+    assert response.status_code == 201
+    [envelope] = app.state.publisher.envelopes
+    assert envelope.eventId.startswith("evt-")
+    assert envelope.eventId.split("-", 1)[1][14] == "7"
+    assert response.json()["assessmentId"].split("-", 1)[1][14] == "7"
+    assert envelope.eventType == "RiskAssessmentResult"
+    assert envelope.producer == "risk-compliance"
+    assert envelope.schemaVersion == 1
+    assert envelope.correlationId == f"corr-{valid_correlation_id}"
+    event_payload_keys = set(envelope.payload)
+    assert event_payload_keys == {
+        "assessmentId",
+        "subjectRef",
+        "scenario",
+        "decision",
+        "score",
+        "level",
+        "policyVersion",
+        "reasonCode",
+        "reasonExplanation",
+        "assessedAt",
+        "evidenceRef",
+        "assessmentSnapshotHash",
+    }
+    assert envelope.causationId is not None and is_prefixed_uuid7(envelope.causationId, "cmd")
+    assert envelope.to_json_dict()["occurredAt"] == response.json()["assessedAt"]
+    assert envelope.payload == {
+        **response.json(),
+        "evidenceRef": f"evid-{response.json()['assessmentId']}",
+        "assessmentSnapshotHash": envelope.payload["assessmentSnapshotHash"],
+    }
+    assert envelope.payload["assessmentSnapshotHash"]
+
+
+def test_subscriber_deduplicates_duplicate_event_id() -> None:
+    envelope = EventEnvelope(
+        eventId="evt-duplicate",
+        eventType="RiskAssessmentResult",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=str(uuid7()),
+        causationId=f"cmd-{uuid7()}",
+        producer="risk-compliance",
+        schemaVersion=1,
+        payload={"assessmentId": "asmt-1"},
+    )
+    subscriber = InMemoryEventSubscriber([envelope, envelope])
+    handled: list[str] = []
+
+    subscriber.subscribe(["unused"], "risk-compliance", "risk-compliance-test", lambda event: handled.append(event.eventId))
+
+    assert handled == ["evt-duplicate"]
+
+
+
+def test_envelope_accepts_optional_causation_id() -> None:
+    envelope = EventEnvelope.from_mapping(
+        {
+            "eventId": "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c339",
+            "eventType": "PaymentCaptured",
+            "occurredAt": "2026-07-05T10:30:00.000Z",
+            "correlationId": "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c340",
+            "producer": "payment",
+            "schemaVersion": 1,
+            "payload": {"paymentIntentId": "pi-123"},
+        }
+    )
+
+    assert envelope.causationId is None
+    assert "causationId" not in envelope.to_dict()
+
+
+def test_risk_score_zero_is_respected_when_score_fallback_present() -> None:
+    response = TestClient(fake_app()).post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 0, "score": 999}},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["score"] == 0
+    assert response.json()["decision"] == "ALLOW"
+
+
+def test_correlation_id_policy_absent_valid_and_malformed() -> None:
+    client = TestClient(fake_app())
+    valid = str(uuid7())
+
+    absent = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-v7"},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+    valid_response = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-v7", "X-Correlation-Id": valid},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+    malformed = client.post(
+        "/api/v1/risk-assessments",
+        headers={"Idempotency-Key": "not-a-v7", "X-Correlation-Id": "corr-bad"},
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {}},
+    )
+
+    assert is_uuid7(absent.json()["correlationId"])
+    assert valid_response.json()["correlationId"] == valid
+    assert is_uuid7(malformed.json()["correlationId"])
+    assert malformed.json()["correlationId"] != "corr-bad"
+
+
+def test_request_id_is_server_assigned_and_caller_value_is_not_echoed() -> None:
+    caller_request_id = str(uuid7())
+
+    response = TestClient(fake_app()).post(
+        "/api/v1/risk-assessments",
+        headers={
+            "Idempotency-Key": str(uuid7()),
+            "X-Correlation-Id": str(uuid7()),
+            "X-Request-Id": caller_request_id,
+        },
+        json={"subjectRef": "ord-123", "scenario": "order_risk", "context": {"riskScore": 10}},
+    )
+
+    assert response.status_code == 201
+    assert response.headers["X-Request-Id"] != caller_request_id
+    assert is_uuid7(response.headers["X-Request-Id"])
+
+
+def test_journey_order_created_is_assessed_and_blocked_idempotently() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = EventEnvelope(
+        eventId=f"evt-{uuid7()}",
+        eventType="JourneyOrderCreated",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="journey-order",
+        schemaVersion=1,
+        payload={
+            "orderId": "ord-risky",
+            "accountId": "acct-risky",
+            "offerId": "offer-1",
+            "travelerRefs": [{"travelerId": "tvl-1", "maskedDocumentRef": "11***9999", "travelerType": "ADULT"}],
+            "segmentRefs": ["seg-1"],
+            "createdAt": "2026-07-05T10:30:00.000Z",
+        },
+    )
+
+    service.handle_event(envelope)
+    service.handle_event(envelope)
+
+    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult", "RiskBlockApplied"]
+    block = publisher.envelopes[1]
+    assert block.payload == {
+        "blockId": block.payload["blockId"],
+        "subjectRef": "ord-risky",
+        "scope": "ORDER",
+        "reasonCode": "HIGH_RISK_SIGNAL",
+        "policyVersion": "1.0.0",
+        "evidenceRef": publisher.envelopes[0].payload["evidenceRef"],
+        "blockedAt": block.payload["blockedAt"],
+    }
+    assert block.payload["blockId"] == deterministic_prefixed_id("blk", publisher.envelopes[0].payload["assessmentId"], "block")
+    assert block.payload["blockId"].split("-", 1)[1][14] == "7"
+    assert block.eventId == deterministic_event_id(block.payload["blockId"])
+    assert block.eventId.split("-", 1)[1][14] == "7"
+    assert block.causationId == publisher.envelopes[0].eventId
+
+
+def test_journey_order_replay_does_not_publish_second_assessment_after_partial_delivery_failure() -> None:
+    class FailsAfterAssessmentPublisher(InMemoryEventPublisher):
+        def publish(self, envelope: EventEnvelope) -> None:
+            super().publish(envelope)
+            if envelope.eventType == "RiskAssessmentResult":
+                raise PublishFailed("block publication failed after assessment delivery")
+
+    publisher = FailsAfterAssessmentPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = journey_order_created_envelope(f"evt-{uuid7()}", "ord-partial", "acct-partial")
+
+    for _ in range(2):
+        try:
+            service.handle_event(envelope)
+        except PublishFailed:
+            pass
+
+    assert [published.eventType for published in publisher.envelopes] == ["RiskAssessmentResult"]
+    assert service.assessment_count() == 1
+
+
+def test_journey_order_duplicate_is_acknowledged_before_side_effects() -> None:
+    class DuplicateRepository(InMemoryAssessmentRepository):
+        def try_mark_processed(self, event_id: str) -> bool:
+            return False
+
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, DuplicateRepository())
+    service.handle_event(journey_order_created_envelope(f"evt-{uuid7()}", "ord-duplicate", "acct-duplicate"))
+
+    assert publisher.envelopes == []
+    assert service.assessment_count() == 0
+
+
+def test_lift_block_clears_account_frequency_window_for_same_account() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    account_id = "acct-lift-frequency"
+    for index in range(3):
+        service.handle_event(journey_order_created_envelope(f"evt-{uuid7()}", f"ord-lift-frequency-{index}", account_id))
+    blocked_order_id = "ord-lift-frequency-2"
+
+    lifted = service.lift_block(
+        subject_ref=blocked_order_id,
+        scope="ORDER",
+        reason_code="MANUAL_REVIEW_CLEARED",
+        correlation_id=f"corr-{uuid7()}",
+    )
+    service.handle_event(journey_order_created_envelope(f"evt-{uuid7()}", "ord-after-lift", account_id, lifted.allowedAt))
+
+    post_lift_assessment = publisher.envelopes[-1]
+    assert post_lift_assessment.eventType == "RiskAssessmentResult"
+    assert post_lift_assessment.payload["subjectRef"] == "ord-after-lift"
+    assert post_lift_assessment.payload["decision"] == "ALLOW"
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 1
+
+
+def test_lift_block_endpoint_publishes_lift_event() -> None:
+    app = fake_app()
+    service = app.state.risk_service
+    risky = EventEnvelope(
+        eventId=f"evt-{uuid7()}",
+        eventType="JourneyOrderCreated",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="journey-order",
+        schemaVersion=1,
+        payload={"orderId": "ord-lift", "accountId": "acct-lift", "travelerRefs": [{"maskedDocumentRef": "11***9999"}]},
+    )
+    service.handle_event(risky)
+
+    response = TestClient(app).post(
+        "/api/v1/risk-blocks/lift",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={"subjectRef": "ord-lift", "scope": "ORDER", "reasonCode": "MANUAL_REVIEW_CLEARED"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["allowId"].startswith("alw-")
+    assert body["subjectRef"] == "ord-lift"
+    assert body["scope"] == "ORDER"
+    assert app.state.publisher.envelopes[-1].eventType == "RiskBlockLifted"
+    assert app.state.publisher.envelopes[-1].payload == body
+
+
+def test_journey_order_created_blocks_ip_high_frequency_across_accounts() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    for index in range(11):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-ip-frequency-{index}",
+            f"acct-ip-frequency-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": "203.0.113.10"},
+        )
+        service.handle_event(envelope)
+
+    last_assessment = publisher.envelopes[-1]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-ip-frequency-10"
+    assert last_assessment.payload["decision"] == "ALLOW"
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+
+    for index in range(15, 32):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-ip-frequency-{index}",
+            f"acct-ip-frequency-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": "203.0.113.10"},
+        )
+        service.handle_event(envelope)
+
+    last_assessment = publisher.envelopes[-2]
+    last_block = publisher.envelopes[-1]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-ip-frequency-31"
+    assert last_assessment.payload["score"] == 900
+    assert last_assessment.payload["decision"] == "DENY"
+    assert last_block.eventType == "RiskBlockApplied"
+    assert last_block.payload["subjectRef"] == "ord-ip-frequency-31"
+
+
+def test_journey_order_created_correlates_multiple_accounts_sharing_ip_pattern() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    source_ip = "203.0.113.11"
+
+    for index in range(12):
+        account_id = f"acct-shared-ip-{index % 6}"
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-shared-ip-{index}",
+            account_id,
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": source_ip},
+        )
+        service.handle_event(envelope)
+
+    assert publisher.envelopes[-1].eventType == "RiskBlockApplied"
+    last_assessment = publisher.envelopes[-2]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-shared-ip-11"
+    assert last_assessment.payload["score"] == 900
+    assert last_assessment.payload["decision"] == "DENY"
+
+
+def test_journey_order_created_allows_low_frequency_distinct_ips() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    for index in range(5):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-normal-ip-{index}",
+            f"acct-normal-ip-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": f"203.0.113.{20 + index}"},
+        )
+        service.handle_event(envelope)
+
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+    assert all(
+        event.payload["decision"] == "ALLOW"
+        for event in publisher.envelopes
+        if event.eventType == "RiskAssessmentResult"
+    )
+
+
+def test_ip_frequency_uses_time_decay_for_older_attempts() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    source_ip = "203.0.113.40"
+
+    for index in range(30):
+        minute = index * 10
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-decayed-ip-{index}",
+            f"acct-decayed-ip-{index}",
+            f"2026-07-05T10:{minute // 60:02d}:{minute % 60:02d}.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": source_ip},
+        )
+        service.handle_event(envelope)
+
+    last_assessment = publisher.envelopes[-1]
+    assert last_assessment.eventType == "RiskAssessmentResult"
+    assert last_assessment.payload["subjectRef"] == "ord-decayed-ip-29"
+    assert last_assessment.payload["decision"] == "ALLOW"
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+
+
+def test_ip_frequency_whitelist_bypasses_known_good_range(monkeypatch) -> None:
+    monkeypatch.setenv("RISK_IP_WHITELIST_CIDRS", "198.51.100.0/24")
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    for index in range(30):
+        envelope = journey_order_created_envelope(
+            f"evt-{uuid7()}",
+            f"ord-whitelisted-ip-{index}",
+            f"acct-whitelisted-ip-{index}",
+            "2026-07-05T10:30:00.000Z",
+        )
+        envelope = EventEnvelope(
+            eventId=envelope.eventId,
+            eventType=envelope.eventType,
+            occurredAt=envelope.occurredAt,
+            correlationId=envelope.correlationId,
+            causationId=envelope.causationId,
+            producer=envelope.producer,
+            schemaVersion=envelope.schemaVersion,
+            payload={**envelope.payload, "sourceIp": "198.51.100.15"},
+        )
+        service.handle_event(envelope)
+
+    assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+
+
+# ── RiskAssessmentRequested (booking saga) ────────────────────────────────
+
+
+def risk_assessment_requested_envelope(
+    event_id: str,
+    saga_id: str = "saga-001",
+    journey_order_id: str = "jord-001",
+    account_id: str = "acct-001",
+) -> EventEnvelope:
+    return EventEnvelope(
+        eventId=event_id,
+        eventType="RiskAssessmentRequested",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="booking-orchestration",
+        schemaVersion=1,
+        payload={
+            "sagaId": saga_id,
+            "journeyOrderId": journey_order_id,
+            "accountId": account_id,
+        },
+    )
+
+
+def test_risk_assessment_requested_publishes_completed_event() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = risk_assessment_requested_envelope(f"evt-{uuid7()}")
+
+    service.handle_event(envelope)
+
+    assert len(publisher.envelopes) == 1
+    completed = publisher.envelopes[0]
+    assert completed.eventType == "RiskAssessmentCompleted"
+    assert completed.producer == "risk-compliance"
+    assert completed.schemaVersion == 1
+    assert completed.payload["sagaId"] == "saga-001"
+    assert completed.payload["journeyOrderId"] == "jord-001"
+    assert completed.payload["accountId"] == "acct-001"
+    assert completed.payload["verdict"] == "PASS"
+    assert completed.payload["riskScore"] == 10
+    assert completed.payload["assessmentId"].startswith("asmt-")
+    assert completed.causationId == envelope.eventId
+
+
+def test_risk_assessment_requested_is_idempotent() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = risk_assessment_requested_envelope(f"evt-{uuid7()}")
+
+    service.handle_event(envelope)
+    service.handle_event(envelope)
+
+    assert len(publisher.envelopes) == 1
+
+
+def test_risk_assessment_requested_deterministic_ids() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    event_id = f"evt-{uuid7()}"
+    envelope = risk_assessment_requested_envelope(event_id)
+
+    service.handle_event(envelope)
+
+    completed = publisher.envelopes[0]
+    assessment_id = completed.payload["assessmentId"]
+    assert assessment_id == deterministic_prefixed_id("asmt", event_id, "saga-assessment")
+    assert completed.eventId == deterministic_event_id(assessment_id)
+
+
+def test_risk_assessment_requested_envelope_has_correct_structure() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = risk_assessment_requested_envelope(f"evt-{uuid7()}")
+
+    service.handle_event(envelope)
+
+    completed = publisher.envelopes[0]
+    payload_keys = set(completed.payload.keys())
+    assert payload_keys == {"sagaId", "journeyOrderId", "accountId", "verdict", "riskScore", "assessmentId"}
+
+
+def test_risk_assessment_requested_ignores_unknown_event_types() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = EventEnvelope(
+        eventId=f"evt-{uuid7()}",
+        eventType="SomeOtherEvent",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="booking-orchestration",
+        schemaVersion=1,
+        payload={"sagaId": "saga-001"},
+    )
+
+    service.handle_event(envelope)
+
+    assert len(publisher.envelopes) == 0
+
+
+def test_risk_assessment_requested_different_sagas_produce_different_assessments() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    service.handle_event(risk_assessment_requested_envelope(f"evt-{uuid7()}", saga_id="saga-A", journey_order_id="jord-A", account_id="acct-A"))
+    service.handle_event(risk_assessment_requested_envelope(f"evt-{uuid7()}", saga_id="saga-B", journey_order_id="jord-B", account_id="acct-B"))
+
+    assert len(publisher.envelopes) == 2
+    assert publisher.envelopes[0].payload["sagaId"] == "saga-A"
+    assert publisher.envelopes[1].payload["sagaId"] == "saga-B"
+    assert publisher.envelopes[0].payload["assessmentId"] != publisher.envelopes[1].payload["assessmentId"]
+
+
+def test_subscription_includes_booking_orchestration_stream() -> None:
+    from risk_compliance.adapters.messaging.redis_streams import RISK_COMPLIANCE_SUBSCRIPTIONS
+
+    assert "events:booking-orchestration" in RISK_COMPLIANCE_SUBSCRIPTIONS
+    assert "events:journey-order" in RISK_COMPLIANCE_SUBSCRIPTIONS

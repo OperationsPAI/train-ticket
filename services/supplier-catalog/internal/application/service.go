@@ -1,0 +1,492 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
+
+	"github.com/trainticket/greenfield/services/supplier-catalog/internal/domain"
+)
+
+const producerName = "supplier-catalog"
+
+var (
+	ErrValidation      = errors.New("validation failed")
+	ErrNotFound        = errors.New("not found")
+	ErrConflict        = errors.New("conflict")
+	ErrDomainViolation = errors.New("domain rule violation")
+)
+
+type Repository interface {
+	SaveSupplier(context.Context, domain.Supplier) error
+	SaveCarrier(context.Context, domain.Carrier) error
+	SaveContract(context.Context, domain.Contract) error
+	FindSupplier(context.Context, string) (domain.Supplier, error)
+	FindCarrier(context.Context, string) (domain.Carrier, error)
+	ListSuppliers(context.Context, string, int, int) (SupplierList, error)
+	FindSupplierByProfile(context.Context, string) (domain.Supplier, error)
+	FindCarrierByCode(context.Context, string) (domain.Carrier, error)
+	FindContractByRef(context.Context, string) (domain.Contract, error)
+}
+
+type UnitOfWork func(context.Context, func(context.Context) error) error
+
+type Service struct {
+	mu             sync.RWMutex
+	publishMu      sync.Mutex
+	suppliers      map[domain.SupplierID]domain.Supplier
+	carriers       map[domain.CarrierID]domain.Carrier
+	contracts      map[domain.ContractID]domain.Contract
+	pendingEvents  []EventEnvelope
+	publishPending bool
+	publisher      EventPublisher
+	repository     Repository
+	uow            UnitOfWork
+}
+
+func NewService(publisher EventPublisher) *Service {
+	return &Service{
+		suppliers:     make(map[domain.SupplierID]domain.Supplier),
+		carriers:      make(map[domain.CarrierID]domain.Carrier),
+		contracts:     make(map[domain.ContractID]domain.Contract),
+		pendingEvents: []EventEnvelope{},
+		publisher:     publisher,
+	}
+}
+
+func (s *Service) WithRepository(repository Repository) *Service {
+	if s != nil {
+		s.repository = repository
+	}
+	return s
+}
+func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
+	if s != nil {
+		s.uow = uow
+	}
+	return s
+}
+func (s *Service) within(ctx context.Context, fn func(context.Context) error) error {
+	if s.uow == nil {
+		return fn(ctx)
+	}
+	return s.uow(ctx, fn)
+}
+
+type RegisterSupplierCommand struct {
+	LegalName     string
+	BrandName     string
+	SupplierCode  string
+	CorrelationID string
+	CausationID   string
+}
+
+type RegisterCarrierCommand struct {
+	SupplierID    string
+	Name          string
+	Code          string
+	TransportMode string
+	CorrelationID string
+	CausationID   string
+}
+
+type ActivateContractCommand struct {
+	SupplierID     string
+	CarrierID      string
+	ContractRef    string
+	EffectiveFrom  time.Time
+	EffectiveUntil *time.Time
+	CorrelationID  string
+	CausationID    string
+}
+
+type SupplierView struct {
+	SupplierID   string                `json:"supplierId"`
+	LegalName    string                `json:"legalName"`
+	BrandName    string                `json:"brandName"`
+	Status       domain.SupplierStatus `json:"status"`
+	RegisteredAt time.Time             `json:"registeredAt"`
+}
+
+type CarrierView struct {
+	CarrierID     string `json:"carrierId"`
+	SupplierID    string `json:"supplierId"`
+	Name          string `json:"name"`
+	Code          string `json:"code"`
+	TransportMode string `json:"transportMode"`
+}
+
+type ContractView struct {
+	ContractID string                `json:"contractId"`
+	Status     domain.ContractStatus `json:"status"`
+}
+
+type SupplierList struct {
+	Items  []SupplierView `json:"items"`
+	Total  int            `json:"total"`
+	Limit  int            `json:"limit"`
+	Offset int            `json:"offset"`
+}
+
+func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierCommand) (SupplierView, error) {
+	if strings.TrimSpace(cmd.LegalName) == "" || strings.TrimSpace(cmd.BrandName) == "" || strings.TrimSpace(cmd.SupplierCode) == "" {
+		return SupplierView{}, fmt.Errorf("%w: legalName, brandName, and supplierCode are required", ErrValidation)
+	}
+	supplierID := domain.SupplierID("sup-" + newUUIDString())
+	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, cmd.SupplierCode)
+	if err != nil {
+		return SupplierView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
+	}
+	events := supplier.Events()
+
+	if s.repository != nil {
+		if _, err := s.repository.FindSupplierByProfile(ctx, supplier.Profile); err == nil {
+			return SupplierView{}, fmt.Errorf("%w: supplierCode already exists", ErrConflict)
+		} else if !errors.Is(err, ErrNotFound) {
+			return SupplierView{}, err
+		}
+	} else {
+		s.mu.Lock()
+		for _, existing := range s.suppliers {
+			if strings.EqualFold(existing.Profile, supplier.Profile) {
+				if s.publishPending && existing.LegalName == supplier.LegalName && existing.BrandName == supplier.BrandName {
+					s.mu.Unlock()
+					if err := s.flushPendingEvents(ctx); err != nil {
+						return SupplierView{}, err
+					}
+					return supplierView(existing), nil
+				}
+				s.mu.Unlock()
+				return SupplierView{}, fmt.Errorf("%w: supplierCode already exists", ErrConflict)
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
+	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
+		if s.repository != nil {
+			return s.repository.SaveSupplier(txCtx, supplier)
+		}
+		return nil
+	}, envelopes); err != nil {
+		return SupplierView{}, err
+	}
+	s.mu.Lock()
+	s.suppliers[supplier.SupplierID] = supplier
+	s.mu.Unlock()
+	return supplierView(supplier), nil
+}
+
+func (s *Service) GetSupplier(ctx context.Context, supplierID string) (domain.Supplier, error) {
+	if s.repository != nil {
+		return s.repository.FindSupplier(ctx, supplierID)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	supplier, ok := s.suppliers[domain.SupplierID(strings.TrimSpace(supplierID))]
+	if !ok {
+		return domain.Supplier{}, fmt.Errorf("%w: supplier not found", ErrNotFound)
+	}
+	return supplier, nil
+}
+
+func (s *Service) ListSuppliers(ctx context.Context, status string, limit, offset int) (SupplierList, error) {
+	if s.repository != nil {
+		return s.repository.ListSuppliers(ctx, status, limit, offset)
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	s.mu.RLock()
+	items := make([]SupplierView, 0, len(s.suppliers))
+	for _, supplier := range s.suppliers {
+		if status == "" || string(supplier.Status) == status {
+			items = append(items, supplierView(supplier))
+		}
+	}
+	s.mu.RUnlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].SupplierID < items[j].SupplierID })
+	total := len(items)
+	if offset > total {
+		items = []SupplierView{}
+	} else {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		items = items[offset:end]
+	}
+	return SupplierList{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+}
+
+func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierCommand) (CarrierView, error) {
+	if strings.TrimSpace(cmd.SupplierID) == "" || strings.TrimSpace(cmd.Name) == "" || strings.TrimSpace(cmd.Code) == "" || strings.TrimSpace(cmd.TransportMode) == "" {
+		return CarrierView{}, fmt.Errorf("%w: supplierId, name, code, and transportMode are required", ErrValidation)
+	}
+	carrierID := domain.CarrierID("car-" + newUUIDString())
+	carrier, err := domain.NewCarrier(carrierID, domain.SupplierID(cmd.SupplierID), cmd.Name, cmd.Code, cmd.TransportMode)
+	if err != nil {
+		return CarrierView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
+	}
+	events := carrier.Events()
+
+	if s.repository != nil {
+		if _, err := s.repository.FindSupplier(ctx, string(carrier.SupplierID)); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return CarrierView{}, fmt.Errorf("%w: supplier not found", ErrNotFound)
+			}
+			return CarrierView{}, err
+		}
+		if _, err := s.repository.FindCarrierByCode(ctx, carrier.Code); err == nil {
+			return CarrierView{}, fmt.Errorf("%w: carrier code already exists", ErrConflict)
+		} else if !errors.Is(err, ErrNotFound) {
+			return CarrierView{}, err
+		}
+	} else {
+		s.mu.Lock()
+		if _, ok := s.suppliers[carrier.SupplierID]; !ok {
+			s.mu.Unlock()
+			return CarrierView{}, fmt.Errorf("%w: supplier not found", ErrNotFound)
+		}
+		for _, existing := range s.carriers {
+			if strings.EqualFold(existing.Code, carrier.Code) {
+				if s.publishPending && existing.SupplierID == carrier.SupplierID && existing.Name == carrier.Name && existing.TransportMode == carrier.TransportMode {
+					s.mu.Unlock()
+					if err := s.flushPendingEvents(ctx); err != nil {
+						return CarrierView{}, err
+					}
+					return carrierView(existing), nil
+				}
+				s.mu.Unlock()
+				return CarrierView{}, fmt.Errorf("%w: carrier code already exists", ErrConflict)
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
+	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
+		if s.repository != nil {
+			return s.repository.SaveCarrier(txCtx, carrier)
+		}
+		return nil
+	}, envelopes); err != nil {
+		return CarrierView{}, err
+	}
+	s.mu.Lock()
+	s.carriers[carrier.CarrierID] = carrier
+	s.mu.Unlock()
+	return carrierView(carrier), nil
+}
+
+func (s *Service) ActivateContract(ctx context.Context, cmd ActivateContractCommand) (ContractView, error) {
+	if strings.TrimSpace(cmd.SupplierID) == "" || strings.TrimSpace(cmd.CarrierID) == "" || strings.TrimSpace(cmd.ContractRef) == "" || cmd.EffectiveFrom.IsZero() {
+		return ContractView{}, fmt.Errorf("%w: supplierId, carrierId, contractRef, and effectiveFrom are required", ErrValidation)
+	}
+	effectiveUntil := cmd.EffectiveFrom.AddDate(100, 0, 0)
+	if cmd.EffectiveUntil != nil {
+		effectiveUntil = *cmd.EffectiveUntil
+	}
+	contract, err := domain.NewContract(domain.ContractID("ctr-"+newUUIDString()), domain.SupplierID(cmd.SupplierID), cmd.ContractRef, domain.TimeWindow{Start: cmd.EffectiveFrom.UTC(), End: effectiveUntil.UTC()}, "")
+	if err != nil {
+		return ContractView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
+	}
+	contract.Events()
+	if err := contract.Activate(); err != nil {
+		return ContractView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
+	}
+	events := contract.Events()
+
+	if s.repository != nil {
+		if _, err := s.repository.FindSupplier(ctx, string(contract.SupplierID)); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return ContractView{}, fmt.Errorf("%w: supplier not found", ErrNotFound)
+			}
+			return ContractView{}, err
+		}
+		carrier, err := s.repository.FindCarrier(ctx, strings.TrimSpace(cmd.CarrierID))
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return ContractView{}, fmt.Errorf("%w: carrier not found", ErrNotFound)
+			}
+			return ContractView{}, err
+		}
+		if carrier.SupplierID != contract.SupplierID {
+			return ContractView{}, fmt.Errorf("%w: carrier not found", ErrNotFound)
+		}
+		if _, err := s.repository.FindContractByRef(ctx, contract.ContractNo); err == nil {
+			return ContractView{}, fmt.Errorf("%w: contractRef already exists", ErrConflict)
+		} else if !errors.Is(err, ErrNotFound) {
+			return ContractView{}, err
+		}
+	} else {
+		s.mu.Lock()
+		if _, ok := s.suppliers[contract.SupplierID]; !ok {
+			s.mu.Unlock()
+			return ContractView{}, fmt.Errorf("%w: supplier not found", ErrNotFound)
+		}
+		carrier, ok := s.carriers[domain.CarrierID(cmd.CarrierID)]
+		if !ok || carrier.SupplierID != contract.SupplierID {
+			s.mu.Unlock()
+			return ContractView{}, fmt.Errorf("%w: carrier not found", ErrNotFound)
+		}
+		for _, existing := range s.contracts {
+			if strings.EqualFold(existing.ContractNo, contract.ContractNo) {
+				if s.publishPending && existing.SupplierID == contract.SupplierID && existing.Status == contract.Status {
+					s.mu.Unlock()
+					if err := s.flushPendingEvents(ctx); err != nil {
+						return ContractView{}, err
+					}
+					return ContractView{ContractID: string(existing.ContractID), Status: existing.Status}, nil
+				}
+				s.mu.Unlock()
+				return ContractView{}, fmt.Errorf("%w: contractRef already exists", ErrConflict)
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
+	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
+		if s.repository != nil {
+			return s.repository.SaveContract(txCtx, contract)
+		}
+		return nil
+	}, envelopes); err != nil {
+		return ContractView{}, err
+	}
+	s.mu.Lock()
+	s.contracts[contract.ContractID] = contract
+	s.mu.Unlock()
+	return ContractView{ContractID: string(contract.ContractID), Status: contract.Status}, nil
+}
+
+func (s *Service) persistAndPublish(ctx context.Context, persist func(context.Context) error, envelopes []EventEnvelope) error {
+	return s.within(ctx, func(txCtx context.Context) error {
+		if persist != nil {
+			if err := persist(txCtx); err != nil {
+				return err
+			}
+		}
+		for _, envelope := range envelopes {
+			if err := s.publishEnvelope(txCtx, envelope); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Service) publishEnvelope(ctx context.Context, envelope EventEnvelope) error {
+	if s.publisher == nil {
+		return nil
+	}
+	if err := s.publisher.Publish(ctx, envelope); err != nil {
+		return fmt.Errorf("publish failed: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) flushPendingEvents(ctx context.Context) error {
+	if s.publisher == nil {
+		s.mu.Lock()
+		s.pendingEvents = nil
+		s.publishPending = false
+		s.mu.Unlock()
+		return nil
+	}
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	for {
+		s.mu.RLock()
+		if !s.publishPending {
+			s.mu.RUnlock()
+			return nil
+		}
+		envelope := s.pendingEvents[0]
+		s.mu.RUnlock()
+
+		if err := s.publisher.Publish(ctx, envelope); err != nil {
+			return fmt.Errorf("publish failed: %w", err)
+		}
+
+		s.mu.Lock()
+		if len(s.pendingEvents) > 0 && s.pendingEvents[0].EventID == envelope.EventID {
+			s.pendingEvents = append([]EventEnvelope{}, s.pendingEvents[1:]...)
+		} else {
+			for i, pending := range s.pendingEvents {
+				if pending.EventID == envelope.EventID {
+					s.pendingEvents = append(s.pendingEvents[:i], s.pendingEvents[i+1:]...)
+					break
+				}
+			}
+		}
+		s.publishPending = len(s.pendingEvents) > 0
+		s.mu.Unlock()
+	}
+}
+
+func wrapDomainEvents(ctx context.Context, events []interface{}, correlationID, causationID string) []EventEnvelope {
+	envelopes := make([]EventEnvelope, 0, len(events))
+	for _, event := range events {
+		envelope, err := WrapDomainEvent(ctx, event, correlationID, causationID)
+		if err == nil {
+			envelopes = append(envelopes, envelope)
+		}
+	}
+	return envelopes
+}
+
+func WrapDomainEvent(ctx context.Context, event interface{}, correlationID, causationID string) (EventEnvelope, error) {
+	option := kitmsg.EnvelopeOptions{Context: ctx}
+	if strings.TrimSpace(causationID) != "" {
+		option.CausationID = causationID
+	}
+	return kitmsg.NewEventEnvelope(eventType(event), producerName, correlationID, event, option)
+}
+
+func newUUIDString() string                      { return ids.NewUUIDv7() }
+func formatUTC(t time.Time) string               { return ids.FormatUTC(t) }
+func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
+
+func eventType(event interface{}) string {
+	switch event.(type) {
+	case domain.SupplierRegisteredEvent:
+		return "SupplierRegistered"
+	case domain.CarrierRegisteredEvent:
+		return "CarrierRegistered"
+	case domain.ContractActivatedEvent:
+		return "ContractActivated"
+	case domain.ContractSuspendedEvent:
+		return "ContractSuspended"
+	case domain.ProductCapabilityDeclaredEvent:
+		return "ProductCapabilityDeclared"
+	case domain.ExternalCodeMappedEvent:
+		return "ExternalCodeMapped"
+	default:
+		return fmt.Sprintf("%T", event)
+	}
+}
+
+func supplierView(s domain.Supplier) SupplierView {
+	return SupplierView{SupplierID: string(s.SupplierID), LegalName: s.LegalName, BrandName: s.BrandName, Status: s.Status, RegisteredAt: s.RegisteredAt.UTC()}
+}
+
+func carrierView(c domain.Carrier) CarrierView {
+	return CarrierView{CarrierID: string(c.CarrierID), SupplierID: string(c.SupplierID), Name: c.Name, Code: c.Code, TransportMode: c.TransportMode}
+}

@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime
+from typing import Any, Mapping
+
+from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
+from trip_planning.domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint
+from trip_planning.events import EventEnvelope
+
+
+_CLEAR_TABLE_SQL = (
+    "DELETE FROM plan_index_events",
+    "DELETE FROM plan_services",
+    "DELETE FROM plan_segments",
+    "DELETE FROM plan_nodes",
+    "DELETE FROM itinerary_snapshots",
+)
+
+
+class _TxState:
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+
+_TX: ContextVar[_TxState | None] = ContextVar("trip_planning_postgres_tx", default=None)
+
+
+def _jsonb_payload(value: Mapping[str, Any]) -> Any:
+    try:
+        from psycopg.types.json import Jsonb
+
+        return Jsonb(dict(value))
+    except ImportError:  # pragma: no cover - psycopg optional in unit tests
+        return json.dumps(dict(value), separators=(",", ":"))
+
+
+def _dt(value: datetime | str) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+class TransactionalOutboxPublisher:
+    def __init__(self, store: "PostgresPlanStore", outbox: OutboxAppender | None = None) -> None:
+        self._store = store
+        self._outbox = outbox or OutboxAppender()
+
+    def publish(self, envelope: EventEnvelope) -> None:
+        self._store.with_connection(lambda conn: self._outbox.append(conn, envelope))
+
+
+class PostgresPlanStore:
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+        self._itineraries = SnapshotRepository("itinerary_snapshots")
+
+    @contextmanager
+    def transaction(self):
+        state = _TX.get()
+        if state is not None:
+            yield state.connection
+            return
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                token = _TX.set(_TxState(conn))
+                try:
+                    yield conn
+                finally:
+                    _TX.reset(token)
+
+    def with_connection(self, fn: Any) -> Any:
+        state = _TX.get()
+        if state is not None:
+            return fn(state.connection)
+        with self.transaction() as conn:
+            return fn(conn)
+
+    def clear(self) -> None:
+        def delete_all(conn: Any) -> None:
+            for statement in _CLEAR_TABLE_SQL:
+                conn.execute(statement)
+
+        self.with_connection(delete_all)
+
+    def apply_envelope(self, envelope: Any) -> bool:
+        event_id = str(getattr(envelope, "eventId", ""))
+        event_type = str(getattr(envelope, "eventType", ""))
+        payload = dict(getattr(envelope, "payload", {}) or {})
+        producer = str(getattr(envelope, "producer", ""))
+        occurred_at = getattr(envelope, "occurredAt", "")
+
+        def write(conn: Any) -> bool:
+            if event_id:
+                row = conn.execute("INSERT INTO processed_events(event_id, stream) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING event_id", (event_id, f"events:{producer}")).fetchone()
+                if row is None:
+                    return False
+                conn.execute("INSERT INTO plan_index_events(event_id, event_type, producer, occurred_at, payload) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (event_id, event_type, producer, str(occurred_at), _jsonb_payload(payload)))
+            self._apply_locked(conn, event_type, payload)
+            return True
+
+        return bool(self.with_connection(write))
+
+    def apply(self, event_type: str, payload: Mapping[str, object]) -> None:
+        self.with_connection(lambda conn: self._apply_locked(conn, event_type, dict(payload)))
+
+    def load(self) -> None:
+        # State is already durable in read-model tables; this method preserves the
+        # in-memory PlanStore lifecycle contract for tests and startup code.
+        return None
+
+    def _apply_locked(self, conn: Any, event_type: str, payload: Mapping[str, object]) -> None:
+        if event_type in ("ServicePlanPublished", "ScheduledServiceCreated"):
+            ref = str(payload.get("scheduledServiceRef", ""))
+            if ref:
+                conn.execute("INSERT INTO plan_services(scheduled_service_ref, version, data) VALUES (%s, 1, %s) ON CONFLICT (scheduled_service_ref) DO UPDATE SET version = plan_services.version + 1, data = EXCLUDED.data, updated_at = now()", (ref, _jsonb_payload(dict(payload))))
+        elif event_type in ("ServicePlanChanged", "ServiceSegmentCreated"):
+            seg = str(payload.get("segmentRef", ""))
+            origin = str(payload.get("originStopRef", ""))
+            destination = str(payload.get("destinationStopRef", ""))
+            departure_raw = str(payload.get("departureTime", ""))
+            if seg and origin and destination and departure_raw:
+                departure = _dt(departure_raw)
+                arrival = _dt(str(payload.get("arrivalTime", departure_raw)))
+                conn.execute("INSERT INTO plan_segments(segment_ref, version, scheduled_service_ref, origin_stop_ref, destination_stop_ref, departure_time, departure_date, arrival_time, data) VALUES (%s, 1, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (segment_ref) DO UPDATE SET version = plan_segments.version + 1, scheduled_service_ref = EXCLUDED.scheduled_service_ref, origin_stop_ref = EXCLUDED.origin_stop_ref, destination_stop_ref = EXCLUDED.destination_stop_ref, departure_time = EXCLUDED.departure_time, departure_date = EXCLUDED.departure_date, arrival_time = EXCLUDED.arrival_time, data = EXCLUDED.data, updated_at = now()", (seg, str(payload.get("scheduledServiceRef", "")), origin, destination, departure, departure.date(), arrival, _jsonb_payload(dict(payload))))
+        elif event_type in ("TransportNodeRegistered", "TransportNodeAdded", "TransportNodeUpdated"):
+            node = str(payload.get("nodeId", ""))
+            place = str(payload.get("placeId", ""))
+            if node and place:
+                conn.execute("INSERT INTO plan_nodes(node_id, version, place_id, data) VALUES (%s, 1, %s, %s) ON CONFLICT (node_id) DO UPDATE SET version = plan_nodes.version + 1, place_id = EXCLUDED.place_id, data = EXCLUDED.data, updated_at = now()", (node, place, _jsonb_payload(dict(payload))))
+
+    def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[Itinerary]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH requested_origin AS (SELECT place_id FROM plan_nodes WHERE node_id = %s),
+                     requested_destination AS (SELECT place_id FROM plan_nodes WHERE node_id = %s),
+                     origin_refs AS (SELECT %s AS ref UNION SELECT node_id FROM plan_nodes WHERE place_id = %s UNION SELECT node_id FROM plan_nodes WHERE place_id = (SELECT place_id FROM requested_origin)),
+                     destination_refs AS (SELECT %s AS ref UNION SELECT node_id FROM plan_nodes WHERE place_id = %s UNION SELECT node_id FROM plan_nodes WHERE place_id = (SELECT place_id FROM requested_destination))
+                SELECT segment_ref, scheduled_service_ref, origin_stop_ref, destination_stop_ref, departure_time, arrival_time
+                  FROM plan_segments
+                 WHERE departure_date = %s::date
+                   AND origin_stop_ref IN (SELECT ref FROM origin_refs WHERE ref IS NOT NULL)
+                   AND destination_stop_ref IN (SELECT ref FROM destination_refs WHERE ref IS NOT NULL)
+                 ORDER BY departure_time, segment_ref
+                """,
+                (origin_ref, destination_ref, origin_ref, origin_ref, destination_ref, destination_ref, departure_date),
+            ).fetchall()
+        return [self._itinerary_from_row(row) for row in rows]
+
+    def _itinerary_from_row(self, row: Any) -> Itinerary:
+        seg_ref, service_ref, origin, destination, departure_time, arrival_time = row
+        departure = departure_time.astimezone(UTC)
+        arrival = arrival_time.astimezone(UTC)
+        return Itinerary(
+            legs=(LegCandidate(service_plan_ref=str(service_ref or ""), service_segment_ref=str(seg_ref), origin_stop_ref=str(origin), destination_stop_ref=str(destination), departure_time=departure, arrival_time=arrival, mode="train", stop_refs=(str(origin), str(destination)), segment_refs=(str(seg_ref),)),),
+            price_hint=PriceHint(amount_minor=0, currency="CNY", snapshot_ref=f"fare-snapshot:{seg_ref}", captured_at=departure, confidence=50),
+            availability_hint=AvailabilityHint(status="UNKNOWN", snapshot_ref=f"availability-snapshot:{seg_ref}", captured_at=departure, confidence=50),
+            planning_snapshot_refs=(f"planning-snapshot:{seg_ref}",),
+        )
+
+    def save_itinerary(self, itinerary: Mapping[str, object]) -> None:
+        ref = str(itinerary["itineraryRef"])
+        payload = dict(itinerary)
+
+        def write(conn: Any) -> None:
+            for _attempt in range(3):
+                snap = self._itineraries.get(conn, ref)
+                if snap is not None and dict(snap[1]) == payload:
+                    return
+                try:
+                    self._itineraries.save(conn, ref, payload, None if snap is None else int(snap[0]))
+                    return
+                except OptimisticConcurrencyError:
+                    # Search writes are durable read-model snapshots keyed by a
+                    # deterministic itinerary id. Concurrent searches can legitimately
+                    # race to persist the same candidate; retry with the winning version
+                    # and fall back to the already-readable snapshot below.
+                    continue
+            if self._itineraries.get(conn, ref) is None:
+                raise OptimisticConcurrencyError(f"concurrent update detected for {ref}")
+
+        self.with_connection(write)
+
+    def get_itinerary(self, itinerary_ref: str) -> dict[str, object] | None:
+        snap = self.with_connection(lambda conn: self._itineraries.get(conn, itinerary_ref))
+        return None if snap is None else dict(snap[1])

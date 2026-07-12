@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - mailpit.yaml
+  - otel-collector.yaml
+  - jaeger.yaml
+  - services.yaml
+  - loadgen.yaml
+
+configMapGenerator:
+  - name: loadgen-config
+    namespace: train-ticket
+    files:
+      - config.yaml=loadgen-config.yaml

@@ -1,0 +1,8 @@
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","service":"wallet-promotion","thread":"%thread","logger":"%logger{36}","requestId":"%X{requestId}","correlationId":"%X{correlationId}","message":"%replace(%msg){'"','\\"'}"}%n</pattern>
+    </encoder>
+  </appender>
+  <root level="INFO"><appender-ref ref="STDOUT"/></root>
+</configuration>

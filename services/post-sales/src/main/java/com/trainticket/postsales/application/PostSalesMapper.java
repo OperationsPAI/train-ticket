@@ -1,0 +1,295 @@
+package com.trainticket.postsales.application;
+
+import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.platformkit.messaging.PrefixedIds;
+import com.trainticket.postsales.domain.AmountDecisionSnapshot;
+import com.trainticket.postsales.domain.DecisionKind;
+import com.trainticket.postsales.domain.EventMetadata;
+import com.trainticket.postsales.domain.Money;
+import com.trainticket.postsales.domain.ChangeApplied;
+import com.trainticket.postsales.domain.ChangeFeeAssessed;
+import com.trainticket.postsales.domain.RefundComponentDecision;
+import com.trainticket.postsales.domain.RefundFeeAssessed;
+import com.trainticket.postsales.domain.PostSalesApplied;
+import com.trainticket.postsales.domain.PostSalesApproved;
+import com.trainticket.postsales.domain.PostSalesCase;
+import com.trainticket.postsales.domain.PostSalesCaseOpened;
+import com.trainticket.postsales.domain.PostSalesCaseStatus;
+import com.trainticket.postsales.domain.PostSalesCaseType;
+import com.trainticket.postsales.domain.PostSalesDecision;
+import com.trainticket.postsales.domain.PostSalesDecisionQuoted;
+import com.trainticket.postsales.domain.PostSalesEligibilityEvaluated;
+import com.trainticket.postsales.domain.PostSalesEvent;
+import com.trainticket.postsales.domain.PostSalesExecutionStarted;
+import com.trainticket.postsales.domain.PostSalesFailed;
+import com.trainticket.postsales.domain.PostSalesRejected;
+import com.trainticket.postsales.domain.PostSalesRequested;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public final class PostSalesMapper {
+    public static final String PRODUCER = "post-sales";
+
+    private PostSalesMapper() {
+    }
+
+    public static EventEnvelope toEnvelope(PostSalesEvent event) {
+        return toEnvelope(event, null);
+    }
+
+    public static EventEnvelope toEnvelope(PostSalesEvent event, PostSalesCase sourceCase) {
+        EventMetadata metadata = event.metadata();
+        return new EventEnvelope(
+            PrefixedIds.isEventId(prefixed(metadata.eventId(), "evt-")) ? prefixed(metadata.eventId(), "evt-") : PrefixedIds.newEventId(),
+            event.getClass().getSimpleName(),
+            metadata.occurredAt(),
+            PrefixedIds.isCorrelationId(prefixed(metadata.correlationId(), "corr-")) ? prefixed(metadata.correlationId(), "corr-") : PrefixedIds.newCorrelationId(),
+            prefixedCausation(metadata.causationId()),
+            PRODUCER,
+            metadata.schemaVersion(),
+            payload(event, sourceCase)
+        );
+    }
+
+    public static Map<String, Object> caseDetails(PostSalesCase postSalesCase) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("caseId", prefixed(postSalesCase.caseId(), "psc-"));
+        body.put("journeyOrderId", postSalesCase.journeyOrderId());
+        body.put("caseType", postSalesCase.caseType().name());
+        body.put("status", contractStatus(postSalesCase.status()));
+        body.put("scope", postSalesCase.scope());
+        body.put("reasonCode", postSalesCase.reasonCode());
+        body.put("actorRef", postSalesCase.actorRef());
+        if (postSalesCase.decision() != null) {
+            body.put("decision", decisionDetails(postSalesCase.decision()));
+        }
+        if (postSalesCase.terminalReason() != null) {
+            body.put("terminalReason", postSalesCase.terminalReason());
+        }
+        String createdAt = postSalesCase.domainEvents().stream().findFirst()
+            .map(PostSalesEvent::metadata)
+            .map(EventMetadata::occurredAt)
+            .map(Object::toString)
+            .orElse(null);
+        body.put("createdAt", createdAt);
+        return body;
+    }
+
+    public static Map<String, Object> openResponse(PostSalesCase postSalesCase) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("caseId", prefixed(postSalesCase.caseId(), "psc-"));
+        body.put("journeyOrderId", postSalesCase.journeyOrderId());
+        body.put("caseType", postSalesCase.caseType().name());
+        body.put("status", contractStatus(postSalesCase.status()));
+        body.put("createdAt", postSalesCase.domainEvents().getFirst().metadata().occurredAt().toString());
+        return body;
+    }
+
+    public static Map<String, Object> evaluateResponse(PostSalesCase postSalesCase) {
+        PostSalesDecision decision = postSalesCase.decision();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("caseId", prefixed(postSalesCase.caseId(), "psc-"));
+        body.put("eligible", decision.eligible());
+        body.put("adjustmentQuoteId", decision.ruleSnapshot().farePricingEvaluationRef());
+        body.put("refundableAmount", money(decision.amountSnapshot().refundAmount()));
+        body.put("amountDue", money(decision.amountSnapshot().extraChargeAmount()));
+        return body;
+    }
+
+    public static Map<String, Object> approveResponse(PostSalesCase postSalesCase) {
+        return Map.of("caseId", prefixed(postSalesCase.caseId(), "psc-"), "status", "APPROVED");
+    }
+
+    public static Map<String, Object> money(Money money) {
+        return Map.of("currency", money.currency().getCurrencyCode(), "minorUnits", money.toMinorUnits());
+    }
+
+    public static String stripCasePrefix(String caseId) {
+        return caseId != null && caseId.startsWith("psc-") ? caseId.substring(4) : caseId;
+    }
+
+    public static String prefixed(String value, String prefix) {
+        if (value == null || value.startsWith(prefix)) {
+            return value;
+        }
+        return prefix + value;
+    }
+
+    public static String contractStatus(PostSalesCaseStatus status) {
+        return switch (status) {
+            case ELIGIBILITY_CHECKING, QUOTED, PENDING_USER_CONFIRMATION, PENDING_APPROVAL -> "EVALUATING";
+            case EXECUTING, COMPENSATION_PENDING, MANUAL_REVIEW_REQUIRED -> "APPROVED";
+            case CANCELLED -> "REJECTED";
+            default -> status.name();
+        };
+    }
+
+    private static Object payload(PostSalesEvent event, PostSalesCase sourceCase) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("caseId", prefixed(event.caseId(), "psc-"));
+        if (event instanceof PostSalesCaseOpened opened) {
+            payload.put("journeyOrderId", opened.journeyOrderId());
+            payload.put("caseType", opened.caseType().name());
+            payload.put("scope", opened.scope());
+            payload.put("reasonCode", opened.reasonCode());
+            payload.put("actorRef", opened.actorRef());
+        } else if (event instanceof PostSalesRequested requested) {
+            payload.put("orderId", requested.journeyOrderId());
+            payload.put("requestType", requestType(requested.caseType()));
+            payload.put("requestedAt", requested.metadata().occurredAt().toString());
+        } else if (event instanceof PostSalesEligibilityEvaluated eligibility) {
+            payload.put("eligible", eligibility.eligible());
+            payload.put("reasonCode", eligibility.reasonCode());
+            if (eligibility.ruleSnapshotRef() != null) {
+                payload.put("ruleSnapshotRef", eligibility.ruleSnapshotRef());
+            }
+            if (eligibility.ruleVersion() != null) {
+                payload.put("ruleVersion", eligibility.ruleVersion());
+            }
+        } else if (event instanceof PostSalesDecisionQuoted quoted) {
+            payload.put("decisionKind", quoted.decisionKind().name());
+            payload.put("eligible", quoted.eligible());
+            payload.put("ruleSnapshotRef", quoted.ruleSnapshotRef());
+            if (quoted.refundAssessment() != null) {
+                payload.put("refundAssessment", refundAssessment(quoted.refundAssessment()));
+            }
+            if (quoted.changeAssessment() != null) {
+                payload.put("changeAssessment", changeAssessment(quoted.changeAssessment()));
+            }
+        } else if (event instanceof RefundFeeAssessed assessed) {
+            payload.put("refundAssessment", refundAssessment(assessed.assessment()));
+        } else if (event instanceof ChangeFeeAssessed assessed) {
+            payload.put("changeAssessment", changeAssessment(assessed.assessment()));
+        } else if (event instanceof PostSalesApproved approved) {
+            payload.put("orderId", approved.journeyOrderId());
+            payload.put("approvedActions", approvedActions(approved, sourceCase));
+        } else if (event instanceof PostSalesRejected rejected) {
+            payload.put("reason", rejected.reasonCode());
+        } else if (event instanceof PostSalesApplied applied) {
+            payload.put("orderId", applied.journeyOrderId());
+            payload.put("resultSummary", resultSummary(applied));
+        } else if (event instanceof PostSalesExecutionStarted executionStarted) {
+            payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
+            payload.put("approvalRef", executionStarted.approvalRef());
+        } else if (event instanceof PostSalesFailed failed) {
+            payload.put("orderId", failed.journeyOrderId());
+            payload.put("reason", failed.reason());
+            if (failed.failedStepRef() != null) {
+                payload.put("failedStepRef", failed.failedStepRef());
+            }
+        } else if (event instanceof ChangeApplied changeApplied) {
+            payload.put("orderId", changeApplied.journeyOrderId());
+            payload.put("oldEntitlementRef", changeApplied.oldEntitlementRef());
+            payload.put("newEntitlementRef", changeApplied.newEntitlementRef());
+            payload.put("changeOfferRef", changeApplied.changeOfferRef());
+        }
+        return payload;
+    }
+
+    private static String requestType(PostSalesCaseType caseType) {
+        return switch (caseType) {
+            case CANCELLATION -> "CANCELLATION";
+            case CHANGE, REBOOK -> "CHANGE";
+            case REFUND, COMPENSATION -> "REFUND_BY_RULE";
+        };
+    }
+
+    private static Map<String, Object> approvedActions(PostSalesApproved approved, PostSalesCase sourceCase) {
+        Map<String, Object> actions = new LinkedHashMap<>();
+        actions.put("decisionKind", approved.decisionKind().name());
+        actions.put("approvalRef", approved.approvalRef());
+        if (sourceCase == null) {
+            return actions;
+        }
+        // Normative execution steps (events/post-sales.md): downstream
+        // contexts act on these without any shared store.
+        if (sourceCase.decision() != null) {
+            Map<String, Object> refund = new LinkedHashMap<>();
+            refund.put("orderId", sourceCase.journeyOrderId());
+            refund.put("amount", money(sourceCase.decision().amountSnapshot().refundAmount()));
+            actions.put("refund", refund);
+        }
+        java.util.List<Map<String, Object>> steps = new java.util.ArrayList<>();
+        for (String entitlementRef : sourceCase.scope().entitlementRefs()) {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("type", "VOID_ENTITLEMENT");
+            step.put("entitlementId", entitlementRef);
+            step.put("reason", approved.decisionKind().name());
+            step.put("policy", "NORMAL");
+            steps.add(step);
+        }
+        for (String segmentBookingRef : sourceCase.scope().orderItemRefs()) {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("type", "RELEASE_CAPACITY");
+            step.put("segmentBookingId", segmentBookingRef);
+            steps.add(step);
+        }
+        actions.put("steps", steps);
+        return actions;
+    }
+
+    private static Map<String, Object> resultSummary(PostSalesApplied applied) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("description", applied.resultSummary());
+        return summary;
+    }
+
+    private static Map<String, Object> decisionDetails(PostSalesDecision decision) {
+        AmountDecisionSnapshot amount = decision.amountSnapshot();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("version", decision.version());
+        body.put("kind", decision.kind().name());
+        body.put("eligible", decision.eligible());
+        body.put("reasonCode", decision.reasonCode());
+        body.put("adjustmentQuoteId", decision.ruleSnapshot().farePricingEvaluationRef());
+        body.put("refundableAmount", money(amount.refundAmount()));
+        body.put("amountDue", money(amount.extraChargeAmount()));
+        if (decision.refundAssessment() != null) {
+            body.put("refundAssessment", refundAssessment(decision.refundAssessment()));
+        }
+        if (decision.changeAssessment() != null) {
+            body.put("changeAssessment", changeAssessment(decision.changeAssessment()));
+        }
+        body.put("quotedAt", decision.quotedAt().toString());
+        body.put("expiresAt", decision.expiresAt().toString());
+        return body;
+    }
+
+    private static Map<String, Object> refundAssessment(com.trainticket.postsales.domain.RefundAssessment assessment) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("refundableAmount", money(assessment.refundableAmount()));
+        body.put("penaltyAmount", money(assessment.penaltyAmount()));
+        body.put("penaltyPct", assessment.penaltyPct().toPlainString());
+        body.put("tierApplied", assessment.tierApplied());
+        body.put("classification", assessment.classification().name());
+        body.put("explanation", assessment.explanation());
+        body.put("components", assessment.componentDecisions().stream().map(PostSalesMapper::componentDecision).toList());
+        return body;
+    }
+
+    private static Map<String, Object> componentDecision(RefundComponentDecision decision) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("componentType", decision.componentType());
+        body.put("originalAmount", money(decision.originalAmount()));
+        body.put("refundableAmount", money(decision.refundableAmount()));
+        body.put("retainedAmount", money(decision.retainedAmount()));
+        body.put("refundable", decision.refundable());
+        body.put("retainReason", decision.retainReason());
+        return body;
+    }
+
+    private static Map<String, Object> changeAssessment(com.trainticket.postsales.domain.ChangeAssessment assessment) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("changeFee", money(assessment.changeFee()));
+        body.put("fareDifference", money(assessment.fareDifference()));
+        body.put("netPayable", money(assessment.netPayable()));
+        body.put("netRefundable", money(assessment.netRefundable()));
+        body.put("explanation", assessment.explanation());
+        return body;
+    }
+
+    private static String prefixedCausation(String value) {
+        String prefixed = value != null && (value.startsWith("cmd-") || value.startsWith("evt-")) ? value : prefixed(value, "cmd-");
+        return PrefixedIds.isCausationId(prefixed) ? prefixed : PrefixedIds.newCommandId();
+    }
+}

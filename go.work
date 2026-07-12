@@ -1,0 +1,15 @@
+go 1.26
+
+use (
+	./platform/go-kit
+	./platform/go-runtime
+	./services/dispatch
+	./services/fulfillment
+	./services/payment-channel
+	./services/place-network
+	./services/provider-integration
+	./services/seat-assignment
+	./services/service-plan
+	./services/supplier-catalog
+	./services/travel-insurance
+)

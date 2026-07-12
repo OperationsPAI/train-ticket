@@ -10,15 +10,9 @@
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     "source=train-ticket-m2,target=/home/vscode/.m2,type=volume",
-    "source=train-ticket-skaffold,target=/home/vscode/.skaffold,type=volume",
     "source=train-ticket-npm,target=/home/vscode/.npm,type=volume",
     "source=train-ticket-cache,target=/home/vscode/.cache,type=volume"
   ],
-  "containerEnv": {
-    "CHART_DIR": "manifests/helm/trainticket",
-    "MAVEN_THREADS": "1.5C",
-    "MAVEN_SKIP_TESTS": "true"
-  },
   "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
   "customizations": {
     "vscode": {

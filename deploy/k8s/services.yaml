@@ -1,0 +1,3382 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatch
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: dispatch
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dispatch
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dispatch
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: dispatch
+          image: train-ticket/dispatch:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/dispatch
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: dispatch
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatch
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: dispatch
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: dispatch
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: place-network
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: place-network
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: place-network
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: place-network
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: place-network
+          image: train-ticket/place-network:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/place_network
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: place-network
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: place-network
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: place-network
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: place-network
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-plan
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: service-plan
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: service-plan
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: service-plan
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: service-plan
+          image: train-ticket/service-plan:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/service_plan
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: service-plan
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-plan
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: service-plan
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: service-plan
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capacity-availability
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: capacity-availability
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capacity-availability
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: capacity-availability
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: capacity-availability
+          image: train-ticket/capacity-availability:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/capacity_availability
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: capacity-availability
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capacity-availability
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: capacity-availability
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: capacity-availability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fare-pricing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fare-pricing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fare-pricing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fare-pricing
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: fare-pricing
+          image: train-ticket/fare-pricing:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: fare-pricing
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/fare_pricing
+            - name: IDENTITY_VERIFICATION_URL
+              value: http://identity-verification:8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fare-pricing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fare-pricing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: fare-pricing
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trip-planning
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: trip-planning
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trip-planning
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trip-planning
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: trip-planning
+          image: train-ticket/trip-planning-rs:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: trip-planning
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/trip_planning
+            - name: MIGRATIONS_DIR
+              value: /app/migrations
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "2"
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trip-planning
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: trip-planning
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: trip-planning
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ancillary-service
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: ancillary-service
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ancillary-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ancillary-service
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: ancillary-service
+          image: train-ticket/ancillary-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: ancillary-service
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/ancillary_service
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ancillary-service
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: ancillary-service
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: ancillary-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: offer-management
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: offer-management
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: offer-management
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: offer-management
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: offer-management
+          image: train-ticket/offer-management:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: offer-management
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/offer_management
+            - name: PG_MAX_POOL_SIZE
+              value: "15"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: offer-management
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: offer-management
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: offer-management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: journey-order
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: journey-order
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: journey-order
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: journey-order
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: journey-order
+          image: train-ticket/journey-order:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/journey_order
+            - name: IDENTITY_VERIFICATION_URL
+              value: http://identity-verification:8080
+            - name: IDENTITY_VERIFICATION_PREORDER_ENABLED
+              value: "true"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: journey-order
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: journey-order
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: journey-order
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: journey-order
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-orchestration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: booking-orchestration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: booking-orchestration
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: booking-orchestration
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: booking-orchestration
+          image: train-ticket/booking-orchestration:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/booking_orchestration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: booking-orchestration
+            - name: CONSUMER_THREADS
+              value: "4"
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-orchestration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: booking-orchestration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: booking-orchestration
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-verification
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: identity-verification
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: identity-verification
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: identity-verification
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: identity-verification
+          image: train-ticket/identity-verification:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/identity_verification
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: identity-verification
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-verification
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: identity-verification
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: identity-verification
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: payment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: payment
+          image: train-ticket/payment:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/payment
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: payment
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: payment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: payment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider-integration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: provider-integration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: provider-integration
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: provider-integration
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: provider-integration
+          image: train-ticket/provider-integration:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/provider_integration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: provider-integration
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: provider-integration
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: provider-integration
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: provider-integration
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: entitlement-ticketing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: entitlement-ticketing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: entitlement-ticketing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: entitlement-ticketing
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: entitlement-ticketing
+          image: train-ticket/entitlement-ticketing:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/entitlement_ticketing
+            - name: SEAT_ASSIGNMENT_BASE_URL
+              value: http://seat-assignment:8080
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: entitlement-ticketing
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: entitlement-ticketing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: entitlement-ticketing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: entitlement-ticketing
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fulfillment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fulfillment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fulfillment
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fulfillment
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: fulfillment
+          image: train-ticket/fulfillment:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/fulfillment
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: fulfillment
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fulfillment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: fulfillment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: fulfillment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: post-sales
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: post-sales
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: post-sales
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: post-sales
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: post-sales
+          image: train-ticket/post-sales:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/post_sales
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: post-sales
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: post-sales
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: post-sales
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: post-sales
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: notification
+          image: train-ticket/notification:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: notification
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/notification
+            - name: SMTP_URL
+              value: smtp://mailpit:1025
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: notification
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: notification
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traveler-profile
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: traveler-profile
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traveler-profile
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traveler-profile
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: traveler-profile
+          image: train-ticket/traveler-profile:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/traveler_profile
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: traveler-profile
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traveler-profile
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: traveler-profile
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: traveler-profile
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-compliance
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: risk-compliance
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: risk-compliance
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: risk-compliance
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: risk-compliance
+          image: train-ticket/risk-compliance:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: risk-compliance
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/risk_compliance
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: risk-compliance
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: risk-compliance
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: risk-compliance
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: corporate-travel
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: corporate-travel
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: corporate-travel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: corporate-travel
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: corporate-travel
+          image: train-ticket/corporate-travel:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/corporate_travel
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: corporate-travel
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: corporate-travel
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: corporate-travel
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: corporate-travel
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: account
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: account
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: account
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: account
+          image: train-ticket/account:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: account
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/account
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: account
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: account
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loyalty-membership
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: loyalty-membership
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loyalty-membership
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loyalty-membership
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: loyalty-membership
+          image: train-ticket/loyalty-membership:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: loyalty-membership
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/loyalty_membership
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loyalty-membership
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: loyalty-membership
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: loyalty-membership
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-audit
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: admin-audit
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: admin-audit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: admin-audit
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: admin-audit
+          image: train-ticket/admin-audit:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/admin_audit
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: admin-audit
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-audit
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: admin-audit
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: admin-audit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-service
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: customer-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: customer-service
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: customer-service
+          image: train-ticket/customer-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: customer-service
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/customer_service
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-service
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: customer-service
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: customer-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finance-settlement
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: finance-settlement
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: finance-settlement
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: finance-settlement
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: finance-settlement
+          image: train-ticket/finance-settlement:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/finance_settlement
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: finance-settlement
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: finance-settlement
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: finance-settlement
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: finance-settlement
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reporting
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reporting
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: reporting
+          image: train-ticket/reporting:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: reporting
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/reporting
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: reporting
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplier-catalog
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: supplier-catalog
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # In-memory phase-1 stores: never run two generations concurrently.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: supplier-catalog
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: supplier-catalog
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: supplier-catalog
+          image: train-ticket/supplier-catalog:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/supplier_catalog
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: supplier-catalog
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplier-catalog
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: supplier-catalog
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: supplier-catalog
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-acl
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: legacy-acl
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  # Stateless strangler facade; keep deployment strategy consistent with phase-1 services.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: legacy-acl
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: legacy-acl
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: legacy-acl
+          image: train-ticket/legacy-acl:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: legacy-acl
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/legacy_acl
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-acl
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: legacy-acl
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: legacy-acl
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waitlist
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: waitlist
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: waitlist
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: waitlist
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: waitlist
+          image: train-ticket/waitlist:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: waitlist
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/waitlist
+            - name: MIGRATIONS_DIR
+              value: /app/migrations
+            - name: FARE_PRICING_BASE_URL
+              value: http://fare-pricing:8080
+            - name: OFFER_MANAGEMENT_BASE_URL
+              value: http://offer-management:8080
+            - name: JOURNEY_ORDER_BASE_URL
+              value: http://journey-order:8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waitlist
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: waitlist
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: waitlist
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallet-promotion
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: wallet-promotion
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wallet-promotion
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wallet-promotion
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: wallet-promotion
+          image: train-ticket/wallet-promotion:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/wallet_promotion
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: wallet-promotion
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wallet-promotion
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: wallet-promotion
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: wallet-promotion
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: disruption-recovery
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: disruption-recovery
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: disruption-recovery
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: disruption-recovery
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: disruption-recovery
+          image: train-ticket/disruption-recovery:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/disruption_recovery
+            - name: POST_SALES_URL
+              value: http://post-sales:8080
+            - name: WALLET_PROMOTION_URL
+              value: http://wallet-promotion:8080
+            - name: TRANSFER_MANAGEMENT_URL
+              value: http://transfer-management:8080
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: disruption-recovery
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: disruption-recovery
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: disruption-recovery
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: disruption-recovery
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transfer-management
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: transfer-management
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: transfer-management
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: transfer-management
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: transfer-management
+          image: train-ticket/transfer-management:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/transfer_management
+            - name: DISRUPTION_RECOVERY_URL
+              value: http://disruption-recovery:8080
+            - name: PLACE_NETWORK_URL
+              value: http://place-network:8080
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: transfer-management
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transfer-management
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: transfer-management
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: transfer-management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seat-assignment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: seat-assignment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seat-assignment
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seat-assignment
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: seat-assignment
+          image: train-ticket/seat-assignment:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/seat_assignment
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: seat-assignment
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seat-assignment
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: seat-assignment
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: seat-assignment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-channel
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: payment-channel
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-channel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-channel
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: payment-channel
+          image: train-ticket/payment-channel:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/payment_channel
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: payment-channel
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-channel
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: payment-channel
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: payment-channel
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: invoicing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: invoicing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: invoicing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: invoicing
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: invoicing
+          image: train-ticket/invoicing:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/invoicing
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: invoicing
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: invoicing
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: invoicing
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: invoicing
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketing-campaign
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: marketing-campaign
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: marketing-campaign
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: marketing-campaign
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: marketing-campaign
+          image: train-ticket/marketing-campaign:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/marketing_campaign
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: marketing-campaign
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketing-campaign
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: marketing-campaign
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: marketing-campaign
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: group-booking
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: group-booking
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: group-booking
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: group-booking
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: group-booking
+          image: train-ticket/group-booking:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/group_booking
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: group-booking
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: group-booking
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: group-booking
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: group-booking
+---
+# travel-insurance
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: travel-insurance
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: travel-insurance
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: travel-insurance
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: travel-insurance
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: travel-insurance
+          image: train-ticket/travel-insurance:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SERVER_PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.train-ticket.svc.cluster.local:6379
+            - name: DATABASE_URL
+              value: postgresql://trainticket:trainticket-dev@postgres:5432/travel_insurance
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: travel-insurance
+  namespace: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: travel-insurance

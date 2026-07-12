@@ -1,0 +1,168 @@
+package com.trainticket.adminaudit.adapters.http;
+
+import static org.hamcrest.Matchers.startsWith;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+@SpringBootTest(properties = "ADMIN_AUDIT_REDIS_ENABLED=false")
+@AutoConfigureMockMvc
+class AdminAuditControllerTest {
+    @Autowired
+    MockMvc mockMvc;
+
+    @Test
+    void registerOperatorHappyPathAndGetOperator() throws Exception {
+        MvcResult result = register("ops@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01111")
+            .andExpect(status().isCreated())
+            .andExpect(header().string("X-Correlation-Id", "corr-0194f2e0-7b3e-7610-8284-5c26e8b01221"))
+            .andExpect(jsonPath("$.operatorId", startsWith("op-")))
+            .andExpect(jsonPath("$.email").value("ops@example.com"))
+            .andExpect(jsonPath("$.role").value("ADMIN"))
+            .andExpect(jsonPath("$.status").value("ACTIVE"))
+            .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+        String operatorId = body.substring(body.indexOf("op-"), body.indexOf("op-") + 39);
+
+        mockMvc.perform(get("/api/v1/admin/operators/{operatorId}", operatorId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.operatorId").value(operatorId));
+    }
+
+    @Test
+    void manualActionHappyPathsAndAuditTrail() throws Exception {
+        String requester = operatorId(register("requester@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01112").andReturn());
+        String approver = operatorId(register("approver@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01113").andReturn());
+
+        MvcResult action = mockMvc.perform(post("/api/v1/admin/manual-actions")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01114")
+                .header("X-Correlation-Id", "corr-0194f2e0-7b3e-7610-8284-5c26e8b01222")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"targetDomain":"payment","targetCommand":"RefundPayment","businessRef":"pi-1","reasonCode":"CUSTOMER_REQUEST","description":"refund","requestedByOperatorId":"%s","requiresApproval":true}
+                    """.formatted(requester)))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.manualActionId", startsWith("ma-")))
+            .andExpect(jsonPath("$.targetDomain").value("payment"))
+            .andExpect(jsonPath("$.status").value("REQUESTED"))
+            .andReturn();
+
+        String manualActionId = actionId(action);
+
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/approve", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01115")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"approvedByOperatorId\":\"%s\"}".formatted(approver)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.manualActionId").value(manualActionId))
+            .andExpect(jsonPath("$.status").value("APPROVED"));
+
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/execute", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01120")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"resultSummary\":\"should not be exposed\"}"))
+            .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/api/v1/admin/audit-trail").param("businessRef", "pi-1").param("limit", "20").param("offset", "0"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(3))
+            .andExpect(jsonPath("$.items[0].resourceRef").value("pi-1"));
+    }
+
+    @Test
+    void rejectManualActionUsesOperatorRefContractAndIsIdempotent() throws Exception {
+        String requester = operatorId(register("reject-requester@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01118").andReturn());
+
+        MvcResult action = mockMvc.perform(post("/api/v1/admin/manual-actions")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01119")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"targetDomain":"payment","targetCommand":"RefundPayment","businessRef":"pi-reject","reasonCode":"CUSTOMER_REQUEST","description":"refund","requestedByOperatorId":"%s","requiresApproval":true}
+                    """.formatted(requester)))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        String manualActionId = actionId(action);
+        String body = "{\"operatorRef\":\"op-reviewer\",\"reason\":\"insufficient evidence\"}";
+
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/reject", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01121")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.manualActionId").value(manualActionId))
+            .andExpect(jsonPath("$.status").value("REJECTED"));
+
+        mockMvc.perform(post("/api/v1/admin/manual-actions/{manualActionId}/reject", manualActionId)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01121")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("REJECTED"));
+    }
+
+    @Test
+    void validationFailureUsesCanonicalBody() throws Exception {
+        mockMvc.perform(post("/api/v1/admin/operators")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01116")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"role\":\"ADMIN\",\"scopes\":[\"OPERATOR_WRITE\"],\"displayName\":\"Ops\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.correlationId").exists())
+            ;
+    }
+
+    @Test
+    void idempotentReplayReturnsOriginalAndDifferentBodyIsRejected() throws Exception {
+        MvcResult first = register("replay@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01117").andReturn();
+        String firstBody = first.getResponse().getContentAsString();
+
+        MvcResult replay = register("replay@example.com", "0194f2e0-7b3e-7610-8284-5c26e8b01117")
+            .andExpect(status().isCreated())
+            .andReturn();
+        org.assertj.core.api.Assertions.assertThat(replay.getResponse().getContentAsString()).isEqualTo(firstBody);
+
+        mockMvc.perform(post("/api/v1/admin/operators")
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b01117")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(operatorJson("different@example.com")))
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions register(String email, String key) throws Exception {
+        return mockMvc.perform(post("/api/v1/admin/operators")
+            .header("Idempotency-Key", key)
+            .header("X-Correlation-Id", "corr-0194f2e0-7b3e-7610-8284-5c26e8b01221")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(operatorJson(email)));
+    }
+
+    private static String operatorJson(String email) {
+        return """
+            {"email":"%s","role":"ADMIN","scopes":["OPERATOR_WRITE","AUDIT_READ"],"displayName":"Ops"}
+            """.formatted(email);
+    }
+
+    private static String operatorId(MvcResult result) throws Exception {
+        String body = result.getResponse().getContentAsString();
+        return body.substring(body.indexOf("op-"), body.indexOf("op-") + 39);
+    }
+
+    private static String actionId(MvcResult result) throws Exception {
+        String body = result.getResponse().getContentAsString();
+        return body.substring(body.indexOf("ma-"), body.indexOf("ma-") + 39);
+    }
+}

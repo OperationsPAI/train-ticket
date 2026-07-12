@@ -1,0 +1,401 @@
+use super::*;
+
+fn key() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+fn corr() -> String {
+    rust_kit::messaging::correlation_id()
+}
+fn title_cmd() -> CreateInvoiceTitleCommand {
+    CreateInvoiceTitleCommand {
+        account_id: "acc-test".into(),
+        title_type: TitleType::Personal,
+        title_name: "个人".into(),
+        tax_identity: None,
+        registered_address: None,
+        registered_phone: None,
+        bank_name: None,
+        bank_account: None,
+        set_as_default: true,
+    }
+}
+fn amount() -> AmountBasis {
+    AmountBasis {
+        basis_type: "REVENUE_RECOGNITION".into(),
+        revenue_recognition_ids: vec!["rr-1".into()],
+        finance_invoice_id: None,
+        tax_lines: vec![TaxLine {
+            tax_code: "VAT_SIM".into(),
+            tax_rate_basis_points: 0,
+            taxable_amount: Money {
+                currency: "CNY".into(),
+                minor_units: 1000,
+            },
+            tax_amount: Money {
+                currency: "CNY".into(),
+                minor_units: 0,
+            },
+        }],
+        total_amount: Money {
+            currency: "CNY".into(),
+            minor_units: 1000,
+        },
+        amount_basis_hash: "sha256:test".into(),
+    }
+}
+
+async fn project_amount(
+    svc: &InMemoryInvoicingService,
+    order_id: &str,
+    event_id: &str,
+) -> AmountBasis {
+    let payload = serde_json::json!({
+        "orderId": order_id,
+        "revenueRecognitionId": format!("rr-{order_id}"),
+        "amount": {"currency":"CNY","minorUnits":1000}
+    });
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "RevenueRecognized",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(event_id.to_string()),
+        "finance-settlement",
+        payload,
+    ))
+    .await
+    .unwrap();
+    svc.snapshot().amounts.get(order_id).cloned().unwrap()
+}
+
+#[tokio::test]
+async fn title_lifecycle_and_deactivated_title_blocks_invoice() {
+    let svc = InMemoryInvoicingService::default();
+    let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
+    assert!(title.is_default);
+    let resp = svc
+        .deactivate_title(
+            title.title_id.clone(),
+            DeactivateTitleCommand {
+                expected_version: 1,
+                reason: "USER_REQUEST".into(),
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status, TitleStatus::Deactivated);
+    let err = svc
+        .request_invoice(
+            RequestEInvoiceCommand {
+                account_id: "acc-test".into(),
+                order_id: "ord-none".into(),
+                title_id: title.title_id,
+                title_version: 1,
+                invoice_scope: InvoiceScope {
+                    scope_type: "ORDER".into(),
+                    order_item_refs: vec![],
+                    segment_refs: vec![],
+                    traveler_refs: vec![],
+                },
+                amount_basis: amount(),
+                recipient_email: None,
+                gateway_profile: None,
+                sim_seed_ref: None,
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        InvoicingError::PreconditionFailed(_) | InvoicingError::ValidationFailed(_)
+    ));
+}
+
+#[tokio::test]
+async fn deterministic_sim_accepts_and_rejects_by_seed() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new("JourneyOrderConfirmed", rust_kit::messaging::now_rfc3339_utc(), corr(), Some(format!("evt-{}", uuid::Uuid::now_v7())), "journey-order", serde_json::json!({"orderId":"ord-ok","accountId":"acc-test","travelerRefs":["tvl-1"],"segmentRefs":["seg-1"]}))).await.unwrap();
+    let basis = project_amount(&svc, "ord-ok", "evt-01900000-0000-7000-8000-000000000001").await;
+    let req = svc
+        .request_invoice(
+            RequestEInvoiceCommand {
+                account_id: "acc-test".into(),
+                order_id: "ord-ok".into(),
+                title_id: title.title_id.clone(),
+                title_version: 1,
+                invoice_scope: InvoiceScope {
+                    scope_type: "ORDER".into(),
+                    order_item_refs: vec![],
+                    segment_refs: vec![],
+                    traveler_refs: vec![],
+                },
+                amount_basis: basis,
+                recipient_email: Some("a@example.com".into()),
+                gateway_profile: None,
+                sim_seed_ref: Some("accept-1".into()),
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(req.status, InvoiceRequestStatus::Issued);
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "JourneyOrderConfirmed",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(format!("evt-{}", uuid::Uuid::now_v7())),
+        "journey-order",
+        serde_json::json!({"orderId":"ord-rej","accountId":"acc-test"}),
+    ))
+    .await
+    .unwrap();
+    let a = project_amount(&svc, "ord-rej", "evt-01900000-0000-7000-8000-000000000002").await;
+    let req2 = svc
+        .request_invoice(
+            RequestEInvoiceCommand {
+                account_id: "acc-test".into(),
+                order_id: "ord-rej".into(),
+                title_id: title.title_id,
+                title_version: 1,
+                invoice_scope: InvoiceScope {
+                    scope_type: "ORDER".into(),
+                    order_item_refs: vec![],
+                    segment_refs: vec![],
+                    traveler_refs: vec![],
+                },
+                amount_basis: a,
+                recipient_email: None,
+                gateway_profile: None,
+                sim_seed_ref: Some("reject-seed".into()),
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(req2.status, InvoiceRequestStatus::Rejected);
+    let types: Vec<_> = publisher
+        .events()
+        .into_iter()
+        .map(|e| e.event_type)
+        .collect();
+    assert!(types.contains(&"EInvoiceIssued".to_string()));
+    assert!(types.contains(&"EInvoiceRejected".to_string()));
+}
+
+#[tokio::test]
+async fn post_sales_refund_observes_and_completes_red_flush() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "JourneyOrderConfirmed",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(format!("evt-{}", uuid::Uuid::now_v7())),
+        "journey-order",
+        serde_json::json!({"orderId":"ord-ref","accountId":"acc-test"}),
+    ))
+    .await
+    .unwrap();
+    let basis = project_amount(&svc, "ord-ref", "evt-01900000-0000-7000-8000-000000000003").await;
+    let req = svc
+        .request_invoice(
+            RequestEInvoiceCommand {
+                account_id: "acc-test".into(),
+                order_id: "ord-ref".into(),
+                title_id: title.title_id,
+                title_version: 1,
+                invoice_scope: InvoiceScope {
+                    scope_type: "ORDER".into(),
+                    order_item_refs: vec![],
+                    segment_refs: vec![],
+                    traveler_refs: vec![],
+                },
+                amount_basis: basis,
+                recipient_email: None,
+                gateway_profile: None,
+                sim_seed_ref: Some("accept".into()),
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(req.status, InvoiceRequestStatus::Issued);
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "PostSalesApplied",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(format!("evt-{}", uuid::Uuid::now_v7())),
+        "post-sales",
+        serde_json::json!({"caseId":"psc-1","orderId":"ord-ref","resultSummary":{"refund":true}}),
+    ))
+    .await
+    .unwrap();
+    let page = svc
+        .list_red_flushes(Some("ord-ref".into()), None, None, 20, 0)
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].status, RedFlushStatus::Completed);
+    let events = publisher.events();
+    let observation = events
+        .iter()
+        .find(|e| e.event_type == "RefundWithoutRedFlushObserved")
+        .expect("missing refund observation");
+    assert_eq!(observation.payload["refundReleaseFlagStatus"], "SUSPENDED");
+    assert_eq!(
+        observation.payload["ruling"],
+        "OBSERVE_ONLY_NO_POST_SALES_BLOCKER_WAVE_A"
+    );
+    assert!(
+        observation.payload["observationId"]
+            .as_str()
+            .unwrap()
+            .starts_with("irf-")
+    );
+    assert!(
+        observation.payload["refundScopeHash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+
+    let completed = events
+        .iter()
+        .find(|e| e.event_type == "RedFlushCompleted")
+        .expect("missing red flush completed");
+    assert_eq!(completed.payload["orderId"], "ord-ref");
+    assert_eq!(completed.payload["totalAmount"]["minorUnits"], 1000);
+    assert!(
+        completed.payload["originalInvoiceNumber"]
+            .as_str()
+            .unwrap()
+            .starts_with("SIM")
+    );
+}
+
+#[tokio::test]
+async fn saga_invoice_requested_creates_invoice_and_publishes_generated() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let envelope = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-001",
+            "journeyOrderId": "jo-001",
+            "paymentRef": "pay-ref-001"
+        }),
+    );
+    svc.apply_subscribed_event(envelope).await.unwrap();
+
+    // Verify invoice record was created in state
+    let snap = svc.snapshot();
+    assert_eq!(snap.saga_invoices.len(), 1);
+    let inv = snap.saga_invoices.values().next().unwrap();
+    assert_eq!(inv.saga_id, "saga-001");
+    assert_eq!(inv.journey_order_id, "jo-001");
+    assert_eq!(inv.payment_ref, "pay-ref-001");
+    assert!(inv.invoice_id.starts_with("inv-"));
+    assert!(inv.invoice_number.starts_with("INV-"));
+    assert!(!inv.issued_at.is_empty());
+
+    // Verify InvoiceGenerated event was published
+    let events = publisher.events();
+    let generated = events
+        .iter()
+        .find(|e| e.event_type == "InvoiceGenerated")
+        .expect("InvoiceGenerated event should be published");
+    assert_eq!(generated.producer, "invoicing");
+    assert_eq!(generated.payload["sagaId"], "saga-001");
+    assert_eq!(generated.payload["journeyOrderId"], "jo-001");
+    assert_eq!(generated.payload["paymentRef"], "pay-ref-001");
+    assert!(
+        generated.payload["invoiceId"]
+            .as_str()
+            .unwrap()
+            .starts_with("inv-")
+    );
+    assert!(
+        generated.payload["invoiceNumber"]
+            .as_str()
+            .unwrap()
+            .starts_with("INV-")
+    );
+    assert!(generated.payload["issuedAt"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn saga_invoice_requested_is_idempotent() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let envelope = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-002",
+            "journeyOrderId": "jo-002",
+            "paymentRef": "pay-ref-002"
+        }),
+    );
+    let event_id = envelope.event_id.clone();
+    svc.apply_subscribed_event(envelope).await.unwrap();
+    // Send duplicate with same event_id
+    let mut dup = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-002",
+            "journeyOrderId": "jo-002",
+            "paymentRef": "pay-ref-002"
+        }),
+    );
+    dup.event_id = event_id;
+    svc.apply_subscribed_event(dup).await.unwrap();
+    // Should still have exactly one invoice
+    assert_eq!(svc.snapshot().saga_invoices.len(), 1);
+    // Should have published only one event
+    let events: Vec<_> = publisher
+        .events()
+        .into_iter()
+        .filter(|e| e.event_type == "InvoiceGenerated")
+        .collect();
+    assert_eq!(events.len(), 1);
+}
+
+#[tokio::test]
+async fn saga_invoice_requested_skips_incomplete_payload() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    // Missing paymentRef
+    let envelope = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-003",
+            "journeyOrderId": "jo-003"
+        }),
+    );
+    svc.apply_subscribed_event(envelope).await.unwrap();
+    assert_eq!(svc.snapshot().saga_invoices.len(), 0);
+    assert!(publisher.events().is_empty());
+}

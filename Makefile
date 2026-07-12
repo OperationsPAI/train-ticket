@@ -1,48 +1,46 @@
-NS ?= ts
-PORT ?= 30080
-CHART_DIR ?= manifests/helm/trainticket
-MAVEN_THREADS ?= 1.5C
-MAVEN_SKIP_TESTS ?= true
+SHELL := /usr/bin/env bash
 
-.PHONY: smoke check package helm-deps helm-lint skaffold-build deploy upgrade-chart otel-agent
+DEVCONTAINER_IMAGE ?= train-ticket-dev:local
+AGENT_ENV_IMAGE ?= train-ticket-agent-env:local
+OTEL_COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib:latest
+OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 
-smoke:
-	.devcontainer/scripts/check.sh smoke
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
 
-check:
-	.devcontainer/scripts/check.sh package
+check: skeleton-check contract-lint
 
-package:
-	mvn -B -T $(MAVEN_THREADS) clean package -Dmaven.test.skip=$(MAVEN_SKIP_TESTS)
+contract-lint:
+	python3 scripts/contract_lint.py
 
-helm-deps:
-	helm dependency build $(CHART_DIR)
+build-devcontainer:
+	docker build -f .devcontainer/Dockerfile -t $(DEVCONTAINER_IMAGE) .
 
-helm-lint:
-	.devcontainer/scripts/check.sh smoke
+build-agent-env-image: build-devcontainer
+	docker build -f .devcontainer/agent-env.Dockerfile --build-arg BASE_IMAGE=$(DEVCONTAINER_IMAGE) -t $(AGENT_ENV_IMAGE) .
 
-skaffold-build:
-	.devcontainer/scripts/check.sh images
+check-agent-env-image:
+	docker run --rm $(AGENT_ENV_IMAGE) bash -lc 'make check-strict'
 
-deploy:
-	@if helm status $(NS) -n $(NS) >/dev/null 2>&1; then \
-		echo "Uninstalling existing $(NS) release"; \
-		helm uninstall $(NS) -n $(NS); \
-		sleep 5; \
-	else \
-		echo "No existing $(NS) release found"; \
-	fi; \
-	helm install $(NS) $(CHART_DIR) --create-namespace -n $(NS) \
-		--set global.monitoring=opentelemetry \
-		--set global.otelcollector="http://opentelemetry-collector-deployment.monitoring:4317" \
-		--set skywalking.enabled=false \
-		--set global.image.tag=637600ea \
-		--set services.tsUiDashboard.nodePort=$(PORT)
+check-devcontainer:
+	docker run --rm -v "$$PWD:/workspace/train-ticket" -w /workspace/train-ticket $(DEVCONTAINER_IMAGE) bash -lc 'make check-strict'
 
-upgrade-chart:
-	cd $(CHART_DIR) && \
-		helm dependency update
+check-strict:
+	python3 scripts/check-skeleton.py --strict
 
+skeleton-check:
+	python3 scripts/check-skeleton.py
 
-otel-agent:
-	cd otel-java-agent && bash build.sh
+list-services:
+	python3 scripts/list-services.py
+
+observability-config:
+	docker compose -f $(OBSERVABILITY_COMPOSE) config
+
+observability-validate:
+	docker run --rm -v "$$PWD/platform/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" $(OTEL_COLLECTOR_IMAGE) validate --config=/etc/otelcol-contrib/config.yaml
+
+observability-up:
+	docker compose -f $(OBSERVABILITY_COMPOSE) up -d
+
+observability-down:
+	docker compose -f $(OBSERVABILITY_COMPOSE) down
