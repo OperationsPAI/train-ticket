@@ -1,6 +1,7 @@
 package com.trainticket.financesettlement.application;
 
 import com.trainticket.financesettlement.domain.Money;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -12,6 +13,10 @@ public interface FinanceSettlementProjectionRepository {
     Optional<Money> findApprovedRefund(String caseId);
 
     void saveApprovedRefund(String caseId, Money amount);
+
+    default List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(LocalDate settlementDate) { return List.of(); }
+
+    default List<ChannelStatementProjection> findChannelStatementsForSettlementDate(LocalDate settlementDate) { return List.of(); }
 
     void saveBenefitCostEntry(BenefitCostEntry entry);
 

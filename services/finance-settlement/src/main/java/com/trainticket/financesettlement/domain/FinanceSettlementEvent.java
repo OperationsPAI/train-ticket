@@ -9,6 +9,8 @@ public sealed interface FinanceSettlementEvent permits
     ReconciliationCaseOpened,
     ReconciliationCaseResolved,
     ReconciliationCompleted,
+    SupplierSettlementCalculated,
+    FeeAccrued,
     InvoiceGenerated,
     SettlementViewRebuilt {
     String eventId();
