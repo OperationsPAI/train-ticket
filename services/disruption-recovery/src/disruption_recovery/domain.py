@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Mapping
@@ -49,6 +49,77 @@ class ExecutionTarget(StrEnum):
     MANUAL_QUEUE = "MANUAL_QUEUE"
 
 
+class DisruptionType(StrEnum):
+    DELAY = "DELAY"
+    CANCELLATION = "CANCELLATION"
+    PARTIAL = "PARTIAL"
+    FORCE_MAJEURE = "FORCE_MAJEURE"
+
+
+class SeverityLevel(StrEnum):
+    MINOR = "MINOR"
+    MODERATE = "MODERATE"
+    SEVERE = "SEVERE"
+    CRITICAL = "CRITICAL"
+
+
+class CompensationStatus(StrEnum):
+    NOT_ELIGIBLE = "NOT_ELIGIBLE"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    PAID = "PAID"
+    REJECTED = "REJECTED"
+
+
+class SeatClass(StrEnum):
+    BUSINESS = "BUSINESS"
+    FIRST = "FIRST"
+    SECOND = "SECOND"
+
+
+class ReroutingDecision(StrEnum):
+    AUTO_REBOOK = "AUTO_REBOOK"
+    OFFER_REFUND = "OFFER_REFUND"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+
+
+class CompensationDeliveryMethod(StrEnum):
+    POINTS = "POINTS"
+    CASH = "CASH"
+
+
+class CompensationClaimStatus(StrEnum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    PAID = "PAID"
+    REJECTED = "REJECTED"
+
+
+class ProcessingBatchStatus(StrEnum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+
+
+LEGACY_DISRUPTION_TYPE_MAP = {
+    "SERVICE_DELAY": DisruptionType.DELAY,
+    "SERVICE_CANCELLED": DisruptionType.CANCELLATION,
+    "SERVICE_SUSPENDED": DisruptionType.CANCELLATION,
+    "SAILING_SUSPENDED": DisruptionType.CANCELLATION,
+    "STOP_CHANGED": DisruptionType.PARTIAL,
+    "PORT_CALL_CHANGED": DisruptionType.PARTIAL,
+    "ROAD_CLOSED": DisruptionType.FORCE_MAJEURE,
+    "WEATHER": DisruptionType.FORCE_MAJEURE,
+    "OPERATION_RESTRICTION": DisruptionType.FORCE_MAJEURE,
+    "SUPPLIER_FAILURE": DisruptionType.FORCE_MAJEURE,
+    "DRIVER_CANCELLED": DisruptionType.CANCELLATION,
+    "DISPATCH_FAILED": DisruptionType.CANCELLATION,
+    "CONNECTION_MISSED": DisruptionType.PARTIAL,
+    "MISSED_CONNECTION": DisruptionType.PARTIAL,
+    "BATCH_SYSTEM_EVENT": DisruptionType.PARTIAL,
+}
+
+
 DISRUPTION_TYPES = {
     "SERVICE_DELAY",
     "SERVICE_CANCELLED",
@@ -65,6 +136,10 @@ DISRUPTION_TYPES = {
     "BATCH_SYSTEM_EVENT",
     "CONNECTION_MISSED",
     "MISSED_CONNECTION",
+    "DELAY",
+    "CANCELLATION",
+    "PARTIAL",
+    "FORCE_MAJEURE",
 }
 
 
@@ -389,3 +464,328 @@ def build_option_set(
     comp = RecoveryOption(option_ids[2], RecoveryOptionType.COMPENSATION, "Issue compensation credit", "Issue a wallet compensation credit for this disruption.", ExecutionTarget.WALLET_PROMOTION, compensation={"amount": {"currency": "CNY", "minorUnits": 1000}, "benefitType": "COMPENSATION_CREDIT", "balanceType": "PROMOTION_CREDIT", "validUntil": rfc3339_utc(generated_at + timedelta(days=30)), "reasonCode": "DISRUPTION_COMP"}, expiresAt=expires)
     manual = RecoveryOption(option_ids[3], RecoveryOptionType.MANUAL, "Manual review", "Send the recovery case to customer-service manual review.", ExecutionTarget.MANUAL_QUEUE, manualReason="Customer-service review requested", expiresAt=expires)
     return RecoveryOptionSet(option_set_id, case_id, (wait, refund, comp, manual), generated_at, expires, True)
+
+
+def _coerce_utc(value: datetime) -> datetime:
+    return (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class Disruption:
+    disruptionId: str
+    segmentRef: str
+    type: DisruptionType
+    severity: SeverityLevel
+    declaredAt: datetime
+    estimatedResolution: datetime | None
+    affectedPassengerCount: int
+    delayMinutes: int | None = None
+
+    def __post_init__(self) -> None:
+        require_text(self.disruptionId, "disruptionId")
+        require_text(self.segmentRef, "segmentRef")
+        if self.affectedPassengerCount < 0:
+            raise DomainError("affectedPassengerCount cannot be negative")
+        if self.delayMinutes is not None and self.delayMinutes < 0:
+            raise DomainError("delayMinutes cannot be negative")
+
+    def to_json(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "disruptionId": self.disruptionId,
+            "segmentRef": self.segmentRef,
+            "type": self.type.value,
+            "severity": self.severity.value,
+            "declaredAt": rfc3339_utc(self.declaredAt),
+            "affectedPassengerCount": self.affectedPassengerCount,
+        }
+        if self.estimatedResolution:
+            data["estimatedResolution"] = rfc3339_utc(self.estimatedResolution)
+        if self.delayMinutes is not None:
+            data["delayMinutes"] = self.delayMinutes
+        return data
+
+
+class DisruptionClassifier:
+    @staticmethod
+    def classify(disruption_type: DisruptionType | str, delay_minutes: int | None = None) -> SeverityLevel:
+        dtype = normalize_disruption_type(disruption_type)
+        if dtype in {DisruptionType.CANCELLATION, DisruptionType.FORCE_MAJEURE}:
+            return SeverityLevel.CRITICAL
+        if dtype is DisruptionType.PARTIAL:
+            return SeverityLevel.MODERATE
+        delay = max(0, int(delay_minutes or 0))
+        if delay < 30:
+            return SeverityLevel.MINOR
+        if delay <= 120:
+            return SeverityLevel.MODERATE
+        return SeverityLevel.SEVERE
+
+
+@dataclass(frozen=True, slots=True)
+class AffectedBooking:
+    orderId: str
+    travelerId: str
+    segmentRef: str
+    compensationStatus: CompensationStatus = CompensationStatus.PENDING
+    origin: str | None = None
+    destination: str | None = None
+    originalDeparture: datetime | None = None
+    seatClass: SeatClass = SeatClass.SECOND
+    ticketPriceMinorUnits: int = 0
+    currency: str = "CNY"
+
+    def __post_init__(self) -> None:
+        require_text(self.orderId, "orderId")
+        require_text(self.travelerId, "travelerId")
+        require_text(self.segmentRef, "segmentRef")
+        if self.ticketPriceMinorUnits < 0:
+            raise DomainError("ticketPriceMinorUnits cannot be negative")
+
+    def to_json(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "orderId": self.orderId,
+            "travelerId": self.travelerId,
+            "segmentRef": self.segmentRef,
+            "compensationStatus": self.compensationStatus.value,
+            "seatClass": self.seatClass.value,
+            "ticketPrice": {"currency": self.currency, "minorUnits": self.ticketPriceMinorUnits},
+        }
+        if self.origin:
+            data["origin"] = self.origin
+        if self.destination:
+            data["destination"] = self.destination
+        if self.originalDeparture:
+            data["originalDeparture"] = rfc3339_utc(self.originalDeparture)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class AlternativeRoute:
+    segmentRef: str
+    departureTime: datetime
+    seatClass: SeatClass
+    transfers: int = 0
+    origin: str | None = None
+    destination: str | None = None
+
+    def __post_init__(self) -> None:
+        require_text(self.segmentRef, "segmentRef")
+        if self.transfers < 0:
+            raise DomainError("transfers cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ReroutingSuggestion:
+    newSegmentRef: str
+    score: float
+    departureTime: datetime
+    seatClass: SeatClass
+    transfers: int
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "newSegmentRef": self.newSegmentRef,
+            "score": round(self.score, 2),
+            "departureTime": rfc3339_utc(self.departureTime),
+            "seatClass": self.seatClass.value,
+            "transfers": self.transfers,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReroutingOutcome:
+    orderId: str
+    decision: ReroutingDecision
+    suggestion: ReroutingSuggestion | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"orderId": self.orderId, "decision": self.decision.value}
+        if self.suggestion:
+            data["suggestion"] = self.suggestion.to_json()
+        return data
+
+
+class ReroutingEngine:
+    AUTO_REBOOK_THRESHOLD = 80.0
+    SEARCH_WINDOW = timedelta(hours=4)
+
+    def suggest(self, booking: AffectedBooking, alternatives: tuple[AlternativeRoute, ...]) -> ReroutingSuggestion | None:
+        if booking.originalDeparture is None:
+            return None
+        candidates = [route for route in alternatives if self._matches(booking, route)]
+        suggestions = tuple(self.score(booking, route) for route in candidates)
+        if not suggestions:
+            return None
+        return max(suggestions, key=lambda suggestion: suggestion.score)
+
+    def decide(self, booking: AffectedBooking, alternatives: tuple[AlternativeRoute, ...]) -> ReroutingOutcome:
+        suggestion = self.suggest(booking, alternatives)
+        if suggestion is None:
+            return ReroutingOutcome(booking.orderId, ReroutingDecision.OFFER_REFUND)
+        if suggestion.score >= self.AUTO_REBOOK_THRESHOLD:
+            return ReroutingOutcome(booking.orderId, ReroutingDecision.AUTO_REBOOK, suggestion)
+        return ReroutingOutcome(booking.orderId, ReroutingDecision.MANUAL_REVIEW, suggestion)
+
+    def score(self, booking: AffectedBooking, route: AlternativeRoute) -> ReroutingSuggestion:
+        if booking.originalDeparture is None:
+            raise DomainError("booking.originalDeparture is required to score rerouting")
+        deviation = abs((_coerce_utc(route.departureTime) - _coerce_utc(booking.originalDeparture)).total_seconds()) / 60
+        time_score = max(0.0, 100.0 - deviation / 2.0)
+        class_score = self._class_score(booking.seatClass, route.seatClass)
+        transfer_score = 20 if route.transfers == 0 else 10 if route.transfers == 1 else 0
+        return ReroutingSuggestion(route.segmentRef, time_score + class_score + transfer_score, route.departureTime, route.seatClass, route.transfers)
+
+    def _matches(self, booking: AffectedBooking, route: AlternativeRoute) -> bool:
+        if booking.originalDeparture is None:
+            return False
+        if abs(_coerce_utc(route.departureTime) - _coerce_utc(booking.originalDeparture)) > self.SEARCH_WINDOW:
+            return False
+        if booking.origin and route.origin and booking.origin != route.origin:
+            return False
+        if booking.destination and route.destination and booking.destination != route.destination:
+            return False
+        return True
+
+    @staticmethod
+    def _class_score(original: SeatClass, replacement: SeatClass) -> int:
+        rank = {SeatClass.SECOND: 1, SeatClass.FIRST: 2, SeatClass.BUSINESS: 3}
+        if replacement is original:
+            return 30
+        if rank[replacement] < rank[original]:
+            return 15
+        return 25
+
+
+@dataclass(frozen=True, slots=True)
+class CompensationPolicy:
+    delaySeverity: SeverityLevel
+    compensationPct: int
+    deliveryMethod: CompensationDeliveryMethod = CompensationDeliveryMethod.POINTS
+
+
+@dataclass(frozen=True, slots=True)
+class CompensationAward:
+    refundMinorUnits: int
+    compensationMinorUnits: int
+    currency: str
+    deliveryMethod: CompensationDeliveryMethod
+
+    @property
+    def totalMinorUnits(self) -> int:
+        return self.refundMinorUnits + self.compensationMinorUnits
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "refund": {"currency": self.currency, "minorUnits": self.refundMinorUnits},
+            "compensation": {"currency": self.currency, "minorUnits": self.compensationMinorUnits},
+            "total": {"currency": self.currency, "minorUnits": self.totalMinorUnits},
+            "method": self.deliveryMethod.value,
+        }
+
+
+class CompensationCalculator:
+    def calculate(self, ticket_price_minor_units: int, delay_minutes: int | None, disruption_type: DisruptionType | str, currency: str = "CNY", delivery_method: CompensationDeliveryMethod = CompensationDeliveryMethod.POINTS) -> CompensationAward:
+        if ticket_price_minor_units < 0:
+            raise DomainError("ticketPriceMinorUnits cannot be negative")
+        dtype = normalize_disruption_type(disruption_type)
+        refund = 0
+        pct = 0
+        if dtype is DisruptionType.FORCE_MAJEURE:
+            refund = ticket_price_minor_units
+        elif dtype is DisruptionType.CANCELLATION:
+            refund = ticket_price_minor_units
+            pct = 25
+        elif dtype is DisruptionType.DELAY:
+            delay = max(0, int(delay_minutes or 0))
+            if delay >= 120:
+                pct = 50
+            elif delay >= 60:
+                pct = 25
+        return CompensationAward(refund, ticket_price_minor_units * pct // 100, currency, delivery_method)
+
+
+@dataclass(frozen=True, slots=True)
+class CompensationClaim:
+    claimId: str
+    orderId: str
+    amount: CompensationAward
+    status: CompensationClaimStatus = CompensationClaimStatus.PENDING
+    issuedBy: datetime | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        data = {"claimId": self.claimId, "orderId": self.orderId, "amount": self.amount.to_json(), "status": self.status.value}
+        if self.issuedBy:
+            data["issuedBy"] = rfc3339_utc(self.issuedBy)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingBatch:
+    batchId: str
+    bookings: tuple[AffectedBooking, ...]
+    status: ProcessingBatchStatus = ProcessingBatchStatus.PENDING
+    processedCount: int = 0
+
+    def complete(self, processed_count: int | None = None) -> "ProcessingBatch":
+        count = len(self.bookings) if processed_count is None else processed_count
+        if count < 0 or count > len(self.bookings):
+            raise DomainError("processedCount is invalid")
+        return replace(self, status=ProcessingBatchStatus.COMPLETED, processedCount=count)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"batchId": self.batchId, "status": self.status.value, "processedCount": self.processedCount, "bookingCount": len(self.bookings), "orderIds": [booking.orderId for booking in self.bookings]}
+
+
+@dataclass(frozen=True, slots=True)
+class MassDisruptionProgress:
+    totalAffected: int
+    processed: int = 0
+    rebooked: int = 0
+    refunded: int = 0
+    pending: int = 0
+
+    @classmethod
+    def empty(cls, total_affected: int) -> "MassDisruptionProgress":
+        return cls(total_affected, 0, 0, 0, total_affected)
+
+    def record(self, outcomes: tuple[ReroutingOutcome, ...]) -> "MassDisruptionProgress":
+        rebooked = sum(1 for outcome in outcomes if outcome.decision is ReroutingDecision.AUTO_REBOOK)
+        refunded = sum(1 for outcome in outcomes if outcome.decision is ReroutingDecision.OFFER_REFUND)
+        processed = min(self.totalAffected, self.processed + len(outcomes))
+        return MassDisruptionProgress(self.totalAffected, processed, self.rebooked + rebooked, self.refunded + refunded, max(0, self.totalAffected - processed))
+
+    def to_json(self) -> dict[str, int]:
+        return {"totalAffected": self.totalAffected, "processed": self.processed, "rebooked": self.rebooked, "refunded": self.refunded, "pending": self.pending}
+
+
+class MassDisruptionProcessor:
+    BATCH_SIZE = 100
+    _priority = {SeatClass.BUSINESS: 0, SeatClass.FIRST: 1, SeatClass.SECOND: 2}
+
+    def create_batches(self, bookings: tuple[AffectedBooking, ...], batch_id_factory: Any) -> tuple[ProcessingBatch, ...]:
+        ordered = tuple(sorted(bookings, key=lambda booking: (self._priority[booking.seatClass], booking.orderId)))
+        return tuple(ProcessingBatch(str(batch_id_factory()), ordered[index:index + self.BATCH_SIZE]) for index in range(0, len(ordered), self.BATCH_SIZE))
+
+    def process(self, bookings: tuple[AffectedBooking, ...], alternatives: tuple[AlternativeRoute, ...], batch_id_factory: Any) -> tuple[tuple[ProcessingBatch, ...], tuple[ReroutingOutcome, ...], MassDisruptionProgress]:
+        engine = ReroutingEngine()
+        progress = MassDisruptionProgress.empty(len(bookings))
+        completed_batches: list[ProcessingBatch] = []
+        all_outcomes: list[ReroutingOutcome] = []
+        for batch in self.create_batches(bookings, batch_id_factory):
+            outcomes = tuple(engine.decide(booking, alternatives) for booking in batch.bookings)
+            all_outcomes.extend(outcomes)
+            progress = progress.record(outcomes)
+            completed_batches.append(batch.complete(len(outcomes)))
+        return tuple(completed_batches), tuple(all_outcomes), progress
+
+
+def normalize_disruption_type(disruption_type: DisruptionType | str) -> DisruptionType:
+    if isinstance(disruption_type, DisruptionType):
+        return disruption_type
+    value = require_text(str(disruption_type), "disruptionType").upper()
+    if value in DisruptionType.__members__:
+        return DisruptionType[value]
+    mapped = LEGACY_DISRUPTION_TYPE_MAP.get(value)
+    if mapped is None:
+        raise DomainError("disruptionType is invalid")
+    return mapped
