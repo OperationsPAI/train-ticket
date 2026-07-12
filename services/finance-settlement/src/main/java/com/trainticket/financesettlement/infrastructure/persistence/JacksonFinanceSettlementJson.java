@@ -5,12 +5,22 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.trainticket.financesettlement.domain.FeeAccrual;
 import com.trainticket.financesettlement.domain.Invoice;
 import com.trainticket.financesettlement.domain.Money;
+import com.trainticket.financesettlement.domain.ReconciliationBatch;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
+import com.trainticket.financesettlement.domain.ReconciliationEntry;
+import com.trainticket.financesettlement.domain.ReconciliationStatus;
+import com.trainticket.financesettlement.domain.RevenueAllocation;
+import com.trainticket.financesettlement.domain.SettlementFrequency;
+import com.trainticket.financesettlement.domain.SettlementPeriod;
+import com.trainticket.financesettlement.domain.SupplierSettlement;
+import com.trainticket.financesettlement.domain.TaxCalculation;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Currency;
 import java.util.List;
@@ -20,6 +30,9 @@ final class JacksonFinanceSettlementJson {
 
     record RevenueRecognitionSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static RevenueRecognitionSnapshot of(ObjectNode data) { return new RevenueRecognitionSnapshot(data); } }
     record ReconciliationCaseSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static ReconciliationCaseSnapshot of(ObjectNode data) { return new ReconciliationCaseSnapshot(data); } }
+    record ReconciliationBatchSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static ReconciliationBatchSnapshot of(ObjectNode data) { return new ReconciliationBatchSnapshot(data); } }
+    record SupplierSettlementSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static SupplierSettlementSnapshot of(ObjectNode data) { return new SupplierSettlementSnapshot(data); } }
+    record FeeAccrualSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static FeeAccrualSnapshot of(ObjectNode data) { return new FeeAccrualSnapshot(data); } }
     record InvoiceSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static InvoiceSnapshot of(ObjectNode data) { return new InvoiceSnapshot(data); } }
 
     static RevenueRecognitionSnapshot revenueSnapshot(RevenueRecognition recognition, ObjectMapper mapper) {
@@ -66,6 +79,114 @@ final class JacksonFinanceSettlementJson {
         return ReconciliationCase.rehydrate(n.path("reconciliationCaseId").asText(), n.path("orderId").asText(), n.path("paymentIntentId").asText(), n.path("differenceType").asText(),
             money(n.withObject("expectedAmount")), money(n.withObject("actualAmount")), n.path("description").asText(), Instant.parse(n.path("openedAt").asText()),
             ReconciliationCase.ReconciliationCaseStatus.valueOf(n.path("status").asText()), textOrNull(n, "resolution"), textOrNull(n, "resolutionNote"));
+    }
+
+    static ReconciliationBatchSnapshot batchSnapshot(ReconciliationBatch batch, ObjectMapper mapper) {
+        ObjectNode n = mapper.createObjectNode();
+        n.put("batchId", batch.batchId());
+        n.put("settlementDate", batch.settlementDate().toString());
+        n.put("cutoffAt", batch.cutoffAt().toString());
+        n.put("currency", batch.currency().getCurrencyCode());
+        ArrayNode entries = n.putArray("entries");
+        for (ReconciliationEntry entry : batch.entries()) {
+            ObjectNode e = entries.addObject();
+            e.put("entryId", entry.entryId());
+            e.put("orderId", entry.orderId());
+            e.put("paymentIntentId", entry.paymentIntentId());
+            money(e.putObject("platformAmount"), entry.platformAmount());
+            money(e.putObject("channelAmount"), entry.channelAmount());
+            e.put("status", entry.status().name());
+            money(e.putObject("variance"), entry.variance());
+            ArrayNode sourceEventIds = e.putArray("sourceEventIds");
+            entry.sourceEventIds().forEach(sourceEventIds::add);
+        }
+        return new ReconciliationBatchSnapshot(n);
+    }
+
+    static ReconciliationBatch toBatch(ReconciliationBatchSnapshot snapshot, ObjectMapper mapper) {
+        ObjectNode n = snapshot.data();
+        List<ReconciliationEntry> entries = new ArrayList<>();
+        n.withArray("entries").forEach(item -> {
+            ObjectNode e = (ObjectNode) item;
+            List<String> sourceEventIds = new ArrayList<>();
+            e.withArray("sourceEventIds").forEach(id -> sourceEventIds.add(id.asText()));
+            entries.add(new ReconciliationEntry(e.path("entryId").asText(), e.path("orderId").asText(), e.path("paymentIntentId").asText(),
+                money(e.withObject("platformAmount")), money(e.withObject("channelAmount")), ReconciliationStatus.valueOf(e.path("status").asText()),
+                money(e.withObject("variance")), sourceEventIds));
+        });
+        return ReconciliationBatch.rehydrate(n.path("batchId").asText(), LocalDate.parse(n.path("settlementDate").asText()),
+            Instant.parse(n.path("cutoffAt").asText()), Currency.getInstance(n.path("currency").asText()), entries);
+    }
+
+    static SupplierSettlementSnapshot supplierSnapshot(SupplierSettlement settlement, ObjectMapper mapper) {
+        ObjectNode n = mapper.createObjectNode();
+        n.put("supplierSettlementId", settlement.supplierSettlementId());
+        n.put("supplierId", settlement.supplierId());
+        n.put("startDate", settlement.period().startDate().toString());
+        n.put("endDate", settlement.period().endDate().toString());
+        n.put("frequency", settlement.period().frequency().name());
+        n.put("platformCommissionPct", settlement.platformCommissionPct().toPlainString());
+        n.put("withholdingTaxPct", settlement.withholdingTaxPct().toPlainString());
+        n.put("currency", settlement.grossRevenue().currency().getCurrencyCode());
+        ArrayNode allocations = n.putArray("allocations");
+        for (RevenueAllocation allocation : settlement.allocations()) {
+            ObjectNode a = allocations.addObject();
+            a.put("orderId", allocation.orderId());
+            money(a.putObject("grossRevenue"), allocation.grossRevenue());
+            money(a.putObject("platformCommission"), allocation.platformCommission());
+            money(a.putObject("taxesWithheld"), allocation.taxesWithheld());
+            money(a.putObject("supplierPayable"), allocation.supplierPayable());
+            money(a.putObject("adjustments"), allocation.adjustments());
+        }
+        return new SupplierSettlementSnapshot(n);
+    }
+
+    static SupplierSettlement toSupplier(SupplierSettlementSnapshot snapshot, ObjectMapper mapper) {
+        ObjectNode n = snapshot.data();
+        List<RevenueAllocation> allocations = new ArrayList<>();
+        n.withArray("allocations").forEach(item -> {
+            ObjectNode a = (ObjectNode) item;
+            allocations.add(new RevenueAllocation(a.path("orderId").asText(), money(a.withObject("grossRevenue")), money(a.withObject("platformCommission")),
+                money(a.withObject("taxesWithheld")), money(a.withObject("supplierPayable")), money(a.withObject("adjustments"))));
+        });
+        return SupplierSettlement.rehydrate(n.path("supplierSettlementId").asText(), n.path("supplierId").asText(),
+            new SettlementPeriod(LocalDate.parse(n.path("startDate").asText()), LocalDate.parse(n.path("endDate").asText()), SettlementFrequency.valueOf(n.path("frequency").asText())),
+            new BigDecimal(n.path("platformCommissionPct").asText()), new BigDecimal(n.path("withholdingTaxPct").asText()), allocations, Currency.getInstance(n.path("currency").asText()));
+    }
+
+    static FeeAccrualSnapshot feeSnapshot(FeeAccrual accrual, ObjectMapper mapper) {
+        ObjectNode n = mapper.createObjectNode();
+        n.put("feeAccrualId", accrual.feeAccrualId());
+        n.put("orderId", accrual.orderId());
+        money(n.putObject("platformServiceFee"), accrual.platformServiceFee());
+        money(n.putObject("supplierServiceFee"), accrual.supplierServiceFee());
+        money(n.putObject("retainedCancellationFee"), accrual.retainedCancellationFee());
+        ObjectNode tax = n.putObject("taxCalculation");
+        money(tax.putObject("vatOnServiceFees"), accrual.taxCalculation().vatOnServiceFees());
+        money(tax.putObject("stampDutyOnTickets"), accrual.taxCalculation().stampDutyOnTickets());
+        money(tax.putObject("withholdingOnSupplierPayment"), accrual.taxCalculation().withholdingOnSupplierPayment());
+        money(tax.putObject("taxReversal"), accrual.taxCalculation().taxReversal());
+        n.put("sourceEventId", accrual.sourceEventId());
+        return new FeeAccrualSnapshot(n);
+    }
+
+    static FeeAccrual toFee(FeeAccrualSnapshot snapshot, ObjectMapper mapper) {
+        ObjectNode n = snapshot.data();
+        ObjectNode tax = n.withObject("taxCalculation");
+        return FeeAccrual.rehydrate(
+            n.path("feeAccrualId").asText(),
+            n.path("orderId").asText(),
+            money(n.withObject("platformServiceFee")),
+            money(n.withObject("supplierServiceFee")),
+            money(n.withObject("retainedCancellationFee")),
+            new TaxCalculation(
+                money(tax.withObject("vatOnServiceFees")),
+                money(tax.withObject("stampDutyOnTickets")),
+                money(tax.withObject("withholdingOnSupplierPayment")),
+                money(tax.withObject("taxReversal"))
+            ),
+            n.path("sourceEventId").asText(n.path("feeAccrualId").asText())
+        );
     }
 
     static InvoiceSnapshot invoiceSnapshot(Invoice invoice, ObjectMapper mapper) {
