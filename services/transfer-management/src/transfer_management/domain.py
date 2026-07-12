@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Iterable, Mapping
 
@@ -45,6 +45,14 @@ class ContractType(StrEnum):
     SUPPLIER_PROTECTED = "SUPPLIER_PROTECTED"
     PLATFORM_ASSISTED = "PLATFORM_ASSISTED"
     SELF_TRANSFER = "SELF_TRANSFER"
+
+
+class TransferMode(StrEnum):
+    TRAIN = "TRAIN"
+    METRO = "METRO"
+    BUS = "BUS"
+    FLIGHT = "FLIGHT"
+    TAXI = "TAXI"
 
 
 class ContractStatus(StrEnum):
@@ -169,6 +177,179 @@ def require_text(value: Any, field_name: str) -> str:
     if not text:
         raise DomainError(f"{field_name} is required")
     return text
+
+
+
+LARGE_HUB_STATIONS = frozenset({"北京南", "上海虹桥", "广州南"})
+MEDIUM_HUB_STATIONS = frozenset({"南京南", "武汉", "成都东"})
+
+
+def station_default_mct_minutes(station_ref: str) -> int:
+    station = str(station_ref or "").strip()
+    if station in LARGE_HUB_STATIONS:
+        return 25
+    if station in MEDIUM_HUB_STATIONS:
+        return 20
+    return 15
+
+
+@dataclass(frozen=True, slots=True)
+class MinimumConnectionTime:
+    stationRef: str
+    fromMode: TransferMode
+    toMode: TransferMode
+    minutes: int
+
+    def __post_init__(self) -> None:
+        require_text(self.stationRef, "stationRef")
+        if self.minutes <= 0:
+            raise DomainError("minimum connection time must be positive")
+
+    @classmethod
+    def default_for(cls, station_ref: str, from_mode: TransferMode = TransferMode.TRAIN, to_mode: TransferMode = TransferMode.TRAIN, same_platform: bool = False, override_minutes: int | None = None) -> "MinimumConnectionTime":
+        if override_minutes is not None:
+            minutes = int(override_minutes)
+        elif from_mode is TransferMode.TRAIN and to_mode is TransferMode.METRO:
+            minutes = 35
+        elif same_platform and from_mode is to_mode:
+            minutes = 10
+        else:
+            minutes = station_default_mct_minutes(station_ref)
+        return cls(station_ref, from_mode, to_mode, minutes)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"stationRef": self.stationRef, "fromMode": self.fromMode.value, "toMode": self.toMode.value, "minutes": self.minutes}
+
+
+@dataclass(frozen=True, slots=True)
+class CrossModeTransfer:
+    fromMode: TransferMode
+    toMode: TransferMode
+    fromStationRef: str
+    toStationRef: str
+    walkingMinutes: int
+    mctOverride: int | None = None
+
+    def __post_init__(self) -> None:
+        require_text(self.fromStationRef, "fromStationRef")
+        require_text(self.toStationRef, "toStationRef")
+        if self.walkingMinutes < 0:
+            raise DomainError("walkingMinutes must be non-negative")
+        if self.mctOverride is not None and self.mctOverride <= 0:
+            raise DomainError("mctOverride must be positive")
+
+    @property
+    def instructions(self) -> str:
+        if self.fromMode is self.toMode:
+            return f"Remain within {self.fromStationRef} and follow signs to the connecting {self.toMode.value.lower()} service."
+        return f"Transfer from {self.fromMode.value} at {self.fromStationRef} to {self.toMode.value} at {self.toStationRef}; allow about {self.walkingMinutes} minutes for walking and wayfinding."
+
+    @property
+    def walkingDistanceMeters(self) -> int:
+        return self.walkingMinutes * 80
+
+    def minimum_connection_time(self) -> MinimumConnectionTime:
+        return MinimumConnectionTime.default_for(self.toStationRef, self.fromMode, self.toMode, self.fromStationRef == self.toStationRef, self.mctOverride)
+
+    def to_json(self) -> dict[str, Any]:
+        data = {"fromMode": self.fromMode.value, "toMode": self.toMode.value, "fromStationRef": self.fromStationRef, "toStationRef": self.toStationRef, "walkingMinutes": self.walkingMinutes, "walkingDistanceMeters": self.walkingDistanceMeters, "instructions": self.instructions}
+        if self.mctOverride is not None:
+            data["mctOverride"] = self.mctOverride
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionGuarantee:
+    transferId: str
+    guaranteed: bool
+    itineraryRef: str
+
+    def __post_init__(self) -> None:
+        require_text(self.transferId, "transferId")
+        require_text(self.itineraryRef, "itineraryRef")
+
+    def to_json(self) -> dict[str, Any]:
+        return {"transferId": self.transferId, "guaranteed": self.guaranteed, "itineraryRef": self.itineraryRef}
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionValidationResult:
+    valid: bool
+    reason: str | None
+    availableMinutes: int
+    requiredMinutes: int
+
+    def to_json(self) -> dict[str, Any]:
+        data = {"valid": self.valid, "availableMinutes": self.availableMinutes, "requiredMinutes": self.requiredMinutes}
+        if self.reason:
+            data["reason"] = self.reason
+        return data
+
+
+class ConnectionValidator:
+    def validate(self, arrival_at: datetime, departure_at: datetime, minimum_connection_time: MinimumConnectionTime) -> ConnectionValidationResult:
+        available = int((departure_at - arrival_at).total_seconds() // 60)
+        if available < minimum_connection_time.minutes:
+            return ConnectionValidationResult(False, "INSUFFICIENT_CONNECTION_TIME", available, minimum_connection_time.minutes)
+        return ConnectionValidationResult(True, None, available, minimum_connection_time.minutes)
+
+    def ensure_valid(self, arrival_at: datetime, departure_at: datetime, minimum_connection_time: MinimumConnectionTime) -> ConnectionValidationResult:
+        result = self.validate(arrival_at, departure_at, minimum_connection_time)
+        if not result.valid:
+            raise DomainError(result.reason or "CONNECTION_VALIDATION_FAILED")
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class RebookingRequest:
+    originalTransferId: str
+    missedLegRef: str
+    searchWindow: timedelta
+
+    def __post_init__(self) -> None:
+        require_text(self.originalTransferId, "originalTransferId")
+        require_text(self.missedLegRef, "missedLegRef")
+        if self.searchWindow.total_seconds() <= 0:
+            raise DomainError("searchWindow must be positive")
+
+    def to_json(self) -> dict[str, Any]:
+        return {"originalTransferId": self.originalTransferId, "missedLegRef": self.missedLegRef, "searchWindowMinutes": int(self.searchWindow.total_seconds() // 60)}
+
+
+@dataclass(frozen=True, slots=True)
+class RebookingSuggestion:
+    newSegmentRef: str
+    newDepartureTime: datetime
+    additionalCost: int = 0
+
+    def __post_init__(self) -> None:
+        require_text(self.newSegmentRef, "newSegmentRef")
+        if self.additionalCost < 0:
+            raise DomainError("additionalCost must be non-negative")
+
+    def to_json(self) -> dict[str, Any]:
+        return {"newSegmentRef": self.newSegmentRef, "newDepartureTime": rfc3339_utc(self.newDepartureTime), "additionalCost": self.additionalCost}
+
+
+class MissedConnectionDetector:
+    def is_missed(self, actual_arrival_at: datetime, next_departure_at: datetime, minimum_connection_time: MinimumConnectionTime) -> bool:
+        return actual_arrival_at > next_departure_at - timedelta(minutes=minimum_connection_time.minutes)
+
+    def choose_rebooking(self, request: RebookingRequest, missed_at: datetime, suggestions: Iterable[RebookingSuggestion]) -> RebookingSuggestion | None:
+        latest = missed_at + request.searchWindow
+        feasible = [suggestion for suggestion in suggestions if missed_at <= suggestion.newDepartureTime <= latest]
+        return min(feasible, key=lambda suggestion: suggestion.newDepartureTime) if feasible else None
+
+
+@dataclass(frozen=True, slots=True)
+class TransferProposal:
+    transferId: str
+    validations: tuple[ConnectionValidationResult, ...] = ()
+
+    def validateConnectionTimes(self) -> None:
+        for validation in self.validations:
+            if not validation.valid:
+                raise DomainError(validation.reason or "CONNECTION_VALIDATION_FAILED")
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +536,11 @@ class Connection:
     scheduledServiceRef: str | None = None
     replacementOfConnectionId: str | None = None
     replacementConnectionId: str | None = None
+    fromMode: TransferMode = TransferMode.TRAIN
+    toMode: TransferMode = TransferMode.TRAIN
+    guaranteed: bool = False
+    transferInstructions: str | None = None
+    walkingDistanceMeters: int | None = None
     version: int = 0
 
     def transition(self, target: ConnectionStatus, at: datetime) -> "Connection":
@@ -424,6 +610,13 @@ class Connection:
             data["replacementOfConnectionId"] = self.replacementOfConnectionId
         if self.replacementConnectionId:
             data["replacementConnectionId"] = self.replacementConnectionId
+        data["fromMode"] = self.fromMode.value
+        data["toMode"] = self.toMode.value
+        data["guaranteed"] = self.guaranteed
+        if self.transferInstructions:
+            data["transferInstructions"] = self.transferInstructions
+        if self.walkingDistanceMeters is not None:
+            data["walkingDistanceMeters"] = self.walkingDistanceMeters
         if self.recovery and self.recovery.recoveryTriggerStatus is not RecoveryTriggerStatus.NOT_REQUIRED:
             data["recovery"] = self.recovery.to_json()
         return data
@@ -590,7 +783,7 @@ class TransferRiskPolicy:
 
     def classify(self, available_minutes: int, buffer_minutes: int, reasons: Iterable[str]) -> tuple[RiskLevel, tuple[str, ...]]:
         explanation = list(reasons)
-        if "NEXT_SEGMENT_CANCELLED" in explanation or "PREVIOUS_SEGMENT_CANCELLED" in explanation:
+        if "NEXT_SEGMENT_CANCELLED" in explanation or "PREVIOUS_SEGMENT_CANCELLED" in explanation or "MISSED_CONNECTION_MCT_VIOLATION" in explanation:
             return RiskLevel.MISSED, tuple(dict.fromkeys(explanation))
         if available_minutes < 0:
             explanation.append("CUTOFF_EXPIRED")
