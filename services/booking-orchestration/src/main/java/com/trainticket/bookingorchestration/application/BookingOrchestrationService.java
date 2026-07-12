@@ -7,6 +7,7 @@ import com.trainticket.bookingorchestration.domain.BookingEvent;
 import com.trainticket.bookingorchestration.domain.BookingSaga;
 import com.trainticket.bookingorchestration.domain.BookingSagaStatus;
 import com.trainticket.bookingorchestration.domain.BookingSagaStep;
+import com.trainticket.bookingorchestration.domain.BookingStepStatus;
 import com.trainticket.bookingorchestration.domain.DomainEvent;
 import com.trainticket.bookingorchestration.domain.ProviderReference;
 import com.trainticket.bookingorchestration.domain.ProviderReservationConfirmed;
@@ -65,7 +66,9 @@ public class BookingOrchestrationService {
         String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, command.journeyOrderId(), command.segmentRefs());
         sagas.save(saga, correlationId);
-        publishEvents(saga.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
+        String causationId = "cmd-" + UUID.randomUUID();
+        publishEvents(saga.pullEvents(), correlationId, causationId);
+        publishRiskAssessmentRequested(sagaId, command.journeyOrderId(), command.accountId(), correlationId, causationId);
 
         StartSagaResult result = new StartSagaResult(sagaId, command.journeyOrderId(), mapSagaStatus(saga.status()), clock.instant());
         return result;
@@ -149,9 +152,11 @@ public class BookingOrchestrationService {
         Map<String, Object> payload = payloadMap(envelope.payload());
         switch (envelope.eventType()) {
             case "JourneyOrderCreated" -> handleJourneyOrderCreated(payload, envelope.correlationId(), envelope.eventId());
+            case "RiskAssessmentCompleted" -> handleRiskAssessmentCompleted(payload, envelope.correlationId(), envelope.eventId());
             case "CapacityHeld", "CapacityHoldConfirmed" -> handleCapacityHeld(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
             case "CapacityReleased", "CapacityHoldExpired" -> handleCapacityReleased(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
             case "CapacityHoldFailed" -> handleCapacityHoldFailed(payload, envelope.correlationId(), envelope.eventId());
+            case "SeatAllocated" -> handleSeatAllocated(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentCreated" -> handlePaymentIntentCreated(payload);
             case "PaymentCaptured" -> handlePaymentCaptured(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentFailed", "PaymentFailed", "PaymentExpired", "PaymentIntentExpired" -> handlePaymentFailure(payload, envelope.correlationId(), envelope.eventId());
@@ -160,6 +165,7 @@ public class BookingOrchestrationService {
             case "EntitlementIssued" -> handleEntitlementIssued(payload, envelope.correlationId(), envelope.eventId());
             case "EntitlementIssueFailed" -> handleEntitlementIssueFailed(payload, envelope.correlationId(), envelope.eventId());
             case "EntitlementVoided" -> handleEntitlementVoided(payload, envelope.correlationId(), envelope.eventId());
+            case "InvoiceGenerated" -> handleInvoiceGenerated(payload, envelope.correlationId(), envelope.eventId());
             default -> {
                 // Streams contain event types that do not affect this saga.
             }
@@ -188,10 +194,12 @@ public class BookingOrchestrationService {
         if (segmentRefs.isEmpty()) {
             throw new IllegalArgumentException("JourneyOrderCreated payload requires segmentRefs or segments");
         }
+        String accountId = firstText(payload, "accountId", "buyerRef");
         String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, journeyOrderId, segmentRefs);
         sagas.save(saga, correlationId);
         publishEvents(saga.pullEvents(), correlationId, causationId);
+        publishRiskAssessmentRequested(sagaId, journeyOrderId, accountId, correlationId, causationId);
     }
 
     private void handleCapacityHeld(String eventType, Map<String, Object> payload, String correlationId, String causationId) {
@@ -397,10 +405,12 @@ public class BookingOrchestrationService {
         markTicketed(sagaId, new MarkTicketedCommand(segmentBookingId, entitlementId),
             "event:" + causationId + ":" + segmentBookingId, correlationId);
         BookingSaga saga = sagas.findById(sagaId).orElse(null);
-        if (saga != null && saga.steps().stream().allMatch(step -> step.status().name().equals("SUCCEEDED"))) {
-            saga.complete();
+        if (saga != null && saga.status() == BookingSagaStatus.TICKETING && allSegmentsTicketed(saga.sagaId())) {
+            saga.advanceTo(BookingSagaStatus.INVOICING);
             sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
+            String paymentRef = paymentRefForSaga(saga.sagaId());
+            publishInvoiceRequested(saga.sagaId(), saga.journeyOrderId(), paymentRef, correlationId, causationId);
         }
     }
 
@@ -451,6 +461,120 @@ public class BookingOrchestrationService {
         publishEvents(booking.pullEvents(), correlationId, causationId);
     }
 
+    private void handleRiskAssessmentCompleted(Map<String, Object> payload, String correlationId, String causationId) {
+        String sagaId = text(payload.get("sagaId"));
+        String verdict = text(payload.get("verdict"));
+        if (sagaId == null || verdict == null) {
+            throw new IllegalArgumentException("RiskAssessmentCompleted payload requires sagaId and verdict");
+        }
+        BookingSaga saga = sagas.findById(sagaId).orElse(null);
+        if (saga == null) {
+            LOGGER.warn("Ack-skipping RiskAssessmentCompleted: unknown saga {}", sagaId);
+            return;
+        }
+        if (saga.status() != BookingSagaStatus.RISK_CHECKING) {
+            LOGGER.warn("Ack-skipping RiskAssessmentCompleted: saga {} not in RISK_CHECKING (status={})", sagaId, saga.status());
+            return;
+        }
+        if ("PASS".equals(verdict)) {
+            saga.recordStepSucceeded(sagaId + ":risk");
+            saga.advanceTo(BookingSagaStatus.RESERVING);
+            sagas.save(saga, correlationId);
+            publishEvents(saga.pullEvents(), correlationId, causationId);
+        } else if ("BLOCK".equals(verdict)) {
+            saga.fail("risk-blocked");
+            sagas.save(saga, correlationId);
+            publishEvents(saga.pullEvents(), correlationId, causationId);
+        } else {
+            LOGGER.warn("Ack-skipping RiskAssessmentCompleted: unknown verdict '{}' for saga {}", verdict, sagaId);
+        }
+    }
+
+    private void handleSeatAllocated(Map<String, Object> payload, String correlationId, String causationId) {
+        String sagaId = text(payload.get("sagaId"));
+        String segmentBookingId = firstText(payload, "segmentBookingId", "segmentBookingRef");
+        String seatAllocationRef = text(payload.get("seatAllocationRef"));
+        if (sagaId == null || segmentBookingId == null) {
+            throw new IllegalArgumentException("SeatAllocated payload requires sagaId and segmentBookingId");
+        }
+        BookingSaga saga = sagas.findById(sagaId).orElse(null);
+        if (saga == null) {
+            LOGGER.warn("Ack-skipping SeatAllocated: unknown saga {}", sagaId);
+            return;
+        }
+        if (saga.status() != BookingSagaStatus.SEAT_ASSIGNING) {
+            LOGGER.warn("Ack-skipping SeatAllocated: saga {} not in SEAT_ASSIGNING (status={})", sagaId, saga.status());
+            return;
+        }
+        SegmentBooking booking = bySegmentBookingId(segmentBookingId);
+        if (booking != null && seatAllocationRef != null) {
+            booking.assignSeat(seatAllocationRef);
+            segmentBookings.save(booking, sagaId);
+        }
+        String stepKey = sagaId + ":seat:" + (booking != null ? booking.segmentRef() : segmentBookingId);
+        try {
+            saga.recordStepSucceeded(stepKey);
+        } catch (IllegalArgumentException ex) {
+            LOGGER.warn("Ack-skipping SeatAllocated: unknown step key {} for saga {}", stepKey, sagaId);
+            return;
+        }
+        if (allSeatAssignStepsSucceeded(saga)) {
+            saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
+        }
+        sagas.save(saga, correlationId);
+        publishEvents(saga.pullEvents(), correlationId, causationId);
+    }
+
+    private void handleInvoiceGenerated(Map<String, Object> payload, String correlationId, String causationId) {
+        String sagaId = text(payload.get("sagaId"));
+        if (sagaId == null) {
+            throw new IllegalArgumentException("InvoiceGenerated payload requires sagaId");
+        }
+        BookingSaga saga = sagas.findById(sagaId).orElse(null);
+        if (saga == null) {
+            LOGGER.warn("Ack-skipping InvoiceGenerated: unknown saga {}", sagaId);
+            return;
+        }
+        if (saga.status() != BookingSagaStatus.INVOICING) {
+            LOGGER.warn("Ack-skipping InvoiceGenerated: saga {} not in INVOICING (status={})", sagaId, saga.status());
+            return;
+        }
+        saga.recordStepSucceeded(sagaId + ":invoice");
+        saga.complete();
+        sagas.save(saga, correlationId);
+        publishEvents(saga.pullEvents(), correlationId, causationId);
+    }
+
+    private boolean allSeatAssignStepsSucceeded(BookingSaga saga) {
+        return saga.steps().stream()
+            .filter(step -> step.name().startsWith("seat-assign-"))
+            .allMatch(step -> step.status() == BookingStepStatus.SUCCEEDED);
+    }
+
+    private boolean allSegmentsTicketed(String sagaId) {
+        List<SegmentBooking> bookings = segmentBookingsForSaga(sagaId);
+        return !bookings.isEmpty() && bookings.stream()
+            .allMatch(b -> "TICKETED".equals(b.status().name()));
+    }
+
+    private String paymentRefForSaga(String sagaId) {
+        return paymentIntentRefs.findSagaId(sagaId).isPresent() ? sagaId : null;
+    }
+
+    private void publishRiskAssessmentRequested(String sagaId, String journeyOrderId, String accountId,
+                                                 String correlationId, String causationId) {
+        List<DomainEvent> events = List.of(new BookingEvent.RiskAssessmentRequested(
+            UUID.randomUUID().toString(), sagaId, clock.instant(), journeyOrderId, accountId));
+        publishEvents(events, correlationId, causationId);
+    }
+
+    private void publishInvoiceRequested(String sagaId, String journeyOrderId, String paymentRef,
+                                          String correlationId, String causationId) {
+        List<DomainEvent> events = List.of(new BookingEvent.InvoiceRequested(
+            UUID.randomUUID().toString(), sagaId, clock.instant(), journeyOrderId, paymentRef));
+        publishEvents(events, correlationId, causationId);
+    }
+
     private void failSegmentBookingForEntitlement(SegmentBooking booking, String reason, String correlationId,
                                                   String causationId) {
         if (booking.status().name().equals("FAILED") || booking.status().name().equals("CANCELLED")) {
@@ -469,10 +593,18 @@ public class BookingOrchestrationService {
 
     private BookingSaga startSagaAggregate(String sagaId, String journeyOrderId, List<String> segmentRefs) {
         List<BookingSagaStep> plan = new ArrayList<>();
+        plan.add(BookingSaga.stepPlan("risk-check", sagaId + ":risk",
+            Duration.ofMinutes(2), 2, "none"));
         for (String segmentRef : segmentRefs) {
             plan.add(BookingSaga.stepPlan("reserve-" + segmentRef, sagaId + ":" + segmentRef,
                 Duration.ofMinutes(5), 3, "release-capacity"));
         }
+        for (String segmentRef : segmentRefs) {
+            plan.add(BookingSaga.stepPlan("seat-assign-" + segmentRef, sagaId + ":seat:" + segmentRef,
+                Duration.ofMinutes(2), 2, "release-seat"));
+        }
+        plan.add(BookingSaga.stepPlan("invoice", sagaId + ":invoice",
+            Duration.ofMinutes(2), 1, "none"));
         return BookingSaga.start(sagaId, journeyOrderId, "1", "purchase", plan, clock);
     }
 
@@ -493,13 +625,32 @@ public class BookingOrchestrationService {
         String stepKey = sagaId + ":" + booking.segmentRef();
         try {
             saga.recordStepSucceeded(stepKey);
-            if (saga.steps().stream().allMatch(step -> step.status().name().equals("SUCCEEDED"))) {
-                saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
+            if (allReserveStepsSucceeded(saga)) {
+                saga.advanceTo(BookingSagaStatus.SEAT_ASSIGNING);
+                sagas.save(saga, correlationId);
+                publishEvents(saga.pullEvents(), correlationId, causationId);
+                publishSeatAllocationRequests(saga, correlationId, causationId);
+            } else {
+                sagas.save(saga, correlationId);
+                publishEvents(saga.pullEvents(), correlationId, causationId);
             }
-            sagas.save(saga, correlationId);
-            publishEvents(saga.pullEvents(), correlationId, causationId);
         } catch (IllegalArgumentException ignored) {
             // The saga plan may have been started from upstream order data with a different step layout.
+        }
+    }
+
+    private boolean allReserveStepsSucceeded(BookingSaga saga) {
+        return saga.steps().stream()
+            .filter(step -> step.name().startsWith("reserve-"))
+            .allMatch(step -> step.status() == BookingStepStatus.SUCCEEDED);
+    }
+
+    private void publishSeatAllocationRequests(BookingSaga saga, String correlationId, String causationId) {
+        for (SegmentBooking booking : segmentBookingsForSaga(saga.sagaId())) {
+            List<DomainEvent> seatEvents = List.of(new SegmentBookingEvent.SeatAllocationRequested(
+                UUID.randomUUID().toString(), booking.segmentBookingId(), clock.instant(),
+                saga.sagaId(), booking.segmentRef(), booking.travelerRef()));
+            publishEvents(seatEvents, correlationId, causationId);
         }
     }
 
@@ -564,6 +715,15 @@ public class BookingOrchestrationService {
             case BookingEvent.BookingSagaStepFailed ignored -> Optional.empty();
             case BookingEvent.BookingSagaRetryScheduled ignored -> Optional.empty();
             case BookingEvent.BookingSagaManualReviewRequired ignored -> Optional.empty();
+            case BookingEvent.RiskAssessmentRequested requested -> Optional.of(new ContractEvent(
+                "RiskAssessmentRequested",
+                new RiskAssessmentRequestedPayload(requested.aggregateId(), requested.journeyOrderId(), requested.accountId())));
+            case BookingEvent.InvoiceRequested invoiceReq -> Optional.of(new ContractEvent(
+                "InvoiceRequested",
+                new InvoiceRequestedPayload(invoiceReq.aggregateId(), invoiceReq.journeyOrderId(), invoiceReq.paymentRef())));
+            case SegmentBookingEvent.SeatAllocationRequested seatReq -> Optional.of(new ContractEvent(
+                "SeatAllocationRequested",
+                new SeatAllocationRequestedPayload(seatReq.aggregateId(), seatReq.sagaId(), seatReq.segmentRef(), seatReq.travelerRef())));
             case SegmentBookingEvent.ProviderReferenceAttached ignored -> Optional.empty();
             case SegmentBookingEvent.ProviderReservationTimedOut ignored -> Optional.empty();
             case SegmentBookingEvent.SegmentBookingCancelRequested ignored -> Optional.empty();
@@ -824,10 +984,13 @@ public class BookingOrchestrationService {
     public static String mapSagaStatus(BookingSagaStatus status) {
         return switch (status) {
             case PLANNED -> "STARTED";
+            case RISK_CHECKING -> "RISK_CHECKING";
             case RESERVING -> "RESERVING";
+            case SEAT_ASSIGNING -> "SEAT_ASSIGNING";
             case AWAITING_PAYMENT -> "WAITING_PAYMENT";
             case CONFIRMING -> "HELD";
             case TICKETING -> "TICKETING";
+            case INVOICING -> "INVOICING";
             case COMPLETED -> "COMPLETED";
             case PARTIALLY_CONFIRMED -> "HELD";
             case COMPENSATING, MANUAL_REVIEW, FAILED -> "FAILED";
@@ -852,6 +1015,10 @@ public class BookingOrchestrationService {
     public record SegmentTicketedPayload(String segmentBookingId, String entitlementId) {}
     public record BookingSagaCompletedPayload(String sagaId, String journeyOrderId) {}
     public record BookingSagaFailedPayload(String sagaId, String journeyOrderId, String reason) {}
+    public record RiskAssessmentRequestedPayload(String sagaId, String journeyOrderId, String accountId) {}
+    public record SeatAllocationRequestedPayload(String segmentBookingId, String sagaId, String segmentRef,
+                                                  String travelerRef) {}
+    public record InvoiceRequestedPayload(String sagaId, String journeyOrderId, String paymentRef) {}
 
     public record StartSagaCommand(String journeyOrderId, String accountId, String offerId,
                                    List<String> travelerRefs, List<String> segmentRefs) {}

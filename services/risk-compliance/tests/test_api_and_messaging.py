@@ -673,3 +673,125 @@ def test_ip_frequency_whitelist_bypasses_known_good_range(monkeypatch) -> None:
         service.handle_event(envelope)
 
     assert [event.eventType for event in publisher.envelopes].count("RiskBlockApplied") == 0
+
+
+# ── RiskAssessmentRequested (booking saga) ────────────────────────────────
+
+
+def risk_assessment_requested_envelope(
+    event_id: str,
+    saga_id: str = "saga-001",
+    journey_order_id: str = "jord-001",
+    account_id: str = "acct-001",
+) -> EventEnvelope:
+    return EventEnvelope(
+        eventId=event_id,
+        eventType="RiskAssessmentRequested",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="booking-orchestration",
+        schemaVersion=1,
+        payload={
+            "sagaId": saga_id,
+            "journeyOrderId": journey_order_id,
+            "accountId": account_id,
+        },
+    )
+
+
+def test_risk_assessment_requested_publishes_completed_event() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = risk_assessment_requested_envelope(f"evt-{uuid7()}")
+
+    service.handle_event(envelope)
+
+    assert len(publisher.envelopes) == 1
+    completed = publisher.envelopes[0]
+    assert completed.eventType == "RiskAssessmentCompleted"
+    assert completed.producer == "risk-compliance"
+    assert completed.schemaVersion == 1
+    assert completed.payload["sagaId"] == "saga-001"
+    assert completed.payload["journeyOrderId"] == "jord-001"
+    assert completed.payload["accountId"] == "acct-001"
+    assert completed.payload["verdict"] == "PASS"
+    assert completed.payload["riskScore"] == 10
+    assert completed.payload["assessmentId"].startswith("asmt-")
+    assert completed.causationId == envelope.eventId
+
+
+def test_risk_assessment_requested_is_idempotent() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = risk_assessment_requested_envelope(f"evt-{uuid7()}")
+
+    service.handle_event(envelope)
+    service.handle_event(envelope)
+
+    assert len(publisher.envelopes) == 1
+
+
+def test_risk_assessment_requested_deterministic_ids() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    event_id = f"evt-{uuid7()}"
+    envelope = risk_assessment_requested_envelope(event_id)
+
+    service.handle_event(envelope)
+
+    completed = publisher.envelopes[0]
+    assessment_id = completed.payload["assessmentId"]
+    assert assessment_id == deterministic_prefixed_id("asmt", event_id, "saga-assessment")
+    assert completed.eventId == deterministic_event_id(assessment_id)
+
+
+def test_risk_assessment_requested_envelope_has_correct_structure() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = risk_assessment_requested_envelope(f"evt-{uuid7()}")
+
+    service.handle_event(envelope)
+
+    completed = publisher.envelopes[0]
+    payload_keys = set(completed.payload.keys())
+    assert payload_keys == {"sagaId", "journeyOrderId", "accountId", "verdict", "riskScore", "assessmentId"}
+
+
+def test_risk_assessment_requested_ignores_unknown_event_types() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+    envelope = EventEnvelope(
+        eventId=f"evt-{uuid7()}",
+        eventType="SomeOtherEvent",
+        occurredAt="2026-07-05T10:30:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="booking-orchestration",
+        schemaVersion=1,
+        payload={"sagaId": "saga-001"},
+    )
+
+    service.handle_event(envelope)
+
+    assert len(publisher.envelopes) == 0
+
+
+def test_risk_assessment_requested_different_sagas_produce_different_assessments() -> None:
+    publisher = InMemoryEventPublisher()
+    service = RiskComplianceService(publisher, InMemoryAssessmentRepository())
+
+    service.handle_event(risk_assessment_requested_envelope(f"evt-{uuid7()}", saga_id="saga-A", journey_order_id="jord-A", account_id="acct-A"))
+    service.handle_event(risk_assessment_requested_envelope(f"evt-{uuid7()}", saga_id="saga-B", journey_order_id="jord-B", account_id="acct-B"))
+
+    assert len(publisher.envelopes) == 2
+    assert publisher.envelopes[0].payload["sagaId"] == "saga-A"
+    assert publisher.envelopes[1].payload["sagaId"] == "saga-B"
+    assert publisher.envelopes[0].payload["assessmentId"] != publisher.envelopes[1].payload["assessmentId"]
+
+
+def test_subscription_includes_booking_orchestration_stream() -> None:
+    from risk_compliance.adapters.messaging.redis_streams import RISK_COMPLIANCE_SUBSCRIPTIONS
+
+    assert "events:booking-orchestration" in RISK_COMPLIANCE_SUBSCRIPTIONS
+    assert "events:journey-order" in RISK_COMPLIANCE_SUBSCRIPTIONS
