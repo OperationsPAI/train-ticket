@@ -133,6 +133,9 @@ redis:
 loadgen:
   enabled: true
   workers: 200
+defaults:
+  env:
+    OUTBOX_POLL_INTERVAL_MS: '10'
 services:
   journey-order:
     db: journey_order
@@ -142,6 +145,7 @@ services:
       IDENTITY_VERIFICATION_PREORDER_ENABLED: 'true'
       CONSUMER_THREADS: '4'
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+      OUTBOX_POLL_INTERVAL_MS: '10'
     resources:
       requests: &svc_req
         cpu: 500m
@@ -156,6 +160,7 @@ services:
     env:
       CONSUMER_THREADS: '4'
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
+      OUTBOX_POLL_INTERVAL_MS: '10'
     resources:
       requests: *svc_req
       limits: *svc_lim
