@@ -77,7 +77,7 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
-          args: ["-c", "max_connections={{ $pg.maxConnections | default 300 }}", "-c", "shared_buffers={{ $pg.sharedBuffers | default "256MB" }}", "-c", "work_mem={{ $pg.workMem | default "8MB" }}"]
+          args: ["-c", "max_connections={{ $pg.maxConnections | default 300 }}", "-c", "shared_buffers={{ $pg.sharedBuffers | default "256MB" }}", "-c", "work_mem={{ $pg.workMem | default "8MB" }}", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
           startupProbe:
             exec:
               command: ["pg_isready", "-U", "{{ $.Values.postgres.credentials.username }}"]
