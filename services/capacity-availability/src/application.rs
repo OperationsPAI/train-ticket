@@ -339,7 +339,7 @@ impl CapacityService {
             )
             .unwrap();
             // Create a default segment/class pool; each class is isolated by pool_key.
-            let units: Vec<CapacityUnitRef> = (0..req.quantity.max(500))
+            let units: Vec<CapacityUnitRef> = (0..req.quantity.max(2000))
                 .map(|i| {
                     let seat = format!("{:02}{}", ((i / 4) + 1), ['A', 'B', 'C', 'D'][i % 4]);
                     CapacityUnitRef::new(seat).unwrap()
