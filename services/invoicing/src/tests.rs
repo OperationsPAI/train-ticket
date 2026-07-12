@@ -280,3 +280,122 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
             .starts_with("SIM")
     );
 }
+
+#[tokio::test]
+async fn saga_invoice_requested_creates_invoice_and_publishes_generated() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let envelope = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-001",
+            "journeyOrderId": "jo-001",
+            "paymentRef": "pay-ref-001"
+        }),
+    );
+    svc.apply_subscribed_event(envelope).await.unwrap();
+
+    // Verify invoice record was created in state
+    let snap = svc.snapshot();
+    assert_eq!(snap.saga_invoices.len(), 1);
+    let inv = snap.saga_invoices.values().next().unwrap();
+    assert_eq!(inv.saga_id, "saga-001");
+    assert_eq!(inv.journey_order_id, "jo-001");
+    assert_eq!(inv.payment_ref, "pay-ref-001");
+    assert!(inv.invoice_id.starts_with("inv-"));
+    assert!(inv.invoice_number.starts_with("INV-"));
+    assert!(!inv.issued_at.is_empty());
+
+    // Verify InvoiceGenerated event was published
+    let events = publisher.events();
+    let generated = events
+        .iter()
+        .find(|e| e.event_type == "InvoiceGenerated")
+        .expect("InvoiceGenerated event should be published");
+    assert_eq!(generated.producer, "invoicing");
+    assert_eq!(generated.payload["sagaId"], "saga-001");
+    assert_eq!(generated.payload["journeyOrderId"], "jo-001");
+    assert_eq!(generated.payload["paymentRef"], "pay-ref-001");
+    assert!(
+        generated.payload["invoiceId"]
+            .as_str()
+            .unwrap()
+            .starts_with("inv-")
+    );
+    assert!(
+        generated.payload["invoiceNumber"]
+            .as_str()
+            .unwrap()
+            .starts_with("INV-")
+    );
+    assert!(generated.payload["issuedAt"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn saga_invoice_requested_is_idempotent() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let envelope = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-002",
+            "journeyOrderId": "jo-002",
+            "paymentRef": "pay-ref-002"
+        }),
+    );
+    let event_id = envelope.event_id.clone();
+    svc.apply_subscribed_event(envelope).await.unwrap();
+    // Send duplicate with same event_id
+    let mut dup = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-002",
+            "journeyOrderId": "jo-002",
+            "paymentRef": "pay-ref-002"
+        }),
+    );
+    dup.event_id = event_id;
+    svc.apply_subscribed_event(dup).await.unwrap();
+    // Should still have exactly one invoice
+    assert_eq!(svc.snapshot().saga_invoices.len(), 1);
+    // Should have published only one event
+    let events: Vec<_> = publisher
+        .events()
+        .into_iter()
+        .filter(|e| e.event_type == "InvoiceGenerated")
+        .collect();
+    assert_eq!(events.len(), 1);
+}
+
+#[tokio::test]
+async fn saga_invoice_requested_skips_incomplete_payload() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    // Missing paymentRef
+    let envelope = rust_kit::messaging::EventEnvelope::new(
+        "InvoiceRequested",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        None::<String>,
+        "booking-orchestration",
+        serde_json::json!({
+            "sagaId": "saga-003",
+            "journeyOrderId": "jo-003"
+        }),
+    );
+    svc.apply_subscribed_event(envelope).await.unwrap();
+    assert_eq!(svc.snapshot().saga_invoices.len(), 0);
+    assert!(publisher.events().is_empty());
+}

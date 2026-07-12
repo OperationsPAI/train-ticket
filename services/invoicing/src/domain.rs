@@ -351,6 +351,19 @@ pub struct DeactivateTitleResponse {
     pub status: TitleStatus,
     pub deactivated_at: String,
 }
+/// Invoice record created in response to a booking saga's InvoiceRequested event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SagaInvoice {
+    pub invoice_id: String,
+    pub journey_order_id: String,
+    pub invoice_number: String,
+    pub payment_ref: String,
+    pub saga_id: String,
+    pub issued_at: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T> {
@@ -844,6 +857,10 @@ pub enum InvoicingEvent {
         red_invoice: EInvoice,
         at: String,
     },
+    SagaInvoiceGenerated {
+        invoice: SagaInvoice,
+        at: String,
+    },
 }
 
 impl InvoicingEvent {
@@ -1048,6 +1065,15 @@ impl InvoicingEvent {
                 red_flush.version,
                 at.clone(),
                 json!({"redFlushId":red_flush.red_flush_id,"originalInvoiceId":red_flush.original_invoice_id,"originalInvoiceNumber":original_invoice_number,"redInvoiceId":red_invoice.e_invoice_id,"redInvoiceNumber":red_invoice.invoice_number,"postSalesCaseId":red_flush.post_sales_case_id,"orderId":red_flush.order_id,"totalAmount":red_invoice.total_amount,"completedAt":at,"status":"COMPLETED"}),
+                None,
+                None,
+            ),
+            Self::SagaInvoiceGenerated { invoice, at } => (
+                "InvoiceGenerated",
+                invoice.invoice_id.clone(),
+                1,
+                at.clone(),
+                json!({"sagaId":invoice.saga_id,"journeyOrderId":invoice.journey_order_id,"invoiceId":invoice.invoice_id,"invoiceNumber":invoice.invoice_number,"paymentRef":invoice.payment_ref,"issuedAt":invoice.issued_at}),
                 None,
                 None,
             ),
