@@ -50,6 +50,86 @@ timestamps. All timestamps are RFC3339 UTC.
 | `departureTime` | RFC3339 UTC | yes | Segment departure time. |
 | `arrivalTime` | RFC3339 UTC | yes | Segment arrival time. |
 
+
+### TemporaryServiceAdded
+
+| Field | Description |
+|---|---|
+| **Producer** | service-plan |
+| **Consumers** | trip-planning, notification |
+| **Trigger** | A rush-period temporary service (`L*` train number) is added. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tempServiceRef` | string | yes | Temporary scheduled service ID. |
+| `baseServiceRef` | string | yes | Base scheduled service ID. |
+| `period` | string | yes | Schedule period (`SPRING_RUSH`, `SUMMER_RUSH`, `NATIONAL_DAY`, `LABOR_DAY`). |
+
+### TrainDelayed
+
+| Field | Description |
+|---|---|
+| **Producer** | service-plan |
+| **Consumers** | trip-planning, disruption-recovery, notification |
+| **Trigger** | A delay is recorded for a service segment and propagated downstream. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `serviceRef` | string | yes | Scheduled service ID. |
+| `segmentRef` | string | yes | Affected segment ID. |
+| `delayMinutes` | integer | yes | Propagated delay minutes after dampening. |
+| `estimatedNewDeparture` | RFC3339 UTC | yes | Estimated departure time after delay propagation. |
+
+### TrainCancelled
+
+| Field | Description |
+|---|---|
+| **Producer** | service-plan |
+| **Consumers** | trip-planning, disruption-recovery, notification |
+| **Trigger** | A service is cancelled for a specific service date. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `serviceRef` | string | yes | Scheduled service ID. |
+| `date` | RFC3339 UTC | yes | Cancelled service date. |
+| `reason` | string | yes | Operational cancellation reason code or text. |
+
+### TrainRestored
+
+| Field | Description |
+|---|---|
+| **Producer** | service-plan |
+| **Consumers** | trip-planning, disruption-recovery, notification |
+| **Trigger** | A previously cancelled service date is restored. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `serviceRef` | string | yes | Scheduled service ID. |
+| `date` | RFC3339 UTC | yes | Restored service date. |
+
+### TemporaryServiceExpired
+
+| Field | Description |
+|---|---|
+| **Producer** | service-plan |
+| **Consumers** | trip-planning |
+| **Trigger** | Rush-period cleanup expires temporary services after period end. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `serviceRef` | string | yes | Temporary scheduled service ID. |
+| `periodEndDate` | RFC3339 UTC | yes | End date of the rush period. |
+
 ## Consumer Notes
 
 - Trip Planning treats these events as the authoritative plan feed: itinerary

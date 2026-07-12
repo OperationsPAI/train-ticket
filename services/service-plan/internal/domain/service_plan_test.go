@@ -226,3 +226,105 @@ func plannedPtr(t *testing.T, dayOffset int, minuteOfDay time.Duration) *Planned
 func date(year int, month time.Month, day int) time.Time {
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
+
+func TestSeasonalVariantShowsTemporaryServicesAndExpiresAfterPeriod(t *testing.T) {
+	plan := mustPublishedPlan(t, 2026)
+	temp, err := NewTemporaryService("tmp-1", "svc-1", "L1234", SchedulePeriodSpringRush, []TransportNodeID{"node-a", "node-c"}, []string{"SECOND_CLASS"})
+	if err != nil {
+		t.Fatalf("temporary service: %v", err)
+	}
+	plan, added, err := plan.AddTemporaryService(temp)
+	if err != nil {
+		t.Fatalf("add temporary service: %v", err)
+	}
+	if added.Period != SchedulePeriodSpringRush || added.BaseServiceRef != "svc-1" {
+		t.Fatalf("unexpected temporary event: %#v", added)
+	}
+	variant := plan.ActiveVariant(date(2026, time.February, 1))
+	if variant.PeriodType() != SchedulePeriodSpringRush || variant.CapacityMultiplier() != 1.30 || len(variant.TemporaryServices) != 1 {
+		t.Fatalf("unexpected spring variant: %#v", variant)
+	}
+	regular := plan.ActiveVariant(date(2026, time.June, 1))
+	if regular.PeriodType() != SchedulePeriodRegular || len(regular.TemporaryServices) != 0 {
+		t.Fatalf("unexpected regular variant: %#v", regular)
+	}
+
+	expiredPlan, events, err := plan.ExpireTemporaryServices(date(2026, time.March, 11))
+	if err != nil {
+		t.Fatalf("expire temporary services: %v", err)
+	}
+	if len(events) != 1 || events[0].ServiceRef != "tmp-1" || !events[0].PeriodEndDate.Equal(date(2026, time.March, 10)) {
+		t.Fatalf("unexpected expiration events: %#v", events)
+	}
+	if got := expiredPlan.ActiveVariant(date(2026, time.February, 1)); len(got.TemporaryServices) != 0 {
+		t.Fatalf("expected expired temporary service hidden, got %#v", got.TemporaryServices)
+	}
+}
+
+func TestDelayPropagationDampensDownstreamStops(t *testing.T) {
+	service := mustScheduledService(t)
+	segments := service.Segments()
+	scheduled := map[ServiceSegmentID]time.Time{
+		segments[0].ID: time.Date(2026, time.January, 5, 8, 0, 0, 0, time.UTC),
+		segments[1].ID: time.Date(2026, time.January, 5, 9, 0, 0, 0, time.UTC),
+		segments[2].ID: time.Date(2026, time.January, 5, 10, 0, 0, 0, time.UTC),
+	}
+	updated, events, err := service.RecordDelay(segments[0].ID, 30, scheduled)
+	if err != nil {
+		t.Fatalf("record delay: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected delay event for each downstream stop, got %#v", events)
+	}
+	want := []int{30, 28, 26}
+	for i, event := range events {
+		if event.DelayMinutes != want[i] {
+			t.Fatalf("event %d delay=%d want %d", i, event.DelayMinutes, want[i])
+		}
+	}
+	if len(updated.DelayRecords()) != 3 || updated.DelayRecords()[1].DelayMinutes != 28 {
+		t.Fatalf("expected delay records retained: %#v", updated.DelayRecords())
+	}
+}
+
+func TestCancelAndRestoreSpecificDate(t *testing.T) {
+	plan := mustPublishedPlan(t, 2026)
+	cancelled, cancelEvent, err := plan.CancelForDate("svc-1", date(2026, time.January, 5), "WEATHER", time.Date(2026, time.January, 4, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelEvent.ServiceRef != "svc-1" || cancelEvent.Reason != "WEATHER" || !cancelled.Cancellations()[0].IsActive() {
+		t.Fatalf("unexpected cancellation: %#v %#v", cancelEvent, cancelled.Cancellations())
+	}
+	restored, restoreEvent, err := cancelled.RestoreForDate("svc-1", date(2026, time.January, 5), time.Date(2026, time.January, 4, 13, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if restoreEvent.ServiceRef != "svc-1" || restored.Cancellations()[0].IsActive() {
+		t.Fatalf("unexpected restoration: %#v %#v", restoreEvent, restored.Cancellations())
+	}
+}
+
+func mustPublishedPlan(t *testing.T, year int) ServicePlan {
+	t.Helper()
+	validated := mustValidatedVersion(t, "v-seasonal", date(year, time.January, 1), date(year, time.December, 31))
+	plan, _, err := NewServicePlan("plan-seasonal", "G1", validated)
+	if err != nil {
+		t.Fatalf("service plan: %v", err)
+	}
+	plan, _, err = plan.PublishVersion(validated.ID(), time.Date(year-1, time.December, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("publish plan: %v", err)
+	}
+	return plan
+}
+
+func mustScheduledService(t *testing.T) ScheduledService {
+	t.Helper()
+	plan := mustPublishedPlan(t, 2026)
+	service, _, err := NewScheduledService("svc-1", "G1-20260105", plan.Versions()[0], date(2026, time.January, 5))
+	if err != nil {
+		t.Fatalf("scheduled service: %v", err)
+	}
+	return service
+}
