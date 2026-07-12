@@ -109,6 +109,18 @@ export function metadata(): ServiceMetadata {
 
 export type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
+  getNotificationTrail?: (notificationId: string) => Promise<NotificationTrailResponse | undefined> | NotificationTrailResponse | undefined;
+}>;
+
+export type NotificationTrailResponse = Readonly<{
+  notificationId: string;
+  status: string;
+  attempts: readonly Readonly<{
+    channelUsed: string;
+    attemptedAt: string;
+    status: string;
+    reason?: string;
+  }>[];
 }>;
 
 export function createApp(instrumentation: InstrumentationHooks = {}, storage?: AppStorage): FastifyInstance {
@@ -142,6 +154,15 @@ export function createApp(instrumentation: InstrumentationHooks = {}, storage?: 
   app.get("/ready", async (_request, reply) => readyBody(reply, storage));
   app.get("/readyz", async (_request, reply) => readyBody(reply, storage));
 
+  app.get("/api/v1/notifications/:id/trail", async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const trail = await storage?.getNotificationTrail?.(id);
+    if (trail === undefined) {
+      sendError(reply, 404, "NOT_FOUND", `Notification ${id} was not found`, requestContext(request));
+      return;
+    }
+    return trail;
+  });
 
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));

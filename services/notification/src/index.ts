@@ -31,6 +31,19 @@ export {
   type TemplateCode,
   type RecipientRef,
   type ChannelType,
+  type NotificationChannel,
+  ChannelFallbackChain,
+  NotificationAggregator,
+  RateLimiter,
+  RateLimitExceeded,
+  TemplateRenderer,
+  builtInNotificationTemplates,
+  type DeliveryAttempt,
+  type DeliveryAttemptStatus,
+  type NotificationStatus,
+  type NotificationTemplate,
+  type NotificationTemplateType,
+  type RenderedNotification,
   type IntentType,
   type EventId,
   type ReceiptId,
@@ -77,7 +90,7 @@ export {
   type EventPublisher,
   type EventSubscriber,
 } from "./application/messaging.js";
-export { NonConformantNotificationTrigger, NotificationApplicationService, type DeliveryResult, type ExternalTriggerResult, type NotificationChannelGateway, type NotificationTaskStore, type UserPreference, type UserPreferenceRepository } from "./application/notification-service.js";
+export { NonConformantNotificationTrigger, NotificationApplicationService, type ContactProfile, type DeliveryResult, type ExternalTriggerResult, type NotificationChannelGateway, type NotificationTaskStore, type RateLimitStore, type RecipientContactRepository, type UserPreference, type UserPreferenceRepository } from "./application/notification-service.js";
 export {
   NOTIFICATION_CONSUMER_GROUP,
   NOTIFICATION_PRODUCER,
@@ -88,5 +101,5 @@ export {
 export { RedisStreamEventPublisher } from "./adapters/messaging/publisher.js";
 export { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 export { startNotificationMessaging, type NotificationMessagingRuntime } from "./adapters/messaging/runtime.js";
-export { PostgresNotificationTaskRepository, PostgresUserPreferenceRepository } from "./adapters/storage/notification-repository.js";
+export { PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./adapters/storage/notification-repository.js";
 export { startNotificationStorage, type NotificationStorageRuntime } from "./adapters/storage/runtime.js";
