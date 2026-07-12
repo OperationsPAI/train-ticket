@@ -145,6 +145,7 @@ impl InMemoryInvoicingService {
         state.orders = snapshot.orders;
         state.amounts = snapshot.amounts;
         state.idempotency = snapshot.idempotency;
+        state.saga_invoices = snapshot.saga_invoices;
     }
 
     pub(crate) fn snapshot(&self) -> InvoicingStateSnapshot {
@@ -157,6 +158,7 @@ impl InMemoryInvoicingService {
             orders: state.orders.clone(),
             amounts: state.amounts.clone(),
             idempotency: state.idempotency.clone(),
+            saga_invoices: state.saga_invoices.clone(),
         }
     }
 
@@ -182,6 +184,9 @@ impl InMemoryInvoicingService {
             return Ok(());
         }
         match envelope.event_type.as_str() {
+            "InvoiceRequested" if envelope.producer == "booking-orchestration" => {
+                self.handle_saga_invoice_requested(envelope).await
+            }
             "JourneyOrderCreated" | "JourneyOrderConfirmed" | "JourneyOrderPostSalesAdjusted" => {
                 self.project_order(envelope).await
             }
@@ -358,6 +363,60 @@ impl InMemoryInvoicingService {
             .insert(e.event_id);
         Ok(())
     }
+    async fn handle_saga_invoice_requested(
+        &self,
+        e: rust_kit::messaging::EventEnvelope,
+    ) -> Result<(), InvoicingError> {
+        let saga_id = string_field(&e.payload, "sagaId").unwrap_or_default();
+        let journey_order_id = string_field(&e.payload, "journeyOrderId").unwrap_or_default();
+        let payment_ref = string_field(&e.payload, "paymentRef").unwrap_or_default();
+        if saga_id.is_empty() || journey_order_id.is_empty() {
+            log::warn!(
+                "InvoiceRequested missing sagaId or journeyOrderId, skipping: {}",
+                e.event_id,
+            );
+            self.state
+                .lock()
+                .unwrap()
+                .processed_events
+                .insert(e.event_id);
+            return Ok(());
+        }
+        let now = current_rfc3339();
+        let invoice_id = format!("inv-{}", uuid::Uuid::now_v7());
+        let ts_millis = chrono::Utc::now().timestamp_millis();
+        let invoice_number = format!("INV-{ts_millis}");
+        let invoice = SagaInvoice {
+            invoice_id: invoice_id.clone(),
+            journey_order_id: journey_order_id.clone(),
+            invoice_number: invoice_number.clone(),
+            payment_ref: payment_ref.clone(),
+            saga_id: saga_id.clone(),
+            issued_at: now.clone(),
+            created_at: now.clone(),
+        };
+        let event = InvoicingEvent::SagaInvoiceGenerated {
+            invoice: invoice.clone(),
+            at: now,
+        };
+        {
+            let mut s = self.state.lock().unwrap();
+            s.saga_invoices.insert(invoice_id, invoice);
+        }
+        publish_events(
+            self.publisher.as_ref(),
+            vec![event],
+            e.correlation_id,
+            Some(e.event_id.clone()),
+        )
+        .await?;
+        self.state
+            .lock()
+            .unwrap()
+            .processed_events
+            .insert(e.event_id);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -369,6 +428,8 @@ pub(crate) struct InvoicingStateSnapshot {
     pub orders: HashMap<String, OrderProjection>,
     pub amounts: HashMap<String, AmountBasis>,
     pub idempotency: HashMap<String, IdemRecord>,
+    #[serde(default)]
+    pub saga_invoices: HashMap<String, SagaInvoice>,
 }
 
 #[derive(Default)]
@@ -381,6 +442,7 @@ struct InMemoryState {
     amounts: HashMap<String, AmountBasis>,
     idempotency: HashMap<String, IdemRecord>,
     processed_events: HashSet<String>,
+    saga_invoices: HashMap<String, SagaInvoice>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OrderProjection {
