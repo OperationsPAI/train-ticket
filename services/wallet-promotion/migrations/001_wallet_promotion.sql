@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS promotion_instrument_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_promotion_account ON promotion_instrument_snapshots ((data->>'accountId'));
+-- Text-ordered index: RFC3339 UTC strings sort chronologically, and the
+-- timestamptz cast is not IMMUTABLE in index expressions (REQ-081A ruling).
+CREATE INDEX IF NOT EXISTS idx_promotion_expiry ON promotion_instrument_snapshots ((data->>'validUntil')) WHERE data->>'status' IN ('ISSUED','RESERVED','RELEASED');
+CREATE TABLE IF NOT EXISTS wallet_account_snapshots (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_account_account ON wallet_account_snapshots ((data->>'accountId'));
+CREATE TABLE IF NOT EXISTS wallet_ledger_entries (ledger_entry_id text PRIMARY KEY, wallet_account_id text NOT NULL, benefit_id text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS benefit_redemptions (redemption_id text PRIMARY KEY, benefit_id text NOT NULL, reason_key text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(benefit_id, reason_key));
+CREATE TABLE IF NOT EXISTS redemption_reversals (reversal_id text PRIMARY KEY, redemption_id text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS outbox (seq bigserial PRIMARY KEY, event_id text NOT NULL UNIQUE, stream text NOT NULL, envelope jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), published_at timestamptz);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished_seq ON outbox(seq) WHERE published_at IS NULL;
+CREATE TABLE IF NOT EXISTS idempotency_records (key text PRIMARY KEY, request_hash text NOT NULL, status_code int NOT NULL, response_body jsonb, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS processed_events (event_id text PRIMARY KEY, stream text, processed_at timestamptz NOT NULL DEFAULT now());

@@ -1,0 +1,56 @@
+# S2 — Staircase scenario: steady-state load with stepped RPS increases.
+#
+# Open-loop driver ramps RPS through a staircase of levels, holding each
+# step for `step_duration_seconds`.  The mix includes purchases and refunds
+# to exercise the full lifecycle under sustained, predictable throughput.
+
+name: s2-staircase
+description: "Steady-state staircase: step RPS every N seconds"
+
+load:
+  model: open            # open-loop: token bucket controls arrival rate
+  workers: 300           # max concurrent coroutines (back-pressure ceiling)
+  duration_seconds: 600  # total test duration
+  rps: 10                # initial requests per second
+
+  # Staircase profile: list of (rps, hold_seconds) steps.
+  # After the last step the test continues at that RPS until duration expires.
+  staircase:
+    - {rps: 10,  hold_seconds: 60}
+    - {rps: 25,  hold_seconds: 60}
+    - {rps: 50,  hold_seconds: 60}
+    - {rps: 75,  hold_seconds: 60}
+    - {rps: 100, hold_seconds: 60}
+    - {rps: 125, hold_seconds: 60}
+    - {rps: 150, hold_seconds: 60}
+    - {rps: 100, hold_seconds: 60}   # cool-down step
+    - {rps: 50,  hold_seconds: 60}
+    - {rps: 25,  hold_seconds: 60}
+
+target:
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"
+  request_timeout_seconds: 15
+
+mix:
+  purchase: 0.60
+  refund: 0.15
+  browse: 0.25
+
+constraints:
+  target_segments: null  # spread across available inventory
+  target_capacity: null
+
+seed:
+  cities: ["Beijing", "Shanghai", "Guangzhou", "Hangzhou"]
+  departure_date: "2026-09-01"
+
+polling:
+  attempts: 10
+  interval_seconds: 3
+
+staff:
+  workers: 6
+  think_time_seconds: {min: 0.3, max: 1.5}
+  queue_poll_seconds: 0.3
+  p_risk_approve: 0.90

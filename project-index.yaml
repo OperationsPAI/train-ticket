@@ -1,0 +1,1376 @@
+project:
+  name: train-ticket-ddd-greenfield
+  languages: [java, golang, python, rust, typescript]
+
+# Current framing: this repository is being prepared for a full rewrite /
+# greenfield rebuild. REQ-001 through REQ-012 describe the current skeleton,
+# devcontainer, and regenerated implementation slices. REQ-015 and REQ-016 describe
+# the Provider Integration ACL foundation and the current OpenTelemetry collection
+# baseline. REQ-011, REQ-013, and REQ-014
+# require status reconciliation before they become authoritative active slices.
+# REQ-101 through REQ-123 are retained as legacy WP-derived references for
+# traceability; they are not the current execution backlog unless explicitly
+# regenerated and re-approved. Legacy WP IDs in runtime profiles are
+# traceability-only metadata. See docs/00-current-status.md.
+requirements:
+  - id: REQ-001
+    title: "Polyglot bounded-context skeleton"
+    description: "Initialize one service skeleton per DDD bounded context and one platform shared-kernel module."
+    priority: P0
+    status: implemented
+    code:
+      - path: service-catalog.json
+        description: "Machine-readable service ownership and language catalog."
+      - path: services
+        description: "Bounded-context service skeletons."
+      - path: platform/shared-kernel-rust
+        description: "Shared Kernel reference skeleton."
+    tests:
+      - path: scripts/check-skeleton.py
+        description: "Validates catalog, service files, and bootstrapped language checks."
+    docs:
+      - path: docs/05-service-architecture/language-selection.md
+    depends_on: []
+    confidence: confirmed
+    source: "docs/03-ddd-final/domain-reduce-status.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-002
+    title: "Polyglot devcontainer toolchain"
+    description: "The development container includes the runtime tools needed by the selected Java, Go, Python, Rust, and TypeScript skeletons, plus a reproducible AgentM/ARL worker snapshot image."
+    priority: P0
+    status: implemented
+    code:
+      - path: .devcontainer/Dockerfile
+        description: "Installs language toolchains and operational CLI tools."
+      - path: .devcontainer/agent-env.Dockerfile
+        description: "Copies the current repository snapshot into the devcontainer base image for ARL agent-env sessions."
+      - path: .devcontainer/scripts/check.sh
+        description: "Reports available toolchain versions and validates the repository layout."
+      - path: .dockerignore
+        description: "Keeps local caches, AgentM artifacts, and build outputs out of Docker build contexts."
+      - path: Makefile
+        description: "Provides host entry points for devcontainer checks and AgentM/ARL worker image builds."
+    tests:
+      - path: .devcontainer/scripts/check.sh
+        description: "Smoke check for documentation and toolchain availability."
+      - path: Makefile
+        description: "Runs strict repository validation inside the devcontainer and ARL worker snapshot images."
+    docs:
+      - path: .devcontainer/README.md
+      - path: docs/06-agentic-development/README.md
+    depends_on: [REQ-001]
+    confidence: confirmed
+    source: ".devcontainer/README.md"
+
+  - id: REQ-003
+    title: "Shared Kernel contract baseline"
+    description: "Define the first active shared-kernel contract primitives for cross-context references, money, time windows, and event envelopes."
+    priority: P0
+    status: implemented
+    code:
+      - path: platform/shared-kernel-rust/src/lib.rs
+        description: "Rust reference implementation for shared IDs, value objects, and event envelope invariants."
+    tests:
+      - path: platform/shared-kernel-rust/src/lib.rs
+        description: "Unit tests for shared contract invariants."
+      - path: platform/shared-kernel-rust/tests/skeleton.rs
+        description: "Public API construction test for contract primitives."
+    docs:
+      - path: platform/shared-kernel-rust/README.md
+      - path: docs/00-current-status.md
+    depends_on: [REQ-001, REQ-002]
+    confidence: confirmed
+    source: "docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-004
+    title: "Place and network master-data primitives"
+    description: "Define validated Place, TransportNode, and ProviderPlaceMapping domain primitives for Place & Network master data, including explicit low-confidence provider mapping gaps."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/place-network/internal/domain/master_data.go
+        description: "Go domain primitives and validation for places, transport nodes, and provider place mappings."
+    tests:
+      - path: services/place-network/internal/domain/master_data_test.go
+        description: "Unit tests for Place & Network master-data invariants."
+    docs:
+      - path: services/place-network/README.md
+      - path: docs/00-current-status.md
+      - path: README.md
+    depends_on: [REQ-001, REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/place-network.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-005
+    title: "Service Plan domain foundation"
+    description: "Define the first coherent Go domain foundation for Service Plan schedules, including plans, patterns, stops, calendars, timetables, scheduled services, service segments, and plan versions."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/service-plan/internal/domain/service_plan.go
+        description: "Go domain model and validation for ServicePlan, ServicePattern, ServiceStop, Calendar, Timetable, ScheduledService, ServiceSegment, and PlanVersion."
+      - path: services/service-plan/internal/domain/profile.go
+        description: "Service profile updated to the regenerated REQ-005 ownership set."
+    tests:
+      - path: services/service-plan/internal/domain/service_plan_test.go
+        description: "Unit tests for stop ordering, calendar exceptions, timetable cross-day semantics, version publication, immutability, overlap checks, and scheduled-service materialization."
+    docs:
+      - path: services/service-plan/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/service-plan.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-004]
+    confidence: confirmed
+    source: "docs/02-domains/service-plan.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-006
+    title: "Capacity and Availability domain foundation"
+    description: "Define the first Rust domain foundation for inventory pools, station intervals, capacity holds, and non-locking availability snapshots."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/capacity-availability/src/lib.rs
+        description: "Rust domain model and invariants for InventoryPool, StationInterval, CapacityHold lifecycle, and AvailabilitySnapshot calculation."
+    tests:
+      - path: services/capacity-availability/src/lib.rs
+        description: "Unit tests for capacity and availability invariants."
+      - path: services/capacity-availability/tests/skeleton.rs
+        description: "Public API/profile construction test for the capacity service."
+    docs:
+      - path: services/capacity-availability/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/capacity-availability.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-005]
+    confidence: confirmed
+    source: "docs/02-domains/capacity-availability.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-007
+    title: "Fare and Pricing domain foundation"
+    description: "Define the first Python domain foundation for rule-set publication, quote calculation, immutable pricing snapshots, and basic post-sales refund/change fee assessment."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/fare-pricing/src/fare_pricing/domain.py
+        description: "Fare & Pricing domain models and invariants for FareRuleSet, FareRule, FareQuote, RuleSnapshot, FareBreakdown, PriceExplanation, FeeAssessment, and AdjustmentQuote."
+      - path: services/fare-pricing/src/fare_pricing/__init__.py
+        description: "Public package exports and service profile ownership for the Fare & Pricing foundation."
+    tests:
+      - path: services/fare-pricing/tests/test_domain.py
+        description: "Unit tests for rule validation, quote calculation, snapshot immutability, quote expiry, and refund/change fee assessment."
+      - path: services/fare-pricing/tests/test_skeleton.py
+        description: "Service skeleton health/profile tests retained for FastAPI registration."
+    docs:
+      - path: services/fare-pricing/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/fare-pricing.md
+    depends_on: [REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/fare-pricing.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+
+  - id: REQ-008
+    title: "Trip Planning search foundation"
+    description: "Define a deterministic, explainable Trip Planning search foundation with validated trip intents and non-authoritative price/availability hints."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/trip-planning/src/trip_planning/domain.py
+        description: "Trip intent, itinerary candidate, ranking, and hint domain primitives."
+      - path: services/trip-planning/src/trip_planning/application.py
+        description: "Search application function and FastAPI-safe adapter path."
+      - path: services/trip-planning/src/trip_planning/__init__.py
+        description: "Public package exports and service profile ownership for the Trip Planning foundation."
+    tests:
+      - path: services/trip-planning/tests/test_search_foundation.py
+        description: "Unit tests for intent validation, deterministic ranking, exclusion explanations, and non-authoritative hints."
+      - path: services/trip-planning/tests/test_skeleton.py
+        description: "Service skeleton health/profile tests retained for FastAPI registration."
+    docs:
+      - path: services/trip-planning/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/trip-planning.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-005, REQ-006, REQ-007]
+    confidence: confirmed
+    source: "docs/02-domains/trip-planning.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-009
+    title: "Offer Management domain foundation"
+    description: "Define immutable Offer Management snapshots, lifecycle/TTL behavior, passenger mix, risk disclosures, and boundary proof that offers do not mutate downstream domains."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/offer-management/src/domain.ts
+        description: "Offer Management domain model and invariants for offer snapshots, items, references, disclosures, and events."
+      - path: services/offer-management/src/index.ts
+        description: "Public exports, service profile, and Fastify health endpoint."
+    tests:
+      - path: services/offer-management/src/domain.test.ts
+        description: "Unit tests for offer lifecycle, immutable snapshots, TTL behavior, passenger mix, disclosures, and non-mutation boundary proof."
+    docs:
+      - path: services/offer-management/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/offer-management.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-006, REQ-007, REQ-008]
+    confidence: confirmed
+    source: "docs/02-domains/offer-management.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+  - id: REQ-015
+    title: "Provider Integration ACL foundation"
+    description: "Implement the Provider Integration anti-corruption layer foundation in Go. Owns ProviderAdapter, ProviderRequestLog, WebhookInbox, ProviderOutbox, ProviderReconciliationBatch aggregates with signature-verified webhooks, idempotent external call logging, status probes, and reconciliation import."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/provider-integration/internal/domain/provider_adapter.go
+        description: "ProviderAdapter aggregate with capability matrix, auth config, SLA policy, and lifecycle commands."
+      - path: services/provider-integration/internal/domain/provider_request_log.go
+        description: "ProviderRequestLog aggregate with idempotent request logging, state machine, raw archive, and retry chain."
+      - path: services/provider-integration/internal/domain/provider_status_probe.go
+        description: "ProviderStatusProbe aggregate for scheduling and executing status queries."
+      - path: services/provider-integration/internal/domain/webhook_inbox.go
+        description: "WebhookInbox aggregate with signature verification, deduplication, event mapping, and outbox publishing."
+      - path: services/provider-integration/internal/domain/provider_outbox.go
+        description: "ProviderOutbox aggregate for publishing mapped events with idempotency guarantees."
+      - path: services/provider-integration/internal/domain/provider_reconciliation.go
+        description: "ProviderReconciliationBatch aggregate for importing and matching settlement statements."
+      - path: services/provider-integration/internal/domain/profile.go
+        description: "Service profile, health check, and ownership summary."
+      - path: services/provider-integration/internal/http/router.go
+        description: "HTTP router with standard runtime middleware and operational endpoints."
+      - path: services/provider-integration/cmd/provider-integration/main.go
+        description: "Service entry point."
+    tests:
+      - path: services/provider-integration/internal/domain/provider_adapter_test.go
+        description: "Unit tests for ProviderAdapter invariants and lifecycle."
+      - path: services/provider-integration/internal/domain/provider_request_log_test.go
+        description: "Unit tests for ProviderRequestLog state machine and idempotency."
+      - path: services/provider-integration/internal/domain/provider_status_probe_test.go
+        description: "Unit tests for ProviderStatusProbe scheduling and execution."
+
+  - id: REQ-017
+    title: "Traveler Profile domain foundation"
+    description: "Implement the Traveler Profile domain foundation in Java. This domain owns traveler master data: TravelerProfile aggregates, identity documents, eligibility summaries, and preference snapshots consumed by Fare & Pricing and Entitlement issuance."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/TravelerProfile.java
+        description: "TravelerProfile aggregate root with lifecycle, document, eligibility, and preference management."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/Document.java
+        description: "Identity document aggregate with verification, expiry, revocation lifecycle."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/EligibilitySummary.java
+        description: "Eligibility facts with validity windows and revocation."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/PreferenceSnapshot.java
+        description: "Immutable preference snapshots with versioning."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/TravelerProfileEvent.java
+        description: "Sealed event interface with 13 event types."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/domain/EventMetadata.java
+        description: "Standard event metadata envelope."
+      - path: services/traveler-profile/src/main/java/com/trainticket/travelerprofile/ServiceProfile.java
+        description: "Service profile with REQ-017 ownership."
+      - path: services/traveler-profile/README.md
+        description: "Service README with domain documentation."
+    tests:
+      - path: services/traveler-profile/src/test/java/com/trainticket/travelerprofile/domain/TravelerProfileTest.java
+        description: "38 unit tests for domain invariants, document lifecycle, eligibility, preferences, and booking validation."
+      - path: services/traveler-profile/src/test/java/com/trainticket/travelerprofile/ApplicationTest.java
+        description: "4 application skeleton tests (health, runtime endpoints, context filter, tracing seam)."
+    docs:
+      - path: docs/02-domains/traveler-profile.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/traveler-profile.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+  - id: REQ-020
+    title: "Risk & Compliance domain foundation"
+    description: "Implement the Risk & Compliance domain foundation in Python. This domain owns risk assessments, challenges, block/allow decisions, and evidence summaries for order and payment flows."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/risk-compliance/src/risk_compliance/domain.py
+        description: "Domain model with RiskAssessment, Challenge, RiskDecision, EvidenceSummary aggregates and commands."
+      - path: services/risk-compliance/src/risk_compliance/__init__.py
+        description: "Public API exports for domain types, commands, and runtime."
+      - path: services/risk-compliance/src/risk_compliance/runtime.py
+        description: "Service profile with REQ-020 ownership."
+      - path: docs/08-contracts/events/risk-compliance.md
+        description: "Events and commands contract for Risk & Compliance."
+    tests:
+      - path: services/risk-compliance/tests/test_domain.py
+        description: "Unit tests for domain invariants, state machines, commands, and cross-context contracts."
+      - path: services/risk-compliance/tests/test_skeleton.py
+        description: "Application skeleton tests (health, runtime endpoints, tracing seam, domain type imports)."
+    docs:
+      - path: docs/02-domains/risk-compliance.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/risk-compliance.md
+    depends_on: [REQ-010, REQ-012, REQ-017, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/risk-compliance.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-021
+    title: "Account domain foundation"
+    description: "Implement the Account domain foundation in TypeScript. This domain owns user account identity, sessions, preferences, freeze state, and the account closure saga shell."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/account/src/domain.ts
+        description: "Account domain model and invariants for UserAccount, Session, Preference, and AccountClosureSaga."
+      - path: services/account/src/profile.ts
+        description: "Service profile updated to the regenerated REQ-021 ownership set."
+    tests:
+      - path: services/account/src/domain.test.ts
+        description: "Unit tests for account, session, preference, and closure saga invariants."
+    docs:
+      - path: services/account/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/account.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-017, REQ-019, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/account.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+    tests:
+      - path: services/provider-integration/internal/domain/webhook_inbox_test.go
+        description: "Unit tests for WebhookInbox verification, mapping, and publishing."
+      - path: services/provider-integration/internal/domain/provider_outbox_test.go
+        description: "Unit tests for ProviderOutbox publishing and delivery failure."
+      - path: services/provider-integration/internal/domain/provider_reconciliation_test.go
+        description: "Unit tests for reconciliation batch lifecycle and unmatched records."
+      - path: services/provider-integration/internal/http/router_test.go
+        description: "Integration tests for standard runtime endpoints."
+    docs:
+      - path: services/provider-integration/README.md
+      - path: docs/02-domains/provider-integration.md
+      - path: docs/01-ddd-high-level/acl-provider-contracts.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/00-current-status.md
+    depends_on: [REQ-003]
+    confidence: confirmed
+    source: "docs/02-domains/provider-integration.md, docs/03-ddd-final/phase-1-contract.md, docs/01-ddd-high-level/acl-provider-contracts.md"
+
+  - id: REQ-022
+    title: "Admin and Audit domain foundation"
+    description: "Implement the Admin & Audit domain foundation in Java. Owns operator identity, approvals, controlled manual actions, and audit trails."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorIdentity.java
+        description: "OperatorIdentity aggregate root with registration, scope validation, and active check."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualAction.java
+        description: "ManualAction aggregate root with request, approve, reject, execute lifecycle and four-eyes enforcement."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AuditTrail.java
+        description: "AuditTrail append-only aggregate with correction support."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AuditEntry.java
+        description: "Immutable audit entry value object."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/Approval.java
+        description: "Approval value object recording four-eyes approval decisions."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AdminAuditEvent.java
+        description: "Sealed event interface for all Admin & Audit domain events."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorRegistered.java
+        description: "Event emitted when an operator is registered."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionRequested.java
+        description: "Event emitted when a manual action is requested."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionApproved.java
+        description: "Event emitted when a manual action is approved."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionRejected.java
+        description: "Event emitted when a manual action is rejected."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionExecuted.java
+        description: "Event emitted when a manual action is executed or fails."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/AuditEntryRecorded.java
+        description: "Event emitted when an audit trail entry is recorded."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/EventEnvelope.java
+        description: "Canonical cross-context event envelope per contract shared-primitives.md."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/DomainRuleViolation.java
+        description: "Domain rule violation exception."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorRef.java
+        description: "Operator reference value object."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/OperatorRole.java
+        description: "Operator role enumeration."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/PermissionScope.java
+        description: "Permission scope enumeration for ABAC."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/domain/ManualActionState.java
+        description: "ManualAction lifecycle state enumeration."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/ServiceProfile.java
+        description: "Service profile with REQ-022 ownership."
+      - path: services/admin-audit/src/main/java/com/trainticket/adminaudit/Application.java
+        description: "Spring Boot application entry point."
+      - path: docs/08-contracts/events/admin-audit.md
+        description: "Admin & Audit event and command contract specification."
+    tests:
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/OperatorIdentityTest.java
+        description: "Unit tests for OperatorIdentity registration, scope validation, and invariants."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/ManualActionTest.java
+        description: "Unit tests for ManualAction lifecycle, four-eyes enforcement, and state machine."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/AuditTrailTest.java
+        description: "Unit tests for AuditTrail append-only semantics and correction references."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/AuditEntryTest.java
+        description: "Unit tests for AuditEntry immutability and validation."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/ApprovalTest.java
+        description: "Unit tests for Approval value object."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/domain/OperatorRefTest.java
+        description: "Unit tests for OperatorRef validation."
+      - path: services/admin-audit/src/test/java/com/trainticket/adminaudit/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: docs/02-domains/admin-audit.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/admin-audit.md
+    depends_on: [REQ-003, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/admin-audit.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-018
+    title: "Fulfillment facts domain foundation"
+    description: "Implement the Fulfillment domain foundation in Go. Records physical travel facts: check-in, boarding verification, no-show, and offline evidence disputes."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/fulfillment/internal/domain/fulfillment_record.go
+        description: "FulfillmentRecord aggregate with check-in, boarding, no-show, and completion lifecycle."
+      - path: services/fulfillment/internal/domain/evidence_dispute.go
+        description: "EvidenceDispute aggregate for offline evidence conflicts with open/resolve lifecycle."
+      - path: services/fulfillment/internal/domain/types.go
+        description: "Shared types, canonical IDs, enums, value objects, and domain events."
+      - path: services/fulfillment/internal/domain/profile.go
+        description: "Service profile updated to REQ-018 ownership set."
+    tests:
+      - path: services/fulfillment/internal/domain/fulfillment_record_test.go
+        description: "Unit tests for FulfillmentRecord lifecycle, idempotency, and invariants."
+      - path: services/fulfillment/internal/domain/evidence_dispute_test.go
+        description: "Unit tests for EvidenceDispute lifecycle, validation, and domain events."
+    docs:
+      - path: docs/02-domains/fulfillment.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/fulfillment.md
+    depends_on:
+      - REQ-013
+      - REQ-028
+    confidence: confirmed
+    source: "docs/02-domains/fulfillment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+  - id: REQ-023
+    title: Customer Service domain foundation
+    description: Implement the Customer Service domain foundation in TypeScript. This domain owns support cases, evidence references, manual action requests, and case timelines. It collaborates and collects evidence but never directly mutates business state.
+    priority: P1
+    status: implemented
+    code:
+      - path: services/customer-service/src/domain.ts
+        description: Customer Service domain model: SupportCase, EvidenceRef, ManualActionRequest, CaseTimeline aggregates with lifecycle commands and domain events.
+      - path: services/customer-service/src/index.ts
+        description: Public exports, service profile, and health endpoint re-exports.
+      - path: services/customer-service/src/profile.ts
+        description: Service profile updated to REQ-023 ownership set.
+    tests:
+      - path: services/customer-service/src/domain.test.ts
+        description: Unit tests for SupportCase lifecycle, EvidenceRef attachment, ManualActionRequest lifecycle, CaseTimeline append-only semantics, and boundary proof.
+    docs:
+      - path: docs/02-domains/customer-service.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/customer-service.md
+    depends_on:
+      - REQ-014
+      - REQ-022
+      - REQ-028
+    confidence: confirmed
+    source: docs/02-domains/customer-service.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md
+
+
+
+  - id: REQ-019
+    title: "Notification domain foundation"
+    description: "Implement the Notification domain foundation in TypeScript. This domain owns transactional notification scheduling: NotificationTask lifecycle, templates, recipient policy, send idempotency, and delivery receipts."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/notification/src/domain.ts
+        description: "Notification domain model: NotificationTask, Template, RecipientPolicy, DeliveryReceipt aggregates with lifecycle commands and domain events."
+      - path: services/notification/src/index.ts
+        description: "Public exports, service profile, and health endpoint re-exports."
+      - path: services/notification/src/profile.ts
+        description: "Service profile updated to REQ-019 ownership set."
+    tests:
+      - path: services/notification/src/domain.test.ts
+        description: "Unit tests for NotificationTask lifecycle, Template versioning, RecipientPolicy, DeliveryReceipt, idempotency, and boundary proof."
+    docs:
+      - path: docs/02-domains/notification.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/notification.md
+    depends_on:
+      - REQ-010
+      - REQ-012
+      - REQ-028
+    confidence: confirmed
+    source: docs/02-domains/notification.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md
+
+  - id: REQ-010
+    title: "Journey Order domain foundation"
+    description: "Define the Journey Order aggregate lifecycle in Java: creation from valid Offer, OrderItems with TravelerRefs and SegmentOrderSnapshots, MonetarySummary invariants, and the order state machine (Created to Confirmed via PendingPayment, with Cancelled and Failed as terminal states)."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrder.java
+        description: "JourneyOrder aggregate root with state machine, creation, payment, entitlement, confirmation, cancellation, and post-sales adjustment commands."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OrderItem.java
+        description: "OrderItem entity with type, amount, bindings, and cancellation tracking."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/MonetarySummary.java
+        description: "MonetarySummary value object enforcing currency-consistent total computation from order items."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OfferSnapshotRef.java
+        description: "OfferSnapshotRef value object with expiry validation for offer-based order creation."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OrderLifecycleState.java
+        description: "JourneyOrder lifecycle state enumeration."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/ConfirmationConditions.java
+        description: "Confirmation conditions record tracking booking, capacity, payment, entitlement, and risk facts."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderCreated.java
+        description: "Domain event emitted when a JourneyOrder is created from a valid Offer."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderPendingPayment.java
+        description: "Domain event emitted when the order transitions to PENDING_PAYMENT."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderConfirmed.java
+        description: "Domain event emitted when all confirmation conditions are satisfied."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderCancelled.java
+        description: "Domain event emitted when the order is cancelled."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderPaymentRecorded.java
+        description: "Domain event emitted when payment capture is recorded."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/JourneyOrderPostSalesAdjusted.java
+        description: "Domain event emitted when post-sales adjustment is applied."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/SegmentOrderSnapshot.java
+        description: "SegmentOrderSnapshot value object for segment reference snapshot."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/TravelerRef.java
+        description: "TravelerRef value object for traveler reference snapshot."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/OrderLineBinding.java
+        description: "OrderLineBinding value object binding order items to travelers and segments."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/Money.java
+        description: "Minor domain money type for Journey Order commercial summaries."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/domain/TimelineFact.java
+        description: "TimelineFact value object for audit timeline entries."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/journey-order/src/main/java/com/trainticket/journeyorder/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+    tests:
+      - path: services/journey-order/src/test/java/com/trainticket/journeyorder/domain/JourneyOrderTest.java
+        description: "Unit tests for JourneyOrder creation, offer expiry, monetary summary invariants, state machine transitions, payment capture, confirmation conditions, payment expiry, and post-sales adjustment."
+      - path: services/journey-order/src/test/java/com/trainticket/journeyorder/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/journey-order/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/journey-order.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-009]
+    confidence: confirmed
+    source: "docs/02-domains/journey-order.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+
+  - id: REQ-011
+    title: "Booking Orchestration domain foundation"
+    description: "Implement the Booking Orchestration domain foundation in Java. Owns SegmentBooking, BookingSaga, ReservationRequestLog, CompensationCase aggregates with persisted saga step coordination, idempotent provider request logging, and controlled compensation."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBooking.java
+        description: "SegmentBooking aggregate root with lifecycle from REQUESTED through CONFIRMED, TICKETED, CANCELLED and FAILED states."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingSaga.java
+        description: "BookingSaga saga orchestrator with persisted step coordination, idempotency keys, timeouts, retry limits, and compensation actions."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingSagaStep.java
+        description: "SagaStep entity with idempotency key, timeout, retry limit, and compensation action."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingSagaStatus.java
+        description: "BookingSaga lifecycle state enumeration."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingStepStatus.java
+        description: "SagaStep status enumeration."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBookingStatus.java
+        description: "SegmentBooking lifecycle state enumeration."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/SegmentBookingEvent.java
+        description: "Segment-level domain events emitted for Journey Order, Capacity, Payment, and Entitlement."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/BookingEvent.java
+        description: "Saga coordination events emitted for Journey Order and downstream consumers."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/DomainEvent.java
+        description: "Domain event marker interface."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/EventRecorder.java
+        description: "Internal event recording helper."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/ProviderReference.java
+        description: "Normalized provider booking reference value object."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/ProviderReservationConfirmed.java
+        description: "Normalized provider confirmation fact with segment booking id, provider reference, evidence, and attributes."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/ReservationRequestLog.java
+        description: "ReservationRequestLog aggregate for idempotent audit of external provider requests."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/CompensationCase.java
+        description: "CompensationCase aggregate for controlled compensation of failed saga steps."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/domain/DomainRuleViolation.java
+        description: "Domain rule violation exception."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/booking-orchestration/src/main/java/com/trainticket/bookingorchestration/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+    tests:
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/SegmentBookingTest.java
+        description: "Unit tests for SegmentBooking lifecycle, provider confirmation idempotency, timeout semantics, cancellation, and late provider confirmation."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/BookingSagaTest.java
+        description: "Unit tests for BookingSaga step coordination, retry limits, terminal failure, and idempotent step recording."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/ReservationRequestLogTest.java
+        description: "Unit tests for ReservationRequestLog response recording, timeout, and field validation."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/domain/CompensationCaseTest.java
+        description: "Unit tests for CompensationCase open, close, escalate, and action tracking."
+      - path: services/booking-orchestration/src/test/java/com/trainticket/bookingorchestration/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/booking-orchestration/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/booking-orchestration.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-010, REQ-015]
+    confidence: confirmed
+    source: "docs/02-domains/booking-orchestration.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+
+  - id: REQ-016
+    title: "OpenTelemetry collection baseline"
+    description: "Provide a local OpenTelemetry collector configuration, stable service-side OTLP environment contract, and opt-in OpenTelemetry API adapters for all language runtime baselines."
+    priority: P0
+    status: implemented
+    code:
+      - path: platform/observability/otel-collector.yaml
+        description: "Local OpenTelemetry Collector configuration accepting OTLP traces, metrics, and logs over HTTP and gRPC."
+      - path: platform/observability/docker-compose.yaml
+        description: "Local compose entry point for running the collector."
+      - path: platform/observability/env.example
+        description: "Shared OTEL_* environment contract for service runtime adapters."
+      - path: Makefile
+        description: "Observability compose validation, startup, and shutdown targets."
+      - path: platform/go-runtime/runtime.go
+        description: "Go observer seam adapter for OpenTelemetry API spans, selected by standard OTEL_* environment configuration."
+      - path: platform/shared-kernel-rust/src/lib.rs
+        description: "Rust shared-kernel observer adapter for OpenTelemetry API spans with no-op default behavior."
+      - path: services
+        description: "Python, TypeScript, Java, Go, and Rust service runtime seams wired to optional OpenTelemetry adapters while retaining no-op defaults."
+    tests:
+      - path: Makefile
+        description: "`make observability-config` validates compose rendering; `make observability-validate` validates the collector configuration with the collector binary."
+    docs:
+      - path: docs/07-observability/README.md
+      - path: services/README.md
+      - path: docs/00-current-status.md
+    depends_on: [REQ-002]
+    confidence: confirmed
+    source: "docs/07-observability/README.md"
+
+
+  - id: REQ-012
+    title: "Payment domain foundation"
+    description: "Implement the Payment domain foundation in Java. Owns PaymentIntent lifecycle with authorization/capture/refund balance invariants, Refund lifecycle with settled/failed/manual-review states, ChannelCallbackRecord idempotency and duplicate detection, LatePaymentCase isolation for captures after cancellation or expiration, IdempotencyLedger for business key idempotency, and domain events including PaymentIntentCreated, PaymentAuthorized, PaymentCaptured, PaymentFailed, PaymentIntentCancelled, PaymentIntentExpired, RefundRequested, RefundSettled, RefundFailed, ChannelCallbackReceived, DuplicateChannelCallbackDetected, and LatePaymentDetected."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntent.java
+        description: "PaymentIntent aggregate root with creation, authorization, capture, failure, cancellation, expiration, refund balance, and late-capture isolation."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/Refund.java
+        description: "Refund aggregate root with request, submit to channel, settle, retryable failure, and final/manual-review lifecycle."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/ChannelCallbackRecord.java
+        description: "ChannelCallbackRecord aggregate root with callback receipt, duplicate detection, and apply/reject lifecycle."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/LatePaymentCase.java
+        description: "LatePaymentCase aggregate root for isolating captures that arrive after cancellation or expiration."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/IdempotencyLedger.java
+        description: "Generic idempotency ledger for deduplicating PaymentIntent and Refund creation by business key."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/Money.java
+        description: "Money value object with currency, addition, subtraction, comparison, and zero-amount validation."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/DomainRuleViolation.java
+        description: "Domain rule violation exception."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/EventMetadata.java
+        description: "Domain event metadata envelope with event id, timestamps, command/causation/correlation chain, and schema version."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentEvent.java
+        description: "Sealed interface for all Payment domain events."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentCreated.java
+        description: "Event emitted when a PaymentIntent is created."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentAuthorized.java
+        description: "Event emitted when a PaymentIntent is authorized."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentCaptured.java
+        description: "Event emitted when a PaymentIntent is captured."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentFailed.java
+        description: "Event emitted when a PaymentIntent fails."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentCancelled.java
+        description: "Event emitted when a PaymentIntent is cancelled."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentExpired.java
+        description: "Event emitted when a PaymentIntent expires."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/PaymentIntentStatus.java
+        description: "Enum for PaymentIntent lifecycle states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundRequested.java
+        description: "Event emitted when a Refund is requested."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundSettled.java
+        description: "Event emitted when a Refund is settled."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundFailed.java
+        description: "Event emitted when a Refund fails."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/RefundStatus.java
+        description: "Enum for Refund lifecycle states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/CallbackProcessingStatus.java
+        description: "Enum for ChannelCallbackRecord processing states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/ChannelCallbackReceived.java
+        description: "Event emitted when a channel callback is received."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/DuplicateChannelCallbackDetected.java
+        description: "Event emitted when a duplicate channel callback is detected."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/LatePaymentCaseStatus.java
+        description: "Enum for LatePaymentCase lifecycle states."
+      - path: services/payment/src/main/java/com/trainticket/payment/domain/LatePaymentDetected.java
+        description: "Event emitted when a late payment is detected."
+      - path: services/payment/src/main/java/com/trainticket/payment/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/payment/src/main/java/com/trainticket/payment/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/payment/src/main/java/com/trainticket/payment/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+    tests:
+      - path: services/payment/src/test/java/com/trainticket/payment/domain/PaymentIntentDomainTest.java
+        description: "Unit tests for PaymentIntent creation, idempotency, authorization/capture, expiry, late capture after cancellation, and callback duplicate detection."
+      - path: services/payment/src/test/java/com/trainticket/payment/domain/RefundDomainTest.java
+        description: "Unit tests for Refund request/settle against captured balance, refund amount validation, and retryable/final failure facts."
+      - path: services/payment/src/test/java/com/trainticket/payment/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/payment/README.md
+      - path: docs/00-current-status.md
+      - path: docs/02-domains/payment.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-010]
+
+  - id: REQ-013
+    title: "Entitlement & Ticketing domain foundation"
+    description: "Implement the Entitlement & Ticketing domain foundation in Rust. Owns Entitlement lifecycle (Requested to Used/Voided/Suspended), CredentialRegistry uniqueness, and domain events for ticketing state changes. Key invariants: Issued entitlement must have a unique Credential; same SegmentBookingId + TravelerId + issuePurpose is idempotent. Used entitlement cannot be ordinarily voided; Voided is irreversible. Suspended entitlement cannot pass boarding verification. Issuance must satisfy Booking, Payment, Capacity, Traveler, and Risk conditions."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/entitlement-ticketing/src/lib.rs
+        description: "Entitlement aggregate root with lifecycle, CredentialRegistry, state machine, audit trail, and domain events."
+      - path: services/entitlement-ticketing/README.md
+        description: "Service README with domain documentation."
+      - path: services/entitlement-ticketing/tests/skeleton.rs
+        description: "Skeleton test for REQ-013 service profile and router."
+    tests:
+      - path: services/entitlement-ticketing/src/lib.rs
+        description: "12 unit tests for domain invariants: issuance with preconditions, idempotency, credential uniqueness, retryable/non-retryable failure, suspend/resume, void rules after check-in/boarding/use, late issue after refund, and expiry terminality."
+      - path: services/entitlement-ticketing/tests/skeleton.rs
+        description: "Skeleton test for service profile metadata."
+    docs:
+      - path: services/entitlement-ticketing/README.md
+      - path: docs/02-domains/entitlement-ticketing.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/entitlement-ticketing.md
+        description: "Cross-context event and command contracts (extended with EntitlementResumed, EntitlementUsed, EntitlementIssueFailed, FulfillmentUseFactAccepted, and full command definitions)."
+    depends_on: [REQ-011, REQ-012, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/entitlement-ticketing.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+    confidence: confirmed
+    source: "docs/02-domains/payment.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+ 
+  - id: REQ-026
+    title: "Supplier Catalog domain foundation"
+    description: "Implement the Supplier Catalog domain foundation in Go. Owns supplier master data: suppliers, carriers, contracts, product capabilities, and external code mappings."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/supplier-catalog/internal/domain/supplier_catalog.go
+        description: "Go domain model for Supplier, Carrier, Contract, ProductCapability, and ExternalCode aggregates."
+      - path: services/supplier-catalog/internal/domain/events.go
+        description: "Domain events for Supplier Catalog: SupplierRegistered, CarrierRegistered, ContractActivated, ContractSuspended, ProductCapabilityDeclared, ExternalCodeMapped."
+      - path: services/supplier-catalog/internal/domain/clock.go
+        description: "Package-level clock variable for deterministic time in tests."
+      - path: services/supplier-catalog/internal/domain/profile.go
+        description: "Service profile updated to REQ-026 ownership."
+    tests:
+      - path: services/supplier-catalog/internal/domain/supplier_catalog_test.go
+        description: "Unit tests for domain invariants: supplier lifecycle, carrier registration, contract activation/suspension, product capability declaration, external code mapping, conflict detection, and non-destructive master data versioning."
+    docs:
+      - path: services/supplier-catalog/README.md
+        description: "Service README with REQ-026 domain documentation."
+      - path: docs/02-domains/supplier-catalog.md
+        description: "Supplier Catalog domain design document."
+      - path: docs/08-contracts/events/supplier-catalog.md
+        description: "Supplier Catalog event and contract command specification."
+    depends_on:
+      - REQ-004
+      - REQ-015
+      - REQ-028
+    confidence: confirmed
+    source: "docs/02-domains/supplier-catalog.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-024
+    title: "Finance Settlement domain foundation"
+    description: "Implement the Finance Settlement domain foundation in Java. Consumes order/payment/post-sales events to build revenue recognition defaults, reconciliation views, and settlement records."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/RevenueRecognition.java
+        description: "RevenueRecognition aggregate with recognize/reverse lifecycle."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/ReconciliationCase.java
+        description: "ReconciliationCase aggregate with open/resolve/reject/escalate lifecycle."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/SettlementView.java
+        description: "SettlementView aggregate rebuildable from event log."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/ConsumedEventLog.java
+        description: "Idempotent event consumption tracking."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/Money.java
+        description: "Minor domain money type for financial amounts."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/FinanceSettlementEvent.java
+        description: "Sealed event interface for domain events."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/EventMetadata.java
+        description: "Standard event envelope metadata."
+      - path: services/finance-settlement/src/main/java/com/trainticket/financesettlement/domain/DomainRuleViolation.java
+        description: "Domain invariant violation exception."
+      - path: docs/08-contracts/README.md
+        description: "Cross-context contracts directory README."
+      - path: docs/08-contracts/shared-primitives.md
+        description: "Shared cross-context ID, Money, timestamp, event envelope contracts."
+      - path: docs/08-contracts/events/finance-settlement-events.md
+        description: "Finance Settlement domain event payload contracts."
+      - path: docs/08-contracts/events/upstream-events.md
+        description: "Upstream event contracts consumed by Finance Settlement."
+    tests:
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/RevenueRecognitionTest.java
+        description: "Unit tests for RevenueRecognition aggregate invariants."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/ReconciliationCaseTest.java
+        description: "Unit tests for ReconciliationCase aggregate lifecycle."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/SettlementViewTest.java
+        description: "Unit tests for SettlementView rebuild invariants."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/ConsumedEventLogTest.java
+        description: "Unit tests for ConsumedEventLog idempotent recording."
+      - path: services/finance-settlement/src/test/java/com/trainticket/financesettlement/domain/MoneyTest.java
+        description: "Unit tests for Money value object invariants."
+    docs:
+      - path: docs/02-domains/finance-settlement.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/README.md
+      - path: docs/08-contracts/shared-primitives.md
+    depends_on: [REQ-010, REQ-012, REQ-014, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/finance-settlement.md, docs/03-ddd-final/phase-1-contract.md, docs/08-contracts/README.md, docs/08-contracts/shared-primitives.md"
+  - id: REQ-025
+    title: "Reporting read models foundation"
+    description: "Implement the Reporting domain foundation in Python. This domain exposes read-only metric definitions and dashboard read models built from business events and Finance views."
+    priority: P2
+    status: implemented
+    code:
+      - path: services/reporting/src/reporting/domain.py
+        description: "Reporting domain model: MetricDefinition, DashboardReadModel, FunnelView, ConsumedEventLog aggregates, commands, and events."
+      - path: services/reporting/src/reporting/__init__.py
+        description: "Public API exports for reporting domain types and commands."
+      - path: services/reporting/src/reporting/runtime.py
+        description: "Service profile with REQ-025 ownership."
+    tests:
+      - path: services/reporting/tests/test_domain.py
+        description: "Unit tests for domain invariants, state machines, commands, and idempotent event consumption."
+      - path: services/reporting/tests/test_skeleton.py
+        description: "Application skeleton tests (health, runtime endpoints, tracing seam, domain type imports)."
+    docs:
+      - path: docs/02-domains/reporting.md
+        description: "Reporting domain design document."
+      - path: docs/03-ddd-final/phase-1-contract.md
+        description: "Phase 1 cross-domain contract specification."
+      - path: docs/08-contracts/events/reporting.md
+        description: "Reporting event and command contract specification."
+    depends_on: [REQ-024, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/reporting.md, docs/03-ddd-final/phase-1-contract.md, docs/08-contracts/events/reporting.md"
+
+
+  - {id: REQ-028, title: "Shared contract conformance baseline", status: implemented, ref: docs/08-contracts/shared-primitives.md}
+  - {id: REQ-029, title: "Cross-context event contract specification", status: implemented, ref: docs/08-contracts/events}
+  - {id: REQ-031, title: "Messaging contract specification", status: implemented, ref: docs/08-contracts/messaging.md}
+  - {id: REQ-032, title: "Trip Planning HTTP API and event bus adapter", status: implemented, ref: services/trip-planning}
+  - {id: REQ-033, title: "Offer Management HTTP API and event bus adapter", status: implemented, ref: services/offer-management}
+  - {id: REQ-034, title: "Journey Order HTTP API and event bus adapter", status: implemented, ref: services/journey-order}
+  - {id: REQ-035, title: "Booking Orchestration HTTP API and event bus adapter", status: implemented, ref: services/booking-orchestration}
+  - {id: REQ-036, title: "Capacity Availability HTTP API and event bus adapter", status: implemented, ref: services/capacity-availability}
+  - {id: REQ-037, title: "Admin Audit HTTP API and messaging adapter", status: implemented, ref: services/admin-audit}
+  - {id: REQ-038, title: "Payment HTTP API and event bus adapter", status: implemented, ref: services/payment}
+  - {id: REQ-039, title: "Provider Integration HTTP API and messaging adapter", status: implemented, ref: services/provider-integration}
+  - {id: REQ-040, title: "Traveler Profile HTTP API and messaging adapter", status: implemented, ref: services/traveler-profile}
+  - {id: REQ-041, title: "Entitlement Ticketing HTTP API and messaging adapter", status: implemented, ref: services/entitlement-ticketing}
+  - {id: REQ-042, title: "Place Network HTTP API and messaging adapter", status: implemented, ref: services/place-network}
+  - {id: REQ-043, title: "Service Plan HTTP API and event bus adapter", status: implemented, ref: services/service-plan}
+  - {id: REQ-044, title: "Post Sales HTTP API and messaging adapter", status: implemented, ref: services/post-sales}
+  - {id: REQ-045, title: "Notification HTTP API and messaging adapter", status: implemented, ref: services/notification}
+  - {id: REQ-046, title: "Risk Compliance HTTP API and messaging adapter", status: implemented, ref: services/risk-compliance}
+  - {id: REQ-047, title: "Fulfillment HTTP API and messaging adapter", status: implemented, ref: services/fulfillment}
+  - {id: REQ-048, title: "Finance Settlement HTTP API and messaging adapter", status: implemented, ref: services/finance-settlement}
+  - {id: REQ-049, title: "Supplier Catalog HTTP API and messaging adapter", status: implemented, ref: services/supplier-catalog}
+  - {id: REQ-050, title: "Reporting HTTP API and event bus adapter", status: implemented, ref: services/reporting}
+  - {id: REQ-051, title: "Account HTTP API and messaging adapter", status: implemented, ref: services/account}
+  - {id: REQ-052, title: "Customer Service HTTP API and messaging adapter", status: implemented, ref: services/customer-service}
+  - {id: REQ-053, title: "Fare Pricing HTTP API and event bus adapter", status: implemented, ref: services/fare-pricing}
+  - {id: REQ-054, title: "Integration-ready status reconciliation", status: implemented, ref: service-catalog.json}
+  - {id: REQ-055, title: "Java platform kit", status: implemented, ref: platform/java-kit}
+  - {id: REQ-056, title: "Go platform kit", status: implemented, ref: platform/go-kit}
+  - {id: REQ-057, title: "Python platform kit", status: implemented, ref: platform/python-kit}
+  - {id: REQ-058, title: "Rust platform kit", status: implemented, ref: platform/rust-kit}
+  - {id: REQ-059, title: "TypeScript platform kit", status: implemented, ref: platform/ts-kit}
+
+  - id: REQ-014
+    title: "Post Sales domain foundation"
+    description: "Implement the Post Sales domain foundation in Java. Owns the post-sales case lifecycle: eligibility evaluation, fee/refund/change decisions, execution plan orchestration, and manual exception tracking. Key invariants: Post Sales must never directly modify JourneyOrder invariants, MonetarySummary, or lifecycle state — only publish result events or send controlled commands. Every eligibility and fee decision must reference a frozen RuleSnapshot, RuleVersion, and input timestamp; confirmed execution amounts cannot be silently rewritten. Already-Used or Boarded entitlements cannot be ordinarily voided; such cases must enter Compensation or manual exception with full audit."
+    priority: P0
+    status: implemented
+    code:
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesCase.java
+        description: "PostSalesCase aggregate root with lifecycle from OPENED through ELIGIBILITY_CHECKING, QUOTED, APPROVED, EXECUTING, APPLIED, REJECTED, FAILED, CANCELLED, and MANUAL_REVIEW_REQUIRED states."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesDecision.java
+        description: "PostSalesDecision immutable decision snapshot value object with eligibility, fee, refund, extra charge, and change flow references."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesExecutionPlan.java
+        description: "PostSalesExecutionPlan aggregate for ordered step execution, idempotency, retry limits, and compensation tracking."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesStep.java
+        description: "PostSalesStep entity with state machine: PLANNED, EXECUTING, SUCCEEDED, FAILED, SKIPPED, MANUAL_REQUIRED."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesScope.java
+        description: "PostSalesScope value object for explicit scope references (order items, segments, travelers, entitlements)."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/RuleEvaluationSnapshot.java
+        description: "RuleEvaluationSnapshot value object freezing fare-pricing evaluation reference, rule snapshot, rule version, and input snapshot refs."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/AmountDecisionSnapshot.java
+        description: "AmountDecisionSnapshot value object with fee, refund, extra charge amounts and explanation."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/ChangeFlowSnapshot.java
+        description: "ChangeFlowSnapshot value object for conservative change execution: hold, payment, void, issue, release ordering."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/Money.java
+        description: "Money value object with currency, scale, and same-currency arithmetic."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/domain/PostSalesEvent.java
+        description: "Sealed event interface with 14 event types including PostSalesCaseOpened, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesExecutionStarted, PostSalesFailed, and ChangeApplied."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/Application.java
+        description: "Spring Boot application entry point and service profile."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/ServiceProfile.java
+        description: "Service ownership and profile metadata."
+      - path: services/post-sales/src/main/java/com/trainticket/postsales/HealthController.java
+        description: "Health, liveness, readiness, and metadata endpoints."
+      - path: docs/08-contracts/events/post-sales.md
+        description: "Post Sales event and command contract specification (extended with PostSalesCaseOpened, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesExecutionStarted, PostSalesFailed, ChangeApplied)."
+    tests:
+      - path: services/post-sales/src/test/java/com/trainticket/postsales/domain/PostSalesCaseDomainTest.java
+        description: "Unit tests for PostSalesCase lifecycle, execution plan ordering, PostSalesExecutionPlan step tracking, failure handling, eligibility evaluation, cancellation, and result application."
+      - path: services/post-sales/src/test/java/com/trainticket/postsales/ApplicationTest.java
+        description: "Unit tests for health endpoints, request context filter, runtime tracer, and service profile."
+    docs:
+      - path: services/post-sales/README.md
+      - path: docs/02-domains/post-sales.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+      - path: docs/08-contracts/events/post-sales.md
+    depends_on: [REQ-012, REQ-013, REQ-028]
+    confidence: confirmed
+    source: "docs/02-domains/post-sales.md, docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-027
+    title: "Field-level cross-domain contract specification"
+    description: "Author the authoritative field-level cross-domain contract specification under docs/08-contracts/. This document set is the single source of truth every service must conform to for cross-context communication."
+    priority: P0
+    status: implemented
+    code: []
+    tests: []
+    docs:
+      - path: docs/08-contracts/README.md
+        description: "Contract organization, versioning, and conformance rules."
+      - path: docs/08-contracts/shared-primitives.md
+        description: "Language-neutral field-level definitions for EventEnvelope, IDs, Money, TimeWindow, and enums."
+      - path: docs/08-contracts/conformance-gaps.md
+        description: "Audit of service implementations against the contract spec."
+      - path: docs/08-contracts/events/
+        description: "Per-context event and command definitions (13 contexts)."
+    depends_on:
+      - REQ-015
+    confidence: confirmed
+    source: "docs/03-ddd-final/phase-1-contract.md, docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-030
+    title: "HTTP API contract specification (all implemented services)"
+    description: "Author the authoritative HTTP API contract under docs/08-contracts/api/. Every service's HTTP layer must conform to this spec exactly. This is the synchronous-command counterpart of the existing event contract in docs/08-contracts/events/."
+    priority: P0
+    status: implemented
+    code: []
+    tests: []
+    docs:
+      - path: docs/08-contracts/api/README.md
+        description: "Cross-cutting API conventions: base path, headers, canonical errors, pagination, health endpoints."
+      - path: docs/08-contracts/api/place-network.md
+        description: "Place & Network HTTP API contract."
+      - path: docs/08-contracts/api/service-plan.md
+        description: "Service Plan HTTP API contract."
+      - path: docs/08-contracts/api/capacity-availability.md
+        description: "Capacity & Availability HTTP API contract."
+      - path: docs/08-contracts/api/fare-pricing.md
+        description: "Fare & Pricing HTTP API contract."
+      - path: docs/08-contracts/api/trip-planning.md
+        description: "Trip Planning HTTP API contract."
+      - path: docs/08-contracts/api/offer-management.md
+        description: "Offer Management HTTP API contract."
+      - path: docs/08-contracts/api/journey-order.md
+        description: "Journey Order HTTP API contract."
+      - path: docs/08-contracts/api/booking-orchestration.md
+        description: "Booking Orchestration HTTP API contract."
+      - path: docs/08-contracts/api/provider-integration.md
+        description: "Provider Integration HTTP API contract."
+      - path: docs/08-contracts/api/payment.md
+        description: "Payment HTTP API contract."
+      - path: docs/08-contracts/api/traveler-profile.md
+        description: "Traveler Profile HTTP API contract."
+      - path: docs/08-contracts/api/entitlement-ticketing.md
+        description: "Entitlement & Ticketing HTTP API contract."
+      - path: docs/08-contracts/api/notification.md
+        description: "Notification HTTP API contract."
+      - path: docs/08-contracts/api/risk-compliance.md
+        description: "Risk & Compliance HTTP API contract."
+      - path: docs/08-contracts/api/admin-audit.md
+        description: "Admin & Audit HTTP API contract."
+      - path: docs/08-contracts/api/supplier-catalog.md
+        description: "Supplier Catalog HTTP API contract."
+      - path: docs/08-contracts/api/post-sales.md
+        description: "Post Sales HTTP API contract."
+      - path: docs/08-contracts/api/fulfillment.md
+        description: "Fulfillment HTTP API contract."
+      - path: docs/08-contracts/api/account.md
+        description: "Account HTTP API contract."
+      - path: docs/08-contracts/api/customer-service.md
+        description: "Customer Service HTTP API contract."
+      - path: docs/08-contracts/api/finance-settlement.md
+        description: "Finance & Settlement HTTP API contract."
+      - path: docs/08-contracts/api/reporting.md
+        description: "Reporting HTTP API contract."
+    depends_on:
+      - REQ-029
+    confidence: confirmed
+    source: "docs/08-contracts/events/, docs/03-ddd-final/phase-1-contract.md"
+
+  # Legacy WP-derived references below. Do not use as active backlog without regenerating the rewrite plan.
+  - id: REQ-101
+    title: "WP-01 Shared kernel contracts"
+    description: "Define common IDs, value objects, and event envelope."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: []
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-102
+    title: "WP-02 Place and network master data"
+    description: "Represent places, transport nodes, and provider place mappings."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-103
+    title: "WP-03 Service plan schedules"
+    description: "Represent routes, timetables, calendars, planned suspension, and plan versions."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-102]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-104
+    title: "WP-04 Fare and rule snapshots"
+    description: "Represent fare rule sets, quotes, refund fees, change fees, and rule snapshots."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-102, REQ-103]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-105
+    title: "WP-05 Internal segment inventory"
+    description: "Represent inventory pools, capacity holds, quotas, overlap checks, and hold TTL."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-103]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-106
+    title: "WP-06 Trip planning query candidates"
+    description: "Search without locking inventory and explain unavailable or unreachable journeys."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-102, REQ-103, REQ-104, REQ-105]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-107
+    title: "WP-07 Offer snapshots"
+    description: "Freeze offer, offer item, price snapshot, disclosure, and TTL without holding inventory."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-104, REQ-105, REQ-106]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-108
+    title: "WP-08 Journey order aggregate"
+    description: "Create commercial orders that reference offers without owning inventory, payment, or ticketing."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-107]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-109
+    title: "WP-09 Booking saga"
+    description: "Coordinate segment bookings, provider reservation mapping, and compensation status."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-105, REQ-108, REQ-111]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-110
+    title: "WP-10 Payment cash loop"
+    description: "Create payment intents, refunds, callback records, late payment handling, and idempotency keys."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-111
+    title: "WP-11 Provider integration ACL"
+    description: "Normalize provider/channel adapters, signatures, raw archive, and external status mapping."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-112
+    title: "WP-12 Ticket entitlement"
+    description: "Issue, void, suspend, and board main-ticket entitlements after all prerequisites are satisfied."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-109, REQ-110]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-113
+    title: "WP-13 Fulfillment facts"
+    description: "Record boarding, check-in, no-show, and offline evidence disputes."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-112]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-114
+    title: "WP-14 Post-sales refund and change"
+    description: "Evaluate and execute refund/change cases without delete-and-recreate semantics."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-104, REQ-105, REQ-109, REQ-110, REQ-112]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-115
+    title: "WP-15 Transaction notification"
+    description: "Schedule required transaction notifications with idempotency and delivery receipts."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-112, REQ-114]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-116
+    title: "WP-16 Traveler facts"
+    description: "Represent travelers, documents, eligibility summaries, and preference snapshots."
+    priority: P0
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-117
+    title: "WP-17 Risk decisions"
+    description: "Represent risk assessments, challenges, block/allow decisions, and evidence summaries."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-116]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-118
+    title: "WP-18 Account minimum"
+    description: "Represent account, session, preference, freeze, and account-closure shell behavior."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-115, REQ-116]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-119
+    title: "WP-19 Admin and audit commands"
+    description: "Represent operator identity, approval, manual action, and audit trails."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-101]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-120
+    title: "WP-20 Customer service cases"
+    description: "Represent support cases, evidence references, manual action requests, and timelines."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-112, REQ-114, REQ-119]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-121
+    title: "WP-21 Finance event consumption"
+    description: "Consume order/payment/post-sales events for revenue recognition and reconciliation views."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-110, REQ-114]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-122
+    title: "WP-22 Reporting read models"
+    description: "Expose read-only metrics and dashboards from events and Finance views."
+    priority: P2
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-106, REQ-108, REQ-110, REQ-112, REQ-121]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+
+  - id: REQ-123
+    title: "WP-23 Legacy ACL strangler"
+    description: "Map old preserve, cancel, rebook, payment, and execute entrypoints to controlled commands."
+    priority: P1
+    status: deprecated
+    code: []
+    tests: []
+    docs:
+      - path: docs/03-ddd-final/implementation-roadmap.md
+      - path: docs/03-ddd-final/phase-1-contract.md
+    depends_on: [REQ-108, REQ-109, REQ-110, REQ-112, REQ-114, REQ-119]
+    confidence: confirmed
+    source: "docs/03-ddd-final/implementation-roadmap.md"
+  - {id: REQ-142, title: "Payment Channel service implementation", status: implemented, ref: services/payment-channel}
+  - id: REQ-143
+    title: "Invoicing service implementation"
+    description: "Implement Rust invoicing service, deployment, e2e, and loadgen coverage."
+    priority: P1
+    status: implemented
+    code:
+      - path: services/invoicing
+        description: "Invoicing Rust service."
+      - path: deploy/e2e/23-invoicing.sh
+        description: "Invoicing e2e suite."
+    tests:
+      - path: services/invoicing/src/tests.rs
+        description: "Invoicing service tests."
+    docs:
+      - path: docs/02-domains/invoicing.md
+      - path: docs/08-contracts/api/invoicing.md
+      - path: docs/08-contracts/events/invoicing.md
+    depends_on: []
+    confidence: provisional
+    source: "WorkGraph REQ-143"

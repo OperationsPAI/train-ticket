@@ -1,0 +1,83 @@
+CREATE TABLE IF NOT EXISTS notification_task_snapshots (
+  id         text PRIMARY KEY,
+  version    bigint NOT NULL,
+  data       jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS notification_task_snapshots_recipient_in_app_idx
+  ON notification_task_snapshots ((data->>'recipientRef'), updated_at DESC)
+  WHERE data->>'channel' = 'IN_APP';
+
+CREATE UNIQUE INDEX IF NOT EXISTS notification_task_snapshots_trigger_recipient_template_idx
+  ON notification_task_snapshots ((data->>'triggerEventId'), (data->>'recipientRef'), (data->>'templateCode'));
+
+CREATE UNIQUE INDEX IF NOT EXISTS notification_task_snapshots_business_recipient_template_idx
+  ON notification_task_snapshots ((data->>'triggerBusinessRef'), (data->>'recipientRef'), (data->>'templateCode'))
+  WHERE data->>'triggerBusinessRef' IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS outbox (
+  seq          bigserial PRIMARY KEY,
+  event_id     text NOT NULL UNIQUE,
+  stream       text NOT NULL,
+  envelope     jsonb NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  published_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS outbox_unpublished_seq_idx
+  ON outbox (seq)
+  WHERE published_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS processed_events (
+  event_id     text PRIMARY KEY,
+  stream       text,
+  processed_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS idempotency_records (
+  key           text PRIMARY KEY,
+  request_hash  text NOT NULL,
+  status_code   int NOT NULL,
+  response_body jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+  recipient_ref text NOT NULL,
+  intent        text NOT NULL,
+  channel       text NOT NULL,
+  enabled       boolean NOT NULL DEFAULT true,
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (recipient_ref, intent, channel)
+);
+
+CREATE TABLE IF NOT EXISTS notification_templates (
+  template_code text PRIMARY KEY,
+  data          jsonb NOT NULL,
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+
+CREATE TABLE IF NOT EXISTS recipient_contacts (
+  recipient_ref     text PRIMARY KEY,
+  device_token      text,
+  phone_number      text,
+  email_address     text,
+  preferred_channel text,
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notification_rate_limits (
+  id            bigserial PRIMARY KEY,
+  recipient_ref text NOT NULL,
+  channel       text NOT NULL,
+  occurred_at   timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS notification_rate_limits_user_channel_time_idx
+  ON notification_rate_limits (recipient_ref, channel, occurred_at DESC);
+
+CREATE INDEX IF NOT EXISTS notification_rate_limits_sms_time_idx
+  ON notification_rate_limits (occurred_at DESC)
+  WHERE channel = 'SMS';

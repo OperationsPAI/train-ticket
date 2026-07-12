@@ -1,0 +1,134 @@
+# Load generator configuration (Go version).
+# Compatible with the Python loadgen config format.
+# Every probability / weight is a tunable hyperparameter.
+
+target:
+  # In-cluster service DNS. {service} is substituted per call.
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"
+  request_timeout_seconds: 10
+
+run:
+  mode: closed-loop            # "closed-loop" or "open-loop"
+  workers: 200                 # concurrent virtual customers (goroutines)
+  duration_seconds: 0          # 0 = run until stopped
+  seed: null                   # set an int for reproducible randomness
+  think_time_seconds: { min: 0.5, max: 3.0 }
+  session_pause_seconds: { min: 1.0, max: 5.0 }
+  stats_interval_seconds: 30
+  state_file: "/data/loadgen-state.json"
+  # open-loop settings (used when mode: open-loop)
+  target_rps: 500
+  ramp_duration_seconds: 30
+
+journey_mix:
+  browse: 30
+  purchase: 40
+  refund: 8
+  change: 5
+  fulfillment: 7
+  support: 4
+  legacy: 6
+  ride: 5
+  disruption: 1
+  transfer: 1
+  loyalty: 8
+  insurance: 6
+  group_booking: 5
+  corporate: 5
+  campaign: 4
+
+behavior:
+  p_new_account: 0.35
+  p_new_traveler: 0.50
+  p_second_traveler: 0.15
+  p_abandon_after_search: 0.20
+  p_abandon_after_quote: 0.15
+  p_abandon_before_payment: 0.10
+  p_cancel_payment_intent_on_abandon: 0.20
+  p_cancel_order_before_payment: 0.10
+  p_refund_get_after_completion: 0.50
+  p_payment_channel_missed_seed: 0.01
+  p_payment_channel_read_probe: 0.10
+  p_ancillary_purchase: 0.03
+  p_invoice_after_purchase: 0.02
+  staff_wait_seconds: 90
+  p_no_show: 0.15
+  p_legacy_cancel: 0.30
+  ride_branches: { complete: 0.75, driver_cancel_reassign: 0.10, user_cancel: 0.10, no_show: 0.05 }
+  p_waitlist_on_no_capacity: 0.30
+  p_waitlist_cancel: 0.05
+  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
+  transfer_contract_mix: { PROTECTED: 0.55, SELF_TRANSFER: 0.45 }
+  p_transfer_delay: 0.35
+  p_transfer_missed: 0.25
+  waitlist_deadline_minutes: 30
+  channels: { WEB: 1.0 }
+  seat_types: { SECOND: 0.8, FIRST: 0.2 }
+  traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
+
+staff:
+  workers: 4
+  think_time_seconds: { min: 0.5, max: 2.0 }
+  queue_poll_seconds: 0.5
+  p_risk_approve: 0.50
+  p_support_assign: 0.80
+  p_support_resolve: 0.60
+  p_support_assign_resolve_branch: 0.70
+  p_support_classify_escalate_branch: 0.15
+  p_support_classify_close_branch: 0.15
+  p_support_reopen_after_close: 0.10
+
+long_tail:
+  enabled: true
+  p_read_probe_after_journey: 0.05
+  p_ancillary_read_probe: 0.20
+
+ops:
+  enabled: true
+  interval_seconds: { min: 180, max: 420 }
+  dashboard_id: dash-revenue
+  p_supplier_catalog_write: 0.25
+  p_wallet_manual_issue: 0.20
+  wallet_manual_issue_minor_units: 100
+
+bootstrap:
+  enabled: true
+  cities:
+    - { name: Beijing, code: BJS }
+    - { name: Shanghai, code: SHA }
+    - { name: Guangzhou, code: CAN }
+    - { name: Hangzhou, code: HGH }
+  departure_window:
+    from_days: 7
+    to_days: 21
+  services_per_date: 3
+  service_number_base: 5000
+
+defaults:
+  currency: "CNY"
+  insurance_premium_minor: 50000
+  group_fare_minor: 85000
+  group_discount_basis_points: 500
+  corporate_credit_limit_minor: 5000000
+
+scalper:
+  enabled: true
+  workers: 3
+  accounts_per_worker: 5
+  target_segments: 2
+  retry_on_failure: 0.8
+  retry_same_key: true
+  purchase_batch_size: 4
+
+polling:
+  attempts: 20
+  interval_seconds: 4
+
+wallet_promotion:
+  p_purchase_reserve_redeem: 0.02
+  purchase_benefit_minor_units: 100
+
+waitlist:
+  poll_attempts: 8
+  poll_interval_seconds: 4

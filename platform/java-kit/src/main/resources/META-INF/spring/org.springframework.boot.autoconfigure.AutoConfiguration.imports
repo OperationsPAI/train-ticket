@@ -1,0 +1,3 @@
+com.trainticket.platformkit.PlatformKitConfiguration
+com.trainticket.platformkit.persistence.PlatformPersistenceConfiguration
+com.trainticket.platformkit.observability.PlatformOpenTelemetryConfiguration

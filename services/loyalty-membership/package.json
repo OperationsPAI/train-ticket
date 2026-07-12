@@ -1,0 +1,21 @@
+{
+  "name": "@trainticket/loyalty-membership",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "rm -rf test-output && tsc --noEmit false --outDir test-output && node --test test-output/**/*.test.js"
+  },
+  "dependencies": {
+    "@trainticket/ts-kit": "file:../../platform/ts-kit",
+    "@types/pg": "^8.20.0",
+    "fastify": "5.9.0",
+    "ioredis": "^5.4.2",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.0.1",
+    "typescript": "6.0.3"
+  }
+}

@@ -1,0 +1,40 @@
+# S4 — Buy-Refund Interleave: same inventory pool cycles buy and refund.
+#
+# Tests inventory return paths, capacity accounting, and waitlist reactions.
+
+name: s4-interleave
+description: "Buy-refund cycling on same inventory pool"
+
+load:
+  model: closed
+  workers: 10
+  duration_seconds: 120
+  rps: null
+
+target:
+  base_url_template: "http://{service}:8080"
+  redis_url: "redis://redis:6379"
+  request_timeout_seconds: 15
+
+mix:
+  purchase: 0.50
+  refund: 0.50
+  browse: 0.0
+
+constraints:
+  target_segments: 1
+  target_capacity: 20
+
+seed:
+  cities: ["Beijing", "Shanghai"]
+  departure_date: "2026-09-01"
+
+polling:
+  attempts: 8
+  interval_seconds: 2
+
+staff:
+  workers: 4
+  think_time_seconds: {min: 0.1, max: 0.3}
+  queue_poll_seconds: 0.2
+  p_risk_approve: 1.0

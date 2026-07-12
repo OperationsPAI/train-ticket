@@ -13,13 +13,17 @@ if [ -S /var/run/docker.sock ] && command -v sudo >/dev/null 2>&1; then
   fi
 fi
 
-mkdir -p "${HOME}/.m2" "${HOME}/.cache" "${HOME}/.skaffold" "${HOME}/.npm"
+mkdir -p "${HOME}/.m2" "${HOME}/.cache" "${HOME}/.npm"
 
-echo "Train Ticket dev container is ready."
+echo "Train Ticket greenfield dev container is ready."
 echo "Java: $(java -version 2>&1 | head -n 1)"
 echo "Maven: $(mvn -version 2>/dev/null | head -n 1)"
+echo "Go: $(go version 2>/dev/null)"
 echo "Node: $(node --version)"
+echo "TypeScript: $(tsc --version 2>/dev/null)"
 echo "Python: $(python3 --version)"
+echo "Rust: $(rustc --version 2>/dev/null)"
+echo "Cargo: $(cargo --version 2>/dev/null)"
 echo "Helm: $(helm version --short 2>/dev/null)"
 echo "Skaffold: $(skaffold version 2>/dev/null)"
 echo "kubectl: $(kubectl version --client=true --output=yaml 2>/dev/null | awk '/gitVersion:/ {print $2; exit}')"
@@ -31,5 +35,5 @@ if [ -S /var/run/docker.sock ]; then
     echo "Docker socket is mounted, but the current shell may need to be reloaded before docker is usable."
   fi
 else
-  echo "Docker socket is not mounted; skaffold image builds need Docker or a compatible remote builder."
+  echo "Docker socket is not mounted; container image builds need Docker or a compatible remote builder."
 fi

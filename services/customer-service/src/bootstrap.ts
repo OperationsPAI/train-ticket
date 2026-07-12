@@ -1,0 +1,53 @@
+import { CustomerServiceApplication } from "./application/customer-service.js";
+import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
+import { RedisEventPublisher } from "./adapters/messaging/publisher.js";
+import { uuidV7 } from "@trainticket/ts-kit";
+import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { startCustomerServiceStorage } from "./adapters/storage/runtime.js";
+import { CUSTOMER_SERVICE_CONSUMER_GROUP, CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
+
+export type BootstrapOptions = Readonly<{
+  host?: string;
+  port?: number;
+  instrumentation?: InstrumentationHooks;
+}>;
+
+export function runtimeHost(options: Pick<BootstrapOptions, "host"> = {}): string {
+  return options.host ?? process.env.HOST ?? "0.0.0.0";
+}
+
+export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): number {
+  if (options.port !== undefined) {
+    return options.port;
+  }
+  const configured = Number.parseInt(process.env.PORT ?? "", 10);
+  return Number.isFinite(configured) ? configured : 8080;
+}
+
+export async function bootstrap(options: BootstrapOptions = {}) {
+  const storage = process.env.DATABASE_URL ? await startCustomerServiceStorage() : undefined;
+  const publisher = new RedisEventPublisher();
+  const application = new CustomerServiceApplication(publisher);
+  const subscriber = new RedisEventSubscriber();
+  await subscriber.subscribe(
+    CUSTOMER_SERVICE_SUBSCRIPTIONS,
+    CUSTOMER_SERVICE_CONSUMER_GROUP,
+    `${CUSTOMER_SERVICE_CONSUMER_GROUP}-${process.env.HOSTNAME ?? uuidV7()}`,
+    (envelope) => storage ? storage.handleIntegrationEvent(envelope as never) : application.handleIntegrationEvent(envelope as never),
+  );
+
+  const app = createApp({
+    instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
+    publisher,
+    application,
+    idempotencyStore: storage?.idempotencyStore,
+    storage,
+  });
+  app.addHook("onClose", async () => {
+    await subscriber.stop();
+    await publisher.close();
+    await storage?.stop();
+  });
+  await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
+  return app;
+}

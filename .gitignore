@@ -2,3 +2,13 @@ target
 *.tgz
 generated-sdk
 openapi-docs
+.venv
+__pycache__
+*.pyc
+*.egg-info
+node_modules
+dist
+test-output
+coverage
+*.log
+.agentm/
