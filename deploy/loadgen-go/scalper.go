@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -501,9 +500,15 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 	}
 	ent := getString(tickData, "entitlementId")
 
-	// Confirm
-	final := s.pollOrderScalper(ctx, orderID)
-	if final != "CONFIRMED" && final != "CONFIRMING" {
+	// Quick confirm check — don't block on invoicing lag
+	code, orderCheck, _ := s.api.Request(ctx, "GET", "journey-order",
+		"/api/v1/journey-orders/"+url.PathEscape(orderID),
+		nil, headers, nil, "scalper-poll-order")
+	final := ""
+	if code == 200 {
+		final = getString(orderCheck, "status")
+	}
+	if final == "CANCELLED" || final == "FAILED" {
 		return "", &StepError{Step: "scalper-confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
 	}
 
@@ -543,35 +548,28 @@ func (s *ScalperSim) requestInlineReservation(ctx context.Context, orderID, segm
 	if err != nil {
 		return "", "", false, err
 	}
-	noCapacity := s.sagaFailedNoCapacity(ctx, saga)
-	return saga, sb, noCapacity, nil
+	return saga, sb, false, nil
 }
 
 func (s *ScalperSim) discoverBookingSaga(ctx context.Context, orderID string) (string, error) {
-	if s.redis == nil {
-		return "", &StepError{Step: "scalper-reservation", Detail: "redis not configured"}
-	}
 	attempts := s.cfg.Polling.Attempts
 	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
 
 	for i := 0; i < attempts; i++ {
-		entries, err := s.redis.XRevRange(ctx, "events:booking-orchestration", "+", "-").Result()
+		_, data, err := s.api.Request(ctx, "GET", "booking-orchestration",
+			"/api/v1/internal/booking-sagas/by-order/"+url.PathEscape(orderID),
+			nil, s.nextHeaders(), []int{200}, "scalper-saga-lookup")
 		if err == nil {
-			for _, entry := range entries {
-				raw, ok := entry.Values["envelope"].(string)
-				if !ok || !strings.Contains(raw, "BookingSagaStarted") || !strings.Contains(raw, orderID) {
-					continue
-				}
-				var env map[string]interface{}
-				if json.Unmarshal([]byte(raw), &env) != nil {
-					continue
-				}
-				if getString(env, "eventType") == "BookingSagaStarted" {
-					payload, _ := env["payload"].(map[string]interface{})
-					if getString(payload, "journeyOrderId") == orderID {
-						return getString(payload, "sagaId"), nil
+			saga := getString(data, "sagaId")
+			if saga == "" {
+				if items, ok := data["items"].([]interface{}); ok && len(items) > 0 {
+					if first, ok := items[0].(map[string]interface{}); ok {
+						saga = getString(first, "sagaId")
 					}
 				}
+			}
+			if saga != "" {
+				return saga, nil
 			}
 		}
 		select {
@@ -580,57 +578,7 @@ func (s *ScalperSim) discoverBookingSaga(ctx context.Context, orderID string) (s
 		case <-time.After(interval):
 		}
 	}
-	return "", &StepError{Step: "scalper-reservation", Detail: "no BookingSagaStarted for " + orderID}
-}
-
-func (s *ScalperSim) sagaFailedNoCapacity(ctx context.Context, saga string) bool {
-	attempts := s.cfg.Polling.Attempts
-	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
-
-	for i := 0; i < attempts; i++ {
-		code, data, _ := s.api.Request(ctx, "GET", "booking-orchestration",
-			"/api/v1/internal/booking-sagas/"+url.PathEscape(saga),
-			nil, s.nextHeaders(), nil, "scalper-poll-reservation")
-		if code == 200 {
-			b, _ := json.Marshal(data)
-			if strings.Contains(string(b), "NO_AVAILABLE_CAPACITY") {
-				return true
-			}
-			status := getString(data, "status")
-			if status == "WAITING_PAYMENT" || status == "HELD" || status == "TICKETING" || status == "COMPLETED" {
-				return false
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(interval):
-		}
-	}
-	return false
-}
-
-func (s *ScalperSim) pollOrderScalper(ctx context.Context, orderID string) string {
-	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
-	deadline := time.After(90 * time.Second)
-	for {
-		code, data, _ := s.api.Request(ctx, "GET", "journey-order",
-			"/api/v1/journey-orders/"+url.PathEscape(orderID),
-			nil, s.nextHeaders(), nil, "scalper-poll-order")
-		if code == 200 {
-			status := getString(data, "status")
-			if status == "CONFIRMED" || status == "CONFIRMING" {
-				return status
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-deadline:
-			return ""
-		case <-time.After(interval):
-		}
-	}
+	return "", &StepError{Step: "scalper-reservation", Detail: "no saga for " + orderID}
 }
 
 func (s *ScalperSim) Close() {

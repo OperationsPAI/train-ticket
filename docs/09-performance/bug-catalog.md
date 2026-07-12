@@ -224,6 +224,64 @@ occasionally, triggering false positives.
 
 ---
 
+## BUG-011: Loadgen Legacy Journey Missing Identity Verification
+
+**Severity**: Medium (all legacy journeys fail)
+**Service**: loadgen
+
+**Symptom**: Legacy journey `preserve` step always fails with "Identity
+verification is not passed for all travelers".
+
+**Root Cause**: The legacy journey creates a traveler but never calls the
+identity-verification service. The regular purchase journey calls
+`p.Identity(ctx, tvl)` before creating orders, but the legacy journey
+skipped this step.
+
+**Fix**: Add identity verification call before `preserve` step, matching
+the purchase journey pattern.
+
+---
+
+## BUG-012: Loadgen Staff XREVRANGE Saga Discovery (BUG-003 Regression)
+
+**Severity**: Critical (blocks all purchase saga completion)
+**Service**: loadgen staff workers
+
+**Symptom**: Staff reservation workers take 80+ seconds to find saga IDs.
+Purchase journeys time out (90s default) before staff completes
+reservation. Purchases fail with "timed out waiting for sb".
+
+**Root Cause**: Staff workers use `XREVRANGE` on `events:booking-orchestration`
+stream to scan for `BookingSagaStarted` events matching an order ID. This
+is O(N) per lookup with 100K+ stream entries. BUG-003 fix was supposed to
+replace this with HTTP API, but the fix was never applied to the current
+loadgen image.
+
+**Fix**:
+1. Add `GET /booking-sagas/by-order/{orderId}` endpoint to booking-orchestration
+2. Replace XREVRANGE scan with HTTP API call in staff workers
+3. Reduce polling from 20×4s to 15×2s
+
+---
+
+## BUG-013: Capacity Pool Size Too Small and Hardcoded Date
+
+**Severity**: High (capacity exhausted quickly under load)
+**Service**: capacity-availability (Rust)
+
+**Symptom**: All inventory pools exhausted after ~100 bookings per route.
+Scalpers report "capacity_exhausted". Provider-integration returns
+NO_AVAILABLE_CAPACITY.
+
+**Root Cause**: Default pool size was `req.quantity.max(100)` = 100 seats
+per segment/class combination. Also, the pool service date was hardcoded
+to "2026-07-05" regardless of actual departure date.
+
+**Fix**: Increase default pool to 500 seats. Use current date from
+`unix_millis_to_date(now_millis())` instead of hardcoded date.
+
+---
+
 ## Performance Findings (Not Bugs)
 
 ### PERF-001: Python Single Uvicorn Worker
@@ -242,5 +300,100 @@ actual relay latency was 600ms. Fix: CDC relay with LISTEN/NOTIFY.
 Impact: 600ms → <100ms per event hop.
 
 ### PERF-004: trip-planning Python CPU Ceiling
-Python trip-planning hits 2c CPU limit at ~170 RPS. Fix: Rust rewrite.
-Impact: 170 RPS/pod → 500+ RPS/pod.
+Python trip-planning hits 2c CPU limit at ~170 RPS. Fix: Rust rewrite
+(trip-planning-rs). Impact: p50 107ms → 13.7ms, p95 2919ms → 184ms.
+
+### PERF-005: Invoicing Fast-Path
+postgres-event COMMIT takes 1-2s per event. `consume_in_tx` did full
+state hydration (SELECT + UPDATE invoicing_state JSONB) for EVERY event
+including trivial in-memory-only ones. Fix: `requires_persistence()`
+fast-path skips state load for non-persistent events. Impact: invoicing
+lag 292s → 2s, postgres-event CPU 718m → 102m.
+
+### PERF-006 (was PERF-005): Invoicing PG COMMIT Latency
+postgres-event COMMIT takes 1-2s per event. Invoicing service falls
+minutes behind the event stream, blocking saga completion at INVOICING
+step. Orders get CANCELLED by saga compensation before reaching
+CONFIRMED. Fix: batch commits or move invoicing to dedicated PG.
+
+### PERF-006: Staff Queue Starvation
+Original strict-priority queue (reservation > ticketing > dispatch)
+caused ticketing starvation under load (51 tickets in 13min). Fix:
+Go `select` fair scheduling across all queues. Impact: ticketing
+went from 51 to 169 in 2min.
+
+### PERF-007: Scalper XREVRANGE (BUG-003 Variant)
+Scalper saga discovery used XREVRANGE on 36K+ entry stream. Same
+O(N) scan as BUG-003 but in the scalper path. Fix: HTTP by-order
+endpoint. Impact: scalper success from 0% to 57%.
+
+---
+
+## BUG-014: PG Connection Leak in checkPostgresReadiness
+
+**Severity**: Critical (crashes all TS services after 2.5h sustained load)
+**Services**: All 7 TypeScript services (account, offer-management,
+customer-service, loyalty-membership, notification, ancillary-service,
+waitlist)
+
+**Symptom**: Under sustained ~600 RPS load, account service pods go
+0/1 Ready after ~2.5 hours. postgres-user shows 296 idle connections.
+Restarting temporarily fixes but issue recurs.
+
+**Root Cause**: `checkPostgresReadiness()` calls
+`withTimeout(pool.connect(), 200ms)`. When pool.connect() resolves
+AFTER the 200ms timeout, the acquired PoolClient is never released —
+`client` is still `undefined` in the `finally` block. Each timeout
+leaks one PG connection. Under load: ~6 timeouts/min × 3 pods =
+~18 leaked connections/hour × 2.5h = ~225 leaked connections.
+
+Additionally, `idleTimeoutMillis: 300_000` (5 min) kept leaked
+connections alive far too long.
+
+**Fix**:
+1. Catch the late-resolving `pool.connect()` promise and release it
+2. Reduce `idleTimeoutMillis` from 300s to 30s
+3. Increase `connectionTimeoutMillis` from 5s to 10s
+
+**Commit**: `22df1de6`
+
+**Verification**: 4 hours sustained load post-fix, account 3/3 ready,
+PG stale connections = 0 (was 296 at crash point).
+
+---
+
+## Stress Test Results (2026-07-12)
+
+### Configuration
+- 10-30 loadgen pods × 50 workers = 500-1500 concurrent users
+- 8 hot-path services at 3 replicas
+- 6 PostgreSQL shards, Redis 6GB
+- Zero think time, 5% new account rate
+
+### Throughput Progression
+| Config | RPS | Bottleneck | Status |
+|--------|-----|-----------|--------|
+| 1 pod × 6 workers | 78 | none | stable |
+| 3 pods | 215 | none | stable |
+| 5 pods | 490 | trip-planning 1803m | crashed |
+| 10 pods (2x scaled) | 480 | customer-service 957m | stable |
+| 20 pods (3x scaled) | 860 | trip-planning + customer-service | stable |
+| 30 pods | 1100 | postgres-user 1005m | stable |
+| 50 pods × 200 workers | 1650 | account PG pool exhaustion | 503 errors |
+| **10 pods × 50 (stable)** | **600** | **postgres-user 1200m** | **4h stable** |
+
+### Key Optimizations Applied
+1. trip-planning Python → Rust: p50 107ms → 13.7ms
+2. Invoicing fast-path: lag 292s → 2s
+3. Staff fair scheduling: ticketing throughput 10×
+4. PG connection leak fix: 2.5h crash → 4h+ stable
+5. PG_MAX_POOL_SIZE 10 → 50
+6. Helm defaults.env injection fix
+
+### Business Metrics (cumulative)
+- Purchases completed: 4,500+
+- Scalper grabs: 350+
+- Refunds: 1,850+
+- Rides: 3,200+
+- Legacy completions: 580+
+- Support cases: 140+

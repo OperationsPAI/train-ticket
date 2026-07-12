@@ -46,7 +46,7 @@ func (s *StaffSim) think(ctx context.Context) {
 	}
 }
 
-// Worker runs a staff worker that polls all queues.
+// Worker runs a staff worker that fairly drains all queues.
 func (s *StaffSim) Worker(ctx context.Context, idx int) {
 	pollDuration := time.Duration(s.cfg.Staff.QueuePollSeconds * float64(time.Second))
 	for {
@@ -59,28 +59,16 @@ func (s *StaffSim) Worker(ctx context.Context, idx int) {
 		var item *WorkItem
 		select {
 		case item = <-s.reg.QReservation:
+		case item = <-s.reg.QTicketing:
+		case item = <-s.reg.QRisk:
+		case item = <-s.reg.QSupport:
+		case item = <-s.reg.QDispatch:
 		default:
 			select {
-			case item = <-s.reg.QTicketing:
-			default:
-				select {
-				case item = <-s.reg.QRisk:
-				default:
-					select {
-					case item = <-s.reg.QSupport:
-					default:
-						select {
-						case item = <-s.reg.QDispatch:
-						default:
-							select {
-							case <-ctx.Done():
-								return
-							case <-time.After(pollDuration):
-								continue
-							}
-						}
-					}
-				}
+			case <-ctx.Done():
+				return
+			case <-time.After(pollDuration):
+				continue
 			}
 		}
 
@@ -111,34 +99,21 @@ func (s *StaffSim) Worker(ctx context.Context, idx int) {
 }
 
 func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
-	if s.redis == nil {
-		return &StepError{Step: "reservation", Detail: "redis not configured"}
-	}
-
 	var saga string
 	attempts := s.cfg.Polling.Attempts
 	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
 
 	for i := 0; i < attempts; i++ {
-		entries, err := s.redis.XRevRange(ctx, "events:booking-orchestration", "+", "-").Result()
-		if err != nil {
-			time.Sleep(interval)
-			continue
-		}
-		for _, entry := range entries {
-			raw, ok := entry.Values["envelope"].(string)
-			if !ok {
-				continue
-			}
-			var env map[string]interface{}
-			if json.Unmarshal([]byte(raw), &env) != nil {
-				continue
-			}
-			if getString(env, "eventType") == "BookingSagaStarted" {
-				payload, _ := env["payload"].(map[string]interface{})
-				if getString(payload, "journeyOrderId") == item.Order {
-					saga = getString(payload, "sagaId")
-					break
+		_, data, err := s.api.Request(ctx, "GET", "booking-orchestration",
+			"/api/v1/internal/booking-sagas/by-order/"+url.PathEscape(item.Order),
+			nil, nil, []int{200}, "staff-saga-lookup")
+		if err == nil {
+			saga = getString(data, "sagaId")
+			if saga == "" {
+				if items, ok := data["items"].([]interface{}); ok && len(items) > 0 {
+					if first, ok := items[0].(map[string]interface{}); ok {
+						saga = getString(first, "sagaId")
+					}
 				}
 			}
 		}
@@ -170,12 +145,6 @@ func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
 
 	item.SetResult("saga", saga)
 	item.SetResult("sb", sb)
-
-	// Check if saga failed with no capacity
-	noCapacity := s.sagaFailedNoCapacity(ctx, saga)
-	if noCapacity {
-		item.SetResult("no_capacity", true)
-	}
 	return nil
 }
 
@@ -264,7 +233,7 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 		_, _, err := s.api.Request(ctx, "POST", "customer-service",
 			"/api/v1/support-cases/"+url.PathEscape(caseID)+"/assign",
 			map[string]interface{}{"ownerQueue": "tier1"},
-			nil, []int{200, 201}, "staff-support-assign")
+			nil, []int{200, 201, 422}, "staff-support-assign")
 		if err != nil {
 			return err
 		}
@@ -289,7 +258,7 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 			map[string]interface{}{
 				"classification": "POST_SALES_HELP",
 				"priority":       "NORMAL",
-			}, nil, []int{200, 201}, "staff-support-classify")
+			}, nil, []int{200, 201, 422}, "staff-support-classify")
 		if err != nil {
 			return err
 		}

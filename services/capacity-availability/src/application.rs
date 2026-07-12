@@ -330,7 +330,7 @@ impl CapacityService {
             let identity = InventoryPoolIdentity::new(
                 format!("pool-{}", uuid::Uuid::now_v7()),
                 format!("scheduled-service:{}", req.segment_ref),
-                "2026-07-05",
+                &unix_millis_to_date(now_millis()),
                 &req.class_ref,
                 "seat",
                 &req.segment_ref,
@@ -339,7 +339,7 @@ impl CapacityService {
             )
             .unwrap();
             // Create a default segment/class pool; each class is isolated by pool_key.
-            let units: Vec<CapacityUnitRef> = (0..req.quantity.max(100))
+            let units: Vec<CapacityUnitRef> = (0..req.quantity.max(2000))
                 .map(|i| {
                     let seat = format!("{:02}{}", ((i / 4) + 1), ['A', 'B', 'C', 'D'][i % 4]);
                     CapacityUnitRef::new(seat).unwrap()
