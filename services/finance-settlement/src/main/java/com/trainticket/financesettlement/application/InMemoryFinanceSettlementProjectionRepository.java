@@ -15,6 +15,7 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     private final ConcurrentMap<String, Money> approvedRefundsByCaseId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, BenefitCostEntry> benefitCostEntriesByEventId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ChannelStatementProjection> channelStatementsById = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ChannelStatementLineProjection> channelStatementLinesById = new ConcurrentHashMap<>();
 
     @Override
     public Optional<FinanceSettlementEventHandler.PaymentCaptureFact> findCapture(String orderId) {
@@ -38,7 +39,22 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
 
     @Override
     public List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(LocalDate settlementDate) {
-        return capturesByOrderId.values().stream().toList();
+        return capturesByOrderId.values().stream()
+            .filter(capture -> settlementDate.equals(capture.occurredAt().atZone(java.time.ZoneOffset.UTC).toLocalDate()))
+            .toList();
+    }
+
+    @Override
+    public void saveChannelStatementLine(ChannelStatementLineProjection line) {
+        channelStatementLinesById.put(line.statementLineId(), line);
+    }
+
+    @Override
+    public List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(LocalDate settlementDate) {
+        return channelStatementLinesById.values().stream()
+            .filter(line -> settlementDate.toString().equals(line.statementDate()))
+            .sorted(Comparator.comparing(ChannelStatementLineProjection::statementLineId))
+            .toList();
     }
 
     @Override

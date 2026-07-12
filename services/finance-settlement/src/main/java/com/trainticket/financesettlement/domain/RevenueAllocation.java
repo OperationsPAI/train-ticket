@@ -31,7 +31,7 @@ public record RevenueAllocation(
         return new RevenueAllocation(orderId, grossRevenue, commission, withheld, payable, adjustments);
     }
 
-    static Money multiply(Money money, BigDecimal pct) {
+    public static Money multiply(Money money, BigDecimal pct) {
         BigDecimal amount = money.amount().multiply(pct).setScale(money.currency().getDefaultFractionDigits(), RoundingMode.HALF_UP);
         return new Money(money.currency(), amount);
     }

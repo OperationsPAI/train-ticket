@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.trainticket.financesettlement.domain.FeeAccrual;
 import com.trainticket.financesettlement.domain.Invoice;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationBatch;
@@ -15,6 +16,7 @@ import com.trainticket.financesettlement.domain.RevenueAllocation;
 import com.trainticket.financesettlement.domain.SettlementFrequency;
 import com.trainticket.financesettlement.domain.SettlementPeriod;
 import com.trainticket.financesettlement.domain.SupplierSettlement;
+import com.trainticket.financesettlement.domain.TaxCalculation;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -30,6 +32,7 @@ final class JacksonFinanceSettlementJson {
     record ReconciliationCaseSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static ReconciliationCaseSnapshot of(ObjectNode data) { return new ReconciliationCaseSnapshot(data); } }
     record ReconciliationBatchSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static ReconciliationBatchSnapshot of(ObjectNode data) { return new ReconciliationBatchSnapshot(data); } }
     record SupplierSettlementSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static SupplierSettlementSnapshot of(ObjectNode data) { return new SupplierSettlementSnapshot(data); } }
+    record FeeAccrualSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static FeeAccrualSnapshot of(ObjectNode data) { return new FeeAccrualSnapshot(data); } }
     record InvoiceSnapshot(@JsonValue ObjectNode data) { @JsonCreator(mode = JsonCreator.Mode.DELEGATING) static InvoiceSnapshot of(ObjectNode data) { return new InvoiceSnapshot(data); } }
 
     static RevenueRecognitionSnapshot revenueSnapshot(RevenueRecognition recognition, ObjectMapper mapper) {
@@ -149,6 +152,41 @@ final class JacksonFinanceSettlementJson {
         return SupplierSettlement.rehydrate(n.path("supplierSettlementId").asText(), n.path("supplierId").asText(),
             new SettlementPeriod(LocalDate.parse(n.path("startDate").asText()), LocalDate.parse(n.path("endDate").asText()), SettlementFrequency.valueOf(n.path("frequency").asText())),
             new BigDecimal(n.path("platformCommissionPct").asText()), new BigDecimal(n.path("withholdingTaxPct").asText()), allocations, Currency.getInstance(n.path("currency").asText()));
+    }
+
+    static FeeAccrualSnapshot feeSnapshot(FeeAccrual accrual, ObjectMapper mapper) {
+        ObjectNode n = mapper.createObjectNode();
+        n.put("feeAccrualId", accrual.feeAccrualId());
+        n.put("orderId", accrual.orderId());
+        money(n.putObject("platformServiceFee"), accrual.platformServiceFee());
+        money(n.putObject("supplierServiceFee"), accrual.supplierServiceFee());
+        money(n.putObject("retainedCancellationFee"), accrual.retainedCancellationFee());
+        ObjectNode tax = n.putObject("taxCalculation");
+        money(tax.putObject("vatOnServiceFees"), accrual.taxCalculation().vatOnServiceFees());
+        money(tax.putObject("stampDutyOnTickets"), accrual.taxCalculation().stampDutyOnTickets());
+        money(tax.putObject("withholdingOnSupplierPayment"), accrual.taxCalculation().withholdingOnSupplierPayment());
+        money(tax.putObject("taxReversal"), accrual.taxCalculation().taxReversal());
+        n.put("sourceEventId", accrual.sourceEventId());
+        return new FeeAccrualSnapshot(n);
+    }
+
+    static FeeAccrual toFee(FeeAccrualSnapshot snapshot, ObjectMapper mapper) {
+        ObjectNode n = snapshot.data();
+        ObjectNode tax = n.withObject("taxCalculation");
+        return FeeAccrual.rehydrate(
+            n.path("feeAccrualId").asText(),
+            n.path("orderId").asText(),
+            money(n.withObject("platformServiceFee")),
+            money(n.withObject("supplierServiceFee")),
+            money(n.withObject("retainedCancellationFee")),
+            new TaxCalculation(
+                money(tax.withObject("vatOnServiceFees")),
+                money(tax.withObject("stampDutyOnTickets")),
+                money(tax.withObject("withholdingOnSupplierPayment")),
+                money(tax.withObject("taxReversal"))
+            ),
+            n.path("sourceEventId").asText(n.path("feeAccrualId").asText())
+        );
     }
 
     static InvoiceSnapshot invoiceSnapshot(Invoice invoice, ObjectMapper mapper) {
