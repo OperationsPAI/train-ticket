@@ -300,5 +300,22 @@ actual relay latency was 600ms. Fix: CDC relay with LISTEN/NOTIFY.
 Impact: 600ms → <100ms per event hop.
 
 ### PERF-004: trip-planning Python CPU Ceiling
-Python trip-planning hits 2c CPU limit at ~170 RPS. Fix: Rust rewrite.
-Impact: 170 RPS/pod → 500+ RPS/pod.
+Python trip-planning hits 2c CPU limit at ~170 RPS. Fix: Rust rewrite
+(trip-planning-rs). Impact: p50 107ms → 13.7ms, p95 2919ms → 184ms.
+
+### PERF-005: Invoicing PG COMMIT Latency
+postgres-event COMMIT takes 1-2s per event. Invoicing service falls
+minutes behind the event stream, blocking saga completion at INVOICING
+step. Orders get CANCELLED by saga compensation before reaching
+CONFIRMED. Fix: batch commits or move invoicing to dedicated PG.
+
+### PERF-006: Staff Queue Starvation
+Original strict-priority queue (reservation > ticketing > dispatch)
+caused ticketing starvation under load (51 tickets in 13min). Fix:
+Go `select` fair scheduling across all queues. Impact: ticketing
+went from 51 to 169 in 2min.
+
+### PERF-007: Scalper XREVRANGE (BUG-003 Variant)
+Scalper saga discovery used XREVRANGE on 36K+ entry stream. Same
+O(N) scan as BUG-003 but in the scalper path. Fix: HTTP by-order
+endpoint. Impact: scalper success from 0% to 57%.
