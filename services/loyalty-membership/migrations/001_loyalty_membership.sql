@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS members (
   member_id text PRIMARY KEY,
   account_id text NOT NULL UNIQUE,
-  tier text NOT NULL CHECK (tier IN ('BASIC', 'SILVER', 'GOLD', 'PLATINUM')),
+  tier text NOT NULL CHECK (tier IN ('SILVER', 'GOLD', 'PLATINUM', 'DIAMOND')),
   status text NOT NULL CHECK (status IN ('ACTIVE', 'SUSPENDED', 'CLOSED')),
   redeemable_points integer NOT NULL CHECK (redeemable_points >= 0),
   tier_points integer NOT NULL CHECK (tier_points >= 0),
@@ -14,10 +14,26 @@ CREATE TABLE IF NOT EXISTS members (
 CREATE INDEX IF NOT EXISTS idx_members_account_id ON members (account_id);
 CREATE INDEX IF NOT EXISTS idx_members_tier ON members (tier);
 
+CREATE TABLE IF NOT EXISTS order_account_refs (
+  order_id text PRIMARY KEY,
+  account_id text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS membership_years (
+  member_id text NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
+  membership_year integer NOT NULL,
+  qualifying_points integer NOT NULL CHECK (qualifying_points >= 0),
+  trip_count integer NOT NULL CHECK (trip_count >= 0),
+  current_tier text NOT NULL CHECK (current_tier IN ('SILVER', 'GOLD', 'PLATINUM', 'DIAMOND')),
+  evaluation_date timestamptz,
+  PRIMARY KEY (member_id, membership_year)
+);
+
 CREATE TABLE IF NOT EXISTS points_ledger (
   entry_id text PRIMARY KEY,
   member_id text NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
-  entry_type text NOT NULL CHECK (entry_type IN ('ACCRUAL', 'REDEMPTION', 'REVERSAL')),
+  entry_type text NOT NULL CHECK (entry_type IN ('EARNED', 'REDEEMED', 'EXPIRED', 'ADJUSTED')),
   points integer NOT NULL,
   source_event_id text NOT NULL,
   source_event_type text NOT NULL,
@@ -45,6 +61,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   published_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished_seq ON outbox (seq) WHERE published_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS processed_events (
   event_id text PRIMARY KEY,

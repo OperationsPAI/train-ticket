@@ -202,6 +202,56 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
     });
   });
 
+
+  app.post("/members/:id/redeem-ticket", async (request, reply) => {
+    await handleIdempotency({
+      key: headerValue(request.headers["idempotency-key"]),
+      store: idempotencyStore,
+      fingerprint: requestFingerprint(request.method, request.url.split("?")[0] ?? request.url, request.body ?? null),
+      context: requestContext(request),
+      reply,
+      operation: async () => {
+        const body = objectBody(request.body);
+        const result = await runWithService((application) => application.redeemTicketPoints({
+          memberId: memberIdParam(request),
+          orderId: requiredString(body.orderId, "orderId"),
+          pointsToRedeem: requiredInteger(body.pointsToRedeem, "pointsToRedeem"),
+          fareAmountMinor: requiredNonNegativeInteger(body.fareAmountMinor, "fareAmountMinor"),
+          redemptionId: optionalString(body.redemptionId, "redemptionId"),
+          correlationId: requestContext(request).correlationId,
+          causationId: headerValue(request.headers["idempotency-key"]),
+        }));
+        return { statusCode: 200, body: result };
+      },
+    });
+  });
+
+  app.post("/members/:id/expire-points", async (request, reply) => {
+    try {
+      const result = await runWithService((application) => application.expirePoints({
+        memberId: memberIdParam(request),
+        correlationId: requestContext(request).correlationId,
+      }));
+      return result;
+    } catch (error) {
+      sendApplicationError(reply, mapError(error), requestContext(request));
+    }
+  });
+
+  app.post("/members/:id/evaluate-tier", async (request, reply) => {
+    try {
+      const body = objectBody(request.body);
+      const result = await runWithService((application) => application.evaluateTier({
+        memberId: memberIdParam(request),
+        evaluationYear: requiredNonNegativeInteger(body.evaluationYear, "evaluationYear"),
+        correlationId: requestContext(request).correlationId,
+      }));
+      return result;
+    } catch (error) {
+      sendApplicationError(reply, mapError(error), requestContext(request));
+    }
+  });
+
   app.setNotFoundHandler((request, reply) => {
     sendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request));
   });
@@ -275,9 +325,21 @@ function requiredInteger(value: unknown, field: string): number {
 }
 
 function assertOptionalString(value: unknown, field: string): void {
+  optionalString(value, field);
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
   if (value !== undefined && typeof value !== "string") {
     throw new ApplicationError("VALIDATION_FAILED", `${field} must be a string`, 400, { field });
   }
+  return value as string | undefined;
+}
+
+function requiredNonNegativeInteger(value: unknown, field: string): number {
+  if (!Number.isInteger(value) || (value as number) < 0) {
+    throw new ApplicationError("VALIDATION_FAILED", `${field} must be a non-negative integer`, 400, { field });
+  }
+  return value as number;
 }
 
 function sendApplicationError(reply: FastifyReply, error: ApplicationError, context: RequestContext): void {
