@@ -221,13 +221,32 @@ export class LoyaltyMembershipApplicationService {
     return memberDetails(updated.toSnapshot());
   }
 
-  async deductQualifyingPointsForRefund(command: { accountId: string; occurredAt: Date; qualifyingPoints: number }): Promise<MemberDetailsDto> {
-    const member = await this.repository.findByAccountId(command.accountId);
-    if (!member) {
-      throw new ApplicationError("NOT_FOUND", `No member found for account ${command.accountId}`, 404);
+  async deductQualifyingPointsForRefund(command: { orderId: string; occurredAt: Date; qualifyingPoints?: number }): Promise<MemberDetailsDto | undefined> {
+    const accountId = await this.repository.findAccountIdByOrderId(command.orderId);
+    if (!accountId) {
+      return undefined;
     }
-    const updated = member.adjustQualifyingPointsForRefund({ occurredAt: command.occurredAt, qualifyingPoints: command.qualifyingPoints });
+    const member = await this.repository.findByAccountId(accountId);
+    if (!member) {
+      return undefined;
+    }
+    const qualifyingPoints = command.qualifyingPoints ?? member.qualifyingPointsForOrder(command.orderId);
+    if (qualifyingPoints === 0) {
+      return memberDetails(member.toSnapshot());
+    }
+    const updated = member.adjustQualifyingPointsForRefund({ occurredAt: command.occurredAt, qualifyingPoints });
     await this.repository.save(updated);
+    return memberDetails(updated.toSnapshot());
+  }
+
+  async restoreRedeemedPointsForCancelledOrder(command: { orderId: string; accountId: string; sourceEventId: string; cancelledAt: Date; correlationId: string; causationId?: string }): Promise<MemberDetailsDto> {
+    await this.repository.saveOrderAccountRef(command.orderId, command.accountId);
+    const member = (await this.repository.findByAccountId(command.accountId)) ?? Member.enroll({ accountId: command.accountId });
+    const { member: updated, events } = member.restoreRedeemedTicketPoints({ orderId: command.orderId, sourceEventId: command.sourceEventId, cancelledAt: command.cancelledAt, correlationId: command.correlationId });
+    await this.repository.save(updated);
+    for (const event of events) {
+      await this.publish(event, command.correlationId, command.causationId);
+    }
     return memberDetails(updated.toSnapshot());
   }
 

@@ -76,8 +76,8 @@ async function startSubscriber(application: LoyaltyMembershipApplicationService)
       if (envelope.eventType === "JourneyOrderCreated") {
         await handleJourneyOrderCreated(application, envelope);
       }
-      if (envelope.eventType === "JourneyOrderConfirmed") {
-        await handleJourneyOrderConfirmed(application, envelope);
+      if (envelope.eventType === "JourneyOrderCancelled") {
+        await handleJourneyOrderCancelled(application, envelope);
       }
       if (envelope.eventType === "PaymentCaptured") {
         await handlePaymentCaptured(application, envelope);
@@ -115,14 +115,20 @@ export async function handleJourneyOrderCreated(application: LoyaltyMembershipAp
 
 export async function handlePostSalesApplied(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
   const payload = envelope.payload;
-  const qualifyingPoints = typeof payload.qualifyingPoints === "number" ? payload.qualifyingPoints : 0;
-  if (qualifyingPoints === 0) {
+  const orderId = stringField(payload.orderId, "orderId");
+  const caseId = optionalStringField(payload.caseId) ?? optionalStringField(payload.postSalesCaseId);
+  if (!caseId) {
+    throw new Error("caseId is required");
+  }
+  const resultSummary = optionalObjectField(payload.resultSummary);
+  const refundDecision = optionalObjectField(payload.refundDecision);
+  if (!postSalesAppliedRefunded(resultSummary, refundDecision)) {
     return;
   }
   await application.deductQualifyingPointsForRefund({
-    accountId: stringField(payload.accountId, "accountId"),
-    occurredAt: new Date(typeof payload.appliedAt === "string" ? payload.appliedAt : envelope.occurredAt),
-    qualifyingPoints,
+    orderId,
+    occurredAt: new Date(envelope.occurredAt),
+    qualifyingPoints: optionalNonNegativeInteger(resultSummary?.qualifyingPoints ?? refundDecision?.qualifyingPoints, "qualifyingPoints"),
   });
 }
 
@@ -151,23 +157,25 @@ export async function handlePaymentCaptured(application: LoyaltyMembershipApplic
 
 export async function handleJourneyOrderConfirmed(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
   const payload = envelope.payload;
-  const orderId = stringField(payload.orderId, "orderId");
-  const accountId = stringField(payload.accountId, "accountId");
-  const monetarySummary = objectField(payload.monetarySummary, "monetarySummary");
-  const total = objectField(monetarySummary.total, "monetarySummary.total");
-  const minorUnits = integerField(total.minorUnits, "monetarySummary.total.minorUnits");
-  const currency = stringField(total.currency ?? monetarySummary.currency, "currency");
-  const confirmedAt = new Date(stringField(payload.confirmedAt, "confirmedAt"));
-  await application.accrueFromJourneyOrderConfirmed({
-    orderId,
-    accountId,
-    ticketPrice: { currency, minorUnits },
-    sourceEventId: envelope.eventId,
-    confirmedAt,
+  await application.recordTripFromJourneyOrderCreated({
+    orderId: stringField(payload.orderId, "orderId"),
+    accountId: stringField(payload.accountId, "accountId"),
+    occurredAt: new Date(typeof payload.confirmedAt === "string" ? payload.confirmedAt : envelope.occurredAt),
+    trips: 0,
     correlationId: envelope.correlationId,
     causationId: envelope.eventId,
-    sourceStream: "events:journey-order",
-    sourceEventType: "JOURNEY_ORDER_CONFIRMED",
+  });
+}
+
+export async function handleJourneyOrderCancelled(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
+  const payload = envelope.payload;
+  await application.restoreRedeemedPointsForCancelledOrder({
+    orderId: stringField(payload.orderId, "orderId"),
+    accountId: stringField(payload.accountId, "accountId"),
+    sourceEventId: envelope.eventId,
+    cancelledAt: new Date(typeof payload.cancelledAt === "string" ? payload.cancelledAt : envelope.occurredAt),
+    correlationId: envelope.correlationId,
+    causationId: envelope.eventId,
   });
 }
 
@@ -281,6 +289,35 @@ function stringField(value: unknown, field: string): string {
 
 function optionalStringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function optionalObjectField(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function optionalNonNegativeInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = integerField(value, field);
+  if (parsed < 0) {
+    throw new Error(`${field} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function postSalesAppliedRefunded(resultSummary?: Record<string, unknown>, refundDecision?: Record<string, unknown>): boolean {
+  if (refundDecision) {
+    if (typeof refundDecision.refunded === "boolean") return refundDecision.refunded;
+    if (typeof refundDecision.eligible === "boolean") return refundDecision.eligible;
+    if (typeof refundDecision.kind === "string") return refundDecision.kind.toUpperCase().includes("REFUND");
+  }
+  if (!resultSummary) {
+    return true;
+  }
+  if (typeof resultSummary.refund === "boolean") return resultSummary.refund;
+  if (typeof resultSummary.refunded === "boolean") return resultSummary.refunded;
+  return true;
 }
 
 function optionalSeatClass(value: unknown): SeatClass | undefined {

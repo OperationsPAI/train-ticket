@@ -43,6 +43,16 @@ function eventPayload(event: LoyaltyDomainEvent): Record<string, unknown> {
         balanceAfter: event.balanceAfter,
         businessReason: event.businessReason,
       };
+    case "PointsRestored":
+      return {
+        memberId: event.memberId,
+        accountId: event.accountId,
+        points: event.points,
+        orderId: event.orderId,
+        sourceFactRef: sourceFactPayload(event.sourceFactRef),
+        businessReason: event.businessReason,
+        balanceAfter: event.balanceAfter,
+      };
     case "PointsExpired":
       return { memberId: event.memberId, accountId: event.accountId, points: event.points, batchId: event.batchId, balanceAfter: event.balanceAfter };
     case "MemberTierUpgraded":

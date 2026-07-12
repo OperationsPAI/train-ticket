@@ -21,6 +21,6 @@ export const serviceProfile: ServiceProfile = {
     "Points ledger entries and lots",
     "Tier upgrade and downgrade rules",
   ],
-  consumes: ["JourneyOrderConfirmed", "PaymentCaptured"],
-  publishes: ["PointsEarned", "PointsRedeemed", "PointsExpired", "MemberTierUpgraded", "MemberTierDowngraded", "TierEvaluationCompleted"],
+  consumes: ["JourneyOrderCreated", "JourneyOrderCancelled", "PaymentCaptured", "PostSalesApplied"],
+  publishes: ["PointsEarned", "PointsRedeemed", "PointsRestored", "PointsExpired", "MemberTierUpgraded", "MemberTierDowngraded", "TierEvaluationCompleted"],
 };
