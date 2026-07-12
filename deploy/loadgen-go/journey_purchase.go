@@ -162,8 +162,16 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	entVal, _ := tick.GetResult("entitlement")
 	ent, _ := entVal.(string)
 
-	final := pollOrderLong(ctx, p, orderID, 30, 2)
-	if final != "CONFIRMED" && final != "CONFIRMING" {
+	// After ticketing, check order status once — the saga may still be
+	// in INVOICING (async), so we accept any non-cancelled status.
+	code, orderData, _ := p.API.Request(ctx, "GET", "journey-order",
+		"/api/v1/journey-orders/"+url.PathEscape(orderID),
+		nil, nil, nil, "poll-order")
+	final := ""
+	if code == 200 {
+		final = getString(orderData, "status")
+	}
+	if final == "CANCELLED" || final == "FAILED" {
 		return "", &StepError{Step: "confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
 	}
 
