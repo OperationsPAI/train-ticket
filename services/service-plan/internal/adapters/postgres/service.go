@@ -87,6 +87,18 @@ func (r *Repository) SaveServiceSegment(ctx context.Context, segment application
 	return insertOrUpdate(ctx, r.db.DBFor(ctx), "service_segment_snapshots", segment.SegmentRef, data)
 }
 
+func (r *Repository) FindServiceSegment(ctx context.Context, ref string) (application.ServiceSegment, error) {
+	snap, ok, err := storage.NewSnapshotRepository(r.db.DBFor(ctx), "service_segment_snapshots").Get(ctx, strings.TrimSpace(ref))
+	if err != nil {
+		return application.ServiceSegment{}, err
+	}
+	if !ok {
+		return application.ServiceSegment{}, application.ErrNotFound
+	}
+	var segment application.ServiceSegment
+	return segment, json.Unmarshal(snap.Data, &segment)
+}
+
 func insertOrUpdate(ctx context.Context, db storage.DBTX, table, id string, data []byte) error {
 	repo := storage.NewSnapshotRepository(db, table)
 	snap, ok, err := repo.Get(ctx, id)

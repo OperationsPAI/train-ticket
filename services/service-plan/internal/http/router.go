@@ -42,6 +42,28 @@ type createServiceSegmentRequest struct {
 	ArrivalTime         time.Time `json:"arrivalTime"`
 }
 
+type addTemporaryServiceRequest struct {
+	TempServiceRef   string   `json:"tempServiceRef"`
+	TempTrainNumber  string   `json:"tempTrainNumber"`
+	Period           string   `json:"period"`
+	StopsSubset      []string `json:"stopsSubset"`
+	AvailableClasses []string `json:"availableClasses"`
+}
+
+type recordDelayRequest struct {
+	SegmentRef   string `json:"segmentRef"`
+	DelayMinutes int    `json:"delayMinutes"`
+}
+
+type cancelServiceRequest struct {
+	Date   time.Time `json:"date"`
+	Reason string    `json:"reason"`
+}
+
+type restoreServiceRequest struct {
+	Date time.Time `json:"date"`
+}
+
 func Router() *gin.Engine {
 	return RouterWithService(application.NewService(application.NoopPublisher{}))
 }
@@ -73,6 +95,10 @@ func RegisterRoutes(router gin.IRouter, service *application.Service, store idem
 	api.GET("/scheduled-services/:serviceRef", handler.getScheduledService)
 	api.GET("/scheduled-services", handler.listScheduledServices)
 	api.POST("/service-segments", idempotent, handler.createServiceSegment)
+	api.POST("/scheduled-services/:serviceRef/temporary-services", idempotent, handler.addTemporaryService)
+	api.POST("/scheduled-services/:serviceRef/delays", idempotent, handler.recordDelay)
+	api.POST("/scheduled-services/:serviceRef/cancellations", idempotent, handler.cancelServiceForDate)
+	api.POST("/scheduled-services/:serviceRef/restorations", idempotent, handler.restoreServiceForDate)
 }
 
 func (h Handler) createScheduledService(ctx *gin.Context) {
@@ -148,6 +174,88 @@ func (h Handler) createServiceSegment(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusCreated, result)
+}
+
+func (h Handler) addTemporaryService(ctx *gin.Context) {
+	var request addTemporaryServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.AddTemporaryService(ctx.Request.Context(), application.AddTemporaryServiceCommand{
+		BaseServiceRef:   ctx.Param("serviceRef"),
+		TempServiceRef:   request.TempServiceRef,
+		TempTrainNumber:  request.TempTrainNumber,
+		Period:           request.Period,
+		StopsSubset:      request.StopsSubset,
+		AvailableClasses: request.AvailableClasses,
+		CorrelationID:    httpkit.CorrelationID(ctx),
+		CausationID:      ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, result)
+}
+
+func (h Handler) recordDelay(ctx *gin.Context) {
+	var request recordDelayRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.RecordDelay(ctx.Request.Context(), application.RecordDelayCommand{
+		ScheduledServiceRef: ctx.Param("serviceRef"),
+		SegmentRef:          request.SegmentRef,
+		DelayMinutes:        request.DelayMinutes,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
+}
+
+func (h Handler) cancelServiceForDate(ctx *gin.Context) {
+	var request cancelServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.CancelForDate(ctx.Request.Context(), application.CancelServiceCommand{
+		ScheduledServiceRef: ctx.Param("serviceRef"),
+		Date:                request.Date,
+		Reason:              request.Reason,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
+}
+
+func (h Handler) restoreServiceForDate(ctx *gin.Context) {
+	var request restoreServiceRequest
+	if err := bindBody(ctx, &request); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	result, err := h.service.RestoreForDate(ctx.Request.Context(), application.RestoreServiceCommand{
+		ScheduledServiceRef: ctx.Param("serviceRef"),
+		Date:                request.Date,
+		CorrelationID:       httpkit.CorrelationID(ctx),
+		CausationID:         ctx.GetHeader("X-Causation-Id"),
+	})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
 }
 
 func bindBody(ctx *gin.Context, target any) error {

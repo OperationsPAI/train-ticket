@@ -22,6 +22,7 @@ type (
 	TransportNodeID     string
 	NodeSnapshotVersion string
 	CarrierID           string
+	TemporaryServiceID  string
 )
 
 type ServiceMode string
@@ -588,17 +589,207 @@ func (v PlanVersion) overlaps(other PlanVersion) bool {
 	return !v.effectiveTo.Before(other.effectiveFrom) && !other.effectiveTo.Before(v.effectiveFrom)
 }
 
+type SchedulePeriodType string
+
+const (
+	SchedulePeriodRegular     SchedulePeriodType = "REGULAR"
+	SchedulePeriodSpringRush  SchedulePeriodType = "SPRING_RUSH"
+	SchedulePeriodSummerRush  SchedulePeriodType = "SUMMER_RUSH"
+	SchedulePeriodNationalDay SchedulePeriodType = "NATIONAL_DAY"
+	SchedulePeriodLaborDay    SchedulePeriodType = "LABOR_DAY"
+)
+
+type SchedulePeriod struct {
+	PeriodType         SchedulePeriodType
+	StartDate          time.Time
+	EndDate            time.Time
+	CapacityMultiplier float64
+}
+
+func NewSchedulePeriod(periodType SchedulePeriodType, startDate, endDate time.Time, capacityMultiplier float64) (SchedulePeriod, error) {
+	period := SchedulePeriod{PeriodType: periodType, StartDate: normalizeDate(startDate), EndDate: normalizeDate(endDate), CapacityMultiplier: capacityMultiplier}
+	if err := period.Validate(); err != nil {
+		return SchedulePeriod{}, err
+	}
+	return period, nil
+}
+
+func (p SchedulePeriod) Validate() error {
+	if !validSchedulePeriodType(p.PeriodType) {
+		return fmt.Errorf("unsupported schedule period type: %q", p.PeriodType)
+	}
+	if p.StartDate.IsZero() || p.EndDate.IsZero() {
+		return fmt.Errorf("schedule period date window is required")
+	}
+	if p.EndDate.Before(p.StartDate) {
+		return fmt.Errorf("schedule period end date must be on or after start date")
+	}
+	if p.CapacityMultiplier <= 0 {
+		return fmt.Errorf("schedule period capacity multiplier must be positive")
+	}
+	return nil
+}
+
+func (p SchedulePeriod) Contains(date time.Time) bool {
+	date = normalizeDate(date)
+	return !date.Before(p.StartDate) && !date.After(p.EndDate)
+}
+
+type TemporaryService struct {
+	TempServiceRef   TemporaryServiceID
+	BaseServiceRef   ScheduledServiceID
+	TempTrainNumber  string
+	PeriodRef        SchedulePeriodType
+	StopsSubset      []TransportNodeID
+	AvailableClasses []string
+	ExpiredAt        *time.Time
+}
+
+func NewTemporaryService(tempServiceRef TemporaryServiceID, baseServiceRef ScheduledServiceID, tempTrainNumber string, periodRef SchedulePeriodType, stopsSubset []TransportNodeID, availableClasses []string) (TemporaryService, error) {
+	service := TemporaryService{
+		TempServiceRef:   TemporaryServiceID(strings.TrimSpace(string(tempServiceRef))),
+		BaseServiceRef:   ScheduledServiceID(strings.TrimSpace(string(baseServiceRef))),
+		TempTrainNumber:  strings.TrimSpace(tempTrainNumber),
+		PeriodRef:        periodRef,
+		StopsSubset:      copyTransportNodeIDs(stopsSubset),
+		AvailableClasses: copyStrings(availableClasses),
+	}
+	if err := service.Validate(); err != nil {
+		return TemporaryService{}, err
+	}
+	return service, nil
+}
+
+func (s TemporaryService) Validate() error {
+	if strings.TrimSpace(string(s.TempServiceRef)) == "" {
+		return fmt.Errorf("temporary service ref is required")
+	}
+	if strings.TrimSpace(string(s.BaseServiceRef)) == "" {
+		return fmt.Errorf("temporary service base service ref is required")
+	}
+	if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s.TempTrainNumber)), "L") {
+		return fmt.Errorf("temporary train number must use L prefix")
+	}
+	if s.PeriodRef == SchedulePeriodRegular || !validSchedulePeriodType(s.PeriodRef) {
+		return fmt.Errorf("temporary service requires a rush schedule period")
+	}
+	if len(s.StopsSubset) < 2 {
+		return fmt.Errorf("temporary service requires at least two stops")
+	}
+	for _, stop := range s.StopsSubset {
+		if strings.TrimSpace(string(stop)) == "" {
+			return fmt.Errorf("temporary service stops cannot be blank")
+		}
+	}
+	if len(s.AvailableClasses) == 0 {
+		return fmt.Errorf("temporary service available classes are required")
+	}
+	for _, class := range s.AvailableClasses {
+		if strings.TrimSpace(class) == "" {
+			return fmt.Errorf("temporary service available classes cannot be blank")
+		}
+	}
+	return nil
+}
+
+func (s TemporaryService) IsExpired() bool { return s.ExpiredAt != nil }
+
+type ScheduleVariant struct {
+	Period            SchedulePeriod
+	TemporaryServices []TemporaryService
+}
+
+func (v ScheduleVariant) PeriodType() SchedulePeriodType { return v.Period.PeriodType }
+func (v ScheduleVariant) CapacityMultiplier() float64    { return v.Period.CapacityMultiplier }
+
+type ServiceCancellation struct {
+	ServiceRef  ScheduledServiceID
+	Date        time.Time
+	Reason      string
+	CancelledAt time.Time
+	RestoredAt  *time.Time
+}
+
+func NewServiceCancellation(serviceRef ScheduledServiceID, date time.Time, reason string, cancelledAt time.Time) (ServiceCancellation, error) {
+	cancellation := ServiceCancellation{ServiceRef: ScheduledServiceID(strings.TrimSpace(string(serviceRef))), Date: normalizeDate(date), Reason: strings.TrimSpace(reason), CancelledAt: cancelledAt.UTC()}
+	if err := cancellation.Validate(); err != nil {
+		return ServiceCancellation{}, err
+	}
+	return cancellation, nil
+}
+
+func (c ServiceCancellation) Validate() error {
+	if strings.TrimSpace(string(c.ServiceRef)) == "" {
+		return fmt.Errorf("service cancellation service ref is required")
+	}
+	if c.Date.IsZero() {
+		return fmt.Errorf("service cancellation date is required")
+	}
+	if strings.TrimSpace(c.Reason) == "" {
+		return fmt.Errorf("service cancellation reason is required")
+	}
+	if c.CancelledAt.IsZero() {
+		return fmt.Errorf("service cancellation cancelled-at is required")
+	}
+	return nil
+}
+
+func (c ServiceCancellation) IsActive() bool { return c.RestoredAt == nil }
+
+type DelaySource string
+
+const DelaySourceOperations DelaySource = "OPERATIONS"
+
+type DelayRecord struct {
+	SegmentRef    ServiceSegmentID
+	ScheduledTime time.Time
+	EstimatedTime time.Time
+	DelayMinutes  int
+	Source        DelaySource
+}
+
+type TrainDelayedEvent struct {
+	ServiceRef            ScheduledServiceID
+	SegmentRef            ServiceSegmentID
+	DelayMinutes          int
+	EstimatedNewDeparture time.Time
+}
+
+type DelayPropagator struct {
+	DampeningPerStopMinutes int
+}
+
+func NewDelayPropagator() DelayPropagator { return DelayPropagator{DampeningPerStopMinutes: 2} }
+
+func (p DelayPropagator) Propagate(delayMinutes, downstreamIndex int) int {
+	if delayMinutes < 0 {
+		delayMinutes = 0
+	}
+	if p.DampeningPerStopMinutes < 0 {
+		p.DampeningPerStopMinutes = 0
+	}
+	propagated := delayMinutes - downstreamIndex*p.DampeningPerStopMinutes
+	if propagated < 0 {
+		return 0
+	}
+	return propagated
+}
+
 type ServicePlan struct {
-	id          ServicePlanID
-	businessKey ServicePlanKey
-	versions    []PlanVersion
+	id                ServicePlanID
+	businessKey       ServicePlanKey
+	versions          []PlanVersion
+	schedulePeriods   []SchedulePeriod
+	temporaryServices []TemporaryService
+	cancellations     []ServiceCancellation
 }
 
 func NewServicePlan(id ServicePlanID, businessKey ServicePlanKey, initialVersion PlanVersion) (ServicePlan, ServicePlanCreatedEvent, error) {
 	plan := ServicePlan{
-		id:          ServicePlanID(strings.TrimSpace(string(id))),
-		businessKey: ServicePlanKey(strings.TrimSpace(string(businessKey))),
-		versions:    []PlanVersion{initialVersion},
+		id:              ServicePlanID(strings.TrimSpace(string(id))),
+		businessKey:     ServicePlanKey(strings.TrimSpace(string(businessKey))),
+		versions:        []PlanVersion{initialVersion},
+		schedulePeriods: defaultSchedulePeriodsFor(initialVersion.EffectiveFrom().Year()),
 	}
 	if err := plan.Validate(); err != nil {
 		return ServicePlan{}, ServicePlanCreatedEvent{}, err
@@ -609,6 +800,27 @@ func NewServicePlan(id ServicePlanID, businessKey ServicePlanKey, initialVersion
 func (p ServicePlan) ID() ServicePlanID           { return p.id }
 func (p ServicePlan) BusinessKey() ServicePlanKey { return p.businessKey }
 func (p ServicePlan) Versions() []PlanVersion     { return copyPlanVersions(p.versions) }
+func (p ServicePlan) SchedulePeriods() []SchedulePeriod {
+	return copySchedulePeriods(p.schedulePeriods)
+}
+func (p ServicePlan) TemporaryServices() []TemporaryService {
+	return copyTemporaryServices(p.temporaryServices)
+}
+func (p ServicePlan) Cancellations() []ServiceCancellation {
+	return copyServiceCancellations(p.cancellations)
+}
+
+func (p ServicePlan) WithOperationalState(temporaryServices []TemporaryService, cancellations []ServiceCancellation) (ServicePlan, error) {
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(temporaryServices)
+	next.cancellations = copyServiceCancellations(cancellations)
+	if err := next.Validate(); err != nil {
+		return ServicePlan{}, err
+	}
+	return next, nil
+}
 
 func (p ServicePlan) Validate() error {
 	if strings.TrimSpace(string(p.id)) == "" {
@@ -629,6 +841,31 @@ func (p ServicePlan) Validate() error {
 			return fmt.Errorf("duplicate plan version id: %s", version.ID())
 		}
 		seen[version.ID()] = struct{}{}
+	}
+	periods := map[SchedulePeriodType]SchedulePeriod{}
+	for _, period := range p.schedulePeriods {
+		if err := period.Validate(); err != nil {
+			return err
+		}
+		if _, exists := periods[period.PeriodType]; exists {
+			return fmt.Errorf("duplicate schedule period: %s", period.PeriodType)
+		}
+		periods[period.PeriodType] = period
+	}
+	for _, service := range p.temporaryServices {
+		if err := service.Validate(); err != nil {
+			return err
+		}
+		if service.PeriodRef != SchedulePeriodRegular {
+			if _, exists := periods[service.PeriodRef]; !exists {
+				return fmt.Errorf("temporary service period is not configured: %s", service.PeriodRef)
+			}
+		}
+	}
+	for _, cancellation := range p.cancellations {
+		if err := cancellation.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -681,6 +918,158 @@ func (p ServicePlan) PublishVersion(versionID PlanVersionID, publishedAt time.Ti
 	return next, PlanVersionPublishedEvent{ServicePlanID: p.id, PlanVersionID: candidate.ID(), EffectiveFrom: candidate.EffectiveFrom(), EffectiveTo: candidate.EffectiveTo()}, nil
 }
 
+func (p ServicePlan) WithSchedulePeriod(period SchedulePeriod) (ServicePlan, error) {
+	if err := period.Validate(); err != nil {
+		return ServicePlan{}, err
+	}
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(p.temporaryServices)
+	next.cancellations = copyServiceCancellations(p.cancellations)
+	for i, existing := range next.schedulePeriods {
+		if existing.PeriodType == period.PeriodType {
+			next.schedulePeriods[i] = period
+			return next, next.Validate()
+		}
+	}
+	next.schedulePeriods = append(next.schedulePeriods, period)
+	return next, next.Validate()
+}
+
+func (p ServicePlan) ActiveVariant(date time.Time) ScheduleVariant {
+	active := regularSchedulePeriod(normalizeDate(date).Year())
+	for _, period := range p.schedulePeriods {
+		if period.PeriodType != SchedulePeriodRegular && period.Contains(date) {
+			active = period
+			break
+		}
+		if period.PeriodType == SchedulePeriodRegular {
+			active = period
+		}
+	}
+	services := []TemporaryService{}
+	if active.PeriodType != SchedulePeriodRegular {
+		for _, service := range p.temporaryServices {
+			if service.PeriodRef == active.PeriodType && !service.IsExpired() {
+				services = append(services, service)
+			}
+		}
+	}
+	return ScheduleVariant{Period: active, TemporaryServices: services}
+}
+
+func (p ServicePlan) AddTemporaryService(service TemporaryService) (ServicePlan, TemporaryServiceAddedEvent, error) {
+	if err := service.Validate(); err != nil {
+		return ServicePlan{}, TemporaryServiceAddedEvent{}, err
+	}
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(p.temporaryServices)
+	next.cancellations = copyServiceCancellations(p.cancellations)
+	for _, existing := range next.temporaryServices {
+		if existing.TempServiceRef == service.TempServiceRef {
+			return ServicePlan{}, TemporaryServiceAddedEvent{}, fmt.Errorf("temporary service already exists: %s", service.TempServiceRef)
+		}
+	}
+	next.temporaryServices = append(next.temporaryServices, service)
+	if err := next.Validate(); err != nil {
+		return ServicePlan{}, TemporaryServiceAddedEvent{}, err
+	}
+	return next, TemporaryServiceAddedEvent{TempServiceRef: service.TempServiceRef, BaseServiceRef: service.BaseServiceRef, Period: service.PeriodRef}, nil
+}
+
+func (p ServicePlan) RemoveTemporaryService(tempServiceRef TemporaryServiceID) (ServicePlan, TemporaryServiceRemovedEvent, error) {
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(p.temporaryServices)
+	next.cancellations = copyServiceCancellations(p.cancellations)
+	for i, service := range next.temporaryServices {
+		if service.TempServiceRef == tempServiceRef {
+			next.temporaryServices = append(next.temporaryServices[:i], next.temporaryServices[i+1:]...)
+			return next, TemporaryServiceRemovedEvent{TempServiceRef: tempServiceRef, BaseServiceRef: service.BaseServiceRef, Period: service.PeriodRef}, next.Validate()
+		}
+	}
+	return ServicePlan{}, TemporaryServiceRemovedEvent{}, fmt.Errorf("temporary service not found: %s", tempServiceRef)
+}
+
+func (p ServicePlan) ActivateSchedulePeriod(date time.Time) SchedulePeriodActivatedEvent {
+	variant := p.ActiveVariant(date)
+	return SchedulePeriodActivatedEvent{ServicePlanID: p.id, Period: variant.Period.PeriodType, StartDate: variant.Period.StartDate, EndDate: variant.Period.EndDate, CapacityMultiplier: variant.Period.CapacityMultiplier}
+}
+
+func (p ServicePlan) ExpireTemporaryServices(asOf time.Time) (ServicePlan, []TemporaryServiceExpiredEvent, error) {
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(p.temporaryServices)
+	next.cancellations = copyServiceCancellations(p.cancellations)
+	events := []TemporaryServiceExpiredEvent{}
+	when := normalizeDate(asOf)
+	for i, service := range next.temporaryServices {
+		if service.IsExpired() {
+			continue
+		}
+		for _, period := range next.schedulePeriods {
+			if period.PeriodType == service.PeriodRef && when.After(period.EndDate) {
+				expiredAt := asOf.UTC()
+				next.temporaryServices[i].ExpiredAt = &expiredAt
+				events = append(events, TemporaryServiceExpiredEvent{ServiceRef: ScheduledServiceID(service.TempServiceRef), PeriodEndDate: period.EndDate})
+			}
+		}
+	}
+	if err := next.Validate(); err != nil {
+		return ServicePlan{}, nil, err
+	}
+	return next, events, nil
+}
+
+func (p ServicePlan) CancelForDate(serviceRef ScheduledServiceID, date time.Time, reason string, cancelledAt time.Time) (ServicePlan, TrainCancelledEvent, error) {
+	cancellation, err := NewServiceCancellation(serviceRef, date, reason, cancelledAt)
+	if err != nil {
+		return ServicePlan{}, TrainCancelledEvent{}, err
+	}
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(p.temporaryServices)
+	next.cancellations = copyServiceCancellations(p.cancellations)
+	key := cancellation.ServiceRef + ScheduledServiceID(":"+dateKey(cancellation.Date))
+	for i, existing := range next.cancellations {
+		if existing.ServiceRef+ScheduledServiceID(":"+dateKey(existing.Date)) == key {
+			if existing.IsActive() {
+				return ServicePlan{}, TrainCancelledEvent{}, fmt.Errorf("service already cancelled for %s", dateKey(cancellation.Date))
+			}
+			next.cancellations[i] = cancellation
+			return next, TrainCancelledEvent{ServiceRef: cancellation.ServiceRef, Date: cancellation.Date, Reason: cancellation.Reason}, next.Validate()
+		}
+	}
+	next.cancellations = append(next.cancellations, cancellation)
+	return next, TrainCancelledEvent{ServiceRef: cancellation.ServiceRef, Date: cancellation.Date, Reason: cancellation.Reason}, next.Validate()
+}
+
+func (p ServicePlan) RestoreForDate(serviceRef ScheduledServiceID, date time.Time, restoredAt time.Time) (ServicePlan, TrainRestoredEvent, error) {
+	next := p
+	next.versions = copyPlanVersions(p.versions)
+	next.schedulePeriods = copySchedulePeriods(p.schedulePeriods)
+	next.temporaryServices = copyTemporaryServices(p.temporaryServices)
+	next.cancellations = copyServiceCancellations(p.cancellations)
+	date = normalizeDate(date)
+	for i, existing := range next.cancellations {
+		if existing.ServiceRef == serviceRef && existing.Date.Equal(date) {
+			if !existing.IsActive() {
+				return ServicePlan{}, TrainRestoredEvent{}, fmt.Errorf("service cancellation already restored for %s", dateKey(date))
+			}
+			restored := restoredAt.UTC()
+			next.cancellations[i].RestoredAt = &restored
+			return next, TrainRestoredEvent{ServiceRef: serviceRef, Date: date}, next.Validate()
+		}
+	}
+	return ServicePlan{}, TrainRestoredEvent{}, fmt.Errorf("active cancellation not found for %s", dateKey(date))
+}
+
 // ScheduledService is a planned service instance materialized from a published
 // PlanVersion and a service date. It is suitable for Trip Planning and Capacity
 // seeding, but does not own seats, fares, orders, or real-time disruption state.
@@ -691,6 +1080,7 @@ type ScheduledService struct {
 	serviceDate   time.Time
 	status        ScheduledServiceStatus
 	segments      []ServiceSegment
+	delayRecords  []DelayRecord
 }
 
 func NewScheduledService(id ScheduledServiceID, key ScheduledServiceKey, version PlanVersion, serviceDate time.Time) (ScheduledService, ScheduledServiceMaterializedEvent, error) {
@@ -725,6 +1115,95 @@ func (s ScheduledService) PlanVersionID() PlanVersionID   { return s.planVersion
 func (s ScheduledService) ServiceDate() time.Time         { return s.serviceDate }
 func (s ScheduledService) Status() ScheduledServiceStatus { return s.status }
 func (s ScheduledService) Segments() []ServiceSegment     { return copySegments(s.segments) }
+func (s ScheduledService) DelayRecords() []DelayRecord    { return copyDelayRecords(s.delayRecords) }
+
+func (s ScheduledService) WithDelayRecords(records []DelayRecord) (ScheduledService, error) {
+	next := s
+	next.segments = copySegments(s.segments)
+	next.delayRecords = copyDelayRecords(records)
+	if err := next.Validate(); err != nil {
+		return ScheduledService{}, err
+	}
+	return next, nil
+}
+
+func (s ScheduledService) RecordDelay(segmentRef ServiceSegmentID, delayMinutes int, scheduledDepartures map[ServiceSegmentID]time.Time) (ScheduledService, []TrainDelayedEvent, error) {
+	if delayMinutes < 0 {
+		return ScheduledService{}, nil, fmt.Errorf("delay minutes cannot be negative")
+	}
+	segmentRef = ServiceSegmentID(strings.TrimSpace(string(segmentRef)))
+	sourceIndex := -1
+	for i, segment := range s.segments {
+		if segment.ID == segmentRef {
+			sourceIndex = i
+			break
+		}
+	}
+	if sourceIndex == -1 {
+		return ScheduledService{}, nil, fmt.Errorf("service segment not found: %s", segmentRef)
+	}
+	propagator := NewDelayPropagator()
+	next := s
+	next.segments = copySegments(s.segments)
+	next.delayRecords = copyDelayRecords(s.delayRecords)
+	events := []TrainDelayedEvent{}
+	sourceFrom := s.segments[sourceIndex].FromSequence
+	maxSequence := sourceFrom
+	for _, segment := range s.segments {
+		if segment.ToSequence > maxSequence {
+			maxSequence = segment.ToSequence
+		}
+	}
+	lastSequence := maxSequence
+	if maxSequence == sourceFrom+1 {
+		lastSequence = sourceFrom
+	}
+	for sequence, downstreamIndex := sourceFrom, 0; sequence <= lastSequence; sequence, downstreamIndex = sequence+1, downstreamIndex+1 {
+		segment, ok := s.segmentForDelaySequence(sequence, maxSequence)
+		if !ok {
+			continue
+		}
+		propagated := propagator.Propagate(delayMinutes, downstreamIndex)
+		scheduled := scheduledDepartures[segment.ID]
+		estimated := scheduled
+		if !scheduled.IsZero() {
+			estimated = scheduled.Add(time.Duration(propagated) * time.Minute)
+		}
+		next.delayRecords = append(next.delayRecords, DelayRecord{SegmentRef: segment.ID, ScheduledTime: scheduled, EstimatedTime: estimated, DelayMinutes: propagated, Source: DelaySourceOperations})
+		events = append(events, TrainDelayedEvent{ServiceRef: s.id, SegmentRef: segment.ID, DelayMinutes: propagated, EstimatedNewDeparture: estimated})
+	}
+	if err := next.Validate(); err != nil {
+		return ScheduledService{}, nil, err
+	}
+	return next, events, nil
+}
+
+func (s ScheduledService) segmentForDelaySequence(sequence, maxSequence int) (ServiceSegment, bool) {
+	var selected ServiceSegment
+	found := false
+	if sequence < maxSequence {
+		for _, segment := range s.segments {
+			if segment.FromSequence != sequence {
+				continue
+			}
+			if !found || segment.ToSequence < selected.ToSequence {
+				selected = segment
+				found = true
+			}
+		}
+		return selected, found
+	}
+	for _, segment := range s.segments {
+		if segment.ToSequence != maxSequence {
+			continue
+		}
+		if !found || segment.FromSequence > selected.FromSequence {
+			selected = segment
+			found = true
+		}
+	}
+	return selected, found
+}
 
 func (s ScheduledService) Validate() error {
 	if strings.TrimSpace(string(s.id)) == "" {
@@ -770,6 +1249,42 @@ type ScheduledServiceMaterializedEvent struct {
 	ServiceDate        time.Time
 }
 
+type TemporaryServiceAddedEvent struct {
+	TempServiceRef TemporaryServiceID
+	BaseServiceRef ScheduledServiceID
+	Period         SchedulePeriodType
+}
+
+type TemporaryServiceRemovedEvent struct {
+	TempServiceRef TemporaryServiceID
+	BaseServiceRef ScheduledServiceID
+	Period         SchedulePeriodType
+}
+
+type SchedulePeriodActivatedEvent struct {
+	ServicePlanID      ServicePlanID
+	Period             SchedulePeriodType
+	StartDate          time.Time
+	EndDate            time.Time
+	CapacityMultiplier float64
+}
+
+type TrainCancelledEvent struct {
+	ServiceRef ScheduledServiceID
+	Date       time.Time
+	Reason     string
+}
+
+type TrainRestoredEvent struct {
+	ServiceRef ScheduledServiceID
+	Date       time.Time
+}
+
+type TemporaryServiceExpiredEvent struct {
+	ServiceRef    ScheduledServiceID
+	PeriodEndDate time.Time
+}
+
 func validServiceMode(value ServiceMode) bool {
 	switch value {
 	case ServiceModeTrain, ServiceModeBus, ServiceModeAir, ServiceModeFerry, ServiceModeShuttle:
@@ -808,6 +1323,29 @@ func validateCalendarException(exception CalendarException) error {
 		return fmt.Errorf("calendar exception reason code is required")
 	}
 	return nil
+}
+
+func validSchedulePeriodType(value SchedulePeriodType) bool {
+	switch value {
+	case SchedulePeriodRegular, SchedulePeriodSpringRush, SchedulePeriodSummerRush, SchedulePeriodNationalDay, SchedulePeriodLaborDay:
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultSchedulePeriodsFor(year int) []SchedulePeriod {
+	return []SchedulePeriod{
+		regularSchedulePeriod(year),
+		{PeriodType: SchedulePeriodSpringRush, StartDate: time.Date(year, time.January, 10, 0, 0, 0, 0, time.UTC), EndDate: time.Date(year, time.March, 10, 0, 0, 0, 0, time.UTC), CapacityMultiplier: 1.30},
+		{PeriodType: SchedulePeriodSummerRush, StartDate: time.Date(year, time.July, 1, 0, 0, 0, 0, time.UTC), EndDate: time.Date(year, time.August, 31, 0, 0, 0, 0, time.UTC), CapacityMultiplier: 1.20},
+		{PeriodType: SchedulePeriodNationalDay, StartDate: time.Date(year, time.September, 28, 0, 0, 0, 0, time.UTC), EndDate: time.Date(year, time.October, 8, 0, 0, 0, 0, time.UTC), CapacityMultiplier: 1.25},
+		{PeriodType: SchedulePeriodLaborDay, StartDate: time.Date(year, time.April, 29, 0, 0, 0, 0, time.UTC), EndDate: time.Date(year, time.May, 5, 0, 0, 0, 0, time.UTC), CapacityMultiplier: 1.15},
+	}
+}
+
+func regularSchedulePeriod(year int) SchedulePeriod {
+	return SchedulePeriod{PeriodType: SchedulePeriodRegular, StartDate: time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC), EndDate: time.Date(year, time.December, 31, 0, 0, 0, 0, time.UTC), CapacityMultiplier: 1.0}
 }
 
 func normalizeDate(value time.Time) time.Time {
@@ -854,6 +1392,52 @@ func copyPlannedTimePtr(value *PlannedTime) *PlannedTime {
 	}
 	copied := *value
 	return &copied
+}
+
+func copySchedulePeriods(periods []SchedulePeriod) []SchedulePeriod {
+	copied := make([]SchedulePeriod, len(periods))
+	copy(copied, periods)
+	return copied
+}
+
+func copyTemporaryServices(services []TemporaryService) []TemporaryService {
+	copied := make([]TemporaryService, len(services))
+	for i, service := range services {
+		copied[i] = service
+		copied[i].StopsSubset = copyTransportNodeIDs(service.StopsSubset)
+		copied[i].AvailableClasses = copyStrings(service.AvailableClasses)
+		copied[i].ExpiredAt = copyTimePtr(service.ExpiredAt)
+	}
+	return copied
+}
+
+func copyServiceCancellations(cancellations []ServiceCancellation) []ServiceCancellation {
+	copied := make([]ServiceCancellation, len(cancellations))
+	for i, cancellation := range cancellations {
+		copied[i] = cancellation
+		copied[i].RestoredAt = copyTimePtr(cancellation.RestoredAt)
+	}
+	return copied
+}
+
+func copyTransportNodeIDs(values []TransportNodeID) []TransportNodeID {
+	copied := make([]TransportNodeID, len(values))
+	copy(copied, values)
+	return copied
+}
+
+func copyStrings(values []string) []string {
+	copied := make([]string, len(values))
+	for i, value := range values {
+		copied[i] = strings.TrimSpace(value)
+	}
+	return copied
+}
+
+func copyDelayRecords(records []DelayRecord) []DelayRecord {
+	copied := make([]DelayRecord, len(records))
+	copy(copied, records)
+	return copied
 }
 
 func copyTimePtr(value *time.Time) *time.Time {
