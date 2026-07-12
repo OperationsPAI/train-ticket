@@ -145,11 +145,39 @@ impl PostgresInvoicingService {
             .map_err(crate::utils::handler_error)
     }
 
+    fn requires_persistence(envelope: &rust_kit::messaging::EventEnvelope) -> bool {
+        matches!(
+            envelope.event_type.as_str(),
+            "InvoiceRequested" | "RequestEInvoice" | "IssueRedFlush"
+        ) && envelope.producer == "booking-orchestration"
+            || matches!(
+                envelope.event_type.as_str(),
+                "RequestEInvoice" | "IssueRedFlush"
+            )
+    }
+
     async fn consume_in_tx(
         &self,
         envelope: rust_kit::messaging::EventEnvelope,
         stream: &str,
     ) -> Result<(), InvoicingError> {
+        if !Self::requires_persistence(&envelope) {
+            let mut tx = self.pool().begin().await.map_err(internal)?;
+            let claimed = sqlx::query(
+                "INSERT INTO processed_events (event_id, stream) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(&envelope.event_id)
+            .bind(stream)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+            if claimed.rows_affected() == 0 {
+                return Ok(());
+            }
+            tx.commit().await.map_err(internal)?;
+            return Ok(());
+        }
+
         let mut tx = self.pool().begin().await.map_err(internal)?;
         let claimed = sqlx::query(
             "INSERT INTO processed_events (event_id, stream) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -160,7 +188,7 @@ impl PostgresInvoicingService {
         .await
         .map_err(internal)?;
         if claimed.rows_affected() == 0 {
-            return Ok(()); // duplicate delivery; prior tx already did the work
+            return Ok(());
         }
         let (svc, publisher) = Self::hydrate_locked(&mut tx).await?;
         svc.apply_subscribed_event(envelope).await?;

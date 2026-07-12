@@ -61,6 +61,10 @@ spec:
               value: none
             - name: OTEL_LOGS_EXPORTER
               value: none
+            {{- range $k, $v := $.Values.defaults.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
             {{- range $k, $v := $svc.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
