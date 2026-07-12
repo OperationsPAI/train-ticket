@@ -162,7 +162,7 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	entVal, _ := tick.GetResult("entitlement")
 	ent, _ := entVal.(string)
 
-	final := pollOrder(ctx, p, orderID, map[string]bool{"CONFIRMED": true, "CONFIRMING": true}, false)
+	final := pollOrderLong(ctx, p, orderID, 30, 2)
 	if final != "CONFIRMED" && final != "CONFIRMING" {
 		return "", &StepError{Step: "confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
 	}
@@ -277,6 +277,29 @@ func pollWaitlist(ctx context.Context, p *Providers, waitlistID string) string {
 		case <-ctx.Done():
 			return ""
 		case <-time.After(interval):
+		}
+	}
+	return ""
+}
+
+func pollOrderLong(ctx context.Context, p *Providers, orderID string, maxAttempts int, intervalSec int) string {
+	for i := 0; i < maxAttempts; i++ {
+		code, data, _ := p.API.Request(ctx, "GET", "journey-order",
+			"/api/v1/journey-orders/"+url.PathEscape(orderID),
+			nil, nil, nil, "poll-order")
+		if code == 200 {
+			status := getString(data, "status")
+			if status == "CONFIRMED" || status == "CONFIRMING" {
+				return status
+			}
+			if status == "CANCELLED" || status == "FAILED" {
+				return status
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(time.Duration(intervalSec) * time.Second):
 		}
 	}
 	return ""
