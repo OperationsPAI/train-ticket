@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { InMemoryEventPublisher, InMemoryMemberRepository, LoyaltyMembershipApplicationService } from "./application.js";
-import { handleJourneyOrderConfirmed } from "./bootstrap.js";
+import { handleJourneyOrderConfirmed, handlePaymentCaptured } from "./bootstrap.js";
 import { createEventEnvelope } from "@trainticket/ts-kit";
 
 describe("journey-order event consumption", () => {
@@ -28,11 +28,43 @@ describe("journey-order event consumption", () => {
 
     const member = await repository.findByAccountId("acct-msg");
     assert.ok(member);
-    assert.equal(member.redeemablePoints, 25);
-    const accrued = publisher.findByEventType("PointsAccrued")[0];
-    assert.equal(accrued.payload.points, 25);
+    assert.equal(member.redeemablePoints, 2500);
+    const accrued = publisher.findByEventType("PointsEarned")[0];
+    assert.equal(accrued.payload.points, 2500);
     const sourceFactRef = accrued.payload.sourceFactRef as { eventType: string; aggregateId: string };
     assert.equal(sourceFactRef.eventType, "JOURNEY_ORDER_CONFIRMED");
     assert.equal(sourceFactRef.aggregateId, "ord-msg");
+  });
+});
+
+
+
+describe("payment event consumption", () => {
+  it("accrues points from PaymentCaptured captured amount", async () => {
+    const repository = new InMemoryMemberRepository();
+    const publisher = new InMemoryEventPublisher();
+    const service = new LoyaltyMembershipApplicationService(repository, publisher);
+    const envelope = createEventEnvelope({
+      eventType: "PaymentCaptured",
+      producer: "payment",
+      payload: {
+        paymentIntentId: "pi-msg",
+        businessRef: "ord-pay-msg",
+        accountId: "acct-pay-msg",
+        capturedAmount: { currency: "CNY", minorUnits: 50_000 },
+        capturedAt: "2026-07-10T10:00:00.000Z",
+        seatClass: "BUSINESS_CLASS",
+      },
+    });
+
+    await handlePaymentCaptured(service, envelope);
+
+    const member = await repository.findByAccountId("acct-pay-msg");
+    assert.ok(member);
+    assert.equal(member.redeemablePoints, 1000);
+    const earned = publisher.findByEventType("PointsEarned")[0];
+    const sourceFactRef = earned.payload.sourceFactRef as { eventType: string; aggregateId: string };
+    assert.equal(sourceFactRef.eventType, "PAYMENT_CAPTURED");
+    assert.equal(sourceFactRef.aggregateId, "ord-pay-msg");
   });
 });

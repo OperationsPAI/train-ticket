@@ -13,8 +13,8 @@ export const serviceProfile: ServiceProfile = {
   serviceId: "loyalty-membership",
   domain: "Loyalty Membership",
   language: "typescript",
-  phase: "phase-1-loyalty-membership-service-foundation",
-  requirement: "REQ-210-Loyalty-membership-service-foundation",
+  phase: "domain-enrichment-loyalty-membership",
+  requirement: "REQ-309-loyalty-membership-points-and-tiers",
   owns: [
     "Membership tier state",
     "Redeemable points balance",
@@ -22,5 +22,5 @@ export const serviceProfile: ServiceProfile = {
     "Tier upgrade and downgrade rules",
   ],
   consumes: ["JourneyOrderConfirmed", "PaymentCaptured"],
-  publishes: ["MembershipTierChanged", "PointsAccrued", "PointsRedeemed"],
+  publishes: ["PointsEarned", "PointsRedeemed", "PointsExpired", "MemberTierUpgraded", "MemberTierDowngraded", "TierEvaluationCompleted"],
 };

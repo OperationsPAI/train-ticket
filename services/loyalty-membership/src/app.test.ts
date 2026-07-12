@@ -33,16 +33,16 @@ describe("loyalty membership HTTP API", () => {
 
     const get = await app.inject(`/members/${member.memberId}`);
     assert.equal(get.statusCode, 200);
-    assert.equal(get.json().redeemablePoints, 10);
+    assert.equal(get.json().redeemablePoints, 1000);
 
     const redeem = await app.inject({
       method: "POST",
       url: `/members/${member.memberId}/redeem`,
       headers: { "idempotency-key": "0194f2e0-7b3e-7610-8284-5c26e8b0c001" },
-      payload: { points: 4, redemptionId: "red-http" },
+      payload: { points: 500, redemptionId: "red-http" },
     });
     assert.equal(redeem.statusCode, 200);
-    assert.equal(redeem.json().balanceAfter, 6);
+    assert.equal(redeem.json().balanceAfter, 500);
     assert.equal(publisher.findByEventType("PointsRedeemed").length, 1);
   });
 });
