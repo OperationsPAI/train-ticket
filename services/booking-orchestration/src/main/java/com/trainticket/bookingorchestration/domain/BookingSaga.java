@@ -44,7 +44,7 @@ public final class BookingSaga {
         for (BookingSagaStep step : plan) {
             saga.addStep(step);
         }
-        saga.status = BookingSagaStatus.RESERVING;
+        saga.status = BookingSagaStatus.RISK_CHECKING;
         saga.record(new BookingSagaStarted(saga.nextEventId(), saga.sagaId, saga.now(), saga.journeyOrderId));
         saga.record(new BookingSagaAdvanced(saga.nextEventId(), saga.sagaId, saga.now(), saga.status));
         return saga;

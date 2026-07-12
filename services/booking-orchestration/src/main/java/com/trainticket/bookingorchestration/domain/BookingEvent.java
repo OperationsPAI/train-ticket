@@ -10,7 +10,9 @@ public sealed interface BookingEvent extends DomainEvent permits BookingEvent.Bo
     BookingEvent.BookingSagaRetryScheduled,
     BookingEvent.BookingSagaCompleted,
     BookingEvent.BookingSagaFailed,
-    BookingEvent.BookingSagaManualReviewRequired {
+    BookingEvent.BookingSagaManualReviewRequired,
+    BookingEvent.RiskAssessmentRequested,
+    BookingEvent.InvoiceRequested {
 
     record BookingSagaStarted(String eventId, String aggregateId, Instant occurredAt, String journeyOrderId)
         implements BookingEvent {
@@ -40,6 +42,16 @@ public sealed interface BookingEvent extends DomainEvent permits BookingEvent.Bo
     }
 
     record BookingSagaManualReviewRequired(String eventId, String aggregateId, Instant occurredAt, String reason)
+        implements BookingEvent {
+    }
+
+    record RiskAssessmentRequested(String eventId, String aggregateId, Instant occurredAt,
+                                   String journeyOrderId, String accountId)
+        implements BookingEvent {
+    }
+
+    record InvoiceRequested(String eventId, String aggregateId, Instant occurredAt,
+                            String journeyOrderId, String paymentRef)
         implements BookingEvent {
     }
 }
