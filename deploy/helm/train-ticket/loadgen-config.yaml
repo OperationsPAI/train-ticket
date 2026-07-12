@@ -152,7 +152,7 @@ bootstrap:
   departure_window:
     from_days: 7      # T+7
     to_days: 21       # T+21  (2-week window)
-  services_per_date: 8
+  services_per_date: 15
   service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
 
 # ---------------------------------------------------------------------------
