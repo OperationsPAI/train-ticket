@@ -23,6 +23,11 @@ data:
       GRANT ALL PRIVILEGES ON DATABASE {{ . }} TO $POSTGRES_USER;
     SQL
     {{- end }}
+    # Ensure remote connections are allowed (needed for pod-to-pod traffic)
+    if ! grep -q '0.0.0.0/0' "$PGDATA/pg_hba.conf" 2>/dev/null; then
+      echo "host all all 0.0.0.0/0 md5" >> "$PGDATA/pg_hba.conf"
+      pg_ctl reload -D "$PGDATA" 2>/dev/null || true
+    fi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -77,7 +82,7 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
-          args: ["-c", "max_connections={{ $pg.maxConnections | default 300 }}", "-c", "shared_buffers={{ $pg.sharedBuffers | default "256MB" }}", "-c", "work_mem={{ $pg.workMem | default "8MB" }}", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
+          args: ["-c", "max_connections={{ $pg.maxConnections | default 300 }}", "-c", "shared_buffers={{ $pg.sharedBuffers | default "256MB" }}", "-c", "work_mem={{ $pg.workMem | default "8MB" }}", "-c", "max_slot_wal_keep_size=2GB"]
           startupProbe:
             exec:
               command: ["pg_isready", "-U", "{{ $.Values.postgres.credentials.username }}"]

@@ -4,7 +4,7 @@ kind: Deployment
 metadata:
   name: loadgen
 spec:
-  replicas: 1
+  replicas: {{ .Values.loadgen.replicas | default 1 }}
   selector:
     matchLabels:
       app.kubernetes.io/name: loadgen
