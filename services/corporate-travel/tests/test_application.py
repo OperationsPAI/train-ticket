@@ -26,6 +26,8 @@ def test_service_creates_active_agreement_and_publishes_activation() -> None:
     result = service.create_agreement(**agreement_payload())
 
     assert result.agreement.status.value == "ACTIVE"
+    service.flush_outbox()
+
     assert [event.eventType for event in publisher.envelopes] == ["CorporateAgreementCreated", "CorporateAgreementActivated"]
     assert publisher.envelopes[1].payload["monthlyCreditLimit"] == {"currency": "USD", "minorUnits": 100000}
 
@@ -78,6 +80,8 @@ def test_service_authorizes_and_closes_billing_period_from_events() -> None:
 
     assert closed.status.value == "CLOSED"
     assert closed.total_amount.minor_units == 5000
+    service.flush_outbox()
+
     assert publisher.envelopes[-1].eventType == "CorporateBillingPeriodClosed"
     assert publisher.envelopes[-1].payload["statementHash"] == closed.statement_hash
 
@@ -105,6 +109,8 @@ def test_policy_check_reserves_budget_and_publishes_outbox_events() -> None:
     assert result.approval_request is not None
     assert result.approval_request.status.value == "APPROVED"
     assert any(pool.reserved_minor == 1200 for pool in result.budget_pools)
+    service.flush_outbox()
+
     assert "TravelPolicyChecked" in [event.eventType for event in publisher.envelopes]
     assert "ApprovalGranted" in [event.eventType for event in publisher.envelopes]
     assert service.repository.outbox[-1].stream == "events:corporate-travel"
@@ -133,6 +139,7 @@ def test_department_budget_exceeded_is_blocked_without_finance_approval() -> Non
     assert result.approval_request is not None
     assert result.approval_request.current_level.value == 3
     assert all(pool.reserved_minor == 0 for pool in result.budget_pools)
+    service.flush_outbox()
     assert publisher.envelopes[-1].eventType == "ApprovalRequested"
 
 
@@ -161,3 +168,57 @@ def test_payment_commits_and_cancellation_releases_budget_reservation() -> None:
     assert any(pool.committed_minor == 1200 for pool in committed)
     assert released
     assert all(pool.committed_minor == 0 for pool in released)
+
+
+def test_messaging_handler_invokes_service_budget_side_effects() -> None:
+    from corporate_travel.messaging import build_event_handler
+
+    service = CorporateTravelService(publisher=InMemoryEventPublisher())
+    agreement = service.create_agreement(**agreement_payload()).agreement
+    service.check_policy_and_reserve(
+        agreement_id=agreement.agreement_id,
+        booking_ref="book-subscriber-1",
+        employee_ref="emp-1",
+        department_ref="dep-1",
+        origin="BJS",
+        destination="SHA",
+        seat_class="SECOND_CLASS",
+        amount={"currency": "USD", "minorUnits": 1200},
+        requested_at="2026-01-01T00:00:00Z",
+        departure_at="2026-01-05T00:00:00Z",
+        trip_duration_minutes=300,
+    )
+
+    build_event_handler(service)(
+        EventEnvelope(
+            eventId="evt-pay-subscriber-1",
+            eventType="PaymentCaptured",
+            occurredAt="2026-01-10T00:05:00Z",
+            correlationId="corr-test",
+            causationId="cmd-test",
+            producer="payment",
+            schemaVersion=1,
+            payload={
+                "agreementId": agreement.agreement_id,
+                "billingPeriod": "2026-01",
+                "bookingRef": "book-subscriber-1",
+                "paymentIntentId": "pay-subscriber-1",
+                "capturedAmount": {"currency": "USD", "minorUnits": 1200},
+            },
+        )
+    )
+
+    assert all(pool.reserved_minor == 0 for pool in service.repository.budget_pools.values())
+    assert any(pool.committed_minor == 1200 for pool in service.repository.budget_pools.values())
+
+
+def test_publish_enqueues_outbox_without_direct_publish() -> None:
+    publisher = InMemoryEventPublisher()
+    service = CorporateTravelService(publisher=publisher)
+
+    service.create_agreement(**agreement_payload())
+
+    assert publisher.envelopes == []
+    assert [record.envelope.eventType for record in service.repository.outbox] == ["CorporateAgreementCreated", "CorporateAgreementActivated"]
+    service.flush_outbox()
+    assert [event.eventType for event in publisher.envelopes] == ["CorporateAgreementCreated", "CorporateAgreementActivated"]

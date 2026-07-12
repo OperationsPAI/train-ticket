@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS monthly_invoices (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+
+CREATE TABLE IF NOT EXISTS processed_events (
+    event_id TEXT PRIMARY KEY,
+    stream TEXT,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS outbox (
     seq BIGSERIAL PRIMARY KEY,
     event_id TEXT NOT NULL UNIQUE,
