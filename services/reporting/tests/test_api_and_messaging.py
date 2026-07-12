@@ -139,6 +139,57 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["code"], "DOMAIN_RULE_VIOLATION")
 
+    def test_dashboard_operational_metrics_endpoint(self) -> None:
+        service = ReportingApplicationService()
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        for index in range(10):
+            service.handle_event(EventEnvelope(
+                eventId=f"evt-order-{index}",
+                eventType="JourneyOrderCreated",
+                occurredAt=occurred_at,
+                correlationId="corr-1",
+                producer="journey-order",
+                schemaVersion=1,
+                payload={"routeId": "G123", "bookingLatencyMs": 120},
+                causationId="evt-source",
+            ))
+        client = TestClient(create_app(service=service))
+
+        response = client.get("/api/v1/metrics/operational")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["orders_per_second"], 10)
+        self.assertIn("avg_booking_latency", response.json())
+
+    def test_anomaly_detection_publishes_event(self) -> None:
+        publisher = FakePublisher()
+        service = ReportingApplicationService(publisher=publisher)
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        with self.assertLogs("reporting.application.service", level="WARNING") as logs:
+            for index in range(8):
+                service.handle_event(EventEnvelope(eventId=f"evt-pay-{index}", eventType="PaymentCaptured", occurredAt=occurred_at, correlationId="corr-1", producer="payment", schemaVersion=1, payload={"amount": "10.00", "currency": "USD"}, causationId="evt-source"))
+            for index in range(2):
+                service.handle_event(EventEnvelope(eventId=f"evt-fail-{index}", eventType="PaymentFailed", occurredAt=occurred_at, correlationId="corr-1", producer="payment", schemaVersion=1, payload={}, causationId="evt-source"))
+
+        anomaly_events = [event for event in publisher.published if event.eventType == "AnomalyDetected"]
+        urgent_events = [event for event in publisher.published if event.eventType == "UrgentNotificationRequested"]
+
+        self.assertTrue(anomaly_events)
+        self.assertEqual(anomaly_events[-1].payload["ruleId"], "ERROR_RATE_SPIKE")
+        self.assertTrue(urgent_events)
+        self.assertEqual(urgent_events[-1].payload["ruleId"], "ERROR_RATE_SPIKE")
+        self.assertTrue(any("ERROR_RATE_SPIKE" in message for message in logs.output))
+
+    def test_revenue_endpoint_returns_route_breakdown(self) -> None:
+        service = ReportingApplicationService()
+        service.handle_event(EventEnvelope(eventId="evt-r-a", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "A", "amount": "50.00", "currency": "USD"}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-r-b", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "B", "amount": "75.00", "currency": "USD"}, causationId="evt-source"))
+
+        response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=route")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["value"], "B")
+
 
 class MessagingTest(unittest.TestCase):
     def test_application_publisher_wraps_event_in_correct_envelope(self) -> None:
@@ -292,6 +343,114 @@ class MessagingTest(unittest.TestCase):
         subscriber._process_entry("events:payment", "reporting", "1-1", fields, handler, 1)
         self.assertEqual(calls, ["evt-redis-duplicate"])
         self.assertEqual(acks, ["1-0", "1-1"])
+
+class PostgresProjectionTest(unittest.TestCase):
+    def test_postgres_projection_persists_metric_events_and_publishes_urgent_action(self) -> None:
+        from reporting.adapters.storage.postgres import PostgresReportingApplicationService
+
+        class FakeCursor:
+            def __init__(self, row: object | None = None, rows: list[tuple[object, ...]] | None = None) -> None:
+                self._row = row
+                self._rows = rows or []
+
+            def fetchone(self) -> object | None:
+                return self._row
+
+            def fetchall(self) -> list[tuple[object, ...]]:
+                return self._rows
+
+        class FakeTransaction:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.metric_events: list[tuple[object, ...]] = []
+                self.outbox: list[tuple[str, dict[str, object]]] = []
+                self.processed: set[str] = set()
+                self.refreshed: list[str] = []
+
+            def __enter__(self) -> "FakeConnection":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def transaction(self) -> FakeTransaction:
+                return FakeTransaction()
+
+            def execute(self, query: str, params: tuple[object, ...] = ()) -> FakeCursor:
+                normalized = " ".join(query.split())
+                if normalized.startswith("SELECT version, data FROM"):
+                    return FakeCursor()
+                if normalized.startswith("INSERT INTO metric_definition_snapshots") or normalized.startswith("INSERT INTO dashboard_read_model_snapshots"):
+                    return FakeCursor((1,))
+                if normalized.startswith("INSERT INTO reporting_rebuild_runs"):
+                    return FakeCursor()
+                if normalized.startswith("INSERT INTO processed_events"):
+                    if str(params[0]) in self.processed:
+                        return FakeCursor()
+                    self.processed.add(str(params[0]))
+                    return FakeCursor((params[0],))
+                if normalized.startswith("INSERT INTO reporting_metric_events"):
+                    self.metric_events.append(params)
+                    return FakeCursor()
+                if normalized.startswith("REFRESH MATERIALIZED VIEW"):
+                    self.refreshed.append(normalized.removeprefix("REFRESH MATERIALIZED VIEW "))
+                    return FakeCursor()
+                if normalized.startswith("SELECT event_id, event_type, occurred_at"):
+                    return FakeCursor(rows=[self._metric_row(params) for params in self.metric_events])
+                if normalized.startswith("UPDATE reporting_anomalies SET resolved_at"):
+                    return FakeCursor()
+                if normalized.startswith("INSERT INTO reporting_anomalies"):
+                    return FakeCursor((params[0],))
+                if normalized.startswith("INSERT INTO outbox"):
+                    payload = params[2]
+                    if hasattr(payload, "obj"):
+                        payload = payload.obj
+                    elif not isinstance(payload, dict):
+                        payload = json.loads(payload)
+                    self.outbox.append((str(params[1]), payload))
+                    return FakeCursor()
+                if normalized.startswith("SELECT id, version, data FROM dashboard_read_model_snapshots"):
+                    return FakeCursor(rows=[])
+                raise AssertionError(f"unexpected SQL: {normalized}")
+
+            @staticmethod
+            def _metric_row(params: tuple[object, ...]) -> tuple[object, ...]:
+                return (
+                    params[0], params[1], params[2], params[3], params[4], params[5],
+                    params[6], params[7], params[8], params[9], params[10], params[11],
+                    params[12], params[13],
+                )
+
+        class FakePool:
+            def __init__(self) -> None:
+                self.conn = FakeConnection()
+
+            def connection(self) -> FakeConnection:
+                return self.conn
+
+        pool = FakePool()
+        service = PostgresReportingApplicationService(pool)
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        for index in range(8):
+            service.handle_event(EventEnvelope(eventId=f"evt-pg-pay-{index}", eventType="PaymentCaptured", occurredAt=occurred_at, correlationId="corr-1", producer="payment", schemaVersion=1, payload={"amount": "10.00", "currency": "USD"}, causationId="evt-source"))
+        for index in range(2):
+            service.handle_event(EventEnvelope(eventId=f"evt-pg-fail-{index}", eventType="PaymentFailed", occurredAt=occurred_at, correlationId="corr-1", producer="payment", schemaVersion=1, payload={}, causationId="evt-source"))
+
+        event_types = [event[1] for event in pool.conn.metric_events]
+        outbox_types = [envelope["eventType"] for _, envelope in pool.conn.outbox]
+
+        self.assertEqual(event_types.count("PaymentCaptured"), 8)
+        self.assertEqual(event_types.count("PaymentFailed"), 2)
+        self.assertIn("reporting_revenue_by_route", pool.conn.refreshed)
+        self.assertIn("reporting_revenue_breakdowns", pool.conn.refreshed)
+        self.assertIn("AnomalyDetected", outbox_types)
+        self.assertIn("UrgentNotificationRequested", outbox_types)
 
 
 if __name__ == "__main__":

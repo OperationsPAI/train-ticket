@@ -6,6 +6,10 @@ from decimal import Decimal
 
 from reporting import (
     ConsumedEventLog,
+    AnomalyDetector,
+    AnomalySeverity,
+    MetricAggregator,
+    OperationalEvent,
     ConsumedEventRecord,
     ConsumptionStatus,
     DashboardReadModel,
@@ -400,6 +404,62 @@ class DashboardReadModelRequiredFieldsTest(unittest.TestCase):
     def test_requires_name(self) -> None:
         with self.assertRaisesRegex(ReportingError, "dashboard name is required"):
             DashboardReadModel(dashboard_id="d-1", name="", description="desc")
+
+
+class RealTimeMetricsEnrichmentTest(unittest.TestCase):
+    def test_ten_orders_are_reflected_in_orders_per_second(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        for index in range(10):
+            aggregator.record(
+                OperationalEvent(
+                    event_id=f"order-{index}",
+                    event_type="JourneyOrderCreated",
+                    occurred_at=NOW + timedelta(seconds=index),
+                    route_id="G123",
+                    booking_latency_ms=100 + index,
+                )
+            )
+
+        snapshot = aggregator.snapshot(NOW + timedelta(seconds=30))
+
+        self.assertEqual(snapshot.orders_per_second, 10)
+        self.assertEqual(snapshot.avg_booking_latency["p50"], 104.5)
+
+    def test_revenue_by_route_returns_top_routes(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        payments = [("A", "100.00"), ("B", "300.00"), ("A", "50.00")]
+        for index, (route, amount) in enumerate(payments):
+            aggregator.record(
+                OperationalEvent(
+                    event_id=f"payment-{index}",
+                    event_type="PaymentCaptured",
+                    occurred_at=NOW + timedelta(minutes=index),
+                    route_id=route,
+                    amount=Money(amount, "USD"),
+                    distance_km=Decimal("100"),
+                    ancillary_attached=index != 1,
+                    insurance_attached=index == 0,
+                )
+            )
+
+        report = aggregator.revenue_report("route", at=NOW + timedelta(hours=1))
+
+        self.assertEqual([item.value for item in report.items], ["B", "A"])
+        self.assertEqual(report.items[0].revenue, Money("300.00", "USD"))
+        self.assertEqual(report.items[1].yield_per_km, Decimal("0.75"))
+
+    def test_payment_failure_rate_detects_anomaly(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        detector = AnomalyDetector()
+        for index in range(8):
+            aggregator.record(OperationalEvent(f"ok-{index}", "PaymentCaptured", NOW + timedelta(seconds=index), amount=Money("10.00", "USD")))
+        for index in range(2):
+            aggregator.record(OperationalEvent(f"fail-{index}", "PaymentFailed", NOW + timedelta(seconds=20 + index)))
+
+        anomalies = detector.evaluate(aggregator, NOW + timedelta(minutes=1))
+
+        self.assertEqual(anomalies[0].rule_id, "ERROR_RATE_SPIKE")
+        self.assertEqual(anomalies[0].severity, AnomalySeverity.CRITICAL)
 
 
 if __name__ == "__main__":
