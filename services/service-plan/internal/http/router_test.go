@@ -236,3 +236,62 @@ func assertCanonicalError(t *testing.T, recorder *httptest.ResponseRecorder, sta
 		t.Fatalf("unexpected error body: %#v", response)
 	}
 }
+
+func TestRecordDelayEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := Router()
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c301","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c301")
+	recorder := performJSON(router, http.MethodPost, "/api/v1/scheduled-services/ss-0194f2e0-7b3e-7610-0284-5c26e8b0c301/delays", `{"segmentRef":"node-a:node-b","delayMinutes":30}`, "0194f2e0-7b3e-7610-0284-5c26e8b0c302")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Events []struct {
+			ServiceRef   string `json:"serviceRef"`
+			DelayMinutes int    `json:"delayMinutes"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if len(response.Events) == 0 || response.Events[0].DelayMinutes != 30 {
+		t.Fatalf("unexpected delay response: %#v", response)
+	}
+}
+
+func TestCancelAndRestoreEndpointsUpdateBookability(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := Router()
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c303","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c303")
+	cancel := performJSON(router, http.MethodPost, "/api/v1/scheduled-services/ss-0194f2e0-7b3e-7610-0284-5c26e8b0c303/cancellations", `{"date":"2026-07-05T00:00:00Z","reason":"WEATHER"}`, "0194f2e0-7b3e-7610-0284-5c26e8b0c304")
+	if cancel.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancel.Code, cancel.Body.String())
+	}
+	var cancelResponse map[string]any
+	_ = json.Unmarshal(cancel.Body.Bytes(), &cancelResponse)
+	if cancelResponse["bookable"] != false {
+		t.Fatalf("expected not bookable: %#v", cancelResponse)
+	}
+	restore := performJSON(router, http.MethodPost, "/api/v1/scheduled-services/ss-0194f2e0-7b3e-7610-0284-5c26e8b0c303/restorations", `{"date":"2026-07-05T00:00:00Z"}`, "0194f2e0-7b3e-7610-0284-5c26e8b0c305")
+	if restore.Code != http.StatusOK {
+		t.Fatalf("unexpected restore status: %d body=%s", restore.Code, restore.Body.String())
+	}
+	var restoreResponse map[string]any
+	_ = json.Unmarshal(restore.Body.Bytes(), &restoreResponse)
+	if restoreResponse["bookable"] != true {
+		t.Fatalf("expected bookable after restore: %#v", restoreResponse)
+	}
+}
+
+func TestAddTemporaryServiceEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := Router()
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c306","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-02-05T10:30:00Z","arrivalTime":"2026-02-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c306")
+	recorder := performJSON(router, http.MethodPost, "/api/v1/scheduled-services/ss-0194f2e0-7b3e-7610-0284-5c26e8b0c306/temporary-services", `{"tempServiceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c307","tempTrainNumber":"L1234","period":"SPRING_RUSH","stopsSubset":["node-a","node-b"],"availableClasses":["SECOND_CLASS"]}`, "0194f2e0-7b3e-7610-0284-5c26e8b0c307")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}

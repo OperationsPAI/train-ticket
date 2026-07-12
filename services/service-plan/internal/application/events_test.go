@@ -59,6 +59,13 @@ func (r *memoryRepository) SaveServiceSegment(_ context.Context, segment Service
 	r.segments[segment.SegmentRef] = segment
 	return nil
 }
+func (r *memoryRepository) FindServiceSegment(_ context.Context, ref string) (ServiceSegment, error) {
+	segment, ok := r.segments[ref]
+	if !ok {
+		return ServiceSegment{}, ErrNotFound
+	}
+	return segment, nil
+}
 
 type failingRepository struct{ err error }
 
@@ -72,6 +79,9 @@ func (r failingRepository) ListScheduledServices(context.Context, ListScheduledS
 	return PaginatedScheduledServices{}, r.err
 }
 func (r failingRepository) SaveServiceSegment(context.Context, ServiceSegment) error { return r.err }
+func (r failingRepository) FindServiceSegment(context.Context, string) (ServiceSegment, error) {
+	return ServiceSegment{}, r.err
+}
 
 func TestPublisherReceivesCorrectServicePlanEnvelope(t *testing.T) {
 	publisher := &recordingPublisher{}
@@ -306,4 +316,108 @@ func mustSpanContext(t *testing.T) trace.SpanContext {
 		t.Fatal("invalid span context")
 	}
 	return spanContext
+}
+
+func TestRecordDelayPublishesDampenedTrainDelayedEvents(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(publisher)
+	_, err := service.CreateScheduledService(context.Background(), CreateScheduledServiceCommand{
+		ServiceRef:        "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c221",
+		CarrierID:         "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001",
+		ServiceNumber:     "G1234",
+		DepartureTime:     time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:       time.Date(2026, 7, 5, 12, 30, 0, 0, time.UTC),
+		OriginNodeID:      "node-a",
+		DestinationNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("create scheduled service: %v", err)
+	}
+	result, err := service.RecordDelay(context.Background(), RecordDelayCommand{
+		ScheduledServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c221",
+		SegmentRef:          "node-a:node-b",
+		DelayMinutes:        30,
+	})
+	if err != nil {
+		t.Fatalf("record delay: %v", err)
+	}
+	if len(result.Events) != 1 || result.Events[0].DelayMinutes != 30 {
+		t.Fatalf("unexpected delay result: %#v", result)
+	}
+	last := publisher.envelopes[len(publisher.envelopes)-1]
+	if last.EventType != "TrainDelayed" {
+		t.Fatalf("expected TrainDelayed event, got %#v", last.EventType)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(last.Payload, &payload); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if payload["serviceRef"] != "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c221" || payload["delayMinutes"].(float64) != 30 {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestCancelAndRestorePublishEventsAndBookability(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(publisher)
+	_, err := service.CreateScheduledService(context.Background(), CreateScheduledServiceCommand{
+		ServiceRef:        "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c222",
+		CarrierID:         "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001",
+		ServiceNumber:     "G1234",
+		DepartureTime:     time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:       time.Date(2026, 7, 5, 12, 30, 0, 0, time.UTC),
+		OriginNodeID:      "node-a",
+		DestinationNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("create scheduled service: %v", err)
+	}
+	cancelled, err := service.CancelForDate(context.Background(), CancelServiceCommand{ScheduledServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c222", Date: time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC), Reason: "WEATHER"})
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled.Bookable {
+		t.Fatalf("expected not bookable after cancellation")
+	}
+	if publisher.envelopes[len(publisher.envelopes)-1].EventType != "TrainCancelled" {
+		t.Fatalf("expected TrainCancelled event")
+	}
+	restored, err := service.RestoreForDate(context.Background(), RestoreServiceCommand{ScheduledServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c222", Date: time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !restored.Bookable || publisher.envelopes[len(publisher.envelopes)-1].EventType != "TrainRestored" {
+		t.Fatalf("unexpected restore result/event: %#v", restored)
+	}
+}
+
+func TestTemporaryServiceAddedAndExpiredEvents(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(publisher)
+	_, err := service.CreateScheduledService(context.Background(), CreateScheduledServiceCommand{
+		ServiceRef:        "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c223",
+		CarrierID:         "car-0194f2e0-7b3e-7610-0284-5c26e8b0c001",
+		ServiceNumber:     "G1234",
+		DepartureTime:     time.Date(2026, 2, 5, 10, 30, 0, 0, time.UTC),
+		ArrivalTime:       time.Date(2026, 2, 5, 12, 30, 0, 0, time.UTC),
+		OriginNodeID:      "node-a",
+		DestinationNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("create scheduled service: %v", err)
+	}
+	_, err = service.AddTemporaryService(context.Background(), AddTemporaryServiceCommand{BaseServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c223", TempServiceRef: "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c224", TempTrainNumber: "L1234", Period: "SPRING_RUSH", StopsSubset: []string{"node-a", "node-b"}, AvailableClasses: []string{"SECOND_CLASS"}})
+	if err != nil {
+		t.Fatalf("add temporary service: %v", err)
+	}
+	if publisher.envelopes[len(publisher.envelopes)-1].EventType != "TemporaryServiceAdded" {
+		t.Fatalf("expected TemporaryServiceAdded event")
+	}
+	expired, err := service.ExpireTemporaryServices(context.Background(), "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c223", time.Date(2026, 3, 11, 0, 0, 0, 0, time.UTC), "", "")
+	if err != nil {
+		t.Fatalf("expire temporary services: %v", err)
+	}
+	if expired != 1 || publisher.envelopes[len(publisher.envelopes)-1].EventType != "TemporaryServiceExpired" {
+		t.Fatalf("expected expiration event, expired=%d", expired)
+	}
 }
