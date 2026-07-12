@@ -132,7 +132,7 @@ redis:
       memory: 8Gi
 loadgen:
   enabled: true
-  replicas: 2
+  replicas: 3
   workers: 200
 defaults:
   env:
