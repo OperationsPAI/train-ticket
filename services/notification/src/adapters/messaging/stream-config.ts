@@ -8,6 +8,8 @@ export const NOTIFICATION_SUBSCRIBED_STREAMS = Object.freeze([
   "events:payment",
   "events:entitlement-ticketing",
   "events:post-sales",
+  "events:disruption-recovery",
+  "events:waitlist",
   "events:wallet-promotion",
 ]);
 
