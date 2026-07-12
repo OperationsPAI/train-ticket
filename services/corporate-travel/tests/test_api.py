@@ -48,3 +48,28 @@ def test_unknown_agreement_returns_canonical_error() -> None:
 
     assert response.status_code == 404
     assert response.json()["code"] == "NOT_FOUND"
+
+
+def test_policy_check_endpoint_is_backward_compatible_addition() -> None:
+    client = TestClient(create_app())
+    agreement_id = client.post("/agreements", json=create_payload()).json()["agreementId"]
+
+    response = client.post(
+        f"/agreements/{agreement_id}/policy-checks",
+        json={
+            "employeeRef": "emp-1",
+            "departmentRef": "dep-1",
+            "origin": "BJS",
+            "destination": "SHA",
+            "seatClass": "SECOND_CLASS",
+            "amount": {"currency": "USD", "minorUnits": 1200},
+            "requestedAt": "2026-01-01T00:00:00Z",
+            "departureAt": "2026-01-05T00:00:00Z",
+            "tripDurationMinutes": 300,
+            "bookingRef": "book-api-1",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["result"] == "COMPLIANT"
+    assert response.json()["approvalRequest"]["status"] == "APPROVED"

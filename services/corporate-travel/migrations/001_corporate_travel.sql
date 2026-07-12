@@ -68,3 +68,81 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     payload JSONB NOT NULL,
     published_at TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS travel_policies (
+    agreement_id TEXT PRIMARY KEY REFERENCES corporate_agreements (agreement_id),
+    document JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+    request_id TEXT PRIMARY KEY,
+    booking_ref TEXT NOT NULL,
+    employee_ref TEXT NOT NULL,
+    current_level INTEGER NOT NULL CHECK (current_level BETWEEN 1 AND 3),
+    status TEXT NOT NULL,
+    document JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_booking
+    ON approval_requests (booking_ref, status);
+
+CREATE TABLE IF NOT EXISTS budget_pools (
+    pool_id TEXT PRIMARY KEY,
+    dimension TEXT NOT NULL,
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    limit_minor BIGINT NOT NULL CHECK (limit_minor >= 0),
+    reserved_minor BIGINT NOT NULL CHECK (reserved_minor >= 0),
+    committed_minor BIGINT NOT NULL CHECK (committed_minor >= 0),
+    document JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT budget_period_window CHECK (period_end > period_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_pools_dimension_period
+    ON budget_pools (dimension, period_start, period_end);
+
+CREATE TABLE IF NOT EXISTS budget_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    pool_id TEXT NOT NULL REFERENCES budget_pools (pool_id),
+    booking_ref TEXT NOT NULL,
+    amount_minor BIGINT NOT NULL CHECK (amount_minor >= 0),
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_booking
+    ON budget_reservations (booking_ref, status);
+
+CREATE TABLE IF NOT EXISTS monthly_invoices (
+    invoice_id TEXT PRIMARY KEY,
+    agreement_id TEXT NOT NULL REFERENCES corporate_agreements (agreement_id),
+    billing_period TEXT NOT NULL,
+    total_minor BIGINT NOT NULL CHECK (total_minor >= 0),
+    discount_minor BIGINT NOT NULL CHECK (discount_minor >= 0),
+    document JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
+CREATE TABLE IF NOT EXISTS processed_events (
+    event_id TEXT PRIMARY KEY,
+    stream TEXT,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS outbox (
+    seq BIGSERIAL PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    stream TEXT NOT NULL,
+    envelope JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished_seq
+    ON outbox (seq) WHERE published_at IS NULL;
