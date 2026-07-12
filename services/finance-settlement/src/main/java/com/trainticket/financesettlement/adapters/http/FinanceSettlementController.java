@@ -6,9 +6,13 @@ import com.trainticket.financesettlement.application.DomainEventEnvelopeMapper;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService.Page;
 import com.trainticket.financesettlement.domain.Invoice;
+import com.trainticket.financesettlement.domain.ReconciliationBatch;
+import com.trainticket.financesettlement.domain.ReconciliationEntry;
+import com.trainticket.financesettlement.domain.SupplierSettlement;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import jakarta.servlet.http.HttpServletRequest;
@@ -64,6 +68,25 @@ public class FinanceSettlementController {
     @GetMapping("/api/v1/channel-statements/{channelStatementId}")
     public ChannelStatementResponse getChannelStatement(@PathVariable String channelStatementId) {
         return ChannelStatementResponse.from(service.getChannelStatement(channelStatementId));
+    }
+
+    @GetMapping("/api/v1/settlements/daily/{date}")
+    public DailySettlementResponse getDailySettlement(@PathVariable String date) {
+        return DailySettlementResponse.from(service.getDailySettlement(LocalDate.parse(date)));
+    }
+
+    @GetMapping("/api/v1/settlements/suppliers/{supplierId}/period")
+    public SupplierSettlementResponse getSupplierSettlement(
+        @PathVariable String supplierId,
+        @RequestParam String startDate,
+        @RequestParam String endDate
+    ) {
+        return SupplierSettlementResponse.from(service.getSupplierSettlement(supplierId, LocalDate.parse(startDate), LocalDate.parse(endDate)));
+    }
+
+    @GetMapping("/api/v1/settlements/reconciliation/{batchId}")
+    public ReconciliationBatchResponse getReconciliationBatch(@PathVariable String batchId) {
+        return ReconciliationBatchResponse.from(service.getReconciliationBatch(batchId));
     }
 
     @GetMapping("/api/v1/benefit-costs")
@@ -170,6 +193,98 @@ public class FinanceSettlementController {
                 reconciliationCase.status().name(),
                 reconciliationCase.resolution(),
                 reconciliationCase.resolutionNote()
+            );
+        }
+    }
+
+    public record DailySettlementResponse(
+        String batchId,
+        String settlementDate,
+        int totalEntries,
+        int matchedEntries,
+        Object matchRate,
+        Map<String, Object> totalVariance,
+        int exceptionCount,
+        Map<String, Long> statusCounts
+    ) {
+        static DailySettlementResponse from(ReconciliationBatch batch) {
+            return new DailySettlementResponse(
+                batch.batchId(),
+                batch.settlementDate().toString(),
+                batch.report().totalEntries(),
+                batch.report().matchedEntries(),
+                batch.report().matchRate(),
+                DomainEventEnvelopeMapper.moneyPayload(batch.report().totalVariance()),
+                batch.report().exceptions().size(),
+                batch.statusCounts()
+            );
+        }
+    }
+
+    public record ReconciliationBatchResponse(
+        String batchId,
+        String settlementDate,
+        Instant cutoffAt,
+        List<ReconciliationEntryResponse> entries,
+        DailySettlementResponse report
+    ) {
+        static ReconciliationBatchResponse from(ReconciliationBatch batch) {
+            return new ReconciliationBatchResponse(
+                batch.batchId(),
+                batch.settlementDate().toString(),
+                batch.cutoffAt(),
+                batch.entries().stream().map(ReconciliationEntryResponse::from).toList(),
+                DailySettlementResponse.from(batch)
+            );
+        }
+    }
+
+    public record ReconciliationEntryResponse(
+        String entryId,
+        String orderId,
+        String paymentIntentId,
+        Map<String, Object> platformAmount,
+        Map<String, Object> channelAmount,
+        String status,
+        Map<String, Object> variance,
+        List<String> sourceEventIds
+    ) {
+        static ReconciliationEntryResponse from(ReconciliationEntry entry) {
+            return new ReconciliationEntryResponse(
+                entry.entryId(), entry.orderId(), entry.paymentIntentId(),
+                DomainEventEnvelopeMapper.moneyPayload(entry.platformAmount()),
+                DomainEventEnvelopeMapper.moneyPayload(entry.channelAmount()),
+                entry.status().name(),
+                DomainEventEnvelopeMapper.moneyPayload(entry.variance()),
+                entry.sourceEventIds()
+            );
+        }
+    }
+
+    public record SupplierSettlementResponse(
+        String supplierSettlementId,
+        String supplierId,
+        String periodStartDate,
+        String periodEndDate,
+        String settlementFrequency,
+        Map<String, Object> grossRevenue,
+        Map<String, Object> platformCommission,
+        Map<String, Object> taxesWithheld,
+        Map<String, Object> supplierPayable,
+        Map<String, Object> adjustments
+    ) {
+        static SupplierSettlementResponse from(SupplierSettlement settlement) {
+            return new SupplierSettlementResponse(
+                settlement.supplierSettlementId(),
+                settlement.supplierId(),
+                settlement.period().startDate().toString(),
+                settlement.period().endDate().toString(),
+                settlement.period().frequency().name(),
+                DomainEventEnvelopeMapper.moneyPayload(settlement.grossRevenue()),
+                DomainEventEnvelopeMapper.moneyPayload(settlement.platformCommission()),
+                DomainEventEnvelopeMapper.moneyPayload(settlement.taxesWithheld()),
+                DomainEventEnvelopeMapper.moneyPayload(settlement.supplierPayable()),
+                DomainEventEnvelopeMapper.moneyPayload(settlement.adjustments())
             );
         }
     }

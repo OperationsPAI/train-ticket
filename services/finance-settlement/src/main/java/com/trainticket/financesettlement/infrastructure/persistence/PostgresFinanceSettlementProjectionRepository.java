@@ -2,6 +2,7 @@ package com.trainticket.financesettlement.infrastructure.persistence;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import com.trainticket.financesettlement.application.BenefitCostEntry;
+import com.trainticket.financesettlement.application.ChannelStatementLineProjection;
 import com.trainticket.financesettlement.application.ChannelStatementProjection;
 import com.trainticket.financesettlement.application.FinanceSettlementEventHandler;
 import com.trainticket.financesettlement.application.FinanceSettlementProjectionRepository;
@@ -9,6 +10,7 @@ import com.trainticket.financesettlement.domain.Money;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Currency;
 import java.util.List;
 import java.util.Optional;
@@ -37,11 +39,13 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     @Override
     public Optional<FinanceSettlementEventHandler.PaymentCaptureFact> findCapture(String orderId) {
         return jdbc.query(
-            "SELECT payment_intent_id, currency, amount, source_event_id FROM captures_by_order_id WHERE order_id = ?",
+            "SELECT payment_intent_id, currency, amount, source_event_id, occurred_at FROM captures_by_order_id WHERE order_id = ?",
             rs -> rs.next() ? Optional.of(new FinanceSettlementEventHandler.PaymentCaptureFact(
+                orderId,
                 rs.getString("payment_intent_id"),
                 money(rs.getString("currency"), rs.getString("amount")),
-                rs.getString("source_event_id")
+                rs.getString("source_event_id"),
+                rs.getTimestamp("occurred_at").toInstant()
             )) : Optional.empty(),
             orderId
         );
@@ -51,20 +55,22 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     public void saveCapture(String orderId, FinanceSettlementEventHandler.PaymentCaptureFact capture) {
         jdbc.update(
             """
-                INSERT INTO captures_by_order_id(order_id, payment_intent_id, currency, amount, source_event_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO captures_by_order_id(order_id, payment_intent_id, currency, amount, source_event_id, occurred_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (order_id) DO UPDATE SET
                   payment_intent_id = EXCLUDED.payment_intent_id,
                   currency = EXCLUDED.currency,
                   amount = EXCLUDED.amount,
                   source_event_id = EXCLUDED.source_event_id,
+                  occurred_at = EXCLUDED.occurred_at,
                   updated_at = now()
                 """,
             orderId,
             capture.paymentIntentId(),
             capture.amount().currency().getCurrencyCode(),
             capture.amount().amount(),
-            capture.sourceEventId()
+            capture.sourceEventId(),
+            Timestamp.from(capture.occurredAt())
         );
     }
 
@@ -91,6 +97,88 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             caseId,
             amount.currency().getCurrencyCode(),
             amount.amount()
+        );
+    }
+
+    @Override
+    public List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(java.time.LocalDate settlementDate) {
+        return jdbc.query(
+            """
+                SELECT order_id, payment_intent_id, currency, amount, source_event_id, occurred_at
+                FROM captures_by_order_id
+                WHERE occurred_at >= ? AND occurred_at < ?
+                ORDER BY order_id
+                """,
+            (rs, rowNum) -> new FinanceSettlementEventHandler.PaymentCaptureFact(
+                rs.getString("order_id"),
+                rs.getString("payment_intent_id"),
+                money(rs.getString("currency"), rs.getString("amount")),
+                rs.getString("source_event_id"),
+                rs.getTimestamp("occurred_at").toInstant()
+            ),
+            Timestamp.from(settlementDate.atStartOfDay().toInstant(ZoneOffset.UTC)),
+            Timestamp.from(settlementDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC))
+        );
+    }
+
+    @Override
+    public void saveChannelStatementLine(ChannelStatementLineProjection line) {
+        jdbc.update(
+            """
+                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (statement_line_id) DO UPDATE SET
+                  channel_statement_id = EXCLUDED.channel_statement_id,
+                  statement_date = EXCLUDED.statement_date,
+                  order_id = EXCLUDED.order_id,
+                  payment_intent_id = EXCLUDED.payment_intent_id,
+                  channel_order_id = EXCLUDED.channel_order_id,
+                  currency = EXCLUDED.currency,
+                  amount = EXCLUDED.amount,
+                  source_event_id = EXCLUDED.source_event_id,
+                  updated_at = now()
+                """,
+            line.statementLineId(),
+            line.channelStatementId(),
+            line.statementDate(),
+            line.orderId(),
+            line.paymentIntentId(),
+            line.channelOrderId(),
+            line.actualAmount().currency().getCurrencyCode(),
+            line.actualAmount().amount(),
+            line.sourceEventId()
+        );
+    }
+
+    @Override
+    public List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(java.time.LocalDate settlementDate) {
+        return jdbc.query(
+            """
+                SELECT statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id
+                FROM channel_statement_lines
+                WHERE statement_date = ?
+                ORDER BY statement_line_id
+                """,
+            (rs, rowNum) -> new ChannelStatementLineProjection(
+                rs.getString("statement_line_id"),
+                rs.getString("channel_statement_id"),
+                rs.getString("statement_date"),
+                rs.getString("order_id"),
+                rs.getString("payment_intent_id"),
+                rs.getString("channel_order_id"),
+                money(rs.getString("currency"), rs.getString("amount")),
+                rs.getString("source_event_id")
+            ),
+            settlementDate.toString()
+        );
+    }
+
+    @Override
+    public List<ChannelStatementProjection> findChannelStatementsForSettlementDate(java.time.LocalDate settlementDate) {
+        return jdbc.query(
+            "SELECT * FROM channel_statements WHERE statement_date = ? ORDER BY channel_statement_id",
+            (rs, rowNum) -> mapStatement(rs),
+            settlementDate.toString()
         );
     }
 

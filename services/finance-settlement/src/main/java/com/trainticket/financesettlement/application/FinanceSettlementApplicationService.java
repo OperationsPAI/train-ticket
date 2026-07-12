@@ -2,23 +2,45 @@ package com.trainticket.financesettlement.application;
 
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.EventMetadata;
+import com.trainticket.financesettlement.domain.FeeAccrual;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
 import com.trainticket.financesettlement.domain.Invoice;
+import com.trainticket.financesettlement.domain.ReconciliationBatch;
+import com.trainticket.financesettlement.domain.ReconciliationEntry;
+import com.trainticket.financesettlement.domain.SettlementFrequency;
+import com.trainticket.financesettlement.domain.SettlementPeriod;
+import com.trainticket.financesettlement.domain.SupplierSettlement;
+import com.trainticket.financesettlement.domain.TaxCalculation;
+import com.trainticket.financesettlement.domain.RevenueAllocation;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.ReconciliationCompleted;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Clock;
+import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Currency;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class FinanceSettlementApplicationService {
     private final RevenueRecognitionRepository revenueRecognitions;
     private final ReconciliationCaseRepository reconciliationCases;
     private final InvoiceRepository invoices;
     private final FinanceSettlementProjectionRepository projections;
+    private final ReconciliationBatchRepository reconciliationBatches;
+    private static final BigDecimal PLATFORM_SERVICE_FEE_PCT = new BigDecimal("0.02");
+    private static final BigDecimal SUPPLIER_SERVICE_FEE_PCT = new BigDecimal("0.01");
+    private static final BigDecimal VOLUNTARY_CANCELLATION_RETAINED_FEE_PCT = new BigDecimal("0.10");
+
+    private final SupplierSettlementRepository supplierSettlements;
+    private final FeeAccrualRepository feeAccruals;
     private final EventPublisher eventPublisher;
     private final DomainEventEnvelopeMapper envelopeMapper;
     private final Clock clock;
@@ -29,7 +51,7 @@ public class FinanceSettlementApplicationService {
         EventPublisher eventPublisher,
         DomainEventEnvelopeMapper envelopeMapper
     ) {
-        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), new InMemoryFinanceSettlementProjectionRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
+        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), new InMemoryFinanceSettlementProjectionRepository(), new InMemoryReconciliationBatchRepository(), new InMemorySupplierSettlementRepository(), new InMemoryFeeAccrualRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
     }
 
     public FinanceSettlementApplicationService(
@@ -40,7 +62,7 @@ public class FinanceSettlementApplicationService {
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock
     ) {
-        this(revenueRecognitions, reconciliationCases, invoices, new InMemoryFinanceSettlementProjectionRepository(), eventPublisher, envelopeMapper, clock);
+        this(revenueRecognitions, reconciliationCases, invoices, new InMemoryFinanceSettlementProjectionRepository(), new InMemoryReconciliationBatchRepository(), new InMemorySupplierSettlementRepository(), new InMemoryFeeAccrualRepository(), eventPublisher, envelopeMapper, clock);
     }
 
     public FinanceSettlementApplicationService(
@@ -52,10 +74,42 @@ public class FinanceSettlementApplicationService {
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock
     ) {
+        this(revenueRecognitions, reconciliationCases, invoices, projections, new InMemoryReconciliationBatchRepository(), new InMemorySupplierSettlementRepository(), new InMemoryFeeAccrualRepository(), eventPublisher, envelopeMapper, clock);
+    }
+
+    public FinanceSettlementApplicationService(
+        RevenueRecognitionRepository revenueRecognitions,
+        ReconciliationCaseRepository reconciliationCases,
+        InvoiceRepository invoices,
+        FinanceSettlementProjectionRepository projections,
+        ReconciliationBatchRepository reconciliationBatches,
+        SupplierSettlementRepository supplierSettlements,
+        EventPublisher eventPublisher,
+        DomainEventEnvelopeMapper envelopeMapper,
+        Clock clock
+    ) {
+        this(revenueRecognitions, reconciliationCases, invoices, projections, reconciliationBatches, supplierSettlements, new InMemoryFeeAccrualRepository(), eventPublisher, envelopeMapper, clock);
+    }
+
+    public FinanceSettlementApplicationService(
+        RevenueRecognitionRepository revenueRecognitions,
+        ReconciliationCaseRepository reconciliationCases,
+        InvoiceRepository invoices,
+        FinanceSettlementProjectionRepository projections,
+        ReconciliationBatchRepository reconciliationBatches,
+        SupplierSettlementRepository supplierSettlements,
+        FeeAccrualRepository feeAccruals,
+        EventPublisher eventPublisher,
+        DomainEventEnvelopeMapper envelopeMapper,
+        Clock clock
+    ) {
         this.revenueRecognitions = revenueRecognitions;
         this.reconciliationCases = reconciliationCases;
         this.invoices = invoices;
         this.projections = projections;
+        this.reconciliationBatches = reconciliationBatches;
+        this.supplierSettlements = supplierSettlements;
+        this.feeAccruals = feeAccruals;
         this.eventPublisher = eventPublisher;
         this.envelopeMapper = envelopeMapper;
         this.clock = clock;
@@ -74,6 +128,21 @@ public class FinanceSettlementApplicationService {
     public Invoice getInvoice(String invoiceId) {
         return invoices.findById(invoiceId)
             .orElseThrow(() -> new ResourceNotFoundException("invoice not found"));
+    }
+
+    public ReconciliationBatch getReconciliationBatch(String batchId) {
+        return reconciliationBatches.findById(batchId)
+            .orElseThrow(() -> new ResourceNotFoundException("reconciliation batch not found"));
+    }
+
+    public ReconciliationBatch getDailySettlement(LocalDate settlementDate) {
+        return reconciliationBatches.findBySettlementDate(settlementDate)
+            .orElseThrow(() -> new ResourceNotFoundException("daily settlement not found"));
+    }
+
+    public SupplierSettlement getSupplierSettlement(String supplierId, LocalDate startDate, LocalDate endDate) {
+        return supplierSettlements.findBySupplierAndPeriod(requireText(supplierId, "supplierId"), startDate, endDate)
+            .orElseThrow(() -> new ResourceNotFoundException("supplier settlement not found"));
     }
 
     List<RevenueRecognition> findRevenueRecognitionsByOrderId(String orderId) {
@@ -152,6 +221,109 @@ public class FinanceSettlementApplicationService {
         });
     }
 
+    public ReconciliationBatch runDailyReconciliation(LocalDate settlementDate, String correlationId) {
+        LocalDate date = settlementDate == null ? LocalDate.now(clock).minusDays(1) : settlementDate;
+        return reconciliationBatches.findBySettlementDate(date).orElseGet(() -> {
+            Currency[] currency = {Currency.getInstance("CNY")};
+            Map<String, PlatformReconciliationFact> captures = new LinkedHashMap<>();
+            for (FinanceSettlementEventHandler.PaymentCaptureFact capture : projections.findCapturesForSettlementDate(date)) {
+                String key = reconciliationKey(capture.orderId(), capture.paymentIntentId());
+                captures.merge(key, new PlatformReconciliationFact(capture.orderId(), capture.paymentIntentId(), capture.amount(), List.of(capture.sourceEventId())), PlatformReconciliationFact::merge);
+                currency[0] = capture.amount().currency();
+            }
+            Map<String, ChannelReconciliationFact> channelLines = new LinkedHashMap<>();
+            for (ChannelStatementLineProjection line : projections.findChannelStatementLinesForSettlementDate(date)) {
+                String key = reconciliationKey(line.orderId(), line.paymentIntentId());
+                channelLines.merge(key, new ChannelReconciliationFact(line.orderId(), line.paymentIntentId(), line.actualAmount(), List.of(line.sourceEventId())), ChannelReconciliationFact::merge);
+                currency[0] = line.actualAmount().currency();
+            }
+            if (channelLines.isEmpty()) {
+                for (ChannelStatementProjection statement : projections.findChannelStatementsForSettlementDate(date)) {
+                    Money channelAmount = statement.grossPaymentAmount().minus(statement.grossRefundAmount());
+                    channelLines.put(statement.channelStatementId(), new ChannelReconciliationFact(statement.channelStatementId(), "", channelAmount, List.of(statement.sourceEventId())));
+                    currency[0] = Currency.getInstance(statement.currency());
+                }
+            }
+            List<ReconciliationEntry> entries = new ArrayList<>();
+            for (var item : captures.entrySet()) {
+                ChannelReconciliationFact channel = channelLines.remove(item.getKey());
+                Money channelAmount = channel == null ? Money.zero(item.getValue().amount().currency()) : channel.amount();
+                List<String> sourceEventIds = new ArrayList<>(item.getValue().sourceEventIds());
+                if (channel != null) {
+                    sourceEventIds.addAll(channel.sourceEventIds());
+                }
+                entries.add(ReconciliationEntry.compare("re-" + item.getKey(), item.getValue().orderId(), item.getValue().paymentIntentId(), item.getValue().amount(), channelAmount, true, channel != null, sourceEventIds));
+            }
+            for (var item : channelLines.entrySet()) {
+                entries.add(ReconciliationEntry.compare("re-" + item.getKey(), item.getValue().orderId(), item.getValue().paymentIntentId(), Money.zero(item.getValue().amount().currency()), item.getValue().amount(), false, true, item.getValue().sourceEventIds()));
+            }
+            ReconciliationBatch batch = ReconciliationBatch.complete(date, date.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC), currency[0], entries,
+                clock.instant(), PrefixedIds.newCommandId(), PrefixedIds.newCommandId(), canonicalCorrelationId(correlationId));
+            reconciliationBatches.save(batch);
+            publish(batch.domainEvents());
+            return batch;
+        });
+    }
+
+    public SupplierSettlement calculateSupplierSettlement(String supplierId, LocalDate startDate, LocalDate endDate, SettlementFrequency frequency,
+                                                          BigDecimal commissionPct, BigDecimal withholdingPct, String correlationId) {
+        requireText(supplierId, "supplierId");
+        SettlementPeriod period = new SettlementPeriod(startDate, endDate, frequency == null ? SettlementFrequency.DAILY : frequency);
+        return supplierSettlements.findBySupplierAndPeriod(supplierId, startDate, endDate).orElseGet(() -> {
+            Currency currency = Currency.getInstance("CNY");
+            List<RevenueAllocation> allocations = revenueRecognitions.findBySupplierAndPeriod(supplierId, startDate, endDate).stream()
+                .map(recognition -> RevenueAllocation.calculate(recognition.orderId(), recognition.netAmount(), commissionPct, withholdingPct, refundAdjustmentsForOrder(recognition.orderId(), recognition.amount().currency())))
+                .toList();
+            if (!allocations.isEmpty()) {
+                currency = allocations.getFirst().grossRevenue().currency();
+            }
+            SupplierSettlement settlement = SupplierSettlement.calculate(supplierId, period, commissionPct, withholdingPct, allocations, currency,
+                clock.instant(), PrefixedIds.newCommandId(), PrefixedIds.newCommandId(), canonicalCorrelationId(correlationId));
+            supplierSettlements.save(settlement);
+            publish(settlement.domainEvents());
+            return settlement;
+        });
+    }
+
+    public FeeAccrual accrueFeesForPaymentCapture(String orderId, Money capturedAmount, Money refundedAmount, String sourceEventId, Instant now, String causationId, String correlationId) {
+        requireText(orderId, "orderId");
+        if (feeAccruals.findByOrderId(orderId).stream().anyMatch(accrual -> accrual.sourceEventId().equals(sourceEventId))) {
+            return feeAccruals.findByOrderId(orderId).stream().filter(accrual -> accrual.sourceEventId().equals(sourceEventId)).findFirst().orElseThrow();
+        }
+        Money platformServiceFee = RevenueAllocation.multiply(capturedAmount, PLATFORM_SERVICE_FEE_PCT);
+        Money supplierServiceFee = RevenueAllocation.multiply(capturedAmount, SUPPLIER_SERVICE_FEE_PCT);
+        Money serviceFees = platformServiceFee.plus(supplierServiceFee);
+        TaxCalculation tax = TaxCalculation.calculate(serviceFees, capturedAmount, capturedAmount.minus(platformServiceFee), BigDecimal.ZERO, refundedAmount);
+        FeeAccrual accrual = FeeAccrual.accrue(orderId, platformServiceFee, supplierServiceFee, Money.zero(capturedAmount.currency()), tax, sourceEventId, now, PrefixedIds.newCommandId(), causationId, canonicalCorrelationId(correlationId));
+        feeAccruals.save(accrual);
+        publish(accrual.domainEvents());
+        return accrual;
+    }
+
+    public FeeAccrual accrueFeesForRefund(String orderId, Money refundAmount, Currency currency, String sourceEventId, Instant now, String causationId, String correlationId) {
+        requireText(orderId, "orderId");
+        if (feeAccruals.findByOrderId(orderId).stream().anyMatch(accrual -> accrual.sourceEventId().equals(sourceEventId))) {
+            return feeAccruals.findByOrderId(orderId).stream().filter(accrual -> accrual.sourceEventId().equals(sourceEventId)).findFirst().orElseThrow();
+        }
+        Currency effectiveCurrency = Objects.requireNonNull(currency, "currency is required");
+        Money zero = Money.zero(effectiveCurrency);
+        Money retainedCancellationFee = RevenueAllocation.multiply(refundAmount, VOLUNTARY_CANCELLATION_RETAINED_FEE_PCT);
+        TaxCalculation tax = TaxCalculation.calculate(zero, zero, zero, BigDecimal.ZERO, refundAmount);
+        FeeAccrual accrual = FeeAccrual.accrue(orderId, zero, zero, retainedCancellationFee, tax, sourceEventId, now, PrefixedIds.newCommandId(), causationId, canonicalCorrelationId(correlationId));
+        feeAccruals.save(accrual);
+        publish(accrual.domainEvents());
+        return accrual;
+    }
+
+    private Money refundAdjustmentsForOrder(String orderId, Currency currency) {
+        List<FeeAccrual> orderFees = feeAccruals.findByOrderId(orderId);
+        return orderFees.stream()
+            .map(FeeAccrual::taxCalculation)
+            .map(TaxCalculation::taxReversal)
+            .filter(amount -> amount.currency().equals(currency))
+            .reduce(Money.zero(currency), Money::plus);
+    }
+
     public String describeWiring() {
         return revenueRecognitions.getClass().getSimpleName() + "/" + reconciliationCases.getClass().getSimpleName()
             + "/" + invoices.getClass().getSimpleName() + "/" + eventPublisher.getClass().getSimpleName();
@@ -169,6 +341,11 @@ public class FinanceSettlementApplicationService {
     public void saveAndPublish(ReconciliationCase reconciliationCase) {
         reconciliationCases.save(reconciliationCase);
         publish(reconciliationCase.domainEvents());
+    }
+
+    public void saveAndPublish(SupplierSettlement settlement) {
+        supplierSettlements.save(settlement);
+        publish(settlement.domainEvents());
     }
 
     public void publishReconciliationCompleted(String orderId, String paymentIntentId, Money expectedAmount, Money actualAmount,
@@ -196,6 +373,28 @@ public class FinanceSettlementApplicationService {
             } catch (PublishFailedException | DomainRuleViolation ex) {
                 throw ex;
             }
+        }
+    }
+
+    private static String reconciliationKey(String orderId, String paymentIntentId) {
+        String normalizedOrderId = orderId == null ? "" : orderId;
+        String normalizedPaymentIntentId = paymentIntentId == null ? "" : paymentIntentId;
+        return normalizedOrderId.isBlank() ? normalizedPaymentIntentId : normalizedOrderId;
+    }
+
+    private record PlatformReconciliationFact(String orderId, String paymentIntentId, Money amount, List<String> sourceEventIds) {
+        private PlatformReconciliationFact merge(PlatformReconciliationFact other) {
+            List<String> mergedEvents = new ArrayList<>(sourceEventIds);
+            mergedEvents.addAll(other.sourceEventIds);
+            return new PlatformReconciliationFact(orderId, paymentIntentId.isBlank() ? other.paymentIntentId : paymentIntentId, amount.plus(other.amount), mergedEvents);
+        }
+    }
+
+    private record ChannelReconciliationFact(String orderId, String paymentIntentId, Money amount, List<String> sourceEventIds) {
+        private ChannelReconciliationFact merge(ChannelReconciliationFact other) {
+            List<String> mergedEvents = new ArrayList<>(sourceEventIds);
+            mergedEvents.addAll(other.sourceEventIds);
+            return new ChannelReconciliationFact(orderId, paymentIntentId.isBlank() ? other.paymentIntentId : paymentIntentId, amount.plus(other.amount), mergedEvents);
         }
     }
 

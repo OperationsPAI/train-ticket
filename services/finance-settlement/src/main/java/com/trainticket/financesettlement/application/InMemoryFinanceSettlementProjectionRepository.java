@@ -1,6 +1,7 @@
 package com.trainticket.financesettlement.application;
 
 import com.trainticket.financesettlement.domain.Money;
+import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -14,6 +15,7 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     private final ConcurrentMap<String, Money> approvedRefundsByCaseId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, BenefitCostEntry> benefitCostEntriesByEventId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ChannelStatementProjection> channelStatementsById = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ChannelStatementLineProjection> channelStatementLinesById = new ConcurrentHashMap<>();
 
     @Override
     public Optional<FinanceSettlementEventHandler.PaymentCaptureFact> findCapture(String orderId) {
@@ -33,6 +35,33 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     @Override
     public void saveApprovedRefund(String caseId, Money amount) {
         approvedRefundsByCaseId.put(caseId, amount);
+    }
+
+    @Override
+    public List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(LocalDate settlementDate) {
+        return capturesByOrderId.values().stream()
+            .filter(capture -> settlementDate.equals(capture.occurredAt().atZone(java.time.ZoneOffset.UTC).toLocalDate()))
+            .toList();
+    }
+
+    @Override
+    public void saveChannelStatementLine(ChannelStatementLineProjection line) {
+        channelStatementLinesById.put(line.statementLineId(), line);
+    }
+
+    @Override
+    public List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(LocalDate settlementDate) {
+        return channelStatementLinesById.values().stream()
+            .filter(line -> settlementDate.toString().equals(line.statementDate()))
+            .sorted(Comparator.comparing(ChannelStatementLineProjection::statementLineId))
+            .toList();
+    }
+
+    @Override
+    public List<ChannelStatementProjection> findChannelStatementsForSettlementDate(LocalDate settlementDate) {
+        return channelStatementsById.values().stream()
+            .filter(statement -> settlementDate.toString().equals(statement.statementDate()))
+            .toList();
     }
 
     @Override

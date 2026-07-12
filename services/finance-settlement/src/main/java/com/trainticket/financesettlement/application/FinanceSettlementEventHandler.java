@@ -143,6 +143,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Map<String, Object> payload = (Map<String, Object>) envelope.payload();
         switch (envelope.eventType()) {
             case "PaymentIntentCreated" -> rememberPaymentIntentOrderReference(payload);
+            case "JourneyOrderCreated" -> rememberOrderSupplierReference(payload);
             case "SegmentReservationRequested" -> rememberSegmentBookingOrderReference(payload);
             case "PaymentCaptured" -> {
                 LOGGER.info("service=finance-settlement PaymentCaptured eventId={} serviceWired={} projections={} serviceRepos={}",
@@ -159,6 +160,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             }
             case "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired" -> recordBenefitCostEntry(envelope, payload);
             case "ChannelStatementGenerated", "ChannelStatementFrozen" -> recordChannelStatement(envelope, payload);
+            case "ChannelStatementLineMatched" -> recordChannelStatementLine(envelope, payload);
             case "ReconciliationDiscrepancyOpened" -> openChannelDiscrepancy(envelope, payload);
             case "ReconciliationDiscrepancyResolved" -> {
                 // Finance owns final accounting case resolution; channel-side resolution is recorded by consumed-event dedup.
@@ -166,6 +168,30 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             default -> {
                 // Streams contain event types that do not affect finance settlement.
             }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void rememberOrderSupplierReference(Map<String, Object> payload) {
+        String orderId = text(payload, "orderId");
+        Object supplierValue = payload.get("supplierId");
+        if (supplierValue instanceof String supplierId && !supplierId.isBlank()) {
+            segmentBookingOrderReferences.save("supplier:" + orderId, supplierId);
+            return;
+        }
+        Object refsValue = payload.get("supplierRefs");
+        if (refsValue instanceof List<?> refs) {
+            refs.stream()
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .filter(ref -> !ref.isBlank())
+                .findFirst()
+                .ifPresent(ref -> segmentBookingOrderReferences.save("supplier:" + orderId, ref));
+            return;
+        }
+        Object monetarySummary = payload.get("monetarySummary");
+        if (monetarySummary instanceof Map<?, ?> rawSummary && rawSummary.get("supplierId") instanceof String supplierId && !supplierId.isBlank()) {
+            segmentBookingOrderReferences.save("supplier:" + orderId, supplierId);
         }
     }
 
@@ -185,6 +211,25 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             text(payload, "status"),
             existing == null ? Instant.parse(text(payload, "generatedAt")) : existing.generatedAt(),
             optionalText(payload, "frozenAt").map(Instant::parse).orElse(existing == null ? null : existing.frozenAt()),
+            envelope.eventId()
+        ));
+    }
+
+    private void recordChannelStatementLine(EventEnvelope envelope, Map<String, Object> payload) {
+        String channelStatementId = text(payload, "channelStatementId");
+        ChannelStatementProjection statement = projections.findChannelStatement(channelStatementId).orElse(null);
+        String paymentIntentId = optionalText(payload, "paymentIntentId").orElse("");
+        String orderId = optionalText(payload, "orderId")
+            .or(() -> paymentIntentId.isBlank() ? Optional.empty() : paymentIntentOrderReferences.findOrderReference(paymentIntentId))
+            .orElse(optionalText(payload, "channelOrderId").orElse(optionalText(payload, "channelRefundId").orElse("")));
+        projections.saveChannelStatementLine(new ChannelStatementLineProjection(
+            text(payload, "statementLineId"),
+            channelStatementId,
+            statement == null ? optionalText(payload, "statementDate").orElse("") : statement.statementDate(),
+            orderId,
+            paymentIntentId,
+            optionalText(payload, "channelOrderId").orElse(""),
+            money(payload.get("actualAmount"), "actualAmount"),
             envelope.eventId()
         ));
     }
@@ -284,10 +329,11 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             .orElseThrow(() -> new OutOfOrderEventException("PaymentCaptured received before order reference"));
         paymentIntentOrderReferences.save(paymentIntentId, orderId);
         Money captured = money(payload.get("capturedAmount"), "capturedAmount");
-        projections.saveCapture(orderId, new PaymentCaptureFact(paymentIntentId, captured, envelope.eventId()));
+        projections.saveCapture(orderId, new PaymentCaptureFact(orderId, paymentIntentId, captured, envelope.eventId(), envelope.occurredAt()));
+        String supplierId = supplierReferenceForOrder(orderId);
         RevenueRecognition recognition = RevenueRecognition.recognize(
             orderId,
-            orderItemReference(payload, orderId),
+            supplierId,
             "fare",
             captured,
             "payment-capture-v1",
@@ -298,6 +344,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             envelope.correlationId()
         );
         service.saveAndPublish(recognition);
+        service.accrueFeesForPaymentCapture(orderId, captured, Money.zero(captured.currency()), envelope.eventId(), clock.instant(), causationIdOrEventId(envelope), envelope.correlationId());
     }
 
     private void reconcileOperationalFact(EventEnvelope envelope, Map<String, Object> payload) {
@@ -425,6 +472,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             envelope.correlationId()
         );
         service.saveAndPublish(originalRecognition, firstUnpublishedEventIndex);
+        service.accrueFeesForRefund(orderId, refund, capture == null ? refund.currency() : capture.amount().currency(), envelope.eventId(), clock.instant(), causationIdOrEventId(envelope), envelope.correlationId());
         Money expected = capture == null ? refund.negate() : capture.amount().minus(refund);
         service.publishReconciliationCompleted(
             orderId,
@@ -438,6 +486,10 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             causationIdOrEventId(envelope),
             envelope.correlationId()
         );
+    }
+
+    private String supplierReferenceForOrder(String orderId) {
+        return segmentBookingOrderReferences.findOrderReference("supplier:" + orderId).orElse(orderId);
     }
 
     private List<RevenueRecognition> serviceRevenue(String orderId) {
@@ -506,7 +558,15 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         return Money.of(currencyCode, majorUnits.toPlainString());
     }
 
-    public record PaymentCaptureFact(String paymentIntentId, Money amount, String sourceEventId) {}
+    public record PaymentCaptureFact(String orderId, String paymentIntentId, Money amount, String sourceEventId, Instant occurredAt) {
+        public PaymentCaptureFact(String paymentIntentId, Money amount, String sourceEventId) {
+            this("", paymentIntentId, amount, sourceEventId, Instant.EPOCH);
+        }
+
+        public PaymentCaptureFact(String orderId, String paymentIntentId, Money amount, String sourceEventId) {
+            this(orderId, paymentIntentId, amount, sourceEventId, Instant.EPOCH);
+        }
+    }
 
     private static final class OutOfOrderEventException extends RuntimeException {
         private OutOfOrderEventException(String message) {
