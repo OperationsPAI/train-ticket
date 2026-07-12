@@ -81,6 +81,44 @@ class AuthorizeTravelerRequest(BaseModel):
     validUntil: str | None = None
 
 
+
+
+class PolicyCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    employeeRef: str = Field(min_length=1)
+    departmentRef: str = Field(min_length=1)
+    origin: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+    seatClass: str = "SECOND_CLASS"
+    amount: MoneyModel
+    requestedAt: str = Field(min_length=1)
+    departureAt: str = Field(min_length=1)
+    tripDurationMinutes: int = Field(ge=0)
+    employeeLevel: str = "STAFF"
+    managerRef: str | None = None
+    emergency: bool = False
+    bookingRef: str | None = None
+
+
+class InvoiceLineItemModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bookingRef: str = Field(min_length=1)
+    employeeName: str = Field(min_length=1)
+    route: str = Field(min_length=1)
+    travelDate: str = Field(min_length=1)
+    amountMinor: int = Field(ge=0)
+
+
+class GenerateInvoiceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    period: str = Field(min_length=1)
+    lineItems: list[InvoiceLineItemModel]
+    discountRateBps: int = Field(default=0, ge=0, le=10000)
+
+
 class ErrorBody(BaseModel):
     code: str
     message: str
@@ -203,6 +241,52 @@ def configure_corporate_travel_endpoints(app: FastAPI, service: CorporateTravelS
         except CorporateTravelError as exc:
             return error_response(request, 400, "CORPORATE_TRAVEL_INVARIANT_VIOLATION", str(exc))
         return JSONResponse(status_code=201, content=traveler.to_dict())
+
+    @app.post("/agreements/{agreementId}/policy-checks", status_code=201, response_model=None)
+    @app.post("/api/v1/agreements/{agreementId}/policy-checks", status_code=201, response_model=None)
+    def check_policy(request: Request, agreementId: str, payload: PolicyCheckRequest) -> JSONResponse:
+        try:
+            result = service.check_policy_and_reserve(
+                agreement_id=agreementId,
+                employee_ref=payload.employeeRef,
+                department_ref=payload.departmentRef,
+                origin=payload.origin,
+                destination=payload.destination,
+                seat_class=payload.seatClass,
+                amount=payload.amount.model_dump(),
+                requested_at=payload.requestedAt,
+                departure_at=payload.departureAt,
+                trip_duration_minutes=payload.tripDurationMinutes,
+                employee_level=payload.employeeLevel,
+                manager_ref=payload.managerRef,
+                emergency=payload.emergency,
+                booking_ref=payload.bookingRef,
+                correlation_id=request.state.correlation_id,
+                causation_id=request.headers.get("Idempotency-Key") or request.state.request_id,
+            )
+        except AgreementNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Corporate agreement was not found")
+        except (CorporateTravelError, ValueError) as exc:
+            return error_response(request, 400, "CORPORATE_TRAVEL_INVARIANT_VIOLATION", str(exc))
+        return JSONResponse(status_code=201, content=result.to_dict())
+
+    @app.post("/agreements/{agreementId}/monthly-invoices", status_code=201, response_model=None)
+    @app.post("/api/v1/agreements/{agreementId}/monthly-invoices", status_code=201, response_model=None)
+    def generate_invoice(request: Request, agreementId: str, payload: GenerateInvoiceRequest) -> JSONResponse:
+        try:
+            result = service.generate_monthly_invoice(
+                agreement_id=agreementId,
+                period=payload.period,
+                line_items=[item.model_dump() for item in payload.lineItems],
+                discount_rate_bps=payload.discountRateBps,
+                correlation_id=request.state.correlation_id,
+                causation_id=request.headers.get("Idempotency-Key") or request.state.request_id,
+            )
+        except AgreementNotFoundError:
+            return error_response(request, 404, "NOT_FOUND", "Corporate agreement was not found")
+        except CorporateTravelError as exc:
+            return error_response(request, 400, "CORPORATE_TRAVEL_INVARIANT_VIOLATION", str(exc))
+        return JSONResponse(status_code=201, content=result.to_dict())
 
 
 def create_app(service: CorporateTravelService | None = None) -> FastAPI:
