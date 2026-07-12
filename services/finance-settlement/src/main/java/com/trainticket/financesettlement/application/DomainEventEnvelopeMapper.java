@@ -2,6 +2,7 @@ package com.trainticket.financesettlement.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
+import com.trainticket.financesettlement.domain.FeeAccrued;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.InvoiceGenerated;
@@ -11,6 +12,7 @@ import com.trainticket.financesettlement.domain.ReconciliationCompleted;
 import com.trainticket.financesettlement.domain.RevenueRecognized;
 import com.trainticket.financesettlement.domain.RevenueRecognitionReversed;
 import com.trainticket.financesettlement.domain.SettlementViewRebuilt;
+import com.trainticket.financesettlement.domain.SupplierSettlementCalculated;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -37,6 +39,8 @@ public final class DomainEventEnvelopeMapper {
             case ReconciliationCaseOpened opened -> reconciliationCaseOpenedPayload(opened);
             case ReconciliationCaseResolved resolved -> reconciliationCaseResolvedPayload(resolved);
             case ReconciliationCompleted completed -> reconciliationCompletedPayload(completed);
+            case SupplierSettlementCalculated calculated -> supplierSettlementCalculatedPayload(calculated);
+            case FeeAccrued accrued -> feeAccruedPayload(accrued);
             case InvoiceGenerated generated -> invoiceGeneratedPayload(generated);
             case SettlementViewRebuilt rebuilt -> settlementViewRebuiltPayload(rebuilt);
         };
@@ -100,6 +104,46 @@ public final class DomainEventEnvelopeMapper {
         payload.put("actualAmount", moneyPayload(event.actualAmount()));
         payload.put("matchedRevenueRecognitionIds", event.matchedRevenueRecognitionIds());
         payload.put("sourceEventIds", event.sourceEventIds());
+        if (!event.batchId().isBlank()) {
+            payload.put("batchId", event.batchId());
+            payload.put("settlementDate", event.settlementDate());
+            payload.put("totalEntries", event.totalEntries());
+            payload.put("matchedEntries", event.matchedEntries());
+            payload.put("matchRate", event.matchRate());
+            payload.put("totalVariance", moneyPayload(event.totalVariance()));
+            payload.put("exceptionCount", event.exceptionCount());
+        }
+        payload.put("metadata", metadataPayload(event));
+        return payload;
+    }
+
+    private static Map<String, Object> supplierSettlementCalculatedPayload(SupplierSettlementCalculated event) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("supplierSettlementId", event.supplierSettlementId());
+        payload.put("supplierId", event.supplierId());
+        payload.put("periodStartDate", event.period().startDate().toString());
+        payload.put("periodEndDate", event.period().endDate().toString());
+        payload.put("settlementFrequency", event.period().frequency().name());
+        payload.put("grossRevenue", moneyPayload(event.grossRevenue()));
+        payload.put("platformCommission", moneyPayload(event.platformCommission()));
+        payload.put("taxesWithheld", moneyPayload(event.taxesWithheld()));
+        payload.put("supplierPayable", moneyPayload(event.supplierPayable()));
+        payload.put("adjustments", moneyPayload(event.adjustments()));
+        payload.put("metadata", metadataPayload(event));
+        return payload;
+    }
+
+    private static Map<String, Object> feeAccruedPayload(FeeAccrued event) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("feeAccrualId", event.feeAccrualId());
+        payload.put("orderId", event.orderId());
+        payload.put("platformServiceFee", moneyPayload(event.platformServiceFee()));
+        payload.put("supplierServiceFee", moneyPayload(event.supplierServiceFee()));
+        payload.put("retainedCancellationFee", moneyPayload(event.retainedCancellationFee()));
+        payload.put("vatOnServiceFees", moneyPayload(event.taxCalculation().vatOnServiceFees()));
+        payload.put("stampDutyOnTickets", moneyPayload(event.taxCalculation().stampDutyOnTickets()));
+        payload.put("withholdingOnSupplierPayment", moneyPayload(event.taxCalculation().withholdingOnSupplierPayment()));
+        payload.put("taxReversal", moneyPayload(event.taxCalculation().taxReversal()));
         payload.put("metadata", metadataPayload(event));
         return payload;
     }

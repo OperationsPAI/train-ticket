@@ -4,13 +4,25 @@ import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.EventMetadata;
 import com.trainticket.financesettlement.domain.FinanceSettlementEvent;
 import com.trainticket.financesettlement.domain.Invoice;
+import com.trainticket.financesettlement.domain.ReconciliationBatch;
+import com.trainticket.financesettlement.domain.ReconciliationEntry;
+import com.trainticket.financesettlement.domain.SettlementFrequency;
+import com.trainticket.financesettlement.domain.SettlementPeriod;
+import com.trainticket.financesettlement.domain.SupplierSettlement;
+import com.trainticket.financesettlement.domain.RevenueAllocation;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.ReconciliationCompleted;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import java.time.Clock;
+import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Currency;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -19,6 +31,8 @@ public class FinanceSettlementApplicationService {
     private final ReconciliationCaseRepository reconciliationCases;
     private final InvoiceRepository invoices;
     private final FinanceSettlementProjectionRepository projections;
+    private final ReconciliationBatchRepository reconciliationBatches;
+    private final SupplierSettlementRepository supplierSettlements;
     private final EventPublisher eventPublisher;
     private final DomainEventEnvelopeMapper envelopeMapper;
     private final Clock clock;
@@ -29,7 +43,7 @@ public class FinanceSettlementApplicationService {
         EventPublisher eventPublisher,
         DomainEventEnvelopeMapper envelopeMapper
     ) {
-        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), new InMemoryFinanceSettlementProjectionRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
+        this(revenueRecognitions, reconciliationCases, new InMemoryInvoiceRepository(), new InMemoryFinanceSettlementProjectionRepository(), new InMemoryReconciliationBatchRepository(), new InMemorySupplierSettlementRepository(), eventPublisher, envelopeMapper, Clock.systemUTC());
     }
 
     public FinanceSettlementApplicationService(
@@ -40,7 +54,7 @@ public class FinanceSettlementApplicationService {
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock
     ) {
-        this(revenueRecognitions, reconciliationCases, invoices, new InMemoryFinanceSettlementProjectionRepository(), eventPublisher, envelopeMapper, clock);
+        this(revenueRecognitions, reconciliationCases, invoices, new InMemoryFinanceSettlementProjectionRepository(), new InMemoryReconciliationBatchRepository(), new InMemorySupplierSettlementRepository(), eventPublisher, envelopeMapper, clock);
     }
 
     public FinanceSettlementApplicationService(
@@ -52,10 +66,26 @@ public class FinanceSettlementApplicationService {
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock
     ) {
+        this(revenueRecognitions, reconciliationCases, invoices, projections, new InMemoryReconciliationBatchRepository(), new InMemorySupplierSettlementRepository(), eventPublisher, envelopeMapper, clock);
+    }
+
+    public FinanceSettlementApplicationService(
+        RevenueRecognitionRepository revenueRecognitions,
+        ReconciliationCaseRepository reconciliationCases,
+        InvoiceRepository invoices,
+        FinanceSettlementProjectionRepository projections,
+        ReconciliationBatchRepository reconciliationBatches,
+        SupplierSettlementRepository supplierSettlements,
+        EventPublisher eventPublisher,
+        DomainEventEnvelopeMapper envelopeMapper,
+        Clock clock
+    ) {
         this.revenueRecognitions = revenueRecognitions;
         this.reconciliationCases = reconciliationCases;
         this.invoices = invoices;
         this.projections = projections;
+        this.reconciliationBatches = reconciliationBatches;
+        this.supplierSettlements = supplierSettlements;
         this.eventPublisher = eventPublisher;
         this.envelopeMapper = envelopeMapper;
         this.clock = clock;
@@ -74,6 +104,21 @@ public class FinanceSettlementApplicationService {
     public Invoice getInvoice(String invoiceId) {
         return invoices.findById(invoiceId)
             .orElseThrow(() -> new ResourceNotFoundException("invoice not found"));
+    }
+
+    public ReconciliationBatch getReconciliationBatch(String batchId) {
+        return reconciliationBatches.findById(batchId)
+            .orElseThrow(() -> new ResourceNotFoundException("reconciliation batch not found"));
+    }
+
+    public ReconciliationBatch getDailySettlement(LocalDate settlementDate) {
+        return reconciliationBatches.findBySettlementDate(settlementDate)
+            .orElseThrow(() -> new ResourceNotFoundException("daily settlement not found"));
+    }
+
+    public SupplierSettlement getSupplierSettlement(String supplierId, LocalDate startDate, LocalDate endDate) {
+        return supplierSettlements.findBySupplierAndPeriod(requireText(supplierId, "supplierId"), startDate, endDate)
+            .orElseThrow(() -> new ResourceNotFoundException("supplier settlement not found"));
     }
 
     List<RevenueRecognition> findRevenueRecognitionsByOrderId(String orderId) {
@@ -152,6 +197,57 @@ public class FinanceSettlementApplicationService {
         });
     }
 
+    public ReconciliationBatch runDailyReconciliation(LocalDate settlementDate, String correlationId) {
+        LocalDate date = settlementDate == null ? LocalDate.now(clock).minusDays(1) : settlementDate;
+        return reconciliationBatches.findBySettlementDate(date).orElseGet(() -> {
+            Currency[] currency = {Currency.getInstance("CNY")};
+            Map<String, FinanceSettlementEventHandler.PaymentCaptureFact> captures = new LinkedHashMap<>();
+            for (FinanceSettlementEventHandler.PaymentCaptureFact capture : projections.findCapturesForSettlementDate(date)) {
+                captures.put(capture.orderId().isBlank() ? capture.paymentIntentId() : capture.orderId(), capture);
+                currency[0] = capture.amount().currency();
+            }
+            Map<String, ChannelStatementProjection> statements = new LinkedHashMap<>();
+            for (ChannelStatementProjection statement : projections.findChannelStatementsForSettlementDate(date)) {
+                statements.put(statement.channelStatementId(), statement);
+                currency[0] = Currency.getInstance(statement.currency());
+            }
+            List<ReconciliationEntry> entries = new ArrayList<>();
+            for (var item : captures.entrySet()) {
+                ChannelStatementProjection statement = statements.remove(item.getKey());
+                Money channelAmount = statement == null ? Money.zero(item.getValue().amount().currency()) : statement.grossPaymentAmount().minus(statement.grossRefundAmount());
+                entries.add(ReconciliationEntry.compare("re-" + item.getKey(), item.getKey(), item.getValue().paymentIntentId(), item.getValue().amount(), channelAmount, true, statement != null, List.of(item.getValue().sourceEventId())));
+            }
+            for (var item : statements.entrySet()) {
+                Money channelAmount = item.getValue().grossPaymentAmount().minus(item.getValue().grossRefundAmount());
+                entries.add(ReconciliationEntry.compare("re-" + item.getKey(), item.getKey(), "", Money.zero(channelAmount.currency()), channelAmount, false, true, List.of(item.getValue().sourceEventId())));
+            }
+            ReconciliationBatch batch = ReconciliationBatch.complete(date, date.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC), currency[0], entries,
+                clock.instant(), PrefixedIds.newCommandId(), PrefixedIds.newCommandId(), canonicalCorrelationId(correlationId));
+            reconciliationBatches.save(batch);
+            publish(batch.domainEvents());
+            return batch;
+        });
+    }
+
+    public SupplierSettlement calculateSupplierSettlement(String supplierId, LocalDate startDate, LocalDate endDate, SettlementFrequency frequency,
+                                                          BigDecimal commissionPct, BigDecimal withholdingPct, String correlationId) {
+        requireText(supplierId, "supplierId");
+        SettlementPeriod period = new SettlementPeriod(startDate, endDate, frequency == null ? SettlementFrequency.DAILY : frequency);
+        return supplierSettlements.findBySupplierAndPeriod(supplierId, startDate, endDate).orElseGet(() -> {
+            Currency currency = Currency.getInstance("CNY");
+            List<RevenueAllocation> allocations = revenueRecognitions.findByOrderId(supplierId).stream()
+                .filter(recognition -> !recognition.recognizedAt().atZone(ZoneOffset.UTC).toLocalDate().isBefore(startDate))
+                .filter(recognition -> !recognition.recognizedAt().atZone(ZoneOffset.UTC).toLocalDate().isAfter(endDate))
+                .map(recognition -> RevenueAllocation.calculate(recognition.orderId(), recognition.netAmount(), commissionPct, withholdingPct, Money.zero(recognition.amount().currency())))
+                .toList();
+            SupplierSettlement settlement = SupplierSettlement.calculate(supplierId, period, commissionPct, withholdingPct, allocations, currency,
+                clock.instant(), PrefixedIds.newCommandId(), PrefixedIds.newCommandId(), canonicalCorrelationId(correlationId));
+            supplierSettlements.save(settlement);
+            publish(settlement.domainEvents());
+            return settlement;
+        });
+    }
+
     public String describeWiring() {
         return revenueRecognitions.getClass().getSimpleName() + "/" + reconciliationCases.getClass().getSimpleName()
             + "/" + invoices.getClass().getSimpleName() + "/" + eventPublisher.getClass().getSimpleName();
@@ -169,6 +265,11 @@ public class FinanceSettlementApplicationService {
     public void saveAndPublish(ReconciliationCase reconciliationCase) {
         reconciliationCases.save(reconciliationCase);
         publish(reconciliationCase.domainEvents());
+    }
+
+    public void saveAndPublish(SupplierSettlement settlement) {
+        supplierSettlements.save(settlement);
+        publish(settlement.domainEvents());
     }
 
     public void publishReconciliationCompleted(String orderId, String paymentIntentId, Money expectedAmount, Money actualAmount,

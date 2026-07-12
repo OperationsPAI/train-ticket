@@ -39,6 +39,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
         return jdbc.query(
             "SELECT payment_intent_id, currency, amount, source_event_id FROM captures_by_order_id WHERE order_id = ?",
             rs -> rs.next() ? Optional.of(new FinanceSettlementEventHandler.PaymentCaptureFact(
+                orderId,
                 rs.getString("payment_intent_id"),
                 money(rs.getString("currency"), rs.getString("amount")),
                 rs.getString("source_event_id")
@@ -91,6 +92,28 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             caseId,
             amount.currency().getCurrencyCode(),
             amount.amount()
+        );
+    }
+
+    @Override
+    public List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(java.time.LocalDate settlementDate) {
+        return jdbc.query(
+            "SELECT order_id, payment_intent_id, currency, amount, source_event_id FROM captures_by_order_id ORDER BY order_id",
+            (rs, rowNum) -> new FinanceSettlementEventHandler.PaymentCaptureFact(
+                rs.getString("order_id"),
+                rs.getString("payment_intent_id"),
+                money(rs.getString("currency"), rs.getString("amount")),
+                rs.getString("source_event_id")
+            )
+        );
+    }
+
+    @Override
+    public List<ChannelStatementProjection> findChannelStatementsForSettlementDate(java.time.LocalDate settlementDate) {
+        return jdbc.query(
+            "SELECT * FROM channel_statements WHERE statement_date = ? ORDER BY channel_statement_id",
+            (rs, rowNum) -> mapStatement(rs),
+            settlementDate.toString()
         );
     }
 

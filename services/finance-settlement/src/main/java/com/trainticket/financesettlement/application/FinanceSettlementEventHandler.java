@@ -284,7 +284,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             .orElseThrow(() -> new OutOfOrderEventException("PaymentCaptured received before order reference"));
         paymentIntentOrderReferences.save(paymentIntentId, orderId);
         Money captured = money(payload.get("capturedAmount"), "capturedAmount");
-        projections.saveCapture(orderId, new PaymentCaptureFact(paymentIntentId, captured, envelope.eventId()));
+        projections.saveCapture(orderId, new PaymentCaptureFact(orderId, paymentIntentId, captured, envelope.eventId()));
         RevenueRecognition recognition = RevenueRecognition.recognize(
             orderId,
             orderItemReference(payload, orderId),
@@ -506,7 +506,11 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         return Money.of(currencyCode, majorUnits.toPlainString());
     }
 
-    public record PaymentCaptureFact(String paymentIntentId, Money amount, String sourceEventId) {}
+    public record PaymentCaptureFact(String orderId, String paymentIntentId, Money amount, String sourceEventId) {
+        public PaymentCaptureFact(String paymentIntentId, Money amount, String sourceEventId) {
+            this("", paymentIntentId, amount, sourceEventId);
+        }
+    }
 
     private static final class OutOfOrderEventException extends RuntimeException {
         private OutOfOrderEventException(String message) {

@@ -1,6 +1,7 @@
 package com.trainticket.financesettlement.application;
 
 import com.trainticket.financesettlement.domain.Money;
+import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -33,6 +34,18 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     @Override
     public void saveApprovedRefund(String caseId, Money amount) {
         approvedRefundsByCaseId.put(caseId, amount);
+    }
+
+    @Override
+    public List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(LocalDate settlementDate) {
+        return capturesByOrderId.values().stream().toList();
+    }
+
+    @Override
+    public List<ChannelStatementProjection> findChannelStatementsForSettlementDate(LocalDate settlementDate) {
+        return channelStatementsById.values().stream()
+            .filter(statement -> settlementDate.toString().equals(statement.statementDate()))
+            .toList();
     }
 
     @Override
