@@ -18,17 +18,18 @@ export function toEventEnvelope(event: LoyaltyDomainEvent, correlationId: string
 
 function eventPayload(event: LoyaltyDomainEvent): Record<string, unknown> {
   switch (event.type) {
-    case "PointsAccrued":
+    case "PointsEarned":
       return {
         memberId: event.memberId,
         accountId: event.accountId,
         points: event.points,
-        tierPoints: event.tierPoints,
-        balanceAfter: event.balanceAfter,
+        sourceRef: event.sourceRef,
         sourceFactRef: sourceFactPayload(event.sourceFactRef),
         businessReason: event.businessReason,
         lotId: event.lotId,
         expiresAt: event.expiresAt.toISOString(),
+        balanceAfter: event.balanceAfter,
+        qualifyingPoints: event.qualifyingPoints,
       };
     case "PointsRedeemed":
       return {
@@ -36,18 +37,20 @@ function eventPayload(event: LoyaltyDomainEvent): Record<string, unknown> {
         accountId: event.accountId,
         redemptionId: event.redemptionId,
         points: event.points,
+        orderId: event.orderId,
+        discountAmountMinor: event.discountAmountMinor,
+        remainingBalance: event.remainingBalance,
         balanceAfter: event.balanceAfter,
         businessReason: event.businessReason,
       };
-    case "MembershipTierChanged":
-      return {
-        memberId: event.memberId,
-        accountId: event.accountId,
-        fromTier: event.fromTier,
-        toTier: event.toTier,
-        tierPoints: event.tierPoints,
-        reason: event.reason,
-      };
+    case "PointsExpired":
+      return { memberId: event.memberId, accountId: event.accountId, points: event.points, batchId: event.batchId, balanceAfter: event.balanceAfter };
+    case "MemberTierUpgraded":
+      return { memberId: event.memberId, accountId: event.accountId, oldTier: event.oldTier, newTier: event.newTier, qualifyingPoints: event.qualifyingPoints, trips: event.trips };
+    case "MemberTierDowngraded":
+      return { memberId: event.memberId, accountId: event.accountId, oldTier: event.oldTier, newTier: event.newTier, qualifyingPoints: event.qualifyingPoints, trips: event.trips };
+    case "TierEvaluationCompleted":
+      return { memberId: event.memberId, accountId: event.accountId, evaluationYear: event.evaluationYear, resultingTier: event.resultingTier, qualifyingPoints: event.qualifyingPoints, trips: event.trips };
   }
 }
 
