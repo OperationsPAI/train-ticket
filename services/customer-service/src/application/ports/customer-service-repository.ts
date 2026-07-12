@@ -2,10 +2,12 @@ import {
   CaseTimeline,
   ManualActionRequest,
   SupportCase,
+  CompensationOffer,
   type CaseTimelineSnapshot,
   type EvidenceRefSnapshot,
   type ManualActionRequestSnapshot,
   type SupportCaseSnapshot,
+  type CompensationOfferSnapshot,
 } from "../../domain.js";
 
 export interface CustomerServiceRepository {
@@ -22,4 +24,7 @@ export interface CustomerServiceRepository {
   findManualAction(manualActionId: string): Promise<Readonly<{ aggregate: ManualActionRequest; version: bigint }> | undefined>;
   saveNewManualAction(snapshot: ManualActionRequestSnapshot): Promise<{ version: bigint }>;
   saveManualAction(snapshot: ManualActionRequestSnapshot, expectedVersion: bigint): Promise<{ version: bigint }>;
+  findCompensationOffer(offerId: string): Promise<Readonly<{ aggregate: CompensationOffer; version: bigint }> | undefined>;
+  saveNewCompensationOffer(snapshot: CompensationOfferSnapshot): Promise<{ version: bigint }>;
+  saveCompensationOffer(snapshot: CompensationOfferSnapshot, expectedVersion: bigint): Promise<{ version: bigint }>;
 }

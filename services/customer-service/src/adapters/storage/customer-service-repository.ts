@@ -7,10 +7,12 @@ import {
   EvidenceRef,
   ManualActionRequest,
   SupportCase,
+  CompensationOffer,
   type CaseTimelineSnapshot,
   type EvidenceRefSnapshot,
   type ManualActionRequestSnapshot,
   type SupportCaseSnapshot,
+  type CompensationOfferSnapshot,
 } from "../../domain.js";
 import { type CustomerServiceRepository } from "../../application/ports/customer-service-repository.js";
 
@@ -95,17 +97,34 @@ export class PostgresCustomerServiceRepository implements CustomerServiceReposit
   async saveManualAction(snapshot: ManualActionRequestSnapshot, expectedVersion: bigint): Promise<SnapshotRecord<StoredManualActionRequestSnapshot>> {
     return new SnapshotRepository<StoredManualActionRequestSnapshot>(this.client, "manual_action_snapshots").save(snapshot.manualActionId, serializeManualAction(snapshot), expectedVersion);
   }
+
+  async findCompensationOffer(offerId: string): Promise<Readonly<{ aggregate: CompensationOffer; version: bigint }> | undefined> {
+    const record = await new SnapshotRepository<StoredCompensationOfferSnapshot>(this.client, "compensation_offer_snapshots").get(offerId);
+    return record ? { aggregate: CompensationOffer.fromSnapshot(reviveCompensationOffer(record.data)), version: record.version } : undefined;
+  }
+
+  async saveNewCompensationOffer(snapshot: CompensationOfferSnapshot): Promise<SnapshotRecord<StoredCompensationOfferSnapshot>> {
+    return new SnapshotRepository<StoredCompensationOfferSnapshot>(this.client, "compensation_offer_snapshots").save(snapshot.offerId, serializeCompensationOffer(snapshot));
+  }
+
+  async saveCompensationOffer(snapshot: CompensationOfferSnapshot, expectedVersion: bigint): Promise<SnapshotRecord<StoredCompensationOfferSnapshot>> {
+    return new SnapshotRepository<StoredCompensationOfferSnapshot>(this.client, "compensation_offer_snapshots").save(snapshot.offerId, serializeCompensationOffer(snapshot), expectedVersion);
+  }
 }
 
-type StoredSupportCaseSnapshot = Omit<SupportCaseSnapshot, "openedAt" | "resolvedAt" | "closedAt" | "resolution" | "escalation"> & Readonly<{
+type StoredSupportCaseSnapshot = Omit<SupportCaseSnapshot, "openedAt" | "resolvedAt" | "closedAt" | "resolution" | "escalation" | "escalationHistory" | "slaTracker" | "slaBreaches"> & Readonly<{
   openedAt: string;
   resolvedAt?: string;
   closedAt?: string;
   resolution?: Omit<NonNullable<SupportCaseSnapshot["resolution"]>, "resolvedAt"> & Readonly<{ resolvedAt: string }>;
   escalation?: Omit<NonNullable<SupportCaseSnapshot["escalation"]>, "escalatedAt"> & Readonly<{ escalatedAt: string }>;
+  escalationHistory?: readonly (Omit<SupportCaseSnapshot["escalationHistory"][number], "escalatedAt"> & Readonly<{ escalatedAt: string }>)[];
+  slaTracker?: Omit<SupportCaseSnapshot["slaTracker"], "openedAt" | "firstResponseAt" | "resolvedAt" | "responseBreachedAt" | "resolutionBreachedAt"> & Readonly<{ openedAt: string; firstResponseAt?: string; resolvedAt?: string; responseBreachedAt?: string; resolutionBreachedAt?: string }>;
+  slaBreaches?: readonly (Omit<SupportCaseSnapshot["slaBreaches"][number], "breachedAt"> & Readonly<{ breachedAt: string }>)[];
 }>;
 type StoredEvidenceRefSnapshot = Omit<EvidenceRefSnapshot, "attachedAt"> & Readonly<{ attachedAt: string }>;
 type StoredManualActionRequestSnapshot = Omit<ManualActionRequestSnapshot, "requestedAt" | "outcomeRecordedAt"> & Readonly<{ requestedAt: string; outcomeRecordedAt?: string }>;
+type StoredCompensationOfferSnapshot = Omit<CompensationOfferSnapshot, "offeredAt" | "acceptedAt" | "issuedAt"> & Readonly<{ offeredAt: string; acceptedAt?: string; issuedAt?: string }>;
 type StoredCaseTimelineSnapshot = Omit<CaseTimelineSnapshot, "entries"> & Readonly<{ entries: readonly StoredTimelineEntrySnapshot[] }>;
 type StoredTimelineEntrySnapshot = Omit<CaseTimelineSnapshot["entries"][number], "occurredAt"> & Readonly<{ occurredAt: string }>;
 
@@ -125,9 +144,20 @@ function serializeManualAction(snapshot: ManualActionRequestSnapshot): StoredMan
   return serializeSnapshot(snapshot) as unknown as StoredManualActionRequestSnapshot;
 }
 
+function serializeCompensationOffer(snapshot: CompensationOfferSnapshot): StoredCompensationOfferSnapshot {
+  return serializeSnapshot(snapshot) as unknown as StoredCompensationOfferSnapshot;
+}
+
 function reviveSupportCase(snapshot: StoredSupportCaseSnapshot): SupportCaseSnapshot {
+  const priority = snapshot.priority ?? "NORMAL";
   return {
     ...snapshot,
+    priority,
+    customerTier: snapshot.customerTier ?? "STANDARD",
+    escalationLevel: snapshot.escalationLevel ?? "L1_AGENT",
+    escalationHistory: (snapshot.escalationHistory ?? []).map((entry) => ({ ...entry, escalatedAt: new Date(entry.escalatedAt) })),
+    slaTracker: reviveSlaTracker(snapshot.slaTracker, priority, snapshot.openedAt, snapshot.resolvedAt),
+    slaBreaches: (snapshot.slaBreaches ?? []).map((entry) => ({ ...entry, breachedAt: new Date(entry.breachedAt) })),
     openedAt: new Date(snapshot.openedAt),
     resolvedAt: snapshot.resolvedAt ? new Date(snapshot.resolvedAt) : undefined,
     closedAt: snapshot.closedAt ? new Date(snapshot.closedAt) : undefined,
@@ -145,6 +175,31 @@ function reviveManualAction(snapshot: StoredManualActionRequestSnapshot): Manual
     ...snapshot,
     requestedAt: new Date(snapshot.requestedAt),
     outcomeRecordedAt: snapshot.outcomeRecordedAt ? new Date(snapshot.outcomeRecordedAt) : undefined,
+  };
+}
+
+function reviveCompensationOffer(snapshot: StoredCompensationOfferSnapshot): CompensationOfferSnapshot {
+  return {
+    ...snapshot,
+    offeredAt: new Date(snapshot.offeredAt),
+    acceptedAt: snapshot.acceptedAt ? new Date(snapshot.acceptedAt) : undefined,
+    issuedAt: snapshot.issuedAt ? new Date(snapshot.issuedAt) : undefined,
+  };
+}
+
+function reviveSlaTracker(snapshot: StoredSupportCaseSnapshot["slaTracker"], priority: SupportCaseSnapshot["priority"], openedAt: string, resolvedAt?: string): SupportCaseSnapshot["slaTracker"] {
+  if (!snapshot) {
+    const responseTargetMinutes = priority === "URGENT" ? 5 : priority === "HIGH" ? 15 : priority === "LOW" ? 1440 : 60;
+    const resolutionTargetMinutes = priority === "URGENT" ? 30 : priority === "HIGH" ? 120 : priority === "LOW" ? 4320 : 1440;
+    return { priority: priority ?? "NORMAL", responseTargetMinutes, resolutionTargetMinutes, openedAt: new Date(openedAt), resolvedAt: resolvedAt ? new Date(resolvedAt) : undefined };
+  }
+  return {
+    ...snapshot,
+    openedAt: new Date(snapshot.openedAt),
+    firstResponseAt: snapshot.firstResponseAt ? new Date(snapshot.firstResponseAt) : undefined,
+    resolvedAt: snapshot.resolvedAt ? new Date(snapshot.resolvedAt) : undefined,
+    responseBreachedAt: snapshot.responseBreachedAt ? new Date(snapshot.responseBreachedAt) : undefined,
+    resolutionBreachedAt: snapshot.resolutionBreachedAt ? new Date(snapshot.resolutionBreachedAt) : undefined,
   };
 }
 
