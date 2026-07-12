@@ -7,7 +7,7 @@ import (
 
 func publishedDelayProduct(t *testing.T, now time.Time) InsuranceProduct {
 	t.Helper()
-	premium, err := NewMoney("CNY", 500)
+	premium, err := NewMoney("CNY", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,8 +32,8 @@ func TestIssuePolicyProducesDeterministicPolicyNumberAndActiveStatus(t *testing.
 	if err != nil {
 		t.Fatalf("issue policy: %v", err)
 	}
-	if policy.Status != PolicyActive {
-		t.Fatalf("status = %s, want ACTIVE", policy.Status)
+	if policy.Status != PolicyIssued {
+		t.Fatalf("status = %s, want ISSUED", policy.Status)
 	}
 	if policy.PolicyNumber == "" {
 		t.Fatal("policy number is required")
@@ -50,7 +50,7 @@ func TestClaimRejectsUnverifiedDelayFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	amount, _ := NewMoney("CNY", 1000)
-	_, err = OpenClaim("clm-1", policy, ClaimDelayAuto, "fact-1", &DelayFact{SourceEventType: "TrainDelayed", SourceEventID: "evt-1", DelayMinutes: 90}, "", nil, amount, now)
+	_, err = OpenClaim("clm-1", policy, ClaimDelayAuto, "fact-1", &DelayFact{SourceEventType: "Unverified", SourceEventID: "evt-1", DelayMinutes: 90}, "", nil, amount, now)
 	if err == nil {
 		t.Fatal("expected unsupported delay source error")
 	}
@@ -74,7 +74,7 @@ func TestApprovedClaimCanSettleOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if advice.Status != "RECOMMENDED" || claim.Status != ClaimPayoutRecommended {
+	if advice.Status != "COMPLETED" || claim.Status != ClaimPaidOut {
 		t.Fatalf("unexpected settlement: %#v %#v", advice, claim)
 	}
 }

@@ -19,22 +19,25 @@ import (
 type Handler struct{ service *application.InsuranceService }
 
 type issuePolicyRequest struct {
-	ProductCode          string    `json:"productCode"`
-	ProductVersion       string    `json:"productVersion"`
-	JourneyOrderID       string    `json:"journeyOrderId"`
-	AncillaryOrderItemID string    `json:"ancillaryOrderItemId"`
-	AccountID            string    `json:"accountId"`
-	TravelerRef          string    `json:"travelerRef"`
-	SegmentRefs          []string  `json:"segmentRefs"`
-	PaymentIntentID      string    `json:"paymentIntentId"`
-	CoverageStartAt      time.Time `json:"coverageStartAt"`
-	CoverageEndAt        time.Time `json:"coverageEndAt"`
+	ProductCode          string       `json:"productCode"`
+	ProductVersion       string       `json:"productVersion"`
+	JourneyOrderID       string       `json:"journeyOrderId"`
+	AncillaryOrderItemID string       `json:"ancillaryOrderItemId"`
+	AccountID            string       `json:"accountId"`
+	TravelerRef          string       `json:"travelerRef"`
+	SegmentRefs          []string     `json:"segmentRefs"`
+	PaymentIntentID      string       `json:"paymentIntentId"`
+	CoverageStartAt      time.Time    `json:"coverageStartAt"`
+	CoverageEndAt        time.Time    `json:"coverageEndAt"`
+	TicketPrice          domain.Money `json:"ticketPrice"`
+	RouteDistance        int          `json:"routeDistance"`
 }
 
 type fileClaimRequest struct {
 	PolicyID       string            `json:"policyId"`
 	ClaimType      string            `json:"claimType"`
 	TriggerFactKey string            `json:"triggerFactKey"`
+	Description    string            `json:"description"`
 	DelayFact      *domain.DelayFact `json:"delayFact"`
 	SupportCaseID  string            `json:"supportCaseId"`
 	EvidenceRefs   []string          `json:"evidenceRefs"`
@@ -72,6 +75,9 @@ func RegisterRoutes(router gin.IRouter, service *application.InsuranceService, s
 	api.POST("/policies", idempotent, h.issuePolicy)
 	api.GET("/policies/:id", h.getPolicy)
 	api.POST("/claims", idempotent, h.fileClaim)
+	api.GET("/claims/:id", h.getClaim)
+	api.POST("/claims/:id/approve", idempotent, h.approveClaim)
+	api.POST("/claims/:id/reject", idempotent, h.rejectClaim)
 }
 
 func (h Handler) issuePolicy(ctx *gin.Context) {
@@ -83,7 +89,7 @@ func (h Handler) issuePolicy(ctx *gin.Context) {
 	if strings.TrimSpace(req.ProductVersion) == "" {
 		req.ProductVersion = "v1"
 	}
-	policy, err := h.service.IssuePolicy(ctx.Request.Context(), application.IssuePolicyCommand{ProductCode: req.ProductCode, ProductVersion: req.ProductVersion, JourneyOrderID: req.JourneyOrderID, AncillaryOrderItemID: req.AncillaryOrderItemID, AccountID: req.AccountID, TravelerRef: req.TravelerRef, SegmentRefs: req.SegmentRefs, PaymentIntentID: req.PaymentIntentID, CoverageStartAt: req.CoverageStartAt, CoverageEndAt: req.CoverageEndAt, CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
+	policy, err := h.service.IssuePolicy(ctx.Request.Context(), application.IssuePolicyCommand{ProductCode: req.ProductCode, ProductVersion: req.ProductVersion, JourneyOrderID: req.JourneyOrderID, AncillaryOrderItemID: req.AncillaryOrderItemID, AccountID: req.AccountID, TravelerRef: req.TravelerRef, SegmentRefs: req.SegmentRefs, PaymentIntentID: req.PaymentIntentID, CoverageStartAt: req.CoverageStartAt, CoverageEndAt: req.CoverageEndAt, TicketPrice: req.TicketPrice, RouteDistance: req.RouteDistance, CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
 	if err != nil {
 		writeMappedError(ctx, err)
 		return
@@ -106,7 +112,7 @@ func (h Handler) fileClaim(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
 		return
 	}
-	claim, err := h.service.FileClaim(ctx.Request.Context(), application.FileClaimCommand{PolicyID: req.PolicyID, ClaimType: req.ClaimType, TriggerFactKey: req.TriggerFactKey, DelayFact: req.DelayFact, SupportCaseID: req.SupportCaseID, EvidenceRefs: req.EvidenceRefs, ClaimedAmount: req.ClaimedAmount, CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
+	claim, err := h.service.FileClaim(ctx.Request.Context(), application.FileClaimCommand{PolicyID: req.PolicyID, ClaimType: req.ClaimType, TriggerFactKey: req.TriggerFactKey, Description: req.Description, DelayFact: req.DelayFact, SupportCaseID: req.SupportCaseID, EvidenceRefs: req.EvidenceRefs, ClaimedAmount: req.ClaimedAmount, CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
 	if err != nil {
 		writeMappedError(ctx, err)
 		return
@@ -124,9 +130,43 @@ func (h Handler) fileClaim(ctx *gin.Context) {
 		}
 		resp.PayoutAdvice = &advice
 		resp.Claim.PayoutAdviceID = advice.ID
-		resp.Claim.Status = domain.ClaimPayoutRecommended
+		resp.Claim.Status = domain.ClaimPaidOut
 	}
 	ctx.JSON(http.StatusCreated, resp)
+}
+
+func (h Handler) getClaim(ctx *gin.Context) {
+	claim, err := h.service.GetClaim(ctx.Request.Context(), ctx.Param("id"))
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, claim)
+}
+
+func (h Handler) approveClaim(ctx *gin.Context) {
+	advice, err := h.service.ApproveClaim(ctx.Request.Context(), application.SettleClaimCommand{ClaimID: ctx.Param("id"), PayoutTarget: string(domain.PayoutPaymentRefund), CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, advice)
+}
+
+func (h Handler) rejectClaim(ctx *gin.Context) {
+	var req struct {
+		ReasonCode string `json:"reasonCode"`
+	}
+	if err := bindBody(ctx, &req); err != nil {
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+		return
+	}
+	claim, err := h.service.RejectClaim(ctx.Request.Context(), application.RejectClaimCommand{ClaimID: ctx.Param("id"), ReasonCode: req.ReasonCode, CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, claim)
 }
 
 func bindBody(ctx *gin.Context, target any) error {

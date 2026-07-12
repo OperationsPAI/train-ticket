@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"time"
 
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/travel-insurance/domain"
@@ -21,7 +22,9 @@ type Repository interface {
 	FindPublishedProduct(context.Context, domain.ProductCode, string) (domain.InsuranceProduct, error)
 	SavePolicy(context.Context, domain.Policy) error
 	FindPolicy(context.Context, string) (domain.Policy, error)
-	FindPolicyByUniqueness(context.Context, string, string, string, string) (domain.Policy, error)
+	FindPolicyByUniqueness(context.Context, domain.ProductCode, string, string, string, string) (domain.Policy, error)
+	FindIssuedPoliciesForSegment(context.Context, domain.ProductCode, string, time.Time) ([]domain.Policy, error)
+	FindIssuedPolicyByJourneyOrder(context.Context, string) (domain.Policy, error)
 	SaveClaim(context.Context, domain.Claim) error
 	FindClaim(context.Context, string) (domain.Claim, error)
 	FindActiveClaim(context.Context, string, domain.ClaimType, string) (domain.Claim, error)

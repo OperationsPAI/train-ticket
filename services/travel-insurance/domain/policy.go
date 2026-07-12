@@ -12,6 +12,12 @@ import (
 type PolicyStatus string
 
 const (
+	PolicyIssued                PolicyStatus = "ISSUED"
+	PolicyClaimed               PolicyStatus = "CLAIMED"
+	PolicyPaidOut               PolicyStatus = "PAID_OUT"
+	PolicyRejected              PolicyStatus = "REJECTED"
+	PolicyExpired               PolicyStatus = "EXPIRED"
+	PolicyCancelled             PolicyStatus = "CANCELLED"
 	PolicyPurchaseSelected      PolicyStatus = "PURCHASE_SELECTED"
 	PolicyAwaitingPremium       PolicyStatus = "AWAITING_PREMIUM_CAPTURE"
 	PolicyUnderwritingRequested PolicyStatus = "UNDERWRITING_REQUESTED"
@@ -20,7 +26,6 @@ const (
 	PolicySurrenderRequested    PolicyStatus = "SURRENDER_REQUESTED"
 	PolicySurrendered           PolicyStatus = "SURRENDERED"
 	PolicyUnderwritingFailed    PolicyStatus = "UNDERWRITING_FAILED"
-	PolicyExpired               PolicyStatus = "EXPIRED"
 	PolicyClosed                PolicyStatus = "CLOSED"
 )
 
@@ -40,6 +45,7 @@ type Policy struct {
 	CoverageStartAt      time.Time    `json:"coverageStartAt"`
 	CoverageEndAt        time.Time    `json:"coverageEndAt"`
 	Status               PolicyStatus `json:"status"`
+	RefundedPremium      Money        `json:"refundedPremium,omitempty"`
 	UnderwritingSeedRef  string       `json:"underwritingSeedRef"`
 	AggregateVersion     int64        `json:"aggregateVersion"`
 }
@@ -75,10 +81,7 @@ func NewIssuedPolicy(req PolicyIssueRequest) (Policy, error) {
 	policy.Status = PolicyUnderwritingRequested
 	policy.UnderwritingSeedRef = policy.issueFingerprint()
 	policy.PolicyNumber = deterministicPolicyNumber(policy.UnderwritingSeedRef)
-	policy.Status = PolicyUnderwritten
-	if !req.Now.UTC().Before(policy.CoverageStartAt) {
-		policy.Status = PolicyActive
-	}
+	policy.Status = PolicyIssued
 	return policy, policy.Validate()
 }
 
@@ -88,7 +91,7 @@ func (p Policy) Validate() error {
 			return fmt.Errorf("%s is required", name)
 		}
 	}
-	if p.ProductCode != ProductDelayInsurance && p.ProductCode != ProductAccidentInsurance {
+	if !SupportedProductCode(p.ProductCode) {
 		return fmt.Errorf("unsupported product code: %q", p.ProductCode)
 	}
 	if err := p.Premium.ValidatePositive(); err != nil {
@@ -106,7 +109,7 @@ func (p Policy) Validate() error {
 	if p.CoverageStartAt.IsZero() || p.CoverageEndAt.IsZero() || !p.CoverageEndAt.After(p.CoverageStartAt) {
 		return fmt.Errorf("coverage window must be present and end after start")
 	}
-	if p.Status == PolicyUnderwritten || p.Status == PolicyActive || p.Status == PolicyExpired || p.Status == PolicySurrendered {
+	if p.Status == PolicyIssued || p.Status == PolicyClaimed || p.Status == PolicyPaidOut || p.Status == PolicyRejected || p.Status == PolicyExpired || p.Status == PolicyCancelled || p.Status == PolicyUnderwritten || p.Status == PolicyActive || p.Status == PolicySurrendered {
 		if strings.TrimSpace(p.PolicyNumber) == "" {
 			return fmt.Errorf("policy number is required after underwriting succeeds")
 		}
@@ -116,7 +119,66 @@ func (p Policy) Validate() error {
 
 func (p Policy) CanClaim(now time.Time) bool {
 	now = now.UTC()
-	return p.Status == PolicyActive && !now.Before(p.CoverageStartAt) && !now.After(p.CoverageEndAt)
+	return p.Status == PolicyIssued && !now.Before(p.CoverageStartAt) && !now.After(p.CoverageEndAt)
+}
+
+func (p *Policy) MarkClaimed(now time.Time) error {
+	if !p.CanClaim(now) {
+		return fmt.Errorf("policy is not issued in coverage window")
+	}
+	p.Status = PolicyClaimed
+	p.AggregateVersion++
+	return p.Validate()
+}
+
+func (p *Policy) MarkPaidOut() error {
+	if p.Status != PolicyClaimed {
+		return fmt.Errorf("policy must be claimed before payout")
+	}
+	p.Status = PolicyPaidOut
+	p.AggregateVersion++
+	return p.Validate()
+}
+
+func (p *Policy) MarkRejected() error {
+	if p.Status != PolicyClaimed {
+		return fmt.Errorf("policy must be claimed before rejection")
+	}
+	p.Status = PolicyRejected
+	p.AggregateVersion++
+	return p.Validate()
+}
+
+func (p *Policy) CancelForRefund() (Money, error) {
+	if p.Status != PolicyIssued {
+		return Money{}, fmt.Errorf("policy cannot be cancelled from %s", p.Status)
+	}
+	p.Status = PolicyCancelled
+	p.RefundedPremium = p.Premium
+	p.AggregateVersion++
+	return p.RefundedPremium, p.Validate()
+}
+
+func (p *Policy) AdjustCoverage(start, end time.Time) error {
+	if p.Status != PolicyIssued {
+		return fmt.Errorf("policy coverage cannot be adjusted from %s", p.Status)
+	}
+	p.CoverageStartAt = start.UTC()
+	p.CoverageEndAt = end.UTC()
+	p.AggregateVersion++
+	return p.Validate()
+}
+
+func (p *Policy) Expire(now time.Time) error {
+	if p.Status != PolicyIssued {
+		return fmt.Errorf("policy cannot expire from %s", p.Status)
+	}
+	if now.UTC().Before(p.CoverageEndAt) {
+		return fmt.Errorf("policy coverage has not ended")
+	}
+	p.Status = PolicyExpired
+	p.AggregateVersion++
+	return p.Validate()
 }
 
 func (p Policy) SegmentScopeHash() string {
