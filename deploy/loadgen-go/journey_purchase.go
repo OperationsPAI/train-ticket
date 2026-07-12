@@ -70,8 +70,8 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	}
 	orderID := getString(order, "orderId")
 
-	// Risk gate
-	status := pollOrder(ctx, p, orderID, map[string]bool{"CONFIRMED": true}, true)
+	// Risk gate — quick check, don't wait for full saga completion
+	status := pollOrderQuick(ctx, p, orderID, 3)
 	if status != "" && containsBlock(status) {
 		review := NewWorkItem("risk")
 		review.Order = orderID
@@ -277,6 +277,26 @@ func pollWaitlist(ctx context.Context, p *Providers, waitlistID string) string {
 		case <-ctx.Done():
 			return ""
 		case <-time.After(interval):
+		}
+	}
+	return ""
+}
+
+func pollOrderQuick(ctx context.Context, p *Providers, orderID string, maxAttempts int) string {
+	for i := 0; i < maxAttempts; i++ {
+		code, data, _ := p.API.Request(ctx, "GET", "journey-order",
+			"/api/v1/journey-orders/"+url.PathEscape(orderID),
+			nil, nil, nil, "poll-order")
+		if code == 200 {
+			status := getString(data, "status")
+			if containsBlock(status) {
+				return status
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(time.Second):
 		}
 	}
 	return ""

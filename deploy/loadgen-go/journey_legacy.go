@@ -17,6 +17,14 @@ func JourneyLegacy(ctx context.Context, p *Providers) (string, error) {
 		return "", err
 	}
 
+	if !isVerified(entry, tvl) {
+		_, err := p.Identity(ctx, tvl)
+		if err != nil {
+			return "", err
+		}
+		markVerified(entry, tvl, p.Reg)
+	}
+
 	routes := p.Reg.GetRoutes()
 	var legacyRoutes []*RouteEntry
 	for _, r := range routes {

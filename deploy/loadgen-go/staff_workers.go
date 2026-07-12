@@ -111,34 +111,21 @@ func (s *StaffSim) Worker(ctx context.Context, idx int) {
 }
 
 func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
-	if s.redis == nil {
-		return &StepError{Step: "reservation", Detail: "redis not configured"}
-	}
-
 	var saga string
 	attempts := s.cfg.Polling.Attempts
 	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
 
 	for i := 0; i < attempts; i++ {
-		entries, err := s.redis.XRevRange(ctx, "events:booking-orchestration", "+", "-").Result()
-		if err != nil {
-			time.Sleep(interval)
-			continue
-		}
-		for _, entry := range entries {
-			raw, ok := entry.Values["envelope"].(string)
-			if !ok {
-				continue
-			}
-			var env map[string]interface{}
-			if json.Unmarshal([]byte(raw), &env) != nil {
-				continue
-			}
-			if getString(env, "eventType") == "BookingSagaStarted" {
-				payload, _ := env["payload"].(map[string]interface{})
-				if getString(payload, "journeyOrderId") == item.Order {
-					saga = getString(payload, "sagaId")
-					break
+		_, data, err := s.api.Request(ctx, "GET", "booking-orchestration",
+			"/api/v1/internal/booking-sagas/by-order/"+url.PathEscape(item.Order),
+			nil, nil, []int{200}, "staff-saga-lookup")
+		if err == nil {
+			saga = getString(data, "sagaId")
+			if saga == "" {
+				if items, ok := data["items"].([]interface{}); ok && len(items) > 0 {
+					if first, ok := items[0].(map[string]interface{}); ok {
+						saga = getString(first, "sagaId")
+					}
 				}
 			}
 		}
@@ -171,10 +158,20 @@ func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
 	item.SetResult("saga", saga)
 	item.SetResult("sb", sb)
 
-	// Check if saga failed with no capacity
-	noCapacity := s.sagaFailedNoCapacity(ctx, saga)
-	if noCapacity {
-		item.SetResult("no_capacity", true)
+	// Quick no-capacity check: poll saga once after a short delay
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-time.After(3 * time.Second):
+	}
+	code, data, _ := s.api.Request(ctx, "GET", "booking-orchestration",
+		"/api/v1/internal/booking-sagas/"+url.PathEscape(saga),
+		nil, nil, nil, "staff-poll-reservation")
+	if code == 200 {
+		b, _ := json.Marshal(data)
+		if containsStr(string(b), "NO_AVAILABLE_CAPACITY") {
+			item.SetResult("no_capacity", true)
+		}
 	}
 	return nil
 }

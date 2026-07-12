@@ -224,6 +224,64 @@ occasionally, triggering false positives.
 
 ---
 
+## BUG-011: Loadgen Legacy Journey Missing Identity Verification
+
+**Severity**: Medium (all legacy journeys fail)
+**Service**: loadgen
+
+**Symptom**: Legacy journey `preserve` step always fails with "Identity
+verification is not passed for all travelers".
+
+**Root Cause**: The legacy journey creates a traveler but never calls the
+identity-verification service. The regular purchase journey calls
+`p.Identity(ctx, tvl)` before creating orders, but the legacy journey
+skipped this step.
+
+**Fix**: Add identity verification call before `preserve` step, matching
+the purchase journey pattern.
+
+---
+
+## BUG-012: Loadgen Staff XREVRANGE Saga Discovery (BUG-003 Regression)
+
+**Severity**: Critical (blocks all purchase saga completion)
+**Service**: loadgen staff workers
+
+**Symptom**: Staff reservation workers take 80+ seconds to find saga IDs.
+Purchase journeys time out (90s default) before staff completes
+reservation. Purchases fail with "timed out waiting for sb".
+
+**Root Cause**: Staff workers use `XREVRANGE` on `events:booking-orchestration`
+stream to scan for `BookingSagaStarted` events matching an order ID. This
+is O(N) per lookup with 100K+ stream entries. BUG-003 fix was supposed to
+replace this with HTTP API, but the fix was never applied to the current
+loadgen image.
+
+**Fix**:
+1. Add `GET /booking-sagas/by-order/{orderId}` endpoint to booking-orchestration
+2. Replace XREVRANGE scan with HTTP API call in staff workers
+3. Reduce polling from 20×4s to 15×2s
+
+---
+
+## BUG-013: Capacity Pool Size Too Small and Hardcoded Date
+
+**Severity**: High (capacity exhausted quickly under load)
+**Service**: capacity-availability (Rust)
+
+**Symptom**: All inventory pools exhausted after ~100 bookings per route.
+Scalpers report "capacity_exhausted". Provider-integration returns
+NO_AVAILABLE_CAPACITY.
+
+**Root Cause**: Default pool size was `req.quantity.max(100)` = 100 seats
+per segment/class combination. Also, the pool service date was hardcoded
+to "2026-07-05" regardless of actual departure date.
+
+**Fix**: Increase default pool to 500 seats. Use current date from
+`unix_millis_to_date(now_millis())` instead of hardcoded date.
+
+---
+
 ## Performance Findings (Not Bugs)
 
 ### PERF-001: Python Single Uvicorn Worker

@@ -1277,6 +1277,12 @@ pub fn unix_millis_to_rfc3339(ms: u64) -> String {
     )
 }
 
+pub fn unix_millis_to_date(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (year, month, day, _, _, _) = epoch_seconds_to_ymdhms(secs);
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
 /// Parse RFC3339 UTC string to Unix millisecond timestamp.
 /// Supports formats: "2026-07-04T10:00:00Z", "2026-07-04T10:00:00.123Z"
 pub fn rfc3339_to_unix_millis(s: &str) -> Option<u64> {

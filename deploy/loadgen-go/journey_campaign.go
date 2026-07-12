@@ -19,7 +19,7 @@ func JourneyCampaign(ctx context.Context, p *Providers) (string, error) {
 				"validFrom":  now.Format(time.RFC3339),
 				"validUntil": windowEnd,
 			},
-		}, nil, []int{200, 201}, "campaign-draft")
+		}, nil, []int{200, 201, 409}, "campaign-draft")
 	if err != nil {
 		return "", err
 	}

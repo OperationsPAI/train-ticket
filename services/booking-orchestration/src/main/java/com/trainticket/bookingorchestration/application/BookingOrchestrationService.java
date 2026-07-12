@@ -78,6 +78,10 @@ public class BookingOrchestrationService {
         return sagas.findById(sagaId).map(this::buildSagaDetail);
     }
 
+    public Optional<SagaDetail> getSagaByOrderId(String orderId) {
+        return sagas.findByJourneyOrderId(orderId).map(this::buildSagaDetail);
+    }
+
     public RequestReservationResult requestReservation(String sagaId, RequestReservationCommand command,
                                                        String idempotencyKey, String correlationId) {
         BookingSaga saga = sagas.findById(sagaId)
