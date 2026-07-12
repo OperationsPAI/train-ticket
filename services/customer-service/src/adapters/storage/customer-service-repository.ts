@@ -39,6 +39,16 @@ export class PostgresCustomerServiceRepository implements CustomerServiceReposit
     return result.rows.map((row) => SupportCase.fromSnapshot(reviveSupportCase(row.data)));
   }
 
+  async listOpenCasesForEvaluation(): Promise<SupportCase[]> {
+    const result = await this.client.query(
+      `SELECT data
+       FROM support_case_snapshots
+       WHERE COALESCE(data->>'status', '') NOT IN ('Resolved', 'Closed')
+       ORDER BY updated_at`,
+    ) as QueryResult<{ data: StoredSupportCaseSnapshot }>;
+    return result.rows.map((row) => SupportCase.fromSnapshot(reviveSupportCase(row.data)));
+  }
+
   async findDuplicateOpenCase(snapshot: SupportCaseSnapshot): Promise<SupportCaseSnapshot | undefined> {
     const result = await this.client.query(
       `SELECT data

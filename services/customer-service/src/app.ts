@@ -82,6 +82,7 @@ export type AppOptions = Readonly<{
 export type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
   runCommand?: <T>(operation: (application: CustomerServiceApplication) => Promise<T>) => Promise<T>;
+  runScheduledEvaluation?: () => Promise<number>;
 }>;
 
 type OTelSpan = Readonly<{
@@ -231,6 +232,24 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
       const body = validateEscalate(request.body);
       return runWithApplication((service) => service.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
     });
+  });
+
+  app.post("/api/v1/support-cases/:caseId/request-escalation", async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    return sendIdempotentUpdate(request, reply, idempotencyStore, { caseId, body: request.body ?? null }, () => {
+      const body = validateCustomerEscalationRequest(request.body);
+      return runWithApplication((service) => service.escalateCase(caseId, body, operatorRef(request), requestContext(request).correlationId, newCommandId()));
+    });
+  });
+
+  app.post("/api/v1/support-cases/evaluate-sla", async (request, reply) => {
+    const response = await withIdempotency(request, idempotencyStore, request.body ?? {}, async () => {
+      const evaluated = appOptions.storage?.runScheduledEvaluation
+        ? await appOptions.storage.runScheduledEvaluation()
+        : (await runWithApplication((service) => service.evaluateOpenTickets())).length;
+      return { statusCode: 202, body: { evaluated } };
+    });
+    return reply.status(response!.statusCode).send(response!.body);
   });
 
   app.post("/api/v1/support-cases/:caseId/resolve", async (request, reply) => {
@@ -414,6 +433,15 @@ function validateEscalate(value: unknown): EscalateCaseRequest {
     targetQueue: requiredString(body, "targetQueue"),
     reason: requiredString(body, "reason"),
     triggerCondition: optionalEnumValue(body, "triggerCondition", escalationTriggerConditions),
+  };
+}
+
+function validateCustomerEscalationRequest(value: unknown): EscalateCaseRequest {
+  const body = objectBody(value);
+  return {
+    targetQueue: requiredString(body, "targetQueue"),
+    reason: requiredString(body, "reason"),
+    triggerCondition: "CUSTOMER_REQUEST",
   };
 }
 

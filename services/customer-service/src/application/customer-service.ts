@@ -6,6 +6,7 @@ import {
   SupportCase,
   CompensationOffer,
   EscalationPolicy,
+  SimulatedResolutionPolicy,
   toTicketEscalated,
   toTicketResolved,
   toTicketReopened,
@@ -358,15 +359,46 @@ export class CustomerServiceApplication {
 
   async evaluateEscalationAndSla(caseId: string, now = new Date(), correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const effectiveCorrelationId = correlationId ?? newCorrelationId();
-    let { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     let updated = current;
-    const snapshot = current.toSnapshot();
-    const autoRule = EscalationPolicy.autoEscalation(now, snapshot);
+    const autoRule = EscalationPolicy.autoEscalation(now, updated.toSnapshot());
     if (autoRule) {
       const result = updated.escalate({ caseId, targetQueue: queueForLevel(autoRule.toLevel), reason: autoRule.triggerCondition, escalatedBy: "op-system-sla", toLevel: autoRule.toLevel, triggerCondition: autoRule.triggerCondition, correlationId: effectiveCorrelationId, causationId, escalatedAt: now });
       updated = result.case;
       await this.publisher.publish(toEventEnvelope(result.event, causationId));
       await this.publisher.publish(toEventEnvelope(toTicketEscalated(result.event), causationId));
+    } else {
+      const simulation = SimulatedResolutionPolicy.decisionAt(now, updated.toSnapshot());
+      if (simulation?.action === "RESOLVE") {
+        const result = updated.resolveBySimulation({
+          caseId,
+          summary: `Auto-resolved at ${simulation.level} by simulated support workflow`,
+          resolutionCode: `AUTO_RESOLVED_${simulation.level}`,
+          resolvedBy: "op-system-resolution",
+          correlationId: effectiveCorrelationId,
+          causationId,
+          resolvedAt: now,
+        });
+        updated = result.case;
+        await this.publisher.publish(toEventEnvelope(result.event, causationId));
+        await this.publisher.publish(toEventEnvelope(toTicketResolved(result.event), causationId));
+      } else if (simulation?.action === "ESCALATE" && updated.escalationLevel !== "L3_SUPERVISOR") {
+        const toLevel = EscalationPolicy.targetFor("MANUAL", updated.escalationLevel);
+        const result = updated.escalate({
+          caseId,
+          targetQueue: queueForLevel(toLevel),
+          reason: `Simulated ${simulation.level} handling did not resolve ticket`,
+          escalatedBy: "op-system-resolution",
+          toLevel,
+          triggerCondition: "MANUAL",
+          correlationId: effectiveCorrelationId,
+          causationId,
+          escalatedAt: now,
+        });
+        updated = result.case;
+        await this.publisher.publish(toEventEnvelope(result.event, causationId));
+        await this.publisher.publish(toEventEnvelope(toTicketEscalated(result.event), causationId));
+      }
     }
     for (const breachType of updated.slaTracker.breachesAt(now)) {
       const breachEvent = updated.createSlaBreachEvent(breachType, now, effectiveCorrelationId, causationId);
@@ -380,20 +412,7 @@ export class CustomerServiceApplication {
         await this.publisher.publish(toEventEnvelope(toTicketEscalated(result.event), causationId));
       }
       if (breachType === "RESOLUTION") {
-        const { offer, event } = CompensationOffer.offer({
-          offerId: newCompensationOfferId(),
-          ticketId: caseId,
-          type: "VOUCHER",
-          amountMinor: 5_000,
-          authorizationLevel: "L3_SUPERVISOR",
-          offeredBy: "op-system-sla",
-          correlationId: effectiveCorrelationId,
-          causationId,
-          offeredAt: now,
-        });
-        this.compensationOffers.set(offer.id, offer);
-        await this.repository?.saveNewCompensationOffer(offer.toSnapshot());
-        await this.publisher.publish(toEventEnvelope(event, causationId));
+        await this.createResolutionBreachCompensationOffer(caseId, updated, now, effectiveCorrelationId, causationId);
       }
     }
     this.cases.set(caseId, updated);
@@ -401,6 +420,15 @@ export class CustomerServiceApplication {
       await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
     }
     return updated.toSnapshot();
+  }
+
+  async evaluateOpenTickets(now = new Date(), correlationId = `corr-${uuidV7()}`, causationId = newCommandId()): Promise<readonly SupportCaseSnapshot[]> {
+    const cases = this.repository ? await this.repository.listOpenCasesForEvaluation() : [...this.cases.values()].filter((supportCase) => !isTerminalCase(supportCase.toSnapshot()));
+    const evaluated: SupportCaseSnapshot[] = [];
+    for (const supportCase of cases) {
+      evaluated.push(await this.evaluateEscalationAndSla(supportCase.id, now, correlationId, causationId));
+    }
+    return Object.freeze(evaluated);
   }
 
   async handleIntegrationEvent(envelope: EventEnvelope): Promise<void> {
@@ -472,6 +500,23 @@ export class CustomerServiceApplication {
       envelope.correlationId,
       envelope.eventId,
     );
+  }
+
+  private async createResolutionBreachCompensationOffer(caseId: string, supportCase: SupportCase, offeredAt: Date, correlationId: string, causationId: string): Promise<void> {
+    const { offer, event } = CompensationOffer.offer({
+      offerId: newCompensationOfferId(),
+      ticketId: caseId,
+      type: "VOUCHER",
+      amountMinor: resolutionBreachCompensationAmount(supportCase.toSnapshot()),
+      authorizationLevel: compensationAuthorizationLevel(supportCase.escalationLevel),
+      offeredBy: "op-system-sla",
+      correlationId,
+      causationId,
+      offeredAt,
+    });
+    this.compensationOffers.set(offer.id, offer);
+    await this.repository?.saveNewCompensationOffer(offer.toSnapshot());
+    await this.publisher.publish(toEventEnvelope(event, causationId));
   }
 
   private async appendTimelineEntry(caseId: string, eventType: string, payload: Readonly<Record<string, unknown>>, visibility: "CUSTOMER_VISIBLE" | "INTERNAL_ONLY", occurredAt: Date, correlationId: string, causationId?: string): Promise<void> {
@@ -612,6 +657,23 @@ function newManualActionId(): string {
 
 function newCompensationOfferId(): string {
   return `co-${uuidV7()}`;
+}
+
+function isTerminalCase(snapshot: SupportCaseSnapshot): boolean {
+  return snapshot.status === "Resolved" || snapshot.status === "Closed";
+}
+
+function compensationAuthorizationLevel(level: EscalationLevel): EscalationLevel {
+  return level === "L1_AGENT" ? "L2_SPECIALIST" : level;
+}
+
+function resolutionBreachCompensationAmount(snapshot: SupportCaseSnapshot): number {
+  switch (snapshot.priority ?? "NORMAL") {
+    case "URGENT": return 20_000;
+    case "HIGH": return 10_000;
+    case "NORMAL": return 5_000;
+    case "LOW": return 2_000;
+  }
 }
 
 function queueForLevel(level: EscalationLevel): string {
