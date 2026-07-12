@@ -28,7 +28,7 @@ public class PaymentController {
     @PostMapping("/payment-intents")
     public ResponseEntity<?> createPaymentIntent(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey, @RequestBody(required = false) CreatePaymentIntentRequest request, HttpServletRequest httpRequest) {
         validateCreate(request);
-        PaymentIntent intent = service.createIntent(request.businessRef(), request.purpose(), PaymentHttpMapper.toMoney(request.amount()), request.payerRef(), idempotencyKey, correlationId(httpRequest));
+        PaymentIntent intent = service.createIntent(request.businessRef(), request.purpose(), PaymentHttpMapper.toMoney(request.amount()), request.payerRef(), idempotencyKey, correlationId(httpRequest), request.preferredChannel());
         return ResponseEntity.created(URI.create("/api/v1/payment-intents/" + intent.paymentIntentId())).body(PaymentHttpMapper.intentResponse(intent));
     }
 
@@ -71,7 +71,7 @@ public class PaymentController {
         return PaymentHttpMapper.refundDetails(service.getRefund(refundId));
     }
 
-    private static void validateCreate(CreatePaymentIntentRequest request) {
+    private void validateCreate(CreatePaymentIntentRequest request) {
         if (request == null) {
             throw new ValidationException("request body is required");
         }
@@ -79,14 +79,17 @@ public class PaymentController {
         requireText(request.purpose(), "purpose");
         PaymentHttpMapper.toMoney(request.amount());
         requireText(request.payerRef(), "payerRef");
+        if (!isBlank(request.preferredChannel()) && !service.isSupportedChannel(request.preferredChannel())) {
+            throw new ValidationException("preferredChannel is unsupported");
+        }
     }
 
-    private static void validateOptionalChannelRef(ChannelRefJson channelRef, boolean requireOriginalRoute) {
+    private void validateOptionalChannelRef(ChannelRefJson channelRef, boolean requireOriginalRoute) {
         if (channelRef == null) {
             return;
         }
         requireText(channelRef.channel(), "channelRef.channel");
-        if (!"ALIPAY_SIM".equals(channelRef.channel()) && !"WECHAT_SIM".equals(channelRef.channel()) && !"UNIONPAY_SIM".equals(channelRef.channel())) {
+        if (!service.isSupportedChannel(channelRef.channel())) {
             throw new ValidationException("channelRef.channel is unsupported");
         }
         if (requireOriginalRoute) {
@@ -111,6 +114,7 @@ public class PaymentController {
         }
         return value;
     }
+
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();

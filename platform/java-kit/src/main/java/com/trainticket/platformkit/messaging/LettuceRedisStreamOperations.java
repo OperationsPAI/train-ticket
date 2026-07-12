@@ -119,17 +119,17 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     @Override
     public void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {
         try {
-            var consumers = connection.sync().xinfoConsumers(stream, group);
-            for (var consumer : consumers) {
-                if (consumer.getName().equals(selfName)) {
+            List<Object> consumers = connection.sync().xinfoConsumers(stream, group);
+            for (Object consumer : consumers) {
+                ConsumerInfo info = ConsumerInfo.from(consumer);
+                if (info.name().equals(selfName)) {
                     continue;
                 }
-                if (consumer.getIdle() > maxIdleMillis) {
-                    long pending = consumer.getPending();
-                    connection.sync().xgroupDelconsumer(stream, Consumer.from(group, consumer.getName()));
+                if (info.idleMillis() > maxIdleMillis) {
+                    connection.sync().xgroupDelconsumer(stream, Consumer.from(group, info.name()));
                     LoggerFactory.getLogger(LettuceRedisStreamOperations.class)
                         .info("pruned dead consumer {} from {}/{} (idle={}ms, pending={})",
-                            consumer.getName(), stream, group, consumer.getIdle(), pending);
+                            info.name(), stream, group, info.idleMillis(), info.pending());
                 }
             }
         } catch (RuntimeException ignored) {
@@ -151,6 +151,52 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
                 "deadLetteredAt", metadata.deadLetteredAt()
             )
         );
+    }
+
+
+    private record ConsumerInfo(String name, long idleMillis, long pending) {
+        private static ConsumerInfo from(Object value) {
+            if (value instanceof List<?> entries) {
+                return fromEntries(entries);
+            }
+            if (value instanceof Map<?, ?> fields) {
+                return new ConsumerInfo(
+                    text(fields.get("name")),
+                    number(fields.get("idle")),
+                    number(fields.get("pending"))
+                );
+            }
+            throw new IllegalStateException("unexpected Redis consumer info shape");
+        }
+
+        private static ConsumerInfo fromEntries(List<?> entries) {
+            String name = null;
+            long idleMillis = 0;
+            long pending = 0;
+            for (int index = 0; index + 1 < entries.size(); index += 2) {
+                String key = text(entries.get(index));
+                Object rawValue = entries.get(index + 1);
+                if ("name".equals(key)) {
+                    name = text(rawValue);
+                } else if ("idle".equals(key)) {
+                    idleMillis = number(rawValue);
+                } else if ("pending".equals(key)) {
+                    pending = number(rawValue);
+                }
+            }
+            return new ConsumerInfo(Objects.requireNonNull(name, "consumer name is required"), idleMillis, pending);
+        }
+
+        private static String text(Object value) {
+            return Objects.requireNonNull(value, "Redis consumer field is required").toString();
+        }
+
+        private static long number(Object value) {
+            if (value instanceof Number number) {
+                return number.longValue();
+            }
+            return Long.parseLong(text(value));
+        }
     }
 
     private static StreamEntry toEntry(io.lettuce.core.StreamMessage<String, String> message) {
