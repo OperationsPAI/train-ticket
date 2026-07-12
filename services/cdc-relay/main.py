@@ -1,7 +1,13 @@
-"""CDC Outbox Relay — replaces polling-based outbox relay with PG logical replication.
+"""CDC Outbox Relay — event-driven via PG LISTEN/NOTIFY.
 
-Subscribes to PG WAL via logical replication, captures INSERT on outbox tables,
-and publishes events to Redis streams instantly (<10ms latency vs 600ms polling).
+Uses PG native LISTEN/NOTIFY for instant event delivery (sub-ms latency)
+instead of polling or WAL-based logical replication. No wal_level=logical
+required, no replication slots, no disk space issues.
+
+Architecture:
+  1. SQL trigger on outbox INSERT → pg_notify('outbox_new', seq::text)
+  2. This relay: LISTEN outbox_new → SELECT → XADD Redis → UPDATE published_at
+  3. Fallback: 500ms poll catches anything missed by NOTIFY
 """
 
 import asyncio
@@ -13,7 +19,7 @@ import time
 from dataclasses import dataclass
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg import sql
 import redis.asyncio as aioredis
 
 
@@ -26,7 +32,6 @@ class PgSource:
 
 
 def parse_pg_instances(config: str) -> list[PgSource]:
-    """Parse PG_INSTANCES env: 'name:host:port:db1,db2;name2:host2:port2:db3'"""
     sources = []
     for part in config.split(";"):
         fields = part.strip().split(":")
@@ -36,105 +41,103 @@ def parse_pg_instances(config: str) -> list[PgSource]:
     return sources
 
 
-async def setup_publication(conninfo: str, db: str):
-    """Create publication and replication slot for a database's outbox table."""
-    dsn = f"{conninfo}/{db}"
-    async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
-        # Create publication for outbox table
-        await conn.execute(f"""
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'outbox_cdc') THEN
-                    CREATE PUBLICATION outbox_cdc FOR TABLE outbox;
-                END IF;
-            END $$;
-        """)
-        # Create replication slot if not exists
-        try:
-            await conn.execute(
-                "SELECT pg_create_logical_replication_slot('outbox_cdc_slot', 'pgoutput')"
-            )
-        except psycopg.errors.DuplicateObject:
-            pass
+TRIGGER_SQL = """
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'outbox_notify') THEN
+        CREATE FUNCTION outbox_notify() RETURNS trigger AS $fn$
+        BEGIN
+            PERFORM pg_notify('outbox_new', NEW.seq::text);
+            RETURN NEW;
+        END;
+        $fn$ LANGUAGE plpgsql;
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'outbox_after_insert') THEN
+        CREATE TRIGGER outbox_after_insert
+            AFTER INSERT ON outbox
+            FOR EACH ROW EXECUTE FUNCTION outbox_notify();
+    END IF;
+END $$;
+"""
+
+
+async def setup_trigger(conninfo: str, db: str) -> bool:
+    """Install the NOTIFY trigger on the outbox table."""
+    try:
+        async with await psycopg.AsyncConnection.connect(
+            f"{conninfo} dbname={db}", autocommit=True
+        ) as conn:
+            await conn.execute("SELECT 1 FROM outbox LIMIT 0")
+            await conn.execute(TRIGGER_SQL)
+            return True
+    except Exception as e:
+        if "does not exist" in str(e):
+            return False  # no outbox table in this DB
+        print(f"[{db}] trigger setup warning: {e}", flush=True)
+        return False
 
 
 async def cdc_worker(source: PgSource, db: str, redis_client: aioredis.Redis, pg_user: str, pg_password: str):
-    """Subscribe to one database's outbox WAL and relay to Redis."""
-    conninfo = f"host={source.host} port={source.port} user={pg_user} password={pg_password} dbname={db}"
-    slot_name = f"cdc_{db.replace('-', '_')}"
-    pub_name = "outbox_cdc"
+    """Event-driven outbox relay using LISTEN/NOTIFY + fallback poll."""
+    conninfo = f"host={source.host} port={source.port} user={pg_user} password={pg_password}"
 
-    # Setup publication
-    try:
-        async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
-            await conn.execute(f"""
-                DO $$ BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = '{pub_name}') THEN
-                        CREATE PUBLICATION {pub_name} FOR TABLE outbox;
-                    END IF;
-                END $$;
-            """)
-            try:
-                await conn.execute(
-                    f"SELECT pg_create_logical_replication_slot('{slot_name}', 'pgoutput')"
-                )
-            except psycopg.errors.DuplicateObject:
-                pass
-    except Exception as e:
-        print(f"[{db}] setup failed: {e}", flush=True)
-        return
+    has_outbox = await setup_trigger(conninfo, db)
+    if not has_outbox:
+        return  # silently skip DBs without outbox
 
-    print(f"[{db}] CDC worker starting (slot={slot_name})", flush=True)
+    print(f"[{db}] CDC worker ready (LISTEN/NOTIFY + 500ms fallback)", flush=True)
     published = 0
 
     while True:
         try:
-            async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
-                # Poll changes from replication slot
+            async with await psycopg.AsyncConnection.connect(
+                f"{conninfo} dbname={db}", autocommit=True
+            ) as conn:
+                await conn.execute("LISTEN outbox_new")
+
                 while True:
-                    rows = await conn.execute(
-                        f"SELECT * FROM pg_logical_slot_get_changes('{slot_name}', NULL, 100, 'proto_version', '1', 'publication_names', '{pub_name}')"
-                    )
-                    changes = await rows.fetchall()
+                    # Process any pending outbox rows
+                    count = await relay_batch(conn, redis_client, db)
+                    published += count
+                    if count > 0 and published % 500 == 0:
+                        print(f"[{db}] published {published} events", flush=True)
 
-                    if not changes:
-                        await asyncio.sleep(0.01)  # 10ms — much faster than 50ms polling
-                        continue
-
-                    for change in changes:
-                        data = change[2] if len(change) > 2 else ""
-                        # Parse the change data to extract outbox rows
-                        # pgoutput format sends relation + tuple data
-                        # For simplicity, we'll query unpublished outbox rows directly
-                        pass
-
-                    # Faster approach: just query unpublished rows with very short interval
-                    result = await conn.execute(
-                        "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100"
-                    )
-                    rows = await result.fetchall()
-                    if rows:
-                        pipe = redis_client.pipeline()
-                        seqs = []
-                        for row in rows:
-                            seq, stream, envelope = row[0], row[1], row[2]
-                            envelope_str = json.dumps(envelope) if isinstance(envelope, dict) else str(envelope)
-                            pipe.xadd(stream, {"envelope": envelope_str}, maxlen=100000, approximate=True)
-                            seqs.append(seq)
-                        await pipe.execute()
-
-                        # Mark published
-                        if seqs:
-                            placeholders = ",".join(str(s) for s in seqs)
-                            await conn.execute(f"UPDATE outbox SET published_at = now() WHERE seq IN ({placeholders})")
-                            published += len(seqs)
-                            if published % 100 == 0:
-                                print(f"[{db}] published {published} events", flush=True)
-
-                    await asyncio.sleep(0.01)  # 10ms cycle
+                    # Wait for NOTIFY or fallback timeout (500ms)
+                    try:
+                        async for notify in conn.notifies(timeout=0.5):
+                            # Got notification — break to process immediately
+                            break
+                    except TimeoutError:
+                        pass  # fallback poll
 
         except Exception as e:
             print(f"[{db}] error: {e}, reconnecting in 1s", flush=True)
             await asyncio.sleep(1)
+
+
+async def relay_batch(conn, redis_client: aioredis.Redis, db: str) -> int:
+    """Relay unpublished outbox rows to Redis. Returns count published."""
+    result = await conn.execute(
+        "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 200"
+    )
+    rows = await result.fetchall()
+    if not rows:
+        return 0
+
+    pipe = redis_client.pipeline()
+    seqs = []
+    for row in rows:
+        seq, stream, envelope = row[0], row[1], row[2]
+        envelope_str = json.dumps(envelope) if isinstance(envelope, dict) else str(envelope)
+        pipe.xadd(stream, {"envelope": envelope_str}, maxlen=100000, approximate=True)
+        seqs.append(seq)
+    await pipe.execute()
+
+    placeholders = ",".join(str(s) for s in seqs)
+    await conn.execute(f"UPDATE outbox SET published_at = now() WHERE seq IN ({placeholders})")
+    return len(seqs)
 
 
 async def main():
@@ -150,15 +153,13 @@ async def main():
     sources = parse_pg_instances(pg_instances_config)
     redis_client = aioredis.from_url(redis_url, decode_responses=True)
 
-    print(f"CDC relay starting: {sum(len(s.databases) for s in sources)} databases across {len(sources)} PG instances", flush=True)
+    print(f"CDC relay starting (LISTEN/NOTIFY mode): {sum(len(s.databases) for s in sources)} databases", flush=True)
 
-    # Launch a worker per database
     tasks = []
     for source in sources:
         for db in source.databases:
             tasks.append(asyncio.create_task(cdc_worker(source, db, redis_client, pg_user, pg_password)))
 
-    # Graceful shutdown
     loop = asyncio.get_event_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
