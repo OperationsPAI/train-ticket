@@ -1,8 +1,8 @@
 # Current Project Status
 
-Last updated: 2026-07-08
+Last updated: 2026-07-12
 
-## Status: Phase 1 complete; Phase 2 hardening complete (persistence, channels, DLQ audit, observability, tracing, coverage)
+## Status: Phase 3 domain enrichment complete (22 services enriched with real-world business logic)
 
 The greenfield DDD rewrite is a working, end-to-end-verified system. All
 Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
@@ -68,6 +68,33 @@ boundary, FAILED timeout closure added to the contract during the gate), plus
 the trip-planning OCC fix. e2e 15/16 cover both; the restart certification now
 spans 26 services and suite 01-16 (latest run: 296/0). All ADR-0002 skeletons are
 now activated; `services/` contains no dormant skeletons.
+
+## Phase 3 — Domain Enrichment (completed 2026-07-12)
+
+22 domain-enrichment tasks (REQ-300..317 + REQ-150/151/152/232) delivered via
+AgentM WorkGraph automation in a single session. Each existing service received
+real-world business logic while maintaining backward API compatibility:
+
+- **fare-pricing**: dynamic pricing (advance/peak/class/distance/capacity bands)
+- **risk-compliance**: fraud scoring, velocity rules, scalper pattern detection
+- **capacity-availability**: overbooking policy, class segmentation, snapshots
+- **post-sales**: time-based refund/change policy engine with waterfall
+- **seat-assignment**: preference scoring, hold lifecycle, class pools
+- **waitlist**: auto-promotion saga with downstream chain integration
+- **identity-verification**: multi-document, blacklist, duplicate-ticket
+- **payment**: multi-channel routing with weighted fallback
+- **transfer-management**: MCT enforcement, auto-rebooking
+- **loyalty-membership**: points earning/redemption, tier system
+- **disruption-recovery**: auto-rerouting, compensation policy
+- **notification**: multi-channel delivery with fallback and rate limiting
+- **service-plan**: seasonal schedules, delay propagation
+- **travel-insurance**: multi-product catalog, claims processing
+- **corporate-travel**: approval workflow, budget control
+- **customer-service**: ticket escalation, SLA tracking
+- **reporting**: real-time metrics, anomaly detection
+- **finance-settlement**: daily reconciliation, supplier settlement
+
+Total WorkGraph tasks: done/=187. PRs #307..#329 merged.
 
 ## Verification baseline
 
