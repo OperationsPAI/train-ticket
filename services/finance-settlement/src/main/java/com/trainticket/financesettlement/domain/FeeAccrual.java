@@ -15,16 +15,18 @@ public final class FeeAccrual {
     private final Money supplierServiceFee;
     private final Money retainedCancellationFee;
     private final TaxCalculation taxCalculation;
+    private final String sourceEventId;
     private final List<FinanceSettlementEvent> domainEvents;
     private long version;
 
-    private FeeAccrual(String feeAccrualId, String orderId, Money platformServiceFee, Money supplierServiceFee, Money retainedCancellationFee, TaxCalculation taxCalculation) {
+    private FeeAccrual(String feeAccrualId, String orderId, Money platformServiceFee, Money supplierServiceFee, Money retainedCancellationFee, TaxCalculation taxCalculation, String sourceEventId) {
         this.feeAccrualId = requireText(feeAccrualId, "feeAccrualId");
         this.orderId = requireText(orderId, "orderId");
         this.platformServiceFee = Objects.requireNonNull(platformServiceFee, "platformServiceFee is required");
         this.supplierServiceFee = Objects.requireNonNull(supplierServiceFee, "supplierServiceFee is required");
         this.retainedCancellationFee = Objects.requireNonNull(retainedCancellationFee, "retainedCancellationFee is required");
         this.taxCalculation = Objects.requireNonNull(taxCalculation, "taxCalculation is required");
+        this.sourceEventId = requireText(sourceEventId, "sourceEventId");
         this.domainEvents = new ArrayList<>();
     }
 
@@ -34,12 +36,13 @@ public final class FeeAccrual {
         Money supplierServiceFee,
         Money retainedCancellationFee,
         TaxCalculation taxCalculation,
+        String sourceEventId,
         Instant now,
         String sourceCommandId,
         String causationId,
         String correlationId
     ) {
-        FeeAccrual accrual = new FeeAccrual("fee-" + UuidV7.generate(), orderId, platformServiceFee, supplierServiceFee, retainedCancellationFee, taxCalculation);
+        FeeAccrual accrual = new FeeAccrual("fee-" + UuidV7.generate(), orderId, platformServiceFee, supplierServiceFee, retainedCancellationFee, taxCalculation, sourceEventId);
         accrual.domainEvents.add(new FeeAccrued(
             accrual.feeAccrualId,
             orderId,
@@ -53,7 +56,11 @@ public final class FeeAccrual {
     }
 
     public static FeeAccrual rehydrate(String feeAccrualId, String orderId, Money platformServiceFee, Money supplierServiceFee, Money retainedCancellationFee, TaxCalculation taxCalculation) {
-        return new FeeAccrual(feeAccrualId, orderId, platformServiceFee, supplierServiceFee, retainedCancellationFee, taxCalculation);
+        return rehydrate(feeAccrualId, orderId, platformServiceFee, supplierServiceFee, retainedCancellationFee, taxCalculation, feeAccrualId);
+    }
+
+    public static FeeAccrual rehydrate(String feeAccrualId, String orderId, Money platformServiceFee, Money supplierServiceFee, Money retainedCancellationFee, TaxCalculation taxCalculation, String sourceEventId) {
+        return new FeeAccrual(feeAccrualId, orderId, platformServiceFee, supplierServiceFee, retainedCancellationFee, taxCalculation, sourceEventId);
     }
 
     public FeeAccrual withVersion(long version) {
@@ -68,6 +75,7 @@ public final class FeeAccrual {
     public Money supplierServiceFee() { return supplierServiceFee; }
     public Money retainedCancellationFee() { return retainedCancellationFee; }
     public TaxCalculation taxCalculation() { return taxCalculation; }
+    public String sourceEventId() { return sourceEventId; }
     public List<FinanceSettlementEvent> domainEvents() { return Collections.unmodifiableList(domainEvents); }
     public long version() { return version; }
 

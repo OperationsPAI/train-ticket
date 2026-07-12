@@ -16,6 +16,10 @@ public interface FinanceSettlementProjectionRepository {
 
     default List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(LocalDate settlementDate) { return List.of(); }
 
+    default void saveChannelStatementLine(ChannelStatementLineProjection line) {}
+
+    default List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(LocalDate settlementDate) { return List.of(); }
+
     default List<ChannelStatementProjection> findChannelStatementsForSettlementDate(LocalDate settlementDate) { return List.of(); }
 
     void saveBenefitCostEntry(BenefitCostEntry entry);

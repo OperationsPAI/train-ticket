@@ -1,11 +1,13 @@
 package com.trainticket.financesettlement.infrastructure.persistence;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.trainticket.financesettlement.application.FeeAccrualRepository;
 import com.trainticket.financesettlement.application.InvoiceRepository;
 import com.trainticket.financesettlement.application.ReconciliationBatchRepository;
 import com.trainticket.financesettlement.application.SupplierSettlementRepository;
 import com.trainticket.financesettlement.application.ReconciliationCaseRepository;
 import com.trainticket.financesettlement.application.RevenueRecognitionRepository;
+import com.trainticket.financesettlement.domain.FeeAccrual;
 import com.trainticket.financesettlement.domain.Invoice;
 import com.trainticket.financesettlement.domain.ReconciliationBatch;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
@@ -13,6 +15,7 @@ import com.trainticket.financesettlement.domain.RevenueRecognition;
 import com.trainticket.financesettlement.domain.SupplierSettlement;
 import com.trainticket.platformkit.persistence.SnapshotRepository;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import javax.sql.DataSource;
@@ -55,6 +58,23 @@ final class PostgresFinanceRepositories {
                 "SELECT id FROM revenue_recognition_snapshots WHERE data->>'orderId' = ? ORDER BY (data->>'recognizedAt')::timestamptz",
                 (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
                 orderId
+            );
+        }
+
+        @Override
+        public List<RevenueRecognition> findBySupplierAndPeriod(String supplierId, LocalDate startDate, LocalDate endDate) {
+            return jdbc.query(
+                """
+                    SELECT id FROM revenue_recognition_snapshots
+                    WHERE data->>'orderItemId' = ?
+                      AND (data->>'recognizedAt')::timestamptz >= ?::timestamptz
+                      AND (data->>'recognizedAt')::timestamptz < ?::timestamptz
+                    ORDER BY (data->>'recognizedAt')::timestamptz, id
+                    """,
+                (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+                supplierId,
+                startDate.atStartOfDay().toInstant(ZoneOffset.UTC).toString(),
+                endDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toString()
             );
         }
 
@@ -198,6 +218,41 @@ final class PostgresFinanceRepositories {
         public void save(SupplierSettlement settlement) {
             long newVersion = snapshots.save(settlement.supplierSettlementId(), settlement.version(), JacksonFinanceSettlementJson.supplierSnapshot(settlement, mapper));
             settlement.withVersion(newVersion);
+        }
+    }
+
+    @Repository
+    @Primary
+    @ConditionalOnBean(DataSource.class)
+    static class FeeAccruals implements FeeAccrualRepository {
+        private final ObjectMapper mapper;
+        private final SnapshotRepository<JacksonFinanceSettlementJson.FeeAccrualSnapshot> snapshots;
+        private final JdbcTemplate jdbc;
+
+        FeeAccruals(DataSource ds, ObjectMapper mapper) {
+            this.mapper = mapper;
+            this.snapshots = new SnapshotRepository<>(ds, mapper, "fee_accrual_snapshots", JacksonFinanceSettlementJson.FeeAccrualSnapshot.class);
+            this.jdbc = new JdbcTemplate(ds);
+        }
+
+        @Override
+        public Optional<FeeAccrual> findById(String id) {
+            return snapshots.get(id).map(snapshot -> JacksonFinanceSettlementJson.toFee(snapshot.data(), mapper).withVersion(snapshot.version()));
+        }
+
+        @Override
+        public List<FeeAccrual> findByOrderId(String orderId) {
+            return jdbc.query(
+                "SELECT id FROM fee_accrual_snapshots WHERE data->>'orderId' = ? ORDER BY id",
+                (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+                orderId
+            );
+        }
+
+        @Override
+        public void save(FeeAccrual accrual) {
+            long newVersion = snapshots.save(accrual.feeAccrualId(), accrual.version(), JacksonFinanceSettlementJson.feeSnapshot(accrual, mapper));
+            accrual.withVersion(newVersion);
         }
     }
 
