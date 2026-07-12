@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
-from typing import Mapping, Self
+from statistics import median
+from typing import Any, Mapping, Self
 
 
 class ReportingError(ValueError):
@@ -454,6 +455,458 @@ class ConsumedEventLog:
     def has_consumed(self, event_id: str) -> bool:
         return any(r.event_id == event_id for r in self.records)
 
+
+# ---------------------------------------------------------------------------
+# Real-time metrics, revenue analytics, and anomaly detection
+# ---------------------------------------------------------------------------
+
+
+class AnomalySeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AnomalyRuleId(str, Enum):
+    REVENUE_DROP = "REVENUE_DROP"
+    ORDER_SPIKE = "ORDER_SPIKE"
+    ERROR_RATE_SPIKE = "ERROR_RATE_SPIKE"
+    CAPACITY_EXHAUSTION = "CAPACITY_EXHAUSTION"
+    REFUND_SURGE = "REFUND_SURGE"
+
+
+_ORDER_EVENT_TYPES = {
+    "JourneyOrderCreated",
+    "JourneyOrderConfirmed",
+    "OrderCreated",
+    "OrderConfirmed",
+    "BookingConfirmed",
+}
+_SEARCH_EVENT_TYPES = {"TripSearched", "SearchPerformed", "OfferSearchRequested"}
+_PAYMENT_CAPTURED_EVENT_TYPES = {"PaymentCaptured", "RevenueRecognized", "PaymentSucceeded"}
+_PAYMENT_FAILED_EVENT_TYPES = {"PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed"}
+_REFUND_EVENT_TYPES = {"RefundSettled", "RefundCompleted", "RefundIssued"}
+_CAPACITY_EVENT_TYPES = {"CapacityUpdated", "SeatInventoryUpdated", "CapacityExhausted"}
+_RISK_BLOCK_EVENT_TYPES = {"ScalperBlocked", "RiskBookingBlocked"}
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalEvent:
+    """Normalized upstream event used by Reporting projections.
+
+    Reporting consumes events from every context. The application layer maps the
+    heterogeneous envelopes into this domain shape so aggregation rules stay in
+    the domain layer.
+    """
+
+    event_id: str
+    event_type: str
+    occurred_at: datetime
+    route_id: str | None = None
+    service_date: date | None = None
+    seat_class: str | None = None
+    amount: Money | None = None
+    channel: str | None = None
+    passenger_type: str | None = None
+    capacity: int | None = None
+    confirmed: int | None = None
+    booking_latency_ms: int | None = None
+    payment_failed: bool = False
+    refunded: bool = False
+    scalper_blocked: bool = False
+    distance_km: Decimal | None = None
+    ancillary_attached: bool = False
+    insurance_attached: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.event_id.strip():
+            raise ReportingError("operational event_id is required")
+        if not self.event_type.strip():
+            raise ReportingError("operational event_type is required")
+        if self.capacity is not None and self.capacity < 0:
+            raise ReportingError("capacity cannot be negative")
+        if self.confirmed is not None and self.confirmed < 0:
+            raise ReportingError("confirmed count cannot be negative")
+        if self.booking_latency_ms is not None and self.booking_latency_ms < 0:
+            raise ReportingError("booking latency cannot be negative")
+        if self.distance_km is not None and self.distance_km < 0:
+            raise ReportingError("distance_km cannot be negative")
+
+    @property
+    def is_order(self) -> bool:
+        return self.event_type in _ORDER_EVENT_TYPES
+
+    @property
+    def is_search(self) -> bool:
+        return self.event_type in _SEARCH_EVENT_TYPES
+
+    @property
+    def is_payment_captured(self) -> bool:
+        return self.event_type in _PAYMENT_CAPTURED_EVENT_TYPES and self.amount is not None
+
+    @property
+    def is_payment_failed(self) -> bool:
+        return self.payment_failed or self.event_type in _PAYMENT_FAILED_EVENT_TYPES
+
+    @property
+    def is_refund(self) -> bool:
+        return self.refunded or self.event_type in _REFUND_EVENT_TYPES
+
+    @property
+    def is_capacity_update(self) -> bool:
+        return self.event_type in _CAPACITY_EVENT_TYPES or self.capacity is not None or self.confirmed is not None
+
+    @property
+    def is_scalper_block(self) -> bool:
+        return self.scalper_blocked or self.event_type in _RISK_BLOCK_EVENT_TYPES
+
+
+@dataclass(frozen=True, slots=True)
+class RouteMetrics:
+    route_id: str
+    service_date: date
+    route_revenue: Money
+    route_demand: int
+    bookings: int
+    searches: int
+    confirmed: int
+    capacity: int
+    seat_utilization_by_class: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.route_id.strip():
+            raise ReportingError("route_id is required")
+        if self.route_demand < 0 or self.bookings < 0 or self.searches < 0:
+            raise ReportingError("route demand counters cannot be negative")
+        if self.confirmed < 0 or self.capacity < 0:
+            raise ReportingError("route capacity counters cannot be negative")
+        for seat_class, utilization in self.seat_utilization_by_class.items():
+            if not seat_class.strip():
+                raise ReportingError("seat class is required")
+            if utilization < 0:
+                raise ReportingError("seat utilization cannot be negative")
+
+    @property
+    def fill_rate(self) -> float:
+        if self.capacity == 0:
+            return 0.0
+        return min(1.0, self.confirmed / self.capacity)
+
+
+@dataclass(frozen=True, slots=True)
+class MetricSnapshot:
+    generated_at: datetime
+    orders_per_second: int
+    revenue_per_hour: Money
+    fill_rate_by_route: Mapping[str, float]
+    avg_booking_latency: Mapping[str, float]
+    refund_rate: float
+    scalper_block_rate: float
+    route_metrics: tuple[RouteMetrics, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RevenueItem:
+    dimension: str
+    value: str
+    revenue: Money
+    count: int
+    yield_per_km: Decimal = Decimal("0.00")
+    ancillary_attach_rate: float = 0.0
+    insurance_attach_rate: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.dimension.strip():
+            raise ReportingError("revenue item dimension is required")
+        if not self.value.strip():
+            raise ReportingError("revenue item value is required")
+        if self.count < 0:
+            raise ReportingError("revenue item count cannot be negative")
+        if self.yield_per_km < 0:
+            raise ReportingError("yield_per_km cannot be negative")
+        if not 0 <= self.ancillary_attach_rate <= 1:
+            raise ReportingError("ancillary_attach_rate must be between 0 and 1")
+        if not 0 <= self.insurance_attach_rate <= 1:
+            raise ReportingError("insurance_attach_rate must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class RevenueReport:
+    generated_at: datetime
+    group_by: str
+    items: tuple[RevenueItem, ...]
+    total_revenue: Money
+
+
+@dataclass(frozen=True, slots=True)
+class AnomalyRule:
+    rule_id: AnomalyRuleId
+    threshold: Decimal
+    severity: AnomalySeverity
+    description: str
+    urgent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AnomalyDetected:
+    rule_id: str
+    current_value: Decimal
+    threshold: Decimal
+    severity: AnomalySeverity
+    detected_at: datetime
+    urgent: bool = False
+    metadata: EventMetadata | None = None
+
+    def __post_init__(self) -> None:
+        if not self.rule_id.strip():
+            raise ReportingError("anomaly rule_id is required")
+
+
+@dataclass(slots=True)
+class MetricAggregator:
+    """Production-realistic in-memory projection for real-time dashboards."""
+
+    currency: str = "USD"
+    events: list[OperationalEvent] = field(default_factory=list)
+
+    def record(self, event: OperationalEvent) -> None:
+        if event.amount is not None and event.amount.currency != self.currency:
+            raise ReportingError(f"metric aggregator currency mismatch: {event.amount.currency} != {self.currency}")
+        if any(existing.event_id == event.event_id for existing in self.events):
+            return
+        self.events.append(event)
+
+    def snapshot(self, at: datetime | None = None) -> MetricSnapshot:
+        now = at or datetime.now(UTC)
+        orders_60s = [event for event in self._since(now, timedelta(seconds=60)) if event.is_order]
+        revenue_1h = sum((event.amount.amount for event in self._since(now, timedelta(hours=1)) if event.is_payment_captured and event.amount is not None), Decimal("0.00"))
+        latencies = [event.booking_latency_ms for event in self.events if event.booking_latency_ms is not None]
+        refund_events = [event for event in self._since(now, timedelta(hours=24)) if event.is_refund]
+        order_events_24h = [event for event in self._since(now, timedelta(hours=24)) if event.is_order]
+        risk_events_1h = [event for event in self._since(now, timedelta(hours=1)) if event.is_scalper_block or event.is_order]
+        blocked_1h = [event for event in risk_events_1h if event.is_scalper_block]
+        routes = self.route_metrics(at=now)
+        return MetricSnapshot(
+            generated_at=now,
+            orders_per_second=len(orders_60s),
+            revenue_per_hour=Money(revenue_1h, self.currency),
+            fill_rate_by_route={route.route_id: route.fill_rate for route in routes},
+            avg_booking_latency=self._latency_percentiles(latencies),
+            refund_rate=self._rate(len(refund_events), len(order_events_24h)),
+            scalper_block_rate=self._rate(len(blocked_1h), len(risk_events_1h)),
+            route_metrics=routes,
+        )
+
+    def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
+        now = at or datetime.now(UTC)
+        grouped: dict[tuple[str, date], list[OperationalEvent]] = {}
+        for event in self.events:
+            if event.route_id is None:
+                continue
+            service_date = event.service_date or event.occurred_at.astimezone(UTC).date()
+            grouped.setdefault((event.route_id, service_date), []).append(event)
+        metrics: list[RouteMetrics] = []
+        for (route_id, service_date), events in grouped.items():
+            revenue = sum((event.amount.amount for event in events if event.is_payment_captured and event.amount is not None), Decimal("0.00"))
+            searches = sum(1 for event in events if event.is_search)
+            bookings = sum(1 for event in events if event.is_order)
+            confirmed = self._latest_int(events, "confirmed") or bookings
+            capacity = self._latest_int(events, "capacity") or 0
+            by_class = self._seat_utilization(events)
+            metrics.append(
+                RouteMetrics(
+                    route_id=route_id,
+                    service_date=service_date,
+                    route_revenue=Money(revenue, self.currency),
+                    route_demand=searches + bookings,
+                    bookings=bookings,
+                    searches=searches,
+                    confirmed=confirmed,
+                    capacity=capacity,
+                    seat_utilization_by_class=by_class,
+                )
+            )
+        metrics.sort(key=lambda item: (item.service_date, item.route_id))
+        return tuple(metrics)
+
+    def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
+        if limit < 1:
+            raise ReportingError("revenue report limit must be positive")
+        now = at or datetime.now(UTC)
+        dimensions = {
+            "route": lambda event: event.route_id,
+            "seat_class": lambda event: event.seat_class,
+            "channel": lambda event: event.channel,
+            "passenger_type": lambda event: event.passenger_type,
+            "time_period": lambda event: event.occurred_at.astimezone(UTC).strftime("%Y-%m-%dT%H:00:00Z"),
+        }
+        if group_by not in dimensions:
+            raise ReportingError("unsupported revenue report dimension")
+        grouped: dict[str, list[OperationalEvent]] = {}
+        for event in self.events:
+            if not event.is_payment_captured or event.amount is None:
+                continue
+            value = dimensions[group_by](event) or "unknown"
+            grouped.setdefault(value, []).append(event)
+        items = tuple(
+            sorted(
+                (self._revenue_item(group_by, value, events) for value, events in grouped.items()),
+                key=lambda item: item.revenue.amount,
+                reverse=True,
+            )[:limit]
+        )
+        total = sum((item.revenue.amount for item in items), Decimal("0.00"))
+        return RevenueReport(now, group_by, items, Money(total, self.currency))
+
+    def _since(self, now: datetime, window: timedelta) -> list[OperationalEvent]:
+        start = now - window
+        return [event for event in self.events if start <= event.occurred_at <= now]
+
+    @staticmethod
+    def _rate(numerator: int, denominator: int) -> float:
+        if denominator == 0:
+            return 0.0
+        return numerator / denominator
+
+    @staticmethod
+    def _latency_percentiles(values: list[int]) -> dict[str, float]:
+        if not values:
+            return {"p50": 0.0, "p95": 0.0, "p99": 0.0}
+        ordered = sorted(values)
+
+        def percentile(percent: float) -> float:
+            index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * percent))))
+            return float(ordered[index])
+
+        return {"p50": float(median(ordered)), "p95": percentile(0.95), "p99": percentile(0.99)}
+
+    @staticmethod
+    def _latest_int(events: list[OperationalEvent], field_name: str) -> int | None:
+        for event in sorted(events, key=lambda item: item.occurred_at, reverse=True):
+            value = getattr(event, field_name)
+            if value is not None:
+                return int(value)
+        return None
+
+    @staticmethod
+    def _seat_utilization(events: list[OperationalEvent]) -> dict[str, float]:
+        by_class: dict[str, dict[str, int]] = {}
+        for event in events:
+            if event.seat_class is None:
+                continue
+            bucket = by_class.setdefault(event.seat_class, {"confirmed": 0, "capacity": 0})
+            if event.is_order:
+                bucket["confirmed"] += 1
+            if event.capacity is not None:
+                bucket["capacity"] = event.capacity
+            if event.confirmed is not None:
+                bucket["confirmed"] = event.confirmed
+        return {
+            seat_class: (0.0 if values["capacity"] == 0 else min(1.0, values["confirmed"] / values["capacity"]))
+            for seat_class, values in by_class.items()
+        }
+
+    def _revenue_item(self, dimension: str, value: str, events: list[OperationalEvent]) -> RevenueItem:
+        revenue = sum((event.amount.amount for event in events if event.amount is not None), Decimal("0.00"))
+        distance = sum((event.distance_km or Decimal("0")) for event in events)
+        yield_per_km = Decimal("0.00") if distance == 0 else (revenue / distance).quantize(Decimal("0.01"))
+        return RevenueItem(
+            dimension=dimension,
+            value=value,
+            revenue=Money(revenue, self.currency),
+            count=len(events),
+            yield_per_km=yield_per_km,
+            ancillary_attach_rate=self._rate(sum(1 for event in events if event.ancillary_attached), len(events)),
+            insurance_attach_rate=self._rate(sum(1 for event in events if event.insurance_attached), len(events)),
+        )
+
+
+@dataclass(slots=True)
+class AnomalyDetector:
+    rules: tuple[AnomalyRule, ...] = (
+        AnomalyRule(AnomalyRuleId.REVENUE_DROP, Decimal("0.50"), AnomalySeverity.CRITICAL, "Revenue is below 50% of same hour yesterday", True),
+        AnomalyRule(AnomalyRuleId.ORDER_SPIKE, Decimal("3.00"), AnomalySeverity.WARNING, "Orders exceed 3x rolling average"),
+        AnomalyRule(AnomalyRuleId.ERROR_RATE_SPIKE, Decimal("0.10"), AnomalySeverity.CRITICAL, "Payment failures exceed 10% in five minutes", True),
+        AnomalyRule(AnomalyRuleId.CAPACITY_EXHAUSTION, Decimal("5"), AnomalySeverity.WARNING, "More than five routes are at 100% capacity"),
+        AnomalyRule(AnomalyRuleId.REFUND_SURGE, Decimal("0.20"), AnomalySeverity.WARNING, "Refunds exceed 20% in one hour"),
+    )
+    active: dict[str, AnomalyDetected] = field(default_factory=dict)
+
+    def evaluate(self, aggregator: MetricAggregator, at: datetime | None = None) -> tuple[AnomalyDetected, ...]:
+        now = at or datetime.now(UTC)
+        detected: list[AnomalyDetected] = []
+        checks = (
+            self._revenue_drop(aggregator, now),
+            self._order_spike(aggregator, now),
+            self._error_rate_spike(aggregator, now),
+            self._capacity_exhaustion(aggregator, now),
+            self._refund_surge(aggregator, now),
+        )
+        triggered_rule_ids: set[str] = set()
+        for anomaly in checks:
+            if anomaly is None:
+                continue
+            triggered_rule_ids.add(anomaly.rule_id)
+            previous = self.active.get(anomaly.rule_id)
+            self.active[anomaly.rule_id] = anomaly
+            if previous is None or previous.current_value != anomaly.current_value:
+                detected.append(anomaly)
+        for rule_id in set(self.active) - triggered_rule_ids:
+            del self.active[rule_id]
+        return tuple(detected)
+
+    def list_active(self) -> tuple[AnomalyDetected, ...]:
+        return tuple(sorted(self.active.values(), key=lambda item: item.detected_at, reverse=True))
+
+    def _rule(self, rule_id: AnomalyRuleId) -> AnomalyRule:
+        return next(rule for rule in self.rules if rule.rule_id is rule_id)
+
+    def _anomaly(self, rule_id: AnomalyRuleId, current: Decimal, now: datetime) -> AnomalyDetected:
+        rule = self._rule(rule_id)
+        return AnomalyDetected(rule.rule_id.value, current, rule.threshold, rule.severity, now, rule.urgent)
+
+    def _revenue_drop(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:
+        current = sum((event.amount.amount for event in aggregator._since(now, timedelta(hours=1)) if event.is_payment_captured and event.amount), Decimal("0.00"))
+        yesterday_end = now - timedelta(days=1)
+        yesterday_start = yesterday_end - timedelta(hours=1)
+        yesterday = sum((event.amount.amount for event in aggregator.events if yesterday_start <= event.occurred_at <= yesterday_end and event.is_payment_captured and event.amount), Decimal("0.00"))
+        if yesterday > 0 and current < (yesterday * self._rule(AnomalyRuleId.REVENUE_DROP).threshold):
+            return self._anomaly(AnomalyRuleId.REVENUE_DROP, (current / yesterday).quantize(Decimal("0.01")), now)
+        return None
+
+    def _order_spike(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:
+        current = Decimal(sum(1 for event in aggregator._since(now, timedelta(minutes=1)) if event.is_order))
+        prior_start = now - timedelta(minutes=6)
+        prior_end = now - timedelta(minutes=1)
+        prior = sum(1 for event in aggregator.events if prior_start <= event.occurred_at < prior_end and event.is_order)
+        avg = Decimal(prior) / Decimal("5") if prior else Decimal("0")
+        if avg > 0 and current > avg * self._rule(AnomalyRuleId.ORDER_SPIKE).threshold:
+            return self._anomaly(AnomalyRuleId.ORDER_SPIKE, (current / avg).quantize(Decimal("0.01")), now)
+        return None
+
+    def _error_rate_spike(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:
+        recent = [event for event in aggregator._since(now, timedelta(minutes=5)) if event.is_payment_failed or event.event_type in _PAYMENT_CAPTURED_EVENT_TYPES]
+        failed = sum(1 for event in recent if event.is_payment_failed)
+        rate = Decimal(str(MetricAggregator._rate(failed, len(recent))))
+        if len(recent) > 0 and rate > self._rule(AnomalyRuleId.ERROR_RATE_SPIKE).threshold:
+            return self._anomaly(AnomalyRuleId.ERROR_RATE_SPIKE, rate.quantize(Decimal("0.01")), now)
+        return None
+
+    def _capacity_exhaustion(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:
+        exhausted = sum(1 for route in aggregator.route_metrics(now) if route.capacity > 0 and route.confirmed >= route.capacity)
+        threshold = self._rule(AnomalyRuleId.CAPACITY_EXHAUSTION).threshold
+        if Decimal(exhausted) > threshold:
+            return self._anomaly(AnomalyRuleId.CAPACITY_EXHAUSTION, Decimal(exhausted), now)
+        return None
+
+    def _refund_surge(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:
+        recent = aggregator._since(now, timedelta(hours=1))
+        refunds = sum(1 for event in recent if event.is_refund)
+        orders = sum(1 for event in recent if event.is_order)
+        rate = Decimal(str(MetricAggregator._rate(refunds, orders)))
+        if orders > 0 and rate > self._rule(AnomalyRuleId.REFUND_SURGE).threshold:
+            return self._anomaly(AnomalyRuleId.REFUND_SURGE, rate.quantize(Decimal("0.01")), now)
+        return None
 
 # ---------------------------------------------------------------------------
 # Domain commands
