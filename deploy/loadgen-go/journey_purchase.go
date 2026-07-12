@@ -70,8 +70,8 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	}
 	orderID := getString(order, "orderId")
 
-	// Risk gate
-	status := pollOrder(ctx, p, orderID, map[string]bool{"CONFIRMED": true}, true)
+	// Risk gate — quick check, don't wait for full saga completion
+	status := pollOrderQuick(ctx, p, orderID, 3)
 	if status != "" && containsBlock(status) {
 		review := NewWorkItem("risk")
 		review.Order = orderID
@@ -162,8 +162,16 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	entVal, _ := tick.GetResult("entitlement")
 	ent, _ := entVal.(string)
 
-	final := pollOrder(ctx, p, orderID, map[string]bool{"CONFIRMED": true}, false)
-	if final != "CONFIRMED" {
+	// After ticketing, check order status once — the saga may still be
+	// in INVOICING (async), so we accept any non-cancelled status.
+	code, orderData, _ := p.API.Request(ctx, "GET", "journey-order",
+		"/api/v1/journey-orders/"+url.PathEscape(orderID),
+		nil, nil, nil, "poll-order")
+	final := ""
+	if code == 200 {
+		final = getString(orderData, "status")
+	}
+	if final == "CANCELLED" || final == "FAILED" {
 		return "", &StepError{Step: "confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
 	}
 
@@ -277,6 +285,49 @@ func pollWaitlist(ctx context.Context, p *Providers, waitlistID string) string {
 		case <-ctx.Done():
 			return ""
 		case <-time.After(interval):
+		}
+	}
+	return ""
+}
+
+func pollOrderLong(ctx context.Context, p *Providers, orderID string, maxAttempts int, intervalSec int) string {
+	for i := 0; i < maxAttempts; i++ {
+		code, data, _ := p.API.Request(ctx, "GET", "journey-order",
+			"/api/v1/journey-orders/"+url.PathEscape(orderID),
+			nil, nil, nil, "poll-order")
+		if code == 200 {
+			status := getString(data, "status")
+			if status == "CONFIRMED" || status == "CONFIRMING" {
+				return status
+			}
+			if status == "CANCELLED" || status == "FAILED" {
+				return status
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(time.Duration(intervalSec) * time.Second):
+		}
+	}
+	return ""
+}
+
+func pollOrderQuick(ctx context.Context, p *Providers, orderID string, maxAttempts int) string {
+	for i := 0; i < maxAttempts; i++ {
+		code, data, _ := p.API.Request(ctx, "GET", "journey-order",
+			"/api/v1/journey-orders/"+url.PathEscape(orderID),
+			nil, nil, nil, "poll-order")
+		if code == 200 {
+			status := getString(data, "status")
+			if containsBlock(status) {
+				return status
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(time.Second):
 		}
 	}
 	return ""
