@@ -469,7 +469,7 @@ spec:
     spec:
       containers:
         - name: trip-planning
-          image: train-ticket/trip-planning:local
+          image: train-ticket/trip-planning-rs:local
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -487,19 +487,19 @@ spec:
               value: none
             - name: PORT
               value: "8080"
-            - name: SERVER_PORT
-              value: "8080"
             - name: REDIS_URL
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/trip_planning
+            - name: MIGRATIONS_DIR
+              value: /app/migrations
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 64Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: "2"
+              memory: 256Mi
           readinessProbe:
             httpGet:
               path: /readyz
