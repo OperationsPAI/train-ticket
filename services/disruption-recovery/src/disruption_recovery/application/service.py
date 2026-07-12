@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from contextlib import nullcontext, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import UUID
 from typing import Any, Mapping
@@ -13,15 +13,25 @@ from disruption_recovery.domain import (
     ActorRef,
     DomainError,
     DISRUPTION_TYPES,
+    AffectedBooking,
+    AlternativeRoute,
+    CompensationCalculator,
+    CompensationDeliveryMethod,
+    Disruption,
+    DisruptionClassifier,
     PreconditionFailed,
     Evidence,
     ExecutionTarget,
     Incident,
+    MassDisruptionProcessor,
     RecoveryCase,
     RecoveryCaseStatus,
     RecoveryOption,
     RecoveryOptionType,
+    ReroutingDecision,
+    SeatClass,
     build_option_set,
+    normalize_disruption_type,
     now_utc,
     require_text,
 )
@@ -226,6 +236,15 @@ class DisruptionRecoveryService:
         if callable(append):
             append(tuple(events))
 
+    def _append_declared_event(self, events: list[EventEnvelope], report: DisruptionReport, data: Mapping[str, Any], correlation_id: str, causation_id: str, at: datetime) -> Disruption:
+        normalized_type = normalize_disruption_type(report.disruptionType)
+        delay_minutes = _int_or_none(data.get("delayMinutes"))
+        severity = DisruptionClassifier.classify(normalized_type, delay_minutes)
+        estimated_resolution = _parse_datetime(data.get("estimatedResolution"))
+        disruption = Disruption(report.disruptionId, report.segmentRef or report.scheduledServiceRef or "unknown-segment", normalized_type, severity, at, estimated_resolution, len(report.affectedOrderIds), delay_minutes)
+        events.append(_envelope("DisruptionDeclared", report.disruptionId, 2, disruption.to_json(), correlation_id, causation_id, at))
+        return disruption
+
     def report_disruption(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
         at = now_utc()
         evidence = Evidence(**dict(data.get("evidence") or {}))
@@ -255,6 +274,7 @@ class DisruptionRecoveryService:
         self.store.save_incident(incident)
         report = DisruptionReport(disruption_id, disruption_type, scheduled, segment, service_date, evidence, affected, reported_by, at, incident.incidentId)
         events = [_envelope("DisruptionReported", disruption_id, 1, report.to_json() | {"reportedAt": rfc3339_utc(at)}, correlation_id, causation_id, at)]
+        disruption = self._append_declared_event(events, report, data, correlation_id, causation_id, at)
         if incident_opened:
             events.append(_envelope("IncidentOpened", incident.incidentId, incident.version + 1, incident.to_json() | {"disruptionId": disruption_id, "affectedOrderIds": list(affected)}, correlation_id, causation_id, at))
         cases: list[RecoveryCase] = []
@@ -285,9 +305,14 @@ class DisruptionRecoveryService:
                 events.append(self._completed_event(case, wait_option, correlation_id, causation_id, at))
             self.store.save_case(case)
             cases.append(case)
+        mass_recovery = self._process_mass_disruption(disruption, data, affected, correlation_id, causation_id, at)
+        events.extend(mass_recovery["events"])
         events.append(_envelope("ServiceAlertPublished", incident.incidentId, incident.version + 2, {"serviceAlertId": prefixed_uuid7("sal"), "incidentId": incident.incidentId, "disruptionType": disruption_type, "serviceDate": service_date, "audience": "AFFECTED_ORDERS", "affectedOrderIds": list(affected), "messageSummary": evidence.summary, "publishedAt": rfc3339_utc(at)} | ({"scheduledServiceRef": scheduled} if scheduled else {}) | ({"segmentRef": segment} if segment else {}), correlation_id, causation_id, at))
         self._append(events)
-        return {"disruption": report.to_json(), "incident": incident.to_json(), "recoveryCases": [case.to_json() for case in cases]}
+        response = {"disruption": report.to_json() | {"classification": disruption.to_json()}, "incident": incident.to_json(), "recoveryCases": [case.to_json() for case in cases]}
+        if mass_recovery["summary"] is not None:
+            response["massRecovery"] = mass_recovery["summary"]
+        return response
 
     def select_option(self, case_id: str, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
         at = now_utc()
@@ -365,6 +390,83 @@ class DisruptionRecoveryService:
             self.store.save_case(case)
             self._append([self._completed_event(case, option, envelope.correlationId, envelope.eventId, at)])
             return True
+
+    def _process_mass_disruption(self, disruption: Disruption, data: Mapping[str, Any], affected_order_ids: tuple[str, ...], correlation_id: str, causation_id: str, at: datetime) -> dict[str, Any]:
+        batch_requested = _bool_flag(data.get("processBatches")) or len(affected_order_ids) > MassDisruptionProcessor.BATCH_SIZE
+        if disruption.type not in {normalize_disruption_type("CANCELLATION"), normalize_disruption_type("FORCE_MAJEURE")} and disruption.severity.value != "SEVERE" and not batch_requested:
+            return {"events": [], "summary": None}
+        bookings = self._affected_bookings(data, affected_order_ids, disruption.segmentRef, at)
+        alternatives = self._alternative_routes(data)
+        processor = MassDisruptionProcessor()
+        batches, outcomes, progress = processor.process(bookings, alternatives, lambda: prefixed_uuid7("dbt"))
+        events: list[EventEnvelope] = [
+            _envelope("MassDisruptionDetected", disruption.disruptionId, 3, {"disruptionId": disruption.disruptionId, "affectedCount": len(bookings)}, correlation_id, causation_id, at),
+            _envelope("BatchProcessingStarted", disruption.disruptionId, 4, {"disruptionId": disruption.disruptionId, "batchCount": len(batches), "batchSize": MassDisruptionProcessor.BATCH_SIZE, "slaMinutes": 30, "startedAt": rfc3339_utc(at)}, correlation_id, causation_id, at),
+        ]
+        compensation_events: list[EventEnvelope] = []
+        outcomes_by_order = {outcome.orderId: outcome for outcome in outcomes}
+        calculator = CompensationCalculator()
+        for index, batch in enumerate(batches, start=1):
+            batch_outcomes = tuple(outcomes_by_order[booking.orderId] for booking in batch.bookings)
+            events.append(_envelope("AlternativesSearched", batch.batchId, 1, {"disruptionId": disruption.disruptionId, "batchId": batch.batchId, "searchedCount": len(batch.bookings), "alternativeCount": len(alternatives)}, correlation_id, causation_id, at))
+            for outcome in batch_outcomes:
+                payload = {"disruptionId": disruption.disruptionId, "batchId": batch.batchId} | outcome.to_json()
+                events.append(_envelope("RebookingDecided", f"{batch.batchId}:{outcome.orderId}", 1, payload, correlation_id, causation_id, at))
+                if outcome.decision is ReroutingDecision.AUTO_REBOOK and outcome.suggestion is not None:
+                    events.append(_envelope("PassengerRebooked", f"{disruption.disruptionId}:{outcome.orderId}", 1, {"disruptionId": disruption.disruptionId, "orderId": outcome.orderId, "newSegmentRef": outcome.suggestion.newSegmentRef, "score": round(outcome.suggestion.score, 2)}, correlation_id, causation_id, at))
+            events.append(_envelope("BatchProcessingCompleted", batch.batchId, 2, {"disruptionId": disruption.disruptionId, **batch.to_json(), "completedAt": rfc3339_utc(at), "batchNumber": index}, correlation_id, causation_id, at))
+            for booking in batch.bookings:
+                award = calculator.calculate(booking.ticketPriceMinorUnits, disruption.delayMinutes, disruption.type, booking.currency, _delivery_method(data))
+                if award.totalMinorUnits <= 0:
+                    continue
+                compensation_events.append(_envelope("CompensationIssued", f"{disruption.disruptionId}:{booking.orderId}", 1, {"disruptionId": disruption.disruptionId, "orderId": booking.orderId, "amount": award.to_json()["total"], "refund": award.to_json()["refund"], "compensation": award.to_json()["compensation"], "method": award.deliveryMethod.value, "issuedBy": rfc3339_utc(at + timedelta(days=7))}, correlation_id, causation_id, at))
+        events.extend(compensation_events)
+        events.append(_envelope("DisruptionResolved", disruption.disruptionId, 5, {"disruptionId": disruption.disruptionId, "totalProcessed": progress.processed, "progress": progress.to_json(), "resolvedAt": rfc3339_utc(at)}, correlation_id, causation_id, at))
+        return {"events": events, "summary": {"batches": [batch.to_json() for batch in batches], "outcomes": [outcome.to_json() for outcome in outcomes], "progress": progress.to_json()}}
+
+    def _affected_bookings(self, data: Mapping[str, Any], affected_order_ids: tuple[str, ...], segment_ref: str, fallback_departure: datetime) -> tuple[AffectedBooking, ...]:
+        raw_bookings = data.get("affectedBookings")
+        if isinstance(raw_bookings, list) and raw_bookings:
+            return tuple(self._booking_from_mapping(item, segment_ref, fallback_departure) for item in raw_bookings if isinstance(item, Mapping))
+        return tuple(
+            AffectedBooking(
+                orderId=order_id,
+                travelerId=order_id,
+                segmentRef=segment_ref,
+                originalDeparture=_parse_datetime(data.get("originalDeparture")) or fallback_departure,
+                seatClass=_seat_class(data.get("seatClass")),
+                ticketPriceMinorUnits=max(0, int(data.get("ticketPriceMinorUnits") or 0)),
+                currency=str(data.get("currency") or "CNY"),
+            )
+            for order_id in affected_order_ids
+        )
+
+    def _booking_from_mapping(self, item: Mapping[str, Any], segment_ref: str, fallback_departure: datetime) -> AffectedBooking:
+        price = item.get("ticketPriceMinorUnits")
+        if price is None and isinstance(item.get("ticketPrice"), Mapping):
+            price = dict(item.get("ticketPrice") or {}).get("minorUnits")
+        return AffectedBooking(
+            orderId=require_text(str(item.get("orderId") or ""), "affectedBookings.orderId"),
+            travelerId=str(item.get("travelerId") or item.get("orderId") or ""),
+            segmentRef=str(item.get("segmentRef") or segment_ref),
+            origin=str(item.get("origin") or "") or None,
+            destination=str(item.get("destination") or "") or None,
+            originalDeparture=_parse_datetime(item.get("originalDeparture")) or fallback_departure,
+            seatClass=_seat_class(item.get("seatClass")),
+            ticketPriceMinorUnits=max(0, int(price or 0)),
+            currency=str(item.get("currency") or dict(item.get("ticketPrice") or {}).get("currency") or "CNY"),
+        )
+
+    def _alternative_routes(self, data: Mapping[str, Any]) -> tuple[AlternativeRoute, ...]:
+        routes: list[AlternativeRoute] = []
+        for item in data.get("alternativeRoutes") or []:
+            if not isinstance(item, Mapping):
+                continue
+            departure = _parse_datetime(item.get("departureTime"))
+            if departure is None:
+                continue
+            routes.append(AlternativeRoute(str(item.get("segmentRef") or item.get("newSegmentRef") or ""), departure, _seat_class(item.get("seatClass")), max(0, int(item.get("transfers") or 0)), str(item.get("origin") or "") or None, str(item.get("destination") or "") or None))
+        return tuple(routes)
 
     def _with_refund_scope(self, option: RecoveryOption, refund_scope: Mapping[str, Any]) -> RecoveryOption:
         if option.optionType is not RecoveryOptionType.REFUND:
@@ -456,3 +558,36 @@ class DisruptionRecoveryService:
         response = self.downstream.reaccommodate_connection(connection_id, body, case.execution.idempotencyKey, correlation_id)
         replacement = dict(response.get("replacementConnection") or {})
         return str(replacement.get("connectionId") or response.get("replacementConnectionId") or connection_id)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return max(0, int(value))
+
+
+def _seat_class(value: Any) -> SeatClass:
+    text = str(value or "SECOND").strip().upper()
+    return SeatClass(text) if text in {item.value for item in SeatClass} else SeatClass.SECOND
+
+
+def _delivery_method(data: Mapping[str, Any]) -> CompensationDeliveryMethod:
+    text = str(data.get("compensationDeliveryMethod") or "POINTS").strip().upper()
+    return CompensationDeliveryMethod.CASH if text == "CASH" else CompensationDeliveryMethod.POINTS
+
+
+def _bool_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
