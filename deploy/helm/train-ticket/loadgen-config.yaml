@@ -10,7 +10,7 @@ target:
   request_timeout_seconds: 10
 
 run:
-  workers: 200                # concurrent virtual customers
+  workers: 50                 # concurrent virtual customers
   duration_seconds: 0         # 0 = run until stopped
   seed: null                  # set an int for reproducible randomness
   think_time_seconds: { min: 0, max: 0 }        # zero think time for stress test
@@ -99,7 +99,7 @@ behavior:
 # risk review, support case handling.
 # ---------------------------------------------------------------------------
 staff:
-  workers: 200
+  workers: 60
   think_time_seconds: { min: 0, max: 0 }        # zero think time for stress test
   queue_poll_seconds: 0.1
   p_risk_approve: 0.50        # manual review lifts the block, else rejected
