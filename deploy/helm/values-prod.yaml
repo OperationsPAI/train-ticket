@@ -168,7 +168,7 @@ services:
     pgInstance: hot
   trip-planning:
     db: trip_planning
-    replicas: 1
+    replicas: 2
     resources:
       requests: *svc_req
       limits: *svc_lim
@@ -225,7 +225,7 @@ services:
     pgInstance: user
   identity-verification:
     db: identity_verification
-    replicas: 1
+    replicas: 2
     resources:
       requests: *svc_req
       limits: *svc_lim
@@ -312,6 +312,7 @@ services:
       limits: *svc_lim
   customer-service:
     db: customer_service
+    replicas: 2
     env:
       PLATFORM_JAVA_KIT_REDIS_ENABLED: 'true'
     resources:
