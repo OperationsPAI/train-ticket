@@ -25,6 +25,7 @@ export type CustomerServiceStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   idempotencyStore: PostgresIdempotencyStore;
   runCommand: <T>(operation: (application: CustomerServiceApplication) => Promise<T>) => Promise<T>;
+  runScheduledEvaluation: () => Promise<number>;
   handleIntegrationEvent: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">;
   stop: () => Promise<void>;
 }>;
@@ -45,11 +46,21 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
+  const slaScheduler = setInterval(() => {
+    withCustomerServiceTransaction(pool, async (application) => {
+      await application.evaluateOpenTickets();
+    }).catch((error) => console.error(sanitizedErrorForLog(error)));
+  }, 5_000);
+  slaScheduler.unref?.();
 
   return {
     ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
     idempotencyStore: new PostgresIdempotencyStore(pool),
     runCommand: (operation) => withCustomerServiceTransaction(pool, operation),
+    runScheduledEvaluation: async () => {
+      const evaluated = await withCustomerServiceTransaction(pool, (application) => application.evaluateOpenTickets());
+      return evaluated.length;
+    },
     handleIntegrationEvent: (envelope, stream) => withTransaction(pool, async (client): Promise<"ack" | "retry" | "dlq"> => {
       const guard = new ProcessedEventsGuard(client);
       if (!await guard.tryStart(envelope.eventId, stream)) {
@@ -61,6 +72,7 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
       return "ack";
     }),
     stop: async () => {
+      clearInterval(slaScheduler);
       await relay.stop();
       await Promise.allSettled([redis.quit(), pool.end()]);
     },

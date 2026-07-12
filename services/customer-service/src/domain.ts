@@ -77,6 +77,32 @@ export type CasePriority =
   | "HIGH"
   | "URGENT";
 
+export type EscalationLevel =
+  | "L1_AGENT"
+  | "L2_SPECIALIST"
+  | "L3_SUPERVISOR";
+
+export type EscalationTriggerCondition =
+  | "L1_UNRESOLVED_30M"
+  | "L2_UNRESOLVED_2H"
+  | "CUSTOMER_REQUEST"
+  | "VIP_CUSTOMER"
+  | "RESPONSE_SLA_BREACH"
+  | "MANUAL";
+
+export type CustomerTier =
+  | "STANDARD"
+  | "SILVER"
+  | "GOLD"
+  | "PLATINUM"
+  | "DIAMOND";
+
+export type SlaBreachType = "RESPONSE" | "RESOLUTION";
+
+export type CompensationType = "POINTS" | "VOUCHER" | "CASH" | "UPGRADE";
+
+export type CompensationStatus = "OFFERED" | "ACCEPTED" | "ISSUED" | "REJECTED";
+
 export type CaseClassification = string; // free-form classification code
 
 export type ManualActionStatus =
@@ -148,6 +174,36 @@ export type EscalationInfo = Readonly<{
   reason: string;
   escalatedAt: Date;
   escalatedBy: OperatorRef;
+  fromLevel?: EscalationLevel;
+  toLevel?: EscalationLevel;
+  triggerCondition?: EscalationTriggerCondition;
+}>;
+
+export type EscalationHistoryEntry = Readonly<{
+  escalationRef: EscalationRef;
+  fromLevel: EscalationLevel;
+  toLevel: EscalationLevel;
+  triggerCondition: EscalationTriggerCondition;
+  reason: string;
+  escalatedAt: Date;
+  escalatedBy: OperatorRef;
+}>;
+
+export type SlaTrackerSnapshot = Readonly<{
+  priority: CasePriority;
+  responseTargetMinutes: number;
+  resolutionTargetMinutes: number;
+  openedAt: Date;
+  firstResponseAt?: Date;
+  resolvedAt?: Date;
+  responseBreachedAt?: Date;
+  resolutionBreachedAt?: Date;
+}>;
+
+export type SlaBreachRecord = Readonly<{
+  ticketId: SupportCaseId;
+  breachType: SlaBreachType;
+  breachedAt: Date;
 }>;
 
 // ─── Commands ──────────────────────────────────────────────────────────────────
@@ -160,6 +216,7 @@ export type OpenSupportCase = Readonly<{
   priority?: CasePriority;
   description: string;
   businessReferences?: BusinessReferences;
+  customerTier?: CustomerTier;
   correlationId: CorrelationId;
   causationId?: CausationId;
   openedAt: Date;
@@ -228,6 +285,8 @@ export type EscalateCase = Readonly<{
   targetQueue: string;
   reason: string;
   escalatedBy: OperatorRef;
+  toLevel?: EscalationLevel;
+  triggerCondition?: EscalationTriggerCondition;
   correlationId?: CorrelationId;
   causationId?: CausationId;
   escalatedAt: Date;
@@ -259,6 +318,32 @@ export type ReopenCase = Readonly<{
   correlationId?: CorrelationId;
   causationId?: CausationId;
   reopenedAt: Date;
+}>;
+
+export type OfferCompensation = Readonly<{
+  offerId: string;
+  ticketId: SupportCaseId;
+  type: CompensationType;
+  amountMinor: number;
+  authorizationLevel: EscalationLevel;
+  offeredBy: OperatorRef;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
+  offeredAt: Date;
+}>;
+
+export type AcceptCompensation = Readonly<{
+  offerId: string;
+  acceptedAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
+}>;
+
+export type IssueCompensation = Readonly<{
+  offerId: string;
+  issuedAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
 }>;
 
 export type AppendTimelineEntry = Readonly<{
@@ -395,6 +480,9 @@ export type SupportCaseEscalated = Readonly<{
   targetQueue: string;
   reason: string;
   escalatedBy: OperatorRef;
+  fromLevel: EscalationLevel;
+  toLevel: EscalationLevel;
+  triggerCondition: EscalationTriggerCondition;
   boundaryProof: CustomerServiceBoundaryProof;
 }>;
 
@@ -444,6 +532,88 @@ export type SupportCaseReopened = Readonly<{
   boundaryProof: CustomerServiceBoundaryProof;
 }>;
 
+export type TicketEscalated = Omit<SupportCaseEscalated, "type" | "eventId" | "eventType"> & Readonly<{
+  type: "TicketEscalated";
+  eventId: EventId;
+  eventType: "TicketEscalated";
+}>;
+export type TicketResolved = Omit<SupportCaseResolved, "type" | "eventId" | "eventType"> & Readonly<{
+  type: "TicketResolved";
+  eventId: EventId;
+  eventType: "TicketResolved";
+}>;
+export type TicketReopened = Omit<SupportCaseReopened, "type" | "eventId" | "eventType"> & Readonly<{
+  type: "TicketReopened";
+  eventId: EventId;
+  eventType: "TicketReopened";
+}>;
+
+export type SlaBreached = Readonly<{
+  type: "SlaBreach";
+  eventId: EventId;
+  eventType: "SlaBreach";
+  schemaVersion: number;
+  occurredAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
+  producer: string;
+  ticketId: SupportCaseId;
+  breachType: SlaBreachType;
+  breachedAt: Date;
+  priority: CasePriority;
+  targetMinutes: number;
+  boundaryProof: CustomerServiceBoundaryProof;
+}>;
+
+export type CompensationOffered = Readonly<{
+  type: "CompensationOffered";
+  eventId: EventId;
+  eventType: "CompensationOffered";
+  schemaVersion: number;
+  occurredAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
+  producer: string;
+  offerId: string;
+  ticketId: SupportCaseId;
+  compensationType: CompensationType;
+  amountMinor: number;
+  authorizationLevel: EscalationLevel;
+  status: CompensationStatus;
+  boundaryProof: CustomerServiceBoundaryProof;
+}>;
+
+export type CompensationAccepted = Readonly<{
+  type: "CompensationAccepted";
+  eventId: EventId;
+  eventType: "CompensationAccepted";
+  schemaVersion: number;
+  occurredAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
+  producer: string;
+  offerId: string;
+  ticketId: SupportCaseId;
+  boundaryProof: CustomerServiceBoundaryProof;
+}>;
+
+export type CompensationIssued = Readonly<{
+  type: "CompensationIssued";
+  eventId: EventId;
+  eventType: "CompensationIssued";
+  schemaVersion: number;
+  occurredAt: Date;
+  correlationId: CorrelationId;
+  causationId?: CausationId;
+  producer: string;
+  offerId: string;
+  ticketId: SupportCaseId;
+  compensationType: CompensationType;
+  amountMinor: number;
+  authorizationLevel: EscalationLevel;
+  boundaryProof: CustomerServiceBoundaryProof;
+}>;
+
 export type CaseTimelineEntryAppended = Readonly<{
   type: "CaseTimelineEntryAppended";
   eventId: EventId;
@@ -471,6 +641,13 @@ export type CustomerServiceDomainEvent =
   | SupportCaseResolved
   | SupportCaseClosed
   | SupportCaseReopened
+  | TicketEscalated
+  | TicketResolved
+  | TicketReopened
+  | SlaBreached
+  | CompensationOffered
+  | CompensationAccepted
+  | CompensationIssued
   | CaseTimelineEntryAppended;
 
 // ─── Boundary Proof ────────────────────────────────────────────────────────────
@@ -497,6 +674,18 @@ export function customerServiceBoundaryProof(): CustomerServiceBoundaryProof {
   return boundaryProof;
 }
 
+export function toTicketEscalated(event: SupportCaseEscalated): TicketEscalated {
+  return deepFreeze({ ...event, type: "TicketEscalated", eventId: newEventId(), eventType: "TicketEscalated" });
+}
+
+export function toTicketResolved(event: SupportCaseResolved): TicketResolved {
+  return deepFreeze({ ...event, type: "TicketResolved", eventId: newEventId(), eventType: "TicketResolved" });
+}
+
+export function toTicketReopened(event: SupportCaseReopened): TicketReopened {
+  return deepFreeze({ ...event, type: "TicketReopened", eventId: newEventId(), eventType: "TicketReopened" });
+}
+
 // ─── SupportCase Aggregate ─────────────────────────────────────────────────────
 
 export type SupportCaseSnapshot = Readonly<{
@@ -511,6 +700,11 @@ export type SupportCaseSnapshot = Readonly<{
   description: string;
   businessReferences: BusinessReferences;
   openedAt: Date;
+  customerTier: CustomerTier;
+  escalationLevel: EscalationLevel;
+  escalationHistory: readonly EscalationHistoryEntry[];
+  slaTracker: SlaTrackerSnapshot;
+  slaBreaches: readonly SlaBreachRecord[];
   resolvedAt?: Date;
   resolution?: Resolution;
   escalation?: EscalationInfo;
@@ -540,10 +734,15 @@ export class SupportCase {
       requesterRef: command.requesterRef,
       channel: command.channel,
       classification: command.classification,
-      priority: command.priority,
+      priority: command.priority ?? "NORMAL",
       description: command.description,
       businessReferences: Object.freeze({ ...(command.businessReferences ?? {}) }) as BusinessReferences,
       openedAt: new Date(command.openedAt),
+      customerTier: command.customerTier ?? "STANDARD",
+      escalationLevel: initialEscalationLevel(command.customerTier),
+      escalationHistory: Object.freeze([]),
+      slaTracker: SlaTracker.start(command.priority ?? "NORMAL", command.openedAt).toSnapshot(),
+      slaBreaches: Object.freeze([]),
       correlationId: command.correlationId,
       causationId: command.causationId,
     });
@@ -585,6 +784,7 @@ export class SupportCase {
       status: "Classifying" as const,
       classification: command.classification,
       priority: command.priority,
+      slaTracker: SlaTracker.fromSnapshot(this.snapshot.slaTracker).withPriority(command.priority).toSnapshot(),
     });
 
     const event: SupportCaseClassified = deepFreeze({
@@ -619,6 +819,7 @@ export class SupportCase {
       status: "Assigned" as const,
       ownerQueue: command.ownerQueue,
       assignedTo: command.assignedTo,
+      slaTracker: SlaTracker.fromSnapshot(this.snapshot.slaTracker).recordFirstResponse(command.assignedAt).toSnapshot(),
     });
 
     const event: SupportCaseAssigned = deepFreeze({
@@ -648,9 +849,31 @@ export class SupportCase {
       );
     }
 
+    const fromLevel = this.snapshot.escalationLevel;
+    const toLevel = command.toLevel ?? nextEscalationLevel(fromLevel);
+    if (levelRank(toLevel) < levelRank(fromLevel)) {
+      throw new DomainError("INVALID_ESCALATION_LEVEL", "Escalation cannot move to a lower level");
+    }
+    if (toLevel === fromLevel && command.triggerCondition !== "MANUAL") {
+      throw new DomainError("ALREADY_AT_ESCALATION_LEVEL", `SupportCase ${this.id} is already at ${fromLevel}`);
+    }
+    const triggerCondition = command.triggerCondition ?? "MANUAL";
+
     const escalation: EscalationInfo = deepFreeze({
       escalationRef: `escl-${uuidV7()}`,
       targetQueue: command.targetQueue,
+      reason: command.reason,
+      escalatedAt: new Date(command.escalatedAt),
+      escalatedBy: command.escalatedBy,
+      fromLevel,
+      toLevel,
+      triggerCondition,
+    });
+    const historyEntry: EscalationHistoryEntry = deepFreeze({
+      escalationRef: escalation.escalationRef,
+      fromLevel,
+      toLevel,
+      triggerCondition,
       reason: command.reason,
       escalatedAt: new Date(command.escalatedAt),
       escalatedBy: command.escalatedBy,
@@ -659,7 +882,9 @@ export class SupportCase {
     const newSnapshot: SupportCaseSnapshot = deepFreeze({
       ...this.snapshot,
       status: "Escalated" as const,
+      escalationLevel: toLevel,
       escalation,
+      escalationHistory: Object.freeze([...this.snapshot.escalationHistory, historyEntry]),
     });
 
     const event: SupportCaseEscalated = deepFreeze({
@@ -675,6 +900,9 @@ export class SupportCase {
       targetQueue: command.targetQueue,
       reason: command.reason,
       escalatedBy: command.escalatedBy,
+      fromLevel,
+      toLevel,
+      triggerCondition,
       boundaryProof,
     });
 
@@ -688,7 +916,20 @@ export class SupportCase {
         `SupportCase ${this.id} in ${this.status} cannot be resolved`,
       );
     }
+    return this.applyResolution(command);
+  }
 
+  resolveBySimulation(command: ResolveCase): { case: SupportCase; event: SupportCaseResolved } {
+    if (isTerminalCaseStatus(this.snapshot.status)) {
+      throw new DomainError(
+        "CASE_NOT_RESOLVABLE",
+        `SupportCase ${this.id} in ${this.status} cannot be resolved`,
+      );
+    }
+    return this.applyResolution(command);
+  }
+
+  private applyResolution(command: ResolveCase): { case: SupportCase; event: SupportCaseResolved } {
     const resolution: Resolution = deepFreeze({
       summary: command.summary,
       resolutionCode: command.resolutionCode,
@@ -701,6 +942,7 @@ export class SupportCase {
       status: "Resolved" as const,
       resolution,
       resolvedAt: new Date(command.resolvedAt),
+      slaTracker: SlaTracker.fromSnapshot(this.snapshot.slaTracker).recordResolution(command.resolvedAt).toSnapshot(),
       correlationId: command.correlationId ?? this.snapshot.correlationId,
       causationId: command.causationId ?? this.snapshot.causationId,
     });
@@ -722,6 +964,39 @@ export class SupportCase {
     });
 
     return { case: new SupportCase(newSnapshot), event };
+  }
+
+  markSlaBreach(breachType: SlaBreachType, breachedAt: Date): SupportCase {
+    const alreadyRecorded = this.snapshot.slaBreaches.some((breach) => breach.breachType === breachType);
+    if (alreadyRecorded) {
+      return this;
+    }
+    const breach: SlaBreachRecord = deepFreeze({ ticketId: this.id, breachType, breachedAt: new Date(breachedAt) });
+    return new SupportCase(deepFreeze({
+      ...this.snapshot,
+      slaTracker: SlaTracker.fromSnapshot(this.snapshot.slaTracker).markBreached(breachType, breachedAt).toSnapshot(),
+      slaBreaches: Object.freeze([...this.snapshot.slaBreaches, breach]),
+    }));
+  }
+
+  createSlaBreachEvent(breachType: SlaBreachType, breachedAt: Date, correlationId?: CorrelationId, causationId?: CausationId): SlaBreached {
+    const targetMinutes = breachType === "RESPONSE" ? this.snapshot.slaTracker.responseTargetMinutes : this.snapshot.slaTracker.resolutionTargetMinutes;
+    return deepFreeze({
+      type: "SlaBreach",
+      eventId: newEventId(),
+      eventType: "SlaBreach",
+      schemaVersion: 1,
+      occurredAt: new Date(breachedAt),
+      correlationId: correlationId ?? this.snapshot.correlationId,
+      causationId: causationId ?? this.snapshot.causationId,
+      producer: "customer-service",
+      ticketId: this.id,
+      breachType,
+      breachedAt: new Date(breachedAt),
+      priority: this.snapshot.slaTracker.priority,
+      targetMinutes,
+      boundaryProof,
+    });
   }
 
   close(command: CloseCase): { case: SupportCase; event: SupportCaseClosed } {
@@ -822,10 +1097,13 @@ export class SupportCase {
 
   private canEscalate(): boolean {
     return (
+      this.snapshot.status === "Opened" ||
+      this.snapshot.status === "Classifying" ||
       this.snapshot.status === "Assigned" ||
       this.snapshot.status === "InProgress" ||
       this.snapshot.status === "WaitingExternal" ||
-      this.snapshot.status === "Reopened"
+      this.snapshot.status === "Reopened" ||
+      this.snapshot.status === "Escalated"
     );
   }
 
@@ -864,6 +1142,14 @@ export class SupportCase {
     return this.snapshot.requesterRef;
   }
 
+  get escalationLevel(): EscalationLevel {
+    return this.snapshot.escalationLevel;
+  }
+
+  get slaTracker(): SlaTracker {
+    return SlaTracker.fromSnapshot(this.snapshot.slaTracker);
+  }
+
   get correlationId(): CorrelationId {
     return this.snapshot.correlationId;
   }
@@ -871,6 +1157,276 @@ export class SupportCase {
   toSnapshot(): SupportCaseSnapshot {
     return deepFreeze(cloneForSnapshot(this.snapshot));
   }
+}
+
+export type EscalationRule = Readonly<{
+  fromLevel: EscalationLevel;
+  triggerCondition: EscalationTriggerCondition;
+  toLevel: EscalationLevel;
+}>;
+
+export class EscalationPolicy {
+  static readonly rules: readonly EscalationRule[] = Object.freeze([
+    { fromLevel: "L1_AGENT", triggerCondition: "L1_UNRESOLVED_30M", toLevel: "L2_SPECIALIST" },
+    { fromLevel: "L2_SPECIALIST", triggerCondition: "L2_UNRESOLVED_2H", toLevel: "L3_SUPERVISOR" },
+    { fromLevel: "L1_AGENT", triggerCondition: "CUSTOMER_REQUEST", toLevel: "L2_SPECIALIST" },
+    { fromLevel: "L2_SPECIALIST", triggerCondition: "CUSTOMER_REQUEST", toLevel: "L3_SUPERVISOR" },
+    { fromLevel: "L1_AGENT", triggerCondition: "RESPONSE_SLA_BREACH", toLevel: "L2_SPECIALIST" },
+    { fromLevel: "L2_SPECIALIST", triggerCondition: "RESPONSE_SLA_BREACH", toLevel: "L3_SUPERVISOR" },
+  ]);
+
+  static autoEscalation(now: Date, snapshot: SupportCaseSnapshot): EscalationRule | undefined {
+    if (isTerminalCaseStatus(snapshot.status)) {
+      return undefined;
+    }
+    const elapsedMinutes = minutesBetween(snapshot.openedAt, now);
+    if (snapshot.escalationLevel === "L1_AGENT" && elapsedMinutes > 30) {
+      return this.rules[0];
+    }
+    if (snapshot.escalationLevel === "L2_SPECIALIST") {
+      const levelStartedAt = snapshot.escalationHistory.at(-1)?.escalatedAt ?? snapshot.openedAt;
+      if (minutesBetween(levelStartedAt, now) > 120) {
+        return this.rules[1];
+      }
+    }
+    return undefined;
+  }
+
+  static targetFor(triggerCondition: EscalationTriggerCondition, fromLevel: EscalationLevel): EscalationLevel {
+    return this.rules.find((rule) => rule.fromLevel === fromLevel && rule.triggerCondition === triggerCondition)?.toLevel ?? nextEscalationLevel(fromLevel);
+  }
+}
+
+
+export type SimulatedResolutionAction = "RESOLVE" | "ESCALATE";
+
+export type SimulatedResolutionDecision = Readonly<{
+  level: EscalationLevel;
+  action: SimulatedResolutionAction;
+  dueAt: Date;
+  successProbabilityPercent: number;
+}>;
+
+export class SimulatedResolutionPolicy {
+  static decisionAt(now: Date, snapshot: SupportCaseSnapshot): SimulatedResolutionDecision | undefined {
+    if (isTerminalCaseStatus(snapshot.status)) {
+      return undefined;
+    }
+    const plan = planForLevel(snapshot.escalationLevel);
+    const levelStartedAt = snapshot.escalationHistory.at(-1)?.escalatedAt ?? snapshot.openedAt;
+    const dueAt = new Date(levelStartedAt.getTime() + plan.dueSeconds * 1_000);
+    if (now.getTime() < dueAt.getTime()) {
+      return undefined;
+    }
+    const bucket = deterministicBucket(`${snapshot.caseId}:${snapshot.escalationLevel}`);
+    if (bucket < plan.resolvePercent) {
+      return Object.freeze({ level: snapshot.escalationLevel, action: "RESOLVE" as const, dueAt, successProbabilityPercent: plan.resolvePercent });
+    }
+    if (plan.escalatePercent > 0 && bucket < plan.resolvePercent + plan.escalatePercent) {
+      return Object.freeze({ level: snapshot.escalationLevel, action: "ESCALATE" as const, dueAt, successProbabilityPercent: plan.resolvePercent });
+    }
+    return undefined;
+  }
+}
+
+export class SlaPolicy {
+  private constructor(
+    public readonly priority: CasePriority,
+    public readonly responseTargetMinutes: number,
+    public readonly resolutionTargetMinutes: number,
+  ) {}
+
+  static forPriority(priority: CasePriority): SlaPolicy {
+    switch (priority) {
+      case "URGENT": return new SlaPolicy(priority, 5, 30);
+      case "HIGH": return new SlaPolicy(priority, 15, 120);
+      case "NORMAL": return new SlaPolicy(priority, 60, 1440);
+      case "LOW": return new SlaPolicy(priority, 1440, 4320);
+    }
+  }
+}
+
+export class SlaTracker {
+  private constructor(private readonly snapshot: SlaTrackerSnapshot) {
+    deepFreeze(this.snapshot);
+    Object.freeze(this);
+  }
+
+  static start(priority: CasePriority, openedAt: Date): SlaTracker {
+    const policy = SlaPolicy.forPriority(priority);
+    return new SlaTracker(deepFreeze({
+      priority,
+      responseTargetMinutes: policy.responseTargetMinutes,
+      resolutionTargetMinutes: policy.resolutionTargetMinutes,
+      openedAt: new Date(openedAt),
+    }));
+  }
+
+  static fromSnapshot(snapshot: SlaTrackerSnapshot): SlaTracker {
+    return new SlaTracker(deepFreeze(cloneForSnapshot(snapshot)));
+  }
+
+  withPriority(priority: CasePriority): SlaTracker {
+    if (priority === this.snapshot.priority) {
+      return this;
+    }
+    const policy = SlaPolicy.forPriority(priority);
+    return new SlaTracker(deepFreeze({
+      ...this.snapshot,
+      priority,
+      responseTargetMinutes: policy.responseTargetMinutes,
+      resolutionTargetMinutes: policy.resolutionTargetMinutes,
+    }));
+  }
+
+  recordFirstResponse(firstResponseAt: Date): SlaTracker {
+    if (this.snapshot.firstResponseAt) {
+      return this;
+    }
+    return new SlaTracker(deepFreeze({ ...this.snapshot, firstResponseAt: new Date(firstResponseAt) }));
+  }
+
+  recordResolution(resolvedAt: Date): SlaTracker {
+    return new SlaTracker(deepFreeze({ ...this.snapshot, resolvedAt: new Date(resolvedAt) }));
+  }
+
+  breachesAt(now: Date): readonly SlaBreachType[] {
+    const breaches: SlaBreachType[] = [];
+    if (!this.snapshot.firstResponseAt && !this.snapshot.responseBreachedAt && minutesBetween(this.snapshot.openedAt, now) > this.snapshot.responseTargetMinutes) {
+      breaches.push("RESPONSE");
+    }
+    if (!this.snapshot.resolvedAt && !this.snapshot.resolutionBreachedAt && minutesBetween(this.snapshot.openedAt, now) > this.snapshot.resolutionTargetMinutes) {
+      breaches.push("RESOLUTION");
+    }
+    return Object.freeze(breaches);
+  }
+
+  markBreached(breachType: SlaBreachType, breachedAt: Date): SlaTracker {
+    return new SlaTracker(deepFreeze({
+      ...this.snapshot,
+      responseBreachedAt: breachType === "RESPONSE" ? new Date(breachedAt) : this.snapshot.responseBreachedAt,
+      resolutionBreachedAt: breachType === "RESOLUTION" ? new Date(breachedAt) : this.snapshot.resolutionBreachedAt,
+    }));
+  }
+
+  timeToFirstResponseMinutes(): number | undefined {
+    return this.snapshot.firstResponseAt ? minutesBetween(this.snapshot.openedAt, this.snapshot.firstResponseAt) : undefined;
+  }
+
+  timeToResolutionMinutes(): number | undefined {
+    return this.snapshot.resolvedAt ? minutesBetween(this.snapshot.openedAt, this.snapshot.resolvedAt) : undefined;
+  }
+
+  isCompliant(): boolean {
+    return !this.snapshot.responseBreachedAt && !this.snapshot.resolutionBreachedAt;
+  }
+
+  toSnapshot(): SlaTrackerSnapshot {
+    return deepFreeze(cloneForSnapshot(this.snapshot));
+  }
+}
+
+export type CompensationOfferSnapshot = Readonly<{
+  offerId: string;
+  ticketId: SupportCaseId;
+  type: CompensationType;
+  amountMinor: number;
+  authorizationLevel: EscalationLevel;
+  status: CompensationStatus;
+  offeredBy: OperatorRef;
+  offeredAt: Date;
+  acceptedAt?: Date;
+  issuedAt?: Date;
+}>;
+
+export class CompensationAuthorizer {
+  static canAuthorize(level: EscalationLevel, amountMinor: number): boolean {
+    if (!Number.isInteger(amountMinor) || amountMinor < 0) {
+      return false;
+    }
+    return amountMinor <= this.limitMinor(level);
+  }
+
+  static limitMinor(level: EscalationLevel): number {
+    switch (level) {
+      case "L1_AGENT": return 5_000;
+      case "L2_SPECIALIST": return 20_000;
+      case "L3_SUPERVISOR": return 100_000;
+    }
+  }
+}
+
+export class CompensationOffer {
+  private constructor(private readonly snapshot: CompensationOfferSnapshot) {
+    deepFreeze(this.snapshot);
+    Object.freeze(this);
+  }
+
+  static fromSnapshot(snapshot: CompensationOfferSnapshot): CompensationOffer {
+    return new CompensationOffer(deepFreeze(cloneForSnapshot(snapshot)));
+  }
+
+  static offer(command: OfferCompensation): { offer: CompensationOffer; event: CompensationOffered } {
+    requireNonBlank(command.offerId, "offerId");
+    requireNonBlank(command.ticketId, "ticketId");
+    requireNonBlank(command.offeredBy, "offeredBy");
+    requireNonBlank(command.correlationId, "correlationId");
+    if (!CompensationAuthorizer.canAuthorize(command.authorizationLevel, command.amountMinor)) {
+      throw new DomainError("COMPENSATION_AUTHORIZATION_EXCEEDED", `${command.authorizationLevel} cannot authorize ${command.amountMinor} minor units`);
+    }
+    const snapshot: CompensationOfferSnapshot = deepFreeze({
+      offerId: command.offerId,
+      ticketId: command.ticketId,
+      type: command.type,
+      amountMinor: command.amountMinor,
+      authorizationLevel: command.authorizationLevel,
+      status: "OFFERED",
+      offeredBy: command.offeredBy,
+      offeredAt: new Date(command.offeredAt),
+    });
+    const event: CompensationOffered = deepFreeze({
+      type: "CompensationOffered", eventId: newEventId(), eventType: "CompensationOffered", schemaVersion: 1,
+      occurredAt: new Date(command.offeredAt), correlationId: command.correlationId, causationId: command.causationId, producer: "customer-service",
+      offerId: command.offerId, ticketId: command.ticketId, compensationType: command.type, amountMinor: command.amountMinor, authorizationLevel: command.authorizationLevel, status: "OFFERED", boundaryProof,
+    });
+    return { offer: new CompensationOffer(snapshot), event };
+  }
+
+  accept(command: AcceptCompensation): { offer: CompensationOffer; event: CompensationAccepted } {
+    this.requireMatchingOffer(command.offerId);
+    if (this.snapshot.status !== "OFFERED") {
+      throw new DomainError("COMPENSATION_NOT_ACCEPTABLE", `Compensation ${this.id} in ${this.snapshot.status} cannot be accepted`);
+    }
+    const snapshot = deepFreeze({ ...this.snapshot, status: "ACCEPTED" as const, acceptedAt: new Date(command.acceptedAt) });
+    const event: CompensationAccepted = deepFreeze({
+      type: "CompensationAccepted", eventId: newEventId(), eventType: "CompensationAccepted", schemaVersion: 1,
+      occurredAt: new Date(command.acceptedAt), correlationId: command.correlationId, causationId: command.causationId, producer: "customer-service", offerId: this.id, ticketId: this.snapshot.ticketId, boundaryProof,
+    });
+    return { offer: new CompensationOffer(snapshot), event };
+  }
+
+  issue(command: IssueCompensation): { offer: CompensationOffer; event: CompensationIssued } {
+    this.requireMatchingOffer(command.offerId);
+    if (this.snapshot.status !== "ACCEPTED") {
+      throw new DomainError("COMPENSATION_NOT_ISSUABLE", `Compensation ${this.id} in ${this.snapshot.status} cannot be issued`);
+    }
+    const snapshot = deepFreeze({ ...this.snapshot, status: "ISSUED" as const, issuedAt: new Date(command.issuedAt) });
+    const event: CompensationIssued = deepFreeze({
+      type: "CompensationIssued", eventId: newEventId(), eventType: "CompensationIssued", schemaVersion: 1,
+      occurredAt: new Date(command.issuedAt), correlationId: command.correlationId, causationId: command.causationId, producer: "customer-service", offerId: this.id, ticketId: this.snapshot.ticketId, compensationType: this.snapshot.type, amountMinor: this.snapshot.amountMinor, authorizationLevel: this.snapshot.authorizationLevel, boundaryProof,
+    });
+    return { offer: new CompensationOffer(snapshot), event };
+  }
+
+  private requireMatchingOffer(offerId: string): void {
+    if (offerId !== this.id) {
+      throw new DomainError("COMPENSATION_OFFER_MISMATCH", `Command offerId  does not match compensation `);
+    }
+  }
+
+  get id(): string { return this.snapshot.offerId; }
+  get ticketId(): string { return this.snapshot.ticketId; }
+  toSnapshot(): CompensationOfferSnapshot { return deepFreeze(cloneForSnapshot(this.snapshot)); }
 }
 
 // ─── EvidenceRef Aggregate ────────────────────────────────────────────────────
@@ -1212,6 +1768,57 @@ function requireNonBlank(value: string | undefined, label: string): void {
   if (!value || value.trim().length === 0) {
     throw new DomainError("MISSING_REQUIRED_FIELD", `${label} is required`);
   }
+}
+
+
+type SimulatedResolutionPlan = Readonly<{ dueSeconds: number; resolvePercent: number; escalatePercent: number }>;
+
+function planForLevel(level: EscalationLevel): SimulatedResolutionPlan {
+  switch (level) {
+    case "L1_AGENT": return { dueSeconds: 10, resolvePercent: 70, escalatePercent: 30 };
+    case "L2_SPECIALIST": return { dueSeconds: 30, resolvePercent: 80, escalatePercent: 20 };
+    case "L3_SUPERVISOR": return { dueSeconds: 60, resolvePercent: 95, escalatePercent: 0 };
+  }
+}
+
+function deterministicBucket(value: string): number {
+  let hash = 0;
+  for (const character of value) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash % 100;
+}
+
+function initialEscalationLevel(customerTier: CustomerTier | undefined): EscalationLevel {
+  return isVipTier(customerTier) ? "L2_SPECIALIST" : "L1_AGENT";
+}
+
+function isVipTier(customerTier: CustomerTier | undefined): boolean {
+  return customerTier === "GOLD" || customerTier === "PLATINUM" || customerTier === "DIAMOND";
+}
+
+function nextEscalationLevel(level: EscalationLevel): EscalationLevel {
+  switch (level) {
+    case "L1_AGENT": return "L2_SPECIALIST";
+    case "L2_SPECIALIST": return "L3_SUPERVISOR";
+    case "L3_SUPERVISOR": return "L3_SUPERVISOR";
+  }
+}
+
+function levelRank(level: EscalationLevel): number {
+  switch (level) {
+    case "L1_AGENT": return 1;
+    case "L2_SPECIALIST": return 2;
+    case "L3_SUPERVISOR": return 3;
+  }
+}
+
+function minutesBetween(start: Date, end: Date): number {
+  return Math.floor((end.getTime() - start.getTime()) / 60_000);
+}
+
+function isTerminalCaseStatus(status: SupportCaseStatus): boolean {
+  return status === "Resolved" || status === "Closed";
 }
 
 // ─── Deep immutability helpers ─────────────────────────────────────────────────

@@ -8,6 +8,9 @@ import {
   EvidenceRef,
   ManualActionRequest,
   CaseTimeline,
+  EscalationPolicy,
+  SimulatedResolutionPolicy,
+  CompensationOffer,
   customerServiceBoundaryProof,
   type OpenSupportCase,
   type ClassifySupportCase,
@@ -20,6 +23,7 @@ import {
   type CloseCase,
   type ReopenCase,
   type AppendTimelineEntry,
+  type OfferCompensation,
 } from "./domain.js";
 
 const openedAt = new Date("2026-07-03T10:00:00.000Z");
@@ -207,6 +211,31 @@ describe("Customer Service domain foundation", () => {
       assert.equal(event.businessReferences?.paymentRef, "pi-test-001");
     });
 
+
+    it("starts VIP customers at L2 specialist escalation level", () => {
+      const { case: supportCase } = SupportCase.open(openCommand({ customerTier: "GOLD" }));
+      const snapshot = supportCase.toSnapshot();
+
+      assert.equal(snapshot.escalationLevel, "L2_SPECIALIST");
+      assert.equal(snapshot.customerTier, "GOLD");
+    });
+
+    it("selects L1 unresolved tickets for auto-escalation after thirty minutes", () => {
+      const { case: supportCase } = SupportCase.open(openCommand({ priority: "NORMAL" }));
+      const rule = EscalationPolicy.autoEscalation(new Date("2026-07-03T10:31:00.000Z"), supportCase.toSnapshot());
+
+      assert.deepEqual(rule, { fromLevel: "L1_AGENT", triggerCondition: "L1_UNRESOLVED_30M", toLevel: "L2_SPECIALIST" });
+    });
+
+    it("selects simulated L1 resolution or escalation after ten seconds", () => {
+      const { case: autoResolved } = SupportCase.open(openCommand({ caseId: "sc-auto-resolve" }));
+      const { case: autoEscalated } = SupportCase.open(openCommand({ caseId: "sc-auto-escalate" }));
+
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:09.000Z"), autoResolved.toSnapshot()), undefined);
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:10.000Z"), autoResolved.toSnapshot())?.action, "RESOLVE");
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:10.000Z"), autoEscalated.toSnapshot())?.action, "ESCALATE");
+    });
+
     it("rejects opening with missing required fields", () => {
       expectDomainError(
         () => SupportCase.open(openCommand({ caseId: "" })),
@@ -222,16 +251,19 @@ describe("Customer Service domain foundation", () => {
       );
     });
 
-    it("classifies an opened case", () => {
-      const { case: supportCase } = SupportCase.open(openCommand());
-      const { case: classified, event } = supportCase.classify(classifyCommand());
+    it("classifies an opened case and updates SLA targets for the new priority", () => {
+      const { case: supportCase } = SupportCase.open(openCommand({ priority: "NORMAL" }));
+      const { case: classified, event } = supportCase.classify(classifyCommand({ priority: "URGENT" }));
 
       assert.equal(classified.status, "Classifying");
       assert.equal(classified.id, "sc-test-001");
       assert.equal(event.type, "SupportCaseClassified");
       assert.equal(event.classification, "PAYMENT_DISPUTE");
-      assert.equal(event.priority, "HIGH");
+      assert.equal(event.priority, "URGENT");
       assert.equal(event.classifiedBy, "op-test-001");
+      assert.equal(classified.toSnapshot().slaTracker.priority, "URGENT");
+      assert.equal(classified.toSnapshot().slaTracker.responseTargetMinutes, 5);
+      assert.equal(classified.toSnapshot().slaTracker.resolutionTargetMinutes, 30);
     });
 
     it("rejects classifying a case that is not in Opened state", () => {
@@ -346,6 +378,21 @@ describe("Customer Service domain foundation", () => {
         () => supportCase.reopen(reopenCommand()),
         "CASE_NOT_REOPENABLE",
       );
+    });
+
+
+    it("records SLA response breach state and creates monitoring event", () => {
+      const { case: supportCase } = SupportCase.open(openCommand({ priority: "URGENT" }));
+      const breachedAt = new Date("2026-07-03T10:06:00.000Z");
+
+      const updated = supportCase.markSlaBreach("RESPONSE", breachedAt);
+      const event = updated.createSlaBreachEvent("RESPONSE", breachedAt);
+
+      assert.equal(updated.toSnapshot().slaBreaches.length, 1);
+      assert.equal(updated.toSnapshot().slaTracker.responseBreachedAt?.toISOString(), breachedAt.toISOString());
+      assert.equal(event.type, "SlaBreach");
+      assert.equal(event.breachType, "RESPONSE");
+      assert.equal(event.targetMinutes, 5);
     });
 
     it("snapshot is deeply immutable", () => {
@@ -499,6 +546,58 @@ describe("Customer Service domain foundation", () => {
     });
   });
 
+
+  // ─── CompensationOffer ───────────────────────────────────────────────────────
+
+  describe("CompensationOffer", () => {
+    function offerCommand(overrides: Partial<OfferCompensation> = {}): OfferCompensation {
+      return {
+        offerId: "co-test-001",
+        ticketId: "sc-test-001",
+        type: "CASH",
+        amountMinor: 10_000,
+        authorizationLevel: "L1_AGENT",
+        offeredBy: "op-test-001",
+        correlationId: testCorrelationId,
+        offeredAt: openedAt,
+        ...overrides,
+      };
+    }
+
+    it("rejects L1 compensation above 50 CNY", () => {
+      expectDomainError(
+        () => CompensationOffer.offer(offerCommand({ amountMinor: 10_000, authorizationLevel: "L1_AGENT" })),
+        "COMPENSATION_AUTHORIZATION_EXCEEDED",
+      );
+    });
+
+    it("offers, accepts, and issues authorized compensation", () => {
+      const { offer, event: offered } = CompensationOffer.offer(offerCommand({ amountMinor: 20_000, authorizationLevel: "L2_SPECIALIST" }));
+      const { offer: accepted, event: acceptedEvent } = offer.accept({ offerId: offer.id, acceptedAt: new Date("2026-07-03T10:10:00.000Z"), correlationId: testCorrelationId });
+      const { offer: issued, event: issuedEvent } = accepted.issue({ offerId: offer.id, issuedAt: new Date("2026-07-03T10:11:00.000Z"), correlationId: testCorrelationId });
+
+      assert.equal(offered.type, "CompensationOffered");
+      assert.equal(acceptedEvent.type, "CompensationAccepted");
+      assert.equal(issuedEvent.type, "CompensationIssued");
+      assert.equal(issued.toSnapshot().status, "ISSUED");
+    });
+
+    it("rejects accept and issue commands for a different compensation offer", () => {
+      const { offer } = CompensationOffer.offer(offerCommand({ amountMinor: 20_000, authorizationLevel: "L2_SPECIALIST" }));
+
+      expectDomainError(
+        () => offer.accept({ offerId: "co-other", acceptedAt: new Date("2026-07-03T10:10:00.000Z"), correlationId: testCorrelationId }),
+        "COMPENSATION_OFFER_MISMATCH",
+      );
+
+      const { offer: accepted } = offer.accept({ offerId: offer.id, acceptedAt: new Date("2026-07-03T10:10:00.000Z"), correlationId: testCorrelationId });
+      expectDomainError(
+        () => accepted.issue({ offerId: "co-other", issuedAt: new Date("2026-07-03T10:11:00.000Z"), correlationId: testCorrelationId }),
+        "COMPENSATION_OFFER_MISMATCH",
+      );
+    });
+  });
+
   // ─── CaseTimeline (append-only) ────────────────────────────────────────────
 
   describe("CaseTimeline", () => {
@@ -565,6 +664,7 @@ describe("Customer Service domain foundation", () => {
 
       assert.equal(updated.entries[0].visibility, "CUSTOMER_VISIBLE");
     });
+
 
     it("snapshot is deeply immutable", () => {
       const timeline = CaseTimeline.create("sc-test-001");
