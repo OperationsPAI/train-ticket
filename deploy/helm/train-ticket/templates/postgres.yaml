@@ -23,6 +23,11 @@ data:
       GRANT ALL PRIVILEGES ON DATABASE {{ . }} TO $POSTGRES_USER;
     SQL
     {{- end }}
+    # Ensure remote connections are allowed (needed for pod-to-pod traffic)
+    if ! grep -q '0.0.0.0/0' "$PGDATA/pg_hba.conf" 2>/dev/null; then
+      echo "host all all 0.0.0.0/0 md5" >> "$PGDATA/pg_hba.conf"
+      pg_ctl reload -D "$PGDATA" 2>/dev/null || true
+    fi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
