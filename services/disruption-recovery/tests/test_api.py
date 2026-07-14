@@ -205,3 +205,22 @@ def test_reaccommodation_selection_posts_downstream_and_replay_keeps_key() -> No
     started = event_payloads(store, "RecoveryExecutionStarted")[0]
     assert started["downstreamRequest"]["connectionId"] == downstream.calls[0][0]
     assert started["downstreamRequest"]["idempotencyKey"] == first_key
+
+
+
+def test_service_alert_read_model_is_queryable() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    client = TestClient(app)
+    response = client.post("/api/v1/disruptions", json=report_body(), headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000118"})
+    assert response.status_code == 202
+    service_alert = response.json()["serviceAlert"]
+
+    fetched = client.get(f"/api/v1/service-alerts/{service_alert['serviceAlertId']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["incidentId"] == response.json()["incident"]["incidentId"]
+
+    listed = client.get("/api/v1/service-alerts", params={"incidentId": response.json()["incident"]["incidentId"]})
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["items"][0]["serviceAlertId"] == service_alert["serviceAlertId"]
