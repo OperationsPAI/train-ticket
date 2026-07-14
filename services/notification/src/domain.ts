@@ -75,6 +75,16 @@ export type NotificationTemplateType =
   | "DELAY_ALERT"
   | "REFUND_COMPLETED"
   | "WAITLIST_PROMOTED"
+  | "DISRUPTION_ALERT"
+  | "RECOVERY_CASE_OPENED"
+  | "RECOVERY_OPTIONS_AVAILABLE"
+  | "RECOVERY_OPTION_SELECTED"
+  | "RECOVERY_EXECUTION_STARTED"
+  | "RECOVERY_REFUND_EXECUTED"
+  | "RECOVERY_COMPENSATION_ISSUED"
+  | "RECOVERY_REACCOMMODATION"
+  | "RECOVERY_COMPLETED"
+  | "RECOVERY_FAILED"
   | "DISRUPTION_REBOOK";
 
 // ─── Value Objects ─────────────────────────────────────────────────────────────
@@ -749,7 +759,7 @@ export class ChannelFallbackChain {
 export type NotificationTemplate = Readonly<{
   templateId: string;
   templateType: NotificationTemplateType;
-  channel: NotificationChannel;
+  channel: ChannelType;
   subjectTemplate?: string;
   bodyTemplate: string;
   pushTitleTemplate?: string;
@@ -764,7 +774,7 @@ export type RenderedNotification = Readonly<{
 export class TemplateRenderer {
   constructor(private readonly templates: readonly NotificationTemplate[] = builtInNotificationTemplates()) {}
 
-  render(templateType: NotificationTemplateType, channel: NotificationChannel, variables: Readonly<Record<string, string>>): RenderedNotification {
+  render(templateType: NotificationTemplateType, channel: ChannelType, variables: Readonly<Record<string, string>>): RenderedNotification {
     const template = this.templates.find((candidate) => candidate.templateType === templateType && candidate.channel === channel);
     if (!template) {
       throw new DomainError("TEMPLATE_NOT_FOUND", `Template ${templateType} for ${channel} is not registered`);
@@ -780,7 +790,7 @@ export class TemplateRenderer {
 export class RateLimitExceeded extends Error {
   constructor(
     public readonly recipientRef: string,
-    public readonly channel: NotificationChannel,
+    public readonly channel: ChannelType,
     public readonly retryAfter: Date,
     message = `Rate limit exceeded for ${recipientRef} on ${channel}`,
   ) {
@@ -792,9 +802,9 @@ export class RateLimitExceeded extends Error {
 export type RateLimitDecision = Readonly<{ allowed: true } | { allowed: false; retryAfter: Date }>;
 
 export class RateLimiter {
-  private readonly events: Array<Readonly<{ recipientRef: string; channel: NotificationChannel; at: Date }>> = [];
+  private readonly events: Array<Readonly<{ recipientRef: string; channel: ChannelType; at: Date }>> = [];
 
-  checkAndRecord(recipientRef: string, channel: NotificationChannel, at: Date = new Date()): RateLimitDecision {
+  checkAndRecord(recipientRef: string, channel: ChannelType, at: Date = new Date()): RateLimitDecision {
     this.prune(at);
     const perUser = this.limitFor(channel);
     const windowStart = new Date(at.getTime() - perUser.windowMs);
@@ -813,8 +823,10 @@ export class RateLimiter {
     return { allowed: true };
   }
 
-  private limitFor(channel: NotificationChannel): Readonly<{ max: number; windowMs: number }> {
+  private limitFor(channel: ChannelType): Readonly<{ max: number; windowMs: number }> {
     switch (channel) {
+      case "IN_APP":
+        return { max: 50, windowMs: 60 * 60 * 1000 };
       case "PUSH":
         return { max: 10, windowMs: 60 * 60 * 1000 };
       case "SMS":
@@ -845,10 +857,14 @@ export class NotificationAggregator {
   private readonly seen = new Map<string, AggregatableNotification>();
 
   shouldSuppress(candidate: AggregatableNotification): boolean {
+    if (!isAggregatableTemplate(candidate.templateType)) {
+      return false;
+    }
+
     const key = `${candidate.recipientRef}:${candidate.orderRef}`;
     const previous = this.seen.get(key);
     this.seen.set(key, candidate);
-    if (!previous) {
+    if (!previous || !isAggregatableTemplate(previous.templateType)) {
       return false;
     }
     const withinWindow = Math.abs(candidate.occurredAt.getTime() - previous.occurredAt.getTime()) <= 5 * 60 * 1000;
@@ -864,12 +880,23 @@ export function builtInNotificationTemplates(): readonly NotificationTemplate[] 
     templateSet("DELAY_ALERT", "列车晚点提醒", "您乘坐的 {trainNumber} 次列车预计晚点 {delayMinutes} 分钟", "{trainNumber}晚点{delayMinutes}分钟", "列车晚点"),
     templateSet("REFUND_COMPLETED", "退款到账提醒", "退款 {amount} 元已原路返回，预计 {arrivalDays} 个工作日到账", "退款{amount}元已返回", "退款完成"),
     templateSet("WAITLIST_PROMOTED", "候补购票成功", "候补购票成功！{origin}→{destination} {departureDate}，请在 15 分钟内确认", "候补成功，请15分钟内确认", "候补成功"),
+    templateSet("DISRUPTION_ALERT", "行程异常提醒", "您的订单 {journeyOrderId} 相关行程出现异常：{messageSummary}", "行程异常：{disruptionType}", "行程异常提醒"),
+    templateSet("RECOVERY_CASE_OPENED", "恢复处理已受理", "您的订单 {journeyOrderId} 已进入异常恢复处理，案件 {caseId}。", "恢复处理已受理", "恢复处理已受理"),
+    templateSet("RECOVERY_OPTIONS_AVAILABLE", "恢复方案可选", "订单 {journeyOrderId} 已生成恢复方案：{optionTypes}。", "恢复方案可选", "恢复方案可选"),
+    templateSet("RECOVERY_OPTION_SELECTED", "恢复方案已选择", "订单 {journeyOrderId} 已选择 {optionType} 恢复方案。", "已选择{optionType}", "恢复方案已选择"),
+    templateSet("RECOVERY_EXECUTION_STARTED", "恢复处理进行中", "订单 {journeyOrderId} 的 {optionType} 恢复方案正在执行。", "恢复处理中", "恢复处理进行中"),
+    templateSet("RECOVERY_REFUND_EXECUTED", "异常退款已执行", "订单 {journeyOrderId} 的异常退款已执行，案件 {caseId}。", "异常退款已执行", "异常退款已执行"),
+    templateSet("RECOVERY_COMPENSATION_ISSUED", "异常补偿已发放", "订单 {journeyOrderId} 的异常补偿已发放，案件 {caseId}。", "异常补偿已发放", "异常补偿已发放"),
+    templateSet("RECOVERY_REACCOMMODATION", "接续改签更新", "订单 {journeyOrderId} 的接续改签恢复有更新：{reaccommodationSummary}。", "接续改签更新", "接续改签更新"),
+    templateSet("RECOVERY_COMPLETED", "恢复处理已完成", "订单 {journeyOrderId} 的异常恢复处理已完成。", "恢复处理完成", "恢复处理已完成"),
+    templateSet("RECOVERY_FAILED", "恢复处理需人工跟进", "订单 {journeyOrderId} 的异常恢复处理暂未完成，将继续为您跟进。", "恢复需跟进", "恢复需跟进"),
     templateSet("DISRUPTION_REBOOK", "列车取消改签", "由于列车取消，已为您改签至 {newTrainNumber} {newDepartureTime}", "已改签至{newTrainNumber}", "已为您改签"),
   ].flat());
 }
 
 function templateSet(type: NotificationTemplateType, subject: string, body: string, smsBody: string, pushTitle: string): NotificationTemplate[] {
   return [
+    { templateId: `${type}:IN_APP`, templateType: type, channel: "IN_APP", subjectTemplate: subject, bodyTemplate: body },
     { templateId: `${type}:EMAIL`, templateType: type, channel: "EMAIL", subjectTemplate: subject, bodyTemplate: body },
     { templateId: `${type}:SMS`, templateType: type, channel: "SMS", bodyTemplate: smsBody },
     { templateId: `${type}:PUSH`, templateType: type, channel: "PUSH", pushTitleTemplate: pushTitle, bodyTemplate: body },
@@ -878,6 +905,10 @@ function templateSet(type: NotificationTemplateType, subject: string, body: stri
 
 function renderTemplate(template: string, variables: Readonly<Record<string, string>>): string {
   return template.replace(/\{([A-Za-z0-9_]+)\}/g, (_placeholder, key: string) => variables[key] ?? "");
+}
+
+function isAggregatableTemplate(type: NotificationTemplateType): boolean {
+  return !type.startsWith("RECOVERY_") && type !== "DISRUPTION_ALERT";
 }
 
 function aggregationPriority(type: NotificationTemplateType): number {
@@ -894,6 +925,17 @@ function aggregationPriority(type: NotificationTemplateType): number {
       return 4;
     case "PAYMENT_REMINDER":
       return 5;
+    case "DISRUPTION_ALERT":
+    case "RECOVERY_CASE_OPENED":
+    case "RECOVERY_OPTIONS_AVAILABLE":
+    case "RECOVERY_OPTION_SELECTED":
+    case "RECOVERY_EXECUTION_STARTED":
+    case "RECOVERY_REFUND_EXECUTED":
+    case "RECOVERY_COMPENSATION_ISSUED":
+    case "RECOVERY_REACCOMMODATION":
+    case "RECOVERY_COMPLETED":
+    case "RECOVERY_FAILED":
+      return 6;
   }
 }
 

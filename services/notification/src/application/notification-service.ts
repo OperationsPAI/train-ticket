@@ -53,7 +53,7 @@ export interface NotificationTaskStore {
 }
 
 export interface RateLimitStore {
-  checkAndRecord(recipientRef: string, channel: NotificationChannel, at: Date): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> | { allowed: true } | { allowed: false; retryAfter: Date };
+  checkAndRecord(recipientRef: string, channel: ChannelType, at: Date): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> | { allowed: true } | { allowed: false; retryAfter: Date };
 }
 
 export type DeliveryResult =
@@ -95,14 +95,14 @@ class DefaultContactRepository implements RecipientContactRepository {
 class InMemoryRateLimitStore implements RateLimitStore {
   private readonly limiter = new RateLimiter();
 
-  checkAndRecord(recipientRef: string, channel: NotificationChannel, at: Date): { allowed: true } | { allowed: false; retryAfter: Date } {
+  checkAndRecord(recipientRef: string, channel: ChannelType, at: Date): { allowed: true } | { allowed: false; retryAfter: Date } {
     return this.limiter.checkAndRecord(recipientRef, channel, at);
   }
 }
 
 type TriggerMapping = Readonly<{
   templateCode: string;
-  templateType?: NotificationTemplateType;
+  templateType?: NotificationTemplateType | ((payload: Record<string, unknown>) => NotificationTemplateType);
   intent: string;
   channel: ChannelType;
   recipient: (payload: Record<string, unknown>) => string | undefined;
@@ -131,21 +131,20 @@ export class NotificationApplicationService {
       return "ignored";
     }
 
-    const templateType = mappingFor(envelope.eventType)?.templateType;
+    const mapping = mappingFor(envelope.eventType);
+    const templateType = mapping ? resolveTemplateType(mapping, envelope.payload) : undefined;
     if (templateType) {
-      (command.variables as Record<string, string>).renderedPreview = this.renderer.render(templateType, "PUSH", command.variables).body;
+      (command.variables as Record<string, string>).renderedPreview = this.renderer.render(templateType, command.channel, command.variables).body;
     }
 
     return this.deliverWithFallback(command, templateType);
   }
 
   private async deliverWithFallback(command: ScheduleNotification, templateType: NotificationTemplateType | undefined): Promise<ExternalTriggerResult> {
-    const profile = await this.contacts.getContactProfile(command.recipientRef);
-    const available = availableChannels(profile);
-    const primary = command.channel === "PUSH" || command.channel === "SMS" || command.channel === "EMAIL"
-      ? command.channel
-      : (profile.preferredChannel ?? "PUSH");
-    const channels = new ChannelFallbackChain(primary, available).toArray();
+    const channels: readonly ChannelType[] = command.channel === "IN_APP"
+      ? ["IN_APP"]
+      : new ChannelFallbackChain(command.channel, availableChannels(await this.contacts.getContactProfile(command.recipientRef))).toArray();
+
     if (!command.transactionRequired && !await this.preferences.isEnabled(command.recipientRef, command.intent, channels[0])) {
       return this.publishCancellation({ ...command, notificationTaskId: newNotificationTaskId(), channel: channels[0], templateCode: templateType ?? command.templateCode }, "SUPPRESSED_BY_PREFERENCES");
     }
@@ -217,7 +216,7 @@ export class NotificationApplicationService {
 function renderedVariables(
   variables: Readonly<Record<string, string>>,
   templateType: NotificationTemplateType | undefined,
-  channel: NotificationChannel,
+  channel: ChannelType,
   renderer: TemplateRenderer,
 ): Record<string, string> {
   if (!templateType) {
@@ -229,6 +228,10 @@ function renderedVariables(
     subject: rendered.subject ?? rendered.title ?? templateType,
     body: rendered.body,
   };
+}
+
+function resolveTemplateType(mapping: TriggerMapping, payload: Record<string, unknown>): NotificationTemplateType | undefined {
+  return typeof mapping.templateType === "function" ? mapping.templateType(payload) : mapping.templateType;
 }
 
 function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregator): ScheduleNotification | undefined {
@@ -248,10 +251,11 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: Notif
 
   const businessRef = triggerBusinessRef(envelope);
   const aggregationRef = aggregationBusinessRef(envelope);
-  if (aggregator && mapping.templateType && aggregationRef && aggregator.shouldSuppress({
+  const templateType = resolveTemplateType(mapping, payload);
+  if (aggregator && templateType && aggregationRef && aggregator.shouldSuppress({
     recipientRef,
     orderRef: aggregationRef,
-    templateType: mapping.templateType,
+    templateType,
     occurredAt: dateValue(envelope.occurredAt) ?? new Date(),
   })) {
     return undefined;
@@ -264,7 +268,7 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: Notif
     correlationId: envelope.correlationId,
     causationId: envelope.eventId,
     recipientRef,
-    templateCode: mapping.templateType ?? mapping.templateCode,
+    templateCode: templateType ?? mapping.templateCode,
     channel: mapping.channel,
     intent: mapping.intent,
     transactionRequired: booleanValue(payload.transactionRequired) ?? true,
@@ -467,6 +471,48 @@ const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]
     { name: "messageSummary", type: "string" },
     { name: "publishedAt", type: "string" },
   ],
+
+  RecoveryCaseOpened: [
+    { name: "caseId", type: "string" },
+    { name: "incidentId", type: "string" },
+    { name: "disruptionId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "affectedScope", type: "object" },
+    { name: "openedAt", type: "string" },
+    { name: "status", type: "string" },
+  ],
+  RecoveryOptionsGenerated: [
+    { name: "caseId", type: "string" },
+    { name: "incidentId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "optionSetId", type: "string" },
+    { name: "options", type: "array" },
+    { name: "requiresUserChoice", type: "boolean" },
+    { name: "generatedAt", type: "string" },
+    { name: "status", type: "string" },
+  ],
+  RecoveryOptionSelected: [
+    { name: "caseId", type: "string" },
+    { name: "incidentId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "optionSetId", type: "string" },
+    { name: "optionId", type: "string" },
+    { name: "optionType", type: "string" },
+    { name: "selectedBy", type: "object" },
+    { name: "selectedAt", type: "string" },
+    { name: "status", type: "string" },
+  ],
+  RecoveryExecutionStarted: [
+    { name: "caseId", type: "string" },
+    { name: "incidentId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "optionId", type: "string" },
+    { name: "optionType", type: "string" },
+    { name: "executionId", type: "string" },
+    { name: "executionTarget", type: "string" },
+    { name: "startedAt", type: "string" },
+    { name: "status", type: "string" },
+  ],
   RecoveryCompleted: [
     { name: "caseId", type: "string" },
     { name: "incidentId", type: "string" },
@@ -476,6 +522,14 @@ const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]
     { name: "executionId", type: "string" },
     { name: "completedAt", type: "string" },
     { name: "status", type: "string" },
+  ],
+  RecoveryFailed: [
+    { name: "caseId", type: "string" },
+    { name: "incidentId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "failedAt", type: "string" },
+    { name: "reason", type: "string" },
+    { name: "nextStatus", type: "string" },
   ],
 });
 
@@ -600,8 +654,18 @@ function mappingFor(eventType: string): TriggerMapping | undefined {
       return waitlistFulfilledMapping();
     case "ServiceAlertPublished":
       return serviceAlertPublishedMapping();
+    case "RecoveryCaseOpened":
+      return recoveryCaseOpenedMapping();
+    case "RecoveryOptionsGenerated":
+      return recoveryOptionsGeneratedMapping();
+    case "RecoveryOptionSelected":
+      return recoveryOptionSelectedMapping();
+    case "RecoveryExecutionStarted":
+      return recoveryExecutionStartedMapping();
     case "RecoveryCompleted":
       return recoveryCompletedMapping();
+    case "RecoveryFailed":
+      return recoveryFailedMapping();
     default:
       return undefined;
   }
@@ -697,13 +761,14 @@ function waitlistFulfilledMapping(): TriggerMapping {
 
 function serviceAlertPublishedMapping(): TriggerMapping {
   return {
-    templateCode: "DELAY_ALERT",
-    templateType: "DELAY_ALERT",
-    intent: "DELAY_ALERT",
-    channel: "PUSH",
+    templateCode: "DISRUPTION_ALERT",
+    templateType: "DISRUPTION_ALERT",
+    intent: "DISRUPTION_ALERT",
+    channel: "IN_APP",
     recipient: recipientFromDisruptionAlert,
     variables: (payload) => ({
       ...pickStringVariables(payload, ["serviceAlertId", "incidentId", "disruptionType", "scheduledServiceRef", "segmentRef", "serviceDate", "messageSummary"]),
+      journeyOrderId: firstString(payload.affectedOrderIds) ?? stringValue(payload.serviceAlertId) ?? "--",
       trainNumber: stringValue(payload.trainNumber)
         ?? stringValue(payload.scheduledServiceRef)
         ?? stringValue(payload.segmentRef)
@@ -714,22 +779,147 @@ function serviceAlertPublishedMapping(): TriggerMapping {
   };
 }
 
+function recoveryCaseOpenedMapping(): TriggerMapping {
+  return disruptionRecoveryMapping("RECOVERY_CASE_OPENED", "RECOVERY_CASE_OPENED", (payload) => ({
+    ...baseRecoveryVariables(payload),
+    openedAt: stringValue(payload.openedAt) ?? "--",
+  }));
+}
+
+function recoveryOptionsGeneratedMapping(): TriggerMapping {
+  return disruptionRecoveryMapping(
+    "RECOVERY_OPTIONS_AVAILABLE",
+    "RECOVERY_OPTIONS_AVAILABLE",
+    (payload) => ({
+      ...baseRecoveryVariables(payload),
+      optionSetId: stringValue(payload.optionSetId) ?? "--",
+      optionTypes: optionTypes(payload.options).join(",") || "--",
+      expiresAt: stringValue(payload.expiresAt) ?? "--",
+      requiresUserChoice: booleanValue(payload.requiresUserChoice) === false ? "false" : "true",
+    }),
+    (payload) => hasReaccommodation(payload) ? "RECOVERY_REACCOMMODATION" : "RECOVERY_OPTIONS_AVAILABLE",
+  );
+}
+
+function recoveryOptionSelectedMapping(): TriggerMapping {
+  return disruptionRecoveryMapping(
+    "RECOVERY_OPTION_SELECTED",
+    "RECOVERY_OPTION_SELECTED",
+    (payload) => ({
+      ...baseRecoveryVariables(payload),
+      optionSetId: stringValue(payload.optionSetId) ?? "--",
+      optionType: stringValue(payload.optionType) ?? "--",
+      selectedAt: stringValue(payload.selectedAt) ?? "--",
+      reaccommodationSummary: stringValue(payload.optionType) === "REACCOMMODATION" ? "已选择接续改签方案" : "--",
+    }),
+    (payload) => stringValue(payload.optionType) === "REACCOMMODATION" ? "RECOVERY_REACCOMMODATION" : "RECOVERY_OPTION_SELECTED",
+  );
+}
+
+function recoveryExecutionStartedMapping(): TriggerMapping {
+  return disruptionRecoveryMapping(
+    "RECOVERY_EXECUTION_STARTED",
+    "RECOVERY_EXECUTION_STARTED",
+    (payload) => ({
+      ...baseRecoveryVariables(payload),
+      optionType: stringValue(payload.optionType) ?? "--",
+      executionId: stringValue(payload.executionId) ?? "--",
+      executionTarget: stringValue(payload.executionTarget) ?? "--",
+      startedAt: stringValue(payload.startedAt) ?? "--",
+      reaccommodationSummary: reaccommodationSummary(payload),
+    }),
+    (payload) => stringValue(payload.optionType) === "REACCOMMODATION"
+      ? "RECOVERY_REACCOMMODATION"
+      : "RECOVERY_EXECUTION_STARTED",
+  );
+}
+
 function recoveryCompletedMapping(): TriggerMapping {
-  return {
-    templateCode: "DISRUPTION_REBOOK",
-    templateType: "DISRUPTION_REBOOK",
-    intent: "DISRUPTION_REBOOK",
-    channel: "PUSH",
-    recipient: recipientFromRecoveryEvent,
-    variables: (payload) => ({
-      ...pickStringVariables(payload, ["caseId", "incidentId", "journeyOrderId", "optionId", "optionType", "executionId", "externalRef", "completedAt"]),
+  return disruptionRecoveryMapping(
+    "RECOVERY_COMPLETED",
+    "RECOVERY_COMPLETED",
+    (payload) => ({
+      ...baseRecoveryVariables(payload),
+      optionType: stringValue(payload.optionType) ?? "--",
+      executionId: stringValue(payload.executionId) ?? "--",
+      externalRef: stringValue(payload.externalRef) ?? "--",
+      completedAt: stringValue(payload.completedAt) ?? "--",
       newTrainNumber: stringValue(payload.newTrainNumber)
         ?? stringValue(payload.externalRef)
         ?? stringValue(payload.journeyOrderId)
         ?? "--",
       newDepartureTime: stringValue(payload.newDepartureTime) ?? stringValue(payload.completedAt) ?? "--",
+      reaccommodationSummary: reaccommodationSummary(payload),
     }),
+    (payload) => {
+      const optionType = stringValue(payload.optionType);
+      if (optionType === "REFUND") {
+        return "RECOVERY_REFUND_EXECUTED";
+      }
+      if (optionType === "COMPENSATION") {
+        return "RECOVERY_COMPENSATION_ISSUED";
+      }
+      if (optionType === "REACCOMMODATION") {
+        return "RECOVERY_REACCOMMODATION";
+      }
+      return "RECOVERY_COMPLETED";
+    },
+  );
+}
+
+function recoveryFailedMapping(): TriggerMapping {
+  return disruptionRecoveryMapping("RECOVERY_FAILED", "RECOVERY_FAILED", (payload) => ({
+    ...baseRecoveryVariables(payload),
+    optionId: stringValue(payload.optionId) ?? "--",
+    executionId: stringValue(payload.executionId) ?? "--",
+    failedAt: stringValue(payload.failedAt) ?? "--",
+    nextStatus: stringValue(payload.nextStatus) ?? "--",
+  }));
+}
+
+function disruptionRecoveryMapping(
+  templateCode: string,
+  intent: string,
+  variables: (payload: Record<string, unknown>) => Record<string, string>,
+  templateType: NotificationTemplateType | ((payload: Record<string, unknown>) => NotificationTemplateType) = templateCode as NotificationTemplateType,
+): TriggerMapping {
+  return {
+    templateCode,
+    templateType,
+    intent,
+    channel: "IN_APP",
+    recipient: recipientFromRecoveryEvent,
+    variables,
   };
+}
+
+function baseRecoveryVariables(payload: Record<string, unknown>): Record<string, string> {
+  return {
+    ...pickStringVariables(payload, ["caseId", "incidentId", "disruptionId", "journeyOrderId", "status"]),
+    journeyOrderId: stringValue(payload.journeyOrderId) ?? stringValue(recordValue(payload.affectedScope)?.journeyOrderId) ?? "--",
+    caseId: stringValue(payload.caseId) ?? "--",
+  };
+}
+
+function optionTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((candidate) => {
+    const record = recordValue(candidate);
+    const optionType = record ? stringValue(record.optionType) : undefined;
+    return optionType ? [optionType] : [];
+  });
+}
+
+function hasReaccommodation(payload: Record<string, unknown>): boolean {
+  return optionTypes(payload.options).includes("REACCOMMODATION") || stringValue(payload.optionType) === "REACCOMMODATION";
+}
+
+function reaccommodationSummary(payload: Record<string, unknown>): string {
+  const downstream = recordValue(payload.downstreamRequest);
+  const connectionId = stringValue(downstream?.connectionId) ?? stringValue(payload.externalRef) ?? stringValue(payload.optionId);
+  return connectionId ? `接续改签 ${connectionId}` : "接续改签恢复";
 }
 
 function walletBenefitMapping(templateCode: string, intent: string): TriggerMapping {

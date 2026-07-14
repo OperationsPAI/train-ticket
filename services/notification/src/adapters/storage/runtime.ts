@@ -151,14 +151,14 @@ async function sameBusinessTaskExists(client: Pick<import("pg").PoolClient, "que
 }
 
 function notificationBusinessSignature(envelope: EventEnvelope): Readonly<{ recipientRef: string; templateCode: string; triggerBusinessRef: string }> | undefined {
-  const templateCode = templateCodeFor(envelope.eventType);
+  const templateCode = templateCodeFor(envelope);
   const recipientRef = recipientRefFor(envelope.payload);
   const triggerBusinessRef = triggerBusinessRefFor(envelope);
   return templateCode && recipientRef && triggerBusinessRef ? { recipientRef, templateCode, triggerBusinessRef } : undefined;
 }
 
-function templateCodeFor(eventType: string): string | undefined {
-  switch (eventType) {
+function templateCodeFor(envelope: EventEnvelope): string | undefined {
+  switch (envelope.eventType) {
     case "JourneyOrderCreated":
       return "order_created";
     case "JourneyOrderPendingPayment":
@@ -187,9 +187,19 @@ function templateCodeFor(eventType: string): string | undefined {
     case "WaitlistFulfilled":
       return "WAITLIST_PROMOTED";
     case "ServiceAlertPublished":
-      return "DELAY_ALERT";
+      return "DISRUPTION_ALERT";
+    case "RecoveryCaseOpened":
+      return "RECOVERY_CASE_OPENED";
+    case "RecoveryOptionsGenerated":
+      return hasReaccommodation(envelope.payload) ? "RECOVERY_REACCOMMODATION" : "RECOVERY_OPTIONS_AVAILABLE";
+    case "RecoveryOptionSelected":
+      return stringValue(envelope.payload.optionType) === "REACCOMMODATION" ? "RECOVERY_REACCOMMODATION" : "RECOVERY_OPTION_SELECTED";
+    case "RecoveryExecutionStarted":
+      return stringValue(envelope.payload.optionType) === "REACCOMMODATION" ? "RECOVERY_REACCOMMODATION" : "RECOVERY_EXECUTION_STARTED";
     case "RecoveryCompleted":
-      return "DISRUPTION_REBOOK";
+      return recoveryCompletedTemplate(envelope.payload);
+    case "RecoveryFailed":
+      return "RECOVERY_FAILED";
     case "PostSalesEligibilityEvaluated":
       return "post_sales_eligibility";
     case "PostSalesDecisionQuoted":
@@ -261,6 +271,24 @@ function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.postSalesCaseId)
     ?? stringValue(payload.businessRef);
   return direct ? `${envelope.eventType}:${direct}` : undefined;
+}
+
+function hasReaccommodation(payload: Record<string, unknown>): boolean {
+  return stringValue(payload.optionType) === "REACCOMMODATION"
+    || (Array.isArray(payload.options) && payload.options.some((option) => stringValue((option as Record<string, unknown>)?.optionType) === "REACCOMMODATION"));
+}
+
+function recoveryCompletedTemplate(payload: Record<string, unknown>): string {
+  switch (stringValue(payload.optionType)) {
+    case "REFUND":
+      return "RECOVERY_REFUND_EXECUTED";
+    case "COMPENSATION":
+      return "RECOVERY_COMPENSATION_ISSUED";
+    case "REACCOMMODATION":
+      return "RECOVERY_REACCOMMODATION";
+    default:
+      return "RECOVERY_COMPLETED";
+  }
 }
 
 function firstString(value: unknown): string | undefined {
