@@ -517,6 +517,8 @@ class OperationalEvent:
     distance_km: Decimal | None = None
     ancillary_attached: bool = False
     insurance_attached: bool = False
+    source_context: str | None = None
+    anomaly_signal: bool = False
 
     def __post_init__(self) -> None:
         if not self.event_id.strip():
@@ -594,6 +596,29 @@ class RouteMetrics:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextEventRollup:
+    source_context: str
+    event_type: str
+    count: int
+    last_occurred_at: datetime
+    anomaly_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.source_context.strip():
+            raise ReportingError("context rollup source_context is required")
+        if not self.event_type.strip():
+            raise ReportingError("context rollup event_type is required")
+        if self.count < 1:
+            raise ReportingError("context rollup count must be positive")
+        if self.anomaly_count < 0 or self.anomaly_count > self.count:
+            raise ReportingError("context rollup anomaly_count must be between zero and count")
+
+    @property
+    def anomaly_rate(self) -> float:
+        return self.anomaly_count / self.count
+
+
+@dataclass(frozen=True, slots=True)
 class MetricSnapshot:
     generated_at: datetime
     orders_per_second: int
@@ -603,6 +628,7 @@ class MetricSnapshot:
     refund_rate: float
     scalper_block_rate: float
     route_metrics: tuple[RouteMetrics, ...] = ()
+    context_rollups: tuple[ContextEventRollup, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,6 +721,7 @@ class MetricAggregator:
             refund_rate=self._rate(len(refund_events), len(order_events_24h)),
             scalper_block_rate=self._rate(len(blocked_1h), len(risk_events_1h)),
             route_metrics=routes,
+            context_rollups=self.context_rollups(),
         )
 
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
@@ -729,6 +756,24 @@ class MetricAggregator:
         metrics.sort(key=lambda item: (item.service_date, item.route_id))
         return tuple(metrics)
 
+    def context_rollups(self) -> tuple[ContextEventRollup, ...]:
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for event in self.events:
+            context = event.source_context or "unknown"
+            bucket = grouped.setdefault(
+                (context, event.event_type),
+                {"count": 0, "last_occurred_at": event.occurred_at, "anomaly_count": 0},
+            )
+            bucket["count"] += 1
+            if event.occurred_at > bucket["last_occurred_at"]:
+                bucket["last_occurred_at"] = event.occurred_at
+            if event.anomaly_signal:
+                bucket["anomaly_count"] += 1
+        return tuple(
+            ContextEventRollup(context, event_type, bucket["count"], bucket["last_occurred_at"], bucket["anomaly_count"])
+            for (context, event_type), bucket in sorted(grouped.items())
+        )
+
     def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
         if limit < 1:
             raise ReportingError("revenue report limit must be positive")
@@ -739,12 +784,14 @@ class MetricAggregator:
             "channel": lambda event: event.channel,
             "passenger_type": lambda event: event.passenger_type,
             "time_period": lambda event: event.occurred_at.astimezone(UTC).strftime("%Y-%m-%dT%H:00:00Z"),
+            "source_context": lambda event: event.source_context,
+            "event_type": lambda event: event.event_type,
         }
         if group_by not in dimensions:
             raise ReportingError("unsupported revenue report dimension")
         grouped: dict[str, list[OperationalEvent]] = {}
         for event in self.events:
-            if not event.is_payment_captured or event.amount is None:
+            if group_by not in {"source_context", "event_type"} and (not event.is_payment_captured or event.amount is None):
                 continue
             value = dimensions[group_by](event) or "unknown"
             grouped.setdefault(value, []).append(event)
@@ -808,13 +855,14 @@ class MetricAggregator:
 
     def _revenue_item(self, dimension: str, value: str, events: list[OperationalEvent]) -> RevenueItem:
         revenue = sum((event.amount.amount for event in events if event.amount is not None), Decimal("0.00"))
+        count = len(events) if dimension in {"source_context", "event_type"} else sum(1 for event in events if event.amount is not None)
         distance = sum((event.distance_km or Decimal("0")) for event in events)
         yield_per_km = Decimal("0.00") if distance == 0 else (revenue / distance).quantize(Decimal("0.01"))
         return RevenueItem(
             dimension=dimension,
             value=value,
             revenue=Money(revenue, self.currency),
-            count=len(events),
+            count=count,
             yield_per_km=yield_per_km,
             ancillary_attach_rate=self._rate(sum(1 for event in events if event.ancillary_attached), len(events)),
             insurance_attach_rate=self._rate(sum(1 for event in events if event.insurance_attached), len(events)),

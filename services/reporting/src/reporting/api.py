@@ -132,6 +132,17 @@ def operational_snapshot_to_json(snapshot: MetricSnapshot) -> dict[str, object]:
         "refund_rate": snapshot.refund_rate,
         "scalper_block_rate": snapshot.scalper_block_rate,
         "routeMetrics": [route_metrics_to_json(route) for route in snapshot.route_metrics],
+        "contextRollups": [
+            {
+                "sourceContext": rollup.source_context,
+                "eventType": rollup.event_type,
+                "count": rollup.count,
+                "lastOccurredAt": rfc3339_utc(rollup.last_occurred_at),
+                "anomalyCount": rollup.anomaly_count,
+                "anomalyRate": rollup.anomaly_rate,
+            }
+            for rollup in snapshot.context_rollups
+        ],
     }
 
 

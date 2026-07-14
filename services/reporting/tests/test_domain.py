@@ -17,6 +17,7 @@ from reporting import (
     FunnelStep,
     FunnelStepCount,
     FunnelView,
+    ContextEventRollup,
     MetricCategory,
     MetricDefinition,
     MetricGranularity,
@@ -460,6 +461,23 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
 
         self.assertEqual(anomalies[0].rule_id, "ERROR_RATE_SPIKE")
         self.assertEqual(anomalies[0].severity, AnomalySeverity.CRITICAL)
+
+    def test_context_rollups_count_source_contexts_and_anomaly_signals(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        aggregator.record(OperationalEvent("waitlist-1", "WaitlistQueued", NOW, source_context="waitlist"))
+        aggregator.record(OperationalEvent("waitlist-2", "WaitlistExpired", NOW + timedelta(minutes=1), source_context="waitlist", anomaly_signal=True))
+
+        snapshot = aggregator.snapshot(NOW + timedelta(minutes=2))
+        rollups = {(item.source_context, item.event_type): item for item in snapshot.context_rollups}
+
+        self.assertEqual(rollups[("waitlist", "WaitlistQueued")].count, 1)
+        self.assertEqual(rollups[("waitlist", "WaitlistExpired")].anomaly_rate, 1.0)
+
+    def test_context_rollup_rejects_invalid_counts(self) -> None:
+        with self.assertRaisesRegex(ReportingError, "count must be positive"):
+            ContextEventRollup("waitlist", "WaitlistQueued", 0, NOW)
+        with self.assertRaisesRegex(ReportingError, "anomaly_count"):
+            ContextEventRollup("waitlist", "WaitlistQueued", 1, NOW, anomaly_count=2)
 
 
 if __name__ == "__main__":
