@@ -15,9 +15,10 @@ Activation-wave rulings:
   `ServiceFulfillmentRecord` concept is represented as embedded
   `fulfillmentFacts` on `AncillaryOrderItem` and as
   `AncillaryFulfillmentFactRecorded` events.
-- Catalog pricing is authoritative for this wave. Event payloads use `Money`
-  fields copied from the catalog/offer/order snapshots. Fare & Pricing quote,
-  fee assessment, and dynamic price-rule integrations are deferred.
+- Fare & Pricing dynamic price rules are authoritative when available. Event
+  payloads carry `Money` fields copied from the quoted offer/order snapshots,
+  the Fare & Pricing `RuleSnapshot`/`inputHash` references, and assessed fees.
+  Catalog price remains the fallback price when Fare & Pricing is unavailable.
 - Ancillary Service does not modify Journey Order, Payment, Fare & Pricing, or
   Entitlement contracts. Cross-context references are carried as strings such as
   `journeyOrderId`, `travelerRef`, `segmentRef`, `entitlementRef`, and optional
@@ -88,7 +89,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | `serviceType` | enum | yes | `INSURANCE`, `MEAL`, `BAGGAGE`, `CONSIGN`, `SEAT_SELECTION`, `TRANSFER_PICKUP`, `LOUNGE`, `FAST_TRACK`, or `BUNDLE`. |
 | `attachmentScope` | enum | yes | `JOURNEY`, `SEGMENT`, `TRAVELER`, `ENTITLEMENT`, `PLACE`, or `TRANSFER`. |
 | `displayName` | string | yes | Display name captured at quote/order time. |
-| `unitPrice` | Money | yes | Static catalog unit price. |
+| `unitPrice` | Money | yes | Catalog fallback unit price captured at quote/order time. |
 | `purchaseCutoffHoursBeforeDeparture` | integer | yes | Minimum cutoff used by eligibility. |
 | `eligibilityRuleVersion` | string | yes | Eligibility rule snapshot version. |
 | `fulfillmentMethod` | enum | yes | `VOUCHER`, `PROVIDER_CONFIRMATION`, `MANUAL_OPS`, or `NONE`. |
@@ -135,7 +136,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | `attachmentScope` | enum | yes | Binding scope. |
 | `modalities` | string[] | yes | Applicable transport modalities. |
 | `supplierRef` | string | no | Normalized supplier capability reference. |
-| `price` | Money | yes | Static catalog price. |
+| `price` | Money | yes | Catalog fallback price. |
 | `salesWindow` | object | yes | Sale `startAt` and `endAt` timestamps. |
 | `serviceWindow` | object | no | Service `startAt` and `endAt` timestamps when applicable. |
 | `purchaseCutoffHoursBeforeDeparture` | integer | yes | Purchase cutoff. |
@@ -196,7 +197,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 |---|---|
 | **Producer** | ancillary-service |
 | **Consumers** | deferred: offer-management, journey-order, notification, reporting |
-| **Trigger** | `QuoteAncillaryOffer` command succeeds after minimum eligibility and static catalog pricing. |
+| **Trigger** | `QuoteAncillaryOffer` command succeeds after minimum eligibility and Fare & Pricing dynamic-rule pricing or catalog fallback pricing. |
 
 **Payload:**
 
@@ -211,8 +212,11 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | `entitlementRef` | string | no | Entitlement proof or lookup reference. |
 | `catalogSnapshot` | object | yes | Catalog snapshot used for the quote. |
 | `quantity` | integer | yes | Positive quantity. |
-| `unitPrice` | Money | yes | Static catalog unit price. |
+| `unitPrice` | Money | yes | Dynamic-rule unit price when Fare & Pricing quoted successfully; otherwise catalog fallback unit price. |
 | `totalPrice` | Money | yes | Quoted total. |
+| `assessedFees` | array[object] | no | Unit-level assessed fee components `{ruleId, amount, explanation, refundable}`. |
+| `feeAssessment` | object | no | Fee assessment summary `{assessmentId, purpose, assessedAt, originalQuoteId, fee, currency, succeeded, failedReason}`. |
+| `priceQuoteRef` | object | no | Fare & Pricing quote reference `{quoteId, inputHash, ruleSnapshot, source}`. |
 | `eligibility` | object | yes | Minimum eligibility result. |
 | `validFrom` | RFC3339 UTC | yes | Quote validity start. |
 | `expiresAt` | RFC3339 UTC | yes | Quote expiry. |
@@ -266,6 +270,9 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | `quantity` | integer | yes | Positive quantity. |
 | `payableAmount` | Money | yes | Informational amount payable outside this domain. |
 | `refundableAmount` | Money | yes | Initial refundable amount, normally zero or the payable amount by policy. |
+| `assessedFees` | array[object] | yes | Assessed fee components copied from the selected quote and multiplied by quantity. |
+| `feeAssessment` | object | no | Fee assessment summary copied from the selected quote and multiplied by quantity. |
+| `priceQuoteRef` | object | no | Fare & Pricing quote reference copied from the selected quote. |
 | `status` | enum | yes | `SELECTED`. |
 | `selectedAt` | RFC3339 UTC | yes | Selection timestamp. |
 | `aggregateVersion` | integer | yes | Aggregate version after selection. |
