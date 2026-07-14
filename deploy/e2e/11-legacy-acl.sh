@@ -117,19 +117,38 @@ REFUNDABLE=$(jget "['data']['refundAmount']['minorUnits']")
 [ "$REFUNDABLE" = "8750" ] && ok "legacy cancel refundable amount is 8750" || bad "legacy cancel refundable amount $REFUNDABLE, expected 8750"
 
 ACCT3="acc-$(uuid7)"
-echo "== 6. rebook creates complete replacement itinerary"
+echo "== 6. multi-leg rebook does not silently stop after first leg"
 legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT3\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"2026-08-01\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
 ORDER3=$(jget "['data']['orderId']"); TOTAL3=$(jget "['data']['total']['minorUnits']")
 legacy_step INSIDE_PAYMENT /api/v1/legacy/inside_payment "{\"orderId\":\"$ORDER3\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}}"
 sleep 8
 legacy_step TICKET_ISSUE /api/v1/legacy/ticket_issue "{\"orderId\":\"$ORDER3\"}"
+
+# Add a second original entitlement so the legacy rebook input is genuinely
+# multi-segment even in the standard e2e seed, which only has one scheduled
+# service segment. The assertion below forbids a successful one-leg rebook: the
+# facade must either reserve all replacement legs or fail deterministically.
+req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$SS\",\"originStopRef\":\"$N_BJ\",\"destinationStopRef\":\"$N_SH\",\"departureTime\":\"2026-08-01T15:00:00Z\",\"arrivalTime\":\"2026-08-01T20:30:00Z\"}"
+check_code 201 "create second original segment for multi-leg rebook"
+SEG_EXTRA=$(jget "['segmentRef']")
+SB_EXTRA="sb-$(uuid7)"
+req POST entitlement-ticketing /api/v1/entitlements "{\"segmentBookingId\":\"$SB_EXTRA\",\"journeyOrderId\":\"$ORDER3\",\"travelerRef\":\"$TVL\",\"segmentRef\":\"$SEG_EXTRA\",\"issuePurpose\":\"INITIAL\"}"
+check_code 201 "issue second entitlement for multi-leg rebook"
 sleep 5
-legacy_step REBOOK /api/v1/legacy/rebook "{\"orderId\":\"$ORDER3\",\"date\":\"2026-08-01\",\"seatType\":\"SECOND\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
-REBOOK_ORDER=$(jget "['data']['replacementOrderId']")
-REBOOK_SEGMENTS=$(jget "['data']['rebookedSegmentCount']")
-REBOOK_BOOKINGS=$(echo "$RESP" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d.get("data", {}).get("replacementSegmentBookingIds", [])))' 2>/dev/null || echo 0)
-[ -n "$REBOOK_ORDER" ] && ok "legacy rebook replacement order returned" || bad "legacy rebook replacement order missing"
-[ "${REBOOK_SEGMENTS:-0}" -ge 1 ] && ok "legacy rebook replacement segment count returned" || bad "legacy rebook replacement segment count missing"
-[ "${REBOOK_BOOKINGS:-0}" -ge "${REBOOK_SEGMENTS:-1}" ] && ok "legacy rebook reserved every returned segment" || bad "legacy rebook reserved $REBOOK_BOOKINGS of $REBOOK_SEGMENTS segments"
+MULTI_REBOOK_KEY=$(uuid7)
+legacy_req /api/v1/legacy/rebook "{\"orderId\":\"$ORDER3\",\"date\":\"2026-08-01\",\"seatType\":\"SECOND\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}" "$MULTI_REBOOK_KEY"
+REBOOK_STATUS=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' 2>/dev/null || true)
+REBOOK_SEGMENTS=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data", {}).get("rebookedSegmentCount", 0))' 2>/dev/null || echo 0)
+REBOOK_BOOKINGS=$(echo "$RESP" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("data", {}).get("replacementSegmentBookingIds", [])))' 2>/dev/null || echo 0)
+if [ "$LAST_CODE" = "200" ]; then ok "multi-leg legacy rebook HTTP 200"; else bad "multi-leg legacy rebook HTTP got $LAST_CODE"; fi
+if [ "$REBOOK_STATUS" = "1" ]; then
+  [ "$REBOOK_SEGMENTS" = "2" ] && [ "$REBOOK_BOOKINGS" = "2" ] && ok "multi-leg legacy rebook reserved both replacement legs" || bad "multi-leg legacy rebook success reserved $REBOOK_BOOKINGS of $REBOOK_SEGMENTS replacement legs"
+else
+  PARTIAL=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data", {}).get("partialOutcome", ""))' 2>/dev/null || true)
+  MSG=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("msg", ""))' 2>/dev/null || true)
+  [ "$PARTIAL" = "PARTIAL_REBOOK_FAILED" ] && echo "$MSG" | grep -q "replacement itinerary covers" && ok "multi-leg legacy rebook failed deterministically instead of first-leg-only success" || bad "multi-leg legacy rebook unexpected failure partial=$PARTIAL msg=$MSG"
+fi
+wait_legacy_event REBOOK "$MULTI_REBOOK_KEY"
+wait_audit "$MULTI_REBOOK_KEY"
 
 summary

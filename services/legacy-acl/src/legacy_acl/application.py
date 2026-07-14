@@ -314,6 +314,11 @@ class LegacyAclService:
             itinerary = _first_mapping(search, "itineraries", "no replacement itinerary found")
             itinerary_ref = _required_text(itinerary, "itineraryRef")
             segment_refs = _segment_refs_from_itinerary(itinerary)
+            original_segment_count = len(scope["segmentRefs"])
+            if len(segment_refs) < original_segment_count:
+                raise DownstreamError(
+                    f"replacement itinerary covers {len(segment_refs)} of {original_segment_count} original segments"
+                )
 
             fare_quote = self.client.post(
                 "fare-pricing",
@@ -372,6 +377,7 @@ class LegacyAclService:
                     )
                     commands.append("RequestSegmentReservation")
                     segment_booking_ids.append(segment_booking_id)
+                    result_refs["replacementSegmentBookingIds"] = list(segment_booking_ids)
             result_refs["replacementSegmentBookingIds"] = segment_booking_ids
 
             amount_due_minor_units = _money_minor_units(amount_due)
