@@ -14,6 +14,7 @@ from reporting.api import configure_error_handlers, configure_runtime_endpoints
 from reporting.application.ports import EventEnvelope, EventHandler, EventPublisher, EventSubscriber, HandlerResult
 from reporting.application.service import ReportingApplicationService
 from reporting.adapters.messaging.publisher import RedisEventPublisher
+from reporting.adapters.messaging.stream_config import SUBSCRIBED_CONTEXTS, reporting_subscription_streams
 from reporting.adapters.messaging.subscriber import RedisEventSubscriber
 from reporting.domain import ReportingError
 
@@ -190,8 +191,70 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["value"], "B")
 
+    def test_new_context_events_increment_context_rollup_and_anomaly_signal(self) -> None:
+        service = ReportingApplicationService()
+        service.handle_event(EventEnvelope(
+            eventId="evt-waitlist-queued",
+            eventType="WaitlistQueued",
+            occurredAt="2026-07-05T10:30:00.000Z",
+            correlationId="corr-1",
+            producer="waitlist",
+            schemaVersion=1,
+            payload={"waitlistRequestId": "wlr-1", "segmentRef": "seg-1"},
+            causationId="evt-source",
+        ))
+        service.handle_event(EventEnvelope(
+            eventId="evt-waitlist-expired",
+            eventType="WaitlistExpired",
+            occurredAt="2026-07-05T10:31:00.000Z",
+            correlationId="corr-1",
+            producer="waitlist",
+            schemaVersion=1,
+            payload={"waitlistRequestId": "wlr-2", "segmentRef": "seg-1"},
+            causationId="evt-source",
+        ))
+
+        response = TestClient(create_app(service=service)).get("/api/v1/metrics/operational")
+
+        self.assertEqual(response.status_code, 200)
+        rollups = {(item["sourceContext"], item["eventType"]): item for item in response.json()["contextRollups"]}
+        self.assertEqual(rollups[("waitlist", "WaitlistQueued")]["count"], 1)
+        self.assertEqual(rollups[("waitlist", "WaitlistExpired")]["anomalyCount"], 1)
+
+    def test_context_rollup_is_queryable_via_revenue_report_shape(self) -> None:
+        service = ReportingApplicationService()
+        service.handle_event(EventEnvelope(eventId="evt-dispatch-failed", eventType="DispatchFailed", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="dispatch", schemaVersion=1, payload={"dispatchId": "disp-1"}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-dispatch-requested", eventType="DispatchRequested", occurredAt="2026-07-05T10:30:01.000Z", correlationId="corr-1", producer="dispatch", schemaVersion=1, payload={"dispatchId": "disp-2"}, causationId="evt-source"))
+
+        response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=source_context")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["value"], "dispatch")
+        self.assertEqual(response.json()["items"][0]["count"], 2)
+
 
 class MessagingTest(unittest.TestCase):
+    def test_reporting_subscribes_to_all_phase_three_context_streams(self) -> None:
+        missing_contexts = {
+            "disruption-recovery",
+            "transfer-management",
+            "waitlist",
+            "wallet-promotion",
+            "dispatch",
+            "ancillary-service",
+            "loyalty-membership",
+            "corporate-travel",
+            "travel-insurance",
+            "identity-verification",
+            "payment-channel",
+            "group-booking",
+            "marketing-campaign",
+            "invoicing",
+            "seat-assignment",
+        }
+        self.assertTrue(missing_contexts.issubset(set(SUBSCRIBED_CONTEXTS)))
+        self.assertTrue({f"events:{context}" for context in missing_contexts}.issubset(set(reporting_subscription_streams())))
+
     def test_application_publisher_wraps_event_in_correct_envelope(self) -> None:
         publisher = FakePublisher()
         service = ReportingApplicationService(publisher=publisher)

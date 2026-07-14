@@ -309,6 +309,25 @@ last_events events:waitlist 8
 [ "$(stream_mentions events:waitlist WaitlistFulfilled "$WLR_F")" = yes ] && ok "WaitlistFulfilled event exists" || bad "missing WaitlistFulfilled event"
 [ "$(stream_mentions events:waitlist WaitlistExpired "$WLR_E")" = yes ] && ok "WaitlistExpired event exists" || bad "missing WaitlistExpired event"
 
+ROLLUP=""
+for attempt in $(seq 1 20); do
+  req GET reporting /api/v1/metrics/operational
+  if [ "$LAST_CODE" = 200 ]; then
+    ROLLUP=$(RESP_JSON="$RESP" python3 - <<'PY' 2>/dev/null
+import json, os
+body = json.loads(os.environ["RESP_JSON"])
+for rollup in body.get("contextRollups", []):
+    if rollup.get("sourceContext") == "waitlist" and rollup.get("eventType") == "WaitlistQueued" and int(rollup.get("count") or 0) > 0:
+        print("yes")
+        break
+PY
+)
+    [ "$ROLLUP" = yes ] && break
+  fi
+  sleep 3
+done
+[ "$ROLLUP" = yes ] && ok "reporting consumed waitlist read model" || bad "reporting waitlist rollup missing"
+
 resume_loadgen
 trap - EXIT
 [ -n "$LG_REPLICAS" ] && [ "$LG_REPLICAS" != "0" ] && ok "loadgen resumed (replicas=$LG_REPLICAS)"

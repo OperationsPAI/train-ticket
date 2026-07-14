@@ -32,6 +32,21 @@ SUBSCRIBED_CONTEXTS = (
     "finance-settlement",
     "reporting",
     "supplier-catalog",
+    "disruption-recovery",
+    "transfer-management",
+    "waitlist",
+    "wallet-promotion",
+    "dispatch",
+    "ancillary-service",
+    "loyalty-membership",
+    "corporate-travel",
+    "travel-insurance",
+    "identity-verification",
+    "payment-channel",
+    "group-booking",
+    "marketing-campaign",
+    "invoicing",
+    "seat-assignment",
 )
 
 
