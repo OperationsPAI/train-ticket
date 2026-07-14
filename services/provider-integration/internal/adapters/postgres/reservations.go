@@ -161,3 +161,37 @@ func DeduplicatingHandler(log *ProcessedEvents, next application.EventHandler) a
 		})
 	}
 }
+
+func (s *ReservationService) ReportProviderSegmentStatus(ctx context.Context, cmd application.ReportProviderSegmentStatusCommand) (application.ProviderSegmentStatusResult, error) {
+	if err := application.ValidateProviderSegmentStatusCommand(cmd); err != nil {
+		return application.ProviderSegmentStatusResult{}, err
+	}
+	eventType := "ProviderSegmentDelayed"
+	payload := map[string]any{
+		"segmentRef":          strings.TrimSpace(cmd.SegmentRef),
+		"scheduledServiceRef": strings.TrimSpace(cmd.ScheduledServiceRef),
+		"serviceDate":         strings.TrimSpace(cmd.ServiceDate),
+		"observedAt":          cmd.ObservedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		"sourceSystem":        application.SourceSystemOrDefault(cmd.SourceSystem),
+	}
+	switch strings.TrimSpace(strings.ToUpper(cmd.Status)) {
+	case "DELAY":
+		payload["estimatedArrivalAt"] = cmd.EstimatedArrivalAt.UTC().Format("2006-01-02T15:04:05Z")
+	case "CANCELLED":
+		eventType = "ProviderSegmentCancelled"
+		payload["cancelledAt"] = cmd.CancelledAt.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if err := s.within(ctx, func(txCtx context.Context) error {
+		if s.publisher == nil {
+			return nil
+		}
+		envelope, err := application.NewEventEnvelope(txCtx, eventType, cmd.CorrelationID, cmd.CausationID, payload)
+		if err != nil {
+			return err
+		}
+		return s.publisher.Publish(txCtx, envelope)
+	}); err != nil {
+		return application.ProviderSegmentStatusResult{}, err
+	}
+	return application.ProviderSegmentStatusResult{SegmentRef: strings.TrimSpace(cmd.SegmentRef), Status: strings.TrimSpace(strings.ToUpper(cmd.Status)), ObservedAt: cmd.ObservedAt.UTC().Format("2006-01-02T15:04:05Z"), PublishedAs: eventType}, nil
+}

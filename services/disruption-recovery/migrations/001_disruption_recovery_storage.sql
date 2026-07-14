@@ -39,3 +39,31 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
   response_body jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS segment_order_index (
+  segment_ref text NOT NULL,
+  order_id text NOT NULL,
+  PRIMARY KEY (segment_ref, order_id)
+);
+CREATE INDEX IF NOT EXISTS idx_segment_order_index_order
+  ON segment_order_index (order_id);
+CREATE TABLE IF NOT EXISTS service_alert_snapshots (
+  id text PRIMARY KEY,
+  version bigint NOT NULL,
+  data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_service_alert_incident_published
+  ON service_alert_snapshots ((data->>'incidentId'), (data->>'publishedAt'));
+CREATE INDEX IF NOT EXISTS idx_service_alert_affected_orders
+  ON service_alert_snapshots USING GIN ((data->'affectedOrderIds'));
+
+CREATE TABLE IF NOT EXISTS pending_segment_signals (
+  event_id text PRIMARY KEY,
+  stream text NOT NULL,
+  envelope jsonb NOT NULL,
+  segment_ref text NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pending_segment_signals_segment
+  ON pending_segment_signals (segment_ref, received_at);

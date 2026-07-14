@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 )
@@ -374,5 +378,36 @@ func TestInboundSegmentReservationRequestedMalformedSegmentBookingIDIsFatal(t *t
 				t.Fatalf("no outcome event may be published for rejected payloads, got %d", len(publisher.envelopes))
 			}
 		})
+	}
+}
+
+func TestProviderSegmentStatusHTTPPublishesProviderSegmentDelayed(t *testing.T) {
+	publisher := &fakePublisher{}
+	service := application.NewInMemoryReservationService(publisher)
+	router := RouterWithDependencies(service, idempotency.NewMemoryStore())
+	body := `{"segmentRef":"seg-018f0000-0000-7000-8000-000000000301","scheduledServiceRef":"svc-100","serviceDate":"2026-07-05","status":"DELAY","estimatedArrivalAt":"2026-07-05T10:45:00Z","observedAt":"2026-07-05T10:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/provider-segment-status", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(idempotency.Header, testUUIDv7(302))
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("status = %d body %s", resp.Code, resp.Body.String())
+	}
+	if len(publisher.envelopes) != 1 {
+		t.Fatalf("expected one event, got %d", len(publisher.envelopes))
+	}
+	envelope := publisher.envelopes[0]
+	if envelope.EventType != "ProviderSegmentDelayed" || envelope.Producer != application.ProducerName {
+		t.Fatalf("unexpected envelope: %#v", envelope)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["segmentRef"] != "seg-018f0000-0000-7000-8000-000000000301" || payload["sourceSystem"] != "PROVIDER" {
+		t.Fatalf("unexpected payload: %#v", payload)
 	}
 }

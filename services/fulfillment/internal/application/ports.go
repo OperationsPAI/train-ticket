@@ -606,7 +606,7 @@ func validateReportSegmentStatus(cmd ReportSegmentStatusCommand) error {
 		return errors.New("observedAt is required")
 	}
 	switch cmd.SourceSystem {
-	case domain.SegmentStatusSourceSystemSystem, domain.SegmentStatusSourceSystemOps:
+	case domain.SegmentStatusSourceSystemSystem, domain.SegmentStatusSourceSystemOps, domain.SegmentStatusSourceSystemProviderIntegration:
 	default:
 		return fmt.Errorf("invalid sourceSystem: %s", cmd.SourceSystem)
 	}

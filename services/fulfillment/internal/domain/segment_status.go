@@ -20,8 +20,9 @@ const (
 type SegmentStatusSourceSystem string
 
 const (
-	SegmentStatusSourceSystemSystem SegmentStatusSourceSystem = "SYSTEM"
-	SegmentStatusSourceSystemOps    SegmentStatusSourceSystem = "OPS"
+	SegmentStatusSourceSystemSystem              SegmentStatusSourceSystem = "SYSTEM"
+	SegmentStatusSourceSystemOps                 SegmentStatusSourceSystem = "OPS"
+	SegmentStatusSourceSystemProviderIntegration SegmentStatusSourceSystem = "PROVIDER_INTEGRATION"
 )
 
 type SegmentStatusRecord struct {
@@ -69,7 +70,7 @@ func NewSegmentStatusRecord(id SegmentStatusRecordID, commandID string, segmentR
 		return nil, fmt.Errorf("observedAt is required")
 	}
 	switch sourceSystem {
-	case SegmentStatusSourceSystemSystem, SegmentStatusSourceSystemOps:
+	case SegmentStatusSourceSystemSystem, SegmentStatusSourceSystemOps, SegmentStatusSourceSystemProviderIntegration:
 	default:
 		return nil, fmt.Errorf("sourceSystem is invalid")
 	}

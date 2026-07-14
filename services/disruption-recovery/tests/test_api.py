@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
+from train_ticket_platform.events import EventEnvelope
 
 from disruption_recovery import create_app
 from disruption_recovery.application.service import InMemoryStore
+from train_ticket_platform.messaging import HandlerResult
 import re as _re
 
 
@@ -44,6 +46,7 @@ def test_select_compensation_recovers_and_close_terminal_only() -> None:
     assert selected.status_code == 200
     assert selected.json()["status"] == "RECOVERED"
     closed = client.post(f"/api/v1/recovery-cases/{case['caseId']}/close", json={"closedBy": {"actorType": "OPERATIONS", "actorId": "ops-1"}, "closeReason": "done"}, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000103"})
+
     assert closed.status_code == 200
     assert closed.json()["status"] == "CLOSED"
 
@@ -205,3 +208,151 @@ def test_reaccommodation_selection_posts_downstream_and_replay_keeps_key() -> No
     started = event_payloads(store, "RecoveryExecutionStarted")[0]
     assert started["downstreamRequest"]["connectionId"] == downstream.calls[0][0]
     assert started["downstreamRequest"]["idempotencyKey"] == first_key
+
+
+
+def test_segment_ref_fanout_from_journey_order_index_and_service_alert_read_model() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    client = TestClient(app)
+    service = app.state.disruption_recovery_service
+    segment = "seg-0194f2e0-7b3e-7610-8000-000000000901"
+    service.handle_journey_order_created(EventEnvelope(
+        eventId="evt-0194f2e0-7b3e-7610-8000-000000000901",
+        eventType="JourneyOrderCreated",
+        producer="journey-order",
+        payload={"orderId": "ord-0194f2e0-7b3e-7610-8000-000000000901", "segmentRefs": [segment]},
+    ), "events:journey-order")
+
+    body = report_body()
+    body["segmentRef"] = segment
+    body["affectedOrderIds"] = []
+    response = client.post("/api/v1/disruptions", json=body, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000901"})
+
+    assert response.status_code == 202, response.text
+    data = response.json()
+    assert [case["journeyOrderId"] for case in data["recoveryCases"]] == ["ord-0194f2e0-7b3e-7610-8000-000000000901"]
+    alerts = client.get(f"/api/v1/service-alerts?incidentId={data['incident']['incidentId']}").json()
+    assert alerts["total"] == 1
+    assert alerts["items"][0]["affectedOrderIds"] == ["ord-0194f2e0-7b3e-7610-8000-000000000901"]
+
+
+def test_fulfillment_segment_cancelled_opens_recovery_case_and_alert_read_model() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    service = app.state.disruption_recovery_service
+    segment = "seg-0194f2e0-7b3e-7610-8000-000000000902"
+    store.index_order_segments("ord-0194f2e0-7b3e-7610-8000-000000000902", (segment,))
+    handled = service.handle_fulfillment_signal(EventEnvelope(
+        eventId="evt-0194f2e0-7b3e-7610-8000-000000000902",
+        eventType="SegmentCancelled",
+        producer="fulfillment",
+        correlationId="corr-0194f2e0-7b3e-7610-8000-000000000902",
+        payload={
+            "segmentRef": segment,
+            "scheduledServiceRef": "ssch-0194f2e0-7b3e-7610-8000-000000000902",
+            "serviceDate": "2026-08-02",
+            "cancelledAt": "2026-08-02T09:00:00Z",
+            "observedAt": "2026-08-02T08:55:00Z",
+            "sourceSystem": "SYSTEM",
+        },
+    ), "events:fulfillment")
+
+    assert handled is True
+    incident = next(iter(store.incidents.values()))
+    assert incident.disruptionType == "CANCELLATION"
+    assert incident.affectedOrderIds == ("ord-0194f2e0-7b3e-7610-8000-000000000902",)
+    case = next(iter(store.cases.values()))
+    assert case.affectedScope["evidenceRef"] == "evt-0194f2e0-7b3e-7610-8000-000000000902"
+    assert next(iter(store.service_alerts.values())).incidentId == incident.incidentId
+
+
+def test_service_alert_read_model_can_rebuild_from_published_event() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    service = app.state.disruption_recovery_service
+    payload = {
+        "serviceAlertId": "sal-0194f2e0-7b3e-7610-8000-000000000903",
+        "incidentId": "inc-0194f2e0-7b3e-7610-8000-000000000903",
+        "disruptionType": "DELAY",
+        "segmentRef": "seg-0194f2e0-7b3e-7610-8000-000000000903",
+        "serviceDate": "2026-08-02",
+        "audience": "AFFECTED_ORDERS",
+        "affectedOrderIds": ["ord-0194f2e0-7b3e-7610-8000-000000000903"],
+        "messageSummary": "Delay",
+        "publishedAt": "2026-08-02T09:00:00Z",
+    }
+
+    assert service.handle_service_alert_published(EventEnvelope(
+        eventId="evt-0194f2e0-7b3e-7610-8000-000000000903",
+        eventType="ServiceAlertPublished",
+        producer="disruption-recovery",
+        payload=payload,
+    ), "events:disruption-recovery") is True
+
+    client = TestClient(app)
+    response = client.get("/api/v1/service-alerts/sal-0194f2e0-7b3e-7610-8000-000000000903")
+    assert response.status_code == 200
+    assert response.json()["incidentId"] == payload["incidentId"]
+
+
+def test_provider_segment_delayed_opens_recovery_case() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    service = app.state.disruption_recovery_service
+    segment = "seg-0194f2e0-7b3e-7610-8000-000000000904"
+    store.index_order_segments("ord-0194f2e0-7b3e-7610-8000-000000000904", (segment,))
+
+    assert service.handle_provider_signal(EventEnvelope(
+        eventId="evt-0194f2e0-7b3e-7610-8000-000000000904",
+        eventType="ProviderSegmentDelayed",
+        producer="provider-integration",
+        correlationId="corr-0194f2e0-7b3e-7610-8000-000000000904",
+        payload={
+            "segmentRef": segment,
+            "scheduledServiceRef": "ssch-0194f2e0-7b3e-7610-8000-000000000904",
+            "serviceDate": "2026-08-02",
+            "estimatedArrivalAt": "2026-08-02T10:30:00Z",
+            "observedAt": "2026-08-02T09:00:00Z",
+            "delayMinutes": 45,
+            "sourceSystem": "PROVIDER",
+        },
+    ), "events:provider-integration") is True
+
+    incident = next(iter(store.incidents.values()))
+    assert incident.disruptionType == "DELAY"
+    case = next(iter(store.cases.values()))
+    assert case.affectedScope["disruptionType"] == "DELAY"
+
+
+def test_segment_signal_waits_for_journey_order_projection() -> None:
+    store = InMemoryStore()
+    app = create_app(store=store)
+    service = app.state.disruption_recovery_service
+    segment = "seg-0194f2e0-7b3e-7610-8000-000000000905"
+    signal = EventEnvelope(
+        eventId="evt-0194f2e0-7b3e-7610-8000-000000000905",
+        eventType="SegmentDelayed",
+        producer="fulfillment",
+        correlationId="corr-0194f2e0-7b3e-7610-8000-000000000905",
+        payload={
+            "segmentRef": segment,
+            "scheduledServiceRef": "ssch-0194f2e0-7b3e-7610-8000-000000000905",
+            "serviceDate": "2026-08-02",
+            "estimatedArrivalAt": "2026-08-02T10:30:00Z",
+            "observedAt": "2026-08-02T09:00:00Z",
+        },
+    )
+
+    result = service.handle_fulfillment_signal(signal, "events:fulfillment")
+
+    assert isinstance(result, HandlerResult)
+    assert signal.eventId not in store.processed_events
+    assert service.handle_journey_order_created(EventEnvelope(
+        eventId="evt-0194f2e0-7b3e-7610-8000-000000000906",
+        eventType="JourneyOrderCreated",
+        producer="journey-order",
+        payload={"orderId": "ord-0194f2e0-7b3e-7610-8000-000000000905", "segmentRefs": [segment]},
+    ), "events:journey-order") is True
+    assert signal.eventId in store.processed_events
+    assert next(iter(store.incidents.values())).affectedOrderIds == ("ord-0194f2e0-7b3e-7610-8000-000000000905",)

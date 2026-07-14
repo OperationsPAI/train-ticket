@@ -14,7 +14,7 @@ import (
 	adapterpg "github.com/trainticket/greenfield/services/provider-integration/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/application"
 	"github.com/trainticket/greenfield/services/provider-integration/internal/config"
-	"github.com/trainticket/greenfield/services/provider-integration/internal/domain"
+	providerhttp "github.com/trainticket/greenfield/services/provider-integration/internal/http"
 )
 
 func main() {
@@ -66,8 +66,7 @@ func main() {
 	if err := subscriber.Subscribe(ctx, nil, messaging.ProviderIntegrationGroup, consumerName, adapterpg.DeduplicatingHandler(consumedEvents, application.NewInboundEventHandler(service))); err != nil {
 		log.Fatal(err)
 	}
-	profile := domain.Profile()
-	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
+	router := providerhttp.RouterWithDependencies(service, nil)
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + cfg.HTTPPort, Handler: router})
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)

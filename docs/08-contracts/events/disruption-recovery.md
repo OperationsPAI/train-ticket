@@ -1,6 +1,6 @@
 # Disruption Recovery — Events & Commands
 
-Last updated: 2026-07-09
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -10,21 +10,22 @@ by the activation rulings in `docs/08-contracts/api/disruption-recovery.md`.
 
 Activation-wave rulings:
 
-- The active signal source is the operations/system HTTP command
-  `POST /api/v1/disruptions`. It represents Customer Service/Admin manual rows
-  or Transfer Management system reports and carries a normalized
-  `disruptionType`, `scheduledServiceRef` and/or `segmentRef`, `evidence`, and
-  explicit `affectedOrderIds`.
-- Automatic `segmentRef` to orders fan-out is deferred because Journey Order has
-  no by-segment query contract. Service Plan, Provider Integration, and
-  Fulfillment signal events remain deferred. Transfer Management wave 18 opens
-  protected missed-connection recovery through HTTP
-  `POST /api/v1/disruptions`, not by a new inbound event.
+- Active signal sources are the operations/system HTTP command
+  `POST /api/v1/disruptions`, Fulfillment `SegmentDelayed` /
+  `SegmentCancelled`, and Provider Integration segment disruption events. HTTP
+  reports carry a normalized `disruptionType`, `scheduledServiceRef` and/or
+  `segmentRef`, `evidence`, and affected orders when supplied by the reporter.
+- `segmentRef` to orders fan-out is active through the Journey Order event-bus
+  projection built from `JourneyOrderCreated.segmentRefs`. A report or consumed
+  segment signal with no explicit `affectedOrderIds` MUST resolve orders from
+  this projection and then emit the standard `RecoveryCaseOpened` /
+  `RecoveryOptionsGenerated` recovery events for each resolved order; no
+  cross-service resolver HTTP call is introduced.
 - The report opens or merges an `Incident`; merge key is
   `(scheduledServiceRef, serviceDate)` when `scheduledServiceRef` is present.
-  `ServiceAlert` is event-only in this wave: `ServiceAlertPublished` is
-  published, but the ServiceAlert read model is deferred.
-- One `RecoveryCase` is opened per explicit `affectedOrderId`. Event payload
+  `ServiceAlertPublished` is stored in the ServiceAlert read model and exposed by
+  the Disruption Recovery API using the same payload shape as the event.
+- One `RecoveryCase` is opened per explicit or segment-resolved `affectedOrderId`. Event payload
   statuses use the exact 10-state domain machine: `OPENED`, `ASSESSING_IMPACT`,
   `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`,
   `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED`.
@@ -46,8 +47,7 @@ Activation-wave rulings:
   idempotency key. `MANUAL` moves the case to manual review.
 - Reporting consumption of Disruption Recovery events remains deferred in this
   wave. Notification is active for traveler-facing recovery lifecycle and alert
-  facts. The only active inbound subscription is `events:post-sales`
-  `PostSalesApplied` for REFUND execution convergence.
+  facts. Active inbound subscriptions are listed in Consumed upstream events below.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -84,9 +84,9 @@ Downstream HTTP commands use deterministic idempotency keys:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `evidenceRef` | string | yes | Reference to the customer-service/admin evidence record. |
-| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`; all other sources are deferred. |
-| `sourceRecordId` | string | yes | Upstream manual-row identifier. |
+| `evidenceRef` | string | yes | Reference to the customer-service/admin evidence record or consumed upstream event ID. |
+| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, `TRANSFER_MANAGEMENT`, `PROVIDER_INTEGRATION`, or `FULFILLMENT`. |
+| `sourceRecordId` | string | yes | Upstream manual row or event identifier. |
 | `summary` | string | yes | Operational summary; must not include unmasked documents or sensitive personal data. |
 | `occurredAt` | RFC3339 UTC | no | Observation time if known. |
 
@@ -143,7 +143,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `segmentRef` | string | no | Segment reference. |
 | `serviceDate` | string | yes | ISO `YYYY-MM-DD` service date. |
 | `evidence` | object | yes | Evidence object. |
-| `affectedOrderIds` | array[string] | yes | Explicit affected orders supplied by operations. |
+| `affectedOrderIds` | array[string] | yes | Affected orders supplied explicitly or resolved from `segmentRef` using the Journey Order projection. |
 | `reportedBy` | object | yes | Reporting actor. |
 | `reportedAt` | RFC3339 UTC | yes | Report timestamp. |
 
@@ -351,7 +351,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 |---|---|---|
 | `ReportDisruption` | Operations HTTP `POST /api/v1/disruptions` | `DisruptionReported` |
 | `OpenIncident` | Application flow after report, or merge lookup miss | `IncidentOpened` |
-| `OpenRecoveryCase` | Application flow for each explicit `affectedOrderId` | `RecoveryCaseOpened` |
+| `OpenRecoveryCase` | Application flow for each explicit or segment-resolved `affectedOrderId` | `RecoveryCaseOpened` |
 | `GenerateRecoveryOptions` | Application flow after impact assessment | `RecoveryOptionsGenerated` |
 | `SelectRecoveryOption` | Automatic single-option `WAIT`, or HTTP `POST /api/v1/recovery-cases/{caseId}/select-option` | `RecoveryOptionSelected` |
 | `ApplyRecoveryDecision` | Internal execution start after selection | `RecoveryExecutionStarted` |
@@ -364,20 +364,27 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Upstream stream | Event type | Purpose |
 |---|---|---|
 | `events:post-sales` | `PostSalesApplied` | Converge a selected `REFUND` option when the downstream Post Sales case reaches `APPLIED`. |
+| `events:journey-order` | `JourneyOrderCreated` | Maintain the local `segmentRef` -> `journeyOrderId` projection used for disruption fan-out. Payload fields consumed: `orderId`, `segmentRefs`. |
+| `events:fulfillment` | `SegmentDelayed`, `SegmentCancelled` | Open or merge a `FULFILLMENT`-sourced incident from the segment signal, resolve affected orders from `segmentRef`, publish a ServiceAlert, and fan out recovery cases through the standard events. |
+| `events:provider-integration` | `ProviderSegmentDelayed`, `ProviderSegmentCancelled` (or provider-published `SegmentDelayed` / `SegmentCancelled` with the same segment payload) | Open or merge a `PROVIDER_INTEGRATION`-sourced incident from the provider segment signal, resolve affected orders from `segmentRef`, publish a ServiceAlert, and fan out recovery cases through the standard events. |
+| `events:disruption-recovery` | `ServiceAlertPublished` | Build/repair the ServiceAlert read model from the normative alert event payload. |
 
-No other upstream event subscription is active in this wave. Service Plan,
-Provider Integration, and Fulfillment disruption sources are deferred. Transfer
-Management protected missed-connection reports arrive over HTTP with
+Fulfillment and Provider Integration segment ingress use the normative
+`segmentRef`, `scheduledServiceRef`, `serviceDate`, observed/cancelled/estimated
+time fields from their source contracts. Disruption Recovery maps delayed signals
+to `disruptionType=DELAY`, cancelled signals to `disruptionType=CANCELLATION`,
+sets `reportedBy={actorType:SYSTEM, actorId:<source-service>}`, and records
+`evidence.sourceSystem` as `FULFILLMENT` or `PROVIDER_INTEGRATION`. Transfer
+Management protected missed-connection reports continue to arrive over HTTP with
 `disruptionType=MISSED_CONNECTION`, `reportedBy.actorType=SYSTEM`, and
-`evidence.sourceSystem=TRANSFER_MANAGEMENT`; the same wave implementation MUST
-update Disruption Recovery code enum/validation allowlists for those values and
-MUST update e2e 17/19 expectations for the `WAIT` plus `REACCOMMODATION`
-`AWAITING_USER_CHOICE` behavior.
+`evidence.sourceSystem=TRANSFER_MANAGEMENT`.
 
-## Deferred downstream touchpoints
+## Downstream and read-model touchpoints
 
-| Downstream context | Events | Purpose |
+| Context | Events / model | Purpose |
 |---|---|---|
 | Notification | active: `ServiceAlertPublished`, `RecoveryCaseOpened`, `RecoveryOptionsGenerated`, `RecoveryOptionSelected`, `RecoveryExecutionStarted`, `RecoveryCompleted`, `RecoveryFailed` | User-facing alert, option, decision, progress, and completion notifications. `RecoveryExecutionStarted` is progress-only; refund executed / compensation issued notifications are emitted only from `RecoveryCompleted`. |
+| ServiceAlert read model | active: built from `ServiceAlertPublished`; queryable through the Disruption Recovery API with the event payload fields (`serviceAlertId`, `incidentId`, `disruptionType`, `scheduledServiceRef`, `segmentRef`, `serviceDate`, `audience`, `affectedOrderIds`, `messageSummary`, `publishedAt`) | Customer-service/operations alert feed and affected-order alert lookup. |
+| Journey Order segment projection | active: built from `JourneyOrderCreated.segmentRefs`; used only for event-driven `segmentRef` fan-out | Resolve affected orders for HTTP reports and provider/fulfillment segment signals without introducing a cross-service HTTP resolver. |
 | Reporting | all Disruption Recovery events | Disruption metrics, waiver/compensation cost attribution, and operational read models. |
 | Journey Order | recovery summary events | Order-detail disruption and recovery display. |

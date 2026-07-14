@@ -69,6 +69,31 @@ type ProviderReservationService interface {
 	CancelReservation(context.Context, CancelProviderReservationCommand) (CancelProviderReservationResult, error)
 }
 
+type ReportProviderSegmentStatusCommand struct {
+	SegmentRef          string
+	ScheduledServiceRef string
+	ServiceDate         string
+	Status              string
+	EstimatedArrivalAt  time.Time
+	CancelledAt         time.Time
+	ObservedAt          time.Time
+	SourceSystem        string
+	CorrelationID       string
+	CausationID         string
+	IdempotencyKey      string
+}
+
+type ProviderSegmentStatusResult struct {
+	SegmentRef  string `json:"segmentRef"`
+	Status      string `json:"status"`
+	ObservedAt  string `json:"observedAt"`
+	PublishedAs string `json:"publishedAs"`
+}
+
+type ProviderSegmentStatusService interface {
+	ReportProviderSegmentStatus(context.Context, ReportProviderSegmentStatusCommand) (ProviderSegmentStatusResult, error)
+}
+
 type InMemoryReservationService struct {
 	mu            sync.Mutex
 	publisher     EventPublisher
@@ -256,4 +281,68 @@ func newLogID() string {
 		id = uuid.New()
 	}
 	return "preq-" + id.String()
+}
+
+func (s *InMemoryReservationService) ReportProviderSegmentStatus(ctx context.Context, cmd ReportProviderSegmentStatusCommand) (ProviderSegmentStatusResult, error) {
+	if err := ValidateProviderSegmentStatusCommand(cmd); err != nil {
+		return ProviderSegmentStatusResult{}, err
+	}
+	eventType := "ProviderSegmentDelayed"
+	payload := map[string]any{
+		"segmentRef":          strings.TrimSpace(cmd.SegmentRef),
+		"scheduledServiceRef": strings.TrimSpace(cmd.ScheduledServiceRef),
+		"serviceDate":         strings.TrimSpace(cmd.ServiceDate),
+		"observedAt":          cmd.ObservedAt.UTC(),
+		"sourceSystem":        SourceSystemOrDefault(cmd.SourceSystem),
+	}
+	switch strings.TrimSpace(strings.ToUpper(cmd.Status)) {
+	case "DELAY":
+		payload["estimatedArrivalAt"] = cmd.EstimatedArrivalAt.UTC()
+	case "CANCELLED":
+		eventType = "ProviderSegmentCancelled"
+		payload["cancelledAt"] = cmd.CancelledAt.UTC()
+	}
+	if err := s.publish(ctx, eventType, cmd.CorrelationID, cmd.CausationID, payload); err != nil {
+		return ProviderSegmentStatusResult{}, ErrUnavailable
+	}
+	return ProviderSegmentStatusResult{SegmentRef: strings.TrimSpace(cmd.SegmentRef), Status: strings.TrimSpace(strings.ToUpper(cmd.Status)), ObservedAt: cmd.ObservedAt.UTC().Format(time.RFC3339), PublishedAs: eventType}, nil
+}
+
+func ValidateProviderSegmentStatusCommand(cmd ReportProviderSegmentStatusCommand) error {
+	if err := validatePrefixedUUIDV7("segmentRef", cmd.SegmentRef, "seg"); err != nil {
+		return err
+	}
+	if err := validateRequiredToken("scheduledServiceRef", cmd.ScheduledServiceRef); err != nil {
+		return err
+	}
+	if _, err := time.Parse("2006-01-02", strings.TrimSpace(cmd.ServiceDate)); err != nil {
+		return fmt.Errorf("%w: serviceDate must be YYYY-MM-DD", ErrValidation)
+	}
+	if cmd.ObservedAt.IsZero() {
+		return fmt.Errorf("%w: observedAt is required", ErrValidation)
+	}
+	switch strings.TrimSpace(strings.ToUpper(cmd.Status)) {
+	case "DELAY":
+		if cmd.EstimatedArrivalAt.IsZero() {
+			return fmt.Errorf("%w: estimatedArrivalAt is required for DELAY", ErrValidation)
+		}
+	case "CANCELLED":
+		if cmd.CancelledAt.IsZero() {
+			return fmt.Errorf("%w: cancelledAt is required for CANCELLED", ErrValidation)
+		}
+	default:
+		return fmt.Errorf("%w: status must be DELAY or CANCELLED", ErrValidation)
+	}
+	if strings.TrimSpace(cmd.IdempotencyKey) == "" {
+		return fmt.Errorf("%w: idempotency key is required", ErrDomainRule)
+	}
+	return nil
+}
+
+func SourceSystemOrDefault(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "PROVIDER"
+	}
+	return trimmed
 }

@@ -19,7 +19,7 @@ class ReportDisruptionRequest(LooseModel):
     disruptionType: str
     serviceDate: str
     evidence: dict[str, Any]
-    affectedOrderIds: list[str] = Field(min_length=1)
+    affectedOrderIds: list[str] = Field(default_factory=list)
     reportedBy: dict[str, Any]
     scheduledServiceRef: str | None = None
     segmentRef: str | None = None
@@ -79,6 +79,19 @@ def list_cases(request: Request, incidentId: str = Query(...), status: str | Non
     safe_limit = max(1, min(limit, 100))
     safe_offset = max(0, offset)
     items, total = _service(request).store.list_cases(incidentId, status, safe_limit, safe_offset)
+    return {"items": [item.to_json() for item in items], "total": total, "limit": safe_limit, "offset": safe_offset}
+
+
+@router.get("/service-alerts/{service_alert_id}")
+def get_service_alert(service_alert_id: str, request: Request) -> dict[str, Any]:
+    return _service(request).store.get_service_alert(service_alert_id).to_json()
+
+
+@router.get("/service-alerts")
+def list_service_alerts(request: Request, incidentId: str | None = None, journeyOrderId: str | None = None, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+    safe_limit = max(1, min(limit, 100))
+    safe_offset = max(0, offset)
+    items, total = _service(request).store.list_service_alerts(incidentId, journeyOrderId, safe_limit, safe_offset)
     return {"items": [item.to_json() for item in items], "total": total, "limit": safe_limit, "offset": safe_offset}
 
 

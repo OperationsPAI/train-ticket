@@ -14,7 +14,13 @@ from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 from train_ticket_platform.ids import new_uuid7
 
-from .adapters.messaging import POST_SALES_STREAM
+from .adapters.messaging import (
+    DISRUPTION_RECOVERY_STREAM,
+    FULFILLMENT_STREAM,
+    JOURNEY_ORDER_STREAM,
+    POST_SALES_STREAM,
+    PROVIDER_INTEGRATION_STREAM,
+)
 from .adapters.storage.postgres import PostgresDisruptionRecoveryStore
 from .application.service import DisruptionRecoveryService, InMemoryStore
 from .downstream import DownstreamHttpClient
@@ -141,6 +147,21 @@ def configure_disruption_routes(app: FastAPI, store: Any | None = None, idempote
         app.router.routes.append(route)
 
 
+def _stream_for_event(envelope: Any) -> str | None:
+    producer = str(getattr(envelope, "producer", "") or "")
+    if producer == "post-sales":
+        return POST_SALES_STREAM
+    if producer == "journey-order":
+        return JOURNEY_ORDER_STREAM
+    if producer == "fulfillment":
+        return FULFILLMENT_STREAM
+    if producer == "provider-integration":
+        return PROVIDER_INTEGRATION_STREAM
+    if producer == "disruption-recovery":
+        return DISRUPTION_RECOVERY_STREAM
+    return None
+
+
 def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None]:
     config = DatabaseConfig.from_env()
     if config is None:
@@ -157,8 +178,20 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     subscriber = RedisEventSubscriber()
     service_holder: dict[str, Any] = {}
     def handle(envelope: Any) -> None:
-        service_holder["service"].handle_post_sales_applied(envelope, POST_SALES_STREAM)
-    thread = subscriber.start_in_background((POST_SALES_STREAM,), "disruption-recovery", handle)
+        service = service_holder["service"]
+        stream = _stream_for_event(envelope)
+        if service.handle_post_sales_applied(envelope, stream):
+            return
+        if service.handle_journey_order_created(envelope, stream):
+            return
+        if service.handle_service_alert_published(envelope, stream):
+            return
+        if stream == FULFILLMENT_STREAM:
+            service.handle_fulfillment_signal(envelope, stream)
+            return
+        if stream == PROVIDER_INTEGRATION_STREAM:
+            service.handle_provider_signal(envelope, stream)
+    thread = subscriber.start_in_background((POST_SALES_STREAM, JOURNEY_ORDER_STREAM, DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM, PROVIDER_INTEGRATION_STREAM), "disruption-recovery", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
     app.state.event_subscriber_thread = thread

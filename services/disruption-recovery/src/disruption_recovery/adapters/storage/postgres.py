@@ -9,9 +9,10 @@ import json
 from typing import Any
 
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
+from train_ticket_platform.events import EventEnvelope
 
 from disruption_recovery.application.service import InMemoryStore, NotFoundError
-from disruption_recovery.domain import Incident, RecoveryCase, RecoveryCaseStatus, RecoveryExecution, RecoveryOption, RecoveryOptionSet, RecoveryOptionType, ExecutionTarget
+from disruption_recovery.domain import Incident, RecoveryCase, RecoveryCaseStatus, RecoveryExecution, RecoveryOption, RecoveryOptionSet, RecoveryOptionType, ExecutionTarget, ServiceAlert
 
 
 def _dt(value: datetime) -> str:
@@ -74,6 +75,45 @@ def case_from_json(data: Mapping[str, Any] | str, version: int = 0) -> RecoveryC
     return RecoveryCase(str(data["caseId"]), str(data["incidentId"]), str(data["journeyOrderId"]), dict(data["affectedScope"]), RecoveryCaseStatus(str(data["status"])), _parse_dt(str(data["openedAt"])) or datetime.now(UTC), _parse_dt(str(data["updatedAt"])) or datetime.now(UTC), _option_set_from_json(data.get("optionSet")), data.get("selectedOptionId"), _execution_from_json(data.get("execution")), version)
 
 
+def alert_to_json(alert: ServiceAlert) -> dict[str, Any]:
+    return alert.to_json()
+
+
+def alert_from_json(data: Mapping[str, Any] | str, version: int = 0) -> ServiceAlert:
+    data = _json_obj(data)
+    return ServiceAlert(
+        serviceAlertId=str(data["serviceAlertId"]),
+        incidentId=str(data["incidentId"]),
+        disruptionType=str(data["disruptionType"]),
+        serviceDate=str(data["serviceDate"]),
+        audience=str(data["audience"]),
+        messageSummary=str(data["messageSummary"]),
+        publishedAt=_parse_dt(str(data["publishedAt"])) or datetime.now(UTC),
+        scheduledServiceRef=data.get("scheduledServiceRef"),
+        segmentRef=data.get("segmentRef"),
+        affectedOrderIds=tuple(data.get("affectedOrderIds") or ()),
+        version=version,
+    )
+
+
+def _stream_for_envelope(envelope: Any) -> str:
+    producer = str(getattr(envelope, "producer", "") or "")
+    return f"events:{producer}" if producer else "events:unknown"
+
+
+def _envelope_from_json(data: Mapping[str, Any] | str) -> EventEnvelope:
+    obj = dict(_json_obj(data))
+    return EventEnvelope(
+        eventId=str(obj["eventId"]),
+        eventType=str(obj["eventType"]),
+        occurredAt=str(obj.get("occurredAt") or ""),
+        correlationId=str(obj.get("correlationId") or ""),
+        causationId=obj.get("causationId"),
+        producer=str(obj.get("producer") or ""),
+        schemaVersion=int(obj.get("schemaVersion") or 1),
+        payload=dict(obj.get("payload") or {}),
+    )
+
 @dataclass
 class _UnitOfWorkState:
     connection: Any | None = None
@@ -94,6 +134,7 @@ class PostgresDisruptionRecoveryStore(InMemoryStore):
         self._incidents = SnapshotRepository("incident_snapshots")
         self._cases = SnapshotRepository("recovery_case_snapshots")
         self._processed = ProcessedEventsGuard()
+        self._alerts = SnapshotRepository("service_alert_snapshots")
 
     @contextmanager
     def transaction(self):
@@ -196,6 +237,88 @@ class PostgresDisruptionRecoveryStore(InMemoryStore):
             row = conn.execute("SELECT id, version, data FROM recovery_case_snapshots WHERE data->'execution'->>'externalRef' = %s ORDER BY id LIMIT 1", (post_sales_case_id,)).fetchone()
             if not row: return None
             self._remember("case", str(row[0]), int(row[1])); return case_from_json(row[2], int(row[1]))
+        return self._with_conn(read)
+
+
+    def index_order_segments(self, order_id: str, segment_refs: tuple[str, ...]) -> None:
+        def write(conn: Any) -> None:
+            for segment_ref in segment_refs:
+                conn.execute("INSERT INTO segment_order_index (segment_ref, order_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (segment_ref, order_id))
+        self._with_conn(write)
+
+    def find_orders_by_segment_ref(self, segment_ref: str) -> tuple[str, ...]:
+        def read(conn: Any) -> tuple[str, ...]:
+            rows = conn.execute("SELECT order_id FROM segment_order_index WHERE segment_ref = %s ORDER BY order_id", (segment_ref,)).fetchall()
+            return tuple(str(row[0]) for row in rows)
+        return self._with_conn(read)
+
+    def save_pending_segment_signal(self, envelope: Any) -> None:
+        def write(conn: Any) -> None:
+            payload = dict(envelope.payload)
+            segment_ref = str(payload.get("segmentRef") or "").strip()
+            if not segment_ref:
+                return
+            body = envelope.to_json_dict() if hasattr(envelope, "to_json_dict") else {
+                "eventId": envelope.eventId,
+                "eventType": envelope.eventType,
+                "producer": envelope.producer,
+                "schemaVersion": envelope.schemaVersion,
+                "correlationId": envelope.correlationId,
+                "causationId": envelope.causationId,
+                "occurredAt": envelope.occurredAt,
+                "payload": payload,
+            }
+            conn.execute(
+                "INSERT INTO pending_segment_signals(event_id, stream, envelope, segment_ref) VALUES (%s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (event_id) DO UPDATE SET envelope = EXCLUDED.envelope, segment_ref = EXCLUDED.segment_ref",
+                (envelope.eventId, _stream_for_envelope(envelope), json.dumps(body, separators=(",", ":")), segment_ref),
+            )
+            conn.execute("DELETE FROM processed_events WHERE event_id = %s", (envelope.eventId,))
+        self._with_conn(write)
+
+    def take_pending_segment_signals(self, segment_refs: tuple[str, ...]) -> tuple[Any, ...]:
+        refs = tuple(dict.fromkeys(str(ref).strip() for ref in segment_refs if str(ref).strip()))
+        if not refs:
+            return ()
+
+        def read(conn: Any) -> tuple[Any, ...]:
+            rows = conn.execute("SELECT event_id, envelope FROM pending_segment_signals WHERE segment_ref = ANY(%s) ORDER BY received_at", (list(refs),)).fetchall()
+            conn.execute("DELETE FROM pending_segment_signals WHERE segment_ref = ANY(%s)", (list(refs),))
+            return tuple(_envelope_from_json(row[1]) for row in rows)
+        return self._with_conn(read)
+
+    def save_service_alert(self, alert: ServiceAlert) -> None:
+        def write(conn: Any) -> None:
+            payload = json.dumps(alert_to_json(alert), separators=(",", ":"))
+            conn.execute(
+                "INSERT INTO service_alert_snapshots(id, version, data) VALUES (%s, 1, %s::jsonb) "
+                "ON CONFLICT (id) DO UPDATE SET version = service_alert_snapshots.version + 1, data = EXCLUDED.data, updated_at = now()",
+                (alert.serviceAlertId, payload),
+            )
+        self._with_conn(write)
+
+    def get_service_alert(self, service_alert_id: str) -> ServiceAlert:
+        def read(conn: Any) -> ServiceAlert:
+            snap = self._alerts.get(conn, service_alert_id)
+            if snap is None:
+                raise NotFoundError(f"service alert not found: {service_alert_id}")
+            version, data = snap; self._remember("service_alert", service_alert_id, version); return alert_from_json(data, version)
+        return self._with_conn(read)
+
+    def list_service_alerts(self, incident_id: str | None, order_id: str | None, limit: int, offset: int) -> tuple[tuple[ServiceAlert, ...], int]:
+        def read(conn: Any) -> tuple[tuple[ServiceAlert, ...], int]:
+            params: list[Any] = []
+            where = "TRUE"
+            if incident_id:
+                where += " AND data->>'incidentId' = %s"; params.append(incident_id)
+            if order_id:
+                where += " AND data->'affectedOrderIds' ? %s"; params.append(order_id)
+            total = int(conn.execute(f"SELECT count(*) FROM service_alert_snapshots WHERE {where}", tuple(params)).fetchone()[0])
+            rows = conn.execute(f"SELECT id, version, data FROM service_alert_snapshots WHERE {where} ORDER BY data->>'publishedAt' DESC LIMIT %s OFFSET %s", tuple(params + [limit, offset])).fetchall()
+            items = []
+            for aggregate_id, version, data in rows:
+                self._remember("service_alert", str(aggregate_id), int(version)); items.append(alert_from_json(data, int(version)))
+            return tuple(items), total
         return self._with_conn(read)
 
     def append_outbox(self, envelopes: Iterable[Any]) -> None:

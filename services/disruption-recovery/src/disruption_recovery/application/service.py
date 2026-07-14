@@ -8,6 +8,7 @@ from uuid import UUID
 from typing import Any, Mapping
 
 from train_ticket_platform.events import EventEnvelope, rfc3339_utc
+from train_ticket_platform.messaging import HandlerResult
 
 from disruption_recovery.domain import (
     ActorRef,
@@ -29,6 +30,7 @@ from disruption_recovery.domain import (
     RecoveryOption,
     RecoveryOptionType,
     ReroutingDecision,
+    ServiceAlert,
     SeatClass,
     build_option_set,
     normalize_disruption_type,
@@ -88,6 +90,9 @@ class InMemoryStore:
         self.refund_execution_index: dict[str, str] = {}
         self._outbox: list[EventEnvelope] = []
         self.processed_events: set[str] = set()
+        self.segment_order_index: dict[str, set[str]] = {}
+        self.service_alerts: dict[str, ServiceAlert] = {}
+        self.pending_segment_signals: dict[str, EventEnvelope] = {}
 
     def transaction(self) -> Any:
         return nullcontext()
@@ -140,6 +145,44 @@ class InMemoryStore:
     def list_cases(self, incident_id: str, status: str | None, limit: int, offset: int) -> tuple[tuple[RecoveryCase, ...], int]:
         items = [case for case in self.cases.values() if case.incidentId == incident_id and (status is None or case.status.value == status)]
         items.sort(key=lambda case: case.openedAt)
+        return tuple(items[offset: offset + limit]), len(items)
+
+    def index_order_segments(self, order_id: str, segment_refs: tuple[str, ...]) -> None:
+        for segment_ref in segment_refs:
+            self.segment_order_index.setdefault(segment_ref, set()).add(order_id)
+
+    def find_orders_by_segment_ref(self, segment_ref: str) -> tuple[str, ...]:
+        return tuple(sorted(self.segment_order_index.get(segment_ref, ())))
+
+    def save_pending_segment_signal(self, envelope: EventEnvelope) -> None:
+        self.pending_segment_signals[envelope.eventId] = envelope
+        self.processed_events.discard(envelope.eventId)
+
+    def take_pending_segment_signals(self, segment_refs: tuple[str, ...]) -> tuple[EventEnvelope, ...]:
+        wanted = set(segment_refs)
+        selected = tuple(
+            signal for signal in self.pending_segment_signals.values()
+            if str(signal.payload.get("segmentRef") or "").strip() in wanted
+        )
+        for signal in selected:
+            self.pending_segment_signals.pop(signal.eventId, None)
+        return selected
+
+    def save_service_alert(self, alert: ServiceAlert) -> None:
+        self.service_alerts[alert.serviceAlertId] = alert
+
+    def get_service_alert(self, service_alert_id: str) -> ServiceAlert:
+        try:
+            return self.service_alerts[service_alert_id]
+        except KeyError as exc:
+            raise NotFoundError(f"service alert not found: {service_alert_id}") from exc
+
+    def list_service_alerts(self, incident_id: str | None, order_id: str | None, limit: int, offset: int) -> tuple[tuple[ServiceAlert, ...], int]:
+        items = [
+            alert for alert in self.service_alerts.values()
+            if (incident_id is None or alert.incidentId == incident_id) and (order_id is None or order_id in alert.affectedOrderIds)
+        ]
+        items.sort(key=lambda alert: alert.publishedAt, reverse=True)
         return tuple(items[offset: offset + limit]), len(items)
 
     def find_case_by_post_sales_case(self, post_sales_case_id: str) -> RecoveryCase | None:
@@ -222,6 +265,14 @@ def _reaccommodation_from_report(data: Mapping[str, Any], generated_at: datetime
     return {"connectionId": connection_id, "replacementWindow": _coerce_replacement_window(data, generated_at)}
 
 
+def _source_system_for_signal(envelope: EventEnvelope) -> str:
+    return "PROVIDER_INTEGRATION" if envelope.producer == "provider-integration" or envelope.eventType.startswith("Provider") else "FULFILLMENT"
+
+
+def _stream_for_signal(envelope: EventEnvelope) -> str:
+    return "events:provider-integration" if _source_system_for_signal(envelope) == "PROVIDER_INTEGRATION" else "events:fulfillment"
+
+
 class DisruptionRecoveryService:
     def __init__(self, store: Any, downstream: DownstreamPort | None = None) -> None:
         self.store = store
@@ -257,9 +308,11 @@ class DisruptionRecoveryService:
         segment = str(data.get("segmentRef") or "").strip() or None
         if not scheduled and not segment:
             raise DomainError("scheduledServiceRef or segmentRef is required")
-        affected = tuple(dict.fromkeys(str(item).strip() for item in data.get("affectedOrderIds") or [] if str(item).strip()))
+        explicit_affected = tuple(dict.fromkeys(str(item).strip() for item in data.get("affectedOrderIds") or [] if str(item).strip()))
+        resolved_affected = self._resolve_segment_orders(segment) if segment else ()
+        affected = tuple(dict.fromkeys((*explicit_affected, *resolved_affected)))
         if not affected:
-            raise DomainError("affectedOrderIds must be non-empty")
+            raise DomainError("affectedOrderIds must be non-empty or segmentRef must resolve to affected orders")
         disruption_id = prefixed_uuid7("drp")
         incident_opened = False
         if scheduled:
@@ -307,7 +360,9 @@ class DisruptionRecoveryService:
             cases.append(case)
         mass_recovery = self._process_mass_disruption(disruption, data, affected, correlation_id, causation_id, at)
         events.extend(mass_recovery["events"])
-        events.append(_envelope("ServiceAlertPublished", incident.incidentId, incident.version + 2, {"serviceAlertId": prefixed_uuid7("sal"), "incidentId": incident.incidentId, "disruptionType": disruption_type, "serviceDate": service_date, "audience": "AFFECTED_ORDERS", "affectedOrderIds": list(affected), "messageSummary": evidence.summary, "publishedAt": rfc3339_utc(at)} | ({"scheduledServiceRef": scheduled} if scheduled else {}) | ({"segmentRef": segment} if segment else {}), correlation_id, causation_id, at))
+        alert_payload = {"serviceAlertId": prefixed_uuid7("sal"), "incidentId": incident.incidentId, "disruptionType": disruption_type, "serviceDate": service_date, "audience": "AFFECTED_ORDERS", "affectedOrderIds": list(affected), "messageSummary": evidence.summary, "publishedAt": rfc3339_utc(at)} | ({"scheduledServiceRef": scheduled} if scheduled else {}) | ({"segmentRef": segment} if segment else {})
+        self._save_service_alert(alert_payload)
+        events.append(_envelope("ServiceAlertPublished", incident.incidentId, incident.version + 2, alert_payload, correlation_id, causation_id, at))
         self._append(events)
         response = {"disruption": report.to_json() | {"classification": disruption.to_json()}, "incident": incident.to_json(), "recoveryCases": [case.to_json() for case in cases]}
         if mass_recovery["summary"] is not None:
@@ -364,6 +419,123 @@ class DisruptionRecoveryService:
         self.store.save_case(case)
         self._append([_envelope("RecoveryCaseClosed", case.caseId, case.version + 1, {"caseId": case.caseId, "incidentId": case.incidentId, "journeyOrderId": case.journeyOrderId, "previousStatus": previous.value, "closedBy": closed_by.to_json(), "closeReason": reason, "closedAt": rfc3339_utc(at), "status": "CLOSED"}, correlation_id, causation_id, at)])
         return case.to_json()
+
+    def _resolve_segment_orders(self, segment_ref: str | None) -> tuple[str, ...]:
+        if not segment_ref:
+            return ()
+        resolver = getattr(self.store, "find_orders_by_segment_ref", None)
+        if not callable(resolver):
+            return ()
+        return tuple(dict.fromkeys(str(item).strip() for item in resolver(segment_ref) if str(item).strip()))
+
+    def _save_service_alert(self, payload: Mapping[str, Any]) -> None:
+        save = getattr(self.store, "save_service_alert", None)
+        if callable(save):
+            save(ServiceAlert.from_payload(payload))
+
+    def _save_pending_segment_signal(self, envelope: EventEnvelope) -> None:
+        save = getattr(self.store, "save_pending_segment_signal", None)
+        if callable(save):
+            save(envelope)
+
+    def _take_pending_segment_signals(self, segment_refs: tuple[str, ...]) -> tuple[EventEnvelope, ...]:
+        take = getattr(self.store, "take_pending_segment_signals", None)
+        if not callable(take):
+            return ()
+        return tuple(take(segment_refs))
+
+    def handle_journey_order_created(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType != "JourneyOrderCreated":
+            return False
+        with self.transaction():
+            mark = getattr(self.store, "mark_processed", None)
+            if callable(mark) and not mark(envelope.eventId, stream):
+                return True
+            payload = dict(envelope.payload)
+            order_id = str(payload.get("orderId") or "").strip()
+            if not order_id:
+                return True
+            segment_refs = tuple(dict.fromkeys(str(item).strip() for item in payload.get("segmentRefs") or [] if str(item).strip()))
+            index = getattr(self.store, "index_order_segments", None)
+            if callable(index):
+                index(order_id, segment_refs)
+            mark = getattr(self.store, "mark_processed", None)
+            for pending in self._take_pending_segment_signals(segment_refs):
+                self._handle_pending_segment_signal(pending, _source_system_for_signal(pending), _stream_for_signal(pending))
+                if callable(mark):
+                    mark(pending.eventId, _stream_for_signal(pending))
+            return True
+
+    def handle_service_alert_published(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType != "ServiceAlertPublished":
+            return False
+        with self.transaction():
+            mark = getattr(self.store, "mark_processed", None)
+            if callable(mark) and not mark(envelope.eventId, stream):
+                return True
+            self._save_service_alert(dict(envelope.payload))
+            return True
+
+    def handle_fulfillment_signal(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType not in {"SegmentDelayed", "SegmentCancelled"}:
+            return False
+        return self._handle_segment_signal(envelope, "FULFILLMENT", stream)
+
+    def handle_provider_signal(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
+        if envelope.eventType not in {"ProviderSegmentDelayed", "ProviderSegmentCancelled", "SegmentDelayed", "SegmentCancelled"}:
+            return False
+        return self._handle_segment_signal(envelope, "PROVIDER_INTEGRATION", stream)
+
+    def _handle_segment_signal(self, envelope: EventEnvelope, source_system: str, stream: str | None) -> bool:
+        with self.transaction():
+            data = self._report_from_segment_signal(envelope, source_system)
+            if data is None:
+                self._save_pending_segment_signal(envelope)
+                return HandlerResult.transient_error("segmentRef has no indexed affected orders yet")
+            mark = getattr(self.store, "mark_processed", None)
+            if callable(mark) and not mark(envelope.eventId, stream):
+                return True
+            self.report_disruption(data, envelope.correlationId, envelope.eventId)
+            return True
+
+    def _handle_pending_segment_signal(self, envelope: EventEnvelope, source_system: str, stream: str | None) -> None:
+        data = self._report_from_segment_signal(envelope, source_system)
+        if data is not None:
+            self.report_disruption(data, envelope.correlationId, envelope.eventId)
+
+    def _report_from_segment_signal(self, envelope: EventEnvelope, source_system: str) -> dict[str, Any] | None:
+        payload = dict(envelope.payload)
+        segment_ref = str(payload.get("segmentRef") or "").strip()
+        scheduled = str(payload.get("scheduledServiceRef") or "").strip() or None
+        service_date = str(payload.get("serviceDate") or "").strip()
+        if not segment_ref or not service_date:
+            return None
+        affected = self._resolve_segment_orders(segment_ref)
+        if not affected:
+            return None
+        disruption_type = "CANCELLATION" if "Cancelled" in envelope.eventType else "DELAY"
+        occurred_at = payload.get("observedAt") or payload.get("cancelledAt") or payload.get("estimatedArrivalAt") or envelope.occurredAt
+        summary = "Segment cancelled" if disruption_type == "CANCELLATION" else "Segment delayed"
+        data: dict[str, Any] = {
+            "disruptionType": disruption_type,
+            "segmentRef": segment_ref,
+            "serviceDate": service_date,
+            "evidence": {
+                "evidenceRef": envelope.eventId,
+                "sourceSystem": source_system,
+                "sourceRecordId": envelope.eventId,
+                "summary": summary,
+                "occurredAt": rfc3339_utc(_parse_datetime(occurred_at) or now_utc()),
+            },
+            "affectedOrderIds": list(affected),
+            "reportedBy": {"actorType": "SYSTEM", "actorId": source_system.lower().replace("_", "-")},
+        }
+        if scheduled:
+            data["scheduledServiceRef"] = scheduled
+        delay_minutes = _int_or_none(payload.get("delayMinutes"))
+        if delay_minutes is not None:
+            data["delayMinutes"] = delay_minutes
+        return data
 
     def handle_post_sales_applied(self, envelope: EventEnvelope, stream: str | None = None) -> bool:
         if envelope.eventType != "PostSalesApplied":

@@ -192,7 +192,7 @@ class Evidence:
 
     def __post_init__(self) -> None:
         require_text(self.evidenceRef, "evidenceRef")
-        if self.sourceSystem not in {"CUSTOMER_SERVICE", "ADMIN", "TRANSFER_MANAGEMENT"}:
+        if self.sourceSystem not in {"CUSTOMER_SERVICE", "ADMIN", "TRANSFER_MANAGEMENT", "PROVIDER_INTEGRATION", "FULFILLMENT"}:
             raise DomainError("evidence.sourceSystem is invalid")
         require_text(self.sourceRecordId, "sourceRecordId")
         require_text(self.summary, "summary")
@@ -247,6 +247,72 @@ class Incident:
         if self.segmentRefs:
             data["segmentRefs"] = list(self.segmentRefs)
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceAlert:
+    serviceAlertId: str
+    incidentId: str
+    disruptionType: str
+    serviceDate: str
+    audience: str
+    messageSummary: str
+    publishedAt: datetime
+    scheduledServiceRef: str | None = None
+    segmentRef: str | None = None
+    affectedOrderIds: tuple[str, ...] = ()
+    version: int = 0
+
+    def __post_init__(self) -> None:
+        require_text(self.serviceAlertId, "serviceAlertId")
+        require_text(self.incidentId, "incidentId")
+        require_text(self.disruptionType, "disruptionType")
+        require_text(self.serviceDate, "serviceDate")
+        if self.audience not in {"AFFECTED_ORDERS", "CUSTOMER_SERVICE", "OPERATIONS"}:
+            raise DomainError("audience is invalid")
+        require_text(self.messageSummary, "messageSummary")
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ServiceAlert":
+        return cls(
+            serviceAlertId=require_text(str(payload.get("serviceAlertId") or ""), "serviceAlertId"),
+            incidentId=require_text(str(payload.get("incidentId") or ""), "incidentId"),
+            disruptionType=require_text(str(payload.get("disruptionType") or ""), "disruptionType"),
+            serviceDate=require_text(str(payload.get("serviceDate") or ""), "serviceDate"),
+            audience=require_text(str(payload.get("audience") or ""), "audience"),
+            messageSummary=require_text(str(payload.get("messageSummary") or ""), "messageSummary"),
+            publishedAt=_parse_alert_datetime(payload.get("publishedAt")),
+            scheduledServiceRef=str(payload.get("scheduledServiceRef") or "").strip() or None,
+            segmentRef=str(payload.get("segmentRef") or "").strip() or None,
+            affectedOrderIds=tuple(dict.fromkeys(str(item).strip() for item in payload.get("affectedOrderIds") or [] if str(item).strip())),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "serviceAlertId": self.serviceAlertId,
+            "incidentId": self.incidentId,
+            "disruptionType": self.disruptionType,
+            "serviceDate": self.serviceDate,
+            "audience": self.audience,
+            "messageSummary": self.messageSummary,
+            "publishedAt": rfc3339_utc(self.publishedAt),
+        }
+        if self.scheduledServiceRef:
+            data["scheduledServiceRef"] = self.scheduledServiceRef
+        if self.segmentRef:
+            data["segmentRef"] = self.segmentRef
+        if self.affectedOrderIds:
+            data["affectedOrderIds"] = list(self.affectedOrderIds)
+        return data
+
+
+def _parse_alert_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
+    text = str(value or "").strip()
+    if not text:
+        raise DomainError("publishedAt is required")
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)

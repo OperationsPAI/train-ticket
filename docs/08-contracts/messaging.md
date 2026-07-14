@@ -57,7 +57,7 @@ context.
 | 8 | `booking-orchestration` | `events:booking-orchestration` | BookingSagaStarted, SegmentReservationRequested, SegmentReservationConfirmed, SegmentReservationFailed, SegmentTicketed, SegmentBookingCancelled |
 | 9 | `payment` | `events:payment` | PaymentIntentCreated, PaymentCaptured, PaymentIntentFailed, PaymentExpired, RefundRequested, RefundSettled, RefundFailed |
 | 9a | `payment-channel` | `events:payment-channel` | ChannelOrderCreated, ChannelOrderSubmitted, ChannelOrderAccepted, ChannelOrderSucceeded, ChannelOrderFailed, ChannelOrderMissed, ChannelOrderQueryRecorded, ChannelOrderRecoveryDetected, ChannelRefundCreated, ChannelRefundSubmitted, ChannelRefundSucceeded, ChannelRefundFailed, ChannelRefundMissed, ChannelRefundQueryRecorded, ChannelRefundRecoveryDetected, ChannelStatementGenerated, ChannelStatementFrozen, ChannelStatementLineMatched, ReconciliationDiscrepancyOpened, ReconciliationDiscrepancyLinkedToFinanceCase, ReconciliationDiscrepancyResolved |
-| 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
+| 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted, ProviderSegmentDelayed, ProviderSegmentCancelled |
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementBoarded, EntitlementSuspended, EntitlementResumed, EntitlementUsed, EntitlementIssueFailed |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved, SegmentArrived, SegmentDelayed, SegmentCancelled |
 | 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied, PostSalesFailed |
@@ -255,12 +255,14 @@ plus notification/finance/reporting fan-in.
 | 21 | `events:payment` | `notification` | Payment events for user notifications |
 | 22 | `events:provider-integration` | `booking-orchestration` | ProviderReservationConfirmed for saga progression |
 | 23 | `events:provider-integration` | `finance-settlement` | Provider events for settlement |
+| 23a | `events:provider-integration` | `disruption-recovery` | ProviderSegmentDelayed and ProviderSegmentCancelled open or merge provider-sourced recovery incidents through segmentRef fan-out. |
 | 24 | `events:entitlement-ticketing` | `fulfillment` | EntitlementIssued to prepare for boarding verification |
 | 25 | `events:entitlement-ticketing` | `booking-orchestration` | EntitlementIssued to mark segment ticketed |
 | 26 | `events:entitlement-ticketing` | `notification` | Ticketing events for user notifications |
 | 26a | `events:entitlement-ticketing` | `capacity-availability` | RULING (2026-07-07): EntitlementVoided (payload `references.segmentBookingRef`) releases the matching hold promptly. Closes the refund-applied gap: post-sales flips APPLIED on `CapacityReleased`, which previously only arrived via booking-orchestration's lazy fallback (~90s). Row 30 (release on PostSalesApplied) stays as idempotent backstop. |
 | 27 | `events:fulfillment` | `transfer-management` | subscribes only SegmentArrived, SegmentDelayed, SegmentCancelled; all other fulfillment events are explicitly ignored by transfer-management |
 | 28 | `events:fulfillment` | `entitlement-ticketing` | BoardingVerified for entitlement lifecycle |
+| 28a | `events:fulfillment` | `disruption-recovery` | SegmentDelayed and SegmentCancelled open or merge fulfillment-sourced recovery incidents through segmentRef fan-out. |
 | 29 | `events:post-sales` | `payment` | PostSalesApproved to trigger refund |
 | 30 | `events:post-sales` | `capacity-availability` | PostSalesApplied to release capacity |
 | 31 | `events:post-sales` | `entitlement-ticketing` | PostSalesApproved to void entitlement |
@@ -289,6 +291,8 @@ plus notification/finance/reporting fan-in.
 | 54 | `events:wallet-promotion` | `notification` | Active benefit arrival, expiry, and revocation user touchpoints; BenefitRedeemed and reversal facts are ack-skipped to avoid noisy notifications |
 | 55 | `events:wallet-promotion` | `reporting` | Wallet / Promotion lifecycle metrics and read models |
 | 56 | `events:post-sales` | `disruption-recovery` | PostSalesApplied converges REFUND recovery execution |
+| 56a | `events:journey-order` | `disruption-recovery` | JourneyOrderCreated maintains the local segmentRef-to-order projection used by HTTP reports and provider/fulfillment signal fan-out. |
+| 56b | `events:disruption-recovery` | `disruption-recovery` | ServiceAlertPublished rebuilds/repairs the ServiceAlert read model from the normative event payload. |
 | 57 | `events:journey-order` | `ancillary-service` | RULING (2026-07-09): JourneyOrderCancelled is the only upstream event consumed by Ancillary Service in this activation wave; it automatically cancels associated non-terminal AncillaryOrderItem records. |
 | 58 | `events:disruption-recovery` | `transfer-management` | RecoveryCompleted/RecoveryFailed converge protected missed connections by stored `caseId` mapping. RULING (2026-07-09): for self-executed `REACCOMMODATION`, `RecoveryCompleted` for an already `RECOVERED` connection and matching `caseId` is acknowledged as an idempotent no-op. |
 | 59 | `events:capacity-availability` | `seat-assignment` | CapacityReleased and CapacityHoldExpired release or expire matching active seat allocations by `holdId`; Seat Assignment explicitly ignores AvailabilitySnapshot/CapacityHeld/CapacityHoldConfirmed for lifecycle mutation in this wave. |
@@ -374,14 +378,19 @@ through a provider stream.
 `events:disruption-recovery` is registered as a produced stream in this
 contract. Notification actively consumes traveler-facing recovery lifecycle and
 service-alert facts; Reporting, Journey Order, and Customer Service consumption
-remain deferred in this activation wave. Disruption Recovery has one active
-inbound subscription: it consumes
+remain deferred in this activation wave. Disruption Recovery actively consumes
 `PostSalesApplied` from `events:post-sales` to converge selected `REFUND`
-recovery options after the downstream Post Sales case reaches `APPLIED`.
-Service Plan, Provider Integration, and Fulfillment signal sources remain
-deferred. Transfer Management opens protected missed-connection cases through
-Disruption Recovery HTTP and actively consumes `RecoveryCompleted` and
-`RecoveryFailed` from `events:disruption-recovery` by stored `caseId`.
+recovery options, `JourneyOrderCreated` from `events:journey-order` to maintain
+the local `segmentRef` fan-out projection, `SegmentDelayed`/`SegmentCancelled`
+from `events:fulfillment`, and `ProviderSegmentDelayed`/`ProviderSegmentCancelled`
+from `events:provider-integration` as disruption sources. It also consumes its
+own `ServiceAlertPublished` facts to rebuild/repair the ServiceAlert read model.
+Provider Integration and Fulfillment segment signals that arrive before the local
+Journey Order projection are retained for retry instead of ack-skipped. Service
+Plan signal sources remain deferred. Transfer Management opens protected
+missed-connection cases through Disruption Recovery HTTP and actively consumes
+`RecoveryCompleted` and `RecoveryFailed` from `events:disruption-recovery` by
+stored `caseId`.
 Disruption Recovery executes scoped `REACCOMMODATION` through Transfer Management
 HTTP (`POST /api/v1/connections/{connectionId}/reaccommodate`); this does not add
 a new subscription row. The resulting `ConnectionRecovered` event carries
