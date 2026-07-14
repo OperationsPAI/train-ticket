@@ -1,7 +1,7 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot, type WaitlistStatus } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
-import { publishAll, waitlistEntryAccepted, waitlistEntryCreated } from "./publisher.js";
+import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
   accountId: string;
@@ -21,6 +21,7 @@ export type JoinWaitlistRequest = Readonly<{
 
 export type AcceptPromotionRequest = Readonly<{ paymentMethodRef?: string }>;
 export type AcceptPromotionResponse = Readonly<{ orderId: string; seatAssignment: unknown }>;
+export type CancelWaitlistResponse = Readonly<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }>;
 export type QueueInfo = Readonly<{ totalQueued: number; myPosition: number | null; estimatedPromotionRate: number }>;
 export type WaitlistRequestResource = Readonly<{
   waitlistRequestId: string;
@@ -79,7 +80,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     if (entry.status === "CLOSED") {
-      this.entries.delete(entry.entryId);
+      if (!this.entries.delete(entry.entryId) && !this.archive.has(entry.entryId)) throw new DomainError("PRECONDITION_FAILED", "Waitlist entry version changed before archival");
       this.archive.set(entry.entryId, entry);
       return entry.toSnapshot(0);
     }
@@ -141,7 +142,7 @@ export class WaitlistApplicationService {
   async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistEntrySnapshot & { estimatedWaitMinutes: number }> {
     const entry = WaitlistEntry.create(this.toCreateCommand(request));
     const snapshot = await this.repository.add(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryCreated(snapshot, correlationId)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistRequestCreated(snapshot, correlationId), waitlistPaymentAuthorizationRequested(snapshot, correlationId), waitlistQueued(snapshot, correlationId)]);
     return { ...snapshot, estimatedWaitMinutes: Math.max(5, snapshot.queuePosition * 15) };
   }
 
@@ -150,11 +151,13 @@ export class WaitlistApplicationService {
     return this.snapshot(entry);
   }
 
-  async cancel(entryId: string): Promise<{ cancelled: true }> {
+  async cancel(entryId: string, reason = "user-requested", correlationId?: string): Promise<CancelWaitlistResponse> {
     const entry = await this.requireEntry(entryId);
+    const cancelledAt = this.now().toISOString();
     entry.cancel();
-    await this.repository.save(entry);
-    return { cancelled: true };
+    const snapshot = await this.repository.save(entry);
+    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, cancelledAt, reason, correlationId)]);
+    return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt };
   }
 
   async accept(entryId: string, request: AcceptPromotionRequest = {}, correlationId?: string): Promise<AcceptPromotionResponse> {
@@ -164,7 +167,7 @@ export class WaitlistApplicationService {
     const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
     entry.accept(now, order.orderId);
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, order.seatAssignment, correlationId)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistFulfilled(snapshot, now.toISOString(), correlationId)]);
     return order;
   }
 

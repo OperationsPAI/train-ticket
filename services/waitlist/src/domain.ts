@@ -42,6 +42,7 @@ export type WaitlistEntrySnapshot = Readonly<{
   deadline?: string;
   paymentGuaranteeRef?: string;
   intentFingerprint?: string;
+  aggregateVersion?: number;
 }>;
 
 export type CreateWaitlistEntry = Readonly<{
@@ -94,6 +95,7 @@ export class WaitlistEntry {
     private readonly _deadline?: string,
     private readonly _paymentGuaranteeRef?: string,
     private readonly _intentFingerprint?: string,
+    private _aggregateVersion = 3,
   ) {}
 
   static create(command: CreateWaitlistEntry): WaitlistEntry {
@@ -162,6 +164,7 @@ export class WaitlistEntry {
       snapshot.deadline,
       snapshot.paymentGuaranteeRef,
       snapshot.intentFingerprint,
+      snapshot.aggregateVersion ?? 3,
     );
   }
 
@@ -182,6 +185,7 @@ export class WaitlistEntry {
   get deadline(): string | undefined { return this._deadline; }
   get paymentGuaranteeRef(): string | undefined { return this._paymentGuaranteeRef; }
   get intentFingerprint(): string | undefined { return this._intentFingerprint; }
+  get aggregateVersion(): number { return this._aggregateVersion; }
 
   offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
     this.assertStatus("QUEUED", "Only queued waitlist entries can start matching");
@@ -194,12 +198,14 @@ export class WaitlistEntry {
     this._capacityHoldId = capacityHoldId;
     this._offerId = offerId;
     this._offerVersion = offerVersion;
+    this.bumpVersion();
   }
 
   accept(now: Date, journeyOrderRef?: string): void {
     this.ensureOfferAcceptable(now);
     this._journeyOrderRef = journeyOrderRef;
     this._status = "FULFILLED";
+    this.bumpVersion();
   }
 
   ensureOfferAcceptable(now: Date): void {
@@ -217,6 +223,7 @@ export class WaitlistEntry {
       throw new DomainError("PRECONDITION_FAILED", "Waitlist offer has not reached its expiry time");
     }
     this._status = "EXPIRED";
+    this.bumpVersion();
   }
 
   cancel(): void {
@@ -224,6 +231,7 @@ export class WaitlistEntry {
       throw new DomainError("INVALID_TRANSITION", `Cannot cancel ${this._status} waitlist entry`);
     }
     this._status = "CANCELLED";
+    this.bumpVersion();
   }
 
   close(): void {
@@ -232,6 +240,7 @@ export class WaitlistEntry {
       throw new DomainError("INVALID_TRANSITION", `Cannot close ${this._status} waitlist entry`);
     }
     this._status = "CLOSED";
+    this.bumpVersion();
   }
 
   toSnapshot(queuePosition = 0): WaitlistEntrySnapshot {
@@ -263,7 +272,12 @@ export class WaitlistEntry {
       deadline: this._deadline,
       paymentGuaranteeRef: this._paymentGuaranteeRef,
       intentFingerprint: this._intentFingerprint,
+      aggregateVersion: this._aggregateVersion,
     };
+  }
+
+  private bumpVersion(): void {
+    this._aggregateVersion += 1;
   }
 
   private assertStatus(expected: WaitlistStatus, message: string): void {

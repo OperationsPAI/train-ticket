@@ -58,17 +58,28 @@ test("expired offer releases hold and promotes next queued entry", async () => {
   assert.equal((await service.get(first.entryId)).status, "EXPIRED");
   assert.equal((await service.get(second.entryId)).status, "MATCHING");
   assert.deepEqual(capacity.released, [`hold-${first.entryId}`]);
-  assert.equal(publisher.findByEventType("WaitlistOfferExpired").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistExpired").length, 1);
   assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 2);
 });
 
 test("accept promotion creates journey order and publishes fulfilled event", async () => {
-  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
   const order = await service.accept(entry.entryId, { paymentMethodRef: "pm-1" });
   assert.equal(order.orderId, `ord-${entry.entryId}`);
   assert.equal((await service.get(entry.entryId)).status, "FULFILLED");
+  assert.deepEqual(publisher.findByEventType("WaitlistFulfilled")[0]?.payload, {
+    waitlistRequestId: entry.entryId,
+    accountId: "acc",
+    travelerRef: "t1",
+    segmentRef: "seg",
+    travelClass: "SECOND",
+    journeyOrderRef: `ord-${entry.entryId}`,
+    fulfilledAt: "2026-01-01T00:00:00.000Z",
+    status: "FULFILLED",
+  });
 });
 
 test("accept does not mutate entry when journey order creation fails", async () => {

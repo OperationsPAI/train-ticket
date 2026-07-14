@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Redis } from "ioredis";
 import { MigrationRunner, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
+import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
 
 export class PostgresWaitlistRepository implements WaitlistRepository {
@@ -33,25 +33,32 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
     if (snapshot.status === "CLOSED") {
-      await this.db.query(
-        `WITH moved AS (
-           DELETE FROM waitlist_entries WHERE entry_id=$1 RETURNING *
+      const result = await this.db.query(
+        `WITH current_row AS (
+           SELECT version FROM waitlist_entries WHERE entry_id=$1 AND status IN ('FULFILLED', 'EXPIRED', 'CANCELLED') FOR UPDATE
+         ), moved AS (
+           DELETE FROM waitlist_entries active
+           USING current_row
+           WHERE active.entry_id=$1 AND active.version=current_row.version
+           RETURNING active.*, current_row.version AS expected_version
          )
          INSERT INTO waitlist_entries_archive (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, version, created_at, updated_at, archived_at)
-         SELECT entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, $2, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, $3, version + 1, created_at, now(), now()
+         SELECT entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, $2, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, $3, expected_version + 1, created_at, now(), now()
          FROM moved
-         ON CONFLICT (entry_id) DO UPDATE
-         SET status=EXCLUDED.status, data=EXCLUDED.data, version=waitlist_entries_archive.version + 1, updated_at=now(), archived_at=now()`,
+         ON CONFLICT (entry_id) DO NOTHING
+         RETURNING entry_id`,
         [snapshot.entryId, snapshot.status, snapshot],
       );
+      if (result.rowCount !== 1) throw new DomainError("PRECONDITION_FAILED", "Waitlist entry version changed before archival");
       return snapshot;
     }
-    await this.db.query(
+    const result = await this.db.query(
       `UPDATE waitlist_entries
        SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, version=version+1, updated_at=now()
        WHERE entry_id=$1`,
       [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot],
     );
+    if (result.rowCount !== 1) throw new DomainError("PRECONDITION_FAILED", "Waitlist entry version changed before save");
     return this.snapshot(entry);
   }
 
@@ -155,6 +162,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     deadline: typeof data.deadline === "string" ? data.deadline : undefined,
     paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : undefined,
     intentFingerprint: typeof data.intentFingerprint === "string" ? data.intentFingerprint : undefined,
+    aggregateVersion: typeof data.aggregateVersion === "number" ? data.aggregateVersion : undefined,
   });
 }
 

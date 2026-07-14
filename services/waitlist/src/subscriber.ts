@@ -29,7 +29,7 @@ export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFre
   const departureDate = string(payload.departureDate);
   const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? 1);
   const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : undefined;
-  return { segmentRef, departureDate, freedSlots, seatClass };
+  return { eventId: envelope.eventId, segmentRef, departureDate, freedSlots, seatClass };
 }
 
 function string(value: unknown): string {

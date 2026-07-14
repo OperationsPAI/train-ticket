@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { InMemoryEventPublisher } from "@trainticket/ts-kit";
+import { InMemoryEventPublisher, uuidV7 } from "@trainticket/ts-kit";
 import { createApp } from "../src/app.js";
 import { InMemoryWaitlistRepository, WaitlistApplicationService, type JourneyOrderClient } from "../src/application.js";
 import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient } from "../src/promotion.js";
@@ -30,6 +30,36 @@ class StubCapacity implements CapacityAvailabilityClient {
 class StubJourneyOrder implements JourneyOrderClient {
   async createOrder(entry: WaitlistEntry) { return { orderId: `ord-${entry.entryId}`, seatAssignment: null }; }
 }
+
+test("contract cancel route returns documented response", async () => {
+  const repository = new InMemoryWaitlistRepository();
+  const app = createApp({ repository, now: () => new Date("2026-01-01T00:00:00.000Z") });
+  const createResponse = await app.inject({
+    method: "POST",
+    url: "/api/v1/waitlist-requests",
+    headers: { "idempotency-key": uuidV7() },
+    payload: { accountId: "acc-1", travelerRef: "tvl-1", segmentRef: "seg-1", deadline: "2026-07-20T23:59:59.000Z", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itin-1", intentFingerprint: "intent-1" },
+  });
+  const waitlistRequestId = createResponse.json().waitlistRequestId;
+
+  const cancelResponse = await app.inject({
+    method: "POST",
+    url: `/api/v1/waitlist-requests/${waitlistRequestId}/cancel`,
+    headers: { "idempotency-key": uuidV7() },
+    payload: { reason: "user-requested" },
+  });
+
+  assert.equal(cancelResponse.statusCode, 200);
+  assert.deepEqual(cancelResponse.json(), { waitlistRequestId, status: "CANCELLED", cancelledAt: "2026-01-01T00:00:00.000Z" });
+  await app.close();
+});
+
+test("public accept route is not exposed", async () => {
+  const app = createApp();
+  const response = await app.inject({ method: "POST", url: "/api/v1/waitlist/entries/wlr-1/accept", payload: {} });
+  assert.equal(response.statusCode, 404);
+  await app.close();
+});
 
 test("contract GET returns CLOSED request resource after archival sweep", async () => {
   const repository = new InMemoryWaitlistRepository();

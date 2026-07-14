@@ -1,8 +1,9 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
-import { publishAll, waitlistEntryPromoted, waitlistOfferExpired } from "./publisher.js";
+import { publishAll, waitlistExpired, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
+  eventId?: string;
   segmentRef: string;
   departureDate: string;
   seatClass?: string;
@@ -156,7 +157,7 @@ export class PromotionOrchestrator {
       const snapshot = await this.repository.save(entry);
       promoted.push(snapshot);
       offers.push(offer);
-      await publishAll(this.publisher, [waitlistEntryPromoted(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [waitlistMatchStarted(snapshot, event.eventId ?? "capacity-release:unknown", correlationId)]);
     }
     return { promoted, offers };
   }
@@ -171,7 +172,7 @@ export class PromotionOrchestrator {
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
       const snapshot = await this.repository.save(entry);
       expired.push(snapshot);
-      await publishAll(this.publisher, [waitlistOfferExpired(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [waitlistExpired(snapshot, now.toISOString(), correlationId)]);
       await this.onCapacityFreed({ segmentRef: entry.segmentRef, departureDate: entry.departureDate, seatClass: entry.seatClass, freedSlots: 1 }, correlationId);
     }
     return expired;
