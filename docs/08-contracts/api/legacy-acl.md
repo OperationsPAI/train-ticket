@@ -77,11 +77,22 @@ Maps to: post-sales REFUND case open → evaluate → approve. Returns
 
 **POST** `/api/v1/legacy/rebook`
 
-**Request:** `{ "orderId", "date", "seatType" }`
+**Request:** `{ "orderId", "date", "seatType" }`. For replacement
+selection, callers may additionally provide `replacementLegs[]` (each with
+`itineraryRef` + `segmentRef` or `from`/`to`/`date`, and optional `price`) or
+parallel `itineraryRefs[]` / `replacementSegmentRefs[]`. Payment capture accepts
+optional `channelRef` with `channel` (`ALIPAY_SIM`, `WECHAT_SIM`,
+`UNIONPAY_SIM`), `channelOrderId`, and `faultSeedRef`.
 
 Maps to: post-sales CHANGE case open → evaluate → approve (old ticket
-teardown); rebooking the replacement journey is the caller's follow-up
-`preserve` (phase-1 scope). Returns `data.caseId`, `data.amountDue`.
+teardown) → for every entitled original leg, fare quote → offer → replacement
+journey order → payment intent → payment capture. Each mutating downstream POST
+uses a deterministic idempotency key derived from the legacy request. Returns
+`data.caseId`, `data.amountDue`, and additive `data.rebookedLegs[]` replacement
+refs. If a later replacement leg fails after earlier replacement legs succeeded,
+returns the same legacy envelope with `status: 0`, `data.partial: true`, the
+completed `data.rebookedLegs[]`, and a deterministic failure message; it never
+reports first-leg-only success.
 
 ## Rules
 
