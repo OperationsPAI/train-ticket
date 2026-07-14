@@ -23,6 +23,12 @@ import {
   type PerformedBy,
   type RefundRecommendation,
 } from "./domain.js";
+import {
+  ancillarySegmentRefs,
+  farePricingInputHash,
+  type AncillaryPricingGateway,
+  type PricingContext,
+} from "./pricing.js";
 
 export interface AncillaryRepository {
   saveCatalog(snapshot: AncillaryCatalogItemSnapshot): Promise<void>;
@@ -165,6 +171,7 @@ export class AncillaryApplicationService {
   constructor(
     private readonly repository: AncillaryRepository,
     private readonly publisher?: EventPublisher,
+    private readonly pricingGateway?: AncillaryPricingGateway,
   ) {}
 
   async createCatalogItem(
@@ -346,23 +353,45 @@ export class AncillaryApplicationService {
     primaryTicketStatus?: any;
     departureAt: string;
     quantity: number;
+    pricing?: PricingContext;
   }): Promise<AncillaryOfferSnapshot> {
     const catalog = await this.requireCatalog(input.catalogItemId);
     const offer = AncillaryOffer.draft(catalog, input);
     const snapshot = offer.toSnapshot();
-    await this.repository.saveOffer(snapshot);
-    return snapshot;
+    const snapshotWithPricingContext = input.pricing
+      ? { ...snapshot, futurePricingRefs: { pricingContext: input.pricing } }
+      : snapshot;
+    await this.repository.saveOffer(snapshotWithPricingContext);
+    return snapshotWithPricingContext;
   }
 
   async quoteOffer(
     ancillaryOfferId: string,
-    input: { expectedVersion: number; validitySeconds?: number },
+    input: {
+      expectedVersion: number;
+      validitySeconds?: number;
+      pricing?: PricingContext;
+      priceQuoteIdempotencyKey?: string;
+    },
     correlationId: string,
   ): Promise<AncillaryOfferSnapshot> {
     const offer = AncillaryOffer.fromSnapshot(
       await this.requireOffer(ancillaryOfferId),
     );
-    offer.quote(input.expectedVersion, input.validitySeconds);
+    const offerSnapshot = offer.toSnapshot();
+    const pricingContext =
+      input.pricing ??
+      ((offerSnapshot.futurePricingRefs?.pricingContext as
+        | PricingContext
+        | undefined) ??
+        {});
+    const pricing = await this.dynamicPricingOrFallback(
+      offerSnapshot,
+      pricingContext,
+      correlationId,
+      input.priceQuoteIdempotencyKey,
+    );
+    offer.quote(input.expectedVersion, input.validitySeconds, new Date(), pricing);
     const snapshot = offer.toSnapshot();
     await this.repository.saveOffer(snapshot);
     if (snapshot.status === "QUOTED") {
@@ -765,6 +794,40 @@ export class AncillaryApplicationService {
     return "ack";
   }
 
+  private async dynamicPricingOrFallback(
+    snapshot: AncillaryOfferSnapshot,
+    context: PricingContext,
+    correlationId: string,
+    idempotencyKey?: string,
+  ): Promise<Parameters<AncillaryOffer["quote"]>[3]> {
+    const result = await this.pricingGateway?.quoteAncillaryPrice({
+      ancillaryOfferId: snapshot.ancillaryOfferId,
+      offerVersion: snapshot.offerVersion,
+      catalogItemId: snapshot.catalogItemId,
+      travelerRef: snapshot.travelerRef,
+      segmentRef: snapshot.segmentRef,
+      departureAt: snapshot.eligibility.departureAt,
+      quantity: snapshot.quantity,
+      catalogUnitPrice: snapshot.catalogSnapshot.unitPrice,
+      context,
+      correlationId,
+      idempotencyKey,
+    });
+    if (result) return { ...result, source: "FARE_PRICING" };
+    const channel = context.channel ?? "DIRECT";
+    const segmentRefs = ancillarySegmentRefs(snapshot);
+    const inputHash = farePricingInputHash(segmentRefs, channel, [
+      snapshot.travelerRef,
+    ]);
+    return {
+      unitPrice: snapshot.catalogSnapshot.unitPrice,
+      quoteId: `catalog-${snapshot.ancillaryOfferId}`,
+      inputHash,
+      fees: [],
+      source: "CATALOG_FALLBACK",
+    };
+  }
+
   private async requireCatalog(
     catalogItemId: string,
   ): Promise<AncillaryCatalogItemSnapshot> {
@@ -864,6 +927,9 @@ function offerEventBase(
     quantity: snapshot.quantity,
     unitPrice: snapshot.unitPrice,
     totalPrice: snapshot.totalPrice,
+    assessedFees: snapshot.assessedFees,
+    feeAssessment: snapshot.feeAssessment,
+    priceQuoteRef: snapshot.priceQuoteRef,
     eligibility: snapshot.eligibility,
     validFrom: snapshot.validFrom,
     expiresAt: snapshot.expiresAt,
@@ -884,6 +950,9 @@ function orderEventBase(
     quantity: snapshot.quantity,
     payableAmount: snapshot.payableAmount,
     refundableAmount: snapshot.refundableAmount,
+    assessedFees: snapshot.assessedFees,
+    feeAssessment: snapshot.feeAssessment,
+    priceQuoteRef: snapshot.priceQuoteRef,
   };
 }
 function cancelEventBase(
@@ -898,6 +967,9 @@ function cancelEventBase(
     serviceType: snapshot.serviceType,
     payableAmount: snapshot.payableAmount,
     refundableAmount: snapshot.refundableAmount,
+    assessedFees: snapshot.assessedFees,
+    feeAssessment: snapshot.feeAssessment,
+    priceQuoteRef: snapshot.priceQuoteRef,
   };
 }
 function deterministicEventId(

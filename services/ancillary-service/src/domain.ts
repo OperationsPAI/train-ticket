@@ -1,5 +1,12 @@
 import { uuidV7 } from "@trainticket/ts-kit";
 
+import {
+  multiplyPriceComponent,
+  type PriceComponent,
+  type PriceQuoteRef,
+  type RuleSnapshot,
+} from "./pricing.js";
+
 export class DomainError extends Error {
   constructor(
     public readonly code: string,
@@ -110,6 +117,17 @@ export type FulfillmentFact = Readonly<{
   notes?: string;
 }>;
 
+export type FeeAssessment = Readonly<{
+  assessmentId: string;
+  purpose: "ANCILLARY_PURCHASE";
+  assessedAt: string;
+  originalQuoteId: string;
+  fee: Money;
+  currency: string;
+  succeeded: boolean;
+  failedReason?: string;
+}>;
+
 export type CatalogSnapshot = Readonly<{
   catalogItemId: string;
   catalogItemVersion: number;
@@ -174,6 +192,9 @@ export type AncillaryOfferSnapshot = Readonly<{
   validFrom: string;
   expiresAt: string;
   ruleSummary?: string;
+  priceQuoteRef?: PriceQuoteRef;
+  assessedFees?: readonly PriceComponent[];
+  feeAssessment?: FeeAssessment;
   futurePricingRefs?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -197,6 +218,9 @@ export type AncillaryOrderItemSnapshot = Readonly<{
   quantity: number;
   payableAmount: Money;
   refundableAmount: Money;
+  assessedFees: readonly PriceComponent[];
+  feeAssessment?: FeeAssessment;
+  priceQuoteRef?: PriceQuoteRef;
   refundRecommendation?: RefundRecommendation;
   refundReason?: string;
   status: OrderItemStatus;
@@ -392,6 +416,16 @@ export class AncillaryOffer {
     expectedVersion: number,
     validitySeconds = 900,
     now = new Date(),
+    pricing?: {
+      unitPrice: Money;
+      quoteId: string;
+      inputHash: string;
+      validFrom?: string;
+      validUntil?: string;
+      ruleSnapshot?: RuleSnapshot;
+      fees?: readonly PriceComponent[];
+      source: PriceQuoteRef["source"];
+    },
   ): void {
     this.expectVersion(expectedVersion);
     if (
@@ -404,12 +438,38 @@ export class AncillaryOffer {
         "INVALID_OFFER_TRANSITION",
         "Only DRAFTING offers may be quoted",
       );
+    const priced = pricing ?? {
+      unitPrice: this.snapshot.catalogSnapshot.unitPrice,
+      quoteId: `catalog-${this.snapshot.ancillaryOfferId}`,
+      inputHash: "",
+      source: "CATALOG_FALLBACK" as const,
+      fees: [],
+    };
+    const unitPrice = priced.unitPrice;
+    const feeAssessment = assessFees(
+      priced.quoteId,
+      priced.fees ?? [],
+      unitPrice.currency,
+      now,
+    );
     this.snapshot = {
       ...this.snapshot,
       status: "QUOTED",
       offerVersion: this.snapshot.offerVersion + 1,
-      validFrom: iso(now),
-      expiresAt: iso(new Date(now.getTime() + validitySeconds * 1000)),
+      unitPrice,
+      totalPrice: multiplyMoney(unitPrice, this.snapshot.quantity),
+      priceQuoteRef: {
+        quoteId: priced.quoteId,
+        inputHash: priced.inputHash,
+        ruleSnapshot: priced.ruleSnapshot,
+        source: priced.source,
+      },
+      assessedFees: priced.fees ?? [],
+      feeAssessment,
+      futurePricingRefs: undefined,
+      validFrom: priced.validFrom ?? iso(now),
+      expiresAt:
+        priced.validUntil ?? iso(new Date(now.getTime() + validitySeconds * 1000)),
       updatedAt: iso(now),
     };
   }
@@ -496,6 +556,15 @@ export class AncillaryOrderItem {
       quantity: offer.quantity,
       payableAmount: offer.totalPrice,
       refundableAmount: zeroMoney(offer.totalPrice.currency),
+      assessedFees: offer.assessedFees
+        ? offer.assessedFees.map((fee) =>
+            multiplyPriceComponent(fee, offer.quantity),
+          )
+        : [],
+      feeAssessment: offer.feeAssessment
+        ? multiplyFeeAssessment(offer.feeAssessment, offer.quantity)
+        : undefined,
+      priceQuoteRef: offer.priceQuoteRef,
       status: "SELECTED",
       fulfillmentFacts: [],
       selectedAt: at,
@@ -756,6 +825,44 @@ export function multiplyMoney(money: Money, quantity: number): Money {
 }
 export function zeroMoney(currency: string): Money {
   return { currency, minorUnits: 0 };
+}
+export function addMoney(first: Money, second: Money): Money {
+  if (first.currency !== second.currency)
+    throw new DomainError(
+      "CURRENCY_MISMATCH",
+      "Money values must share currency",
+    );
+  return {
+    currency: first.currency,
+    minorUnits: first.minorUnits + second.minorUnits,
+  };
+}
+export function assessFees(
+  originalQuoteId: string,
+  fees: readonly PriceComponent[],
+  currency: string,
+  now = new Date(),
+): FeeAssessment {
+  const totalFee = fees.reduce(
+    (total, fee) => addMoney(total, fee.amount),
+    zeroMoney(currency),
+  );
+  return {
+    assessmentId: `fas-${uuidV7(now)}`,
+    purpose: "ANCILLARY_PURCHASE",
+    assessedAt: iso(now),
+    originalQuoteId,
+    fee: totalFee,
+    currency: totalFee.currency,
+    succeeded: true,
+  };
+}
+export function multiplyFeeAssessment(
+  assessment: FeeAssessment,
+  quantity: number,
+): FeeAssessment {
+  const fee = multiplyMoney(assessment.fee, quantity);
+  return { ...assessment, fee, currency: fee.currency };
 }
 export function iso(date: Date): string {
   return date.toISOString();

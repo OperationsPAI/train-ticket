@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 
 import { AncillaryApplicationService, InMemoryAncillaryRepository, isDomainError, type AncillaryRepository } from "./application.js";
 import { serviceProfile } from "./profile.js";
+import { HttpFarePricingGateway, type AncillaryPricingGateway } from "./pricing.js";
 import { InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError as kitSendError, type ErrorEnvelope, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 
 export type HealthStatus = Readonly<{ status: "ok"; service: typeof serviceProfile }>;
@@ -18,7 +19,7 @@ type OTelSpan = Readonly<{ setAttribute?: (key: string, value: string | number) 
 type OTelTracer = Readonly<{ startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan }>;
 
 type AppStorage = Readonly<{ ready: () => boolean | Promise<boolean>; runCommand?: <T>(operation: (service: AncillaryApplicationService) => Promise<T>) => Promise<T> }>;
-type AppDependencies = Readonly<{ repository?: AncillaryRepository; publisher?: EventPublisher; idempotencyStore?: IdempotencyStore; storage?: AppStorage }>;
+type AppDependencies = Readonly<{ repository?: AncillaryRepository; publisher?: EventPublisher; pricingGateway?: AncillaryPricingGateway; idempotencyStore?: IdempotencyStore; storage?: AppStorage }>;
 
 const defaultRepository = new InMemoryAncillaryRepository();
 const defaultIdempotencyStore = new InMemoryIdempotencyStore();
@@ -41,7 +42,8 @@ export function metadata(): ServiceMetadata { return { service: serviceProfile, 
 
 export function createApp(instrumentation: InstrumentationHooks = {}, dependencies: AppDependencies = {}): FastifyInstance {
   const app = Fastify({ logger: false });
-  const service = new AncillaryApplicationService(dependencies.repository ?? defaultRepository, dependencies.publisher);
+  const pricingGateway = dependencies.pricingGateway ?? farePricingGatewayFromEnv();
+  const service = new AncillaryApplicationService(dependencies.repository ?? defaultRepository, dependencies.publisher, pricingGateway);
   const idempotencyStore = dependencies.idempotencyStore ?? defaultIdempotencyStore;
   const runCommand = dependencies.storage?.runCommand ?? (<T>(operation: (svc: AncillaryApplicationService) => Promise<T>) => operation(service));
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
@@ -80,7 +82,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
   app.get("/api/v1/ancillary-catalog-items", async (request, reply) => handleRead(reply, request, () => runCommand((svc) => svc.listCatalogItems({ ...query(request), limit: limit(request), offset: offset(request) }))));
 
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-offers", async (request) => ({ statusCode: 201, body: await runCommand((svc) => svc.draftOffer(request.body as any)) }), replyNoop);
-  stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-offers/:ancillaryOfferId/quote", async (request, ctx) => ({ statusCode: 200, body: await runCommand((svc) => svc.quoteOffer(param(request, "ancillaryOfferId"), request.body as any, ctx.correlationId)) }), replyNoop);
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-offers/:ancillaryOfferId/quote", async (request, ctx) => ({ statusCode: 200, body: await runCommand((svc) => svc.quoteOffer(param(request, "ancillaryOfferId"), quoteInput(request), ctx.correlationId)) }), replyNoop);
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-offers/:ancillaryOfferId/select", async (request, ctx) => ({ statusCode: 201, body: await runCommand((svc) => svc.selectOffer(param(request, "ancillaryOfferId"), request.body as any, ctx.correlationId)) }), replyNoop);
   app.get("/api/v1/ancillary-offers/:ancillaryOfferId", async (request, reply) => handleRead(reply, request, () => runCommand((svc) => svc.getOffer(param(request, "ancillaryOfferId")))));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-order-items/:ancillaryOrderItemId/confirm", async (request, ctx) => ({ statusCode: 200, body: await runCommand((svc) => svc.confirmOrderItem(param(request, "ancillaryOrderItemId"), request.body as any, ctx.correlationId)) }), replyNoop);
@@ -125,8 +127,13 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
   }
 }
 
+function farePricingGatewayFromEnv(): AncillaryPricingGateway | undefined {
+  const baseUrl = process.env.FARE_PRICING_URL?.trim();
+  return baseUrl ? new HttpFarePricingGateway(baseUrl) : undefined;
+}
 function requestContext(request: AppRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }
 function traceContext(request: AppRequest, context: RequestContext = requestContext(request)): RequestTraceContext { return { ...context, method: request.method, url: request.url }; }
+function quoteInput(request: FastifyRequest): { expectedVersion: number; validitySeconds?: number; pricing?: Parameters<AncillaryApplicationService["quoteOffer"]>[1]["pricing"]; priceQuoteIdempotencyKey?: string } { return { ...(request.body as { expectedVersion: number; validitySeconds?: number; pricing?: Parameters<AncillaryApplicationService["quoteOffer"]>[1]["pricing"] }), priceQuoteIdempotencyKey: headerValue(request.headers["idempotency-key"]) }; }
 type AppRequest = FastifyRequest;
 function healthBody(): HealthStatus { return { status: health(), service: serviceProfile }; }
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus { return { status: health(), probe }; }

@@ -17,10 +17,11 @@ Activation-wave rulings:
   `ServiceFulfillmentRecord` is not a separate aggregate on the wire; fulfillment
   records are facts embedded under `AncillaryOrderItem` and published as
   fulfillment-fact events.
-- Pricing is static catalog pricing in this wave. Each catalog item carries a
-  `price` Money value. Fare & Pricing `PriceQuote`, `RuleSnapshot`, and
-  `FeeAssessment` integration remains deferred; future references are carried as
-  optional informational refs only.
+- Pricing consults Fare & Pricing dynamic price rules using the normative
+  fare-pricing input hash and rule snapshot contract. Each catalog item still
+  carries a `price` Money value used as the fallback when Fare & Pricing is
+  unavailable or no applicable rule set is returned. Fee assessments are carried
+  on quoted offers and selected order items.
 - Ancillary order items reference `journeyOrderId`, `travelerRef`, and optional
   `segmentRef`; this contract does not change Journey Order HTTP or event
   contracts. Payment integration is deferred; the resource carries informational
@@ -114,7 +115,7 @@ future `COMPENSATED` closure from the wire contract.
 | `attachmentScope` | enum | yes | Binding scope for the item. |
 | `modalities` | string[] | yes | Applicable transport modes such as `TRAIN`, `AIR`, `BUS`, `FERRY`, or `TRANSFER`. |
 | `supplierRef` | string | no | Normalized supplier capability reference. |
-| `price` | Money | yes | Static catalog price for this wave. |
+| `price` | Money | yes | Catalog fallback price used when Fare & Pricing dynamic rules are unavailable or inapplicable. |
 | `currency` | string | yes | ISO-4217 currency matching `price.currency`; included for search/filter convenience. |
 | `salesWindow` | object | yes | `startAt` and `endAt` RFC3339 UTC timestamps. |
 | `serviceWindow` | object | no | Optional service-validity `startAt` and `endAt` timestamps. |
@@ -145,13 +146,16 @@ future `COMPENSATED` closure from the wire contract.
 | `serviceType` | enum | yes | Service type copied from the catalog snapshot. |
 | `attachmentScope` | enum | yes | Attachment scope copied from the catalog snapshot. |
 | `quantity` | integer | yes | Positive quantity. |
-| `unitPrice` | Money | yes | Static catalog unit price. |
+| `unitPrice` | Money | yes | Quoted unit price from Fare & Pricing dynamic rules, or the catalog fallback price when dynamic pricing is unavailable. |
 | `totalPrice` | Money | yes | `unitPrice * quantity` in minor units. |
 | `eligibility` | object | yes | Minimum eligibility result. See `EligibilityResult`. |
 | `validFrom` | RFC3339 UTC | yes | Quote validity start. |
 | `expiresAt` | RFC3339 UTC | yes | Quote expiry. |
 | `ruleSummary` | string | no | Human-readable rule summary; do not include sensitive personal data. |
-| `futurePricingRefs` | object | no | Optional informational refs reserved for deferred Fare & Pricing integration. |
+| `priceQuoteRef` | object | no | Fare & Pricing quote reference: `{quoteId, inputHash, ruleSnapshot, source}` where `inputHash` and `ruleSnapshot` use `docs/08-contracts/events/fare-pricing.md`; `source` is `FARE_PRICING` or `CATALOG_FALLBACK`. |
+| `assessedFees` | array[object] | no | Fare & Pricing fee components applied to the unit price; component shape is `{ruleId, amount, explanation, refundable}`. |
+| `feeAssessment` | object | no | Fee assessment summary using Fare & Pricing fee-assessment fields: `{assessmentId, purpose, assessedAt, originalQuoteId, fee, currency, succeeded, failedReason}`. |
+| `futurePricingRefs` | object | no | Optional informational refs for backward-compatible clients; normative pricing refs are `priceQuoteRef` and `feeAssessment`. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
 | `updatedAt` | RFC3339 UTC | yes | Last update timestamp. |
 
@@ -187,6 +191,9 @@ future `COMPENSATED` closure from the wire contract.
 | `quantity` | integer | yes | Positive quantity. |
 | `payableAmount` | Money | yes | Informational amount due for Payment/Journey Order coordination. |
 | `refundableAmount` | Money | yes | Informational amount currently recommended as refundable. |
+| `assessedFees` | array[object] | yes | Assessed fee components copied from the selected quote and multiplied by quantity; component shape is `{ruleId, amount, explanation, refundable}`. |
+| `feeAssessment` | object | no | Fee assessment summary copied from the selected quote and multiplied by quantity; shape is `{assessmentId, purpose, assessedAt, originalQuoteId, fee, currency, succeeded, failedReason}`. |
+| `priceQuoteRef` | object | no | Fare & Pricing quote reference copied from the selected quote: `{quoteId, inputHash, ruleSnapshot, source}`. |
 | `refundRecommendation` | enum | no | Latest refund suggestion, if evaluated. |
 | `refundReason` | string | no | Stable reason code or summary; no unmasked sensitive personal data. |
 | `status` | enum | yes | Nine-state order-item status. |
@@ -370,8 +377,10 @@ status after minimum eligibility collection.
 
 **POST** `/api/v1/ancillary-offers/{ancillaryOfferId}/quote`
 
-**Idempotency:** REQUIRED (`Idempotency-Key` header). Uses static catalog pricing
-for this wave.
+**Idempotency:** REQUIRED (`Idempotency-Key` header). Pricing consults Fare &
+Pricing dynamic rules with catalog price fallback; the service forwards the same
+client-generated UUID v7 key to Fare & Pricing for safe retry of the quote
+request.
 
 **Request fields:** `expectedVersion` (integer, required), optional
 `validitySeconds` (integer), and optional `clientRequestId` (string).
@@ -566,8 +575,10 @@ The following behaviors have no public HTTP endpoint in this activation wave:
 - Payment contracts are not modified. `payableAmount` and `refundableAmount` are
   information fields for future orchestration and external refund-result
   recording.
-- Fare & Pricing integration is deferred. Static catalog `price` is the only
-  authoritative price source in this wave; `futurePricingRefs` is non-normative.
+- Fare & Pricing integration is active for quoted offers and selected order
+  items. Ancillary Service uses the normative fare-pricing input hash and rule
+  snapshot contract, carries assessed fee facts, and falls back to catalog
+  `price` only when dynamic pricing is unavailable or inapplicable.
 - Additional eligibility dimensions from the domain document remain deferred:
   traveler age/documents, special needs, supplier slot capacity, provider status,
   fare-rule refundability, and bundle split rules.

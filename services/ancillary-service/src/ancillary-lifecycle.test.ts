@@ -8,8 +8,12 @@ import { AncillaryCatalogItem, AncillaryOffer, AncillaryOrderItem, type CatalogI
 
 const CORR = "corr-018f0000-0000-7000-8000-000000000118";
 
+function futureDeparture(hoursAhead = 24): string {
+  return new Date(Date.now() + hoursAhead * 3_600_000).toISOString();
+}
+
 function catalogInput(overrides: Partial<CatalogInput> = {}): CatalogInput {
-  const now = new Date("2026-07-09T10:00:00.000Z");
+  const now = new Date();
   return {
     serviceType: "MEAL",
     displayName: "Hot meal",
@@ -38,7 +42,7 @@ async function serviceWithPublishedCatalog(overrides: Partial<CatalogInput> = {}
 
 async function selectedOrderItem(overrides: Partial<CatalogInput> = {}) {
   const { service, publisher, catalog } = await serviceWithPublishedCatalog(overrides);
-  const draft = await service.draftOffer({ catalogItemId: catalog.catalogItemId, journeyOrderId: "ord-1", travelerRef: "trav-1", segmentRef: catalog.requiresSegmentRef ? "seg-1" : undefined, entitlementRef: "ent-1", departureAt: "2026-07-10T10:00:00.000Z", quantity: 2 });
+  const draft = await service.draftOffer({ catalogItemId: catalog.catalogItemId, journeyOrderId: "ord-1", travelerRef: "trav-1", segmentRef: catalog.requiresSegmentRef ? "seg-1" : undefined, entitlementRef: "ent-1", departureAt: futureDeparture(), quantity: 2 });
   const quoted = await service.quoteOffer(draft.ancillaryOfferId, { expectedVersion: draft.offerVersion }, CORR);
   const item = await service.selectOffer(quoted.ancillaryOfferId, { journeyOrderId: "ord-1", expectedVersion: quoted.offerVersion }, CORR);
   return { service, publisher, catalog, quoted, item };
@@ -71,11 +75,11 @@ describe("ancillary domain state machines", () => {
 
   it("enforces offer state rules and expiry scan", async () => {
     const { service, catalog } = await serviceWithPublishedCatalog({ attachmentScope: "JOURNEY", requiresEntitlementRef: true, requiresSegmentRef: false });
-    const ineligible = await service.draftOffer({ catalogItemId: catalog.catalogItemId, travelerRef: "trav", departureAt: "2026-07-09T10:30:00.000Z", quantity: 1 });
+    const ineligible = await service.draftOffer({ catalogItemId: catalog.catalogItemId, travelerRef: "trav", departureAt: new Date(Date.now() + 30 * 60_000).toISOString(), quantity: 1 });
     assert.equal(ineligible.status, "INELIGIBLE");
     assert.equal((await service.quoteOffer(ineligible.ancillaryOfferId, { expectedVersion: ineligible.offerVersion }, CORR)).status, "INELIGIBLE");
 
-    const draft = await service.draftOffer({ catalogItemId: catalog.catalogItemId, travelerRef: "trav", entitlementRef: "ent", departureAt: "2026-07-10T10:00:00.000Z", quantity: 1 });
+    const draft = await service.draftOffer({ catalogItemId: catalog.catalogItemId, travelerRef: "trav", entitlementRef: "ent", departureAt: futureDeparture(), quantity: 1 });
     const quoted = await service.quoteOffer(draft.ancillaryOfferId, { expectedVersion: draft.offerVersion, validitySeconds: 1 }, CORR);
     assert.equal(quoted.status, "QUOTED");
     assert.equal(await service.expireOffers(new Date(Date.parse(quoted.expiresAt) + 1), CORR), 1);
@@ -130,7 +134,7 @@ describe("ancillary integration-event regressions", () => {
     assertLastEventId(publisher, "AncillaryCatalogItemSuperseded", catalog.catalogItemId, superseded.version);
 
     const active = await serviceWithPublishedCatalog({ attachmentScope: "JOURNEY", requiresSegmentRef: false });
-    const draft = await active.service.draftOffer({ catalogItemId: active.catalog.catalogItemId, travelerRef: "trav", entitlementRef: "ent", departureAt: "2026-07-10T10:00:00.000Z", quantity: 1 });
+    const draft = await active.service.draftOffer({ catalogItemId: active.catalog.catalogItemId, travelerRef: "trav", entitlementRef: "ent", departureAt: futureDeparture(), quantity: 1 });
     const quoted = await active.service.quoteOffer(draft.ancillaryOfferId, { expectedVersion: draft.offerVersion, validitySeconds: 1 }, CORR);
     assertLastEventId(active.publisher, "AncillaryOfferQuoted", quoted.ancillaryOfferId, quoted.offerVersion);
     await active.service.expireOffers(new Date(Date.parse(quoted.expiresAt) + 1), CORR);
@@ -164,7 +168,7 @@ describe("ancillary integration-event regressions", () => {
 
   it("freezes catalog snapshots from the selected offer with unitPrice for quantity greater than one", async () => {
     const { service, publisher, catalog } = await serviceWithPublishedCatalog();
-    const draft = await service.draftOffer({ catalogItemId: catalog.catalogItemId, travelerRef: "trav", segmentRef: "seg-1", entitlementRef: "ent", departureAt: "2026-07-10T10:00:00.000Z", quantity: 3 });
+    const draft = await service.draftOffer({ catalogItemId: catalog.catalogItemId, travelerRef: "trav", segmentRef: "seg-1", entitlementRef: "ent", departureAt: futureDeparture(), quantity: 3 });
     const quoted = await service.quoteOffer(draft.ancillaryOfferId, { expectedVersion: draft.offerVersion }, CORR);
     await service.selectOffer(quoted.ancillaryOfferId, { journeyOrderId: "ord-quantity", expectedVersion: quoted.offerVersion }, CORR);
     const selected = publisher.findByEventType("AncillaryOrderItemSelected").at(-1)?.payload as any;
