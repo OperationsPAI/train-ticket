@@ -103,10 +103,17 @@ func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*Cre
 	return response, nil
 }
 
+type WalkingEdgeResponse struct {
+	ToNodeID           string `json:"toNodeId"`
+	WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+}
+
 type NodeSummary struct {
-	NodeID       string   `json:"nodeId"`
-	DisplayName  string   `json:"displayName"`
-	ServingModes []string `json:"servingModes"`
+	NodeID            string                `json:"nodeId"`
+	DisplayName       string                `json:"displayName"`
+	ServingModes      []string              `json:"servingModes"`
+	AccessTimeMinutes *int                  `json:"accessTimeMinutes,omitempty"`
+	WalkingEdges      []WalkingEdgeResponse `json:"walkingEdges,omitempty"`
 }
 
 type GetPlaceResponse struct {
@@ -185,19 +192,28 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 	return &ListPlacesResponse{Items: items, Total: page.Total, Limit: limit, Offset: responseOffset}, nil
 }
 
+type WalkingEdgeRequest struct {
+	ToNodeID           string
+	WalkingTimeMinutes int
+}
+
 type CreateTransportNodeRequest struct {
-	PlaceID       string
-	DisplayName   string
-	ServingModes  []string
-	CorrelationID string
+	PlaceID           string
+	DisplayName       string
+	ServingModes      []string
+	AccessTimeMinutes *int
+	WalkingEdges      []WalkingEdgeRequest
+	CorrelationID     string
 }
 
 type CreateTransportNodeResponse struct {
-	NodeID       string   `json:"nodeId"`
-	PlaceID      string   `json:"placeId"`
-	DisplayName  string   `json:"displayName"`
-	ServingModes []string `json:"servingModes"`
-	CreatedAt    string   `json:"createdAt"`
+	NodeID            string                `json:"nodeId"`
+	PlaceID           string                `json:"placeId"`
+	DisplayName       string                `json:"displayName"`
+	ServingModes      []string              `json:"servingModes"`
+	AccessTimeMinutes *int                  `json:"accessTimeMinutes,omitempty"`
+	WalkingEdges      []WalkingEdgeResponse `json:"walkingEdges,omitempty"`
+	CreatedAt         string                `json:"createdAt"`
 }
 
 func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
@@ -215,13 +231,18 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 	if err != nil {
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
+	node.SetAccessWeights(req.AccessTimeMinutes, walkingEdgesFromRequest(req.WalkingEdges))
+	if err := node.Validate(); err != nil {
+		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
+	}
 	node.MarkCreatedAt(now)
 	servingModes := stringModes(node.ServingModes)
+	walkingEdges := walkingEdgesToResponse(node.WalkingEdges)
 	if err := s.unitOfWork(ctx, func(txCtx context.Context) error {
 		if err := s.nodes.Save(txCtx, node); err != nil {
 			return NewDomainError("CONFLICT", err.Error())
 		}
-		event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, UpdatedAt: domain.FormatTimestamp(now)}
+		event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToPayload(node.WalkingEdges), UpdatedAt: domain.FormatTimestamp(now)}
 		if err := s.publisher.Publish(txCtx, domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
 		}
@@ -229,16 +250,18 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 	}); err != nil {
 		return nil, err
 	}
-	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, CreatedAt: domain.FormatTimestamp(now)}
+	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdges, CreatedAt: domain.FormatTimestamp(now)}
 	return response, nil
 }
 
 type GetTransportNodeResponse struct {
-	NodeID       string   `json:"nodeId"`
-	PlaceID      string   `json:"placeId"`
-	DisplayName  string   `json:"displayName"`
-	ServingModes []string `json:"servingModes"`
-	CreatedAt    string   `json:"createdAt"`
+	NodeID            string                `json:"nodeId"`
+	PlaceID           string                `json:"placeId"`
+	DisplayName       string                `json:"displayName"`
+	ServingModes      []string              `json:"servingModes"`
+	AccessTimeMinutes *int                  `json:"accessTimeMinutes,omitempty"`
+	WalkingEdges      []WalkingEdgeResponse `json:"walkingEdges,omitempty"`
+	CreatedAt         string                `json:"createdAt"`
 }
 
 func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
@@ -246,7 +269,7 @@ func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeI
 	if err != nil || node == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
-	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
+	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
 }
 
 type DomainError struct {
@@ -279,7 +302,45 @@ func stringModes(modes []domain.TransportMode) []string {
 func nodeSummaries(nodes []domain.TransportNode) []NodeSummary {
 	out := make([]NodeSummary, len(nodes))
 	for i, node := range nodes {
-		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes)}
+		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
+	}
+	return out
+}
+
+func copyInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+func walkingEdgesFromRequest(edges []WalkingEdgeRequest) []domain.WalkingEdge {
+	out := make([]domain.WalkingEdge, len(edges))
+	for i, edge := range edges {
+		out[i] = domain.WalkingEdge{ToNodeID: domain.TransportNodeID(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
+	return out
+}
+
+func walkingEdgesToResponse(edges []domain.WalkingEdge) []WalkingEdgeResponse {
+	if len(edges) == 0 {
+		return nil
+	}
+	out := make([]WalkingEdgeResponse, len(edges))
+	for i, edge := range edges {
+		out[i] = WalkingEdgeResponse{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
+	return out
+}
+
+func walkingEdgesToPayload(edges []domain.WalkingEdge) []domain.WalkingEdgePayload {
+	if len(edges) == 0 {
+		return nil
+	}
+	out := make([]domain.WalkingEdgePayload, len(edges))
+	for i, edge := range edges {
+		out[i] = domain.WalkingEdgePayload{ToNodeID: edge.ToNodeID, WalkingTimeMinutes: edge.WalkingTimeMinutes}
 	}
 	return out
 }

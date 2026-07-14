@@ -18,10 +18,11 @@ def idem() -> str:
 
 
 class FakeTopology:
-    def __init__(self, place_graph_version: str = "place-network:test-v1", fail: bool = False, missing: bool = False) -> None:
+    def __init__(self, place_graph_version: str = "place-network:test-v1", fail: bool = False, missing: bool = False, mct_minutes: int | None = None) -> None:
         self.place_graph_version = place_graph_version
         self.fail = fail
         self.missing = missing
+        self.mct_minutes = mct_minutes
 
     @property
     def enabled(self):
@@ -34,13 +35,13 @@ class FakeTopology:
         if self.fail:
             from transfer_management.topology import PlaceNetworkUnavailable
             raise PlaceNetworkUnavailable("boom")
-        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version})()
+        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version, "mctAccessTimeMinutes": self.mct_minutes})()
 
     def fetch_snapshot(self, from_node_ref, to_node_ref):
         if self.fail:
             from transfer_management.topology import PlaceNetworkUnavailable
             raise PlaceNetworkUnavailable("boom")
-        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version})()
+        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version, "mctAccessTimeMinutes": self.mct_minutes})()
 
 
 class FakeDownstream:
@@ -160,6 +161,19 @@ def test_no_matching_mct_rule_rejects_connection_registration() -> None:
     con = client.post("/api/v1/connections", headers={"Idempotency-Key": idem()}, json={"transferPlanId": plan.json()["transferPlanId"], "itineraryRef": "iti-no-rule", "journeyOrderId": "jo-no-rule", "previousSegmentRef": "seg-x", "nextSegmentRef": "seg-y", "travelerRefs": ["trav-1"], "fromNodeRef": "sta", "toNodeRef": "sta", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-x", "contractType": "PROTECTED", "window": {"plannedArrivalAt": rfc3339_utc(now), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=60)), "nextCutoffAt": rfc3339_utc(now + timedelta(minutes=50))}})
     assert con.status_code == 422, con.text
     assert "NO_PUBLISHED_MCT_RULE" in con.text
+
+
+def test_topology_weighted_mct_allows_ruleless_connection_and_uses_access_time() -> None:
+    client, _, _ = setup_client(topology=FakeTopology(mct_minutes=27))
+    plan = client.post("/api/v1/transfer-plans", headers={"Idempotency-Key": idem()}, json={"itineraryRef": "iti-weighted", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"], "journeyOrderId": "jo-weighted"})
+    assert plan.status_code == 201, plan.text
+    now = datetime.now(UTC).replace(microsecond=0)
+    con = client.post("/api/v1/connections", headers={"Idempotency-Key": idem()}, json={"transferPlanId": plan.json()["transferPlanId"], "itineraryRef": "iti-weighted", "journeyOrderId": "jo-weighted", "previousSegmentRef": "seg-x", "nextSegmentRef": "seg-y", "travelerRefs": ["trav-1"], "fromNodeRef": "sta-a", "toNodeRef": "sta-b", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-x", "contractType": "PROTECTED", "window": {"plannedArrivalAt": rfc3339_utc(now), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=60)), "nextCutoffAt": rfc3339_utc(now + timedelta(minutes=60))}})
+    assert con.status_code == 201, con.text
+    data = con.json()
+    assert data["window"]["mctMinutes"] == 27
+    assert data["latestEvaluation"]["requiredMinutes"] == 27
+    assert data["latestEvaluation"]["placeGraphVersion"] == "place-network:test-v1"
 
 
 def test_evaluate_plan_without_published_rule_marks_unserviceable() -> None:
