@@ -31,15 +31,15 @@ test("WaitlistCapacityFreed promotes highest-priority queued entry", async () =>
   const fare = new StubFarePricing();
   const capacity = new StubCapacity();
   const service = new WaitlistApplicationService(repository, publisher, fare, capacity, new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const regular = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
-  const platinum = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
+  const regular = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20, itineraryRef: "itin", paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-regular" });
+  const platinum = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, itineraryRef: "itin", paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-platinum" });
 
   const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
-  assert.equal(result.promoted[0]?.entryId, platinum.entryId);
-  assert.equal((await service.get(platinum.entryId)).status, "OFFERED");
-  assert.equal((await service.get(regular.entryId)).status, "QUEUED");
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 1);
+  assert.equal(result.promoted[0]?.entryId, platinum.waitlistRequestId);
+  assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
+  assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
 });
 
 test("expired offer releases hold and promotes next queued entry", async () => {
@@ -48,27 +48,27 @@ test("expired offer releases hold and promotes next queued entry", async () => {
   const publisher = new InMemoryEventPublisher();
   const capacity = new StubCapacity();
   const service = new WaitlistApplicationService(repository, publisher, new StubFarePricing(), capacity, new StubJourneyOrder(), () => current, new StubOfferManagement());
-  const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  const second = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "GOLD", tripCount: 0, daysBefore: 20 });
+  const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, itineraryRef: "itin", paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-first" });
+  const second = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", loyaltyTier: "GOLD", tripCount: 0, daysBefore: 20, itineraryRef: "itin", paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-second" });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
   current = new Date("2026-01-01T00:16:00.000Z");
   await service.expireDueOffers();
 
-  assert.equal((await service.get(first.entryId)).status, "EXPIRED");
-  assert.equal((await service.get(second.entryId)).status, "OFFERED");
-  assert.deepEqual(capacity.released, [`hold-${first.entryId}`]);
-  assert.equal(publisher.findByEventType("WaitlistOfferExpired").length, 1);
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 2);
+  assert.equal((await service.get(first.waitlistRequestId)).status, "EXPIRED");
+  assert.equal((await service.get(second.waitlistRequestId)).status, "MATCHING");
+  assert.deepEqual(capacity.released, [`hold-${first.waitlistRequestId}`]);
+  assert.equal(publisher.findByEventType("WaitlistExpired").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 2);
 });
 
-test("accept promotion creates journey order and publishes accepted event", async () => {
+test("fulfill matching request creates journey order and publishes fulfilled event", async () => {
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
+  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, itineraryRef: "itin", paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-fulfill" });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
-  const order = await service.accept(entry.entryId, { paymentMethodRef: "pm-1" });
-  assert.equal(order.orderId, `ord-${entry.entryId}`);
-  assert.equal((await service.get(entry.entryId)).status, "ACCEPTED");
+  const order = await service.accept(entry.waitlistRequestId, { paymentMethodRef: "pm-1" });
+  assert.equal(order.orderId, `ord-${entry.waitlistRequestId}`);
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "FULFILLED");
 });
 
 test("accept does not mutate entry when journey order creation fails", async () => {
@@ -76,10 +76,34 @@ test("accept does not mutate entry when journey order creation fails", async () 
     async createOrder(): Promise<never> { throw new Error("downstream unavailable"); }
   }
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new FailingJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
+  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, itineraryRef: "itin", paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-fail" });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
-  await assert.rejects(() => service.accept(entry.entryId), /downstream unavailable/);
+  await assert.rejects(() => service.accept(entry.waitlistRequestId), /downstream unavailable/);
 
-  assert.equal((await service.get(entry.entryId)).status, "OFFERED");
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "MATCHING");
+});
+
+test("archive sweep closes terminal requests while contract GET remains retrievable", async () => {
+  const repository = new InMemoryWaitlistRepository();
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const entry = await service.join({ accountId: "acc", travelerRef: "t1", segmentRef: "seg", deadline: "2026-07-20T00:00:00.000Z", travelClass: "SECOND", itineraryRef: "itin-1", paymentGuaranteeRef: "pay-auth-1", intentFingerprint: "t1:seg" });
+  await service.cancel(entry.waitlistRequestId);
+
+  const archived = await service.archiveTerminalRequests();
+
+  assert.deepEqual(archived.map((item) => item.status), ["CLOSED"]);
+  assert.equal((await service.queueInfo("seg", "2026-07-20", "SECOND", entry.waitlistRequestId)).myPosition, null);
+  assert.deepEqual(await service.get(entry.waitlistRequestId), {
+    waitlistRequestId: entry.waitlistRequestId,
+    accountId: "acc",
+    travelerRef: "t1",
+    segmentRef: "seg",
+    travelClass: "SECOND",
+    deadline: "2026-07-20T00:00:00.000Z",
+    paymentGuaranteeRef: "pay-auth-1",
+    itineraryRef: "itin-1",
+    intentFingerprint: "t1:seg",
+    status: "CLOSED",
+  });
 });

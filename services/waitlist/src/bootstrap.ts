@@ -31,11 +31,19 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     const operation = storage
       ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).expireDueOffers())
       : memoryEventService.expireDueOffers();
-    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist offer expiry scan failed"));
+    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist expiry scan failed"));
   }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "60000", 10));
   expiryTimer.unref();
+  const archiveTimer = setInterval(() => {
+    const operation = storage
+      ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).archiveTerminalRequests())
+      : memoryEventService.archiveTerminalRequests();
+    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist archive sweep failed"));
+  }, Number.parseInt(process.env.WAITLIST_ARCHIVE_SWEEP_MS ?? "300000", 10));
+  archiveTimer.unref();
   app.addHook("onClose", async () => {
     clearInterval(expiryTimer);
+    clearInterval(archiveTimer);
     abortController.abort();
     messaging.subscriber.stop?.();
     await messaging.close();

@@ -5,7 +5,7 @@ import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagem
 import { WaitlistEntry } from "../src/domain.js";
 
 function promotedEntry() {
-  const entry = WaitlistEntry.create({ entryId: "wl-contract", accountId: "acc", travelerRefs: ["tvl-1", "tvl-2"], segmentRef: "seg-1", departureDate: "2026-07-20", seatClass: "SECOND", priority: { loyaltyTier: "PLATINUM", tripCount: 1 }, itineraryRef: "itn-1", createdAt: new Date("2026-01-01T00:00:00.000Z") });
+  const entry = WaitlistEntry.create({ entryId: "wl-contract", accountId: "acc", travelerRefs: ["tvl-1", "tvl-2"], segmentRef: "seg-1", departureDate: "2026-07-20", seatClass: "SECOND", priority: { loyaltyTier: "PLATINUM", tripCount: 1 }, itineraryRef: "itn-1", deadline: new Date("2026-07-20T00:00:00.000Z"), paymentGuaranteeRef: "pay-auth-test", intentFingerprint: "fp-test", createdAt: new Date("2026-01-01T00:00:00.000Z") });
   entry.offer("off-1", 1, "fq-1", "hold-1", new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-01T00:15:00.000Z"));
   return entry;
 }

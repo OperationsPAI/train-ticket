@@ -29,6 +29,7 @@ export interface WaitlistRepository {
   save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
   findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
+  findArchivable(): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
 }
 
@@ -145,6 +146,11 @@ export class PromotionOrchestrator {
     for (let index = 0; index < slots; index++) {
       const entry = await this.repository.findTopQueued(event.segmentRef, event.departureDate, event.seatClass);
       if (!entry) break;
+      if (entry.deadline <= this.now()) {
+        entry.expire(this.now());
+        await this.repository.save(entry);
+        continue;
+      }
       const quote = await this.farePricing.quote(entry);
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
       const hold = await this.capacityAvailability.hold(entry, quote.fareQuoteId);
@@ -164,7 +170,7 @@ export class PromotionOrchestrator {
     const now = this.now();
     const expired: WaitlistEntrySnapshot[] = [];
     for (const entry of await this.repository.findExpiredOffers(now)) {
-      const offer = offerFromEntry(entry);
+      const offer = entry.status === "MATCHING" ? offerFromEntry(entry) : undefined;
       const capacityHoldId = entry.capacityHoldId;
       entry.expire(now);
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);

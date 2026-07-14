@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Redis } from "ioredis";
 import { MigrationRunner, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
+import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
 
 export class PostgresWaitlistRepository implements WaitlistRepository {
@@ -26,12 +26,15 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
-    await this.db.query(
+    const result = await this.db.query(
       `UPDATE waitlist_entries
        SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, version=version+1, updated_at=now()
-       WHERE entry_id=$1`,
-      [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot],
-    );
+       WHERE entry_id=$1 AND version=$8
+       RETURNING version`,
+      [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, entry.version],
+    ) as QueryResult<{ version: string | number }>;
+    if (result.rowCount === 0) throw new DomainError("CONFLICT", "optimistic concurrency conflict");
+    entry.markPersisted(Number(result.rows[0]?.version ?? entry.version + 1));
     return this.snapshot(entry);
   }
 
@@ -47,7 +50,17 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
-    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'OFFERED' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
+    const result = await this.db.query(
+      `SELECT * FROM waitlist_entries
+       WHERE ((status = 'MATCHING' AND offer_expires_at <= $1) OR (status IN ('QUEUED', 'MATCHING') AND (data->>'deadline')::timestamptz <= $1))
+       ORDER BY COALESCE(offer_expires_at, (data->>'deadline')::timestamptz) ASC`,
+      [now.toISOString()],
+    ) as QueryResult<WaitlistRow>;
+    return result.rows.map(entryFromRow);
+  }
+
+  async findArchivable(): Promise<readonly WaitlistEntry[]> {
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status IN ('FULFILLED', 'EXPIRED', 'CANCELLED') ORDER BY updated_at ASC, entry_id ASC`) as QueryResult<WaitlistRow>;
     return result.rows.map(entryFromRow);
   }
 
@@ -56,7 +69,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     const seatClause = seatClass ? "AND seat_class = $3" : "";
     if (seatClass) params.push(seatClass);
     const result = await this.db.query(
-      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
+      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} AND status <> 'CLOSED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
       params,
     ) as QueryResult<WaitlistRow>;
     const entries = result.rows.map(entryFromRow);
@@ -64,6 +77,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   private async snapshot(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    if (entry.status === "CLOSED") return entry.toSnapshot(0);
     const queue = await this.queueFor(entry.segmentRef, entry.departureDate, entry.seatClass);
     return queue.find((candidate) => candidate.entryId === entry.entryId) ?? entry.toSnapshot(0);
   }
@@ -104,7 +118,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
   return WaitlistEntry.fromSnapshot({
     entryId: row.entry_id,
     accountId: row.account_id,
-    travelerRefs: Array.isArray(row.traveler_refs) ? row.traveler_refs.map(String) : [],
+    travelerRefs: travelerRefs(row.traveler_refs),
     segmentRef: row.segment_ref,
     departureDate: dateString(row.departure_date),
     seatClass: row.seat_class as WaitlistEntrySnapshot["seatClass"],
@@ -114,26 +128,36 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     createdAt: instantString(row.created_at),
     offeredAt: row.offered_at ? instantString(row.offered_at) : null,
     offerExpiresAt: row.offer_expires_at ? instantString(row.offer_expires_at) : null,
-    fareQuoteId: row.fare_quote_id ?? (typeof data.fareQuoteId === "string" ? data.fareQuoteId : undefined),
-    capacityHoldId: row.capacity_hold_id ?? (typeof data.capacityHoldId === "string" ? data.capacityHoldId : undefined),
-    offerId: typeof data.offerId === "string" ? data.offerId : undefined,
+    deadline: stringData(data, "deadline") ?? instantString(row.created_at),
+    paymentGuaranteeRef: stringData(data, "paymentGuaranteeRef") ?? "pay-auth-legacy",
+    intentFingerprint: stringData(data, "intentFingerprint") ?? row.entry_id,
+    fareQuoteId: row.fare_quote_id ?? stringData(data, "fareQuoteId"),
+    capacityHoldId: row.capacity_hold_id ?? stringData(data, "capacityHoldId"),
+    offerId: stringData(data, "offerId"),
     offerVersion: typeof data.offerVersion === "number" ? data.offerVersion : undefined,
-    itineraryRef: typeof data.itineraryRef === "string" ? data.itineraryRef : undefined,
-    fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
-    offerIdempotencyKey: typeof data.offerIdempotencyKey === "string" ? data.offerIdempotencyKey : undefined,
-    capacityHoldIdempotencyKey: typeof data.capacityHoldIdempotencyKey === "string" ? data.capacityHoldIdempotencyKey : undefined,
-    capacityReleaseIdempotencyKey: typeof data.capacityReleaseIdempotencyKey === "string" ? data.capacityReleaseIdempotencyKey : undefined,
-    journeyOrderIdempotencyKey: typeof data.journeyOrderIdempotencyKey === "string" ? data.journeyOrderIdempotencyKey : undefined,
-    capacitySegmentBookingId: typeof data.capacitySegmentBookingId === "string" ? data.capacitySegmentBookingId : undefined,
+    itineraryRef: stringData(data, "itineraryRef") ?? row.segment_ref,
+    journeyOrderRef: stringData(data, "journeyOrderRef"),
+    cancelledAt: stringData(data, "cancelledAt"),
+    closedAt: stringData(data, "closedAt"),
+    fareQuoteIdempotencyKey: stringData(data, "fareQuoteIdempotencyKey"),
+    offerIdempotencyKey: stringData(data, "offerIdempotencyKey"),
+    capacityHoldIdempotencyKey: stringData(data, "capacityHoldIdempotencyKey"),
+    capacityReleaseIdempotencyKey: stringData(data, "capacityReleaseIdempotencyKey"),
+    journeyOrderIdempotencyKey: stringData(data, "journeyOrderIdempotencyKey"),
+    capacitySegmentBookingId: stringData(data, "capacitySegmentBookingId"),
+    version: Number(row.version),
   });
 }
 
-function positionIn(entries: readonly WaitlistEntry[], entryId: string): number {
-  const queued = entries.filter((entry) => entry.status === "QUEUED");
-  const index = queued.findIndex((entry) => entry.entryId === entryId);
-  return index < 0 ? 0 : index + 1;
+function travelerRefs(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string") {
+    try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; }
+  }
+  return [];
 }
-
+function positionIn(entries: readonly WaitlistEntry[], entryId: string): number { const queued = entries.filter((entry) => entry.status === "QUEUED"); const index = queued.findIndex((entry) => entry.entryId === entryId); return index < 0 ? 0 : index + 1; }
+function stringData(data: Record<string, unknown>, field: string): string | undefined { return typeof data[field] === "string" ? data[field] as string : undefined; }
 function dateString(value: Date | string): string { return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10); }
 function instantString(value: Date | string): string { return value instanceof Date ? value.toISOString() : new Date(value).toISOString(); }
 function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> { return error instanceof Error ? { name: error.name || "Error", message: error.message || "Storage failed" } : { name: typeof error, message: "Storage failed" }; }
@@ -153,4 +177,5 @@ type WaitlistRow = Readonly<{
   capacity_hold_id: string | null;
   data: Record<string, unknown> | null;
   created_at: Date | string;
+  version: string | number;
 }>;
