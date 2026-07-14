@@ -256,7 +256,7 @@ on outbound events/commands use `corr-<uuid-v7>` and `cmd-<uuid-v7>` prefixes.
 | `fromNodeType` | enum | yes | Arrival node type matched by the rule. |
 | `toNodeType` | enum | yes | Departure node type matched by the rule. |
 | `transferCategory` | enum | yes | Transfer category matched by the rule. |
-| `minimumMinutes` | integer | yes | Required minutes; must be positive. |
+| `minimumMinutes` | integer | yes | Required minutes; must be non-negative. |
 | `conditions` | object | yes | Structured non-PII conditions such as baggage/security/accessibility flags. |
 | `validFrom` | RFC3339 UTC | yes | Rule effective start. |
 | `validUntil` | RFC3339 UTC | no | Rule effective end. |
@@ -601,7 +601,7 @@ status depending on previous state.
 | `fromNodeType` | enum | yes | Arrival node type. |
 | `toNodeType` | enum | yes | Departure node type. |
 | `transferCategory` | enum | yes | Transfer category. |
-| `minimumMinutes` | integer | yes | Positive required minutes. |
+| `minimumMinutes` | integer | yes | Non-negative required minutes. |
 | `conditions` | object | yes | Structured condition flags; no PII. |
 | `validFrom` | RFC3339 UTC | yes | Effective start. |
 | `validUntil` | RFC3339 UTC | no | Effective end. |
@@ -626,7 +626,7 @@ immutable; changing a published rule requires creating a new version.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `minimumMinutes` | integer | no | Replacement positive minutes. |
+| `minimumMinutes` | integer | no | Replacement non-negative minutes. |
 | `conditions` | object | no | Replacement non-PII conditions. |
 | `validFrom` | RFC3339 UTC | no | Replacement effective start. |
 | `validUntil` | RFC3339 UTC | no | Replacement effective end. |
