@@ -439,7 +439,7 @@ a normal transition to `RECOVERED`.
 | `fromNodeType` | enum | yes | Arrival node type. |
 | `toNodeType` | enum | yes | Departure node type. |
 | `transferCategory` | enum | yes | Transfer category. |
-| `minimumMinutes` | integer | yes | Positive MCT minutes. |
+| `minimumMinutes` | integer | yes | Non-negative MCT minutes. |
 | `conditions` | object | yes | Non-PII condition flags. |
 | `validFrom` | RFC3339 UTC | yes | Effective start. |
 | `validUntil` | RFC3339 UTC | no | Effective end. |
@@ -464,7 +464,7 @@ a normal transition to `RECOVERED`.
 | `fromNodeType` | enum | yes | Arrival node type. |
 | `toNodeType` | enum | yes | Departure node type. |
 | `transferCategory` | enum | yes | Transfer category. |
-| `minimumMinutes` | integer | yes | Positive MCT minutes. |
+| `minimumMinutes` | integer | yes | Non-negative MCT minutes. |
 | `conditions` | object | yes | Non-PII condition flags. |
 | `validFrom` | RFC3339 UTC | yes | Effective start. |
 | `validUntil` | RFC3339 UTC | no | Effective end. |

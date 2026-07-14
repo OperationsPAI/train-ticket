@@ -18,11 +18,10 @@ def idem() -> str:
 
 
 class FakeTopology:
-    def __init__(self, place_graph_version: str = "place-network:test-v1", fail: bool = False, missing: bool = False, mct_minutes: int | None = None) -> None:
+    def __init__(self, place_graph_version: str = "place-network:test-v1", fail: bool = False, missing: bool = False) -> None:
         self.place_graph_version = place_graph_version
         self.fail = fail
         self.missing = missing
-        self.mct_minutes = mct_minutes
 
     @property
     def enabled(self):
@@ -35,13 +34,13 @@ class FakeTopology:
         if self.fail:
             from transfer_management.topology import PlaceNetworkUnavailable
             raise PlaceNetworkUnavailable("boom")
-        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version, "mctAccessTimeMinutes": self.mct_minutes})()
+        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version, "mctAccessTimeMinutes": None})()
 
     def fetch_snapshot(self, from_node_ref, to_node_ref):
         if self.fail:
             from transfer_management.topology import PlaceNetworkUnavailable
             raise PlaceNetworkUnavailable("boom")
-        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version, "mctAccessTimeMinutes": self.mct_minutes})()
+        return type("Snapshot", (), {"placeGraphVersion": self.place_graph_version, "mctAccessTimeMinutes": None})()
 
 
 class FakeDownstream:
@@ -163,8 +162,24 @@ def test_no_matching_mct_rule_rejects_connection_registration() -> None:
     assert "NO_PUBLISHED_MCT_RULE" in con.text
 
 
-def test_topology_weighted_mct_allows_ruleless_connection_and_uses_access_time() -> None:
-    client, _, _ = setup_client(topology=FakeTopology(mct_minutes=27))
+def test_topology_weighted_mct_allows_ruleless_connection_and_uses_access_time(monkeypatch) -> None:
+    import httpx
+
+    from transfer_management.topology import PlaceNetworkClient
+
+    original_client = httpx.Client
+
+    def handler(request):
+        bodies = {
+            "/api/v1/transport-nodes/sta-a": {"nodeId": "sta-a", "placeId": "plc-a", "createdAt": "2026-01-01T00:00:00Z", "accessTimeMinutes": 11},
+            "/api/v1/transport-nodes/sta-b": {"nodeId": "sta-b", "placeId": "plc-b", "createdAt": "2026-01-01T00:05:00Z", "accessTimeMinutes": 16},
+            "/api/v1/places/plc-a": {"placeId": "plc-a", "placeType": "STATION"},
+            "/api/v1/places/plc-b": {"placeId": "plc-b", "placeType": "STATION"},
+        }
+        return httpx.Response(200, json=bodies[str(request.url.path)])
+
+    monkeypatch.setattr("transfer_management.topology.httpx.Client", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    client, _, _ = setup_client(topology=PlaceNetworkClient("http://place-network.test"))
     plan = client.post("/api/v1/transfer-plans", headers={"Idempotency-Key": idem()}, json={"itineraryRef": "iti-weighted", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"], "journeyOrderId": "jo-weighted"})
     assert plan.status_code == 201, plan.text
     now = datetime.now(UTC).replace(microsecond=0)
@@ -173,7 +188,35 @@ def test_topology_weighted_mct_allows_ruleless_connection_and_uses_access_time()
     data = con.json()
     assert data["window"]["mctMinutes"] == 27
     assert data["latestEvaluation"]["requiredMinutes"] == 27
-    assert data["latestEvaluation"]["placeGraphVersion"] == "place-network:test-v1"
+    assert data["latestEvaluation"]["placeGraphVersion"] == "place-network:sta-a@2026-01-01T00:00:00Z:sta-b@2026-01-01T00:05:00Z"
+
+
+def test_topology_weighted_mct_accepts_contracted_zero_access_time(monkeypatch) -> None:
+    import httpx
+
+    from transfer_management.topology import PlaceNetworkClient
+
+    original_client = httpx.Client
+
+    def handler(request):
+        bodies = {
+            "/api/v1/transport-nodes/sta-zero-a": {"nodeId": "sta-zero-a", "placeId": "plc-a", "accessTimeMinutes": 0},
+            "/api/v1/transport-nodes/sta-zero-b": {"nodeId": "sta-zero-b", "placeId": "plc-b", "accessTimeMinutes": 0},
+            "/api/v1/places/plc-a": {"placeId": "plc-a", "placeType": "STATION"},
+            "/api/v1/places/plc-b": {"placeId": "plc-b", "placeType": "STATION"},
+        }
+        return httpx.Response(200, json=bodies[str(request.url.path)])
+
+    monkeypatch.setattr("transfer_management.topology.httpx.Client", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    client, _, _ = setup_client(topology=PlaceNetworkClient("http://place-network.test"))
+    plan = client.post("/api/v1/transfer-plans", headers={"Idempotency-Key": idem()}, json={"itineraryRef": "iti-zero-weighted", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"], "journeyOrderId": "jo-zero-weighted"})
+    assert plan.status_code == 201, plan.text
+    now = datetime.now(UTC).replace(microsecond=0)
+    con = client.post("/api/v1/connections", headers={"Idempotency-Key": idem()}, json={"transferPlanId": plan.json()["transferPlanId"], "itineraryRef": "iti-zero-weighted", "journeyOrderId": "jo-zero-weighted", "previousSegmentRef": "seg-x", "nextSegmentRef": "seg-y", "travelerRefs": ["trav-1"], "fromNodeRef": "sta-zero-a", "toNodeRef": "sta-zero-b", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-x", "contractType": "PROTECTED", "window": {"plannedArrivalAt": rfc3339_utc(now), "nextDepartureAt": rfc3339_utc(now + timedelta(minutes=1)), "nextCutoffAt": rfc3339_utc(now + timedelta(minutes=1))}})
+    assert con.status_code == 201, con.text
+    data = con.json()
+    assert data["window"]["mctMinutes"] == 0
+    assert data["latestEvaluation"]["requiredMinutes"] == 0
 
 
 def test_evaluate_plan_without_published_rule_marks_unserviceable() -> None:
