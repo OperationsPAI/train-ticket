@@ -3,7 +3,7 @@ from __future__ import annotations
 from train_ticket_platform.messaging import RedisEventPublisher, RedisEventSubscriber, default_consumer_name
 
 RISK_COMPLIANCE_PRODUCER = "risk-compliance"
-RISK_COMPLIANCE_SUBSCRIPTIONS: tuple[str, ...] = ("events:journey-order", "events:booking-orchestration")
+RISK_COMPLIANCE_SUBSCRIPTIONS: tuple[str, ...] = ("events:journey-order", "events:booking-orchestration", "events:identity-verification")
 RISK_COMPLIANCE_CONSUMER_GROUP = "risk-compliance"
 
 

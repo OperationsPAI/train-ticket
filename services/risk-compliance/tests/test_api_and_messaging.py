@@ -795,3 +795,124 @@ def test_subscription_includes_booking_orchestration_stream() -> None:
 
     assert "events:booking-orchestration" in RISK_COMPLIANCE_SUBSCRIPTIONS
     assert "events:journey-order" in RISK_COMPLIANCE_SUBSCRIPTIONS
+
+
+def purchase_limit_fact_recorded_envelope(event_id: str, fact_id: str, traveler_id: str = "tvl-limit") -> EventEnvelope:
+    return EventEnvelope(
+        eventId=event_id,
+        eventType="PurchaseLimitFactRecorded",
+        occurredAt="2026-07-05T10:20:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="identity-verification",
+        schemaVersion=1,
+        payload={
+            "purchaseLimitFactId": fact_id,
+            "scopeType": "CREDENTIAL",
+            "scopeRef": "crd-1",
+            "travelerId": traveler_id,
+            "orderIntentId": "oint-1",
+            "journeyDate": "2026-07-20",
+            "productCode": "ADULT_FULL_FARE",
+            "segmentRefs": ["seg-1"],
+            "limitPolicyVersion": "limit-v1",
+            "factStatus": "RECORDED",
+            "recordedAt": "2026-07-05T10:20:00.000Z",
+            "aggregateVersion": 1,
+        },
+    )
+
+
+def purchase_limit_fact_released_envelope(event_id: str, fact_id: str) -> EventEnvelope:
+    return EventEnvelope(
+        eventId=event_id,
+        eventType="PurchaseLimitFactReleased",
+        occurredAt="2026-07-05T10:25:00.000Z",
+        correlationId=f"corr-{uuid7()}",
+        causationId=f"cmd-{uuid7()}",
+        producer="identity-verification",
+        schemaVersion=1,
+        payload={
+            "purchaseLimitFactId": fact_id,
+            "orderIntentId": "oint-1",
+            "releaseReason": "ORDER_INTENT_ABANDONED",
+            "sourceEventId": "evt-source",
+            "factStatus": "RELEASED",
+            "limitPolicyVersion": "limit-v1",
+            "releasedAt": "2026-07-05T10:25:00.000Z",
+            "aggregateVersion": 2,
+        },
+    )
+
+
+def test_subscription_includes_identity_verification_stream() -> None:
+    from risk_compliance.adapters.messaging.redis_streams import RISK_COMPLIANCE_SUBSCRIPTIONS
+
+    assert "events:identity-verification" in RISK_COMPLIANCE_SUBSCRIPTIONS
+
+
+def test_identity_purchase_limit_fact_dedups_by_event_and_fact_id_and_influences_evaluation() -> None:
+    app = fake_app()
+    service = app.state.risk_service
+    publisher = app.state.publisher
+
+    service.handle_event(purchase_limit_fact_recorded_envelope("evt-limit-1", "plf-1"))
+    service.handle_event(purchase_limit_fact_recorded_envelope("evt-limit-1", "plf-2"))
+    service.handle_event(purchase_limit_fact_recorded_envelope("evt-limit-2", "plf-1"))
+
+    response = TestClient(app).post(
+        "/api/v1/risk-evaluations",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={
+            "orderId": "ord-limit-eval",
+            "accountId": "acct-limit-eval",
+            "travelerRefs": ["tvl-limit"],
+            "totalAmountMinor": 15000,
+            "currency": "CNY",
+            "route": {"origin": "node-shanghai", "destination": "node-beijing"},
+            "departureDate": "2026-07-20",
+            "sourceIp": "203.0.113.45",
+            "channelId": "web",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["score"] >= 25
+    assert any(
+        signal["signalType"] == "known_scalper_pattern"
+        and "IDENTITY_PURCHASE_LIMIT_DUPLICATE" in signal["rawValue"]
+        for signal in publisher.envelopes[-1].payload["signals"]
+    )
+
+
+def test_identity_purchase_limit_fact_lifecycle_updates_same_fact_id() -> None:
+    app = fake_app()
+    service = app.state.risk_service
+    publisher = app.state.publisher
+
+    service.handle_event(purchase_limit_fact_recorded_envelope("evt-limit-record", "plf-lifecycle"))
+    service.handle_event(purchase_limit_fact_released_envelope("evt-limit-release", "plf-lifecycle"))
+
+    response = TestClient(app).post(
+        "/api/v1/risk-evaluations",
+        headers={"Idempotency-Key": str(uuid7()), "X-Correlation-Id": str(uuid7())},
+        json={
+            "orderId": "ord-limit-released-eval",
+            "accountId": "acct-limit-released-eval",
+            "travelerRefs": ["tvl-limit"],
+            "totalAmountMinor": 15000,
+            "currency": "CNY",
+            "route": {"origin": "node-shanghai", "destination": "node-beijing"},
+            "departureDate": "2026-07-20",
+            "sourceIp": "203.0.113.45",
+            "channelId": "web",
+        },
+    )
+
+    assert response.status_code == 201
+    assert not any(
+        signal["signalType"] == "known_scalper_pattern"
+        and "IDENTITY_PURCHASE_LIMIT_DUPLICATE" in signal["rawValue"]
+        for signal in publisher.envelopes[-1].payload["signals"]
+    )
