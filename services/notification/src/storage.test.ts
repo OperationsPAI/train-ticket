@@ -139,6 +139,52 @@ describe("notification PostgreSQL pilot seams", () => {
     assert.equal(await isDuplicateBusinessNotification(client as never, duplicate), true);
   });
 
+  it("detects transfer-management business duplicates using nested connection travelers", async () => {
+    const client = new FakeDuplicateNotificationClient();
+    const event: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b04010",
+      eventType: "ConnectionMissed",
+      schemaVersion: 1,
+      producer: "transfer-management",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        connection: {
+          connectionId: "con-401",
+          transferPlanId: "tpl-401",
+          itineraryRef: "iti-401",
+          journeyOrderId: "ord-401",
+          previousSegmentRef: "seg-prev-401",
+          nextSegmentRef: "seg-next-401",
+          travelerRefs: ["tvl-401", "tvl-402"],
+        },
+        previousStatus: "AT_RISK",
+        status: "MISSED",
+        riskLevel: "MISSED",
+        contractType: "PROTECTED",
+        missedAt: "2026-07-05T10:21:00.000Z",
+        missedCause: "CUTOFF_EXPIRED",
+        window: {
+          plannedArrivalAt: "2026-07-05T10:00:00.000Z",
+          nextDepartureAt: "2026-07-05T10:30:00.000Z",
+          nextCutoffAt: "2026-07-05T10:20:00.000Z",
+          availableMinutes: -5,
+          mctMinutes: 20,
+          bufferMinutes: -25,
+        },
+        recoveryRequired: true,
+      },
+    };
+    client.snapshot = {
+      recipientRef: "tvl-402",
+      templateCode: "CONNECTION_MISSED",
+      triggerBusinessRef: "ConnectionMissed:con-401",
+    };
+
+    assert.equal(await isDuplicateBusinessNotification(client as never, event), true);
+  });
+
   it("marks readiness unavailable while configured storage is not ready", async () => {
     const app = createApp({}, { ready: () => Promise.resolve(false) });
 

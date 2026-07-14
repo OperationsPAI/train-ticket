@@ -706,7 +706,7 @@ describe("notification messaging integration surface", () => {
       journeyOrderId: "ord-401",
       previousSegmentRef: "seg-prev-401",
       nextSegmentRef: "seg-next-401",
-      travelerRefs: ["tvl-401"],
+      travelerRefs: ["tvl-401", "tvl-402"],
     };
     const window = {
       plannedArrivalAt: "2026-07-05T10:00:00.000Z",
@@ -764,19 +764,21 @@ describe("notification messaging integration surface", () => {
       },
     }), "delivered");
 
-    assert.deepEqual(sentChannels, ["PUSH", "PUSH"]);
+    assert.deepEqual(sentChannels, ["PUSH", "PUSH", "PUSH", "PUSH"]);
+    const scheduled = publisher.envelopes.filter((envelope) => envelope.eventType === "NotificationScheduled");
     assert.deepEqual(
-      publisher.envelopes
-        .filter((envelope) => envelope.eventType === "NotificationScheduled")
-        .map((envelope) => [envelope.payload.templateType, envelope.payload.intent, envelope.payload.recipientRef, envelope.payload.channel]),
+      scheduled.map((envelope) => [envelope.payload.templateType, envelope.payload.intent, envelope.payload.recipientRef, envelope.payload.channel]),
       [
         ["CONNECTION_MISSED", "CONNECTION_MISSED", "tvl-401", "PUSH"],
+        ["CONNECTION_MISSED", "CONNECTION_MISSED", "tvl-402", "PUSH"],
         ["CONNECTION_REACCOMMODATED", "CONNECTION_REACCOMMODATED", "tvl-401", "PUSH"],
+        ["CONNECTION_REACCOMMODATED", "CONNECTION_REACCOMMODATED", "tvl-402", "PUSH"],
       ],
     );
-    const scheduled = publisher.envelopes.filter((envelope) => envelope.eventType === "NotificationScheduled");
-    assert.equal(scheduled[0].payload.templateCode, "CONNECTION_MISSED");
-    assert.equal(scheduled[1].payload.templateCode, "CONNECTION_REACCOMMODATED");
+    assert.deepEqual(
+      scheduled.map((envelope) => envelope.payload.templateCode),
+      ["CONNECTION_MISSED", "CONNECTION_MISSED", "CONNECTION_REACCOMMODATED", "CONNECTION_REACCOMMODATED"],
+    );
   });
 
   it("rate-limits transfer-management traveler notifications", async () => {

@@ -134,27 +134,35 @@ export async function isDuplicateBusinessNotification(client: Pick<import("pg").
 }
 
 async function sameBusinessTaskExists(client: Pick<import("pg").PoolClient, "query">, envelope: EventEnvelope): Promise<boolean> {
-  const signature = notificationBusinessSignature(envelope);
-  if (!signature) {
+  const signatures = notificationBusinessSignatures(envelope);
+  if (signatures.length === 0) {
     return false;
   }
-  const result = await client.query(
-    `SELECT 1
-     FROM notification_task_snapshots
-     WHERE data->>'recipientRef' = $1
-       AND data->>'templateCode' = $2
-       AND data->>'triggerBusinessRef' = $3
-     LIMIT 1`,
-    [signature.recipientRef, signature.templateCode, signature.triggerBusinessRef],
-  );
-  return (result.rowCount ?? 0) > 0;
+
+  for (const signature of signatures) {
+    const result = await client.query(
+      `SELECT 1
+       FROM notification_task_snapshots
+       WHERE data->>'recipientRef' = $1
+         AND data->>'templateCode' = $2
+         AND data->>'triggerBusinessRef' = $3
+       LIMIT 1`,
+      [signature.recipientRef, signature.templateCode, signature.triggerBusinessRef],
+    );
+    if ((result.rowCount ?? 0) > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
-function notificationBusinessSignature(envelope: EventEnvelope): Readonly<{ recipientRef: string; templateCode: string; triggerBusinessRef: string }> | undefined {
+function notificationBusinessSignatures(envelope: EventEnvelope): readonly Readonly<{ recipientRef: string; templateCode: string; triggerBusinessRef: string }>[] {
   const templateCode = templateCodeFor(envelope);
-  const recipientRef = recipientRefFor(envelope.payload);
+  const recipientRefs = recipientRefsFor(envelope.payload);
   const triggerBusinessRef = triggerBusinessRefFor(envelope);
-  return templateCode && recipientRef && triggerBusinessRef ? { recipientRef, templateCode, triggerBusinessRef } : undefined;
+  return templateCode && triggerBusinessRef
+    ? recipientRefs.map((recipientRef) => ({ recipientRef, templateCode, triggerBusinessRef }))
+    : [];
 }
 
 function templateCodeFor(envelope: EventEnvelope): string | undefined {
@@ -229,39 +237,50 @@ function templateCodeFor(envelope: EventEnvelope): string | undefined {
   }
 }
 
-function recipientRefFor(payload: Record<string, unknown>): string | undefined {
-  return stringValue(payload.recipientRef)
+function recipientRefsFor(payload: Record<string, unknown>): readonly string[] {
+  const connection = recordFromUnknown(payload.connection);
+  const direct = stringValue(payload.recipientRef)
     ?? stringValue(payload.travelerId)
     ?? stringValue(payload.accountId)
     ?? stringValue(payload.actorRef)
     ?? stringValue(payload.travelerRef)
     ?? firstString(payload.affectedOrderIds)
     ?? stringValue(payload.journeyOrderId)
-    ?? stringValue(payload.serviceAlertId)
-    ?? recipientFromTravelerRefs(payload.travelerRefs);
+    ?? stringValue(payload.serviceAlertId);
+  if (direct !== undefined) {
+    return [direct];
+  }
+
+  return recipientRefsFromTravelerRefs(connection?.travelerRefs)
+    ?? recipientRefsFromTravelerRefs(payload.travelerRefs)
+    ?? [];
 }
 
-function recipientFromTravelerRefs(value: unknown): string | undefined {
+function recipientRefsFromTravelerRefs(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
+
+  const recipientRefs: string[] = [];
   for (const candidate of value) {
     if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
+      recipientRefs.push(candidate);
+      continue;
     }
     if (candidate && typeof candidate === "object") {
       const ref = candidate as Record<string, unknown>;
       const recipientRef = stringValue(ref.recipientRef) ?? stringValue(ref.travelerId) ?? stringValue(ref.travelerRef) ?? stringValue(ref.id);
       if (recipientRef) {
-        return recipientRef;
+        recipientRefs.push(recipientRef);
       }
     }
   }
-  return undefined;
+  return recipientRefs.length > 0 ? [...new Set(recipientRefs)] : undefined;
 }
 
 function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
   const payload = envelope.payload;
+  const connection = recordFromUnknown(payload.connection);
   const direct = stringValue(payload.orderId)
     ?? stringValue(payload.journeyOrderId)
     ?? stringValue(payload.paymentIntentId)
@@ -275,6 +294,7 @@ function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.waitlistRequestId)
     ?? stringValue(payload.journeyOrderRef)
     ?? stringValue(payload.postSalesCaseId)
+    ?? stringValue(connection?.connectionId)
     ?? stringValue(payload.businessRef);
   return direct ? `${envelope.eventType}:${direct}` : undefined;
 }
@@ -302,6 +322,10 @@ function firstString(value: unknown): string | undefined {
     return undefined;
   }
   return value.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
