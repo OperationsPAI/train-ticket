@@ -469,8 +469,218 @@ describe("notification messaging integration surface", () => {
       publisher.envelopes
         .filter((envelope) => envelope.eventType === "NotificationScheduled")
         .map((envelope) => envelope.payload.templateType),
-      ["WAITLIST_PROMOTED", "DELAY_ALERT", "DISRUPTION_REBOOK"],
+      ["WAITLIST_PROMOTED", "DISRUPTION_ALERT", "RECOVERY_REACCOMMODATION"],
     );
+  });
+
+
+  it("consumes disruption recovery lifecycle facts as durable in-app traveler notifications", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const sentChannels: string[] = [];
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      { send: (task) => { sentChannels.push(task.channel); return { ok: true }; } },
+    );
+    const base = {
+      schemaVersion: 1,
+      producer: "disruption-recovery",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+    } as const;
+    const payloadBase = { caseId: "rcv-321", incidentId: "inc-321", journeyOrderId: "ord-321" };
+
+    const events: EventEnvelope[] = [
+      {
+        ...base,
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03210",
+        eventType: "RecoveryCaseOpened",
+        payload: {
+          ...payloadBase,
+          disruptionId: "drp-321",
+          affectedScope: { journeyOrderId: "ord-321", serviceDate: "2026-07-05", disruptionType: "MISSED_CONNECTION", evidenceRef: "ev-321" },
+          openedAt: "2026-07-05T10:00:00.000Z",
+          status: "OPENED",
+        },
+      },
+      {
+        ...base,
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03211",
+        eventType: "RecoveryOptionsGenerated",
+        payload: {
+          ...payloadBase,
+          optionSetId: "ros-321",
+          options: [
+            { optionId: "rop-wait", optionType: "WAIT", title: "等待", description: "等待接续", executionTarget: "NONE" },
+            { optionId: "rop-reacc", optionType: "REACCOMMODATION", title: "接续改签", description: "安排替代接续", executionTarget: "TRANSFER_MANAGEMENT", reaccommodation: { connectionId: "conn-321", replacementWindow: { plannedArrivalAt: "2026-07-05T13:00:00.000Z", nextDepartureAt: "2026-07-05T13:30:00.000Z", source: "SYSTEM" } } },
+          ],
+          requiresUserChoice: true,
+          generatedAt: "2026-07-05T10:01:00.000Z",
+          status: "AWAITING_USER_CHOICE",
+        },
+      },
+      {
+        ...base,
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03212",
+        eventType: "RecoveryExecutionStarted",
+        payload: {
+          ...payloadBase,
+          optionId: "rop-refund",
+          optionType: "REFUND",
+          executionId: "rex-321",
+          executionTarget: "POST_SALES",
+          startedAt: "2026-07-05T10:02:00.000Z",
+          status: "EXECUTING_RECOVERY",
+        },
+      },
+      {
+        ...base,
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03213",
+        eventType: "RecoveryCompleted",
+        payload: {
+          ...payloadBase,
+          optionId: "rop-comp",
+          optionType: "COMPENSATION",
+          executionId: "rex-322",
+          externalRef: "ben-321",
+          completedAt: "2026-07-05T10:03:00.000Z",
+          status: "RECOVERED",
+        },
+      },
+      {
+        ...base,
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03214",
+        eventType: "RecoveryFailed",
+        payload: {
+          ...payloadBase,
+          optionId: "rop-manual",
+          executionId: "rex-323",
+          failedAt: "2026-07-05T10:04:00.000Z",
+          reason: "DOWNSTREAM_UNAVAILABLE",
+          nextStatus: "MANUAL_REVIEW",
+        },
+      },
+    ];
+
+    for (const event of events) {
+      assert.equal(await service.handleExternalTrigger(event), "delivered");
+    }
+
+    assert.deepEqual(sentChannels, ["IN_APP", "IN_APP", "IN_APP", "IN_APP", "IN_APP"]);
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => [envelope.payload.templateType, envelope.payload.intent, envelope.payload.recipientRef, envelope.payload.channel]),
+      [
+        ["RECOVERY_CASE_OPENED", "RECOVERY_CASE_OPENED", "ord-321", "IN_APP"],
+        ["RECOVERY_REACCOMMODATION", "RECOVERY_OPTIONS_AVAILABLE", "ord-321", "IN_APP"],
+        ["RECOVERY_EXECUTION_STARTED", "RECOVERY_EXECUTION_STARTED", "ord-321", "IN_APP"],
+        ["RECOVERY_COMPENSATION_ISSUED", "RECOVERY_COMPLETED", "ord-321", "IN_APP"],
+        ["RECOVERY_FAILED", "RECOVERY_FAILED", "ord-321", "IN_APP"],
+      ],
+    );
+  });
+
+  it("does not present refund or compensation starts as completed recovery outcomes", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+
+    for (const [eventId, optionType] of [
+      ["evt-0194f2e0-7b3e-7610-8284-5c26e8b03217", "REFUND"],
+      ["evt-0194f2e0-7b3e-7610-8284-5c26e8b03218", "COMPENSATION"],
+    ] as const) {
+      assert.equal(await service.handleExternalTrigger({
+        eventId,
+        eventType: "RecoveryExecutionStarted",
+        schemaVersion: 1,
+        producer: "disruption-recovery",
+        correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+        causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+        occurredAt: "2026-07-05T10:02:00.000Z",
+        payload: {
+          caseId: "rcv-321",
+          incidentId: "inc-321",
+          journeyOrderId: "ord-321",
+          optionId: `rop-${optionType.toLowerCase()}`,
+          optionType,
+          executionId: `rex-${optionType.toLowerCase()}`,
+          executionTarget: optionType === "REFUND" ? "POST_SALES" : "WALLET_PROMOTION",
+          startedAt: "2026-07-05T10:02:00.000Z",
+          status: "EXECUTING_RECOVERY",
+        },
+      }), "delivered");
+    }
+
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => envelope.payload.templateType),
+      ["RECOVERY_EXECUTION_STARTED", "RECOVERY_EXECUTION_STARTED"],
+    );
+  });
+
+  it("rate-limits disruption recovery in-app notifications", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { checkAndRecord: () => ({ allowed: false, retryAfter: new Date("2026-07-05T11:00:00.000Z") }) },
+    );
+
+    await assert.rejects(
+      () => service.handleExternalTrigger({
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03216",
+        eventType: "RecoveryCaseOpened",
+        schemaVersion: 1,
+        producer: "disruption-recovery",
+        correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+        causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+        occurredAt: "2026-07-05T10:00:00.000Z",
+        payload: {
+          caseId: "rcv-321",
+          incidentId: "inc-321",
+          disruptionId: "drp-321",
+          journeyOrderId: "ord-321",
+          affectedScope: { journeyOrderId: "ord-321", serviceDate: "2026-07-05", disruptionType: "DELAY", evidenceRef: "ev-321" },
+          openedAt: "2026-07-05T10:00:00.000Z",
+          status: "OPENED",
+        },
+      }),
+      (error: Error) => error.name === "RateLimitExceeded",
+    );
+  });
+
+  it("deduplicates repeated disruption recovery eventIds before scheduling", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const handler = new DeduplicatingEventHandler((envelope) => service.handleExternalTrigger(envelope).then(() => successfulHandling()));
+    const event: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03215",
+      eventType: "RecoveryCompleted",
+      schemaVersion: 1,
+      producer: "disruption-recovery",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c321",
+      occurredAt: "2026-07-05T10:05:00.000Z",
+      payload: {
+        caseId: "rcv-321",
+        incidentId: "inc-321",
+        journeyOrderId: "ord-321",
+        optionId: "rop-reacc",
+        optionType: "REACCOMMODATION",
+        executionId: "rex-324",
+        completedAt: "2026-07-05T10:05:00.000Z",
+        status: "RECOVERED",
+      },
+    };
+
+    assert.deepEqual(await handler.handle(event), { ok: true });
+    assert.deepEqual(await handler.handle(event), { ok: true });
+    assert.equal(publisher.envelopes.filter((envelope) => envelope.eventType === "NotificationScheduled").length, 1);
   });
 
 });

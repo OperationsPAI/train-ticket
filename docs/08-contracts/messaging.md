@@ -267,7 +267,7 @@ plus notification/finance/reporting fan-in.
 | 32 | `events:post-sales` | `journey-order` | PostSalesApplied to adjust order |
 | 33 | `events:post-sales` | `notification` | Post-sales events for user notifications |
 | 34 | `events:transfer-management` | *(none — downstream consumers deferred)* | Transfer risk, connection, contract, and MCT facts are produced in wave 18; Notification/Reporting/Journey Order/Customer Service consumption is deferred |
-| 35 | `events:disruption-recovery` | *(none — downstream consumers deferred)* | Disruption recovery notification/reporting/order touchpoints are documented in `events/disruption-recovery.md` but not active in this wave |
+| 35 | `events:disruption-recovery` | `notification` | Recovery lifecycle and service-alert facts produce traveler-facing notification intents; Reporting/Journey Order/Customer Service touchpoints remain deferred |
 | 36 | `events:notification` | *(none — notification owns its stream)* | Notification events are not consumed by other business contexts in phase 1 |
 | 37 | `events:traveler-profile` | `offer-management` | Profile changes for eligibility checks |
 | 38 | `events:traveler-profile` | `journey-order` | Profile changes affecting existing orders |
@@ -331,7 +331,7 @@ analytics, and cross-cutting concerns:
 |---|---|---|
 | `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, `events:payment-channel`, `events:transfer-management`, and `events:identity-verification` until their deferred-consumer activation waves; includes `events:seat-assignment` and `events:invoicing` in ADR-0003 wave A | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:payment-channel`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion`, `events:invoicing` | Revenue recognition, reconciliation, invoice generation, Wallet / Promotion benefit-cost attribution, ADR-0003 SIM channel statement reconciliation, and tax-document lifecycle read models. |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:seat-assignment`, `events:invoicing` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints, seat/standing/degradation changes, and invoice/red-flush status touchpoints. |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:disruption-recovery`, `events:seat-assignment`, `events:invoicing` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints, seat/standing/degradation changes, and invoice/red-flush status touchpoints. |
 
 ### Invoicing subscriptions and exclusions
 
@@ -372,9 +372,10 @@ through a provider stream.
 ### Disruption Recovery subscriptions
 
 `events:disruption-recovery` is registered as a produced stream in this
-contract, but Notification, Reporting, Journey Order, and Customer Service
-consumption of its lifecycle and alert facts is deferred in this activation
-wave. Disruption Recovery has one active inbound subscription: it consumes
+contract. Notification actively consumes traveler-facing recovery lifecycle and
+service-alert facts; Reporting, Journey Order, and Customer Service consumption
+remain deferred in this activation wave. Disruption Recovery has one active
+inbound subscription: it consumes
 `PostSalesApplied` from `events:post-sales` to converge selected `REFUND`
 recovery options after the downstream Post Sales case reaches `APPLIED`.
 Service Plan, Provider Integration, and Fulfillment signal sources remain

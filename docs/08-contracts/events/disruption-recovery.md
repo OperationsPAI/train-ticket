@@ -44,9 +44,10 @@ Activation-wave rulings:
   `REACCOMMODATION` calls Transfer Management
   `POST /api/v1/connections/{connectionId}/reaccommodate` with a folded UUID-v7
   idempotency key. `MANUAL` moves the case to manual review.
-- Consumers of Disruption Recovery events are deferred for Notification and
-  Reporting in this wave. The only active inbound subscription is
-  `events:post-sales` `PostSalesApplied` for REFUND execution convergence.
+- Reporting consumption of Disruption Recovery events remains deferred in this
+  wave. Notification is active for traveler-facing recovery lifecycle and alert
+  facts. The only active inbound subscription is `events:post-sales`
+  `PostSalesApplied` for REFUND execution convergence.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -174,7 +175,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification; deferred: reporting |
 | **Trigger** | A report opens a recovery case for one explicit `affectedOrderId`. |
 
 **Payload:**
@@ -194,7 +195,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification; deferred: reporting |
 | **Trigger** | `GenerateRecoveryOptions` creates this wave's option set for a case. |
 
 **Payload:**
@@ -216,7 +217,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification; deferred: reporting |
 | **Trigger** | Automatic `WAIT` selection or user/customer-service `select-option` command. |
 
 **Payload:**
@@ -238,7 +239,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: reporting |
+| **Consumers** | notification; deferred: reporting |
 | **Trigger** | Selected option starts local execution or a downstream HTTP command. |
 
 **Payload:**
@@ -262,7 +263,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | transfer-management; deferred: notification, reporting |
+| **Consumers** | notification, transfer-management; deferred: reporting |
 | **Trigger** | `WAIT` completes locally, Wallet / Promotion benefit issuance succeeds, consumed `PostSalesApplied` converges a REFUND execution, or Transfer Management reaccommodation returns `200`. |
 
 **Payload:**
@@ -284,7 +285,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | transfer-management; deferred: notification, reporting |
+| **Consumers** | notification, transfer-management; deferred: reporting |
 | **Trigger** | A selected option fails and cannot automatically converge. |
 
 **Payload:**
@@ -326,7 +327,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification; deferred: reporting |
 | **Trigger** | Incident alert fact is published for affected users, customer service, or operations. |
 
 **Payload:**
@@ -375,8 +376,8 @@ MUST update e2e 17/19 expectations for the `WAIT` plus `REACCOMMODATION`
 
 ## Deferred downstream touchpoints
 
-| Downstream context | Deferred events | Purpose when activated |
+| Downstream context | Events | Purpose |
 |---|---|---|
-| Notification | `ServiceAlertPublished`, `RecoveryOptionsGenerated`, `RecoveryOptionSelected`, `RecoveryCompleted`, `RecoveryFailed` | User-facing alert, option, decision, and progress notifications. |
+| Notification | active: `ServiceAlertPublished`, `RecoveryCaseOpened`, `RecoveryOptionsGenerated`, `RecoveryOptionSelected`, `RecoveryExecutionStarted`, `RecoveryCompleted`, `RecoveryFailed` | User-facing alert, option, decision, progress, and completion notifications. `RecoveryExecutionStarted` is progress-only; refund executed / compensation issued notifications are emitted only from `RecoveryCompleted`. |
 | Reporting | all Disruption Recovery events | Disruption metrics, waiver/compensation cost attribution, and operational read models. |
 | Journey Order | recovery summary events | Order-detail disruption and recovery display. |
