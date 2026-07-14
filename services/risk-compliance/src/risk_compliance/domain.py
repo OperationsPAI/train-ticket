@@ -108,6 +108,25 @@ class ScalperPattern(str, Enum):
     SAME_ROUTE_BULK = "SAME_ROUTE_BULK"
     RAPID_SEARCH_THEN_BOOK = "RAPID_SEARCH_THEN_BOOK"
     RESALE_REFUND_CYCLE = "RESALE_REFUND_CYCLE"
+    IDENTITY_PURCHASE_LIMIT_DUPLICATE = "IDENTITY_PURCHASE_LIMIT_DUPLICATE"
+
+
+class PurchaseLimitFactStatus(str, Enum):
+    RECORDED = "RECORDED"
+    CONFIRMED = "CONFIRMED"
+    RELEASED = "RELEASED"
+    MISSED = "MISSED"
+    FAILED = "FAILED"
+
+
+ACTIVE_PURCHASE_LIMIT_FACT_STATUSES = frozenset(
+    {
+        PurchaseLimitFactStatus.RECORDED,
+        PurchaseLimitFactStatus.CONFIRMED,
+        PurchaseLimitFactStatus.MISSED,
+        PurchaseLimitFactStatus.FAILED,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +236,62 @@ class DetectedPattern:
     def to_signal(self) -> RiskSignal:
         normalized = 100 if self.score_contribution >= 25 else int(round(self.score_contribution * 100 / 25))
         return RiskSignal("known_scalper_pattern", self.pattern_type.value, min(100, normalized))
+
+
+
+
+@dataclass(frozen=True, slots=True)
+class PurchaseLimitFact:
+    """Identity-verification purchase-limit fact retained for risk scoring.
+
+    The fact ID is a business id from the identity-verification contract and is
+    separate from the transport envelope eventId used for at-least-once dedup.
+    """
+
+    fact_id: str
+    status: PurchaseLimitFactStatus
+    traveler_id: str | None = None
+    order_intent_id: str | None = None
+    journey_date: str | None = None
+    product_code: str | None = None
+    segment_refs: tuple[str, ...] = ()
+    limit_policy_version: str | None = None
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not self.fact_id.strip():
+            raise RiskComplianceError("purchase limit fact_id is required")
+        if self.traveler_id is not None and not self.traveler_id.strip():
+            raise RiskComplianceError("traveler_id cannot be blank")
+        if self.order_intent_id is not None and not self.order_intent_id.strip():
+            raise RiskComplianceError("order_intent_id cannot be blank")
+        if self.journey_date is not None and not self.journey_date.strip():
+            raise RiskComplianceError("journey_date cannot be blank")
+        if self.product_code is not None and not self.product_code.strip():
+            raise RiskComplianceError("product_code cannot be blank")
+        if self.limit_policy_version is not None and not self.limit_policy_version.strip():
+            raise RiskComplianceError("limit_policy_version cannot be blank")
+        if any(not segment_ref.strip() for segment_ref in self.segment_refs):
+            raise RiskComplianceError("segment_refs cannot contain blank values")
+
+    @property
+    def is_active_for_scoring(self) -> bool:
+        return self.status in ACTIVE_PURCHASE_LIMIT_FACT_STATUSES
+
+    def merge(self, update: "PurchaseLimitFact") -> "PurchaseLimitFact":
+        if update.fact_id != self.fact_id:
+            raise RiskComplianceError("cannot merge different purchase limit facts")
+        return PurchaseLimitFact(
+            fact_id=self.fact_id,
+            status=update.status,
+            traveler_id=update.traveler_id or self.traveler_id,
+            order_intent_id=update.order_intent_id or self.order_intent_id,
+            journey_date=update.journey_date or self.journey_date,
+            product_code=update.product_code or self.product_code,
+            segment_refs=update.segment_refs or self.segment_refs,
+            limit_policy_version=update.limit_policy_version or self.limit_policy_version,
+            occurred_at=update.occurred_at,
+        )
 
 
 @dataclass(frozen=True, slots=True)
