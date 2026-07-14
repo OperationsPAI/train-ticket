@@ -14,9 +14,13 @@ from risk_compliance.application import (
     RiskAssessmentResult,
     RiskBlockApplied,
 )
-from risk_compliance.domain import RiskEvaluation, RiskSignal, RiskVerdict, RuleResult
+from risk_compliance.domain import PurchaseLimitFact, PurchaseLimitFactStatus, RiskEvaluation, RiskSignal, RiskVerdict, RuleResult
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
+
+
+def _jsonb_payload(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"))
 
 
 def _json_obj(data: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -124,6 +128,34 @@ def _evaluation_to_columns(evaluation: RiskEvaluation) -> tuple[Any, ...]:
     )
 
 
+def _purchase_limit_fact_to_columns(fact: PurchaseLimitFact) -> tuple[Any, ...]:
+    return (
+        fact.fact_id,
+        fact.status.value,
+        fact.traveler_id,
+        fact.order_intent_id,
+        fact.journey_date,
+        fact.product_code,
+        _jsonb_payload(list(fact.segment_refs)),
+        fact.limit_policy_version,
+        _coerce_dt(fact.occurred_at),
+    )
+
+
+def _purchase_limit_fact_from_row(row: Any) -> PurchaseLimitFact:
+    return PurchaseLimitFact(
+        fact_id=str(row[0]),
+        status=PurchaseLimitFactStatus(str(row[1])),
+        traveler_id=None if row[2] is None else str(row[2]),
+        order_intent_id=None if row[3] is None else str(row[3]),
+        journey_date=None if row[4] is None else str(row[4]),
+        product_code=None if row[5] is None else str(row[5]),
+        segment_refs=tuple(str(value) for value in _json_array(row[6])),
+        limit_policy_version=None if row[7] is None else str(row[7]),
+        occurred_at=_coerce_dt(row[8]),
+    )
+
+
 class _TxState:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
@@ -198,8 +230,8 @@ class PostgresAssessmentRepository:
             self._assessments.save(conn, assessment.assessmentId, _assessment_to_json(assessment), None if snap is None else int(snap[0]))
         self.with_connection(write)
 
-    def try_mark_processed(self, event_id: str) -> bool:
-        return bool(self.with_connection(lambda conn: self._processed.try_mark_processed(conn, event_id, "events:journey-order")))
+    def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
+        return bool(self.with_connection(lambda conn: self._processed.try_mark_processed(conn, event_id, stream or "events:journey-order")))
 
     def is_processed(self, event_id: str) -> bool:
         return self.with_connection(lambda conn: conn.execute("SELECT 1 FROM processed_events WHERE event_id = %s", (event_id,)).fetchone() is not None)
@@ -298,6 +330,83 @@ class PostgresRiskEvaluationRepository:
             return fn(state.connection)
         with self.transaction() as conn:
             return fn(conn)
+
+    def try_mark_purchase_limit_fact_processed(self, event_id: str, fact_id: str, event_type: str) -> bool:
+        return bool(
+            self.with_connection(
+                lambda conn: conn.execute(
+                    """
+                    INSERT INTO risk_processed_purchase_limit_facts(event_id, fact_id, event_type)
+                    VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING event_id
+                    """,
+                    (event_id, fact_id, event_type),
+                ).fetchone()
+            )
+        )
+
+    def record_purchase_limit_fact_processed(self, event_id: str, fact_id: str, event_type: str) -> None:
+        self.with_connection(
+            lambda conn: conn.execute(
+                """
+                INSERT INTO risk_processed_purchase_limit_facts(event_id, fact_id, event_type)
+                VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
+                """,
+                (event_id, fact_id, event_type),
+            )
+        )
+
+    def upsert_purchase_limit_fact(self, fact: PurchaseLimitFact) -> None:
+        def write(conn: Any) -> None:
+            existing = conn.execute(
+                """
+                SELECT fact_id, status, traveler_id, order_intent_id, journey_date, product_code,
+                       segment_refs, limit_policy_version, occurred_at
+                FROM risk_purchase_limit_facts WHERE fact_id = %s
+                """,
+                (fact.fact_id,),
+            ).fetchone()
+            merged = fact if existing is None else _purchase_limit_fact_from_row(existing).merge(fact)
+            conn.execute(
+                """
+                INSERT INTO risk_purchase_limit_facts(
+                  fact_id, status, traveler_id, order_intent_id, journey_date, product_code,
+                  segment_refs, limit_policy_version, occurred_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (fact_id) DO UPDATE SET
+                  status = EXCLUDED.status,
+                  traveler_id = COALESCE(EXCLUDED.traveler_id, risk_purchase_limit_facts.traveler_id),
+                  order_intent_id = COALESCE(EXCLUDED.order_intent_id, risk_purchase_limit_facts.order_intent_id),
+                  journey_date = COALESCE(EXCLUDED.journey_date, risk_purchase_limit_facts.journey_date),
+                  product_code = COALESCE(EXCLUDED.product_code, risk_purchase_limit_facts.product_code),
+                  segment_refs = CASE
+                    WHEN jsonb_array_length(EXCLUDED.segment_refs) > 0 THEN EXCLUDED.segment_refs
+                    ELSE risk_purchase_limit_facts.segment_refs
+                  END,
+                  limit_policy_version = COALESCE(EXCLUDED.limit_policy_version, risk_purchase_limit_facts.limit_policy_version),
+                  occurred_at = EXCLUDED.occurred_at,
+                  updated_at = now()
+                """,
+                _purchase_limit_fact_to_columns(merged),
+            )
+        self.with_connection(write)
+
+    def active_purchase_limit_facts(self, traveler_refs: tuple[str, ...]) -> tuple[PurchaseLimitFact, ...]:
+        traveler_set = tuple(sorted({traveler_ref for traveler_ref in traveler_refs if traveler_ref.strip()}))
+        if not traveler_set:
+            return ()
+        def read(conn: Any) -> tuple[PurchaseLimitFact, ...]:
+            rows = conn.execute(
+                """
+                SELECT fact_id, status, traveler_id, order_intent_id, journey_date, product_code,
+                       segment_refs, limit_policy_version, occurred_at
+                FROM risk_purchase_limit_facts
+                WHERE traveler_id = ANY(%s) AND status IN ('RECORDED', 'CONFIRMED', 'MISSED', 'FAILED')
+                ORDER BY occurred_at DESC
+                """,
+                (list(traveler_set),),
+            ).fetchall()
+            return tuple(_purchase_limit_fact_from_row(row) for row in rows)
+        return self.with_connection(read)
 
     def save(self, evaluation: RiskEvaluation) -> None:
         def write(conn: Any) -> None:

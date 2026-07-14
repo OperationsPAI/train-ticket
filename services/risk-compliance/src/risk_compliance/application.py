@@ -23,10 +23,32 @@ from train_ticket_platform.messaging import (
     TransientHandlerError,
 )
 
-from .domain import BlockScope, Decision, PolicyVersionRef, RiskAssessment, RiskLevel, allow_subject, assess_risk, block_subject
+from .domain import (
+    BlockScope,
+    Decision,
+    PolicyVersionRef,
+    PurchaseLimitFact,
+    PurchaseLimitFactStatus,
+    RiskAssessment,
+    RiskComplianceError,
+    RiskLevel,
+    allow_subject,
+    assess_risk,
+    block_subject,
+)
 
 PRODUCER = "risk-compliance"
 SCHEMA_VERSION = 1
+IDENTITY_VERIFICATION_STREAM = "events:identity-verification"
+IDENTITY_PURCHASE_LIMIT_EVENT_TYPES = frozenset(
+    {
+        "PurchaseLimitFactRecorded",
+        "PurchaseLimitFactConfirmed",
+        "PurchaseLimitFactReleased",
+        "PurchaseLimitFactMissed",
+        "PurchaseLimitFactFailed",
+    }
+)
 DEFAULT_POLICY_VERSION = PolicyVersionRef(policy_set_id="risk-rules", version="1.0.0")
 FREQUENCY_WINDOW = timedelta(minutes=int(os.environ.get("RISK_FREQUENCY_WINDOW_MINUTES", "5")))
 FREQUENCY_THRESHOLD = int(os.environ.get("RISK_FREQUENCY_THRESHOLD", "2"))
@@ -138,6 +160,7 @@ class InMemoryAssessmentRepository:
         self._assessments: dict[str, RiskAssessmentResult] = {}
         self._blocks: dict[str, RiskBlockApplied] = {}
         self._processed_event_ids: set[str] = set()
+        self._processed_purchase_limit_fact_keys: set[tuple[str, str]] = set()
         self._account_order_times: dict[str, list[datetime]] = {}
         self._account_lifted_at: dict[str, datetime] = {}
         self._ip_order_times: dict[str, list[datetime]] = {}
@@ -162,7 +185,8 @@ class InMemoryAssessmentRepository:
     def save(self, assessment: RiskAssessmentResult) -> None:
         self._assessments[assessment.assessmentId] = assessment
 
-    def try_mark_processed(self, event_id: str) -> bool:
+    def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
+        del stream
         if event_id in self._processed_event_ids:
             return False
         self._processed_event_ids.add(event_id)
@@ -173,6 +197,18 @@ class InMemoryAssessmentRepository:
 
     def record_processed(self, event_id: str) -> None:
         self._processed_event_ids.add(event_id)
+
+    def try_mark_purchase_limit_fact_processed(self, event_id: str, fact_id: str, event_type: str) -> bool:
+        del event_id
+        dedup_key = (fact_id, event_type)
+        if dedup_key in self._processed_purchase_limit_fact_keys:
+            return False
+        self._processed_purchase_limit_fact_keys.add(dedup_key)
+        return True
+
+    def record_purchase_limit_fact_processed(self, event_id: str, fact_id: str, event_type: str) -> None:
+        del event_id
+        self._processed_purchase_limit_fact_keys.add((fact_id, event_type))
 
     def save_block(self, block: RiskBlockApplied) -> None:
         self._blocks[block.subjectRef] = block
@@ -231,6 +267,7 @@ class RiskComplianceService:
     publisher: EventPublisher
     repository: InMemoryAssessmentRepository = field(default_factory=InMemoryAssessmentRepository)
     idempotency_store: IdempotencyStore | None = None
+    purchase_limit_fact_sink: Any | None = None
 
     def assess(
         self,
@@ -309,6 +346,9 @@ class RiskComplianceService:
         if envelope.eventType == "RiskAssessmentRequested":
             self._handle_risk_assessment_requested(envelope)
             return
+        if envelope.eventType in IDENTITY_PURCHASE_LIMIT_EVENT_TYPES:
+            self._handle_purchase_limit_fact(envelope)
+            return
         if envelope.eventType != "JourneyOrderCreated":
             return
         transaction = getattr(self.repository, "transaction", None)
@@ -321,10 +361,7 @@ class RiskComplianceService:
 
     def _handle_event_in_transaction(self, envelope: EventEnvelope) -> None:
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
-        if callable(try_mark_processed):
-            if not try_mark_processed(envelope.eventId):
-                return
-        elif self.repository.is_processed(envelope.eventId):
+        if not _try_mark_processed(self.repository, envelope.eventId, "events:journey-order"):
             return
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
@@ -352,10 +389,7 @@ class RiskComplianceService:
 
     def _handle_risk_assessment_requested_in_transaction(self, envelope: EventEnvelope) -> None:
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
-        if callable(try_mark_processed):
-            if not try_mark_processed(envelope.eventId):
-                return
-        elif self.repository.is_processed(envelope.eventId):
+        if not _try_mark_processed(self.repository, envelope.eventId, "events:booking-orchestration"):
             return
         payload = envelope.payload
         saga_id = str(payload.get("sagaId", ""))
@@ -373,6 +407,34 @@ class RiskComplianceService:
         self.publisher.publish(completed_envelope)
         if try_mark_processed is None:
             self.repository.record_processed(envelope.eventId)
+
+    def _handle_purchase_limit_fact(self, envelope: EventEnvelope) -> None:
+        transaction = getattr(self.repository, "transaction", None)
+        context = transaction() if callable(transaction) else None
+        if context is None:
+            self._handle_purchase_limit_fact_in_transaction(envelope)
+            return
+        with context:
+            self._handle_purchase_limit_fact_in_transaction(envelope)
+
+    def _handle_purchase_limit_fact_in_transaction(self, envelope: EventEnvelope) -> None:
+        fact = _purchase_limit_fact_from_envelope(envelope)
+        try_mark_processed = getattr(self.repository, "try_mark_processed", None)
+        if not _try_mark_processed(self.repository, envelope.eventId, IDENTITY_VERIFICATION_STREAM):
+            return
+        fact_store = self.purchase_limit_fact_sink or self.repository
+        try_mark_fact_processed = getattr(fact_store, "try_mark_purchase_limit_fact_processed", None)
+        if callable(try_mark_fact_processed):
+            if not try_mark_fact_processed(envelope.eventId, fact.fact_id, envelope.eventType):
+                return
+        upsert_purchase_limit_fact = getattr(fact_store, "upsert_purchase_limit_fact", None)
+        if callable(upsert_purchase_limit_fact):
+            upsert_purchase_limit_fact(fact)
+        if try_mark_processed is None:
+            self.repository.record_processed(envelope.eventId)
+        record_fact_processed = getattr(fact_store, "record_purchase_limit_fact_processed", None)
+        if try_mark_fact_processed is None and callable(record_fact_processed):
+            record_fact_processed(envelope.eventId, fact.fact_id, envelope.eventType)
 
     def lift_block(self, *, subject_ref: str, scope: str, reason_code: str, correlation_id: str) -> RiskBlockLifted:
         previous = self.repository.active_block(subject_ref)
@@ -434,6 +496,16 @@ class RiskComplianceService:
         result = _to_result(completed)
         block = _block_from_result(result) if completed.decision in BLOCKING_DECISIONS else None
         return result, block
+
+
+def _try_mark_processed(repository: Any, event_id: str, stream: str) -> bool:
+    try_mark_processed = getattr(repository, "try_mark_processed", None)
+    if callable(try_mark_processed):
+        try:
+            return bool(try_mark_processed(event_id, stream))
+        except TypeError:
+            return bool(try_mark_processed(event_id))
+    return not repository.is_processed(event_id)
 
 
 def prefixed_id(prefix: str) -> str:
@@ -619,10 +691,46 @@ def _is_whitelisted_ip(source_ip: str) -> bool:
     return any(address in network for network in _ip_whitelist_ranges())
 
 
-def _required_payload_text(payload: Mapping[str, Any], field_name: str) -> str:
+
+def _purchase_limit_fact_from_envelope(envelope: EventEnvelope) -> PurchaseLimitFact:
+    payload = envelope.payload
+    fact_id = _required_payload_text(payload, "purchaseLimitFactId", event_type=envelope.eventType)
+    raw_status = _required_payload_text(payload, "factStatus", event_type=envelope.eventType)
+    try:
+        status = PurchaseLimitFactStatus(raw_status)
+    except ValueError as exc:
+        raise RiskComplianceError(f"unsupported purchase-limit fact status {raw_status}") from exc
+    occurred_at = _coerce_datetime(envelope.occurredAt)
+    return PurchaseLimitFact(
+        fact_id=fact_id,
+        status=status,
+        traveler_id=_optional_payload_text(payload, "travelerId"),
+        order_intent_id=_optional_payload_text(payload, "orderIntentId"),
+        journey_date=_optional_payload_text(payload, "journeyDate"),
+        product_code=_optional_payload_text(payload, "productCode"),
+        segment_refs=_string_tuple(payload.get("segmentRefs")),
+        limit_policy_version=_optional_payload_text(payload, "limitPolicyVersion"),
+        occurred_at=occurred_at,
+    )
+
+
+def _optional_payload_text(payload: Mapping[str, Any], field_name: str) -> str | None:
+    value = payload.get(field_name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
+
+
+def _required_payload_text(payload: Mapping[str, Any], field_name: str, *, event_type: str = "JourneyOrderCreated") -> str:
     value = payload.get(field_name)
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"JourneyOrderCreated payload missing {field_name}")
+        raise ValueError(f"{event_type} payload missing {field_name}")
     return value
 
 

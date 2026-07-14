@@ -11,6 +11,7 @@ from train_ticket_platform.messaging import EventPublisher
 from .application import prefixed_id
 from .domain import (
     DetectedPattern,
+    PurchaseLimitFact,
     RiskComplianceError,
     RiskEvaluation,
     RiskScoreCalculator,
@@ -66,6 +67,8 @@ class OrderHistoryRecord:
 @dataclass(slots=True)
 class RiskEvaluationRepository:
     _evaluations: dict[str, RiskEvaluation] = field(default_factory=dict)
+    _purchase_limit_facts: dict[str, PurchaseLimitFact] = field(default_factory=dict)
+    _processed_purchase_limit_fact_keys: set[tuple[str, str]] = field(default_factory=set)
     _account_created_at: dict[str, datetime] = field(default_factory=dict)
     _orders: list[OrderHistoryRecord] = field(default_factory=list)
     _payment_attempts: dict[str, list[datetime]] = field(default_factory=lambda: defaultdict(list))
@@ -104,6 +107,32 @@ class RiskEvaluationRepository:
     def record_refund(self, account_id: str, occurred_at: datetime) -> None:
         self._refunds[account_id].append(occurred_at)
 
+    def try_mark_purchase_limit_fact_processed(self, event_id: str, fact_id: str, event_type: str) -> bool:
+        del event_id
+        dedup_key = (fact_id, event_type)
+        if dedup_key in self._processed_purchase_limit_fact_keys:
+            return False
+        self._processed_purchase_limit_fact_keys.add(dedup_key)
+        return True
+
+    def record_purchase_limit_fact_processed(self, event_id: str, fact_id: str, event_type: str) -> None:
+        del event_id
+        self._processed_purchase_limit_fact_keys.add((fact_id, event_type))
+
+    def upsert_purchase_limit_fact(self, fact: PurchaseLimitFact) -> None:
+        existing = self._purchase_limit_facts.get(fact.fact_id)
+        self._purchase_limit_facts[fact.fact_id] = fact if existing is None else existing.merge(fact)
+
+    def active_purchase_limit_facts(self, traveler_refs: tuple[str, ...]) -> tuple[PurchaseLimitFact, ...]:
+        traveler_set = {traveler_ref for traveler_ref in traveler_refs if traveler_ref.strip()}
+        if not traveler_set:
+            return ()
+        return tuple(
+            fact
+            for fact in self._purchase_limit_facts.values()
+            if fact.is_active_for_scoring and fact.traveler_id in traveler_set
+        )
+
     def refunds_since(self, account_id: str, since: datetime) -> tuple[datetime, ...]:
         refunds = [seen_at for seen_at in self._refunds[account_id] if seen_at >= since]
         self._refunds[account_id] = refunds
@@ -130,6 +159,17 @@ class PatternMatcher:
         searches = _int_from_mapping(request.context, "searchCountLast2m")
         if searches > 20:
             detected.append(DetectedPattern(ScalperPattern.RAPID_SEARCH_THEN_BOOK, 2 * 60, 20, 15, f"{searches}/20 searches before booking"))
+        active_limit_facts = self._repository.active_purchase_limit_facts(request.traveler_refs)
+        if active_limit_facts:
+            detected.append(
+                DetectedPattern(
+                    ScalperPattern.IDENTITY_PURCHASE_LIMIT_DUPLICATE,
+                    24 * 60 * 60,
+                    0,
+                    30,
+                    f"{len(active_limit_facts)} active identity purchase-limit facts for traveler",
+                )
+            )
         return tuple(detected)
 
 

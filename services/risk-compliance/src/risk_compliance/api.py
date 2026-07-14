@@ -435,17 +435,18 @@ def create_app(
         app.state.publisher = postgres_publisher or RedisEventPublisher()
         from .adapters.redis import VelocityRedisCounter
 
-        app.state.risk_service = RiskComplianceService(
-            publisher=app.state.publisher,
-            repository=app.state.assessment_repository,
-            idempotency_store=store,
-        )
-        app.state.subscriber = RedisEventSubscriber()
         app.state.risk_evaluation_service = RiskEvaluationService(
             app.state.publisher,
             repository=evaluation_repository or RiskEvaluationRepository(),
             velocity_counter=VelocityRedisCounter(),
         )
+        app.state.risk_service = RiskComplianceService(
+            publisher=app.state.publisher,
+            repository=app.state.assessment_repository,
+            idempotency_store=store,
+        )
+        app.state.risk_service.purchase_limit_fact_sink = app.state.risk_evaluation_service.repository
+        app.state.subscriber = RedisEventSubscriber()
         subscriber_config = {
             "subscriptions": RISK_COMPLIANCE_SUBSCRIPTIONS,
             "consumer_group": RISK_COMPLIANCE_CONSUMER_GROUP,
@@ -455,6 +456,7 @@ def create_app(
         app.state.risk_service = service
         app.state.publisher = service.publisher
         app.state.risk_evaluation_service = RiskEvaluationService(app.state.publisher)
+        app.state.risk_service.purchase_limit_fact_sink = app.state.risk_evaluation_service.repository
         app.state.risk_service.idempotency_store = store
 
     def handle_risk_event(envelope: Any) -> None:
