@@ -56,7 +56,7 @@ Registers a new geographic place.
 | `code` | string | Short code, if set. |
 | `timezone` | string | IANA timezone, if set. |
 | `status` | enum | Current status. |
-| `nodes` | array | List of associated transport nodes. |
+| `nodes` | array | List of associated transport nodes using the TransportNode shape below, including optional access-time weights when configured. |
 
 **Error codes:** `NOT_FOUND`
 
@@ -81,6 +81,8 @@ Registers a new geographic place.
 | `placeId` | string | yes | Parent place ID (`plc-<uuid>`). |
 | `displayName` | string | yes | Display name (e.g. "Platform 3"). |
 | `servingModes` | string[] | yes | Transport modes served (e.g. `["RAIL"]`). |
+| `accessTimeMinutes` | integer | no | Non-negative walking/wayfinding access-time weight in whole minutes for entering/leaving this node. Omitted when unknown. |
+| `walkingEdges` | array | no | Optional directed walking/access edges from this node to adjacent transport nodes. Each item is `{toNodeId, walkingTimeMinutes}` where `toNodeId` is a TransportNode ID (`tnd-<uuid>` or configured node ref) and `walkingTimeMinutes` is a non-negative integer in whole minutes. Omitted or empty when no edge weights are configured. |
 
 **Response (201):**
 
@@ -90,6 +92,8 @@ Registers a new geographic place.
 | `placeId` | string | Parent place. |
 | `displayName` | string | Display name. |
 | `servingModes` | string[] | Transport modes. |
+| `accessTimeMinutes` | integer | Optional; same semantics and minute units as request. Present only when configured. |
+| `walkingEdges` | array | Optional; same `{toNodeId, walkingTimeMinutes}` directed edge shape as request. Present only when one or more edge weights are configured. |
 | `createdAt` | timestamp | Creation time. |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND` (placeId), `CONFLICT`
