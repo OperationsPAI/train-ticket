@@ -185,6 +185,8 @@ def _flags_from_event(event: OperationalEvent) -> dict[str, Any]:
         "distanceKm": None if event.distance_km is None else str(event.distance_km),
         "ancillaryAttached": event.ancillary_attached,
         "insuranceAttached": event.insurance_attached,
+        "sourceContext": event.source_context,
+        "anomalySignal": event.anomaly_signal,
     }
 
 
@@ -235,6 +237,8 @@ def _event_from_row(row: Sequence[Any]) -> OperationalEvent:
         distance_km=_decimal_flag(flags, "distanceKm"),
         ancillary_attached=_bool_flag(flags, "ancillaryAttached"),
         insurance_attached=_bool_flag(flags, "insuranceAttached"),
+        source_context=None if flags.get("sourceContext") is None else str(flags.get("sourceContext")),
+        anomaly_signal=_bool_flag(flags, "anomalySignal"),
     )
 
 

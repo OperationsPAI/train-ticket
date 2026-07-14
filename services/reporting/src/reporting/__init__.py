@@ -2,6 +2,7 @@ from .api import create_app, create_production_app
 from .domain import (
     ConsumedEventLog,
     ConsumedEventRecord,
+    ContextEventRollup,
     AnomalyDetected,
     AnomalyDetector,
     AnomalyRule,
@@ -41,6 +42,7 @@ from .runtime import SERVICE_PROFILE, ServiceProfile, health, profile
 __all__ = [
     'ConsumedEventLog',
     'ConsumedEventRecord',
+    'ContextEventRollup',
     'AnomalyDetected',
     'AnomalyDetector',
     'AnomalyRule',

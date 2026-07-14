@@ -181,27 +181,57 @@ def _parse_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+_FAILURE_EVENT_WORDS = (
+    "Failed",
+    "Rejected",
+    "Missed",
+    "Expired",
+    "Cancelled",
+    "Revoked",
+    "Blocked",
+    "Discrepancy",
+    "NoShow",
+    "Degradation",
+)
+
+
+def _is_anomaly_signal(event_type: str, payload: Mapping[str, Any]) -> bool:
+    if any(word in event_type for word in _FAILURE_EVENT_WORDS):
+        return True
+    status = str(_payload_value(payload, "status", "finalStatus", "result", "outcome") or "").upper()
+    return status in {"FAILED", "REJECTED", "MISSED", "EXPIRED", "CANCELLED", "REVOKED", "BLOCKED"}
+
+
 def operational_event_from_envelope(envelope: EventEnvelope) -> OperationalEvent:
     payload = envelope.payload or {}
+    anomaly_signal = _is_anomaly_signal(envelope.eventType, payload)
     return OperationalEvent(
         event_id=envelope.eventId,
         event_type=envelope.eventType,
         occurred_at=_parse_occurred_at(envelope.occurredAt),
-        route_id=_payload_value(payload, "routeId", "route_id", "route"),
-        service_date=_parse_date(_payload_value(payload, "serviceDate", "travelDate", "departureDate")),
-        seat_class=_payload_value(payload, "seatClass", "seat_class", "class"),
+        route_id=_payload_value(payload, "routeId", "route_id", "route", "segmentRef", "serviceSegmentRef"),
+        service_date=_parse_date(_payload_value(payload, "serviceDate", "travelDate", "departureDate", "requestedAt", "validFrom")),
+        seat_class=_payload_value(payload, "seatClass", "seat_class", "class", "berthType"),
         amount=_parse_money(payload),
-        channel=_payload_value(payload, "channel", "salesChannel"),
-        passenger_type=_payload_value(payload, "passengerType", "passenger_type"),
-        capacity=_parse_int(_payload_value(payload, "capacity", "totalCapacity", "seatsAvailable")),
-        confirmed=_parse_int(_payload_value(payload, "confirmed", "confirmedSeats", "bookedSeats")),
-        booking_latency_ms=_parse_int(_payload_value(payload, "bookingLatencyMs", "latencyMs")),
-        payment_failed=bool(_payload_value(payload, "paymentFailed", "failed", "declined") or envelope.eventType in {"PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed"}),
-        refunded=bool(_payload_value(payload, "refunded") or envelope.eventType in {"RefundSettled", "RefundCompleted", "RefundIssued"}),
-        scalper_blocked=bool(_payload_value(payload, "scalperBlocked", "blockedByRisk") or envelope.eventType in {"ScalperBlocked", "RiskBookingBlocked"}),
+        channel=_payload_value(payload, "channel", "salesChannel", "channelId", "sourceChannel"),
+        passenger_type=_payload_value(payload, "passengerType", "passenger_type", "travelerType"),
+        capacity=_parse_int(_payload_value(payload, "capacity", "totalCapacity", "seatsAvailable", "availableSeats", "availableUnits")),
+        confirmed=_parse_int(_payload_value(payload, "confirmed", "confirmedSeats", "bookedSeats", "usedSeats", "allocatedSeats")),
+        booking_latency_ms=_parse_int(_payload_value(payload, "bookingLatencyMs", "latencyMs", "elapsedMs")),
+        payment_failed=_parse_bool(_payload_value(payload, "paymentFailed", "failed", "declined") or envelope.eventType in {"PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed", "ChannelOrderFailed", "ChannelRefundFailed"}),
+        refunded=_parse_bool(_payload_value(payload, "refunded") or envelope.eventType in {"RefundSettled", "RefundCompleted", "RefundIssued", "ChannelRefundSucceeded", "AncillaryOrderItemRefunded"}),
+        scalper_blocked=_parse_bool(_payload_value(payload, "scalperBlocked", "blockedByRisk") or envelope.eventType in {"ScalperBlocked", "RiskBookingBlocked", "RiskBlockApplied"}),
         distance_km=_parse_decimal(_payload_value(payload, "distanceKm", "distance_km")),
-        ancillary_attached=bool(_payload_value(payload, "ancillaryAttached", "ancillary_attach")),
-        insurance_attached=bool(_payload_value(payload, "insuranceAttached", "insurance_attach")),
+        ancillary_attached=_parse_bool(_payload_value(payload, "ancillaryAttached", "ancillary_attach") or envelope.eventType.startswith("Ancillary")),
+        insurance_attached=_parse_bool(_payload_value(payload, "insuranceAttached", "insurance_attach") or envelope.eventType.startswith("Insurance")),
+        source_context=envelope.producer,
+        anomaly_signal=anomaly_signal,
     )
 
 
