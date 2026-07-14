@@ -1,5 +1,5 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
-import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
+import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot, type WaitlistStatus } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistEntryAccepted, waitlistEntryCreated } from "./publisher.js";
 
@@ -14,11 +14,27 @@ export type JoinWaitlistRequest = Readonly<{
   daysBefore?: number;
   specialStatus?: PriorityInput["specialStatus"];
   itineraryRef?: string;
+  deadline?: string;
+  paymentGuaranteeRef?: string;
+  intentFingerprint?: string;
 }>;
 
 export type AcceptPromotionRequest = Readonly<{ paymentMethodRef?: string }>;
 export type AcceptPromotionResponse = Readonly<{ orderId: string; seatAssignment: unknown }>;
 export type QueueInfo = Readonly<{ totalQueued: number; myPosition: number | null; estimatedPromotionRate: number }>;
+export type WaitlistRequestResource = Readonly<{
+  waitlistRequestId: string;
+  accountId: string;
+  travelerRef: string;
+  segmentRef: string;
+  travelClass?: string;
+  deadline: string;
+  paymentGuaranteeRef: string;
+  itineraryRef: string;
+  intentFingerprint: string;
+  status: WaitlistStatus;
+  journeyOrderRef?: string;
+}>;
 
 export interface JourneyOrderClient {
   createOrder(entry: WaitlistEntry, paymentMethodRef?: string): Promise<AcceptPromotionResponse>;
@@ -52,15 +68,22 @@ export class HttpJourneyOrderClient implements JourneyOrderClient {
 
 export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
+  private readonly archive = new Map<string, WaitlistEntry>();
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     this.entries.set(entry.entryId, entry);
     return this.snapshot(entry);
   }
 
-  async get(entryId: string): Promise<WaitlistEntry | undefined> { return this.entries.get(entryId); }
+  async get(entryId: string): Promise<WaitlistEntry | undefined> { return this.entries.get(entryId) ?? this.archive.get(entryId); }
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    if (entry.status === "CLOSED") {
+      this.entries.delete(entry.entryId);
+      this.archive.set(entry.entryId, entry);
+      return entry.toSnapshot(0);
+    }
+    this.archive.delete(entry.entryId);
     this.entries.set(entry.entryId, entry);
     return this.snapshot(entry);
   }
@@ -71,7 +94,11 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
-    return [...this.entries.values()].filter((entry) => entry.status === "OFFERED" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
+    return [...this.entries.values()].filter((entry) => entry.status === "MATCHING" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
+  }
+
+  async findArchivable(): Promise<readonly WaitlistEntry[]> {
+    return [...this.entries.values()].filter((entry) => isArchivableStatus(entry.status));
   }
 
   async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
@@ -79,7 +106,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return queue.allEntries().map((entry) => this.snapshot(entry));
   }
 
-  clear(): void { this.entries.clear(); }
+  clear(): void { this.entries.clear(); this.archive.clear(); }
 
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
     const matching = [...this.entries.values()].filter((entry) => entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
@@ -88,7 +115,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   private snapshot(entry: WaitlistEntry): WaitlistEntrySnapshot {
-    return entry.toSnapshot(this.position(entry));
+    return entry.status === "CLOSED" ? entry.toSnapshot(0) : entry.toSnapshot(this.position(entry));
   }
 
   private position(entry: WaitlistEntry): number {
@@ -135,7 +162,7 @@ export class WaitlistApplicationService {
     const now = this.now();
     entry.ensureOfferAcceptable(now);
     const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
-    entry.accept(now);
+    entry.accept(now, order.orderId);
     const snapshot = await this.repository.save(entry);
     if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, order.seatAssignment, correlationId)]);
     return order;
@@ -155,6 +182,19 @@ export class WaitlistApplicationService {
     return this.promotion.expireDueOffers(correlationId);
   }
 
+  async sweepClosed(_correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
+    const closed: WaitlistEntrySnapshot[] = [];
+    for (const entry of await this.repository.findArchivable()) {
+      entry.close();
+      closed.push(await this.repository.save(entry));
+    }
+    return closed;
+  }
+
+  async getResource(entryId: string): Promise<WaitlistRequestResource> {
+    return toWaitlistRequestResource(await this.get(entryId));
+  }
+
   private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {
     return {
       accountId: request.accountId,
@@ -163,6 +203,9 @@ export class WaitlistApplicationService {
       departureDate: request.departureDate,
       seatClass: request.seatClass,
       itineraryRef: request.itineraryRef ?? request.segmentRef,
+      deadline: request.deadline,
+      paymentGuaranteeRef: request.paymentGuaranteeRef,
+      intentFingerprint: request.intentFingerprint,
       priority: {
         loyaltyTier: request.loyaltyTier ?? "NONE",
         tripCount: request.tripCount ?? 0,
@@ -184,6 +227,42 @@ export class WaitlistApplicationService {
     const queue = await this.repository.queueFor(entry.segmentRef, entry.departureDate, entry.seatClass);
     return queue.find((candidate) => candidate.entryId === entry.entryId) ?? entry.toSnapshot(0);
   }
+}
+
+export function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistRequestResource {
+  return withoutUndefined({
+    waitlistRequestId: snapshot.entryId,
+    accountId: snapshot.accountId,
+    travelerRef: snapshot.travelerRefs[0] ?? "",
+    segmentRef: snapshot.segmentRef,
+    travelClass: snapshot.seatClass,
+    deadline: snapshot.deadline ?? snapshot.offerExpiresAt ?? `${snapshot.departureDate}T23:59:59.000Z`,
+    paymentGuaranteeRef: snapshot.paymentGuaranteeRef ?? paymentGuaranteeRef(snapshot),
+    itineraryRef: snapshot.itineraryRef ?? snapshot.segmentRef,
+    intentFingerprint: snapshot.intentFingerprint ?? intentFingerprint(snapshot),
+    status: snapshot.status,
+    journeyOrderRef: journeyOrderRef(snapshot),
+  });
+}
+
+function isArchivableStatus(status: WaitlistStatus): boolean {
+  return status === "FULFILLED" || status === "EXPIRED" || status === "CANCELLED";
+}
+
+function journeyOrderRef(snapshot: WaitlistEntrySnapshot): string | undefined {
+  return snapshot.journeyOrderRef;
+}
+
+function paymentGuaranteeRef(snapshot: WaitlistEntrySnapshot): string {
+  return `pay-auth-${snapshot.entryId}`;
+}
+
+function intentFingerprint(snapshot: WaitlistEntrySnapshot): string {
+  return `${snapshot.travelerRefs[0] ?? ""}:${snapshot.segmentRef}:${snapshot.departureDate}:${snapshot.seatClass}`;
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as T;
 }
 
 function daysBefore(departureDate: string): number {

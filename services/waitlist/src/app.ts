@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
-import { InMemoryWaitlistRepository, WaitlistApplicationService, type JourneyOrderClient } from "./application.js";
+import { InMemoryWaitlistRepository, WaitlistApplicationService, toWaitlistRequestResource, type JoinWaitlistRequest, type JourneyOrderClient } from "./application.js";
 import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
 
@@ -58,16 +58,16 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
   app.get("/metadata", async () => metadata());
 
-  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries", async (request, ctx) => ({
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => ({
     statusCode: 201,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
+    body: toWaitlistRequestResource(await runCommand((repository, publisher) => commandService(repository, publisher).join(toJoinWaitlistRequest(request.body as Record<string, unknown>), ctx.correlationId))),
   }));
-  app.get("/api/v1/waitlist/entries/:entryId", async (request, reply) => handleRead(reply, request, () => (
-    runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
+  app.get("/api/v1/waitlist-requests/:waitlistRequestId", async (request, reply) => handleRead(reply, request, () => (
+    runCommand((repository, publisher) => commandService(repository, publisher).getResource(param(request, "waitlistRequestId")))
   )));
-  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request) => ({
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"))),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"))),
   }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries/:entryId/accept", async (request, ctx) => ({
     statusCode: 200,
@@ -117,6 +117,31 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
     else throw error;
     return reply;
   }
+}
+
+function toJoinWaitlistRequest(body: Record<string, unknown>): JoinWaitlistRequest {
+  const travelerRef = stringBody(body, "travelerRef");
+  const travelClass = stringBody(body, "travelClass") ?? stringBody(body, "seatClass") ?? "SECOND";
+  return {
+    accountId: stringBody(body, "accountId") ?? "",
+    travelerRefs: travelerRef ? [travelerRef] : arrayBody(body, "travelerRefs"),
+    segmentRef: stringBody(body, "segmentRef") ?? "",
+    departureDate: (stringBody(body, "deadline") ?? stringBody(body, "departureDate") ?? "").slice(0, 10),
+    seatClass: travelClass as JoinWaitlistRequest["seatClass"],
+    itineraryRef: stringBody(body, "itineraryRef"),
+    deadline: stringBody(body, "deadline"),
+    paymentGuaranteeRef: stringBody(body, "paymentGuaranteeRef"),
+    intentFingerprint: stringBody(body, "intentFingerprint"),
+  };
+}
+
+function stringBody(body: Record<string, unknown>, field: string): string | undefined {
+  return typeof body[field] === "string" ? body[field] as string : undefined;
+}
+
+function arrayBody(body: Record<string, unknown>, field: string): readonly string[] {
+  const value = body[field];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }

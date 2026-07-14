@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS waitlist_entries (
     departure_date date NOT NULL,
     seat_class text NOT NULL,
     priority_score integer NOT NULL CHECK (priority_score >= 0 AND priority_score <= 100),
-    status text NOT NULL CHECK (status IN ('QUEUED', 'OFFERED', 'ACCEPTED', 'EXPIRED', 'CANCELLED')),
+    status text NOT NULL CHECK (status IN ('DRAFT', 'QUEUED', 'MATCHING', 'FULFILLED', 'EXPIRED', 'CANCELLED', 'SUSPENDED')),
     offered_at timestamptz,
     offer_expires_at timestamptz,
     fare_quote_id text,
@@ -18,13 +18,38 @@ CREATE TABLE IF NOT EXISTS waitlist_entries (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE waitlist_entries DROP CONSTRAINT IF EXISTS waitlist_entries_status_check;
+ALTER TABLE waitlist_entries ADD CONSTRAINT waitlist_entries_status_check CHECK (status IN ('DRAFT', 'QUEUED', 'MATCHING', 'FULFILLED', 'EXPIRED', 'CANCELLED', 'SUSPENDED'));
+
+DROP INDEX IF EXISTS waitlist_offer_expiry_idx;
+
 CREATE INDEX IF NOT EXISTS waitlist_queue_order_idx
     ON waitlist_entries (segment_ref, departure_date, seat_class, priority_score DESC, created_at ASC, entry_id)
     WHERE status = 'QUEUED';
 
 CREATE INDEX IF NOT EXISTS waitlist_offer_expiry_idx
     ON waitlist_entries (offer_expires_at)
-    WHERE status = 'OFFERED';
+    WHERE status = 'MATCHING';
+
+CREATE TABLE IF NOT EXISTS waitlist_entries_archive (
+    entry_id text PRIMARY KEY,
+    account_id text NOT NULL,
+    traveler_refs jsonb NOT NULL,
+    segment_ref text NOT NULL,
+    departure_date date NOT NULL,
+    seat_class text NOT NULL,
+    priority_score integer NOT NULL CHECK (priority_score >= 0 AND priority_score <= 100),
+    status text NOT NULL CHECK (status = 'CLOSED'),
+    offered_at timestamptz,
+    offer_expires_at timestamptz,
+    fare_quote_id text,
+    capacity_hold_id text,
+    data jsonb NOT NULL DEFAULT '{}'::jsonb,
+    version bigint NOT NULL DEFAULT 1,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    archived_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS waitlist_offers (
     offer_id text PRIMARY KEY,

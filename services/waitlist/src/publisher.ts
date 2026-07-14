@@ -11,7 +11,7 @@ export function waitlistEntryCreated(entry: WaitlistEntrySnapshot, correlationId
 }
 
 export function waitlistEntryPromoted(entry: WaitlistEntrySnapshot, offer: WaitlistOffer, correlationId?: string): EventEnvelope<WaitlistEventPayload> {
-  return waitlistEnvelope("WaitlistEntryPromoted", { entry, offer }, correlationId);
+  return waitlistEnvelope("WaitlistMatchStarted", { entry, offer }, correlationId);
 }
 
 export function waitlistOfferExpired(entry: WaitlistEntrySnapshot, offer: WaitlistOffer, correlationId?: string): EventEnvelope<WaitlistEventPayload> {
@@ -19,7 +19,7 @@ export function waitlistOfferExpired(entry: WaitlistEntrySnapshot, offer: Waitli
 }
 
 export function waitlistEntryAccepted(entry: WaitlistEntrySnapshot, orderId: string, seatAssignment: unknown, correlationId?: string): EventEnvelope<WaitlistEventPayload> {
-  return waitlistEnvelope("WaitlistEntryAccepted", { entry, orderId, seatAssignment }, correlationId);
+  return waitlistEnvelope("WaitlistFulfilled", { entry, orderId, seatAssignment }, correlationId);
 }
 
 export async function publishAll(publisher: EventPublisher, envelopes: readonly EventEnvelope[]): Promise<void> {

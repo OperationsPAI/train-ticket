@@ -20,12 +20,32 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   async get(entryId: string): Promise<WaitlistEntry | undefined> {
-    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE entry_id = $1`, [entryId]) as QueryResult<WaitlistRow>;
+    const result = await this.db.query(
+      `SELECT entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at FROM waitlist_entries WHERE entry_id = $1
+       UNION ALL
+       SELECT entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at FROM waitlist_entries_archive WHERE entry_id = $1
+       LIMIT 1`,
+      [entryId],
+    ) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
+    if (snapshot.status === "CLOSED") {
+      await this.db.query(
+        `WITH moved AS (
+           DELETE FROM waitlist_entries WHERE entry_id=$1 RETURNING *
+         )
+         INSERT INTO waitlist_entries_archive (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, version, created_at, updated_at, archived_at)
+         SELECT entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, $2, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, $3, version + 1, created_at, now(), now()
+         FROM moved
+         ON CONFLICT (entry_id) DO UPDATE
+         SET status=EXCLUDED.status, data=EXCLUDED.data, version=waitlist_entries_archive.version + 1, updated_at=now(), archived_at=now()`,
+        [snapshot.entryId, snapshot.status, snapshot],
+      );
+      return snapshot;
+    }
     await this.db.query(
       `UPDATE waitlist_entries
        SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, version=version+1, updated_at=now()
@@ -47,7 +67,12 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
-    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'OFFERED' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'MATCHING' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
+    return result.rows.map(entryFromRow);
+  }
+
+  async findArchivable(): Promise<readonly WaitlistEntry[]> {
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status IN ('FULFILLED', 'EXPIRED', 'CANCELLED') ORDER BY updated_at ASC, entry_id ASC`) as QueryResult<WaitlistRow>;
     return result.rows.map(entryFromRow);
   }
 
@@ -64,6 +89,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   private async snapshot(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    if (entry.status === "CLOSED") return entry.toSnapshot(0);
     const queue = await this.queueFor(entry.segmentRef, entry.departureDate, entry.seatClass);
     return queue.find((candidate) => candidate.entryId === entry.entryId) ?? entry.toSnapshot(0);
   }
@@ -125,6 +151,10 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     capacityReleaseIdempotencyKey: typeof data.capacityReleaseIdempotencyKey === "string" ? data.capacityReleaseIdempotencyKey : undefined,
     journeyOrderIdempotencyKey: typeof data.journeyOrderIdempotencyKey === "string" ? data.journeyOrderIdempotencyKey : undefined,
     capacitySegmentBookingId: typeof data.capacitySegmentBookingId === "string" ? data.capacitySegmentBookingId : undefined,
+    journeyOrderRef: typeof data.journeyOrderRef === "string" ? data.journeyOrderRef : undefined,
+    deadline: typeof data.deadline === "string" ? data.deadline : undefined,
+    paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : undefined,
+    intentFingerprint: typeof data.intentFingerprint === "string" ? data.intentFingerprint : undefined,
   });
 }
 

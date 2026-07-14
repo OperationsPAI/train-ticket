@@ -1,6 +1,6 @@
 import { uuidV7 } from "@trainticket/ts-kit";
 
-export type WaitlistStatus = "QUEUED" | "OFFERED" | "ACCEPTED" | "EXPIRED" | "CANCELLED";
+export type WaitlistStatus = "DRAFT" | "QUEUED" | "MATCHING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "SUSPENDED" | "CLOSED";
 export type LoyaltyTier = "PLATINUM" | "GOLD" | "SILVER" | "NONE";
 export type FareClass = "BUSINESS" | "FIRST" | "SECOND" | "SECOND_CLASS" | "STANDING";
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
@@ -38,6 +38,10 @@ export type WaitlistEntrySnapshot = Readonly<{
   capacityReleaseIdempotencyKey?: string;
   journeyOrderIdempotencyKey?: string;
   capacitySegmentBookingId?: string;
+  journeyOrderRef?: string;
+  deadline?: string;
+  paymentGuaranteeRef?: string;
+  intentFingerprint?: string;
 }>;
 
 export type CreateWaitlistEntry = Readonly<{
@@ -49,6 +53,9 @@ export type CreateWaitlistEntry = Readonly<{
   seatClass: FareClass;
   priority: Omit<PriorityInput, "groupSize" | "fareClass"> & Partial<Pick<PriorityInput, "groupSize" | "fareClass">>;
   itineraryRef?: string;
+  deadline?: string;
+  paymentGuaranteeRef?: string;
+  intentFingerprint?: string;
   createdAt?: Date;
 }>;
 
@@ -83,6 +90,10 @@ export class WaitlistEntry {
     private readonly _capacityReleaseIdempotencyKey: string = uuidV7(),
     private readonly _journeyOrderIdempotencyKey: string = uuidV7(),
     private readonly _capacitySegmentBookingId: string = `sb-${uuidV7()}`,
+    private _journeyOrderRef?: string,
+    private readonly _deadline?: string,
+    private readonly _paymentGuaranteeRef?: string,
+    private readonly _intentFingerprint?: string,
   ) {}
 
   static create(command: CreateWaitlistEntry): WaitlistEntry {
@@ -94,7 +105,7 @@ export class WaitlistEntry {
     const fareClass = command.priority.fareClass ?? command.seatClass;
     const priorityScore = PriorityCalculator.calculate({ ...command.priority, groupSize, fareClass });
     return new WaitlistEntry(
-      command.entryId ?? `wl-${uuidV7()}`,
+      command.entryId ?? `wlr-${uuidV7()}`,
       command.accountId,
       [...command.travelerRefs],
       command.segmentRef,
@@ -110,6 +121,16 @@ export class WaitlistEntry {
       undefined,
       undefined,
       command.itineraryRef,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      command.deadline,
+      command.paymentGuaranteeRef,
+      command.intentFingerprint,
     );
   }
 
@@ -137,6 +158,10 @@ export class WaitlistEntry {
       snapshot.capacityReleaseIdempotencyKey,
       snapshot.journeyOrderIdempotencyKey,
       snapshot.capacitySegmentBookingId,
+      snapshot.journeyOrderRef,
+      snapshot.deadline,
+      snapshot.paymentGuaranteeRef,
+      snapshot.intentFingerprint,
     );
   }
 
@@ -153,11 +178,15 @@ export class WaitlistEntry {
   get capacityReleaseIdempotencyKey(): string { return this._capacityReleaseIdempotencyKey; }
   get journeyOrderIdempotencyKey(): string { return this._journeyOrderIdempotencyKey; }
   get capacitySegmentBookingId(): string { return this._capacitySegmentBookingId; }
+  get journeyOrderRef(): string | undefined { return this._journeyOrderRef; }
+  get deadline(): string | undefined { return this._deadline; }
+  get paymentGuaranteeRef(): string | undefined { return this._paymentGuaranteeRef; }
+  get intentFingerprint(): string | undefined { return this._intentFingerprint; }
 
   offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
-    this.assertStatus("QUEUED", "Only queued waitlist entries can be offered");
+    this.assertStatus("QUEUED", "Only queued waitlist entries can start matching");
     if (expiresAt <= now) throw new DomainError("VALIDATION_FAILED", "Offer expiry must be in the future");
-    this._status = "OFFERED";
+    this._status = "MATCHING";
     this._offeredAt = now;
     this._offerExpiresAt = expiresAt;
     if (!Number.isInteger(offerVersion) || offerVersion < 1) throw new DomainError("VALIDATION_FAILED", "offerVersion must be positive");
@@ -167,33 +196,42 @@ export class WaitlistEntry {
     this._offerVersion = offerVersion;
   }
 
-  accept(now: Date): void {
+  accept(now: Date, journeyOrderRef?: string): void {
     this.ensureOfferAcceptable(now);
-    this._status = "ACCEPTED";
+    this._journeyOrderRef = journeyOrderRef;
+    this._status = "FULFILLED";
   }
 
   ensureOfferAcceptable(now: Date): void {
-    this.assertStatus("OFFERED", "Only offered waitlist entries can be accepted");
+    this.assertStatus("MATCHING", "Only matching waitlist entries can be fulfilled");
     if (this._offerExpiresAt && now > this._offerExpiresAt) {
       throw new DomainError("PRECONDITION_FAILED", "Waitlist offer has expired");
     }
   }
 
   expire(now: Date): void {
-    if (this._status !== "OFFERED" && this._status !== "QUEUED") {
+    if (this._status !== "MATCHING" && this._status !== "QUEUED") {
       throw new DomainError("INVALID_TRANSITION", `Cannot expire ${this._status} waitlist entry`);
     }
-    if (this._status === "OFFERED" && this._offerExpiresAt && now < this._offerExpiresAt) {
+    if (this._status === "MATCHING" && this._offerExpiresAt && now < this._offerExpiresAt) {
       throw new DomainError("PRECONDITION_FAILED", "Waitlist offer has not reached its expiry time");
     }
     this._status = "EXPIRED";
   }
 
   cancel(): void {
-    if (this._status === "ACCEPTED" || this._status === "EXPIRED") {
+    if (this._status === "FULFILLED" || this._status === "EXPIRED" || this._status === "CANCELLED" || this._status === "CLOSED") {
       throw new DomainError("INVALID_TRANSITION", `Cannot cancel ${this._status} waitlist entry`);
     }
     this._status = "CANCELLED";
+  }
+
+  close(): void {
+    if (this._status === "CLOSED") return;
+    if (this._status !== "FULFILLED" && this._status !== "EXPIRED" && this._status !== "CANCELLED") {
+      throw new DomainError("INVALID_TRANSITION", `Cannot close ${this._status} waitlist entry`);
+    }
+    this._status = "CLOSED";
   }
 
   toSnapshot(queuePosition = 0): WaitlistEntrySnapshot {
@@ -221,6 +259,10 @@ export class WaitlistEntry {
       capacityReleaseIdempotencyKey: this._capacityReleaseIdempotencyKey,
       journeyOrderIdempotencyKey: this._journeyOrderIdempotencyKey,
       capacitySegmentBookingId: this._capacitySegmentBookingId,
+      journeyOrderRef: this._journeyOrderRef,
+      deadline: this._deadline,
+      paymentGuaranteeRef: this._paymentGuaranteeRef,
+      intentFingerprint: this._intentFingerprint,
     };
   }
 
