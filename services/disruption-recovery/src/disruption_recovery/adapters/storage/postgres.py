@@ -10,7 +10,7 @@ from typing import Any
 
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
-from disruption_recovery.application.service import InMemoryStore, NotFoundError
+from disruption_recovery.application.service import InMemoryStore, NotFoundError, ServiceAlert
 from disruption_recovery.domain import Incident, RecoveryCase, RecoveryCaseStatus, RecoveryExecution, RecoveryOption, RecoveryOptionSet, RecoveryOptionType, ExecutionTarget
 
 
@@ -74,6 +74,15 @@ def case_from_json(data: Mapping[str, Any] | str, version: int = 0) -> RecoveryC
     return RecoveryCase(str(data["caseId"]), str(data["incidentId"]), str(data["journeyOrderId"]), dict(data["affectedScope"]), RecoveryCaseStatus(str(data["status"])), _parse_dt(str(data["openedAt"])) or datetime.now(UTC), _parse_dt(str(data["updatedAt"])) or datetime.now(UTC), _option_set_from_json(data.get("optionSet")), data.get("selectedOptionId"), _execution_from_json(data.get("execution")), version)
 
 
+def alert_to_json(alert: ServiceAlert) -> dict[str, Any]:
+    return alert.to_json()
+
+
+def alert_from_json(data: Mapping[str, Any] | str, version: int = 0) -> ServiceAlert:
+    del version
+    return ServiceAlert.from_payload(_json_obj(data))
+
+
 @dataclass
 class _UnitOfWorkState:
     connection: Any | None = None
@@ -93,6 +102,7 @@ class PostgresDisruptionRecoveryStore(InMemoryStore):
         self._outbox = outbox or OutboxAppender()
         self._incidents = SnapshotRepository("incident_snapshots")
         self._cases = SnapshotRepository("recovery_case_snapshots")
+        self._alerts = SnapshotRepository("service_alert_snapshots")
         self._processed = ProcessedEventsGuard()
 
     @contextmanager
@@ -196,6 +206,57 @@ class PostgresDisruptionRecoveryStore(InMemoryStore):
             row = conn.execute("SELECT id, version, data FROM recovery_case_snapshots WHERE data->'execution'->>'externalRef' = %s ORDER BY id LIMIT 1", (post_sales_case_id,)).fetchone()
             if not row: return None
             self._remember("case", str(row[0]), int(row[1])); return case_from_json(row[2], int(row[1]))
+        return self._with_conn(read)
+
+    def index_journey_order(self, order_id: str, segment_refs: tuple[str, ...]) -> None:
+        clean_order_id = str(order_id).strip()
+        if not clean_order_id:
+            return
+        unique_segment_refs = tuple(dict.fromkeys(str(item).strip() for item in segment_refs if str(item).strip()))
+        if not unique_segment_refs:
+            return
+        def write(conn: Any) -> None:
+            for segment_ref in unique_segment_refs:
+                conn.execute("INSERT INTO segment_order_index(segment_ref, journey_order_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (segment_ref, clean_order_id))
+        self._with_conn(write)
+
+    def find_orders_by_segment(self, segment_ref: str) -> tuple[str, ...]:
+        def read(conn: Any) -> tuple[str, ...]:
+            rows = conn.execute("SELECT journey_order_id FROM segment_order_index WHERE segment_ref = %s ORDER BY journey_order_id", (segment_ref,)).fetchall()
+            return tuple(str(row[0]) for row in rows)
+        return self._with_conn(read)
+
+    def save_service_alert(self, alert: ServiceAlert) -> None:
+        def write(conn: Any) -> None:
+            expected = self._take("service_alert", alert.serviceAlertId)
+            if expected is None and self._alerts.get(conn, alert.serviceAlertId) is not None:
+                return
+            self._alerts.save(conn, alert.serviceAlertId, alert_to_json(alert), expected)
+        self._with_conn(write)
+
+    def get_service_alert(self, service_alert_id: str) -> ServiceAlert:
+        def read(conn: Any) -> ServiceAlert:
+            snap = self._alerts.get(conn, service_alert_id)
+            if snap is None:
+                raise NotFoundError(f"service alert not found: {service_alert_id}")
+            version, data = snap; self._remember("service_alert", service_alert_id, version); return alert_from_json(data, version)
+        return self._with_conn(read)
+
+    def list_service_alerts(self, incident_id: str | None, journey_order_id: str | None, limit: int, offset: int) -> tuple[tuple[ServiceAlert, ...], int]:
+        def read(conn: Any) -> tuple[tuple[ServiceAlert, ...], int]:
+            params: list[Any] = []
+            clauses: list[str] = []
+            if incident_id:
+                clauses.append("data->>'incidentId' = %s"); params.append(incident_id)
+            if journey_order_id:
+                clauses.append("data->'affectedOrderIds' ? %s"); params.append(journey_order_id)
+            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            total = int(conn.execute(f"SELECT count(*) FROM service_alert_snapshots{where}", tuple(params)).fetchone()[0])
+            rows = conn.execute(f"SELECT id, version, data FROM service_alert_snapshots{where} ORDER BY data->>'publishedAt' DESC LIMIT %s OFFSET %s", tuple(params + [limit, offset])).fetchall()
+            items = []
+            for aggregate_id, version, data in rows:
+                self._remember("service_alert", str(aggregate_id), int(version)); items.append(alert_from_json(data, int(version)))
+            return tuple(items), total
         return self._with_conn(read)
 
     def append_outbox(self, envelopes: Iterable[Any]) -> None:

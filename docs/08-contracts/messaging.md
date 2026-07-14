@@ -57,7 +57,7 @@ context.
 | 8 | `booking-orchestration` | `events:booking-orchestration` | BookingSagaStarted, SegmentReservationRequested, SegmentReservationConfirmed, SegmentReservationFailed, SegmentTicketed, SegmentBookingCancelled |
 | 9 | `payment` | `events:payment` | PaymentIntentCreated, PaymentCaptured, PaymentIntentFailed, PaymentExpired, RefundRequested, RefundSettled, RefundFailed |
 | 9a | `payment-channel` | `events:payment-channel` | ChannelOrderCreated, ChannelOrderSubmitted, ChannelOrderAccepted, ChannelOrderSucceeded, ChannelOrderFailed, ChannelOrderMissed, ChannelOrderQueryRecorded, ChannelOrderRecoveryDetected, ChannelRefundCreated, ChannelRefundSubmitted, ChannelRefundSucceeded, ChannelRefundFailed, ChannelRefundMissed, ChannelRefundQueryRecorded, ChannelRefundRecoveryDetected, ChannelStatementGenerated, ChannelStatementFrozen, ChannelStatementLineMatched, ReconciliationDiscrepancyOpened, ReconciliationDiscrepancyLinkedToFinanceCase, ReconciliationDiscrepancyResolved |
-| 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted |
+| 10 | `provider-integration` | `events:provider-integration` | ProviderReservationConfirmed, ProviderReservationFailed, ProviderReservationCancelled, ProviderBoardingAccepted, SegmentDelayed, SegmentCancelled |
 | 11 | `entitlement-ticketing` | `events:entitlement-ticketing` | EntitlementIssued, EntitlementVoided, EntitlementBoarded, EntitlementSuspended, EntitlementResumed, EntitlementUsed, EntitlementIssueFailed |
 | 12 | `fulfillment` | `events:fulfillment` | BoardingVerified, NoShowRecorded, FulfillmentCompleted, EvidenceDisputeOpened, EvidenceDisputeResolved, SegmentArrived, SegmentDelayed, SegmentCancelled |
 | 13 | `post-sales` | `events:post-sales` | PostSalesCaseOpened, PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesRejected, PostSalesApplied, PostSalesFailed |
@@ -260,6 +260,9 @@ plus notification/finance/reporting fan-in.
 | 26 | `events:entitlement-ticketing` | `notification` | Ticketing events for user notifications |
 | 26a | `events:entitlement-ticketing` | `capacity-availability` | RULING (2026-07-07): EntitlementVoided (payload `references.segmentBookingRef`) releases the matching hold promptly. Closes the refund-applied gap: post-sales flips APPLIED on `CapacityReleased`, which previously only arrived via booking-orchestration's lazy fallback (~90s). Row 30 (release on PostSalesApplied) stays as idempotent backstop. |
 | 27 | `events:fulfillment` | `transfer-management` | subscribes only SegmentArrived, SegmentDelayed, SegmentCancelled; all other fulfillment events are explicitly ignored by transfer-management |
+| 45 | `events:fulfillment` | `disruption-recovery` | subscribes only SegmentDelayed and SegmentCancelled for recovery case ingress; unresolved segmentRef returns transient HandlerResult for retry/DLQ taxonomy |
+| 46 | `events:provider-integration` | `disruption-recovery` | subscribes only SegmentDelayed and SegmentCancelled for provider-sourced disruption ingress; unresolved segmentRef returns transient HandlerResult for retry/DLQ taxonomy |
+| 47 | `events:journey-order` | `disruption-recovery` | subscribes JourneyOrderCreated to maintain the local segmentRef to journeyOrderId projection |
 | 28 | `events:fulfillment` | `entitlement-ticketing` | BoardingVerified for entitlement lifecycle |
 | 29 | `events:post-sales` | `payment` | PostSalesApproved to trigger refund |
 | 30 | `events:post-sales` | `capacity-availability` | PostSalesApplied to release capacity |

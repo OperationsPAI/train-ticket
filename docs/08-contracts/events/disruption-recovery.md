@@ -15,15 +15,16 @@ Activation-wave rulings:
   or Transfer Management system reports and carries a normalized
   `disruptionType`, `scheduledServiceRef` and/or `segmentRef`, `evidence`, and
   explicit `affectedOrderIds`.
-- Automatic `segmentRef` to orders fan-out is deferred because Journey Order has
-  no by-segment query contract. Service Plan, Provider Integration, and
-  Fulfillment signal events remain deferred. Transfer Management wave 18 opens
-  protected missed-connection recovery through HTTP
-  `POST /api/v1/disruptions`, not by a new inbound event.
+- Automatic `segmentRef` to orders fan-out is active through Disruption Recovery's
+  local Journey Order projection, built by consuming `JourneyOrderCreated`
+  `segmentRefs`. No new cross-service HTTP resolver is introduced. Provider
+  Integration and Fulfillment `SegmentDelayed` / `SegmentCancelled` facts open
+  recovery through this projection; unresolved segment signals return transient
+  handler results for Redis retry/DLQ handling.
 - The report opens or merges an `Incident`; merge key is
   `(scheduledServiceRef, serviceDate)` when `scheduledServiceRef` is present.
-  `ServiceAlert` is event-only in this wave: `ServiceAlertPublished` is
-  published, but the ServiceAlert read model is deferred.
+  `ServiceAlertPublished` is published and persisted into the ServiceAlert read
+  model.
 - One `RecoveryCase` is opened per explicit `affectedOrderId`. Event payload
   statuses use the exact 10-state domain machine: `OPENED`, `ASSESSING_IMPACT`,
   `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`,
@@ -46,8 +47,9 @@ Activation-wave rulings:
   idempotency key. `MANUAL` moves the case to manual review.
 - Reporting consumption of Disruption Recovery events remains deferred in this
   wave. Notification is active for traveler-facing recovery lifecycle and alert
-  facts. The only active inbound subscription is `events:post-sales`
-  `PostSalesApplied` for REFUND execution convergence.
+  facts. Active inbound subscriptions are `events:post-sales` `PostSalesApplied`,
+  `events:journey-order` `JourneyOrderCreated`, and Provider Integration /
+  Fulfillment segment delay/cancellation facts.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -78,6 +80,22 @@ Downstream HTTP commands use deterministic idempotency keys:
 | `COMPENSATION` | `POST /api/v1/benefits` with `issuanceSource=DISRUPTION_COMP` | `disruption-recovery:compensation:<caseId>:<optionId>` |
 | `REACCOMMODATION` | `POST /api/v1/connections/{connectionId}/reaccommodate` | Fold `disruption-recovery:reaccommodation:<caseId>:<optionId>:<connectionId>` into a UUID-v7 wire key. |
 
+## Normative enums
+
+### disruptionType enum
+
+`disruptionType` values accepted or emitted by Disruption Recovery are:
+`SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`,
+`SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`,
+`SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`,
+`PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED`,
+`MISSED_CONNECTION`, `DELAY`, `CANCELLATION`, `PARTIAL`, and
+`FORCE_MAJEURE`.
+
+Provider Integration and Fulfillment `SegmentDelayed` ingress maps to `DELAY`;
+`SegmentCancelled` ingress maps to `CANCELLATION`. These emitted/accepted values
+are part of this normative enum.
+
 ## Common payload objects
 
 ### Evidence
@@ -85,7 +103,7 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `evidenceRef` | string | yes | Reference to the customer-service/admin evidence record. |
-| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`; all other sources are deferred. |
+| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, `TRANSFER_MANAGEMENT`, `PROVIDER_INTEGRATION`, or `FULFILLMENT`. |
 | `sourceRecordId` | string | yes | Upstream manual-row identifier. |
 | `summary` | string | yes | Operational summary; must not include unmasked documents or sensitive personal data. |
 | `occurredAt` | RFC3339 UTC | no | Observation time if known. |
@@ -364,20 +382,21 @@ Downstream HTTP commands use deterministic idempotency keys:
 | Upstream stream | Event type | Purpose |
 |---|---|---|
 | `events:post-sales` | `PostSalesApplied` | Converge a selected `REFUND` option when the downstream Post Sales case reaches `APPLIED`. |
+| `events:journey-order` | `JourneyOrderCreated` | Index `segmentRefs` by `orderId` for automatic segment fan-out. |
+| `events:fulfillment` | `SegmentDelayed`, `SegmentCancelled` | Resolve `segmentRef` to affected orders and open `DELAY` / `CANCELLATION` recovery with `evidence.sourceSystem=FULFILLMENT`. |
+| `events:provider-integration` | `SegmentDelayed`, `SegmentCancelled` | Resolve `segmentRef` to affected orders and open `DELAY` / `CANCELLATION` recovery with `evidence.sourceSystem=PROVIDER_INTEGRATION`. |
 
-No other upstream event subscription is active in this wave. Service Plan,
-Provider Integration, and Fulfillment disruption sources are deferred. Transfer
-Management protected missed-connection reports arrive over HTTP with
-`disruptionType=MISSED_CONNECTION`, `reportedBy.actorType=SYSTEM`, and
-`evidence.sourceSystem=TRANSFER_MANAGEMENT`; the same wave implementation MUST
-update Disruption Recovery code enum/validation allowlists for those values and
-MUST update e2e 17/19 expectations for the `WAIT` plus `REACCOMMODATION`
-`AWAITING_USER_CHOICE` behavior.
+Service Plan disruption sources remain deferred. Transfer Management protected
+missed-connection reports arrive over HTTP with `disruptionType=MISSED_CONNECTION`,
+`reportedBy.actorType=SYSTEM`, and `evidence.sourceSystem=TRANSFER_MANAGEMENT`.
 
-## Deferred downstream touchpoints
+## Downstream touchpoints
 
 | Downstream context | Events | Purpose |
 |---|---|---|
 | Notification | active: `ServiceAlertPublished`, `RecoveryCaseOpened`, `RecoveryOptionsGenerated`, `RecoveryOptionSelected`, `RecoveryExecutionStarted`, `RecoveryCompleted`, `RecoveryFailed` | User-facing alert, option, decision, progress, and completion notifications. `RecoveryExecutionStarted` is progress-only; refund executed / compensation issued notifications are emitted only from `RecoveryCompleted`. |
+| Journey Order | active: `JourneyOrderCreated` projection from `events:journey-order` | Maintains the local `segmentRef -> journeyOrderId` resolver used for automatic segment fan-out. |
+| Fulfillment | active: `SegmentDelayed`, `SegmentCancelled` from `events:fulfillment` | Opens `DELAY` / `CANCELLATION` recovery using affected orders resolved from `segmentRef`; unresolved segment refs return transient handler results. |
+| Provider Integration | active: `SegmentDelayed`, `SegmentCancelled` from `events:provider-integration` | Same segment-signal ingress as Fulfillment with `evidence.sourceSystem=PROVIDER_INTEGRATION`. |
 | Reporting | all Disruption Recovery events | Disruption metrics, waiver/compensation cost attribution, and operational read models. |
 | Journey Order | recovery summary events | Order-detail disruption and recovery display. |

@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+JOURNEY_ORDER_STREAM = "events:journey-order"
 POST_SALES_STREAM = "events:post-sales"
+FULFILLMENT_STREAM = "events:fulfillment"
+PROVIDER_INTEGRATION_STREAM = "events:provider-integration"
 
-__all__ = ["POST_SALES_STREAM"]
+INBOUND_STREAMS = (POST_SALES_STREAM, JOURNEY_ORDER_STREAM, FULFILLMENT_STREAM, PROVIDER_INTEGRATION_STREAM)
+
+__all__ = [
+    "FULFILLMENT_STREAM",
+    "INBOUND_STREAMS",
+    "JOURNEY_ORDER_STREAM",
+    "POST_SALES_STREAM",
+    "PROVIDER_INTEGRATION_STREAM",
+]

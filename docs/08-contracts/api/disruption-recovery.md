@@ -12,20 +12,21 @@ contract is scoped to the ADR-0002 third activation wave and is bounded by
 
 Activation-wave rulings:
 
-- The disruption signal source in this wave is **operations/system reporting** via
-  `POST /api/v1/disruptions`. The request represents Customer Service/Admin
-  manual rows or Transfer Management system reports and MUST carry
+- Disruption signal sources are **operations/system reporting** via
+  `POST /api/v1/disruptions`, plus Provider Integration and Fulfillment
+  `SegmentDelayed` / `SegmentCancelled` events. HTTP requests represent Customer
+  Service/Admin manual rows or Transfer Management system reports and MUST carry
   `disruptionType`, `scheduledServiceRef` and/or `segmentRef`, `serviceDate`,
-  `evidence`, and explicit `affectedOrderIds`. Automatic `segmentRef` to order
-  fan-out is deferred because Journey Order has no by-segment query contract.
-- Service Plan, Provider Integration, and Fulfillment event sources remain
-  deferred. Transfer Management wave 18 opens protected missed-connection
-  recovery through outbound HTTP to this API, not through a new input event.
+  `evidence`, and explicit `affectedOrderIds`. Event ingress resolves affected
+  orders from the local Journey Order `segmentRef` projection; unresolved segment
+  signals are retried through Redis rather than acknowledged.
+- Service Plan event sources remain deferred. Transfer Management wave 18 opens
+  protected missed-connection recovery through outbound HTTP to this API.
 - An `Incident` is opened or merged by the same report. This wave merges by
   `(scheduledServiceRef, serviceDate)` when `scheduledServiceRef` is present;
   otherwise the report opens a distinct incident for its supplied scope.
-- `ServiceAlert` is event-only in this wave. Disruption Recovery publishes
-  `ServiceAlertPublished`; the ServiceAlert read model is deferred.
+- `ServiceAlertPublished` builds the Disruption Recovery ServiceAlert read
+  model exposed by `/api/v1/service-alerts`.
 - The `RecoveryCase` state machine is exactly the 10-state machine from the
   domain document (`OPENED` through `CLOSED`) and follows the transition table
   below. One `RecoveryCase` is opened for each `affectedOrderId` supplied in the
@@ -54,7 +55,7 @@ camelCase and enum values are SCREAMING_SNAKE_CASE.
 
 | Enum | Values |
 |---|---|
-| `disruptionType` | `SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`, `SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`, `SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`, `PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED`, `MISSED_CONNECTION` |
+| `disruptionType` | `SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`, `SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`, `SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`, `PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED`, `MISSED_CONNECTION`, `DELAY`, `CANCELLATION`, `PARTIAL`, `FORCE_MAJEURE` |
 | `incidentStatus` | `DETECTED`, `CONFIRMED`, `BATCH_PROCESSING`, `MONITORING`, `RESOLVED`, `CLOSED` |
 | `recoveryCaseStatus` | `OPENED`, `ASSESSING_IMPACT`, `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`, `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED` |
 | `recoveryOptionType` | `WAIT`, `REFUND`, `COMPENSATION`, `REACCOMMODATION`, `MANUAL` |
@@ -125,7 +126,7 @@ option set:
 | `segmentRef` | string | no | Segment reference from the order/service plan. Required when `scheduledServiceRef` is absent. |
 | `serviceDate` | string | yes | Service operating date in ISO `YYYY-MM-DD`; used with `scheduledServiceRef` for incident merge. |
 | `evidence` | object | yes | Operational evidence object. See `Evidence`. |
-| `affectedOrderIds` | array[string] | yes | Explicit affected journey order IDs (`ord-<uuid>`). Must be non-empty; no automatic segment-to-order fan-out in this wave. |
+| `affectedOrderIds` | array[string] | yes | Explicit affected journey order IDs (`ord-<uuid>`). Must be non-empty for HTTP reports. Provider/Fulfillment segment signals resolve this list from the Journey Order segment projection. |
 | `reportedBy` | object | yes | Reporting actor. See `ActorRef`. |
 | `reportedAt` | RFC3339 UTC | yes | Report timestamp. |
 | `incidentId` | string | yes | Opened or merged incident ID (`inc-<uuid>`). |
@@ -135,7 +136,7 @@ option set:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `evidenceRef` | string | yes | Reference to the admin/customer-service evidence record or uploaded artifact. |
-| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`. Other upstream source systems are deferred. |
+| `sourceSystem` | enum | yes | `CUSTOMER_SERVICE`, `ADMIN`, `TRANSFER_MANAGEMENT`, `PROVIDER_INTEGRATION`, or `FULFILLMENT`. |
 | `sourceRecordId` | string | yes | Upstream manual-row identifier. |
 | `summary` | string | yes | Operational summary; MUST NOT include unmasked documents or other sensitive personal data. |
 | `occurredAt` | RFC3339 UTC | no | When the disruption was observed, if known. |
@@ -311,7 +312,7 @@ return the original response. Reusing the same key with a different body returns
 | `scheduledServiceRef` | string | no | Scheduled service reference. Required when `segmentRef` is absent. |
 | `segmentRef` | string | no | Segment reference. Required when `scheduledServiceRef` is absent. |
 | `serviceDate` | string | yes | ISO `YYYY-MM-DD` operating date; used with `scheduledServiceRef` for incident merge. |
-| `evidence` | object | yes | Evidence object with `sourceSystem` of `CUSTOMER_SERVICE`, `ADMIN`, or `TRANSFER_MANAGEMENT`. |
+| `evidence` | object | yes | Evidence object with `sourceSystem` of `CUSTOMER_SERVICE`, `ADMIN`, `TRANSFER_MANAGEMENT`, `PROVIDER_INTEGRATION`, or `FULFILLMENT`. |
 | `affectedOrderIds` | array[string] | yes | Explicit affected `ord-<uuid>` IDs. Must be non-empty. |
 | `reportedBy` | object | yes | Reporting actor; normally `CUSTOMER_SERVICE`, `OPERATIONS`, or `SYSTEM` for Transfer Management missed-connection reports. |
 
@@ -440,6 +441,26 @@ operations/customer service outside this public API.
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`
 
+### Query Service Alerts
+
+**GET** `/api/v1/service-alerts/{serviceAlertId}` returns a `ServiceAlert`.
+
+**GET** `/api/v1/service-alerts`
+
+Query parameters:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `incidentId` | string | no | Filter alerts by parent incident. |
+| `journeyOrderId` | string | no | Filter alerts whose `affectedOrderIds` contains the order. |
+| `limit` | integer | no | Page size, 1-100; default 20. |
+| `offset` | integer | no | Page offset; default 0. |
+
+Response: `{items,total,limit,offset}` with `items` containing `ServiceAlert`
+resources in reverse `publishedAt` order.
+
+**Error codes:** `NOT_FOUND`
+
 ## Migration note for WAIT auto-through
 
 Before REQ-121, any generated `WAIT` option could be auto-selected and close the
@@ -463,10 +484,15 @@ wave:
   `MISSED_CONNECTION` cases; all other `REACCOMMODATION` generation is deferred.
 - `ApplyRecoveryDecision` / execution convergence — driven internally after
   selection and by consuming `PostSalesApplied` from `events:post-sales`.
-- `PublishServiceAlert` — publishes the event-only `ServiceAlertPublished` fact;
-  the ServiceAlert read model is deferred.
+- `PublishServiceAlert` — publishes `ServiceAlertPublished` and upserts the
+  ServiceAlert read model.
+- `ResolveSegmentAffectedOrders` — consumes `JourneyOrderCreated` from
+  `events:journey-order` into a local `segmentRef -> journeyOrderId` projection;
+  provider/fulfillment segment signals use it to fan out cases without
+  cross-service HTTP. If a segment signal arrives before the projection is ready,
+  the handler returns `HandlerResult.transient_error(...)` so Redis retries/DLQs
+  according to the messaging contract.
 
-Deferred signal sources remain out of this wave: Service Plan, Provider
-Integration, and Fulfillment events do not open incidents or cases until their
-activation waves. Transfer Management opens protected missed-connection recovery
-through this HTTP endpoint, not by publishing a Disruption Recovery input event.
+Provider Integration and Fulfillment segment delay/cancellation events are active
+Disruption Recovery sources. Transfer Management still opens protected
+missed-connection recovery through this HTTP endpoint.
