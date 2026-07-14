@@ -202,8 +202,8 @@ class MinimumConnectionTime:
 
     def __post_init__(self) -> None:
         require_text(self.stationRef, "stationRef")
-        if self.minutes <= 0:
-            raise DomainError("minimum connection time must be positive")
+        if self.minutes < 0:
+            raise DomainError("minimum connection time must be non-negative")
 
     @classmethod
     def default_for(cls, station_ref: str, from_mode: TransferMode = TransferMode.TRAIN, to_mode: TransferMode = TransferMode.TRAIN, same_platform: bool = False, override_minutes: int | None = None) -> "MinimumConnectionTime":
@@ -669,8 +669,8 @@ class MctRule:
     retiredAt: datetime | None = None
 
     def __post_init__(self) -> None:
-        if self.minimumMinutes <= 0:
-            raise DomainError("minimumMinutes must be positive")
+        if self.minimumMinutes < 0:
+            raise DomainError("minimumMinutes must be non-negative")
 
     def update(self, data: Mapping[str, Any]) -> "MctRule":
         if self.status is MctRuleStatus.PUBLISHED:
@@ -678,8 +678,8 @@ class MctRule:
         if self.status is MctRuleStatus.RETIRED:
             raise PreconditionFailed("retired MCT rules are immutable")
         minimum = int(data.get("minimumMinutes", self.minimumMinutes))
-        if minimum <= 0:
-            raise DomainError("minimumMinutes must be positive")
+        if minimum < 0:
+            raise DomainError("minimumMinutes must be non-negative")
         return replace(self, minimumMinutes=minimum, conditions=dict(data.get("conditions", self.conditions)), validFrom=optional_dt(data.get("validFrom")) or self.validFrom, validUntil=optional_dt(data.get("validUntil")) if "validUntil" in data else self.validUntil, version=self.version + 1)
 
     def publish(self, at: datetime) -> "MctRule":

@@ -264,8 +264,7 @@ def _can_use_builtin_mct(data: Mapping[str, Any], from_mode: TransferMode, to_mo
 def _topology_weighted_mct_minutes(topology: TopologySnapshot | None) -> int | None:
     if topology is None:
         return None
-    minutes = topology.mctAccessTimeMinutes
-    return minutes if minutes is not None and minutes > 0 else None
+    return topology.mctAccessTimeMinutes
 
 
 def _leg_ref(leg: Mapping[str, Any], index: int) -> str:
