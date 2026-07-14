@@ -612,6 +612,7 @@ function supportCaseResponse(snapshot: {
   slaTracker?: unknown;
   slaBreaches?: readonly unknown[];
   slaMetrics?: unknown;
+  caseContext?: readonly unknown[];
 }) {
   return {
     caseId: snapshot.caseId,
@@ -638,6 +639,7 @@ function supportCaseResponse(snapshot: {
     slaMetrics: snapshot.slaMetrics,
     evidence: snapshot.evidence,
     timeline: snapshot.timeline,
+    caseContext: snapshot.caseContext,
   };
 }
 
