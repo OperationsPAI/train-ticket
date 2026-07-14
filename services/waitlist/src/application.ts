@@ -160,7 +160,7 @@ export class WaitlistApplicationService {
     const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
     entry.accept(now, order.orderId);
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, order.seatAssignment, correlationId)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, now.toISOString(), correlationId)]);
     return order;
   }
 

@@ -3,6 +3,7 @@ import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./d
 import { publishAll, waitlistEntryPromoted, waitlistOfferExpired } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
+  eventId?: string;
   segmentRef: string;
   departureDate: string;
   seatClass?: string;
@@ -161,7 +162,7 @@ export class PromotionOrchestrator {
       const snapshot = await this.repository.save(entry);
       promoted.push(snapshot);
       offers.push(offer);
-      await publishAll(this.publisher, [waitlistEntryPromoted(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [waitlistEntryPromoted(snapshot, event.eventId ?? `capacity-released:${entry.entryId}:${snapshot.version}`, snapshot.offeredAt ?? now.toISOString(), correlationId)]);
     }
     return { promoted, offers };
   }
@@ -170,13 +171,12 @@ export class PromotionOrchestrator {
     const now = this.now();
     const expired: WaitlistEntrySnapshot[] = [];
     for (const entry of await this.repository.findExpiredOffers(now)) {
-      const offer = entry.status === "MATCHING" ? offerFromEntry(entry) : undefined;
       const capacityHoldId = entry.capacityHoldId;
       entry.expire(now);
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
       const snapshot = await this.repository.save(entry);
       expired.push(snapshot);
-      await publishAll(this.publisher, [waitlistOfferExpired(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [waitlistOfferExpired(snapshot, now.toISOString(), correlationId)]);
       await this.onCapacityFreed({ segmentRef: entry.segmentRef, departureDate: entry.departureDate, seatClass: entry.seatClass, freedSlots: 1 }, correlationId);
     }
     return expired;

@@ -13,7 +13,7 @@ export function consumerName(instanceId?: string): string {
 export function createWaitlistEventHandler(service: Pick<WaitlistApplicationService, "handleCapacityFreed">) {
   return async (envelope: EventEnvelope): Promise<EventHandlerResult> => {
     try {
-      if (envelope.eventType !== "WaitlistCapacityFreed") return successfulHandling();
+      if (envelope.eventType !== "CapacityReleased" && envelope.eventType !== "WaitlistCapacityFreed") return successfulHandling();
       await service.handleCapacityFreed(parseCapacityFreed(envelope), envelope.correlationId);
       return successfulHandling();
     } catch (error) {
@@ -26,10 +26,10 @@ export function createWaitlistEventHandler(service: Pick<WaitlistApplicationServ
 export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed {
   const payload = envelope.payload as Record<string, unknown>;
   const segmentRef = string(payload.segmentRef);
-  const departureDate = string(payload.departureDate);
-  const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? 1);
-  const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : undefined;
-  return { segmentRef, departureDate, freedSlots, seatClass };
+  const departureDate = string(payload.departureDate ?? payload.journeyDate ?? payload.serviceDate ?? payload.releasedAt);
+  const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? payload.quantity ?? 1);
+  const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : typeof payload.classRef === "string" ? payload.classRef : undefined;
+  return { eventId: envelope.eventId, segmentRef, departureDate: datePart(departureDate), freedSlots, seatClass };
 }
 
 function string(value: unknown): string {
@@ -41,4 +41,8 @@ function number(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) throw new Error("WaitlistCapacityFreed event must include freedSlots >= 1");
   return parsed;
+}
+
+function datePart(value: string): string {
+  return value.slice(0, 10);
 }
