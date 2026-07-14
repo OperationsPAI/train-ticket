@@ -125,14 +125,24 @@ func (p Place) Validate() error {
 	return nil
 }
 
+type WalkingEdge struct {
+	ToNodeID           TransportNodeID
+	WalkingTimeMinutes int
+}
+
 // TransportNode binds a transport-meaningful node to a canonical Place. Service
-// Plan may only publish stops against known, valid nodes.
+// Plan may only publish stops against known, valid nodes. AccessTimeMinutes is
+// an optional walking/wayfinding access-time weight in minutes for transfers
+// that enter or leave this node. WalkingEdges are optional directed edge weights
+// to adjacent transport nodes.
 type TransportNode struct {
-	ID           TransportNodeID
-	PlaceID      PlaceID
-	DisplayName  string
-	ServingModes []TransportMode
-	CreatedAt    time.Time
+	ID                TransportNodeID
+	PlaceID           PlaceID
+	DisplayName       string
+	ServingModes      []TransportMode
+	AccessTimeMinutes *int
+	WalkingEdges      []WalkingEdge
+	CreatedAt         time.Time
 }
 
 func NewTransportNode(id TransportNodeID, placeID PlaceID, displayName string, servingModes []TransportMode) (TransportNode, error) {
@@ -146,6 +156,19 @@ func NewTransportNode(id TransportNodeID, placeID PlaceID, displayName string, s
 		return TransportNode{}, err
 	}
 	return node, nil
+}
+
+func (n *TransportNode) SetAccessWeights(accessTimeMinutes *int, walkingEdges []WalkingEdge) {
+	if accessTimeMinutes == nil {
+		n.AccessTimeMinutes = nil
+	} else {
+		minutes := *accessTimeMinutes
+		n.AccessTimeMinutes = &minutes
+	}
+	n.WalkingEdges = make([]WalkingEdge, len(walkingEdges))
+	for i, edge := range walkingEdges {
+		n.WalkingEdges[i] = WalkingEdge{ToNodeID: TransportNodeID(strings.TrimSpace(string(edge.ToNodeID))), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
 }
 
 func (n *TransportNode) MarkCreatedAt(createdAt time.Time) {
@@ -174,6 +197,23 @@ func (n TransportNode) Validate() error {
 			return fmt.Errorf("duplicate transport mode: %q", mode)
 		}
 		seen[mode] = struct{}{}
+	}
+	if n.AccessTimeMinutes != nil && *n.AccessTimeMinutes < 0 {
+		return fmt.Errorf("accessTimeMinutes must be non-negative")
+	}
+	seenEdges := make(map[TransportNodeID]struct{}, len(n.WalkingEdges))
+	for _, edge := range n.WalkingEdges {
+		toNodeID := TransportNodeID(strings.TrimSpace(string(edge.ToNodeID)))
+		if toNodeID == "" {
+			return fmt.Errorf("walking edge toNodeId is required")
+		}
+		if edge.WalkingTimeMinutes < 0 {
+			return fmt.Errorf("walkingTimeMinutes must be non-negative")
+		}
+		if _, exists := seenEdges[toNodeID]; exists {
+			return fmt.Errorf("duplicate walking edge toNodeId: %q", toNodeID)
+		}
+		seenEdges[toNodeID] = struct{}{}
 	}
 	return nil
 }

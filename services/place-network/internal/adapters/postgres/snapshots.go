@@ -23,12 +23,19 @@ type placeSnapshot struct {
 	CreatedAt     time.Time           `json:"createdAt"`
 }
 
+type walkingEdgeSnapshot struct {
+	ToNodeID           string `json:"toNodeId"`
+	WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+}
+
 type nodeSnapshot struct {
-	ID           string                 `json:"id"`
-	PlaceID      string                 `json:"placeId"`
-	DisplayName  string                 `json:"displayName"`
-	ServingModes []domain.TransportMode `json:"servingModes"`
-	CreatedAt    time.Time              `json:"createdAt"`
+	ID                string                 `json:"id"`
+	PlaceID           string                 `json:"placeId"`
+	DisplayName       string                 `json:"displayName"`
+	ServingModes      []domain.TransportMode `json:"servingModes"`
+	AccessTimeMinutes *int                   `json:"accessTimeMinutes,omitempty"`
+	WalkingEdges      []walkingEdgeSnapshot  `json:"walkingEdges,omitempty"`
+	CreatedAt         time.Time              `json:"createdAt"`
 }
 
 func placeSnapshotFromDomain(place domain.Place) placeSnapshot {
@@ -40,7 +47,11 @@ func placeSnapshotFromDomain(place domain.Place) placeSnapshot {
 }
 
 func nodeSnapshotFromDomain(node domain.TransportNode) nodeSnapshot {
-	return nodeSnapshot{ID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: append([]domain.TransportMode(nil), node.ServingModes...), CreatedAt: node.CreatedAt.UTC()}
+	walkingEdges := make([]walkingEdgeSnapshot, len(node.WalkingEdges))
+	for i, edge := range node.WalkingEdges {
+		walkingEdges[i] = walkingEdgeSnapshot{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
+	return nodeSnapshot{ID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: append([]domain.TransportMode(nil), node.ServingModes...), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdges, CreatedAt: node.CreatedAt.UTC()}
 }
 
 func decodePlace(raw []byte) (domain.Place, error) {
@@ -70,6 +81,22 @@ func decodeNode(raw []byte) (domain.TransportNode, error) {
 	if err != nil {
 		return domain.TransportNode{}, err
 	}
+	walkingEdges := make([]domain.WalkingEdge, len(snap.WalkingEdges))
+	for i, edge := range snap.WalkingEdges {
+		walkingEdges[i] = domain.WalkingEdge{ToNodeID: domain.TransportNodeID(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
+	node.SetAccessWeights(snap.AccessTimeMinutes, walkingEdges)
+	if err := node.Validate(); err != nil {
+		return domain.TransportNode{}, err
+	}
 	node.MarkCreatedAt(snap.CreatedAt)
 	return node, nil
+}
+
+func copyInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }

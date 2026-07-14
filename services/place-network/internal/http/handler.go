@@ -88,15 +88,24 @@ func (h *Handler) ListPlaces(ctx *gin.Context) {
 
 func (h *Handler) CreateTransportNode(ctx *gin.Context) {
 	var req struct {
-		PlaceID      string   `json:"placeId" binding:"required"`
-		DisplayName  string   `json:"displayName" binding:"required"`
-		ServingModes []string `json:"servingModes" binding:"required"`
+		PlaceID           string   `json:"placeId" binding:"required"`
+		DisplayName       string   `json:"displayName" binding:"required"`
+		ServingModes      []string `json:"servingModes" binding:"required"`
+		AccessTimeMinutes *int     `json:"accessTimeMinutes"`
+		WalkingEdges      []struct {
+			ToNodeID           string `json:"toNodeId" binding:"required"`
+			WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+		} `json:"walkingEdges"`
 	}
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "invalid request body: "+err.Error(), nil)
 		return
 	}
-	resp, err := h.svc.CreateTransportNode(ctx.Request.Context(), application.CreateTransportNodeRequest{PlaceID: req.PlaceID, DisplayName: req.DisplayName, ServingModes: req.ServingModes, CorrelationID: correlationID(ctx)})
+	walkingEdges := make([]application.WalkingEdgeRequest, len(req.WalkingEdges))
+	for i, edge := range req.WalkingEdges {
+		walkingEdges[i] = application.WalkingEdgeRequest{ToNodeID: edge.ToNodeID, WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
+	resp, err := h.svc.CreateTransportNode(ctx.Request.Context(), application.CreateTransportNodeRequest{PlaceID: req.PlaceID, DisplayName: req.DisplayName, ServingModes: req.ServingModes, AccessTimeMinutes: req.AccessTimeMinutes, WalkingEdges: walkingEdges, CorrelationID: correlationID(ctx)})
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return

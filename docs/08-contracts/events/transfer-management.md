@@ -17,11 +17,17 @@ Activation-wave rulings:
 - Fulfillment segment delay/arrival/cancelled events are not active today.
   Runtime facts enter through `POST /api/v1/segment-status-reports`; future
   Fulfillment events may be mapped to the same command material.
-- Place Network node/place read integration is active for evaluation metadata.
-  Event payloads carry itinerary/node refs, transfer category, and risk
-  evaluations may include `placeGraphVersion` or degradation fields. Place
-  Network walking/access-time weights remain deferred because that contract has no
-  such fields.
+- Place Network node/place read integration is active for evaluation metadata
+  and topology-weighted minimum connection time. Transfer Management consumes the
+  Place Network TransportNode fields `accessTimeMinutes` and
+  `walkingEdges[].{toNodeId,walkingTimeMinutes}` exactly as defined in
+  `docs/08-contracts/api/place-network.md`: all weights are whole minutes and
+  optional. When either endpoint's node has `accessTimeMinutes`, required MCT uses
+  the sum of present endpoint access times (missing endpoint weight contributes
+  `0`). Otherwise, a direct `walkingEdges` item from `fromNodeRef` to `toNodeRef`
+  supplies the required minutes. If those weights are absent or Place Network is
+  unavailable, evaluation remains degraded-not-blocking and falls back to the
+  builtin default policy.
 - Protected missed connections use outbound HTTP to Disruption Recovery. Transfer
   Management stores returned `caseId` mappings and consumes
   `RecoveryCompleted`/`RecoveryFailed` by `caseId` to converge the `Connection`.

@@ -114,7 +114,7 @@ func TestCreateTransportNodeHappyPath(t *testing.T) {
 func TestGetTransportNodeHappyPath(t *testing.T) {
 	router := setupTestRouter(nil)
 	place := createPlace(t, router, "Beijing South", "STATION", "0194f2e0-7b3e-7007-8284-5c26e8b00007")
-	createdRec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Platform 2", "servingModes": []string{"TRAIN"}}, "0194f2e0-7b3e-7008-8284-5c26e8b00008")
+	createdRec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Platform 2", "servingModes": []string{"TRAIN"}, "accessTimeMinutes": 7, "walkingEdges": []map[string]any{{"toNodeId": "tnd-next", "walkingTimeMinutes": 5}}}, "0194f2e0-7b3e-7008-8284-5c26e8b00008")
 	var created application.CreateTransportNodeResponse
 	decode(t, createdRec, &created)
 	rec := perform(router, http.MethodGet, "/api/v1/transport-nodes/"+created.NodeID, nil)
@@ -123,7 +123,7 @@ func TestGetTransportNodeHappyPath(t *testing.T) {
 	}
 	var resp application.GetTransportNodeResponse
 	decode(t, rec, &resp)
-	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" {
+	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" || resp.AccessTimeMinutes == nil || *resp.AccessTimeMinutes != 7 || len(resp.WalkingEdges) != 1 || resp.WalkingEdges[0].ToNodeID != "tnd-next" || resp.WalkingEdges[0].WalkingTimeMinutes != 5 {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 }

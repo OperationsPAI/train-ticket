@@ -23,12 +23,19 @@ type PlaceUpdatedEvent struct {
 	UpdatedAt     string      `json:"updatedAt"`
 }
 
+type WalkingEdgePayload struct {
+	ToNodeID           TransportNodeID `json:"toNodeId"`
+	WalkingTimeMinutes int             `json:"walkingTimeMinutes"`
+}
+
 type TransportNodeUpdatedEvent struct {
-	NodeID       TransportNodeID `json:"nodeId"`
-	PlaceID      PlaceID         `json:"placeId"`
-	DisplayName  string          `json:"displayName"`
-	ServingModes []TransportMode `json:"servingModes"`
-	UpdatedAt    string          `json:"updatedAt"`
+	NodeID            TransportNodeID      `json:"nodeId"`
+	PlaceID           PlaceID              `json:"placeId"`
+	DisplayName       string               `json:"displayName"`
+	ServingModes      []TransportMode      `json:"servingModes"`
+	AccessTimeMinutes *int                 `json:"accessTimeMinutes,omitempty"`
+	WalkingEdges      []WalkingEdgePayload `json:"walkingEdges,omitempty"`
+	UpdatedAt         string               `json:"updatedAt"`
 }
 
 // EventEnvelope is the shared-primitives event envelope used on the event bus.

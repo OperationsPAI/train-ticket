@@ -18,11 +18,19 @@ class PlaceNetworkValidationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class WalkingEdge:
+    toNodeId: str
+    walkingTimeMinutes: int
+
+
+@dataclass(frozen=True, slots=True)
 class TopologyNode:
     nodeId: str
     placeId: str
     placeType: str | None
     createdAt: str | None
+    accessTimeMinutes: int | None = None
+    walkingEdges: tuple[WalkingEdge, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +43,19 @@ class TopologySnapshot:
         from_version = self.fromNode.createdAt or "unversioned"
         to_version = self.toNode.createdAt or "unversioned"
         return f"place-network:{self.fromNode.nodeId}@{from_version}:{self.toNode.nodeId}@{to_version}"
+
+    @property
+    def mctAccessTimeMinutes(self) -> int | None:
+        values = [self.fromNode.accessTimeMinutes, self.toNode.accessTimeMinutes]
+        if any(value is not None for value in values):
+            return sum(value or 0 for value in values)
+        edge_minutes = self.walkingTimeMinutes
+        return edge_minutes
+
+    @property
+    def walkingTimeMinutes(self) -> int | None:
+        direct_edges = [edge.walkingTimeMinutes for edge in self.fromNode.walkingEdges if edge.toNodeId == self.toNode.nodeId]
+        return min(direct_edges) if direct_edges else None
 
 
 class PlaceNetworkClient:
@@ -92,7 +113,9 @@ class PlaceNetworkClient:
             raise PlaceNetworkUnavailable("place-network node response missing nodeId or placeId")
         place = self._get_json(f"/api/v1/places/{place_id}")
         place_type = str(place.get("placeType") or "") or None
-        return TopologyNode(node_id, place_id, place_type, str(node.get("createdAt") or "") or None)
+        access_time = _optional_non_negative_int(node.get("accessTimeMinutes"), "accessTimeMinutes")
+        walking_edges = _walking_edges(node.get("walkingEdges"))
+        return TopologyNode(node_id, place_id, place_type, str(node.get("createdAt") or "") or None, access_time, walking_edges)
 
     def _validate_node_type(self, node: TopologyNode, expected: NodeType, field_name: str) -> None:
         if node.placeType is None:
@@ -104,3 +127,34 @@ class PlaceNetworkClient:
         }.get(expected)
         if allowed is not None and node.placeType not in allowed:
             raise PlaceNetworkValidationError(f"{field_name} does not match place-network placeType {node.placeType}")
+
+
+def _optional_non_negative_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PlaceNetworkUnavailable(f"place-network node response has invalid {field_name}") from exc
+    if minutes < 0:
+        raise PlaceNetworkUnavailable(f"place-network node response has negative {field_name}")
+    return minutes
+
+
+def _walking_edges(value: Any) -> tuple[WalkingEdge, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise PlaceNetworkUnavailable("place-network node response has invalid walkingEdges")
+    edges: list[WalkingEdge] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise PlaceNetworkUnavailable("place-network node response has invalid walkingEdges item")
+        to_node_id = str(item.get("toNodeId") or "").strip()
+        if not to_node_id:
+            raise PlaceNetworkUnavailable("place-network walkingEdges item missing toNodeId")
+        walking_time = _optional_non_negative_int(item.get("walkingTimeMinutes"), "walkingTimeMinutes")
+        if walking_time is None:
+            raise PlaceNetworkUnavailable("place-network walkingEdges item missing walkingTimeMinutes")
+        edges.append(WalkingEdge(to_node_id, walking_time))
+    return tuple(edges)

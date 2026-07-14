@@ -37,3 +37,5 @@ Last updated: 2026-06-28
 | `placeId` | `PlaceId` | yes | Parent place. |
 | `displayName` | string | yes | Display name. |
 | `servingModes` | string[] | yes | Transport modes served. |
+| `accessTimeMinutes` | integer | no | Non-negative walking/wayfinding access-time weight in whole minutes for entering/leaving this node. Omitted when unknown. |
+| `walkingEdges` | array | no | Optional directed walking/access edges from this node to adjacent transport nodes. Each item is `{toNodeId, walkingTimeMinutes}` where `toNodeId` is a TransportNode ID (`tnd-<uuid>` or configured node ref) and `walkingTimeMinutes` is a non-negative integer in whole minutes. Omitted or empty when no edge weights are configured. |

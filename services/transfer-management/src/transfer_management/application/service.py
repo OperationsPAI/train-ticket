@@ -52,7 +52,7 @@ from transfer_management.domain import (
     require_text,
 )
 from transfer_management.downstream import DisruptionRecoveryClient, DownstreamError
-from transfer_management.topology import PlaceNetworkClient, PlaceNetworkUnavailable, PlaceNetworkValidationError
+from transfer_management.topology import PlaceNetworkClient, PlaceNetworkUnavailable, PlaceNetworkValidationError, TopologySnapshot
 
 PRODUCER = "transfer-management"
 PROTECTED_TYPES = {ContractType.PROTECTED, ContractType.SUPPLIER_PROTECTED}
@@ -261,6 +261,13 @@ def _can_use_builtin_mct(data: Mapping[str, Any], from_mode: TransferMode, to_mo
     )
 
 
+def _topology_weighted_mct_minutes(topology: TopologySnapshot | None) -> int | None:
+    if topology is None:
+        return None
+    minutes = topology.mctAccessTimeMinutes
+    return minutes if minutes is not None and minutes > 0 else None
+
+
 def _leg_ref(leg: Mapping[str, Any], index: int) -> str:
     return str(leg.get("serviceSegmentRef") or leg.get("segmentRef") or leg.get("servicePlanRef") or f"leg-{index}")
 
@@ -415,12 +422,13 @@ class TransferManagementService:
         cross_mode = _cross_mode_from_data(data, from_mode, to_mode, from_node_ref, to_node_ref)
         override = data.get("mctOverride")
         same_platform = _same_platform(data, category)
-        mct = MinimumConnectionTime.default_for(to_node_ref, from_mode, to_mode, same_platform, int(override) if override is not None else None)
+        topology_minutes = _topology_weighted_mct_minutes(topology)
+        mct = MinimumConnectionTime.default_for(to_node_ref, from_mode, to_mode, same_platform, int(override) if override is not None else topology_minutes)
         rule = self._find_published_rule(from_node_type, to_node_type, category, at)
         if rule is None:
-            if not _can_use_builtin_mct(data, from_mode, to_mode, to_node_ref, same_platform):
+            if topology_minutes is None and not _can_use_builtin_mct(data, from_mode, to_mode, to_node_ref, same_platform):
                 raise DomainError("NO_PUBLISHED_MCT_RULE")
-            rule = self._default_mct_rule(from_node_type, to_node_type, category, mct, at)
+            rule = self._default_mct_rule(from_node_type, to_node_type, category, mct, at, "PLACE_NETWORK_ACCESS_TIME" if topology_minutes is not None else "BUILTIN_STATION_POLICY")
         window_data = dict(data.get("window") or {})
         planned = parse_dt(window_data.get("plannedArrivalAt"), "window.plannedArrivalAt")
         departure = parse_dt(window_data.get("nextDepartureAt"), "window.nextDepartureAt")
@@ -744,8 +752,8 @@ class TransferManagementService:
                 events.append(_envelope(event_type, transfer_id, 1, event_payload, envelope.correlationId, envelope.eventId, at))
         return events
 
-    def _default_mct_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, mct: MinimumConnectionTime, at: datetime) -> MctRule:
-        return MctRule(f"mct-default-{mct.fromMode.value.lower()}-{mct.toMode.value.lower()}-{category.value.lower()}", 1, MctRuleStatus.PUBLISHED, from_type, to_type, category, mct.minutes, {"source": "BUILTIN_STATION_POLICY", "stationRef": mct.stationRef}, at, publishedAt=at)
+    def _default_mct_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, mct: MinimumConnectionTime, at: datetime, source: str = "BUILTIN_STATION_POLICY") -> MctRule:
+        return MctRule(f"mct-default-{mct.fromMode.value.lower()}-{mct.toMode.value.lower()}-{category.value.lower()}", 1, MctRuleStatus.PUBLISHED, from_type, to_type, category, mct.minutes, {"source": source, "stationRef": mct.stationRef}, at, publishedAt=at)
 
     def _carrier_responsible(self, connection: Connection) -> bool:
         return connection.guaranteed or connection.contractType in PROTECTED_TYPES
@@ -818,7 +826,7 @@ class TransferManagementService:
             policy = TransferRiskPolicy("builtin", "builtin-v1", RiskPolicyStatus.ACTIVE, RiskThresholds(10, 0), ActorRef("SYSTEM", "transfer-management"), at, at)
         level, reasons = policy.classify(window.availableMinutes, window.bufferMinutes, tuple(extra_reasons))
         degraded = tuple(dict.fromkeys(degraded_reasons))
-        return RiskEvaluation(evaluation_id, level, rule.mctRuleId, rule.version, window.availableMinutes, rule.minimumMinutes, reasons, at, policy.version, place_graph_version, bool(degraded), degraded)
+        return RiskEvaluation(evaluation_id, level, rule.mctRuleId, rule.version, window.availableMinutes, window.mctMinutes, reasons, at, policy.version, place_graph_version, bool(degraded), degraded)
 
     def _refresh_connection(self, connection: Connection, at: datetime, correlation_id: str, causation_id: str, report: SegmentStatusReport | None) -> tuple[Connection, list[EventEnvelope]]:
         previous_status = connection.status
