@@ -192,7 +192,7 @@ class Evidence:
 
     def __post_init__(self) -> None:
         require_text(self.evidenceRef, "evidenceRef")
-        if self.sourceSystem not in {"CUSTOMER_SERVICE", "ADMIN", "TRANSFER_MANAGEMENT"}:
+        if self.sourceSystem not in {"CUSTOMER_SERVICE", "ADMIN", "TRANSFER_MANAGEMENT", "PROVIDER_INTEGRATION", "FULFILLMENT"}:
             raise DomainError("evidence.sourceSystem is invalid")
         require_text(self.sourceRecordId, "sourceRecordId")
         require_text(self.summary, "summary")

@@ -65,3 +65,29 @@ Last updated: 2026-06-28
 |---|---|---|---|
 | `entitlementId` | `EntitlementId` | yes | Platform entitlement ID. |
 | `providerReference` | `ProviderReference` | yes | Provider's ticket reference. |
+
+### SegmentDelayed
+
+| Field | Description |
+|---|---|
+| **Producer** | provider-integration |
+| **Consumers** | disruption-recovery |
+| **Trigger** | External provider reports an operational delay for a booked service segment. |
+
+**Payload:** same shape as Fulfillment `SegmentDelayed`: `segmentRef`,
+`scheduledServiceRef`, `serviceDate`, `estimatedArrivalAt`, `observedAt`, and
+`sourceSystem`. Disruption Recovery maps this event to
+`disruptionType=DELAY` with `evidence.sourceSystem=PROVIDER_INTEGRATION`.
+
+### SegmentCancelled
+
+| Field | Description |
+|---|---|
+| **Producer** | provider-integration |
+| **Consumers** | disruption-recovery |
+| **Trigger** | External provider reports cancellation for a booked service segment. |
+
+**Payload:** same shape as Fulfillment `SegmentCancelled`: `segmentRef`,
+`scheduledServiceRef`, `serviceDate`, `cancelledAt`, `observedAt`, and
+`sourceSystem`. Disruption Recovery maps this event to
+`disruptionType=CANCELLATION` with `evidence.sourceSystem=PROVIDER_INTEGRATION`.

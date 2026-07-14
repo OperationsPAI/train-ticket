@@ -14,7 +14,7 @@ from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 from train_ticket_platform.ids import new_uuid7
 
-from .adapters.messaging import POST_SALES_STREAM
+from .adapters.messaging import INBOUND_STREAMS
 from .adapters.storage.postgres import PostgresDisruptionRecoveryStore
 from .application.service import DisruptionRecoveryService, InMemoryStore
 from .downstream import DownstreamHttpClient
@@ -156,9 +156,9 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     relay.start()
     subscriber = RedisEventSubscriber()
     service_holder: dict[str, Any] = {}
-    def handle(envelope: Any) -> None:
-        service_holder["service"].handle_post_sales_applied(envelope, POST_SALES_STREAM)
-    thread = subscriber.start_in_background((POST_SALES_STREAM,), "disruption-recovery", handle)
+    def handle(envelope: Any) -> Any:
+        return service_holder["service"].handle_inbound_event(envelope)
+    thread = subscriber.start_in_background(INBOUND_STREAMS, "disruption-recovery", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
     app.state.event_subscriber_thread = thread
