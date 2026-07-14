@@ -1,6 +1,7 @@
 import { uuidV7 } from "@trainticket/ts-kit";
 
-export type WaitlistStatus = "QUEUED" | "OFFERED" | "ACCEPTED" | "EXPIRED" | "CANCELLED";
+export type WaitlistStatus = "QUEUED" | "OFFERED" | "ACCEPTED" | "EXPIRED" | "CANCELLED" | "CLOSED";
+export type WaitlistTerminalStatus = Exclude<WaitlistStatus, "QUEUED" | "OFFERED" | "CLOSED">;
 export type LoyaltyTier = "PLATINUM" | "GOLD" | "SILVER" | "NONE";
 export type FareClass = "BUSINESS" | "FIRST" | "SECOND" | "SECOND_CLASS" | "STANDING";
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
@@ -23,6 +24,7 @@ export type WaitlistEntrySnapshot = Readonly<{
   seatClass: FareClass;
   priorityScore: number;
   status: WaitlistStatus;
+  terminalStatus?: WaitlistTerminalStatus;
   queuePosition: number;
   createdAt: string;
   offeredAt: string | null;
@@ -32,6 +34,7 @@ export type WaitlistEntrySnapshot = Readonly<{
   offerId?: string;
   offerVersion?: number;
   itineraryRef?: string;
+  archivedAt?: string;
   fareQuoteIdempotencyKey?: string;
   offerIdempotencyKey?: string;
   capacityHoldIdempotencyKey?: string;
@@ -77,6 +80,8 @@ export class WaitlistEntry {
     private _offerId?: string,
     private _offerVersion?: number,
     public readonly itineraryRef?: string,
+    private _archivedAt: Date | null = null,
+    private _terminalStatus?: WaitlistTerminalStatus,
     private readonly _fareQuoteIdempotencyKey: string = uuidV7(),
     private readonly _offerIdempotencyKey: string = uuidV7(),
     private readonly _capacityHoldIdempotencyKey: string = uuidV7(),
@@ -110,6 +115,8 @@ export class WaitlistEntry {
       undefined,
       undefined,
       command.itineraryRef,
+      null,
+      undefined,
     );
   }
 
@@ -131,6 +138,8 @@ export class WaitlistEntry {
       snapshot.offerId,
       snapshot.offerVersion,
       snapshot.itineraryRef,
+      snapshot.archivedAt ? new Date(snapshot.archivedAt) : null,
+      snapshot.terminalStatus,
       snapshot.fareQuoteIdempotencyKey,
       snapshot.offerIdempotencyKey,
       snapshot.capacityHoldIdempotencyKey,
@@ -147,12 +156,18 @@ export class WaitlistEntry {
   get capacityHoldId(): string | undefined { return this._capacityHoldId; }
   get offerId(): string | undefined { return this._offerId; }
   get offerVersion(): number | undefined { return this._offerVersion; }
+  get archivedAt(): Date | null { return this._archivedAt; }
+  get terminalStatus(): WaitlistTerminalStatus | undefined { return this._terminalStatus; }
   get fareQuoteIdempotencyKey(): string { return this._fareQuoteIdempotencyKey; }
   get offerIdempotencyKey(): string { return this._offerIdempotencyKey; }
   get capacityHoldIdempotencyKey(): string { return this._capacityHoldIdempotencyKey; }
   get capacityReleaseIdempotencyKey(): string { return this._capacityReleaseIdempotencyKey; }
   get journeyOrderIdempotencyKey(): string { return this._journeyOrderIdempotencyKey; }
   get capacitySegmentBookingId(): string { return this._capacitySegmentBookingId; }
+
+  isArchivableTerminal(): boolean {
+    return this._status === "ACCEPTED" || this._status === "EXPIRED" || this._status === "CANCELLED";
+  }
 
   offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
     this.assertStatus("QUEUED", "Only queued waitlist entries can be offered");
@@ -190,10 +205,20 @@ export class WaitlistEntry {
   }
 
   cancel(): void {
-    if (this._status === "ACCEPTED" || this._status === "EXPIRED") {
+    if (this._status === "ACCEPTED" || this._status === "EXPIRED" || this._status === "CLOSED") {
       throw new DomainError("INVALID_TRANSITION", `Cannot cancel ${this._status} waitlist entry`);
     }
     this._status = "CANCELLED";
+  }
+
+  closeForArchive(now: Date): void {
+    if (this._status === "CLOSED") return;
+    if (!this.isArchivableTerminal()) {
+      throw new DomainError("INVALID_TRANSITION", `Cannot archive ${this._status} waitlist entry`);
+    }
+    this._terminalStatus = this._status as WaitlistTerminalStatus;
+    this._status = "CLOSED";
+    this._archivedAt = now;
   }
 
   toSnapshot(queuePosition = 0): WaitlistEntrySnapshot {
@@ -206,6 +231,7 @@ export class WaitlistEntry {
       seatClass: this.seatClass,
       priorityScore: this.priorityScore,
       status: this._status,
+      terminalStatus: this._terminalStatus,
       queuePosition,
       createdAt: this.createdAt.toISOString(),
       offeredAt: this._offeredAt?.toISOString() ?? null,
@@ -215,6 +241,7 @@ export class WaitlistEntry {
       offerId: this._offerId,
       offerVersion: this._offerVersion,
       itineraryRef: this.itineraryRef,
+      archivedAt: this._archivedAt?.toISOString(),
       fareQuoteIdempotencyKey: this._fareQuoteIdempotencyKey,
       offerIdempotencyKey: this._offerIdempotencyKey,
       capacityHoldIdempotencyKey: this._capacityHoldIdempotencyKey,

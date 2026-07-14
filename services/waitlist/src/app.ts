@@ -65,6 +65,9 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/api/v1/waitlist/entries/:entryId", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
   )));
+  app.get("/api/v1/waitlist-requests/:waitlistRequestId", async (request, reply) => handleRead(reply, request, () => (
+    runCommand((repository, publisher) => commandService(repository, publisher).getActiveOrArchived(param(request, "waitlistRequestId")))
+  )));
   stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request) => ({
     statusCode: 200,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"))),
@@ -72,6 +75,10 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries/:entryId/accept", async (request, ctx) => ({
     statusCode: 200,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).accept(param(request, "entryId"), request.body as any, ctx.correlationId)),
+  }));
+  stateChanging(app, idempotencyStore, "POST", "/internal/waitlist/archive-sweep", async (request) => ({
+    statusCode: 200,
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).sweepArchived(requestLimit(request.body))),
   }));
   app.get("/api/v1/waitlist/segments/:segmentRef/:departureDate/queue", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).queueInfo(param(request, "segmentRef"), param(request, "departureDate"), query(request).seatClass, query(request).entryId))
@@ -122,3 +129,8 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }
 function param(request: FastifyRequest, name: string): string { return (request.params as Record<string, string>)[name] ?? ""; }
 function query(request: FastifyRequest): Record<string, string | undefined> { return request.query as Record<string, string | undefined>; }
+function requestLimit(body: unknown): number {
+  if (typeof body !== "object" || body === null || !("limit" in body)) return 100;
+  const limit = Number((body as { limit?: unknown }).limit);
+  return Number.isFinite(limit) ? limit : 100;
+}

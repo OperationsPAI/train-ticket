@@ -24,6 +24,11 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
 
+  async getArchived(entryId: string): Promise<WaitlistEntrySnapshot | undefined> {
+    const result = await this.db.query(`SELECT data FROM archived_waitlist_entries WHERE entry_id = $1`, [entryId]) as QueryResult<{ data: WaitlistEntrySnapshot }>;
+    return result.rows[0]?.data;
+  }
+
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
     await this.db.query(
@@ -49,6 +54,37 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'OFFERED' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
     return result.rows.map(entryFromRow);
+  }
+
+  async findArchivableTerminal(limit: number): Promise<readonly WaitlistEntry[]> {
+    const result = await this.db.query(
+      `SELECT * FROM waitlist_entries
+       WHERE status IN ('ACCEPTED', 'EXPIRED', 'CANCELLED')
+       ORDER BY updated_at ASC, entry_id ASC
+       LIMIT $1`,
+      [Math.max(1, Math.floor(limit))],
+    ) as QueryResult<WaitlistRow>;
+    return result.rows.map(entryFromRow);
+  }
+
+  async archive(entry: WaitlistEntry, archivedAt: Date): Promise<WaitlistEntrySnapshot | undefined> {
+    const current = await this.db.query(`SELECT * FROM waitlist_entries WHERE entry_id = $1 FOR UPDATE`, [entry.entryId]) as QueryResult<WaitlistRow>;
+    const row = current.rows[0];
+    if (!row) return this.getArchived(entry.entryId);
+    const activeEntry = entryFromRow(row);
+    activeEntry.closeForArchive(archivedAt);
+    const snapshot = activeEntry.toSnapshot(0);
+    const inserted = await this.db.query(
+      `INSERT INTO archived_waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, terminal_status, archived_at, data, source_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (entry_id) DO NOTHING
+       RETURNING data`,
+      [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.terminalStatus ?? row.status, snapshot.archivedAt ?? archivedAt.toISOString(), snapshot, row.version],
+    ) as QueryResult<{ data: WaitlistEntrySnapshot }>;
+    const archivedSnapshot = (inserted.rowCount ?? 0) === 0 ? await this.getArchived(entry.entryId) : inserted.rows[0]?.data ?? snapshot;
+    const deleted = await this.db.query(`DELETE FROM waitlist_entries WHERE entry_id = $1 AND version = $2`, [entry.entryId, row.version]);
+    if ((deleted.rowCount ?? 0) !== 1) throw new Error("Waitlist archival delete lost optimistic concurrency race");
+    return archivedSnapshot;
   }
 
   async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
@@ -110,6 +146,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     seatClass: row.seat_class as WaitlistEntrySnapshot["seatClass"],
     priorityScore: row.priority_score,
     status: row.status as WaitlistEntrySnapshot["status"],
+    terminalStatus: typeof data.terminalStatus === "string" ? data.terminalStatus as WaitlistEntrySnapshot["terminalStatus"] : undefined,
     queuePosition: 0,
     createdAt: instantString(row.created_at),
     offeredAt: row.offered_at ? instantString(row.offered_at) : null,
@@ -119,6 +156,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     offerId: typeof data.offerId === "string" ? data.offerId : undefined,
     offerVersion: typeof data.offerVersion === "number" ? data.offerVersion : undefined,
     itineraryRef: typeof data.itineraryRef === "string" ? data.itineraryRef : undefined,
+    archivedAt: typeof data.archivedAt === "string" ? data.archivedAt : undefined,
     fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
     offerIdempotencyKey: typeof data.offerIdempotencyKey === "string" ? data.offerIdempotencyKey : undefined,
     capacityHoldIdempotencyKey: typeof data.capacityHoldIdempotencyKey === "string" ? data.capacityHoldIdempotencyKey : undefined,
@@ -152,5 +190,6 @@ type WaitlistRow = Readonly<{
   fare_quote_id: string | null;
   capacity_hold_id: string | null;
   data: Record<string, unknown> | null;
+  version: string | number | bigint;
   created_at: Date | string;
 }>;

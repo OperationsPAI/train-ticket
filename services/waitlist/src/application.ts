@@ -1,6 +1,6 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
-import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
+import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type ArchiveResult, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistEntryAccepted, waitlistEntryCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
@@ -52,6 +52,7 @@ export class HttpJourneyOrderClient implements JourneyOrderClient {
 
 export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
+  private readonly archived = new Map<string, WaitlistEntrySnapshot>();
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     this.entries.set(entry.entryId, entry);
@@ -59,6 +60,8 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   async get(entryId: string): Promise<WaitlistEntry | undefined> { return this.entries.get(entryId); }
+
+  async getArchived(entryId: string): Promise<WaitlistEntrySnapshot | undefined> { return this.archived.get(entryId); }
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     this.entries.set(entry.entryId, entry);
@@ -74,12 +77,28 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return [...this.entries.values()].filter((entry) => entry.status === "OFFERED" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
   }
 
+  async findArchivableTerminal(limit: number): Promise<readonly WaitlistEntry[]> {
+    return [...this.entries.values()]
+      .filter((entry) => entry.isArchivableTerminal())
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.entryId.localeCompare(right.entryId))
+      .slice(0, Math.max(0, Math.floor(limit)));
+  }
+
+  async archive(entry: WaitlistEntry, archivedAt: Date): Promise<WaitlistEntrySnapshot | undefined> {
+    if (!this.entries.has(entry.entryId)) return this.archived.get(entry.entryId);
+    entry.closeForArchive(archivedAt);
+    const snapshot = entry.toSnapshot(0);
+    this.archived.set(entry.entryId, snapshot);
+    this.entries.delete(entry.entryId);
+    return snapshot;
+  }
+
   async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
     const queue = this.buildQueue(segmentRef, departureDate, seatClass);
     return queue.allEntries().map((entry) => this.snapshot(entry));
   }
 
-  clear(): void { this.entries.clear(); }
+  clear(): void { this.entries.clear(); this.archived.clear(); }
 
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
     const matching = [...this.entries.values()].filter((entry) => entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
@@ -123,6 +142,20 @@ export class WaitlistApplicationService {
     return this.snapshot(entry);
   }
 
+  async getArchived(entryId: string): Promise<WaitlistEntrySnapshot> {
+    const snapshot = await this.repository.getArchived(entryId);
+    if (!snapshot) throw new DomainError("NOT_FOUND", "Archived waitlist entry was not found");
+    return snapshot;
+  }
+
+  async getActiveOrArchived(entryId: string): Promise<WaitlistEntrySnapshot> {
+    const entry = await this.repository.get(entryId);
+    if (entry) return this.snapshot(entry);
+    const archived = await this.repository.getArchived(entryId);
+    if (!archived) throw new DomainError("NOT_FOUND", "Waitlist entry was not found");
+    return archived;
+  }
+
   async cancel(entryId: string): Promise<{ cancelled: true }> {
     const entry = await this.requireEntry(entryId);
     entry.cancel();
@@ -153,6 +186,22 @@ export class WaitlistApplicationService {
 
   async expireDueOffers(correlationId?: string) {
     return this.promotion.expireDueOffers(correlationId);
+  }
+
+  async sweepArchived(limit = 100): Promise<ArchiveResult> {
+    const batchLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const archived: WaitlistEntrySnapshot[] = [];
+    let skipped = 0;
+    const archivedAt = this.now();
+    for (const entry of await this.repository.findArchivableTerminal(batchLimit)) {
+      const snapshot = await this.repository.archive(entry, archivedAt);
+      if (!snapshot) {
+        skipped += 1;
+        continue;
+      }
+      archived.push(snapshot);
+    }
+    return { archived, skipped };
   }
 
   private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {

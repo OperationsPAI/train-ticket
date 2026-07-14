@@ -23,12 +23,20 @@ export type PromotionResult = Readonly<{
   offers: readonly WaitlistOffer[];
 }>;
 
+export type ArchiveResult = Readonly<{
+  archived: readonly WaitlistEntrySnapshot[];
+  skipped: number;
+}>;
+
 export interface WaitlistRepository {
   add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
   get(entryId: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
+  getArchived(entryId: string): Promise<WaitlistEntrySnapshot | undefined> | WaitlistEntrySnapshot | undefined;
   save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
   findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
+  findArchivableTerminal(limit: number): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
+  archive(entry: WaitlistEntry, archivedAt: Date): Promise<WaitlistEntrySnapshot | undefined> | WaitlistEntrySnapshot | undefined;
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
 }
 
