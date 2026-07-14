@@ -266,7 +266,7 @@ plus notification/finance/reporting fan-in.
 | 31 | `events:post-sales` | `entitlement-ticketing` | PostSalesApproved to void entitlement |
 | 32 | `events:post-sales` | `journey-order` | PostSalesApplied to adjust order |
 | 33 | `events:post-sales` | `notification` | Post-sales events for user notifications |
-| 34 | `events:transfer-management` | *(none — downstream consumers deferred)* | Transfer risk, connection, contract, and MCT facts are produced in wave 18; Notification/Reporting/Journey Order/Customer Service consumption is deferred |
+| 34 | `events:transfer-management` | `notification` | TransferAtRisk, ConnectionMissed, and ConnectionRecovered produce traveler-facing transfer risk/recovery notification intents; Reporting/Journey Order/Customer Service consumption remains deferred |
 | 35 | `events:disruption-recovery` | `notification` | Recovery lifecycle and service-alert facts produce traveler-facing notification intents; Reporting/Journey Order/Customer Service touchpoints remain deferred |
 | 36 | `events:notification` | *(none — notification owns its stream)* | Notification events are not consumed by other business contexts in phase 1 |
 | 37 | `events:traveler-profile` | `offer-management` | Profile changes for eligibility checks |
@@ -331,7 +331,7 @@ analytics, and cross-cutting concerns:
 |---|---|---|
 | `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, `events:payment-channel`, `events:transfer-management`, and `events:identity-verification` until their deferred-consumer activation waves; includes `events:seat-assignment` and `events:invoicing` in ADR-0003 wave A | Business metrics, funnel analysis, operational dashboards |
 | `finance-settlement` | `events:payment`, `events:payment-channel`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion`, `events:invoicing` | Revenue recognition, reconciliation, invoice generation, Wallet / Promotion benefit-cost attribution, ADR-0003 SIM channel statement reconciliation, and tax-document lifecycle read models. |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:disruption-recovery`, `events:seat-assignment`, `events:invoicing` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints, seat/standing/degradation changes, and invoice/red-flush status touchpoints. |
+| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:disruption-recovery`, `events:transfer-management`, `events:seat-assignment`, `events:invoicing` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints, transfer risk/recovery updates, seat/standing/degradation changes, and invoice/red-flush status touchpoints. |
 
 ### Invoicing subscriptions and exclusions
 

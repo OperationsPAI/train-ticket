@@ -103,7 +103,7 @@ class InMemoryRateLimitStore implements RateLimitStore {
 type TriggerMapping = Readonly<{
   templateCode: string;
   templateType?: NotificationTemplateType | ((payload: Record<string, unknown>) => NotificationTemplateType);
-  intent: string;
+  intent: string | ((payload: Record<string, unknown>) => string);
   channel: ChannelType;
   recipient: (payload: Record<string, unknown>) => string | undefined;
   variables: (payload: Record<string, unknown>) => Record<string, string>;
@@ -234,6 +234,10 @@ function resolveTemplateType(mapping: TriggerMapping, payload: Record<string, un
   return typeof mapping.templateType === "function" ? mapping.templateType(payload) : mapping.templateType;
 }
 
+function resolveIntent(mapping: TriggerMapping, payload: Record<string, unknown>): string {
+  return typeof mapping.intent === "function" ? mapping.intent(payload) : mapping.intent;
+}
+
 function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregator): ScheduleNotification | undefined {
   const mapping = mappingFor(envelope.eventType);
   if (mapping === undefined) {
@@ -270,7 +274,7 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: Notif
     recipientRef,
     templateCode: templateType ?? mapping.templateCode,
     channel: mapping.channel,
-    intent: mapping.intent,
+    intent: resolveIntent(mapping, payload),
     transactionRequired: booleanValue(payload.transactionRequired) ?? true,
     variables: mapping.variables(payload),
     scheduledAt: new Date(),
@@ -291,6 +295,7 @@ function aggregationBusinessRef(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.caseId)
     ?? stringValue(payload.serviceAlertId)
     ?? stringValue(payload.incidentId)
+    ?? stringValue(recordValue(payload.connection)?.connectionId)
     ?? stringValue(payload.waitlistRequestId)
     ?? stringValue(payload.journeyOrderRef)
     ?? stringValue(payload.postSalesCaseId);
@@ -311,6 +316,7 @@ function triggerBusinessRef(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.waitlistRequestId)
     ?? stringValue(payload.journeyOrderRef)
     ?? stringValue(payload.postSalesCaseId)
+    ?? stringValue(recordValue(payload.connection)?.connectionId)
     ?? stringValue(payload.businessRef);
   return businessRef ? `${envelope.eventType}:${businessRef}` : undefined;
 }
@@ -531,6 +537,34 @@ const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]
     { name: "reason", type: "string" },
     { name: "nextStatus", type: "string" },
   ],
+  TransferAtRisk: [
+    { name: "connection", type: "object" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "riskLevel", type: "string" },
+    { name: "riskPolicyVersion", type: "string" },
+    { name: "reasons", type: "array" },
+    { name: "window", type: "object" },
+    { name: "detectedAt", type: "string" },
+  ],
+  ConnectionMissed: [
+    { name: "connection", type: "object" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "riskLevel", type: "string" },
+    { name: "contractType", type: "string" },
+    { name: "missedAt", type: "string" },
+    { name: "missedCause", type: "string" },
+    { name: "window", type: "object" },
+    { name: "recoveryRequired", type: "boolean" },
+  ],
+  ConnectionRecovered: [
+    { name: "connection", type: "object" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "riskLevel", type: "string" },
+    { name: "recoveredAt", type: "string" },
+  ],
 });
 
 function validateTriggerContract(envelope: EventEnvelope): void {
@@ -666,6 +700,12 @@ function mappingFor(eventType: string): TriggerMapping | undefined {
       return recoveryCompletedMapping();
     case "RecoveryFailed":
       return recoveryFailedMapping();
+    case "TransferAtRisk":
+      return transferAtRiskMapping();
+    case "ConnectionMissed":
+      return connectionMissedMapping();
+    case "ConnectionRecovered":
+      return connectionRecoveredMapping();
     default:
       return undefined;
   }
@@ -875,6 +915,102 @@ function recoveryFailedMapping(): TriggerMapping {
     failedAt: stringValue(payload.failedAt) ?? "--",
     nextStatus: stringValue(payload.nextStatus) ?? "--",
   }));
+}
+
+function transferAtRiskMapping(): TriggerMapping {
+  return transferManagementMapping("TRANSFER_AT_RISK", "TRANSFER_AT_RISK", "TRANSFER_AT_RISK", (payload) => ({
+    ...baseTransferVariables(payload),
+    previousStatus: stringValue(payload.previousStatus) ?? "--",
+    status: stringValue(payload.status) ?? "AT_RISK",
+    riskLevel: stringValue(payload.riskLevel) ?? "AT_RISK",
+    riskPolicyVersion: stringValue(payload.riskPolicyVersion) ?? "--",
+    reasons: stringList(payload.reasons).join(",") || "--",
+    detectedAt: stringValue(payload.detectedAt) ?? "--",
+    availableMinutes: numberLikeString(recordValue(payload.window)?.availableMinutes) ?? "--",
+  }));
+}
+
+function connectionMissedMapping(): TriggerMapping {
+  return transferManagementMapping("CONNECTION_MISSED", "CONNECTION_MISSED", "CONNECTION_MISSED", (payload) => ({
+    ...baseTransferVariables(payload),
+    previousStatus: stringValue(payload.previousStatus) ?? "--",
+    status: stringValue(payload.status) ?? "MISSED",
+    riskLevel: stringValue(payload.riskLevel) ?? "MISSED",
+    contractType: stringValue(payload.contractType) ?? "--",
+    missedAt: stringValue(payload.missedAt) ?? "--",
+    missedCause: stringValue(payload.missedCause) ?? "--",
+    recoveryRequired: booleanValue(payload.recoveryRequired) === true ? "true" : "false",
+    recoveryMessage: booleanValue(payload.recoveryRequired) === true ? "我们正在为您安排恢复方案" : "请查看车站指引或联系客服",
+  }));
+}
+
+function connectionRecoveredMapping(): TriggerMapping {
+  return transferManagementMapping(
+    "CONNECTION_RECOVERED",
+    (payload) => stringValue(payload.replacementConnectionId) ? "CONNECTION_REACCOMMODATED" : "CONNECTION_RECOVERED",
+    (payload) => stringValue(payload.replacementConnectionId) ? "CONNECTION_REACCOMMODATED" : "CONNECTION_RECOVERED",
+    (payload) => ({
+      ...baseTransferVariables(payload),
+      previousStatus: stringValue(payload.previousStatus) ?? "--",
+      status: stringValue(payload.status) ?? "RECOVERED",
+      riskLevel: stringValue(payload.riskLevel) ?? "RECOVERED",
+      recoveryCaseId: stringValue(payload.recoveryCaseId) ?? "--",
+      replacementConnectionId: stringValue(payload.replacementConnectionId) ?? "--",
+      recoveredAt: stringValue(payload.recoveredAt) ?? "--",
+      reaccommodatedAt: stringValue(payload.reaccommodatedAt) ?? "--",
+      recoverySummary: stringValue(payload.recoverySummary) ?? (stringValue(payload.replacementConnectionId) ? "接续已重新安排" : "接续已恢复"),
+      nextDepartureAt: replacementWindowTime(payload, "nextDepartureAt") ?? "--",
+      plannedArrivalAt: replacementWindowTime(payload, "plannedArrivalAt") ?? "--",
+    }),
+  );
+}
+
+function transferManagementMapping(
+  templateCode: string,
+  intent: string | ((payload: Record<string, unknown>) => string),
+  templateType: NotificationTemplateType | ((payload: Record<string, unknown>) => NotificationTemplateType),
+  variables: (payload: Record<string, unknown>) => Record<string, string>,
+): TriggerMapping {
+  return {
+    templateCode,
+    templateType,
+    intent,
+    channel: "PUSH",
+    recipient: recipientFromTransferConnection,
+    variables,
+  };
+}
+
+function baseTransferVariables(payload: Record<string, unknown>): Record<string, string> {
+  const connection = recordValue(payload.connection);
+  return {
+    ...pickStringVariables(payload, ["recoveryCaseId", "replacementConnectionId"]),
+    connectionId: stringValue(connection?.connectionId) ?? stringValue(payload.connectionId) ?? "--",
+    transferPlanId: stringValue(connection?.transferPlanId) ?? stringValue(payload.transferPlanId) ?? "--",
+    itineraryRef: stringValue(connection?.itineraryRef) ?? "--",
+    journeyOrderId: stringValue(connection?.journeyOrderId) ?? stringValue(payload.journeyOrderId) ?? "--",
+    previousSegmentRef: stringValue(connection?.previousSegmentRef) ?? "--",
+    nextSegmentRef: stringValue(connection?.nextSegmentRef) ?? "--",
+  };
+}
+
+function recipientFromTransferConnection(payload: Record<string, unknown>): string | undefined {
+  const connection = recordValue(payload.connection);
+  return recipientFromDirectFields(payload)
+    ?? recipientFromTravelerRefs(connection?.travelerRefs)
+    ?? stringValue(connection?.journeyOrderId);
+}
+
+function replacementWindowTime(payload: Record<string, unknown>, field: string): string | undefined {
+  return stringValue(recordValue(payload.replacementWindow)?.[field]);
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.flatMap((candidate) => stringValue(candidate) ?? []) : [];
+}
+
+function numberLikeString(value: unknown): string | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : stringValue(value);
 }
 
 function disruptionRecoveryMapping(
