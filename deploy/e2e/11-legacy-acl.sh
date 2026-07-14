@@ -116,4 +116,20 @@ legacy_step CANCEL /api/v1/legacy/cancel "{\"orderId\":\"$ORDER2\"}"
 REFUNDABLE=$(jget "['data']['refundAmount']['minorUnits']")
 [ "$REFUNDABLE" = "8750" ] && ok "legacy cancel refundable amount is 8750" || bad "legacy cancel refundable amount $REFUNDABLE, expected 8750"
 
+ACCT3="acc-$(uuid7)"
+echo "== 6. rebook creates complete replacement itinerary"
+legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT3\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"2026-08-01\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
+ORDER3=$(jget "['data']['orderId']"); TOTAL3=$(jget "['data']['total']['minorUnits']")
+legacy_step INSIDE_PAYMENT /api/v1/legacy/inside_payment "{\"orderId\":\"$ORDER3\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}}"
+sleep 8
+legacy_step TICKET_ISSUE /api/v1/legacy/ticket_issue "{\"orderId\":\"$ORDER3\"}"
+sleep 5
+legacy_step REBOOK /api/v1/legacy/rebook "{\"orderId\":\"$ORDER3\",\"date\":\"2026-08-01\",\"seatType\":\"SECOND\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
+REBOOK_ORDER=$(jget "['data']['replacementOrderId']")
+REBOOK_SEGMENTS=$(jget "['data']['rebookedSegmentCount']")
+REBOOK_BOOKINGS=$(echo "$RESP" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d.get("data", {}).get("replacementSegmentBookingIds", [])))' 2>/dev/null || echo 0)
+[ -n "$REBOOK_ORDER" ] && ok "legacy rebook replacement order returned" || bad "legacy rebook replacement order missing"
+[ "${REBOOK_SEGMENTS:-0}" -ge 1 ] && ok "legacy rebook replacement segment count returned" || bad "legacy rebook replacement segment count missing"
+[ "${REBOOK_BOOKINGS:-0}" -ge "${REBOOK_SEGMENTS:-1}" ] && ok "legacy rebook reserved every returned segment" || bad "legacy rebook reserved $REBOOK_BOOKINGS of $REBOOK_SEGMENTS segments"
+
 summary

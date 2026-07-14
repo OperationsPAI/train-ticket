@@ -251,7 +251,139 @@ class LegacyAclService:
         return self._post_sales(payload, ctx, LegacyOperation.CANCEL, "REFUND", "CUSTOMER_REQUEST", "refundableAmount", "refundAmount")
 
     def rebook(self, payload: Mapping[str, Any], ctx: LegacyContext) -> LegacyResult:
-        return self._post_sales(payload, ctx, LegacyOperation.REBOOK, "CHANGE", "CUSTOMER_CHANGE", "amountDue", "amountDue")
+        commands: list[str] = []
+        result_refs: dict[str, Any] = {}
+        replacement_order_id: str | None = None
+        try:
+            original_order_id = _required_text(payload, "orderId")
+            departure_date = _required_text(payload, "date")
+            order = self._get_order(original_order_id)
+            account_id = _required_text(order, "accountId")
+            entitlements = self._entitlements_for_order(original_order_id)
+            scope = _post_sales_scope(entitlements)
+
+            opened = self.client.post(
+                "post-sales",
+                "/api/v1/post-sales-cases",
+                {
+                    "journeyOrderId": original_order_id,
+                    "caseType": "CHANGE",
+                    "scope": scope,
+                    "reasonCode": "CUSTOMER_CHANGE",
+                    "actorRef": account_id,
+                },
+                _headers(ctx, "rebook-case"),
+            )
+            commands.append("OpenPostSalesCase")
+            case_id = _required_text(opened, "caseId")
+            result_refs["caseId"] = case_id
+
+            evaluated = self.client.post(
+                "post-sales",
+                f"/api/v1/post-sales-cases/{quote(case_id)}/evaluate",
+                {},
+                _headers(ctx, "rebook-evaluate"),
+            )
+            commands.append("EvaluatePostSalesEligibility")
+            amount_due = _required_mapping(evaluated, "amountDue")
+            result_refs["amountDue"] = amount_due
+
+            self.client.post(
+                "post-sales",
+                f"/api/v1/post-sales-cases/{quote(case_id)}/approve",
+                {},
+                _headers(ctx, "rebook-approve"),
+            )
+            commands.append("ApprovePostSalesCase")
+
+            traveler_refs = _unique_ordered(scope["travelerRefs"])
+            origin_ref, destination_ref = self._replacement_bounds(payload, order, ctx)
+            search = self.client.post(
+                "trip-planning",
+                "/api/v1/itineraries/search",
+                {
+                    "originRef": origin_ref,
+                    "destinationRef": destination_ref,
+                    "departureDate": departure_date,
+                    "travelerRefs": traveler_refs,
+                    "channel": "WEB",
+                },
+                _headers(ctx, "rebook-search"),
+            )
+            commands.append("SearchItineraries")
+            itinerary = _first_mapping(search, "itineraries", "no replacement itinerary found")
+            itinerary_ref = _required_text(itinerary, "itineraryRef")
+            segment_refs = _segment_refs_from_itinerary(itinerary)
+
+            fare_quote = self.client.post(
+                "fare-pricing",
+                "/api/v1/fare-quotes",
+                {"travelerRefs": traveler_refs, "channel": "WEB", "segmentRefs": segment_refs},
+                _headers(ctx, "rebook-fare-quote"),
+            )
+            commands.append("CreateFareQuote")
+
+            offer = self._post_awaiting_projections(
+                "offer-management",
+                "/api/v1/offers",
+                {
+                    "accountId": account_id,
+                    "channelId": "WEB",
+                    "itineraryRef": itinerary_ref,
+                    "travelerRefs": traveler_refs,
+                    "quoteRequestId": str(fare_quote.get("quoteId", ctx.source_ref)),
+                },
+                _headers(ctx, "rebook-offer"),
+            )
+            commands.append("CreateOffer")
+            offer_id = _required_text(offer, "offerId")
+            offer_version = _required_int(offer, "offerVersion")
+            result_refs["replacementOfferId"] = offer_id
+
+            replacement_order = self.client.post(
+                "journey-order",
+                "/api/v1/journey-orders",
+                {
+                    "accountId": account_id,
+                    "offerId": offer_id,
+                    "offerVersion": offer_version,
+                    "travelerRefs": traveler_refs,
+                    "segmentRefs": segment_refs,
+                },
+                _headers(ctx, "rebook-order"),
+            )
+            commands.append("CreateJourneyOrder")
+            replacement_order_id = _required_text(replacement_order, "orderId")
+            result_refs["replacementOrderId"] = replacement_order_id
+            result_refs["rebookedSegmentCount"] = len(segment_refs)
+
+            saga_id = self._resolve_saga(replacement_order_id, account_id, offer_id, traveler_refs, segment_refs, ctx, commands)
+            segment_booking_ids: list[str] = []
+            reservation_index = 0
+            for segment_ref in segment_refs:
+                for traveler_ref in traveler_refs:
+                    reservation_index += 1
+                    segment_booking_id = deterministic_prefixed_uuid("sb", f"{replacement_order_id}:{segment_ref}:{traveler_ref}")
+                    self.client.post(
+                        "booking-orchestration",
+                        f"/api/v1/internal/booking-sagas/{quote(saga_id)}/request-reservation",
+                        {"segmentRef": segment_ref, "travelerRef": traveler_ref, "segmentBookingId": segment_booking_id},
+                        _headers(ctx, f"rebook-reservation-{reservation_index}"),
+                    )
+                    commands.append("RequestSegmentReservation")
+                    segment_booking_ids.append(segment_booking_id)
+            result_refs["replacementSegmentBookingIds"] = segment_booking_ids
+
+            amount_due_minor_units = _money_minor_units(amount_due)
+            if amount_due_minor_units > 0:
+                payment_intent_id = self._capture_rebook_payment(replacement_order_id, account_id, amount_due, ctx, commands)
+                result_refs["paymentIntentId"] = payment_intent_id
+            elif amount_due_minor_units == 0:
+                result_refs["paymentStatus"] = "NOT_REQUIRED"
+
+            return self._finish(LegacyOperation.REBOOK, Outcome.SUCCEEDED, ctx, commands, result_refs, None)
+        except Exception as exc:
+            return self._partial_rebook_failure(ctx, commands, result_refs, replacement_order_id, exc)
 
     def _post_sales(
         self,
@@ -319,6 +451,96 @@ class LegacyAclService:
         message = str(exc) or exc.__class__.__name__
         self._publish(operation, Outcome.FAILED, ctx, commands, {}, message)
         return LegacyResult(0, message, {})
+
+    def _partial_rebook_failure(
+        self,
+        ctx: LegacyContext,
+        commands: list[str],
+        result_refs: dict[str, Any],
+        replacement_order_id: str | None,
+        exc: Exception,
+    ) -> LegacyResult:
+        message = str(exc) or exc.__class__.__name__
+        if replacement_order_id:
+            result_refs["partialOutcome"] = self._compensate_replacement_order(replacement_order_id, ctx, commands, result_refs)
+        elif result_refs:
+            result_refs["partialOutcome"] = "PARTIAL_REBOOK_FAILED"
+        self._publish(LegacyOperation.REBOOK, Outcome.FAILED, ctx, commands, result_refs, message)
+        return LegacyResult(0, message, result_refs)
+
+    def _compensate_replacement_order(
+        self,
+        replacement_order_id: str,
+        ctx: LegacyContext,
+        commands: list[str],
+        result_refs: dict[str, Any],
+    ) -> str:
+        try:
+            self.client.post(
+                "journey-order",
+                f"/api/v1/journey-orders/{quote(replacement_order_id)}/cancel",
+                {"reason": "REBOOK_PARTIAL_FAILURE"},
+                _headers(ctx, "rebook-compensate-order"),
+            )
+            commands.append("CancelReplacementJourneyOrder")
+            return "COMPENSATED"
+        except Exception as compensation_exc:
+            result_refs["compensationFailureMessage"] = str(compensation_exc) or compensation_exc.__class__.__name__
+            return "COMPENSATION_FAILED"
+
+    def _capture_rebook_payment(
+        self,
+        replacement_order_id: str,
+        account_id: str,
+        amount_due: Mapping[str, Any],
+        ctx: LegacyContext,
+        commands: list[str],
+    ) -> str:
+        intent = self.client.post(
+            "payment",
+            "/api/v1/payment-intents",
+            {
+                "businessRef": replacement_order_id,
+                "purpose": "purchase",
+                "amount": amount_due,
+                "payerRef": account_id,
+            },
+            _headers(ctx, "rebook-payment-intent"),
+        )
+        commands.append("CreatePaymentIntent")
+        payment_intent_id = _required_text(intent, "paymentIntentId")
+        self.client.post(
+            "payment",
+            f"/api/v1/payment-intents/{quote(payment_intent_id)}/capture",
+            {},
+            _headers(ctx, "rebook-capture"),
+        )
+        commands.append("CapturePayment")
+        return payment_intent_id
+
+    def _replacement_bounds(self, payload: Mapping[str, Any], order: Mapping[str, Any], ctx: LegacyContext) -> tuple[str, str]:
+        supplied_origin = _optional_text(payload, "from")
+        supplied_destination = _optional_text(payload, "to")
+        if supplied_origin and supplied_destination:
+            return supplied_origin, supplied_destination
+        if supplied_origin or supplied_destination:
+            raise ValueError("from and to must be supplied together")
+
+        offer_id = _required_text(order, "offerId")
+        offer = self.client.get("offer-management", f"/api/v1/offers/{quote(offer_id)}", _headers(ctx, "rebook-get-offer"))
+        itinerary_ref = _required_text(offer, "itineraryRef")
+        itinerary = self.client.get("trip-planning", f"/api/v1/itineraries/{quote(itinerary_ref)}", _headers(ctx, "rebook-get-itinerary"))
+        return _bounds_from_itinerary(itinerary)
+
+    def _entitlements_for_order(self, order_id: str) -> list[Mapping[str, Any]]:
+        page = self.client.get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=100&offset=0")
+        items = page.get("items")
+        if not isinstance(items, list):
+            raise DownstreamError("no entitlement found for order")
+        entitlements = [item for item in items if isinstance(item, Mapping)]
+        if not entitlements:
+            raise DownstreamError("no entitlement found for order")
+        return entitlements
 
     def _post_awaiting_projections(
         self,
@@ -462,6 +684,81 @@ class LegacyAclService:
         page = self.client.get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0")
         item = _first_mapping(page, "items", "no entitlement found for order")
         return item
+
+
+def _optional_text(payload: Mapping[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _post_sales_scope(entitlements: list[Mapping[str, Any]]) -> dict[str, list[str]]:
+    return {
+        "orderItemRefs": _unique_ordered(_required_text(item, "segmentBookingId") for item in entitlements),
+        "segmentRefs": _unique_ordered(_required_text(item, "segmentRef") for item in entitlements),
+        "travelerRefs": _unique_ordered(_required_text(item, "travelerRef") for item in entitlements),
+        "entitlementRefs": _unique_ordered(_required_text(item, "entitlementId") for item in entitlements),
+    }
+
+
+def _bounds_from_itinerary(itinerary: Mapping[str, Any]) -> tuple[str, str]:
+    origin_ref = _optional_text(itinerary, "originRef")
+    destination_ref = _optional_text(itinerary, "destinationRef")
+    if origin_ref and destination_ref:
+        return origin_ref, destination_ref
+    legs = itinerary.get("legs")
+    if isinstance(legs, list) and legs:
+        first_leg = legs[0]
+        last_leg = legs[-1]
+        if isinstance(first_leg, Mapping) and isinstance(last_leg, Mapping):
+            origin_ref = _optional_text(first_leg, "originStopRef")
+            destination_ref = _optional_text(last_leg, "destinationStopRef")
+            if origin_ref and destination_ref:
+                return origin_ref, destination_ref
+    raise ValueError("replacement origin/destination could not be resolved; supply from and to")
+
+
+def _segment_refs_from_itinerary(itinerary: Mapping[str, Any]) -> list[str]:
+    legs = itinerary.get("legs")
+    if not isinstance(legs, list) or not legs:
+        raise DownstreamError("replacement itinerary contains no legs")
+    refs: list[str] = []
+    for leg in legs:
+        if not isinstance(leg, Mapping):
+            continue
+        service_segment_ref = leg.get("serviceSegmentRef")
+        if isinstance(service_segment_ref, str) and service_segment_ref.strip():
+            refs.append(service_segment_ref.strip())
+            continue
+        nested_refs = leg.get("segmentRefs")
+        if isinstance(nested_refs, list):
+            refs.extend(item.strip() for item in nested_refs if isinstance(item, str) and item.strip())
+    segment_refs = _unique_ordered(refs)
+    if not segment_refs:
+        raise DownstreamError("replacement itinerary contains no segments")
+    return segment_refs
+
+
+def _unique_ordered(values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                result.append(candidate)
+    if not result:
+        raise ValueError("at least one reference is required")
+    return result
+
+
+def _money_minor_units(value: Mapping[str, Any]) -> int:
+    minor_units = value.get("minorUnits")
+    if isinstance(minor_units, int) and not isinstance(minor_units, bool):
+        return minor_units
+    raise ValueError("amountDue.minorUnits is required")
 
 
 def _headers(ctx: LegacyContext, suffix: str) -> dict[str, str]:

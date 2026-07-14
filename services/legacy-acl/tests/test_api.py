@@ -25,13 +25,13 @@ class FakeDownstream:
         if self.fail_on == (service, path):
             raise DownstreamError("downstream rejected")
         if service == "trip-planning":
-            return {"itineraries": [{"itineraryRef": "itin_1", "legs": [{"serviceSegmentRef": "seg-1"}]}]}
+            return {"itineraries": [{"itineraryRef": "itin_1", "originRef": "p-bj", "destinationRef": "p-sh", "legs": [{"serviceSegmentRef": "seg-1"}]}]}
         if service == "fare-pricing" and path == "/api/v1/fare-quotes":
             return {"quoteId": "fq-1", "breakdown": {"total": {"currency": "CNY", "minorUnits": 10750}}}
         if service == "offer-management":
-            return {"offerId": "off-1", "offerVersion": 1, "total": {"currency": "CNY", "minorUnits": 10750}}
+            return {"offerId": "off-1", "offerVersion": 1, "itineraryRef": "itin_1", "total": {"currency": "CNY", "minorUnits": 10750}}
         if service == "journey-order" and path == "/api/v1/journey-orders":
-            return {"orderId": "ord-1", "accountId": "acc-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"]}
+            return {"orderId": "ord-1", "accountId": "acc-1", "offerId": "off-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"]}
         if service == "booking-orchestration" and path == "/api/v1/internal/booking-sagas":
             return {"sagaId": "saga-1"}
         if service == "booking-orchestration" and path.endswith("/request-reservation"):
@@ -55,7 +55,11 @@ class FakeDownstream:
     def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         self.calls.append(("GET", service, path, {}, dict(headers or {})))
         if service == "journey-order":
-            return {"orderId": "ord-1", "accountId": "acc-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"]}
+            return {"orderId": "ord-1", "accountId": "acc-1", "offerId": "off-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-1"]}
+        if service == "offer-management" and path == "/api/v1/offers/off-1":
+            return {"offerId": "off-1", "itineraryRef": "itin_1"}
+        if service == "trip-planning" and path == "/api/v1/itineraries/itin_1":
+            return {"itineraryRef": "itin_1", "originRef": "p-bj", "destinationRef": "p-sh"}
         if service == "entitlement-ticketing":
             return {"items": [{"entitlementId": "ent-1", "segmentBookingId": "sb-1", "journeyOrderId": "ord-1", "travelerRef": "tvl-1", "segmentRef": "seg-1"}], "total": 1, "limit": 20, "offset": 0}
         raise AssertionError((service, path))
@@ -226,3 +230,131 @@ def test_preserve_does_not_retry_non_projection_errors(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == 0
     assert len([c for c in fake.calls if c[1] == "offer-management"]) == 1
+
+
+def test_rebook_rebooks_every_replacement_leg_in_one_legacy_call() -> None:
+    class MultiLegDownstream(FakeDownstream):
+        def post(self, service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("POST", service, path, dict(body), dict(headers or {})))
+            if service == "post-sales" and path == "/api/v1/post-sales-cases":
+                assert body["scope"]["segmentRefs"] == ["old-seg-1", "old-seg-2"]
+                assert body["scope"]["entitlementRefs"] == ["ent-1", "ent-2"]
+                return {"caseId": "psc-change"}
+            if service == "post-sales" and path.endswith("/evaluate"):
+                return {"caseId": "psc-change", "amountDue": {"currency": "CNY", "minorUnits": 0}}
+            if service == "post-sales" and path.endswith("/approve"):
+                return {"caseId": "psc-change", "status": "APPROVED"}
+            if service == "trip-planning":
+                return {"itineraries": [{"itineraryRef": "itin-repl", "legs": [{"serviceSegmentRef": "new-seg-1"}, {"serviceSegmentRef": "new-seg-2"}]}]}
+            if service == "fare-pricing":
+                assert body["segmentRefs"] == ["new-seg-1", "new-seg-2"]
+                return {"quoteId": "fq-repl", "breakdown": {"total": {"currency": "CNY", "minorUnits": 21000}}}
+            if service == "offer-management":
+                assert body["itineraryRef"] == "itin-repl"
+                return {"offerId": "off-repl", "offerVersion": 3, "total": {"currency": "CNY", "minorUnits": 21000}}
+            if service == "journey-order" and path == "/api/v1/journey-orders":
+                assert body["segmentRefs"] == ["new-seg-1", "new-seg-2"]
+                return {"orderId": "ord-repl", "accountId": "acc-1", "offerId": "off-repl", "travelerRefs": ["tvl-1"], "segmentRefs": ["new-seg-1", "new-seg-2"]}
+            if service == "booking-orchestration" and path == "/api/v1/internal/booking-sagas":
+                assert body["segmentRefs"] == ["new-seg-1", "new-seg-2"]
+                return {"sagaId": "saga-repl"}
+            if service == "booking-orchestration" and path.endswith("/request-reservation"):
+                return {"segmentBookingId": body["segmentBookingId"], "status": "REQUESTED"}
+            raise AssertionError((service, path, body))
+
+        def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("GET", service, path, {}, dict(headers or {})))
+            if service == "journey-order":
+                return {"orderId": "ord-original", "accountId": "acc-1", "offerId": "off-original", "travelerRefs": ["tvl-1"], "segmentRefs": ["old-seg-1", "old-seg-2"]}
+            if service == "entitlement-ticketing":
+                return {"items": [
+                    {"entitlementId": "ent-1", "segmentBookingId": "sb-old-1", "journeyOrderId": "ord-original", "travelerRef": "tvl-1", "segmentRef": "old-seg-1"},
+                    {"entitlementId": "ent-2", "segmentBookingId": "sb-old-2", "journeyOrderId": "ord-original", "travelerRef": "tvl-1", "segmentRef": "old-seg-2"},
+                ], "total": 2, "limit": 20, "offset": 0}
+            raise AssertionError((service, path))
+
+    fake = MultiLegDownstream()
+    publisher = InMemoryEventPublisher()
+    response = client(fake, publisher).post(
+        "/api/v1/legacy/rebook",
+        headers=HEADERS,
+        json={"orderId": "ord-original", "date": "2026-08-03", "seatType": "FIRST", "from": "p-bj", "to": "p-sh"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == 1
+    assert body["msg"] == "success"
+    assert body["data"]["caseId"] == "psc-change"
+    assert body["data"]["amountDue"] == {"currency": "CNY", "minorUnits": 0}
+    assert body["data"]["replacementOrderId"] == "ord-repl"
+    assert body["data"]["rebookedSegmentCount"] == 2
+    reservation_calls = [call for call in fake.calls if call[1] == "booking-orchestration" and call[2].endswith("/request-reservation")]
+    assert [call[3]["segmentRef"] for call in reservation_calls] == ["new-seg-1", "new-seg-2"]
+    post_keys = [call[4]["Idempotency-Key"] for call in fake.calls if call[0] == "POST"]
+    assert len(post_keys) == len(set(post_keys))
+    assert all(is_uuid7(key) for key in post_keys)
+    assert publisher.envelopes[-1].payload["legacyOperation"] == "REBOOK"
+    assert publisher.envelopes[-1].payload["outcome"] == "SUCCEEDED"
+    assert publisher.envelopes[-1].payload["mappedCommands"].count("RequestSegmentReservation") == 2
+
+
+def test_rebook_later_leg_failure_reports_partial_and_compensates_replacement_order() -> None:
+    class FailingReservationDownstream(FakeDownstream):
+        def post(self, service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("POST", service, path, dict(body), dict(headers or {})))
+            if service == "post-sales" and path == "/api/v1/post-sales-cases":
+                return {"caseId": "psc-change"}
+            if service == "post-sales" and path.endswith("/evaluate"):
+                return {"caseId": "psc-change", "amountDue": {"currency": "CNY", "minorUnits": 0}}
+            if service == "post-sales" and path.endswith("/approve"):
+                return {"caseId": "psc-change", "status": "APPROVED"}
+            if service == "trip-planning":
+                return {"itineraries": [{"itineraryRef": "itin-repl", "legs": [{"serviceSegmentRef": "new-seg-1"}, {"serviceSegmentRef": "new-seg-2"}]}]}
+            if service == "fare-pricing":
+                return {"quoteId": "fq-repl", "breakdown": {"total": {"currency": "CNY", "minorUnits": 21000}}}
+            if service == "offer-management":
+                return {"offerId": "off-repl", "offerVersion": 3, "total": {"currency": "CNY", "minorUnits": 21000}}
+            if service == "journey-order" and path == "/api/v1/journey-orders":
+                return {"orderId": "ord-repl", "accountId": "acc-1", "offerId": "off-repl", "travelerRefs": ["tvl-1"], "segmentRefs": ["new-seg-1", "new-seg-2"]}
+            if service == "journey-order" and path == "/api/v1/journey-orders/ord-repl/cancel":
+                return {"orderId": "ord-repl", "status": "CANCELLED"}
+            if service == "booking-orchestration" and path == "/api/v1/internal/booking-sagas":
+                return {"sagaId": "saga-repl"}
+            if service == "booking-orchestration" and path.endswith("/request-reservation"):
+                if body["segmentRef"] == "new-seg-2":
+                    raise DownstreamError("capacity unavailable")
+                return {"segmentBookingId": body["segmentBookingId"], "status": "REQUESTED"}
+            raise AssertionError((service, path, body))
+
+        def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("GET", service, path, {}, dict(headers or {})))
+            if service == "journey-order":
+                return {"orderId": "ord-original", "accountId": "acc-1", "offerId": "off-original", "travelerRefs": ["tvl-1"], "segmentRefs": ["old-seg-1", "old-seg-2"]}
+            if service == "entitlement-ticketing":
+                return {"items": [
+                    {"entitlementId": "ent-1", "segmentBookingId": "sb-old-1", "journeyOrderId": "ord-original", "travelerRef": "tvl-1", "segmentRef": "old-seg-1"},
+                    {"entitlementId": "ent-2", "segmentBookingId": "sb-old-2", "journeyOrderId": "ord-original", "travelerRef": "tvl-1", "segmentRef": "old-seg-2"},
+                ], "total": 2, "limit": 20, "offset": 0}
+            raise AssertionError((service, path))
+
+    fake = FailingReservationDownstream()
+    publisher = InMemoryEventPublisher()
+    response = client(fake, publisher).post(
+        "/api/v1/legacy/rebook",
+        headers=HEADERS,
+        json={"orderId": "ord-original", "date": "2026-08-03", "seatType": "FIRST", "from": "p-bj", "to": "p-sh"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == 0
+    assert body["msg"] == "capacity unavailable"
+    assert body["data"]["replacementOrderId"] == "ord-repl"
+    assert body["data"]["partialOutcome"] == "COMPENSATED"
+    cancel_calls = [call for call in fake.calls if call[1] == "journey-order" and call[2].endswith("/cancel")]
+    assert len(cancel_calls) == 1
+    assert cancel_calls[0][3] == {"reason": "REBOOK_PARTIAL_FAILURE"}
+    assert publisher.envelopes[-1].payload["legacyOperation"] == "REBOOK"
+    assert publisher.envelopes[-1].payload["outcome"] == "FAILED"
+    assert publisher.envelopes[-1].payload["resultRefs"]["partialOutcome"] == "COMPENSATED"

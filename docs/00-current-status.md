@@ -169,8 +169,9 @@ under kustomize)~~ — resolved: `loadgen-config-*` is generated from
 Wallet/Promotion's finance/notification consumers remain documented-deferred.
 
 Known accepted gaps after Phase 2: payment remains a simulated provider
-boundary; legacy-acl rebook books the first leg only (caller follows up) — both
-by explicit ruling.
+boundary. The former legacy-acl first-leg-only rebook gap is closed: one legacy
+rebook now drives replacement booking for every itinerary leg and reports a
+deterministic partial/compensated outcome on later-leg failure.
 
 ## Historical note
 

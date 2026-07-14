@@ -77,11 +77,23 @@ Maps to: post-sales REFUND case open → evaluate → approve. Returns
 
 **POST** `/api/v1/legacy/rebook`
 
-**Request:** `{ "orderId", "date", "seatType" }`
+**Request:** `{ "orderId", "date", "seatType", optional "from", optional "to" }`
 
 Maps to: post-sales CHANGE case open → evaluate → approve (old ticket
-teardown); rebooking the replacement journey is the caller's follow-up
-`preserve` (phase-1 scope). Returns `data.caseId`, `data.amountDue`.
+teardown) → replacement trip search → fare quote → offer → CreateJourneyOrder →
+request-reservation for every replacement itinerary leg/traveler → collect and
+capture `amountDue` when positive. Returns `data.caseId`, `data.amountDue`,
+`data.replacementOrderId`, `data.replacementOfferId`,
+`data.rebookedSegmentCount`, and replacement segment-booking refs. Existing
+single-leg callers still receive `caseId` and `amountDue` in the same legacy
+response shape.
+
+If a downstream failure occurs after a replacement order is created, the ACL
+attempts deterministic compensation by cancelling the replacement journey order
+with reason `REBOOK_PARTIAL_FAILURE`. The legacy response is `status: 0` with
+already-created references in `data` and `data.partialOutcome` set to
+`COMPENSATED` or `COMPENSATION_FAILED`; earlier failures use
+`PARTIAL_REBOOK_FAILED` when any post-sales references were created.
 
 ## Rules
 
