@@ -105,7 +105,7 @@ type TriggerMapping = Readonly<{
   templateType?: NotificationTemplateType | ((payload: Record<string, unknown>) => NotificationTemplateType);
   intent: string | ((payload: Record<string, unknown>) => string);
   channel: ChannelType;
-  recipient: (payload: Record<string, unknown>) => string | undefined;
+  recipient: (payload: Record<string, unknown>) => string | readonly string[] | undefined;
   variables: (payload: Record<string, unknown>) => Record<string, string>;
 }>;
 
@@ -123,8 +123,8 @@ export class NotificationApplicationService {
   ) {}
 
   async handleExternalTrigger(envelope: EventEnvelope): Promise<ExternalTriggerResult> {
-    const command = scheduleCommandFromEnvelope(envelope, this.aggregator);
-    if (command === undefined) {
+    const commands = scheduleCommandsFromEnvelope(envelope, this.aggregator);
+    if (commands === undefined) {
       if (mappingFor(envelope.eventType) === undefined) {
         console.info(`Ignoring unsupported notification trigger ${envelope.eventType} (${envelope.eventId})`);
       }
@@ -133,11 +133,24 @@ export class NotificationApplicationService {
 
     const mapping = mappingFor(envelope.eventType);
     const templateType = mapping ? resolveTemplateType(mapping, envelope.payload) : undefined;
-    if (templateType) {
-      (command.variables as Record<string, string>).renderedPreview = this.renderer.render(templateType, command.channel, command.variables).body;
+    const results: ExternalTriggerResult[] = [];
+    for (const command of commands) {
+      if (templateType) {
+        (command.variables as Record<string, string>).renderedPreview = this.renderer.render(templateType, command.channel, command.variables).body;
+      }
+      results.push(await this.deliverWithFallback(command, templateType));
     }
 
-    return this.deliverWithFallback(command, templateType);
+    if (results.includes("delivered")) {
+      return "delivered";
+    }
+    if (results.includes("failed")) {
+      return "failed";
+    }
+    if (results.includes("cancelled")) {
+      return "cancelled";
+    }
+    return "ignored";
   }
 
   private async deliverWithFallback(command: ScheduleNotification, templateType: NotificationTemplateType | undefined): Promise<ExternalTriggerResult> {
@@ -238,7 +251,7 @@ function resolveIntent(mapping: TriggerMapping, payload: Record<string, unknown>
   return typeof mapping.intent === "function" ? mapping.intent(payload) : mapping.intent;
 }
 
-function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregator): ScheduleNotification | undefined {
+function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregator): readonly ScheduleNotification[] | undefined {
   const mapping = mappingFor(envelope.eventType);
   if (mapping === undefined) {
     return undefined;
@@ -247,8 +260,8 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: Notif
   validateTriggerContract(envelope);
 
   const payload = envelope.payload;
-  const recipientRef = mapping.recipient(payload);
-  if (recipientRef === undefined) {
+  const recipientRefs = recipientRefsFromMapping(mapping.recipient(payload));
+  if (recipientRefs.length === 0) {
     console.debug(`Skipping notification trigger ${envelope.eventType} (${envelope.eventId}): no resolvable recipientRef`);
     return undefined;
   }
@@ -256,30 +269,40 @@ function scheduleCommandFromEnvelope(envelope: EventEnvelope, aggregator?: Notif
   const businessRef = triggerBusinessRef(envelope);
   const aggregationRef = aggregationBusinessRef(envelope);
   const templateType = resolveTemplateType(mapping, payload);
-  if (aggregator && templateType && aggregationRef && aggregator.shouldSuppress({
-    recipientRef,
-    orderRef: aggregationRef,
-    templateType,
-    occurredAt: dateValue(envelope.occurredAt) ?? new Date(),
-  })) {
-    return undefined;
+  const commands: ScheduleNotification[] = [];
+  for (const recipientRef of recipientRefs) {
+    if (aggregator && templateType && aggregationRef && aggregator.shouldSuppress({
+      recipientRef,
+      orderRef: aggregationRef,
+      templateType,
+      occurredAt: dateValue(envelope.occurredAt) ?? new Date(),
+    })) {
+      continue;
+    }
+
+    commands.push({
+      notificationTaskId: newNotificationTaskId(),
+      triggerEventId: envelope.eventId,
+      triggerEventType: envelope.eventType,
+      correlationId: envelope.correlationId,
+      causationId: envelope.eventId,
+      recipientRef,
+      templateCode: templateType ?? mapping.templateCode,
+      channel: mapping.channel,
+      intent: resolveIntent(mapping, payload),
+      transactionRequired: booleanValue(payload.transactionRequired) ?? true,
+      variables: mapping.variables(payload),
+      scheduledAt: new Date(),
+      triggerBusinessRef: businessRef,
+    });
   }
 
-  return {
-    notificationTaskId: newNotificationTaskId(),
-    triggerEventId: envelope.eventId,
-    triggerEventType: envelope.eventType,
-    correlationId: envelope.correlationId,
-    causationId: envelope.eventId,
-    recipientRef,
-    templateCode: templateType ?? mapping.templateCode,
-    channel: mapping.channel,
-    intent: resolveIntent(mapping, payload),
-    transactionRequired: booleanValue(payload.transactionRequired) ?? true,
-    variables: mapping.variables(payload),
-    scheduledAt: new Date(),
-    triggerBusinessRef: businessRef,
-  };
+  return commands.length > 0 ? commands : undefined;
+}
+
+function recipientRefsFromMapping(value: string | readonly string[] | undefined): readonly string[] {
+  const candidates = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return [...new Set(candidates.filter((candidate) => candidate.trim().length > 0))];
 }
 
 
@@ -994,10 +1017,10 @@ function baseTransferVariables(payload: Record<string, unknown>): Record<string,
   };
 }
 
-function recipientFromTransferConnection(payload: Record<string, unknown>): string | undefined {
+function recipientFromTransferConnection(payload: Record<string, unknown>): string | readonly string[] | undefined {
   const connection = recordValue(payload.connection);
   return recipientFromDirectFields(payload)
-    ?? recipientFromTravelerRefs(connection?.travelerRefs)
+    ?? recipientRefsFromTravelerRefs(connection?.travelerRefs)
     ?? stringValue(connection?.journeyOrderId);
 }
 
@@ -1116,23 +1139,29 @@ function firstString(value: unknown): string | undefined {
 }
 
 function recipientFromTravelerRefs(value: unknown): string | undefined {
+  return recipientRefsFromTravelerRefs(value)?.[0];
+}
+
+function recipientRefsFromTravelerRefs(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
 
+  const recipientRefs: string[] = [];
   for (const candidate of value) {
     if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
+      recipientRefs.push(candidate);
+      continue;
     }
     if (candidate && typeof candidate === "object") {
       const ref = candidate as Record<string, unknown>;
       const recipientRef = stringValue(ref.recipientRef) ?? stringValue(ref.travelerId) ?? stringValue(ref.travelerRef) ?? stringValue(ref.id);
       if (recipientRef !== undefined) {
-        return recipientRef;
+        recipientRefs.push(recipientRef);
       }
     }
   }
-  return undefined;
+  return recipientRefs.length > 0 ? [...new Set(recipientRefs)] : undefined;
 }
 
 function pickStringVariables(payload: Record<string, unknown>, keys: readonly string[]): Record<string, string> {
