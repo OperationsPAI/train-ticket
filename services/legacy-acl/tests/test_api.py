@@ -130,6 +130,10 @@ def test_inside_payment_ticket_issue_execute_cancel_and_rebook_mapping() -> None
         assert result_field in body["data"]
         if operation == "CANCEL":
             assert body["data"]["refundAmount"] == {"currency": "CNY", "minorUnits": 8750}
+        if operation == "INSIDE_PAYMENT":
+            capture = next(call for call in fake.calls if call[1] == "payment" and call[2].endswith("/capture"))
+            assert capture[3] == {"channelRef": {"channel": "ALIPAY_SIM"}}
+            assert capture[4].get("Idempotency-Key")
         assert publisher.envelopes[-1].payload["legacyOperation"] == operation
         assert publisher.envelopes[-1].payload["outcome"] == "SUCCEEDED"
 
@@ -151,6 +155,155 @@ def test_downstream_post_idempotency_keys_are_distinct_uuid7_and_stable_on_repla
     assert len(first_post_keys) == len(set(first_post_keys))
     assert all(is_uuid7(key) for key in first_post_keys)
     assert HEADERS["Idempotency-Key"] not in first_post_keys
+
+
+def test_rebook_rebooks_every_entitled_leg_with_payment_channel_refs() -> None:
+    class MultiLegFake(FakeDownstream):
+        def __init__(self) -> None:
+            super().__init__()
+            self.order_count = 0
+            self.intent_count = 0
+
+        def post(self, service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("POST", service, path, dict(body), dict(headers or {})))
+            if service == "post-sales" and path == "/api/v1/post-sales-cases":
+                assert body["scope"]["segmentRefs"] == ["seg-old-1", "seg-old-2"]
+                assert body["scope"]["entitlementRefs"] == ["ent-1", "ent-2"]
+                return {"caseId": "psc-multi"}
+            if service == "post-sales" and path.endswith("/evaluate"):
+                return {"caseId": "psc-multi", "amountDue": {"currency": "CNY", "minorUnits": 9000}}
+            if service == "post-sales" and path.endswith("/approve"):
+                return {"caseId": "psc-multi", "status": "APPROVED"}
+            if service == "fare-pricing" and path == "/api/v1/fare-quotes":
+                return {"quoteId": f"fq-{body['segmentRefs'][0]}", "breakdown": {"total": {"currency": "CNY", "minorUnits": 4500}}}
+            if service == "offer-management":
+                return {"offerId": f"off-{body['itineraryRef']}", "offerVersion": 1, "total": {"currency": "CNY", "minorUnits": 4500}}
+            if service == "journey-order" and path == "/api/v1/journey-orders":
+                self.order_count += 1
+                return {"orderId": f"ord-new-{self.order_count}", "accountId": "acc-1", "travelerRefs": body["travelerRefs"], "segmentRefs": body["segmentRefs"]}
+            if service == "payment" and path == "/api/v1/payment-intents":
+                self.intent_count += 1
+                return {"paymentIntentId": f"pi-new-{self.intent_count}"}
+            if service == "payment" and path.endswith("/capture"):
+                assert body == {"channelRef": {"channel": "WECHAT_SIM", "faultSeedRef": "seed-1"}}
+                assert headers and headers.get("Idempotency-Key")
+                return {"paymentIntentId": path.split("/")[-2], "status": "CAPTURED"}
+            raise AssertionError((service, path, body))
+
+        def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("GET", service, path, {}, dict(headers or {})))
+            if service == "journey-order":
+                return {"orderId": "ord-multi", "accountId": "acc-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-old-1", "seg-old-2"]}
+            if service == "entitlement-ticketing":
+                return {
+                    "items": [
+                        {"entitlementId": "ent-1", "segmentBookingId": "sb-1", "journeyOrderId": "ord-multi", "travelerRef": "tvl-1", "segmentRef": "seg-old-1"},
+                        {"entitlementId": "ent-2", "segmentBookingId": "sb-2", "journeyOrderId": "ord-multi", "travelerRef": "tvl-1", "segmentRef": "seg-old-2"},
+                    ],
+                    "total": 2,
+                    "limit": 100,
+                    "offset": 0,
+                }
+            raise AssertionError((service, path))
+
+    fake = MultiLegFake()
+    publisher = InMemoryEventPublisher()
+    response = client(fake, publisher).post(
+        "/api/v1/legacy/rebook",
+        headers=HEADERS,
+        json={
+            "orderId": "ord-multi",
+            "date": "2026-08-02",
+            "seatType": "FIRST",
+            "channelRef": {"channel": "WECHAT_SIM", "faultSeedRef": "seed-1"},
+            "replacementLegs": [
+                {"itineraryRef": "itin-new-1", "segmentRef": "seg-new-1", "price": {"currency": "CNY", "minorUnits": 4500}},
+                {"itineraryRef": "itin-new-2", "segmentRef": "seg-new-2", "price": {"currency": "CNY", "minorUnits": 4500}},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == 1
+    assert body["data"]["caseId"] == "psc-multi"
+    assert [leg["replacementSegmentRef"] for leg in body["data"]["rebookedLegs"]] == ["seg-new-1", "seg-new-2"]
+    capture_calls = [call for call in fake.calls if call[1] == "payment" and call[2].endswith("/capture")]
+    assert len(capture_calls) == 2
+    capture_keys = [call[4]["Idempotency-Key"] for call in capture_calls]
+    assert len(capture_keys) == len(set(capture_keys))
+    assert all(is_uuid7(key) for key in capture_keys)
+    assert publisher.envelopes[-1].payload["outcome"] == "SUCCEEDED"
+    assert len(publisher.envelopes[-1].payload["resultRefs"]["rebookedLegs"]) == 2
+
+
+def test_rebook_later_leg_failure_returns_deterministic_partial_result() -> None:
+    class LaterLegFailFake(FakeDownstream):
+        def __init__(self) -> None:
+            super().__init__()
+            self.order_count = 0
+
+        def post(self, service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("POST", service, path, dict(body), dict(headers or {})))
+            if service == "post-sales" and path == "/api/v1/post-sales-cases":
+                return {"caseId": "psc-partial"}
+            if service == "post-sales" and path.endswith("/evaluate"):
+                return {"amountDue": {"currency": "CNY", "minorUnits": 9000}}
+            if service == "post-sales" and path.endswith("/approve"):
+                return {"status": "APPROVED"}
+            if service == "fare-pricing":
+                if body["segmentRefs"] == ["seg-new-2"]:
+                    raise DownstreamError("fare unavailable")
+                return {"quoteId": "fq-ok", "breakdown": {"total": {"currency": "CNY", "minorUnits": 4500}}}
+            if service == "offer-management":
+                return {"offerId": "off-ok", "offerVersion": 1, "total": {"currency": "CNY", "minorUnits": 4500}}
+            if service == "journey-order" and path == "/api/v1/journey-orders":
+                self.order_count += 1
+                return {"orderId": f"ord-new-{self.order_count}"}
+            if service == "payment" and path == "/api/v1/payment-intents":
+                return {"paymentIntentId": "pi-ok"}
+            if service == "payment" and path.endswith("/capture"):
+                return {"paymentIntentId": "pi-ok", "status": "CAPTURED"}
+            raise AssertionError((service, path, body))
+
+        def get(self, service: str, path: str, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+            self.calls.append(("GET", service, path, {}, dict(headers or {})))
+            if service == "journey-order":
+                return {"orderId": "ord-multi", "accountId": "acc-1", "travelerRefs": ["tvl-1"], "segmentRefs": ["seg-old-1", "seg-old-2"]}
+            if service == "entitlement-ticketing":
+                return {
+                    "items": [
+                        {"entitlementId": "ent-1", "segmentBookingId": "sb-1", "journeyOrderId": "ord-multi", "travelerRef": "tvl-1", "segmentRef": "seg-old-1"},
+                        {"entitlementId": "ent-2", "segmentBookingId": "sb-2", "journeyOrderId": "ord-multi", "travelerRef": "tvl-1", "segmentRef": "seg-old-2"},
+                    ],
+                    "total": 2,
+                    "limit": 100,
+                    "offset": 0,
+                }
+            raise AssertionError((service, path))
+
+    fake = LaterLegFailFake()
+    publisher = InMemoryEventPublisher()
+    response = client(fake, publisher).post(
+        "/api/v1/legacy/rebook",
+        headers=HEADERS,
+        json={
+            "orderId": "ord-multi",
+            "replacementLegs": [
+                {"itineraryRef": "itin-new-1", "segmentRef": "seg-new-1"},
+                {"itineraryRef": "itin-new-2", "segmentRef": "seg-new-2"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == 0
+    assert body["data"]["partial"] is True
+    assert len(body["data"]["rebookedLegs"]) == 1
+    assert body["msg"] == "rebook failed after 1 replacement leg(s): fare unavailable"
+    assert publisher.envelopes[-1].payload["outcome"] == "FAILED"
+    assert publisher.envelopes[-1].payload["resultRefs"]["partial"] is True
 
 
 def test_operator_header_is_required() -> None:

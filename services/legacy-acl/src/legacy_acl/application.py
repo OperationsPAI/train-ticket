@@ -53,6 +53,7 @@ _PROJECTION_LAG_CODES = frozenset({
     "MISSING_TRAVELER_SNAPSHOT",
 })
 _PROJECTION_RETRY_DELAYS_SECONDS = (0.2, 0.4, 0.8, 1.6, 3.2)
+_DEFAULT_PAYMENT_CHANNEL = "ALIPAY_SIM"
 
 
 class LegacyAclService:
@@ -159,12 +160,7 @@ class LegacyAclService:
             )
             commands.append("CreatePaymentIntent")
             payment_intent_id = _required_text(intent, "paymentIntentId")
-            self.client.post(
-                "payment",
-                f"/api/v1/payment-intents/{quote(payment_intent_id)}/capture",
-                {},
-                _headers(ctx, "capture"),
-            )
+            self._capture_payment(payment_intent_id, payload, ctx, "capture")
             commands.append("CapturePayment")
             return self._finish(
                 LegacyOperation.INSIDE_PAYMENT,
@@ -251,7 +247,48 @@ class LegacyAclService:
         return self._post_sales(payload, ctx, LegacyOperation.CANCEL, "REFUND", "CUSTOMER_REQUEST", "refundableAmount", "refundAmount")
 
     def rebook(self, payload: Mapping[str, Any], ctx: LegacyContext) -> LegacyResult:
-        return self._post_sales(payload, ctx, LegacyOperation.REBOOK, "CHANGE", "CUSTOMER_CHANGE", "amountDue", "amountDue")
+        commands: list[str] = []
+        result_refs: dict[str, Any] = {"rebookedLegs": []}
+        try:
+            order_id = _required_text(payload, "orderId")
+            order = self._get_order(order_id)
+            entitlements = _ordered_entitlements(order, self._entitlements_for_order(order_id, ctx))
+            scope = _post_sales_scope(entitlements)
+            opened = self.client.post(
+                "post-sales",
+                "/api/v1/post-sales-cases",
+                {
+                    "journeyOrderId": order_id,
+                    "caseType": "CHANGE",
+                    "scope": scope,
+                    "reasonCode": "CUSTOMER_CHANGE",
+                    "actorRef": _required_text(order, "accountId"),
+                },
+                _headers(ctx, "rebook-case"),
+            )
+            commands.append("OpenPostSalesCase")
+            case_id = _required_text(opened, "caseId")
+            evaluated = self.client.post("post-sales", f"/api/v1/post-sales-cases/{quote(case_id)}/evaluate", {}, _headers(ctx, "rebook-evaluate"))
+            commands.append("EvaluatePostSalesEligibility")
+            self.client.post("post-sales", f"/api/v1/post-sales-cases/{quote(case_id)}/approve", {}, _headers(ctx, "rebook-approve"))
+            commands.append("ApprovePostSalesCase")
+            amount_due = _required_mapping(evaluated, "amountDue")
+            result_refs = {"caseId": case_id, "amountDue": amount_due, "rebookedLegs": []}
+
+            for index in range(_replacement_count(payload, len(entitlements))):
+                entitlement = entitlements[index] if index < len(entitlements) else entitlements[-1]
+                leg_result = self._rebook_leg(payload, order, entitlement, index, ctx, commands)
+                result_refs["rebookedLegs"].append(leg_result)
+
+            return self._finish(LegacyOperation.REBOOK, Outcome.SUCCEEDED, ctx, commands, result_refs, None)
+        except Exception as exc:
+            if result_refs.get("caseId") and result_refs.get("rebookedLegs"):
+                completed = len(result_refs["rebookedLegs"]) if isinstance(result_refs.get("rebookedLegs"), list) else 0
+                message = f"rebook failed after {completed} replacement leg(s): {str(exc) or exc.__class__.__name__}"
+                partial_refs = {**result_refs, "partial": True, "failureMessage": message}
+                self._publish(LegacyOperation.REBOOK, Outcome.FAILED, ctx, commands, partial_refs, message)
+                return LegacyResult(0, message, partial_refs)
+            return self._failure(LegacyOperation.REBOOK, ctx, commands, exc)
 
     def _post_sales(
         self,
@@ -302,6 +339,156 @@ class LegacyAclService:
             )
         except Exception as exc:
             return self._failure(operation, ctx, commands, exc)
+
+    def _rebook_leg(
+        self,
+        payload: Mapping[str, Any],
+        order: Mapping[str, Any],
+        entitlement: Mapping[str, Any],
+        index: int,
+        ctx: LegacyContext,
+        commands: list[str],
+    ) -> dict[str, Any]:
+        account_id = _required_text(order, "accountId")
+        traveler_ref = _required_text(entitlement, "travelerRef")
+        replacement = _replacement_leg(payload, index)
+        itinerary_ref, segment_ref = self._replacement_refs(payload, replacement, order, entitlement, index, traveler_ref, ctx, commands)
+
+        suffix = f"rebook-{index + 1}"
+        fare_quote = self.client.post(
+            "fare-pricing",
+            "/api/v1/fare-quotes",
+            {"travelerRefs": [traveler_ref], "channel": "WEB", "segmentRefs": [segment_ref]},
+            _headers(ctx, f"{suffix}-fare-quote"),
+        )
+        commands.append("CreateFareQuote")
+        offer = self._post_awaiting_projections(
+            "offer-management",
+            "/api/v1/offers",
+            {
+                "accountId": account_id,
+                "channelId": "WEB",
+                "itineraryRef": itinerary_ref,
+                "travelerRefs": [traveler_ref],
+                "quoteRequestId": str(fare_quote.get("quoteId", ctx.source_ref)),
+            },
+            _headers(ctx, f"{suffix}-offer"),
+        )
+        commands.append("CreateOffer")
+        offer_id = _required_text(offer, "offerId")
+        offer_version = _required_int(offer, "offerVersion")
+        replacement_order = self.client.post(
+            "journey-order",
+            "/api/v1/journey-orders",
+            {
+                "accountId": account_id,
+                "offerId": offer_id,
+                "offerVersion": offer_version,
+                "travelerRefs": [traveler_ref],
+                "segmentRefs": [segment_ref],
+            },
+            _headers(ctx, f"{suffix}-order"),
+        )
+        commands.append("CreateJourneyOrder")
+        replacement_order_id = _required_text(replacement_order, "orderId")
+        intent = self.client.post(
+            "payment",
+            "/api/v1/payment-intents",
+            {
+                "businessRef": replacement_order_id,
+                "purpose": "rebook",
+                "amount": _payment_amount(offer, fare_quote, replacement),
+                "payerRef": account_id,
+            },
+            _headers(ctx, f"{suffix}-payment-intent"),
+        )
+        commands.append("CreatePaymentIntent")
+        payment_intent_id = _required_text(intent, "paymentIntentId")
+        self._capture_payment(payment_intent_id, payload, ctx, f"{suffix}-capture")
+        commands.append("CapturePayment")
+        return {
+            "originalSegmentRef": _required_text(entitlement, "segmentRef"),
+            "replacementSegmentRef": segment_ref,
+            "replacementOrderId": replacement_order_id,
+            "offerId": offer_id,
+            "paymentIntentId": payment_intent_id,
+        }
+
+    def _replacement_refs(
+        self,
+        payload: Mapping[str, Any],
+        replacement: Mapping[str, Any],
+        order: Mapping[str, Any],
+        entitlement: Mapping[str, Any],
+        index: int,
+        traveler_ref: str,
+        ctx: LegacyContext,
+        commands: list[str],
+    ) -> tuple[str, str]:
+        itinerary_ref = (
+            _optional_text(replacement, "itineraryRef")
+            or _optional_indexed_text(payload, "itineraryRefs", index)
+            or _optional_text(payload, "itineraryRef")
+        )
+        segment_ref = (
+            _optional_text(replacement, "segmentRef")
+            or _optional_text(replacement, "replacementSegmentRef")
+            or _optional_indexed_text(payload, "replacementSegmentRefs", index)
+            or _optional_indexed_text(payload, "segmentRefs", index)
+        )
+        if itinerary_ref and segment_ref:
+            return itinerary_ref, segment_ref
+
+        origin = (
+            _optional_text(replacement, "from")
+            or _optional_text(replacement, "originRef")
+            or _optional_text(payload, "from")
+            or _optional_text(payload, "originRef")
+        )
+        destination = (
+            _optional_text(replacement, "to")
+            or _optional_text(replacement, "destinationRef")
+            or _optional_text(payload, "to")
+            or _optional_text(payload, "destinationRef")
+        )
+        departure_date = _optional_text(replacement, "date") or _optional_text(payload, "date")
+        if origin and destination and departure_date:
+            search = self.client.post(
+                "trip-planning",
+                "/api/v1/itineraries/search",
+                {
+                    "originRef": origin,
+                    "destinationRef": destination,
+                    "departureDate": departure_date,
+                    "travelerRefs": [traveler_ref],
+                    "channel": "WEB",
+                },
+                _headers(ctx, f"rebook-{index + 1}-search"),
+            )
+            commands.append("SearchItineraries")
+            itinerary = _first_mapping(search, "itineraries", "no replacement itinerary found")
+            leg = _indexed_mapping(itinerary, "legs", index) or _first_mapping(itinerary, "legs", "replacement itinerary contains no legs")
+            return _required_text(itinerary, "itineraryRef"), _required_text(leg, "serviceSegmentRef")
+
+        # Compatibility fallback for legacy callers that only supplied orderId/date/seatType.
+        # Reuse the original offer itinerary snapshot, so the normal quote -> offer ->
+        # order -> payment chain still has a projected itinerary to resolve against.
+        original_segment = _required_text(entitlement, "segmentRef")
+        original_offer_id = _optional_text(order, "offerId")
+        if original_offer_id:
+            original_offer = self.client.get("offer-management", f"/api/v1/offers/{quote(original_offer_id)}", _headers(ctx, f"rebook-{index + 1}-original-offer"))
+            original_itinerary_ref = _optional_text(original_offer, "itineraryRef")
+            if original_itinerary_ref:
+                return original_itinerary_ref, original_segment
+        return f"legacy-rebook:{original_segment}", original_segment
+
+    def _capture_payment(self, payment_intent_id: str, payload: Mapping[str, Any], ctx: LegacyContext, suffix: str) -> None:
+        self.client.post(
+            "payment",
+            f"/api/v1/payment-intents/{quote(payment_intent_id)}/capture",
+            {"channelRef": _channel_ref(payload)},
+            _headers(ctx, suffix),
+        )
 
     def _finish(
         self,
@@ -459,9 +646,98 @@ class LegacyAclService:
         return segment_refs[0], traveler_refs[0]
 
     def _first_entitlement(self, order_id: str) -> Mapping[str, Any]:
-        page = self.client.get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=20&offset=0")
-        item = _first_mapping(page, "items", "no entitlement found for order")
-        return item
+        return self._entitlements_for_order(order_id, None)[0]
+
+    def _entitlements_for_order(self, order_id: str, ctx: LegacyContext | None) -> list[Mapping[str, Any]]:
+        headers = _headers(ctx, "list-entitlements") if ctx else None
+        page = self.client.get("entitlement-ticketing", f"/api/v1/entitlements?journeyOrderId={quote(order_id)}&limit=100&offset=0", headers)
+        items = page.get("items")
+        if isinstance(items, list):
+            entitlements = [item for item in items if isinstance(item, Mapping)]
+            if entitlements:
+                return entitlements
+        raise DownstreamError("no entitlement found for order")
+
+
+def _ordered_entitlements(order: Mapping[str, Any], entitlements: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    segment_order = {segment_ref: index for index, segment_ref in enumerate(_required_string_list(order, "segmentRefs"))}
+    return sorted(entitlements, key=lambda entitlement: segment_order.get(str(entitlement.get("segmentRef", "")), len(segment_order)))
+
+
+def _post_sales_scope(entitlements: list[Mapping[str, Any]]) -> dict[str, list[str]]:
+    return {
+        "orderItemRefs": [_required_text(entitlement, "segmentBookingId") for entitlement in entitlements],
+        "segmentRefs": [_required_text(entitlement, "segmentRef") for entitlement in entitlements],
+        "travelerRefs": [_required_text(entitlement, "travelerRef") for entitlement in entitlements],
+        "entitlementRefs": [_required_text(entitlement, "entitlementId") for entitlement in entitlements],
+    }
+
+
+def _replacement_leg(payload: Mapping[str, Any], index: int) -> Mapping[str, Any]:
+    for field in ("replacementLegs", "rebookLegs", "legs", "replacementItineraries"):
+        value = payload.get(field)
+        if isinstance(value, list) and index < len(value) and isinstance(value[index], Mapping):
+            return value[index]
+    return {}
+
+
+def _replacement_count(payload: Mapping[str, Any], entitlement_count: int) -> int:
+    count = entitlement_count
+    for field in ("replacementLegs", "rebookLegs", "legs", "replacementItineraries", "itineraryRefs", "replacementSegmentRefs", "segmentRefs"):
+        value = payload.get(field)
+        if isinstance(value, list):
+            count = max(count, len(value))
+    return count
+
+
+def _payment_amount(offer: Mapping[str, Any], fare_quote: Mapping[str, Any], replacement: Mapping[str, Any]) -> Mapping[str, Any]:
+    for candidate in (replacement.get("price"), replacement.get("amount"), offer.get("total"), _nested(fare_quote, "breakdown", "total")):
+        if isinstance(candidate, Mapping) and _positive_minor_units(candidate):
+            return candidate
+    raise ValueError("replacement payment amount is required")
+
+
+def _positive_minor_units(amount: Mapping[str, Any]) -> bool:
+    value = amount.get("minorUnits")
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0 and isinstance(amount.get("currency"), str) and bool(amount.get("currency"))
+
+
+def _channel_ref(payload: Mapping[str, Any]) -> Mapping[str, str]:
+    supplied = payload.get("channelRef")
+    channel_ref: dict[str, str] = {}
+    if isinstance(supplied, Mapping):
+        for field in ("channel", "channelOrderId", "faultSeedRef"):
+            value = supplied.get(field)
+            if isinstance(value, str) and value.strip():
+                channel_ref[field] = value.strip()
+    channel = channel_ref.get("channel", _DEFAULT_PAYMENT_CHANNEL)
+    if channel not in {"ALIPAY_SIM", "WECHAT_SIM", "UNIONPAY_SIM"}:
+        raise ValueError("channelRef.channel is unsupported")
+    channel_ref["channel"] = channel
+    return channel_ref
+
+
+def _optional_text(payload: Mapping[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _optional_indexed_text(payload: Mapping[str, Any], field: str, index: int) -> str | None:
+    value = payload.get(field)
+    if isinstance(value, list) and index < len(value):
+        item = value[index]
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return None
+
+
+def _indexed_mapping(payload: Mapping[str, Any], field: str, index: int) -> Mapping[str, Any] | None:
+    value = payload.get(field)
+    if isinstance(value, list) and index < len(value) and isinstance(value[index], Mapping):
+        return value[index]
+    return None
 
 
 def _headers(ctx: LegacyContext, suffix: str) -> dict[str, str]:
