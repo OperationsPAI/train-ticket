@@ -200,6 +200,12 @@ function templateCodeFor(envelope: EventEnvelope): string | undefined {
       return recoveryCompletedTemplate(envelope.payload);
     case "RecoveryFailed":
       return "RECOVERY_FAILED";
+    case "TransferAtRisk":
+      return "TRANSFER_AT_RISK";
+    case "ConnectionMissed":
+      return "CONNECTION_MISSED";
+    case "ConnectionRecovered":
+      return stringValue(envelope.payload.replacementConnectionId) ? "CONNECTION_REACCOMMODATED" : "CONNECTION_RECOVERED";
     case "PostSalesEligibilityEvaluated":
       return "post_sales_eligibility";
     case "PostSalesDecisionQuoted":

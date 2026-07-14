@@ -31,10 +31,11 @@ Activation-wave rulings:
   replacement fields; when it later consumes the resulting `RecoveryCompleted`
   for the same `caseId`, it idempotently skips because the original connection is
   already `RECOVERED`. `SELF_TRANSFER` misses publish facts only.
-- Downstream Notification, Reporting, Offer Management, Journey Order, and
-  Customer Service consumers are deferred in this wave. The events below are
-  published to the registered stream, but no new downstream consumer is activated
-  except Transfer Management's inbound subscription to Disruption Recovery.
+- Notification now actively consumes traveler-facing connection-state events
+  (`TransferAtRisk`, `ConnectionMissed`, and `ConnectionRecovered`). Reporting,
+  Offer Management, Journey Order, and Customer Service downstream consumers
+  remain deferred except Transfer Management's inbound subscription to Disruption
+  Recovery.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -239,7 +240,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: notification, customer-service, reporting |
+| **Consumers** | notification; deferred: customer-service, reporting |
 | **Trigger** | A connection transitions to `AT_RISK`. |
 
 **Payload:**
@@ -260,7 +261,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: notification, customer-service, reporting |
+| **Consumers** | notification; deferred: customer-service, reporting |
 | **Trigger** | A connection transitions to `MISSED`. Protected contracts also start the outbound Disruption Recovery HTTP command. |
 
 **Payload:**
@@ -283,7 +284,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: notification, customer-service, reporting |
+| **Consumers** | notification; deferred: customer-service, reporting |
 | **Trigger** | Consumed Disruption Recovery `RecoveryCompleted` matches a stored `caseId`, an explicit controlled recovery command restores the connection, or Disruption Recovery calls `POST /api/v1/connections/{connectionId}/reaccommodate`. |
 
 **Payload:**
@@ -517,9 +518,9 @@ remains the active fallback adapter.
 
 ## Deferred downstream touchpoints
 
-| Downstream context | Deferred events | Purpose when activated |
+| Downstream context | Events | Purpose |
 |---|---|---|
-| Notification | `TransferAtRisk`, `ConnectionMissed`, `ConnectionRecovered` | User-facing transfer risk and recovery notifications. |
+| Notification | `TransferAtRisk`, `ConnectionMissed`, `ConnectionRecovered` | Active user-facing transfer risk and recovery notifications. |
 | Reporting | all Transfer Management events | Connection success rate, MCT quality, protected exposure, and supplier quality metrics. |
 | Journey Order | `ConnectionContractConfirmed`, `ConnectionMissed`, `ConnectionRecovered` | Order-detail responsibility and recovery display. |
 | Offer Management | `TransferPlanEvaluated`, `ConnectionContractProposed`, `MctRulePublished` | Quote-time feasibility and contract display. |

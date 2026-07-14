@@ -114,6 +114,10 @@ function isReq311Template(templateCode: string): boolean {
     "RECOVERY_REACCOMMODATION",
     "RECOVERY_COMPLETED",
     "RECOVERY_FAILED",
+    "TRANSFER_AT_RISK",
+    "CONNECTION_MISSED",
+    "CONNECTION_RECOVERED",
+    "CONNECTION_REACCOMMODATED",
     "DISRUPTION_REBOOK",
   ].includes(templateCode);
 }

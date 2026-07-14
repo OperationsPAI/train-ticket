@@ -683,4 +683,150 @@ describe("notification messaging integration surface", () => {
     assert.equal(publisher.envelopes.filter((envelope) => envelope.eventType === "NotificationScheduled").length, 1);
   });
 
+
+  it("consumes transfer-management missed-connection and reaccommodation facts for affected travelers", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const sentChannels: string[] = [];
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      { send: (task) => { sentChannels.push(task.channel); return { ok: true }; } },
+    );
+    const base = {
+      schemaVersion: 1,
+      producer: "transfer-management",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+    } as const;
+    const connection = {
+      connectionId: "con-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+      transferPlanId: "tpl-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+      itineraryRef: "iti-401",
+      journeyOrderId: "ord-401",
+      previousSegmentRef: "seg-prev-401",
+      nextSegmentRef: "seg-next-401",
+      travelerRefs: ["tvl-401"],
+    };
+    const window = {
+      plannedArrivalAt: "2026-07-05T10:00:00.000Z",
+      actualArrivalAt: "2026-07-05T10:25:00.000Z",
+      nextDepartureAt: "2026-07-05T10:30:00.000Z",
+      nextCutoffAt: "2026-07-05T10:20:00.000Z",
+      availableMinutes: -5,
+      mctMinutes: 20,
+      bufferMinutes: -25,
+    };
+
+    assert.equal(await service.handleExternalTrigger({
+      ...base,
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b04010",
+      eventType: "ConnectionMissed",
+      payload: {
+        connection,
+        previousStatus: "AT_RISK",
+        status: "MISSED",
+        riskLevel: "MISSED",
+        contractType: "PROTECTED",
+        missedAt: "2026-07-05T10:21:00.000Z",
+        missedCause: "CUTOFF_EXPIRED",
+        window,
+        recoveryRequired: true,
+        recovery: {
+          caseIds: ["rcv-401"],
+          outboundIdempotencyKey: "idem-401",
+          recoveryTriggerStatus: "OPENED",
+        },
+      },
+    }), "delivered");
+
+    assert.equal(await service.handleExternalTrigger({
+      ...base,
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b04011",
+      eventType: "ConnectionRecovered",
+      occurredAt: "2026-07-05T10:35:00.000Z",
+      payload: {
+        connection,
+        previousStatus: "MISSED",
+        status: "RECOVERED",
+        riskLevel: "RECOVERED",
+        recoveryCaseId: "rcv-401",
+        replacementConnectionId: "con-0194f2e0-7b3e-7610-8284-5c26e8b0c402",
+        replacementWindow: {
+          plannedArrivalAt: "2026-07-05T11:10:00.000Z",
+          nextDepartureAt: "2026-07-05T11:40:00.000Z",
+          nextCutoffAt: "2026-07-05T11:35:00.000Z",
+          source: "SYSTEM",
+        },
+        reaccommodatedAt: "2026-07-05T10:35:00.000Z",
+        recoveredAt: "2026-07-05T10:35:00.000Z",
+        recoverySummary: "Connection reaccommodated",
+      },
+    }), "delivered");
+
+    assert.deepEqual(sentChannels, ["PUSH", "PUSH"]);
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => [envelope.payload.templateType, envelope.payload.intent, envelope.payload.recipientRef, envelope.payload.channel]),
+      [
+        ["CONNECTION_MISSED", "CONNECTION_MISSED", "tvl-401", "PUSH"],
+        ["CONNECTION_REACCOMMODATED", "CONNECTION_REACCOMMODATED", "tvl-401", "PUSH"],
+      ],
+    );
+    const scheduled = publisher.envelopes.filter((envelope) => envelope.eventType === "NotificationScheduled");
+    assert.equal(scheduled[0].payload.templateCode, "CONNECTION_MISSED");
+    assert.equal(scheduled[1].payload.templateCode, "CONNECTION_REACCOMMODATED");
+  });
+
+  it("rate-limits transfer-management traveler notifications", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { checkAndRecord: () => ({ allowed: false, retryAfter: new Date("2026-07-05T11:00:00.000Z") }) },
+    );
+
+    await assert.rejects(
+      () => service.handleExternalTrigger({
+        eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b04012",
+        eventType: "TransferAtRisk",
+        schemaVersion: 1,
+        producer: "transfer-management",
+        correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+        causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c401",
+        occurredAt: "2026-07-05T10:00:00.000Z",
+        payload: {
+          connection: {
+            connectionId: "con-401",
+            transferPlanId: "tpl-401",
+            itineraryRef: "iti-401",
+            journeyOrderId: "ord-401",
+            previousSegmentRef: "seg-prev-401",
+            nextSegmentRef: "seg-next-401",
+            travelerRefs: ["tvl-401"],
+          },
+          previousStatus: "TIGHT",
+          status: "AT_RISK",
+          riskLevel: "AT_RISK",
+          riskPolicyVersion: "builtin-v1",
+          reasons: ["BUFFER_BELOW_THRESHOLD"],
+          window: {
+            plannedArrivalAt: "2026-07-05T10:00:00.000Z",
+            nextDepartureAt: "2026-07-05T10:30:00.000Z",
+            nextCutoffAt: "2026-07-05T10:20:00.000Z",
+            availableMinutes: 10,
+            mctMinutes: 20,
+            bufferMinutes: -10,
+          },
+          detectedAt: "2026-07-05T09:55:00.000Z",
+        },
+      }),
+      (error: Error) => error.name === "RateLimitExceeded",
+    );
+  });
+
 });

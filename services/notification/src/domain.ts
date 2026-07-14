@@ -85,6 +85,10 @@ export type NotificationTemplateType =
   | "RECOVERY_REACCOMMODATION"
   | "RECOVERY_COMPLETED"
   | "RECOVERY_FAILED"
+  | "TRANSFER_AT_RISK"
+  | "CONNECTION_MISSED"
+  | "CONNECTION_RECOVERED"
+  | "CONNECTION_REACCOMMODATED"
   | "DISRUPTION_REBOOK";
 
 // ─── Value Objects ─────────────────────────────────────────────────────────────
@@ -890,6 +894,10 @@ export function builtInNotificationTemplates(): readonly NotificationTemplate[] 
     templateSet("RECOVERY_REACCOMMODATION", "接续改签更新", "订单 {journeyOrderId} 的接续改签恢复有更新：{reaccommodationSummary}。", "接续改签更新", "接续改签更新"),
     templateSet("RECOVERY_COMPLETED", "恢复处理已完成", "订单 {journeyOrderId} 的异常恢复处理已完成。", "恢复处理完成", "恢复处理已完成"),
     templateSet("RECOVERY_FAILED", "恢复处理需人工跟进", "订单 {journeyOrderId} 的异常恢复处理暂未完成，将继续为您跟进。", "恢复需跟进", "恢复需跟进"),
+    templateSet("TRANSFER_AT_RISK", "接续风险提醒", "您的接续 {connectionId} 可能受影响，请关注下一段 {nextSegmentRef}，当前可用换乘时间 {availableMinutes} 分钟。", "接续{connectionId}有风险", "接续风险提醒"),
+    templateSet("CONNECTION_MISSED", "接续已错过", "您的接续 {connectionId} 已错过，原因：{missedCause}。{recoveryMessage}", "接续已错过：{missedCause}", "接续已错过"),
+    templateSet("CONNECTION_RECOVERED", "接续恢复完成", "您的接续 {connectionId} 已恢复，{recoverySummary}。", "接续已恢复", "接续恢复完成"),
+    templateSet("CONNECTION_REACCOMMODATED", "接续已重新安排", "您的接续已重新安排至 {replacementConnectionId}，下一段出发时间 {nextDepartureAt}。", "接续已重新安排", "接续已重新安排"),
     templateSet("DISRUPTION_REBOOK", "列车取消改签", "由于列车取消，已为您改签至 {newTrainNumber} {newDepartureTime}", "已改签至{newTrainNumber}", "已为您改签"),
   ].flat());
 }
@@ -908,7 +916,7 @@ function renderTemplate(template: string, variables: Readonly<Record<string, str
 }
 
 function isAggregatableTemplate(type: NotificationTemplateType): boolean {
-  return !type.startsWith("RECOVERY_") && type !== "DISRUPTION_ALERT";
+  return !type.startsWith("RECOVERY_") && !type.startsWith("CONNECTION_") && type !== "TRANSFER_AT_RISK" && type !== "DISRUPTION_ALERT";
 }
 
 function aggregationPriority(type: NotificationTemplateType): number {
@@ -935,6 +943,10 @@ function aggregationPriority(type: NotificationTemplateType): number {
     case "RECOVERY_REACCOMMODATION":
     case "RECOVERY_COMPLETED":
     case "RECOVERY_FAILED":
+    case "TRANSFER_AT_RISK":
+    case "CONNECTION_MISSED":
+    case "CONNECTION_RECOVERED":
+    case "CONNECTION_REACCOMMODATED":
       return 6;
   }
 }
