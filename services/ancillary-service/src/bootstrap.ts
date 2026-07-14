@@ -3,17 +3,20 @@ import { CONSUMER_GROUP, SUBSCRIBED_STREAMS, consumerName } from "./adapters/mes
 import { startAncillaryStorage } from "./adapters/storage/runtime.js";
 import { AncillaryApplicationService, InMemoryAncillaryRepository } from "./application.js";
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
+import { HttpFarePricingGateway } from "./pricing.js";
 
 export type BootstrapOptions = Readonly<{ host?: string; port?: number; instrumentation?: InstrumentationHooks; redisUrl?: string; instanceId?: string }>;
 export function runtimeHost(options: Pick<BootstrapOptions, "host"> = {}): string { return options.host ?? process.env.HOST ?? "0.0.0.0"; }
 export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): number { if (options.port !== undefined) return options.port; const configured = Number.parseInt(process.env.PORT ?? "", 10); return Number.isFinite(configured) ? configured : 8080; }
 export function runtimeRedisUrl(options: Pick<BootstrapOptions, "redisUrl"> = {}): string { return options.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379"; }
+function farePricingGatewayFromEnv(): HttpFarePricingGateway | undefined { const baseUrl = process.env.FARE_PRICING_URL?.trim(); return baseUrl ? new HttpFarePricingGateway(baseUrl) : undefined; }
 export async function bootstrap(options: BootstrapOptions = {}) {
   const messaging = await createRedisMessagingAdapters(runtimeRedisUrl(options));
   const storage = process.env.DATABASE_URL ? await startAncillaryStorage(runtimeRedisUrl(options)) : undefined;
   const repository = new InMemoryAncillaryRepository();
-  const application = new AncillaryApplicationService(repository, messaging.publisher);
-  const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv(), { repository, publisher: messaging.publisher, idempotencyStore: storage?.idempotencyStore, storage });
+  const pricingGateway = farePricingGatewayFromEnv();
+  const application = new AncillaryApplicationService(repository, messaging.publisher, pricingGateway);
+  const app = createApp(options.instrumentation ?? opentelemetryInstrumentationFromEnv(), { repository, publisher: messaging.publisher, pricingGateway, idempotencyStore: storage?.idempotencyStore, storage });
   const abortController = new AbortController();
   const expiryTimer = setInterval(() => {
     void (storage ? storage.runCommand((svc) => svc.expireOffers()) : application.expireOffers()).catch((error: unknown) => app.log.warn({ err: error }, "ancillary offer expiry scan failed"));
