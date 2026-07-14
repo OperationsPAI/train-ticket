@@ -2,7 +2,7 @@ import { type PoolClient, type QueryResult } from "pg";
 
 import { SnapshotRepository, type SnapshotRecord } from "@trainticket/ts-kit";
 
-import { type NotificationChannel, type NotificationTaskSnapshot } from "../../domain.js";
+import { type ChannelType, type NotificationChannel, type NotificationTaskSnapshot } from "../../domain.js";
 import { type ContactProfile, type RateLimitStore, type RecipientContactRepository, type UserPreferenceRepository } from "../../application/notification-service.js";
 
 export type PersistedNotificationTask = SnapshotRecord<NotificationTaskSnapshot>;
@@ -65,7 +65,7 @@ export class PostgresRecipientContactRepository implements RecipientContactRepos
 export class PostgresRateLimitRepository implements RateLimitStore {
   constructor(private readonly client: PoolClient) {}
 
-  async checkAndRecord(recipientRef: string, channel: NotificationChannel, at: Date): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> {
+  async checkAndRecord(recipientRef: string, channel: ChannelType, at: Date): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> {
     const limit = channelLimit(channel);
     const userResult = await this.client.query(
       `SELECT occurred_at
@@ -99,8 +99,10 @@ export class PostgresRateLimitRepository implements RateLimitStore {
   }
 }
 
-function channelLimit(channel: NotificationChannel): Readonly<{ max: number; windowMs: number }> {
+function channelLimit(channel: ChannelType): Readonly<{ max: number; windowMs: number }> {
   switch (channel) {
+    case "IN_APP":
+      return { max: 50, windowMs: 60 * 60 * 1000 };
     case "PUSH":
       return { max: 10, windowMs: 60 * 60 * 1000 };
     case "SMS":
