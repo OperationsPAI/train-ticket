@@ -23,6 +23,9 @@ import {
   type SupportCaseSnapshot,
   type TimelineEntrySnapshot,
   type CompensationOfferSnapshot,
+  type CaseContextSeverity,
+  type CaseContextSnapshot,
+  type CaseContextType,
 } from "../domain.js";
 import { newCommandId, newCorrelationId, toEventEnvelope, type EventEnvelope, type EventPublisher } from "./messaging.js";
 import { OptimisticConcurrencyConflict, uuidV7 } from "@trainticket/ts-kit";
@@ -33,6 +36,7 @@ export type SupportCaseDetails = SupportCaseSnapshot &
     evidence: readonly ReturnType<EvidenceRef["toSnapshot"]>[];
     timeline: readonly TimelineEntrySnapshot[];
     slaMetrics: Readonly<{ timeToFirstResponseMinutes?: number; timeToResolutionMinutes?: number; compliant: boolean }>;
+    caseContext: readonly CaseContextSnapshot[];
   }>;
 
 export type OpenSupportCaseRequest = Readonly<{
@@ -89,6 +93,7 @@ export class CustomerServiceApplication {
   private readonly timelines = new Map<string, CaseTimeline>();
   private readonly manualActions = new Map<string, ManualActionRequest>();
   private readonly compensationOffers = new Map<string, CompensationOffer>();
+  private readonly caseContextByCase = new Map<string, CaseContextSnapshot[]>();
   private readonly consumedIntegrationEvents = new Map<string, Readonly<{ source: string; eventType: string; consumedAt: Date; payload: Readonly<Record<string, unknown>> }>>();
 
   constructor(
@@ -137,6 +142,7 @@ export class CustomerServiceApplication {
       evidence: Object.freeze((this.evidenceByCase.get(caseId) ?? []).map((evidence) => evidence.toSnapshot())),
       timeline: Object.freeze((this.timelines.get(caseId) ?? CaseTimeline.create(caseId)).entries.map((entry) => ({ ...entry }))),
       slaMetrics: slaMetrics(supportCase.toSnapshot()),
+      caseContext: Object.freeze((this.caseContextByCase.get(caseId) ?? []).map(cloneCaseContext)),
     };
   }
 
@@ -151,6 +157,7 @@ export class CustomerServiceApplication {
       evidence: Object.freeze(await this.repository.evidenceForCase(caseId)),
       timeline: Object.freeze(((await this.findTimeline(caseId)) ?? CaseTimeline.create(caseId)).entries.map((entry) => ({ ...entry }))),
       slaMetrics: slaMetrics(supportCase.toSnapshot()),
+      caseContext: Object.freeze(await this.caseContextForCase(caseId)),
     };
   }
 
@@ -438,6 +445,8 @@ export class CustomerServiceApplication {
 
     if (envelope.producer === "admin-audit" && (envelope.eventType === "ManualActionExecuted" || envelope.eventType === "ManualActionRejected")) {
       await this.recordAdminAuditManualActionOutcome(envelope);
+    } else if (envelope.producer === "transfer-management" || envelope.producer === "identity-verification") {
+      await this.projectCaseContext(envelope);
     } else {
       for (const supportCase of await this.findCasesReferencingEnvelope(envelope)) {
         if (caseReferencesEnvelope(supportCase.toSnapshot(), envelope)) {
@@ -464,6 +473,102 @@ export class CustomerServiceApplication {
 
   consumedIntegrationEventCount(): number {
     return this.consumedIntegrationEvents.size;
+  }
+
+  private async projectCaseContext(envelope: EventEnvelope): Promise<void> {
+    const projection = caseContextProjection(envelope);
+    if (!projection) {
+      return;
+    }
+
+    for (const supportCase of await this.findCasesReferencingCaseContext(envelope)) {
+      if (!caseMatchesContextRefs(supportCase.toSnapshot(), projection.refs)) {
+        continue;
+      }
+      if (await this.hasCaseContextForEvent(supportCase.id, envelope.eventId)) {
+        continue;
+      }
+
+      const context: CaseContextSnapshot = Object.freeze({
+        contextId: newCaseContextId(),
+        caseId: supportCase.id,
+        source: envelope.producer as CaseContextSnapshot["source"],
+        sourceEventId: envelope.eventId,
+        sourceEventType: envelope.eventType,
+        contextType: projection.contextType,
+        severity: projection.severity,
+        occurredAt: new Date(envelope.occurredAt),
+        refs: Object.freeze({ ...projection.refs }),
+        summary: projection.summary,
+        facts: deepFreezeRecord({ ...projection.facts }),
+        createdAt: new Date(),
+      });
+
+      const current = this.caseContextByCase.get(supportCase.id) ?? [];
+      current.push(context);
+      this.caseContextByCase.set(supportCase.id, current);
+      await this.repository?.saveCaseContext(context);
+      await this.appendTimelineEntry(
+        supportCase.id,
+        `CaseContext.${projection.contextType}`,
+        { sourceEventId: envelope.eventId, producer: envelope.producer, contextType: projection.contextType, severity: projection.severity, refs: context.refs, facts: context.facts },
+        "INTERNAL_ONLY",
+        new Date(envelope.occurredAt),
+        envelope.correlationId,
+        envelope.eventId,
+      );
+      if (projection.severity === "CRITICAL") {
+        await this.escalateForCaseContext(supportCase.id, context, envelope);
+      }
+    }
+  }
+
+  private async escalateForCaseContext(caseId: string, context: CaseContextSnapshot, envelope: EventEnvelope): Promise<void> {
+    const { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    if (isTerminalCase(current.toSnapshot())) {
+      return;
+    }
+    const toLevel = escalationLevelForContext(context.contextType, current.escalationLevel);
+    const { case: updated, event } = current.escalate({
+      caseId,
+      targetQueue: queueForCaseContext(context.contextType),
+      reason: context.summary,
+      escalatedBy: "op-system-case-context",
+      toLevel,
+      triggerCondition: "MANUAL",
+      correlationId: envelope.correlationId,
+      causationId: envelope.eventId,
+      escalatedAt: new Date(envelope.occurredAt),
+    });
+    this.cases.set(caseId, updated);
+    if (this.repository) {
+      await this.repository.saveCase(updated.toSnapshot(), version ?? 0n);
+    }
+    await this.publisher.publish(toEventEnvelope(event, envelope.eventId));
+    await this.publisher.publish(toEventEnvelope(toTicketEscalated(event), envelope.eventId));
+  }
+
+  private async findCasesReferencingCaseContext(envelope: EventEnvelope): Promise<SupportCase[]> {
+    const cases = this.repository ? await this.repository.listCases() : [...this.cases.values()];
+    const projection = caseContextProjection(envelope);
+    if (!projection) {
+      return [];
+    }
+    return cases.filter((supportCase) => caseMatchesContextRefs(supportCase.toSnapshot(), projection.refs));
+  }
+
+  private async caseContextForCase(caseId: string): Promise<CaseContextSnapshot[]> {
+    if (this.repository) {
+      return await this.repository.caseContextForCase(caseId);
+    }
+    return (this.caseContextByCase.get(caseId) ?? []).map(cloneCaseContext);
+  }
+
+  private async hasCaseContextForEvent(caseId: string, sourceEventId: string): Promise<boolean> {
+    if (this.repository) {
+      return await this.repository.hasCaseContextForEvent(caseId, sourceEventId);
+    }
+    return (this.caseContextByCase.get(caseId) ?? []).some((context) => context.sourceEventId === sourceEventId);
   }
 
   private async recordAdminAuditManualActionOutcome(envelope: EventEnvelope): Promise<void> {
@@ -638,8 +743,8 @@ function caseReferencesEnvelope(snapshot: SupportCaseSnapshot, envelope: EventEn
     || (references.postSalesCaseId !== undefined && references.postSalesCaseId === postSalesCaseId);
 }
 
-function stringField(payload: Record<string, unknown>, field: string): string | undefined {
-  const value = payload[field];
+function stringField(payload: Record<string, unknown> | undefined, field: string): string | undefined {
+  const value = payload?.[field];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
@@ -692,4 +797,276 @@ function slaMetrics(snapshot: SupportCaseSnapshot): SupportCaseDetails["slaMetri
 
 function newTimelineEntryId(): string {
   return `tl-${uuidV7()}`;
+}
+
+function newCaseContextId(): string {
+  return `ctx-${uuidV7()}`;
+}
+
+type CaseContextProjection = Readonly<{
+  contextType: CaseContextType;
+  severity: CaseContextSeverity;
+  refs: Readonly<Record<string, string>>;
+  summary: string;
+  facts: Readonly<Record<string, unknown>>;
+}>;
+
+function caseContextProjection(envelope: EventEnvelope): CaseContextProjection | undefined {
+  if (envelope.producer === "transfer-management") {
+    return transferCaseContextProjection(envelope);
+  }
+  if (envelope.producer === "identity-verification") {
+    return identityCaseContextProjection(envelope);
+  }
+  return undefined;
+}
+
+function transferCaseContextProjection(envelope: EventEnvelope): CaseContextProjection | undefined {
+  const payload = envelope.payload;
+  const connection = objectField(payload, "connection");
+  const refs = compactStringRecord({
+    connectionId: stringField(connection, "connectionId") ?? stringField(payload, "connectionId"),
+    transferPlanId: stringField(connection, "transferPlanId") ?? stringField(payload, "transferPlanId"),
+    journeyOrderId: stringField(connection, "journeyOrderId") ?? stringField(payload, "journeyOrderId"),
+    recoveryCaseId: stringField(payload, "recoveryCaseId") ?? firstString(arrayField(objectField(payload, "recovery"), "caseIds")),
+  });
+  if (Object.keys(refs).length === 0) {
+    return undefined;
+  }
+
+  if (envelope.eventType === "ConnectionMissed") {
+    const missedCause = stringField(payload, "missedCause") ?? "UNKNOWN";
+    return {
+      contextType: "MISSED_CONNECTION",
+      severity: "CRITICAL",
+      refs,
+      summary: `Connection ${refs.connectionId ?? "unknown"} missed (${missedCause})`,
+      facts: compactRecord({
+        previousStatus: stringField(payload, "previousStatus"),
+        status: stringField(payload, "status"),
+        riskLevel: stringField(payload, "riskLevel"),
+        contractType: stringField(payload, "contractType"),
+        missedAt: stringField(payload, "missedAt"),
+        missedCause,
+        recoveryRequired: booleanField(payload, "recoveryRequired"),
+      }),
+    };
+  }
+
+  if (envelope.eventType === "ConnectionRecovered") {
+    const replacementConnectionId = stringField(payload, "replacementConnectionId");
+    return {
+      contextType: "CONNECTION_RECOVERED",
+      severity: "INFO",
+      refs: compactStringRecord({ ...refs, replacementConnectionId }),
+      summary: replacementConnectionId
+        ? `Connection ${refs.connectionId ?? "unknown"} recovered by reaccommodation ${replacementConnectionId}`
+        : `Connection ${refs.connectionId ?? "unknown"} recovered`,
+      facts: compactRecord({
+        previousStatus: stringField(payload, "previousStatus"),
+        status: stringField(payload, "status"),
+        riskLevel: stringField(payload, "riskLevel"),
+        recoveredAt: stringField(payload, "recoveredAt"),
+        recoverySummary: stringField(payload, "recoverySummary"),
+        replacementConnectionId,
+        reaccommodatedAt: stringField(payload, "reaccommodatedAt"),
+        disruptionRecoveryEventId: stringField(payload, "disruptionRecoveryEventId"),
+      }),
+    };
+  }
+
+  if (envelope.eventType === "ConnectionRecoveryFailed") {
+    const reason = stringField(payload, "reason") ?? "UNKNOWN";
+    return {
+      contextType: "CONNECTION_RECOVERY_FAILED",
+      severity: "CRITICAL",
+      refs,
+      summary: `Recovery failed for connection ${refs.connectionId ?? "unknown"}: ${reason}`,
+      facts: compactRecord({
+        status: stringField(payload, "status"),
+        failedAt: stringField(payload, "failedAt"),
+        reason,
+        disruptionRecoveryEventId: stringField(payload, "disruptionRecoveryEventId"),
+      }),
+    };
+  }
+
+  return undefined;
+}
+
+function identityCaseContextProjection(envelope: EventEnvelope): CaseContextProjection | undefined {
+  const payload = envelope.payload;
+  const reason = stringField(payload, "reasonCode") ?? stringField(payload, "reason") ?? stringField(payload, "failureCode");
+  const refs = compactStringRecord({
+    travelerId: stringField(payload, "travelerId"),
+    credentialRecordId: stringField(payload, "credentialRecordId"),
+    verificationCaseId: stringField(payload, "verificationCaseId"),
+    purchaseLimitFactId: stringField(payload, "purchaseLimitFactId"),
+    journeyOrderId: stringField(payload, "journeyOrderId"),
+    orderIntentId: stringField(payload, "orderIntentId"),
+  });
+  if (Object.keys(refs).length === 0) {
+    return undefined;
+  }
+
+  if (envelope.eventType === "VerificationFailed") {
+    const contextType = identityContextType(reason);
+    return {
+      contextType,
+      severity: contextType === "IDENTITY_VERIFICATION_FAILED" ? "WARNING" : "CRITICAL",
+      refs,
+      summary: identitySummary(contextType, refs.travelerId, reason),
+      facts: compactRecord({
+        simOutcome: stringField(payload, "simOutcome"),
+        verificationStatus: stringField(payload, "verificationStatus"),
+        reasonCode: reason,
+        policyVersion: stringField(payload, "policyVersion"),
+        completedAt: stringField(payload, "completedAt") ?? stringField(payload, "rejectedAt"),
+      }),
+    };
+  }
+
+  if (envelope.eventType === "PurchaseLimitFactFailed" || envelope.eventType === "PurchaseLimitFactMissed") {
+    return {
+      contextType: "DUPLICATE_TICKET_SIGNAL",
+      severity: "CRITICAL",
+      refs,
+      summary: `Duplicate-ticket control ${envelope.eventType === "PurchaseLimitFactMissed" ? "missed" : "failed"}`,
+      facts: compactRecord({
+        factStatus: stringField(payload, "factStatus"),
+        limitPolicyVersion: stringField(payload, "limitPolicyVersion"),
+        failedAt: stringField(payload, "failedAt"),
+        missedAt: stringField(payload, "missedAt"),
+        failureCode: stringField(payload, "failureCode"),
+      }),
+    };
+  }
+
+  return undefined;
+}
+
+function identityContextType(reason: string | undefined): CaseContextType {
+  const normalized = reason?.trim().toUpperCase() ?? "";
+  if (normalized.includes("DUPLICATE_TICKET")) {
+    return "DUPLICATE_TICKET_SIGNAL";
+  }
+  if (normalized.includes("BLACKLIST") || normalized.includes("TRAVEL_BAN") || normalized.includes("RESTRICTED")) {
+    return "IDENTITY_BLACKLIST_SIGNAL";
+  }
+  return "IDENTITY_VERIFICATION_FAILED";
+}
+
+function identitySummary(contextType: CaseContextType, travelerId: string | undefined, reason: string | undefined): string {
+  const subject = travelerId ?? "traveler";
+  switch (contextType) {
+    case "IDENTITY_BLACKLIST_SIGNAL": return `Identity blacklist signal for ${subject}`;
+    case "DUPLICATE_TICKET_SIGNAL": return `Duplicate-ticket signal for ${subject}`;
+    default: return `Identity verification failed for ${subject}${reason ? ` (${reason})` : ""}`;
+  }
+}
+
+function caseMatchesContextRefs(snapshot: SupportCaseSnapshot, refs: Readonly<Record<string, string>>): boolean {
+  const businessRefs = snapshot.businessReferences;
+  return matchesOptionalRef(businessRefs.journeyOrderId, refs.journeyOrderId)
+    || matchesOptionalRef(businessRefs.recoveryCaseId, refs.recoveryCaseId)
+    || matchesOptionalRef(businessRefs.accountRef, refs.travelerId)
+    || matchesOptionalRef(snapshot.requesterRef, refs.travelerId)
+    || matchesOptionalRef(businessRefs.journeyOrderId, refs.orderIntentId)
+    || matchesOptionalRef(businessRefField(businessRefs, "connectionId"), refs.connectionId)
+    || matchesOptionalRef(businessRefField(businessRefs, "transferPlanId"), refs.transferPlanId)
+    || matchesOptionalRef(businessRefField(businessRefs, "verificationCaseId"), refs.verificationCaseId)
+    || matchesOptionalRef(businessRefField(businessRefs, "credentialRecordId"), refs.credentialRecordId)
+    || matchesOptionalRef(businessRefField(businessRefs, "purchaseLimitFactId"), refs.purchaseLimitFactId)
+    || matchesOptionalRef(businessRefs.postSalesCaseId, refs.verificationCaseId);
+}
+
+function businessRefField(refs: SupportCaseSnapshot["businessReferences"], field: string): string | undefined {
+  const value = (refs as Readonly<Record<string, unknown>>)[field];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function matchesOptionalRef(caseRef: string | undefined, contextRef: string | undefined): boolean {
+  return caseRef !== undefined && contextRef !== undefined && caseRef === contextRef;
+}
+
+function escalationLevelForContext(contextType: CaseContextType, currentLevel: EscalationLevel): EscalationLevel {
+  if (currentLevel === "L3_SUPERVISOR") {
+    return "L3_SUPERVISOR";
+  }
+  if (contextType === "IDENTITY_BLACKLIST_SIGNAL" || contextType === "DUPLICATE_TICKET_SIGNAL") {
+    return "L3_SUPERVISOR";
+  }
+  return EscalationPolicy.targetFor("MANUAL", currentLevel);
+}
+
+function queueForCaseContext(contextType: CaseContextType): string {
+  switch (contextType) {
+    case "IDENTITY_BLACKLIST_SIGNAL": return "identity-risk-supervisor";
+    case "DUPLICATE_TICKET_SIGNAL": return "duplicate-ticket-review";
+    case "CONNECTION_RECOVERY_FAILED": return "disruption-recovery-escalation";
+    case "MISSED_CONNECTION": return "missed-connection-support";
+    case "CONNECTION_RECOVERED": return "connection-recovery-support";
+    case "IDENTITY_VERIFICATION_FAILED": return "identity-verification-support";
+  }
+}
+
+function objectField(payload: Record<string, unknown> | undefined, field: string): Record<string, unknown> | undefined {
+  const value = payload?.[field];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function arrayField(payload: Record<string, unknown> | undefined, field: string): readonly unknown[] | undefined {
+  const value = payload?.[field];
+  return Array.isArray(value) ? value : undefined;
+}
+
+function booleanField(payload: Record<string, unknown>, field: string): boolean | undefined {
+  const value = payload[field];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function firstString(values: readonly unknown[] | undefined): string | undefined {
+  const value = values?.find((entry) => typeof entry === "string" && entry.trim().length > 0);
+  return typeof value === "string" ? value : undefined;
+}
+
+function compactStringRecord(values: Record<string, string | undefined>): Readonly<Record<string, string>> {
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) {
+      compacted[key] = value;
+    }
+  }
+  return Object.freeze(compacted);
+}
+
+function compactRecord(values: Record<string, unknown>): Readonly<Record<string, unknown>> {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) {
+      compacted[key] = value;
+    }
+  }
+  return Object.freeze(compacted);
+}
+
+function cloneCaseContext(context: CaseContextSnapshot): CaseContextSnapshot {
+  return Object.freeze({
+    ...context,
+    occurredAt: new Date(context.occurredAt),
+    refs: Object.freeze({ ...context.refs }),
+    facts: deepFreezeRecord({ ...context.facts }),
+    createdAt: new Date(context.createdAt),
+  });
+}
+
+function deepFreezeRecord<T extends Record<string, unknown>>(value: T): Readonly<T> {
+  for (const nested of Object.values(value)) {
+    if (Array.isArray(nested)) {
+      Object.freeze(nested);
+    } else if (nested && typeof nested === "object") {
+      deepFreezeRecord(nested as Record<string, unknown>);
+    }
+  }
+  return Object.freeze(value);
 }

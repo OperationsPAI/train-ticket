@@ -206,6 +206,33 @@ export type SlaBreachRecord = Readonly<{
   breachedAt: Date;
 }>;
 
+export type CaseContextSource = "transfer-management" | "identity-verification";
+
+export type CaseContextType =
+  | "MISSED_CONNECTION"
+  | "CONNECTION_RECOVERED"
+  | "CONNECTION_RECOVERY_FAILED"
+  | "IDENTITY_VERIFICATION_FAILED"
+  | "IDENTITY_BLACKLIST_SIGNAL"
+  | "DUPLICATE_TICKET_SIGNAL";
+
+export type CaseContextSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export type CaseContextSnapshot = Readonly<{
+  contextId: string;
+  caseId: SupportCaseId;
+  source: CaseContextSource;
+  sourceEventId: EventId;
+  sourceEventType: string;
+  contextType: CaseContextType;
+  severity: CaseContextSeverity;
+  occurredAt: Date;
+  refs: Readonly<Record<string, string>>;
+  summary: string;
+  facts: Readonly<Record<string, unknown>>;
+  createdAt: Date;
+}>;
+
 // ─── Commands ──────────────────────────────────────────────────────────────────
 
 export type OpenSupportCase = Readonly<{

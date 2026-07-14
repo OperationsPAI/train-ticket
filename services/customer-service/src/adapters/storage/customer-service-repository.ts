@@ -13,6 +13,7 @@ import {
   type ManualActionRequestSnapshot,
   type SupportCaseSnapshot,
   type CompensationOfferSnapshot,
+  type CaseContextSnapshot,
 } from "../../domain.js";
 import { type CustomerServiceRepository } from "../../application/ports/customer-service-repository.js";
 
@@ -120,6 +121,40 @@ export class PostgresCustomerServiceRepository implements CustomerServiceReposit
   async saveCompensationOffer(snapshot: CompensationOfferSnapshot, expectedVersion: bigint): Promise<SnapshotRecord<StoredCompensationOfferSnapshot>> {
     return new SnapshotRepository<StoredCompensationOfferSnapshot>(this.client, "compensation_offer_snapshots").save(snapshot.offerId, serializeCompensationOffer(snapshot), expectedVersion);
   }
+
+  async caseContextForCase(caseId: string): Promise<CaseContextSnapshot[]> {
+    const result = await this.client.query(
+      `SELECT data FROM case_context WHERE case_id = $1 ORDER BY occurred_at, created_at`,
+      [caseId],
+    ) as QueryResult<{ data: StoredCaseContextSnapshot }>;
+    return result.rows.map((row) => reviveCaseContext(row.data));
+  }
+
+  async saveCaseContext(snapshot: CaseContextSnapshot): Promise<void> {
+    await this.client.query(
+      `INSERT INTO case_context (context_id, case_id, source_event_id, source, context_type, severity, occurred_at, data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (case_id, source_event_id) DO NOTHING`,
+      [
+        snapshot.contextId,
+        snapshot.caseId,
+        snapshot.sourceEventId,
+        snapshot.source,
+        snapshot.contextType,
+        snapshot.severity,
+        snapshot.occurredAt,
+        serializeCaseContext(snapshot),
+      ],
+    );
+  }
+
+  async hasCaseContextForEvent(caseId: string, sourceEventId: string): Promise<boolean> {
+    const result = await this.client.query(
+      `SELECT 1 FROM case_context WHERE case_id = $1 AND source_event_id = $2 LIMIT 1`,
+      [caseId, sourceEventId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
 }
 
 type StoredSupportCaseSnapshot = Omit<SupportCaseSnapshot, "openedAt" | "resolvedAt" | "closedAt" | "resolution" | "escalation" | "escalationHistory" | "slaTracker" | "slaBreaches"> & Readonly<{
@@ -137,6 +172,7 @@ type StoredManualActionRequestSnapshot = Omit<ManualActionRequestSnapshot, "requ
 type StoredCompensationOfferSnapshot = Omit<CompensationOfferSnapshot, "offeredAt" | "acceptedAt" | "issuedAt"> & Readonly<{ offeredAt: string; acceptedAt?: string; issuedAt?: string }>;
 type StoredCaseTimelineSnapshot = Omit<CaseTimelineSnapshot, "entries"> & Readonly<{ entries: readonly StoredTimelineEntrySnapshot[] }>;
 type StoredTimelineEntrySnapshot = Omit<CaseTimelineSnapshot["entries"][number], "occurredAt"> & Readonly<{ occurredAt: string }>;
+type StoredCaseContextSnapshot = Omit<CaseContextSnapshot, "occurredAt" | "createdAt"> & Readonly<{ occurredAt: string; createdAt: string }>;
 
 function serializeSnapshot<T>(snapshot: T): T {
   return JSON.parse(JSON.stringify(snapshot)) as T;
@@ -156,6 +192,10 @@ function serializeManualAction(snapshot: ManualActionRequestSnapshot): StoredMan
 
 function serializeCompensationOffer(snapshot: CompensationOfferSnapshot): StoredCompensationOfferSnapshot {
   return serializeSnapshot(snapshot) as unknown as StoredCompensationOfferSnapshot;
+}
+
+function serializeCaseContext(snapshot: CaseContextSnapshot): StoredCaseContextSnapshot {
+  return serializeSnapshot(snapshot) as unknown as StoredCaseContextSnapshot;
 }
 
 function reviveSupportCase(snapshot: StoredSupportCaseSnapshot): SupportCaseSnapshot {
@@ -194,6 +234,14 @@ function reviveCompensationOffer(snapshot: StoredCompensationOfferSnapshot): Com
     offeredAt: new Date(snapshot.offeredAt),
     acceptedAt: snapshot.acceptedAt ? new Date(snapshot.acceptedAt) : undefined,
     issuedAt: snapshot.issuedAt ? new Date(snapshot.issuedAt) : undefined,
+  };
+}
+
+function reviveCaseContext(snapshot: StoredCaseContextSnapshot): CaseContextSnapshot {
+  return {
+    ...snapshot,
+    occurredAt: new Date(snapshot.occurredAt),
+    createdAt: new Date(snapshot.createdAt),
   };
 }
 

@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
 import { CustomerServiceApplication } from "./application/customer-service.js";
 import { EvidenceRef, ManualActionRequest, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
 import { isPrefixedUuidV7 } from "@trainticket/ts-kit";
 import { ConsumedEventDeduplicator, InMemoryEventPublisher, InMemoryEventSubscriber, toEventEnvelope, type EventEnvelope } from "./application/messaging.js";
 
 describe("customer-service messaging ports", () => {
+  it("subscribes to transfer-management and identity-verification streams", () => {
+    assert.equal(CUSTOMER_SERVICE_SUBSCRIPTIONS.includes("events:transfer-management"), true);
+    assert.equal(CUSTOMER_SERVICE_SUBSCRIPTIONS.includes("events:identity-verification"), true);
+  });
   it("wraps domain events in the contract envelope", () => {
     const { event } = SupportCase.open({
       caseId: "sc-test-envelope",
@@ -145,6 +150,132 @@ describe("customer-service messaging ports", () => {
     assert.deepEqual(timelineEvents.map((e) => e.payload.eventTypeCode), ["PostSalesApplied"]);
     assert.equal(timelineEvents[0].correlationId, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.equal(timelineEvents[0].causationId, "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c221");
+  });
+
+  it("projects missed connection events into case context and escalates matching cases once", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const application = new CustomerServiceApplication(publisher);
+    const opened = await application.openSupportCase({
+      requesterRef: "tvl-transfer",
+      channel: "APP",
+      priority: "NORMAL",
+      description: "Connection was disrupted",
+      businessReferences: { journeyOrderId: "ord-transfer" },
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
+    const missed: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d100",
+      eventType: "ConnectionMissed",
+      occurredAt: "2026-07-05T10:40:00.000Z",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d100",
+      producer: "transfer-management",
+      schemaVersion: 1,
+      payload: {
+        connection: {
+          connectionId: "con-transfer",
+          transferPlanId: "tpl-transfer",
+          itineraryRef: "itin-transfer",
+          journeyOrderId: "ord-transfer",
+          previousSegmentRef: "seg-a",
+          nextSegmentRef: "seg-b",
+          travelerRefs: ["tvl-transfer"],
+        },
+        previousStatus: "AT_RISK",
+        status: "MISSED",
+        riskLevel: "MISSED",
+        contractType: "PROTECTED",
+        missedAt: "2026-07-05T10:40:00.000Z",
+        missedCause: "PREVIOUS_SEGMENT_DELAYED",
+        window: { plannedArrivalAt: "2026-07-05T10:20:00.000Z", nextDepartureAt: "2026-07-05T10:35:00.000Z", nextCutoffAt: "2026-07-05T10:30:00.000Z", availableMinutes: -5, mctMinutes: 20, bufferMinutes: -25 },
+        recoveryRequired: true,
+      },
+    };
+
+    await application.handleIntegrationEvent(missed);
+    await application.handleIntegrationEvent(missed);
+
+    const details = application.getSupportCase(opened.caseId);
+    assert.equal(details.caseContext.length, 1);
+    assert.equal(details.caseContext[0].contextType, "MISSED_CONNECTION");
+    assert.equal(details.caseContext[0].sourceEventId, missed.eventId);
+    assert.equal(details.caseContext[0].refs.journeyOrderId, "ord-transfer");
+    assert.equal(details.caseContext[0].facts.missedCause, "PREVIOUS_SEGMENT_DELAYED");
+    assert.equal(details.status, "Escalated");
+    assert.equal(details.escalation?.targetQueue, "missed-connection-support");
+    assert.equal(details.timeline.some((entry) => entry.eventType === "CaseContext.MISSED_CONNECTION"), true);
+    assert.equal(publisher.findByEventType("TicketEscalated").length, 1);
+    assert.equal(application.consumedIntegrationEventCount(), 1);
+  });
+
+  it("projects identity blacklist and duplicate-ticket signals into case context", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const application = new CustomerServiceApplication(publisher);
+    const identityCase = await application.openSupportCase({
+      requesterRef: "tvl-identity",
+      channel: "APP",
+      priority: "NORMAL",
+      description: "Identity verification failed",
+      businessReferences: { accountRef: "tvl-identity" },
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c225");
+    const duplicateTicketCase = await application.openSupportCase({
+      requesterRef: "tvl-duplicate",
+      channel: "APP",
+      priority: "NORMAL",
+      description: "Purchase-limit fact needs support follow-up",
+      businessReferences: { purchaseLimitFactId: "plf-identity" },
+    }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c226");
+
+    await application.handleIntegrationEvent({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d200",
+      eventType: "VerificationFailed",
+      occurredAt: "2026-07-05T10:41:00.000Z",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c225",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d200",
+      producer: "identity-verification",
+      schemaVersion: 1,
+      payload: {
+        verificationCaseId: "ivc-identity",
+        travelerId: "tvl-identity",
+        credentialRecordId: "crd-identity",
+        simOutcome: "REJECTED",
+        simResultRef: "simres-identity",
+        verificationStatus: "FAILED",
+        reasonCode: "BLACKLISTED",
+        policyVersion: "sim-v1",
+        completedAt: "2026-07-05T10:41:00.000Z",
+        aggregateVersion: 2,
+      },
+    });
+    await application.handleIntegrationEvent({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d201",
+      eventType: "PurchaseLimitFactMissed",
+      occurredAt: "2026-07-05T10:42:00.000Z",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c226",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d201",
+      producer: "identity-verification",
+      schemaVersion: 1,
+      payload: {
+        purchaseLimitFactId: "plf-identity",
+        ttlBucket: "2026-07-05T10:40Z",
+        monitorRunId: "mon-identity",
+        factStatus: "MISSED",
+        limitPolicyVersion: "limit-v1",
+        missedAt: "2026-07-05T10:42:00.000Z",
+        aggregateVersion: 3,
+      },
+    });
+
+    const identityDetails = application.getSupportCase(identityCase.caseId);
+    const duplicateTicketDetails = application.getSupportCase(duplicateTicketCase.caseId);
+    assert.deepEqual(identityDetails.caseContext.map((context) => context.contextType), ["IDENTITY_BLACKLIST_SIGNAL"]);
+    assert.equal(identityDetails.caseContext[0].facts.reasonCode, "BLACKLISTED");
+    assert.equal(identityDetails.escalationLevel, "L3_SUPERVISOR");
+    assert.equal(identityDetails.escalation?.targetQueue, "identity-risk-supervisor");
+    assert.deepEqual(duplicateTicketDetails.caseContext.map((context) => context.contextType), ["DUPLICATE_TICKET_SIGNAL"]);
+    assert.equal(duplicateTicketDetails.caseContext[0].refs.purchaseLimitFactId, "plf-identity");
+    assert.equal(duplicateTicketDetails.caseContext[0].facts.factStatus, "MISSED");
+    assert.equal(duplicateTicketDetails.escalationLevel, "L3_SUPERVISOR");
+    assert.equal(duplicateTicketDetails.escalation?.targetQueue, "duplicate-ticket-review");
   });
 
   it("records admin-audit manual action outcomes once and preserves event lineage", async () => {

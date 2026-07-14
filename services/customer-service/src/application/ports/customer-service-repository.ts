@@ -8,6 +8,7 @@ import {
   type ManualActionRequestSnapshot,
   type SupportCaseSnapshot,
   type CompensationOfferSnapshot,
+  type CaseContextSnapshot,
 } from "../../domain.js";
 
 export interface CustomerServiceRepository {
@@ -28,4 +29,7 @@ export interface CustomerServiceRepository {
   findCompensationOffer(offerId: string): Promise<Readonly<{ aggregate: CompensationOffer; version: bigint }> | undefined>;
   saveNewCompensationOffer(snapshot: CompensationOfferSnapshot): Promise<{ version: bigint }>;
   saveCompensationOffer(snapshot: CompensationOfferSnapshot, expectedVersion: bigint): Promise<{ version: bigint }>;
+  caseContextForCase(caseId: string): Promise<CaseContextSnapshot[]>;
+  saveCaseContext(snapshot: CaseContextSnapshot): Promise<void>;
+  hasCaseContextForEvent(caseId: string, sourceEventId: string): Promise<boolean>;
 }
