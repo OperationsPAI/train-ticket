@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 from fare_pricing.domain import (
@@ -10,6 +10,7 @@ from fare_pricing.domain import (
     AssessmentPurpose,
     FareQuote,
     CapacitySnapshot,
+    EligibilityCertificateSummary,
     FareRuleSet,
     RuleSetStatus,
     PricingError,
@@ -40,6 +41,8 @@ class InMemoryStore:
     adjustment_quotes: dict[str, AdjustmentQuote] = field(default_factory=dict)
     fare_quote_segment_links: dict[str, tuple[str, ...]] = field(default_factory=dict)
     capacity_snapshots: dict[tuple[str, str], CapacitySnapshot] = field(default_factory=dict)
+    eligibility_certificates: dict[str, EligibilityCertificateSummary] = field(default_factory=dict)
+    processed_events: set[str] = field(default_factory=set)
 
     def transaction(self) -> Any:
         return nullcontext()
@@ -96,10 +99,36 @@ class InMemoryStore:
             if (snapshot := self.capacity_snapshots.get((segment_ref, departure_date))) is not None
         )
 
+    def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
+        if event_id in self.processed_events:
+            return False
+        self.processed_events.add(event_id)
+        return True
+
+    def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
+        current = self.eligibility_certificates.get(certificate.eligibility_certificate_id)
+        if current is None or certificate.aggregate_version >= current.aggregate_version:
+            self.eligibility_certificates[certificate.eligibility_certificate_id] = certificate
+
+    def update_eligibility_usage_counts(self, certificate_id: str, reserved: int, confirmed: int, aggregate_version: int) -> None:
+        current = self.eligibility_certificates.get(certificate_id)
+        if current is not None:
+            self.eligibility_certificates[certificate_id] = current.with_usage_counts(reserved, confirmed, aggregate_version)
+
+    def active_eligibility_certificates_for(
+        self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str
+    ) -> tuple[EligibilityCertificateSummary, ...]:
+        target_date = date.fromisoformat(journey_date)
+        return tuple(
+            certificate
+            for certificate in self.eligibility_certificates.values()
+            if certificate.is_active_for(traveler_id, eligibility_type, target_date, product_code)
+        )
+
 
 class EligibilityCertificatePort:
     def has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
-        return True
+        return False
 
 
 class FarePricingService:
@@ -137,8 +166,9 @@ class FarePricingService:
         ttl = ttl or timedelta(minutes=15)
         rule_set = self._store.get_rule_set(rule_set_id)
 
-        active_discount_types = self._active_discount_types(rule_set, traveler_refs, now.date().isoformat())
         departure_date = departure_time.astimezone(UTC).date().isoformat() if departure_time is not None else None
+        journey_date = departure_date or now.date().isoformat()
+        active_discount_types = self._active_discount_types(rule_set, traveler_refs, journey_date)
         capacity_snapshots = self.capacity_snapshots_for(segment_refs or [], departure_date)
         quote = calculate_fare_quote(
             quote_id=quote_id,
@@ -166,9 +196,19 @@ class FarePricingService:
             return set()
         active: set[str] = set()
         for eligibility_type in requested:
-            if any(self._eligibility.has_active_certificate(traveler, eligibility_type, journey_date, rule_set.product_code) for traveler in traveler_refs):
+            if any(self._has_active_certificate(traveler, eligibility_type, journey_date, rule_set.product_code) for traveler in traveler_refs):
                 active.add(eligibility_type)
         return active
+
+    def _has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
+        lookup = getattr(self._store, "active_eligibility_certificates_for", None)
+        if callable(lookup):
+            try:
+                if lookup(traveler_id, eligibility_type, journey_date, product_code):
+                    return True
+            except ValueError:
+                return False
+        return self._eligibility.has_active_certificate(traveler_id, eligibility_type, journey_date, product_code)
 
     def compute_adjustment_quote(
         self,
@@ -318,3 +358,28 @@ class FarePricingService:
         if callable(lookup):
             return lookup(segment_refs, departure_date)
         return ()
+
+    def mark_event_processed(self, event_id: str, stream: str) -> bool:
+        mark = getattr(self._store, "try_mark_processed", None)
+        if callable(mark):
+            try:
+                return bool(mark(event_id, stream))
+            except TypeError:
+                return bool(mark(event_id))
+        processed = getattr(self._store, "processed_events", None)
+        if processed is None:
+            return True
+        if event_id in processed:
+            return False
+        processed.add(event_id)
+        return True
+
+    def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
+        upsert = getattr(self._store, "upsert_eligibility_certificate", None)
+        if callable(upsert):
+            upsert(certificate)
+
+    def update_eligibility_usage_counts(self, certificate_id: str, reserved: int, confirmed: int, aggregate_version: int) -> None:
+        update = getattr(self._store, "update_eligibility_usage_counts", None)
+        if callable(update):
+            update(certificate_id, reserved, confirmed, aggregate_version)

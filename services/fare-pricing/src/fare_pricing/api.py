@@ -27,7 +27,7 @@ from .adapters.storage import PostgresFarePricingStore
 from .adapters.messaging.publisher import RedisEventPublisher
 from train_ticket_platform.messaging import RedisEventSubscriber, default_consumer_name
 from .ports.messaging import EventPublisher
-from .handlers import CAPACITY_STREAM, handle_capacity_snapshot_updated
+from .handlers import CAPACITY_STREAM, IDENTITY_VERIFICATION_STREAM, handle_capacity_snapshot_updated, handle_identity_verification_event
 from .web.errors import register_exception_handlers
 from .web.handlers import router as fare_pricing_router
 
@@ -193,13 +193,20 @@ def configure_fare_pricing_routes(
     if isinstance(store, PostgresFarePricingStore) and os.getenv("FARE_PRICING_DISABLE_SUBSCRIBER", "").lower() not in {"1", "true", "yes"}:
         subscriber = RedisEventSubscriber()
         subscriber.start_in_background(
-            (CAPACITY_STREAM,),
+            (CAPACITY_STREAM, IDENTITY_VERIFICATION_STREAM),
             "fare-pricing",
-            lambda envelope: handle_capacity_snapshot_updated(service, envelope),
+            lambda envelope: _handle_subscribed_event(service, envelope),
             consumer_name=default_consumer_name("fare-pricing"),
         )
-        app.state.capacity_subscriber = subscriber
+        app.state.event_subscriber = subscriber
     app.include_router(fare_pricing_router)
+
+
+def _handle_subscribed_event(service: FarePricingService, envelope: Any) -> None:
+    if envelope.producer == "identity-verification":
+        handle_identity_verification_event(service, envelope)
+        return
+    handle_capacity_snapshot_updated(service, envelope)
 
 
 def _install_default_rule_sets(store: Any) -> None:
@@ -312,7 +319,7 @@ def create_app(
         relay = getattr(app.state, "outbox_relay", None)
         if relay is not None:
             relay.stop()
-        subscriber = getattr(app.state, "capacity_subscriber", None)
+        subscriber = getattr(app.state, "event_subscriber", None) or getattr(app.state, "capacity_subscriber", None)
         if subscriber is not None:
             subscriber.stop()
         pool = getattr(app.state, "database_pool", None)
