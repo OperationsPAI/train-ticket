@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Redis } from "ioredis";
-import { MigrationRunner, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
+import { MigrationRunner, OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import { WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
@@ -16,6 +16,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt],
     );
+    entry.markPersisted(1);
     return this.snapshot(entry);
   }
 
@@ -26,12 +27,16 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
-    await this.db.query(
+    const loadedVersion = entry.loadedVersion;
+    if (loadedVersion < 1) throw new OptimisticConcurrencyConflict(`Waitlist entry ${entry.entryId} has no loaded version`);
+    const result = await this.db.query(
       `UPDATE waitlist_entries
        SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, version=version+1, updated_at=now()
-       WHERE entry_id=$1`,
-      [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot],
+       WHERE entry_id=$1 AND version=$8`,
+      [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, loadedVersion],
     );
+    if (result.rowCount === 0) throw new OptimisticConcurrencyConflict(`Waitlist entry ${entry.entryId} was modified by another writer`);
+    entry.markPersisted(loadedVersion + 1);
     return this.snapshot(entry);
   }
 
@@ -49,6 +54,11 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'MATCHING' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
     return result.rows.map(entryFromRow);
+  }
+
+  async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE data->>'journeyOrderRef' = $1 ORDER BY created_at ASC LIMIT 1`, [journeyOrderRef]) as QueryResult<WaitlistRow>;
+    return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
 
   async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
@@ -78,10 +88,25 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 }
 
+export class ProcessedEventRepository {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async record(eventId: string, stream: string): Promise<boolean> {
+    const result = await this.db.query(
+      `INSERT INTO processed_events (event_id, stream)
+       VALUES ($1, $2)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [eventId, stream],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+}
+
 export type WaitlistStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   idempotencyStore: PostgresIdempotencyStore;
   runCommand: <T>(operation: (repository: WaitlistRepository, publisher: TransactionalOutboxPublisher) => Promise<T>) => Promise<T>;
+  runConsumedEvent: <T>(eventId: string, stream: string, operation: (repository: WaitlistRepository, publisher: TransactionalOutboxPublisher) => Promise<T>) => Promise<T | undefined>;
   stop: () => Promise<void>;
 }>;
 
@@ -97,6 +122,10 @@ export async function startWaitlistStorage(redisUrl = process.env.REDIS_URL ?? "
     ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
     idempotencyStore: new PostgresIdempotencyStore(pool),
     runCommand: (operation) => withTransaction(pool, async (client) => operation(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)))),
+    runConsumedEvent: (eventId, stream, operation) => withTransaction(pool, async (client) => {
+      if (!await new ProcessedEventRepository(client).record(eventId, stream)) return undefined;
+      return operation(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)));
+    }),
     stop: async () => { await relay.stop(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
 }
@@ -110,7 +139,7 @@ export function migrationsDirectory(): string { return process.env.MIGRATIONS_DI
 
 function entryFromRow(row: WaitlistRow): WaitlistEntry {
   const data = row.data ?? {};
-  return WaitlistEntry.fromSnapshot({
+  const entry = WaitlistEntry.fromSnapshot({
     entryId: row.entry_id,
     accountId: row.account_id,
     travelerRefs: Array.isArray(row.traveler_refs) ? row.traveler_refs.map(String) : [],
@@ -139,6 +168,8 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     journeyOrderIdempotencyKey: typeof data.journeyOrderIdempotencyKey === "string" ? data.journeyOrderIdempotencyKey : undefined,
     capacitySegmentBookingId: typeof data.capacitySegmentBookingId === "string" ? data.capacitySegmentBookingId : undefined,
   });
+  entry.markPersisted(Number(row.version));
+  return entry;
 }
 
 function positionIn(entries: readonly WaitlistEntry[], entryId: string): number {
@@ -170,5 +201,6 @@ type WaitlistRow = Readonly<{
   fare_quote_id: string | null;
   capacity_hold_id: string | null;
   data: Record<string, unknown> | null;
+  version: string | number | bigint;
   created_at: Date | string;
 }>;

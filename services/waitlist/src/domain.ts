@@ -94,6 +94,7 @@ export class WaitlistEntry {
     private readonly _capacityReleaseIdempotencyKey: string = uuidV7(),
     private readonly _journeyOrderIdempotencyKey: string = uuidV7(),
     private readonly _capacitySegmentBookingId: string = `sb-${uuidV7()}`,
+    private _loadedVersion = 0,
   ) {}
 
   static create(command: CreateWaitlistEntry): WaitlistEntry {
@@ -172,6 +173,12 @@ export class WaitlistEntry {
   get capacityReleaseIdempotencyKey(): string { return this._capacityReleaseIdempotencyKey; }
   get journeyOrderIdempotencyKey(): string { return this._journeyOrderIdempotencyKey; }
   get capacitySegmentBookingId(): string { return this._capacitySegmentBookingId; }
+  get loadedVersion(): number { return this._loadedVersion; }
+
+  markPersisted(version: number): void {
+    if (!Number.isInteger(version) || version < 1) throw new DomainError("VALIDATION_FAILED", "loadedVersion must be a positive integer");
+    this._loadedVersion = version;
+  }
 
   offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
     this.assertStatus("QUEUED", "Only queued waitlist entries can begin matching");
@@ -188,9 +195,8 @@ export class WaitlistEntry {
 
   accept(now: Date, journeyOrderRef: string): void {
     this.ensureOfferAcceptable(now);
-    assertNonEmpty(journeyOrderRef, "journeyOrderRef");
+    this.recordJourneyOrderRef(journeyOrderRef);
     this._status = "FULFILLED";
-    this._journeyOrderRef = journeyOrderRef;
   }
 
   ensureOfferAcceptable(now: Date): void {
@@ -257,6 +263,11 @@ export class WaitlistEntry {
 
   private assertStatus(expected: WaitlistStatus, message: string): void {
     if (this._status !== expected) throw new DomainError("INVALID_TRANSITION", message);
+  }
+
+  private recordJourneyOrderRef(journeyOrderRef: string): void {
+    assertNonEmpty(journeyOrderRef, "journeyOrderRef");
+    this._journeyOrderRef = journeyOrderRef;
   }
 }
 

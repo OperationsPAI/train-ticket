@@ -1,4 +1,4 @@
-import { createRedisMessagingAdapters } from "@trainticket/ts-kit";
+import { createRedisMessagingAdapters, streamForProducer, type EventEnvelope } from "@trainticket/ts-kit";
 import { createApp } from "./app.js";
 import { WaitlistApplicationService } from "./application.js";
 import { createWaitlistEventHandler, SUBSCRIBED_STREAMS, CONSUMER_GROUP, consumerName } from "./subscriber.js";
@@ -11,6 +11,10 @@ export function runtimeHost(options: Pick<BootstrapOptions, "host"> = {}): strin
 export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): number { return options.port ?? Number.parseInt(process.env.PORT ?? "8080", 10); }
 export function runtimeRedisUrl(options: Pick<BootstrapOptions, "redisUrl"> = {}): string { return options.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379"; }
 
+function consumedStream(envelope: EventEnvelope): string {
+  return streamForProducer(envelope.producer);
+}
+
 export async function bootstrap(options: BootstrapOptions = {}) {
   const messaging = await createRedisMessagingAdapters(runtimeRedisUrl(options));
   const storage = process.env.DATABASE_URL ? await startWaitlistStorage(runtimeRedisUrl(options)) : undefined;
@@ -18,9 +22,15 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const abortController = new AbortController();
   const memoryEventService = new WaitlistApplicationService(undefined, messaging.publisher);
   const eventService = {
-    handleCapacityFreed: (event: WaitlistCapacityFreed, correlationId?: string) => storage
-      ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).handleCapacityFreed(event, correlationId))
+    handleCapacityFreed: (event: WaitlistCapacityFreed, correlationId: string | undefined, envelope: EventEnvelope) => storage
+      ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleCapacityFreed(event, correlationId))
       : memoryEventService.handleCapacityFreed(event, correlationId),
+    handleJourneyOrderConfirmed: (orderId: string, correlationId: string | undefined, envelope: EventEnvelope) => storage
+      ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderConfirmed(orderId, correlationId))
+      : memoryEventService.handleJourneyOrderConfirmed(orderId, correlationId),
+    handleJourneyOrderCancelled: (orderId: string, _correlationId: string | undefined, envelope: EventEnvelope) => storage
+      ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderCancelled(orderId))
+      : memoryEventService.handleJourneyOrderCancelled(orderId),
   };
   const subscription = messaging.subscriber.subscribe(SUBSCRIBED_STREAMS, CONSUMER_GROUP, consumerName(options.instanceId ?? process.env.HOSTNAME), createWaitlistEventHandler(eventService), abortController.signal);
   subscription.catch((error: unknown) => {
