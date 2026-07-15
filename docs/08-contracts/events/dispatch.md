@@ -1,6 +1,6 @@
 # Dispatch — Events & Commands
 
-Last updated: 2026-07-08
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -20,10 +20,10 @@ Activation-wave rulings:
   this wave. Future external platform integration may replace the ops driver
   without changing these event payloads.
 - Dispatch produces `DriverArrived`, `RideStarted`, and `RideEnded` as
-  Fulfillment handoff facts. Fulfillment consumption is deferred in this wave.
-- Post Sales and Notification consumption is also deferred. The events below
-  identify intended touchpoints, but `docs/08-contracts/messaging.md` registers
-  no active Dispatch subscribers for this activation wave.
+  Fulfillment handoff facts; Fulfillment now consumes those events.
+- Notification consumes the full Dispatch lifecycle listed below, and Post Sales
+  consumes the cancellation/no-show/completion/failure subset for after-sales
+  evaluation.
 - Mutual exclusion is enforced by Dispatch: the same
   `(riderAccountId, intentFingerprint)` may have at most one active dispatch in
   `REQUESTED`, `MATCHING`, `ASSIGNED`, `DRIVER_ARRIVING`, `DRIVER_ARRIVED`,
@@ -66,7 +66,7 @@ request as `FAILED`.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | `RequestDispatch` command accepted from `POST /api/v1/ride-requests`. |
 
 **Payload:**
@@ -89,7 +89,7 @@ request as `FAILED`.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | `AssignDriver` ops command binds a driver/vehicle assignment. |
 
 **Payload:**
@@ -113,7 +113,7 @@ request as `FAILED`.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | `UpdateEta` ops command updates the active assignment ETA. |
 
 **Payload:**
@@ -135,7 +135,7 @@ request as `FAILED`.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: fulfillment, notification, reporting |
+| **Consumers** | fulfillment, notification, reporting |
 | **Trigger** | `MarkDriverArrived` ops command records driver arrival at pickup. |
 
 **Payload:**
@@ -153,15 +153,14 @@ request as `FAILED`.
 | `arrivedAt` | RFC3339 UTC | yes | Driver arrival timestamp. |
 | `status` | enum | yes | `DRIVER_ARRIVED`. |
 
-This event is the first Fulfillment handoff fact, but Fulfillment consumption is
-deferred in this wave.
+This event is the first Fulfillment handoff fact and is consumed by Fulfillment.
 
 ### RideStarted
 
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: fulfillment, notification, reporting |
+| **Consumers** | fulfillment, notification, reporting |
 | **Trigger** | `StartRide` ops command records rider pickup / ride start. |
 
 **Payload:**
@@ -179,15 +178,14 @@ deferred in this wave.
 | `startedAt` | RFC3339 UTC | yes | Ride start timestamp. |
 | `status` | enum | yes | `PICKED_UP`. |
 
-This event is a Fulfillment handoff fact, but Fulfillment consumption is deferred
-in this wave.
+This event is a Fulfillment handoff fact and is consumed by Fulfillment.
 
 ### RideEnded
 
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: fulfillment, post-sales, notification, reporting |
+| **Consumers** | fulfillment, post-sales, notification, reporting |
 | **Trigger** | `CompleteDispatch` ops command records ride completion. This is the wire event for the domain `DispatchCompleted` fact. |
 
 **Payload:**
@@ -207,15 +205,14 @@ in this wave.
 | `finalFareRef` | string | no | Optional final fare or adjustment reference recorded by Dispatch. |
 | `status` | enum | yes | `COMPLETED`. |
 
-This event is the final Fulfillment handoff fact. Fulfillment and Post Sales
-consumption is deferred in this wave.
+This event is the final Fulfillment handoff fact and is consumed by Fulfillment and Post Sales.
 
 ### DriverCancelled
 
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | `CancelByDriver` ops command records driver/provider cancellation of the active assignment. |
 
 **Payload:**
@@ -241,7 +238,7 @@ publishing this fact unless a future failure policy closes the request.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: post-sales, notification, reporting |
+| **Consumers** | post-sales, notification, reporting |
 | **Trigger** | `CancelByUser` command cancels an active dispatch. |
 
 **Payload:**
@@ -263,7 +260,7 @@ publishing this fact unless a future failure policy closes the request.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: post-sales, notification, reporting |
+| **Consumers** | post-sales, notification, reporting |
 | **Trigger** | `RecordNoShow` ops command records that the rider did not appear after driver arrival. |
 
 **Payload:**
@@ -287,7 +284,7 @@ publishing this fact unless a future failure policy closes the request.
 | Field | Description |
 |---|---|
 | **Producer** | dispatch |
-| **Consumers** | deferred: post-sales, notification, reporting |
+| **Consumers** | post-sales, notification, reporting |
 | **Trigger** | Timeout scan closes a `REQUESTED`/`MATCHING` request whose window elapsed (activation-wave increment 2026-07-09). |
 
 **Payload:**
@@ -326,12 +323,3 @@ the wire event name used for the domain `DispatchCompleted` completion fact.
 
 Dispatch registers no upstream event subscriptions in this activation wave.
 External provider-platform events are deferred by the simulation-boundary ruling.
-
-## Deferred downstream touchpoints
-
-| Downstream context | Deferred events | Purpose when activated |
-|---|---|---|
-| Fulfillment | `DriverArrived`, `RideStarted`, `RideEnded` | Ride arrival/start/end facts for fulfillment evidence and lifecycle. |
-| Notification | `DispatchRequested`, `DriverAssigned`, `DriverEtaUpdated`, `DriverArrived`, `DriverCancelled`, `DispatchUserCancelled`, `DispatchNoShowRecorded`, `RideEnded` | User-facing dispatch lifecycle notifications. |
-| Post Sales | `DispatchUserCancelled`, `DispatchNoShowRecorded`, `RideEnded` | Cancellation, waiting-fee, no-show, and final-charge dispute handling. |
-| Reporting | all Dispatch events | Dispatch lifecycle metrics and operational read models. |
