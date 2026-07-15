@@ -15,6 +15,7 @@ TRIP_PLANNING_SUBSCRIPTIONS = (
     "events:place-network",
     "events:service-plan",
     "events:capacity-availability",
+    "events:transfer-management",
 )
 TRIP_PLANNING_CONSUMER_GROUP = "trip-planning"
 SUBSCRIBER_RESTART_DELAY_SECONDS = 1.0

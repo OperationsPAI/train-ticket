@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
-from trip_planning.domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint
+from trip_planning.domain import Itinerary, MinimumConnectionTimeRule
 from trip_planning.events import EventEnvelope
+from trip_planning.read_model import SegmentRecord, build_itineraries
 
 
 _CLEAR_TABLE_SQL = (
@@ -16,6 +17,7 @@ _CLEAR_TABLE_SQL = (
     "DELETE FROM plan_services",
     "DELETE FROM plan_segments",
     "DELETE FROM plan_nodes",
+    "DELETE FROM plan_mct_rules",
     "DELETE FROM itinerary_snapshots",
 )
 
@@ -130,35 +132,53 @@ class PostgresPlanStore:
             place = str(payload.get("placeId", ""))
             if node and place:
                 conn.execute("INSERT INTO plan_nodes(node_id, version, place_id, data) VALUES (%s, 1, %s, %s) ON CONFLICT (node_id) DO UPDATE SET version = plan_nodes.version + 1, place_id = EXCLUDED.place_id, data = EXCLUDED.data, updated_at = now()", (node, place, _jsonb_payload(dict(payload))))
+        elif event_type == "MctRulePublished":
+            rule = MinimumConnectionTimeRule.from_transfer_event(payload)
+            conn.execute(
+                "INSERT INTO plan_mct_rules(mct_rule_id, version, status, from_node_type, to_node_type, transfer_category, minimum_minutes, valid_from, valid_until, data) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (mct_rule_id, version) DO UPDATE SET status = EXCLUDED.status, from_node_type = EXCLUDED.from_node_type, to_node_type = EXCLUDED.to_node_type, transfer_category = EXCLUDED.transfer_category, minimum_minutes = EXCLUDED.minimum_minutes, valid_from = EXCLUDED.valid_from, valid_until = EXCLUDED.valid_until, data = EXCLUDED.data, updated_at = now()",
+                (rule.mct_rule_id, rule.version, rule.status, rule.from_node_type, rule.to_node_type, rule.transfer_category, rule.minimum_minutes, rule.valid_from, rule.valid_until, _jsonb_payload(dict(payload))),
+            )
+        elif event_type == "MctRuleRetired":
+            rule_id = str(payload.get("mctRuleId", ""))
+            version = int(payload.get("version", 0))
+            if rule_id and version:
+                conn.execute("DELETE FROM plan_mct_rules WHERE mct_rule_id = %s AND version = %s", (rule_id, version))
 
     def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[Itinerary]:
         with self._pool.connection() as conn:
-            rows = conn.execute(
+            segment_rows = conn.execute(
                 """
-                WITH requested_origin AS (SELECT place_id FROM plan_nodes WHERE node_id = %s),
-                     requested_destination AS (SELECT place_id FROM plan_nodes WHERE node_id = %s),
-                     origin_refs AS (SELECT %s AS ref UNION SELECT node_id FROM plan_nodes WHERE place_id = %s UNION SELECT node_id FROM plan_nodes WHERE place_id = (SELECT place_id FROM requested_origin)),
-                     destination_refs AS (SELECT %s AS ref UNION SELECT node_id FROM plan_nodes WHERE place_id = %s UNION SELECT node_id FROM plan_nodes WHERE place_id = (SELECT place_id FROM requested_destination))
                 SELECT segment_ref, scheduled_service_ref, origin_stop_ref, destination_stop_ref, departure_time, arrival_time
                   FROM plan_segments
                  WHERE departure_date = %s::date
-                   AND origin_stop_ref IN (SELECT ref FROM origin_refs WHERE ref IS NOT NULL)
-                   AND destination_stop_ref IN (SELECT ref FROM destination_refs WHERE ref IS NOT NULL)
                  ORDER BY departure_time, segment_ref
                 """,
-                (origin_ref, destination_ref, origin_ref, origin_ref, destination_ref, destination_ref, departure_date),
+                (departure_date,),
             ).fetchall()
-        return [self._itinerary_from_row(row) for row in rows]
-
-    def _itinerary_from_row(self, row: Any) -> Itinerary:
-        seg_ref, service_ref, origin, destination, departure_time, arrival_time = row
-        departure = departure_time.astimezone(UTC)
-        arrival = arrival_time.astimezone(UTC)
-        return Itinerary(
-            legs=(LegCandidate(service_plan_ref=str(service_ref or ""), service_segment_ref=str(seg_ref), origin_stop_ref=str(origin), destination_stop_ref=str(destination), departure_time=departure, arrival_time=arrival, mode="train", stop_refs=(str(origin), str(destination)), segment_refs=(str(seg_ref),)),),
-            price_hint=PriceHint(amount_minor=0, currency="CNY", snapshot_ref=f"fare-snapshot:{seg_ref}", captured_at=departure, confidence=50),
-            availability_hint=AvailabilityHint(status="UNKNOWN", snapshot_ref=f"availability-snapshot:{seg_ref}", captured_at=departure, confidence=50),
-            planning_snapshot_refs=(f"planning-snapshot:{seg_ref}",),
+            node_rows = conn.execute("SELECT node_id, place_id, data FROM plan_nodes").fetchall()
+            rule_rows = conn.execute("SELECT data FROM plan_mct_rules WHERE status = 'PUBLISHED'").fetchall()
+        segments = tuple(
+            SegmentRecord(
+                segment_ref=str(row[0]),
+                scheduled_service_ref=str(row[1] or ""),
+                origin_stop_ref=str(row[2]),
+                destination_stop_ref=str(row[3]),
+                departure_time=row[4].astimezone(UTC),
+                arrival_time=row[5].astimezone(UTC),
+            )
+            for row in segment_rows
+        )
+        node_place = {str(row[0]): str(row[1]) for row in node_rows}
+        node_payloads = {str(row[0]): dict(row[2] or {}) for row in node_rows}
+        mct_rules = tuple(MinimumConnectionTimeRule.from_transfer_event(dict(row[0] or {})) for row in rule_rows)
+        return build_itineraries(
+            origin_ref=origin_ref,
+            destination_ref=destination_ref,
+            departure_date=departure_date,
+            segments=segments,
+            node_place=node_place,
+            node_payloads=node_payloads,
+            mct_rules=mct_rules,
         )
 
     def save_itinerary(self, itinerary: Mapping[str, object]) -> None:

@@ -16,6 +16,8 @@ _ALLOWED_AVAILABILITY_STATUSES = {
     "UNKNOWN",
     "UNAVAILABLE",
 }
+_ALLOWED_MCT_RULE_STATUSES = {"PUBLISHED", "RETIRED"}
+_WILDCARD_RULE_VALUE = "ANY"
 _PRICE_HINT_DISCLAIMER = (
     "Price hint is a non-authoritative planning snapshot. It is not an offer, "
     "does not freeze fare rules, and cannot be used as a payment amount."
@@ -62,6 +64,143 @@ def _tuple_of_refs(values: Sequence[str], field_name: str) -> tuple[str, ...]:
 def stable_ref(prefix: str, parts: Iterable[str]) -> str:
     digest = sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
     return f"{prefix}_{digest}"
+
+@dataclass(frozen=True)
+class MinimumConnectionTimeRule:
+    """Published transfer-management MCT rule used to filter connecting itineraries."""
+
+    mct_rule_id: str
+    version: int
+    status: str
+    from_node_type: str
+    to_node_type: str
+    transfer_category: str
+    minimum_minutes: int
+    conditions: Mapping[str, Any] = field(default_factory=dict)
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mct_rule_id", _require_ref(self.mct_rule_id, "mct_rule_id"))
+        if self.version <= 0:
+            raise TripPlanningValidationError("mct rule version must be positive")
+        status = _require_ref(self.status, "status").upper()
+        if status not in _ALLOWED_MCT_RULE_STATUSES:
+            raise TripPlanningValidationError(f"unsupported mct rule status: {status}")
+        object.__setattr__(self, "status", status)
+        for field_name in ("from_node_type", "to_node_type", "transfer_category"):
+            object.__setattr__(self, field_name, _require_ref(getattr(self, field_name), field_name).upper())
+        if self.minimum_minutes < 0:
+            raise TripPlanningValidationError("minimum_minutes cannot be negative")
+        if self.valid_from is not None:
+            object.__setattr__(self, "valid_from", _parse_datetime(self.valid_from, "valid_from"))
+        if self.valid_until is not None:
+            object.__setattr__(self, "valid_until", _parse_datetime(self.valid_until, "valid_until"))
+        if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
+            raise TripPlanningValidationError("valid_from must be before valid_until")
+
+    @classmethod
+    def from_transfer_event(cls, payload: Mapping[str, Any]) -> "MinimumConnectionTimeRule":
+        return cls(
+            mct_rule_id=payload.get("mctRuleId"),
+            version=int(payload.get("version", 0)),
+            status=payload.get("status", ""),
+            from_node_type=payload.get("fromNodeType", _WILDCARD_RULE_VALUE),
+            to_node_type=payload.get("toNodeType", _WILDCARD_RULE_VALUE),
+            transfer_category=payload.get("transferCategory", _WILDCARD_RULE_VALUE),
+            minimum_minutes=int(payload.get("minimumMinutes", 0)),
+            conditions=dict(payload.get("conditions") or {}),
+            valid_from=payload.get("validFrom"),
+            valid_until=payload.get("validUntil"),
+        )
+
+    @property
+    def snapshot_ref(self) -> str:
+        return f"mct-rule:{self.mct_rule_id}:v{self.version}"
+
+    def is_effective_at(self, at_time: datetime) -> bool:
+        if self.status != "PUBLISHED":
+            return False
+        if self.valid_from and at_time < self.valid_from:
+            return False
+        if self.valid_until and at_time >= self.valid_until:
+            return False
+        return True
+
+    def matches(self, from_node_type: str, to_node_type: str, transfer_category: str, at_time: datetime) -> bool:
+        if not self.is_effective_at(at_time):
+            return False
+        return (
+            self._matches_value(self.from_node_type, from_node_type)
+            and self._matches_value(self.to_node_type, to_node_type)
+            and self._matches_value(self.transfer_category, transfer_category)
+        )
+
+    @staticmethod
+    def _matches_value(rule_value: str, actual_value: str) -> bool:
+        return rule_value == _WILDCARD_RULE_VALUE or rule_value == actual_value
+
+
+def required_connection_minutes(
+    from_node_ref: str,
+    to_node_ref: str,
+    *,
+    at_time: datetime,
+    node_payloads: Mapping[str, Mapping[str, Any]],
+    rules: Sequence[MinimumConnectionTimeRule],
+    default_minutes: int,
+) -> tuple[int, MinimumConnectionTimeRule | None]:
+    from_node = node_payloads.get(from_node_ref, {})
+    to_node = node_payloads.get(to_node_ref, {})
+    from_node_type = _node_type(from_node)
+    to_node_type = _node_type(to_node)
+    category = _transfer_category(from_node_ref, to_node_ref, from_node, to_node)
+    matching_rules = [
+        rule
+        for rule in rules
+        if rule.matches(from_node_type, to_node_type, category, at_time)
+    ]
+    if not matching_rules:
+        return default_minutes, None
+    selected = max(
+        matching_rules,
+        key=lambda rule: (
+            _specificity(rule.from_node_type, rule.to_node_type, rule.transfer_category),
+            rule.valid_from or datetime.min,
+            rule.version,
+            rule.mct_rule_id,
+        ),
+    )
+    return selected.minimum_minutes, selected
+
+
+def _node_type(node_payload: Mapping[str, Any]) -> str:
+    value = node_payload.get("nodeType") or node_payload.get("placeType") or node_payload.get("type")
+    if isinstance(value, str) and value.strip():
+        return value.strip().upper()
+    serving_modes = node_payload.get("servingModes")
+    if isinstance(serving_modes, Sequence) and not isinstance(serving_modes, (str, bytes)):
+        modes = {str(mode).upper() for mode in serving_modes}
+        if "TRAIN" in modes:
+            return "STATION"
+    return "OTHER"
+
+
+def _transfer_category(
+    from_node_ref: str,
+    to_node_ref: str,
+    from_node: Mapping[str, Any],
+    to_node: Mapping[str, Any],
+) -> str:
+    if from_node_ref == to_node_ref:
+        return "SAME_STATION"
+    if from_node.get("placeId") and from_node.get("placeId") == to_node.get("placeId"):
+        return "IN_STATION"
+    return "CROSS_STATION"
+
+
+def _specificity(*values: str) -> int:
+    return sum(1 for value in values if value != _WILDCARD_RULE_VALUE)
 
 
 @dataclass(frozen=True)
