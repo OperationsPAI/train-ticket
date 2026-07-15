@@ -1,6 +1,6 @@
 # Disruption Recovery — Events & Commands
 
-Last updated: 2026-07-09
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -45,11 +45,12 @@ Activation-wave rulings:
   `REACCOMMODATION` calls Transfer Management
   `POST /api/v1/connections/{connectionId}/reaccommodate` with a folded UUID-v7
   idempotency key. `MANUAL` moves the case to manual review.
-- Reporting consumption of Disruption Recovery events remains deferred in this
-  wave. Notification is active for traveler-facing recovery lifecycle and alert
-  facts. Active inbound subscriptions are `events:post-sales` `PostSalesApplied`,
-  `events:journey-order` `JourneyOrderCreated`, and Provider Integration /
-  Fulfillment segment delay/cancellation facts.
+- Reporting consumption of Disruption Recovery events is active for analytics
+  projection handling. Notification is active for traveler-facing recovery
+  lifecycle and alert facts. Active inbound subscriptions are
+  `events:post-sales` `PostSalesApplied`, `events:journey-order`
+  `JourneyOrderCreated`, and Provider Integration / Fulfillment segment
+  delay/cancellation facts.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -148,7 +149,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: reporting |
+| **Consumers** | reporting |
 | **Trigger** | Operations report accepted from `POST /api/v1/disruptions`. |
 
 **Payload:**
@@ -170,7 +171,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: notification, reporting |
+| **Consumers** | reporting; deferred: notification |
 | **Trigger** | Accepted report opens a new incident instead of merging into an existing one. |
 
 **Payload:**
@@ -193,7 +194,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification; deferred: reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | A report opens a recovery case for one explicit `affectedOrderId`. |
 
 **Payload:**
@@ -213,7 +214,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification; deferred: reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | `GenerateRecoveryOptions` creates this wave's option set for a case. |
 
 **Payload:**
@@ -235,7 +236,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification; deferred: reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | Automatic `WAIT` selection or user/customer-service `select-option` command. |
 
 **Payload:**
@@ -257,7 +258,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification; deferred: reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | Selected option starts local execution or a downstream HTTP command. |
 
 **Payload:**
@@ -281,7 +282,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification, transfer-management; deferred: reporting |
+| **Consumers** | notification, transfer-management, reporting |
 | **Trigger** | `WAIT` completes locally, Wallet / Promotion benefit issuance succeeds, consumed `PostSalesApplied` converges a REFUND execution, or Transfer Management reaccommodation returns `200`. |
 
 **Payload:**
@@ -303,7 +304,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification, transfer-management; deferred: reporting |
+| **Consumers** | notification, transfer-management, reporting |
 | **Trigger** | A selected option fails and cannot automatically converge. |
 
 **Payload:**
@@ -324,7 +325,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | deferred: reporting |
+| **Consumers** | reporting |
 | **Trigger** | `CloseRecoveryCase` archives a terminal or manually resolved case. |
 
 **Payload:**
@@ -345,7 +346,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | notification; deferred: reporting |
+| **Consumers** | notification, reporting |
 | **Trigger** | Incident alert fact is published for affected users, customer service, or operations. |
 
 **Payload:**

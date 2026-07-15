@@ -1,6 +1,6 @@
 # Transfer Management — Events & Commands
 
-Last updated: 2026-07-09
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -37,11 +37,12 @@ Activation-wave rulings:
   replacement fields; when it later consumes the resulting `RecoveryCompleted`
   for the same `caseId`, it idempotently skips because the original connection is
   already `RECOVERED`. `SELF_TRANSFER` misses publish facts only.
-- Notification now actively consumes traveler-facing connection-state events
-  (`TransferAtRisk`, `ConnectionMissed`, and `ConnectionRecovered`). Reporting,
-  Offer Management, Journey Order, and Customer Service downstream consumers
-  remain deferred except Transfer Management's inbound subscription to Disruption
-  Recovery.
+- Notification actively consumes traveler-facing connection-state events
+  (`TransferAtRisk`, `ConnectionMissed`, and `ConnectionRecovered`). Reporting
+  consumes the full Transfer Management stream. Offer Management, Journey Order,
+  Trip Planning, and Customer Service consume the event subsets called out in the
+  per-event consumer rows; other intended touchpoints remain deferred until their
+  handlers map those event types.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -132,7 +133,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: offer-management, journey-order, reporting |
+| **Consumers** | reporting; deferred: offer-management, journey-order |
 | **Trigger** | `CreateTransferPlan` accepted from `POST /api/v1/transfer-plans`. |
 
 **Payload:**
@@ -154,7 +155,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: offer-management, journey-order, reporting |
+| **Consumers** | offer-management, reporting; deferred: journey-order |
 | **Trigger** | Plan evaluation completed or refreshed. |
 
 **Payload:**
@@ -177,7 +178,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: offer-management, reporting |
+| **Consumers** | reporting; deferred: offer-management |
 | **Trigger** | Planning/offer window expires. |
 
 **Payload:**
@@ -196,7 +197,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: journey-order, customer-service, reporting |
+| **Consumers** | reporting; deferred: journey-order, customer-service |
 | **Trigger** | `RegisterConnection` command creates a connection. |
 
 **Payload:**
@@ -227,7 +228,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: offer-management, journey-order, customer-service, reporting |
+| **Consumers** | reporting; deferred: offer-management, journey-order, customer-service |
 | **Trigger** | Initial, scheduled, or segment-report-driven risk evaluation completes. |
 
 **Payload:**
@@ -246,7 +247,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | notification; deferred: customer-service, reporting |
+| **Consumers** | notification, reporting; deferred: customer-service |
 | **Trigger** | A connection transitions to `AT_RISK`. |
 
 **Payload:**
@@ -267,7 +268,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | notification; deferred: customer-service, reporting |
+| **Consumers** | notification, journey-order, customer-service, reporting |
 | **Trigger** | A connection transitions to `MISSED`. Protected contracts also start the outbound Disruption Recovery HTTP command. |
 
 **Payload:**
@@ -290,7 +291,7 @@ key. Outbound Disruption Recovery idempotency keys are persisted and reused. Inb
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | notification; deferred: customer-service, reporting |
+| **Consumers** | notification, journey-order, customer-service, reporting |
 | **Trigger** | Consumed Disruption Recovery `RecoveryCompleted` matches a stored `caseId`, an explicit controlled recovery command restores the connection, or Disruption Recovery calls `POST /api/v1/connections/{connectionId}/reaccommodate`. |
 
 **Payload:**
@@ -321,7 +322,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: customer-service, reporting |
+| **Consumers** | customer-service, reporting |
 | **Trigger** | Consumed Disruption Recovery `RecoveryFailed` matches a stored `caseId`, or the outbound recovery report failed permanently. |
 
 **Payload:**
@@ -340,7 +341,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: offer-management, journey-order, reporting |
+| **Consumers** | offer-management, reporting; deferred: journey-order |
 | **Trigger** | Contract option proposed for a connection. |
 
 **Payload:**
@@ -362,7 +363,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: journey-order, customer-service, reporting |
+| **Consumers** | journey-order, reporting; deferred: customer-service |
 | **Trigger** | Offer/order accepts the contract snapshot. |
 
 **Payload:**
@@ -383,7 +384,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: journey-order, customer-service, reporting |
+| **Consumers** | reporting; deferred: journey-order, customer-service |
 | **Trigger** | Contract is withdrawn, voided, or rejected by controlled command. |
 
 **Payload:**
@@ -405,7 +406,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: reporting, operations audit |
+| **Consumers** | reporting; deferred: operations audit |
 | **Trigger** | Operations activates a `TransferRiskPolicy`; any previous active policy is retired. |
 
 **Payload:**
@@ -426,7 +427,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: reporting |
+| **Consumers** | reporting |
 | **Trigger** | Operations creates a draft MCT rule. |
 
 **Payload:**
@@ -450,7 +451,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: trip-planning, offer-management, reporting |
+| **Consumers** | trip-planning, offer-management, reporting |
 | **Trigger** | Operations publishes a validated MCT rule version. |
 
 **Payload:**
@@ -476,7 +477,7 @@ a normal transition to `RECOVERED`.
 | Field | Description |
 |---|---|
 | **Producer** | transfer-management |
-| **Consumers** | deferred: trip-planning, offer-management, reporting |
+| **Consumers** | trip-planning, reporting; deferred: offer-management |
 | **Trigger** | Operations retires a published MCT rule version. |
 
 **Payload:**
@@ -524,10 +525,9 @@ remains the active fallback adapter.
 
 ## Deferred downstream touchpoints
 
-| Downstream context | Events | Purpose |
+| Downstream context | Deferred events | Purpose when activated |
 |---|---|---|
-| Notification | `TransferAtRisk`, `ConnectionMissed`, `ConnectionRecovered` | Active user-facing transfer risk and recovery notifications. |
-| Reporting | all Transfer Management events | Connection success rate, MCT quality, protected exposure, and supplier quality metrics. |
-| Journey Order | `ConnectionContractConfirmed`, `ConnectionMissed`, `ConnectionRecovered` | Order-detail responsibility and recovery display. |
-| Offer Management | `TransferPlanEvaluated`, `ConnectionContractProposed`, `MctRulePublished` | Quote-time feasibility and contract display. |
-| Customer Service | `TransferAtRisk`, `ConnectionMissed`, `ConnectionRecovered`, `ConnectionRecoveryFailed` | Support timeline and responsibility explanation. |
+| Journey Order | `TransferPlanCreated`, `TransferPlanEvaluated`, `TransferRiskEvaluated`, `ConnectionRegistered`, `ConnectionContractProposed`, `ConnectionContractWithdrawn` | Broader order-detail projection beyond confirmed contract and missed/recovered connection facts. |
+| Offer Management | `TransferPlanCreated`, `TransferPlanExpired`, `TransferRiskEvaluated`, `MctRuleRetired` | Additional quote-time feasibility and catalog maintenance beyond the active evaluated/proposed/published subset. |
+| Customer Service | non-exception transfer-planning/contract events | Support context beyond missed/recovered/recovery-failed exception handling. |
+| Operations audit | `RiskPolicyActivated` | Operator audit projection if/when admin-audit subscribes to transfer-management. |
