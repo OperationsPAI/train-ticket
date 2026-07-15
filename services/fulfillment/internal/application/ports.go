@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ var (
 	ErrSubscribeFailed     = errors.New("subscribe failed")
 	ErrTransientHandler    = errors.New("transient handler error")
 	ErrFatalHandler        = errors.New("fatal handler error")
+	ErrAckSkip             = errors.New("ack skip")
 )
 
 type EventEnvelope = kitmsg.EventEnvelope
@@ -55,6 +57,16 @@ type SegmentStatusRepository interface {
 	FindSegmentStatusByCommandID(ctx context.Context, commandID string) (*domain.SegmentStatusRecord, error)
 }
 
+type AncillaryHandoffRepository interface {
+	SaveAncillaryHandoff(ctx context.Context, handoff *domain.AncillaryFulfillmentHandoff) error
+	FindAncillaryHandoff(ctx context.Context, ancillaryOrderItemID string) (*domain.AncillaryFulfillmentHandoff, error)
+}
+
+type RideExecutionRepository interface {
+	SaveRideExecution(ctx context.Context, view *domain.RideExecutionView) error
+	FindRideExecution(ctx context.Context, rideRequestID string) (*domain.RideExecutionView, error)
+}
+
 type ConsumedEventLog interface {
 	Claim(ctx context.Context, eventID string) (bool, error)
 }
@@ -66,15 +78,19 @@ type IDGenerator func(prefix string) string
 type Clock func() time.Time
 
 type Service struct {
-	repo     FulfillmentRepository
-	segments SegmentStatusRepository
-	pub      EventPublisher
-	consumed ConsumedEventLog
-	idGen    IDGenerator
-	clock    Clock
-	uow      UnitOfWork
-	mu       sync.Mutex
-	tickets  map[string]TicketProjection
+	repo       FulfillmentRepository
+	segments   SegmentStatusRepository
+	ancillary  AncillaryHandoffRepository
+	rides      RideExecutionRepository
+	pub        EventPublisher
+	consumed   ConsumedEventLog
+	idGen      IDGenerator
+	clock      Clock
+	uow        UnitOfWork
+	mu         sync.Mutex
+	tickets    map[string]TicketProjection
+	ancInMem   map[string]*domain.AncillaryFulfillmentHandoff
+	ridesInMem map[string]*domain.RideExecutionView
 }
 
 type TicketProjection struct {
@@ -94,7 +110,9 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	segments, _ := repo.(SegmentStatusRepository)
-	return &Service{repo: repo, segments: segments, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}}
+	ancillary, _ := repo.(AncillaryHandoffRepository)
+	rides, _ := repo.(RideExecutionRepository)
+	return &Service{repo: repo, segments: segments, ancillary: ancillary, rides: rides, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}, ancInMem: map[string]*domain.AncillaryFulfillmentHandoff{}, ridesInMem: map[string]*domain.RideExecutionView{}}
 }
 
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
@@ -107,6 +125,20 @@ func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 func (s *Service) WithSegmentStatusRepository(repo SegmentStatusRepository) *Service {
 	if s != nil {
 		s.segments = repo
+	}
+	return s
+}
+
+func (s *Service) WithAncillaryHandoffRepository(repo AncillaryHandoffRepository) *Service {
+	if s != nil {
+		s.ancillary = repo
+	}
+	return s
+}
+
+func (s *Service) WithRideExecutionRepository(repo RideExecutionRepository) *Service {
+	if s != nil {
+		s.rides = repo
 	}
 	return s
 }
@@ -342,6 +374,10 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvel
 		}
 	}
 	if err := s.applySubscribedEvent(ctx, envelope); err != nil {
+		if errors.Is(err, ErrAckSkip) {
+			log.Printf("WARN service=%s eventId=%s producer=%s eventType=%s ack-skip subscribed event: %v", ProducerName, envelope.EventID, envelope.Producer, envelope.EventType, err)
+			return nil
+		}
 		if errors.Is(err, ErrDomainRuleViolation) || errors.Is(err, ErrNotFound) {
 			return kitmsg.FatalHandlerError(err)
 		}
@@ -361,6 +397,16 @@ func (s *Service) applySubscribedEvent(ctx context.Context, envelope EventEnvelo
 		return s.applyEntitlementVoided(envelope.Payload)
 	case "SegmentTicketed":
 		return s.applySegmentTicketed(ctx, envelope.Payload)
+	case "AncillaryOrderItemFulfillmentReady":
+		return s.applyAncillaryFulfillmentReady(ctx, envelope.EventID, envelope.Payload)
+	case "AncillaryFulfillmentFactRecorded":
+		return s.applyAncillaryFulfillmentFactRecorded(ctx, envelope.EventID, envelope.Payload)
+	case "DriverArrived":
+		return s.applyDriverArrived(ctx, envelope.EventID, envelope.Payload)
+	case "RideStarted":
+		return s.applyRideStarted(ctx, envelope.EventID, envelope.Payload)
+	case "RideEnded":
+		return s.applyRideEnded(ctx, envelope.EventID, envelope.Payload)
 	default:
 		return nil
 	}
@@ -449,6 +495,194 @@ func (s *Service) applyEntitlementVoided(payload json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) applyAncillaryFulfillmentReady(ctx context.Context, sourceEventID string, payload json.RawMessage) error {
+	var event ancillaryReadyEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid AncillaryOrderItemFulfillmentReady payload: %v", ErrDomainRuleViolation, err)
+	}
+	if err := validateAncillaryReadyEvent(event); err != nil {
+		return err
+	}
+	handoff, err := s.ancillaryHandoffFor(ctx, event.AncillaryOrderItemID, domain.OrderRef(event.JourneyOrderID), domain.TravelerRef(event.TravelerRef), domain.SegmentRef(event.SegmentRef), event.CatalogSnapshot.CatalogItemID, event.CatalogSnapshot.ServiceType)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	if err := handoff.MarkReady(event.Status, event.ReadyAt, event.ProviderRef, domain.EntitlementRef(event.EntitlementRef)); err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	return s.saveAncillaryHandoff(ctx, handoff)
+}
+
+func (s *Service) applyAncillaryFulfillmentFactRecorded(ctx context.Context, sourceEventID string, payload json.RawMessage) error {
+	var event ancillaryFactRecordedEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid AncillaryFulfillmentFactRecorded payload: %v", ErrDomainRuleViolation, err)
+	}
+	if err := validateAncillaryFactRecordedEvent(event); err != nil {
+		return err
+	}
+	handoff, err := s.ancillaryHandoffFor(ctx, event.AncillaryOrderItemID, domain.OrderRef(event.JourneyOrderID), domain.TravelerRef(event.TravelerRef), domain.SegmentRef(event.SegmentRef), event.CatalogItemID, event.ServiceType)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	fact := domain.AncillaryFulfillmentFact{FulfillmentFactID: event.FulfillmentFact.FulfillmentFactID, FactType: event.FulfillmentFact.FactType, ProviderRef: event.FulfillmentFact.ProviderRef, PlaceRef: event.FulfillmentFact.PlaceRef, OccurredAt: event.FulfillmentFact.OccurredAt.UTC(), RecordedAt: event.FulfillmentFact.RecordedAt.UTC(), PerformedBy: event.FulfillmentFact.PerformedBy, IdempotencyRef: event.FulfillmentFact.IdempotencyRef, Compensable: event.FulfillmentFact.Compensable, SourceEventID: sourceEventID}
+	if err := handoff.RecordFact(event.Status, fact); err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	return s.saveAncillaryHandoff(ctx, handoff)
+}
+
+func (s *Service) applyDriverArrived(ctx context.Context, sourceEventID string, payload json.RawMessage) error {
+	var event dispatchArrivalEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid DriverArrived payload: %v", ErrDomainRuleViolation, err)
+	}
+	if err := validateDispatchFields(event.dispatchFields, "DRIVER_ARRIVED"); err != nil {
+		return err
+	}
+	if event.ArrivedAt.IsZero() {
+		return fmt.Errorf("%w: arrivedAt is required", ErrDomainRuleViolation)
+	}
+	view, err := s.rideExecutionFor(ctx, event.RideRequestID, domain.TravelerRef(event.TravelerRef))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	if err := view.DriverArrived(sourceEventID, event.ArrivedAt, rideSnapshot(event.dispatchFields)); err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	return s.saveRideExecution(ctx, view)
+}
+
+func (s *Service) applyRideStarted(ctx context.Context, sourceEventID string, payload json.RawMessage) error {
+	var event dispatchStartedEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid RideStarted payload: %v", ErrDomainRuleViolation, err)
+	}
+	if err := validateDispatchFields(event.dispatchFields, "PICKED_UP"); err != nil {
+		return err
+	}
+	if event.StartedAt.IsZero() {
+		return fmt.Errorf("%w: startedAt is required", ErrDomainRuleViolation)
+	}
+	view, err := s.rideExecutionFor(ctx, event.RideRequestID, domain.TravelerRef(event.TravelerRef))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	if err := view.RideStarted(sourceEventID, event.StartedAt, rideSnapshot(event.dispatchFields)); err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	return s.saveRideExecution(ctx, view)
+}
+
+func (s *Service) applyRideEnded(ctx context.Context, sourceEventID string, payload json.RawMessage) error {
+	var event dispatchEndedEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return fmt.Errorf("%w: invalid RideEnded payload: %v", ErrDomainRuleViolation, err)
+	}
+	if err := validateDispatchFields(event.dispatchFields, "COMPLETED"); err != nil {
+		return err
+	}
+	if event.StartedAt.IsZero() || event.EndedAt.IsZero() {
+		return fmt.Errorf("%w: startedAt and endedAt are required", ErrDomainRuleViolation)
+	}
+	view, err := s.rideExecutionFor(ctx, event.RideRequestID, domain.TravelerRef(event.TravelerRef))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	if err := view.RideEnded(sourceEventID, event.StartedAt, event.EndedAt, rideSnapshot(event.dispatchFields), event.FinalFareRef); err != nil {
+		return fmt.Errorf("%w: %v", ErrAckSkip, err)
+	}
+	return s.saveRideExecution(ctx, view)
+}
+
+func (s *Service) ancillaryHandoffFor(ctx context.Context, id string, journeyOrderID domain.OrderRef, travelerRef domain.TravelerRef, segmentRef domain.SegmentRef, catalogItemID, serviceType string) (*domain.AncillaryFulfillmentHandoff, error) {
+	if s.ancillary != nil {
+		handoff, err := s.ancillary.FindAncillaryHandoff(ctx, id)
+		if err == nil {
+			return handoff, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	} else {
+		s.mu.Lock()
+		handoff, ok := s.ancInMem[strings.TrimSpace(id)]
+		s.mu.Unlock()
+		if ok {
+			return cloneAncillaryHandoff(handoff), nil
+		}
+	}
+	return domain.NewAncillaryFulfillmentHandoff(id, journeyOrderID, travelerRef, segmentRef, catalogItemID, serviceType)
+}
+
+func (s *Service) saveAncillaryHandoff(ctx context.Context, handoff *domain.AncillaryFulfillmentHandoff) error {
+	if s.ancillary != nil {
+		return s.ancillary.SaveAncillaryHandoff(ctx, handoff)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ancInMem[handoff.AncillaryOrderItemID] = cloneAncillaryHandoff(handoff)
+	return nil
+}
+
+func (s *Service) rideExecutionFor(ctx context.Context, rideRequestID string, travelerRef domain.TravelerRef) (*domain.RideExecutionView, error) {
+	if s.rides != nil {
+		view, err := s.rides.FindRideExecution(ctx, rideRequestID)
+		if err == nil {
+			return view, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	} else {
+		s.mu.Lock()
+		view, ok := s.ridesInMem[strings.TrimSpace(rideRequestID)]
+		s.mu.Unlock()
+		if ok {
+			return cloneRideExecution(view), nil
+		}
+	}
+	return domain.NewRideExecutionView(rideRequestID, travelerRef)
+}
+
+func (s *Service) saveRideExecution(ctx context.Context, view *domain.RideExecutionView) error {
+	if s.rides != nil {
+		return s.rides.SaveRideExecution(ctx, view)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ridesInMem[view.RideRequestID] = cloneRideExecution(view)
+	return nil
+}
+
+func (s *Service) GetAncillaryHandoff(ctx context.Context, ancillaryOrderItemID string) (*domain.AncillaryFulfillmentHandoff, error) {
+	id := strings.TrimSpace(ancillaryOrderItemID)
+	if s.ancillary != nil {
+		return s.ancillary.FindAncillaryHandoff(ctx, id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handoff, ok := s.ancInMem[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneAncillaryHandoff(handoff), nil
+}
+
+func (s *Service) GetRideExecution(ctx context.Context, rideRequestID string) (*domain.RideExecutionView, error) {
+	id := strings.TrimSpace(rideRequestID)
+	if s.rides != nil {
+		return s.rides.FindRideExecution(ctx, id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	view, ok := s.ridesInMem[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneRideExecution(view), nil
 }
 
 func (s *Service) readyRecordForCommand(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
@@ -809,6 +1043,107 @@ type segmentCompletedPayload struct {
 	CompletionSource    domain.CompletionSource    `json:"completionSource"`
 }
 
+type ancillaryReadyEvent struct {
+	AncillaryOrderItemID string                   `json:"ancillaryOrderItemId"`
+	JourneyOrderID       string                   `json:"journeyOrderId"`
+	TravelerRef          string                   `json:"travelerRef"`
+	SegmentRef           string                   `json:"segmentRef"`
+	CatalogSnapshot      ancillaryCatalogSnapshot `json:"catalogSnapshot"`
+	ProviderRef          string                   `json:"providerRef"`
+	EntitlementRef       string                   `json:"entitlementRef"`
+	Status               string                   `json:"status"`
+	ReadyAt              time.Time                `json:"readyAt"`
+}
+
+type ancillaryCatalogSnapshot struct {
+	CatalogItemID string `json:"catalogItemId"`
+	ServiceType   string `json:"serviceType"`
+}
+
+type ancillaryFactRecordedEvent struct {
+	AncillaryOrderItemID string               `json:"ancillaryOrderItemId"`
+	JourneyOrderID       string               `json:"journeyOrderId"`
+	TravelerRef          string               `json:"travelerRef"`
+	SegmentRef           string               `json:"segmentRef"`
+	CatalogItemID        string               `json:"catalogItemId"`
+	ServiceType          string               `json:"serviceType"`
+	FulfillmentFact      ancillaryFactPayload `json:"fulfillmentFact"`
+	Status               string               `json:"status"`
+}
+
+type ancillaryFactPayload struct {
+	FulfillmentFactID string    `json:"fulfillmentFactId"`
+	FactType          string    `json:"factType"`
+	ProviderRef       string    `json:"providerRef"`
+	PlaceRef          string    `json:"placeRef"`
+	OccurredAt        time.Time `json:"occurredAt"`
+	RecordedAt        time.Time `json:"recordedAt"`
+	PerformedBy       string    `json:"performedBy"`
+	IdempotencyRef    string    `json:"idempotencyRef"`
+	Compensable       bool      `json:"compensable"`
+}
+
+type dispatchFields struct {
+	RideRequestID    string `json:"rideRequestId"`
+	RideAssignmentID string `json:"rideAssignmentId"`
+	RiderAccountID   string `json:"riderAccountId"`
+	TravelerRef      string `json:"travelerRef"`
+	PickupRef        string `json:"pickupRef"`
+	DropoffRef       string `json:"dropoffRef"`
+	DriverRef        string `json:"driverRef"`
+	VehicleRef       string `json:"vehicleRef"`
+	Status           string `json:"status"`
+}
+
+type dispatchArrivalEvent struct {
+	dispatchFields
+	ArrivedAt time.Time `json:"arrivedAt"`
+}
+
+type dispatchStartedEvent struct {
+	dispatchFields
+	StartedAt time.Time `json:"startedAt"`
+}
+
+type dispatchEndedEvent struct {
+	dispatchFields
+	StartedAt    time.Time `json:"startedAt"`
+	EndedAt      time.Time `json:"endedAt"`
+	FinalFareRef string    `json:"finalFareRef"`
+}
+
+func validateAncillaryReadyEvent(event ancillaryReadyEvent) error {
+	if strings.TrimSpace(event.AncillaryOrderItemID) == "" || strings.TrimSpace(event.JourneyOrderID) == "" || strings.TrimSpace(event.TravelerRef) == "" || strings.TrimSpace(event.CatalogSnapshot.CatalogItemID) == "" || strings.TrimSpace(event.CatalogSnapshot.ServiceType) == "" || event.ReadyAt.IsZero() {
+		return fmt.Errorf("%w: missing required AncillaryOrderItemFulfillmentReady field", ErrDomainRuleViolation)
+	}
+	return nil
+}
+
+func validateAncillaryFactRecordedEvent(event ancillaryFactRecordedEvent) error {
+	if strings.TrimSpace(event.AncillaryOrderItemID) == "" || strings.TrimSpace(event.JourneyOrderID) == "" || strings.TrimSpace(event.TravelerRef) == "" || strings.TrimSpace(event.CatalogItemID) == "" || strings.TrimSpace(event.ServiceType) == "" {
+		return fmt.Errorf("%w: missing required AncillaryFulfillmentFactRecorded field", ErrDomainRuleViolation)
+	}
+	fact := event.FulfillmentFact
+	if strings.TrimSpace(fact.FulfillmentFactID) == "" || strings.TrimSpace(fact.FactType) == "" || strings.TrimSpace(fact.PerformedBy) == "" || strings.TrimSpace(fact.IdempotencyRef) == "" || fact.OccurredAt.IsZero() || fact.RecordedAt.IsZero() {
+		return fmt.Errorf("%w: missing required AncillaryFulfillmentFactRecorded fulfillmentFact field", ErrDomainRuleViolation)
+	}
+	return nil
+}
+
+func validateDispatchFields(fields dispatchFields, expectedStatus string) error {
+	if strings.TrimSpace(fields.RideRequestID) == "" || strings.TrimSpace(fields.RideAssignmentID) == "" || strings.TrimSpace(fields.RiderAccountID) == "" || strings.TrimSpace(fields.TravelerRef) == "" || strings.TrimSpace(fields.PickupRef) == "" || strings.TrimSpace(fields.DropoffRef) == "" || strings.TrimSpace(fields.DriverRef) == "" || strings.TrimSpace(fields.VehicleRef) == "" || strings.TrimSpace(fields.Status) == "" {
+		return fmt.Errorf("%w: missing required dispatch handoff field", ErrDomainRuleViolation)
+	}
+	if strings.TrimSpace(fields.Status) != expectedStatus {
+		return fmt.Errorf("%w: unexpected dispatch status %q for expected %s", ErrAckSkip, fields.Status, expectedStatus)
+	}
+	return nil
+}
+
+func rideSnapshot(fields dispatchFields) domain.RideAssignmentSnapshot {
+	return domain.RideAssignmentSnapshot{RideAssignmentID: fields.RideAssignmentID, RiderAccountID: fields.RiderAccountID, TravelerRef: domain.TravelerRef(fields.TravelerRef), PickupRef: fields.PickupRef, DropoffRef: fields.DropoffRef, DriverRef: fields.DriverRef, VehicleRef: fields.VehicleRef}
+}
+
 func MarshalDomainEventPayload(event domain.DomainEvent) (json.RawMessage, error) {
 	var payload any
 	switch e := event.(type) {
@@ -842,10 +1177,12 @@ type InMemoryRepository struct {
 	byTuple          map[string]domain.FulfillmentRecordID
 	segmentByID      map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord
 	segmentByCommand map[string]domain.SegmentStatusRecordID
+	ancillary        map[string]*domain.AncillaryFulfillmentHandoff
+	rides            map[string]*domain.RideExecutionView
 }
 
 func NewInMemoryRepository() *InMemoryRepository {
-	return &InMemoryRepository{byID: map[domain.FulfillmentRecordID]*domain.FulfillmentRecord{}, byTuple: map[string]domain.FulfillmentRecordID{}, segmentByID: map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord{}, segmentByCommand: map[string]domain.SegmentStatusRecordID{}}
+	return &InMemoryRepository{byID: map[domain.FulfillmentRecordID]*domain.FulfillmentRecord{}, byTuple: map[string]domain.FulfillmentRecordID{}, segmentByID: map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord{}, segmentByCommand: map[string]domain.SegmentStatusRecordID{}, ancillary: map[string]*domain.AncillaryFulfillmentHandoff{}, rides: map[string]*domain.RideExecutionView{}}
 }
 
 func (r *InMemoryRepository) Save(_ context.Context, record *domain.FulfillmentRecord) error {
@@ -898,6 +1235,40 @@ func (r *InMemoryRepository) FindSegmentStatusByCommandID(_ context.Context, com
 	return cloneSegmentStatus(r.segmentByID[id]), nil
 }
 
+func (r *InMemoryRepository) SaveAncillaryHandoff(_ context.Context, handoff *domain.AncillaryFulfillmentHandoff) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ancillary[handoff.AncillaryOrderItemID] = cloneAncillaryHandoff(handoff)
+	return nil
+}
+
+func (r *InMemoryRepository) FindAncillaryHandoff(_ context.Context, ancillaryOrderItemID string) (*domain.AncillaryFulfillmentHandoff, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	handoff, ok := r.ancillary[strings.TrimSpace(ancillaryOrderItemID)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneAncillaryHandoff(handoff), nil
+}
+
+func (r *InMemoryRepository) SaveRideExecution(_ context.Context, view *domain.RideExecutionView) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rides[view.RideRequestID] = cloneRideExecution(view)
+	return nil
+}
+
+func (r *InMemoryRepository) FindRideExecution(_ context.Context, rideRequestID string) (*domain.RideExecutionView, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	view, ok := r.rides[strings.TrimSpace(rideRequestID)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneRideExecution(view), nil
+}
+
 func cloneSegmentStatus(record *domain.SegmentStatusRecord) *domain.SegmentStatusRecord {
 	if record == nil {
 		return nil
@@ -920,6 +1291,40 @@ func cloneSegmentStatus(record *domain.SegmentStatusRecord) *domain.SegmentStatu
 
 func tupleKey(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) string {
 	return string(entitlementID) + "|" + string(segmentBookingID) + "|" + string(segmentRef)
+}
+
+func cloneAncillaryHandoff(handoff *domain.AncillaryFulfillmentHandoff) *domain.AncillaryFulfillmentHandoff {
+	if handoff == nil {
+		return nil
+	}
+	copy := *handoff
+	if handoff.ReadyAt != nil {
+		t := *handoff.ReadyAt
+		copy.ReadyAt = &t
+	}
+	copy.Facts = append([]domain.AncillaryFulfillmentFact(nil), handoff.Facts...)
+	return &copy
+}
+
+func cloneRideExecution(view *domain.RideExecutionView) *domain.RideExecutionView {
+	if view == nil {
+		return nil
+	}
+	copy := *view
+	if view.DriverArrivedAt != nil {
+		t := *view.DriverArrivedAt
+		copy.DriverArrivedAt = &t
+	}
+	if view.RideStartedAt != nil {
+		t := *view.RideStartedAt
+		copy.RideStartedAt = &t
+	}
+	if view.RideEndedAt != nil {
+		t := *view.RideEndedAt
+		copy.RideEndedAt = &t
+	}
+	copy.Evidence = append([]domain.RideExecutionEvidence(nil), view.Evidence...)
+	return &copy
 }
 
 func cloneRecord(record *domain.FulfillmentRecord) *domain.FulfillmentRecord {

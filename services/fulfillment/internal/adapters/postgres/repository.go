@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/trainticket/greenfield/platform/go-kit/storage"
@@ -105,6 +106,56 @@ func (r *FulfillmentRepository) FindSegmentStatusByCommandID(ctx context.Context
 	return decodeSegmentStatus(raw)
 }
 
+func (r *FulfillmentRepository) SaveAncillaryHandoff(ctx context.Context, handoff *domain.AncillaryFulfillmentHandoff) error {
+	data, err := json.Marshal(ancillaryHandoffSnapshotFromDomain(handoff))
+	if err != nil {
+		return err
+	}
+	_, err = r.db.DBFor(ctx).Exec(ctx, `INSERT INTO ancillary_fulfillment_handoffs(ancillary_order_item_id, data) VALUES ($1, $2) ON CONFLICT (ancillary_order_item_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`, handoff.AncillaryOrderItemID, data)
+	return err
+}
+
+func (r *FulfillmentRepository) FindAncillaryHandoff(ctx context.Context, ancillaryOrderItemID string) (*domain.AncillaryFulfillmentHandoff, error) {
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM ancillary_fulfillment_handoffs WHERE ancillary_order_item_id = $1 LIMIT 1`, strings.TrimSpace(ancillaryOrderItemID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, application.ErrNotFound
+	}
+	var raw json.RawMessage
+	if err := rows.Scan(&raw); err != nil {
+		return nil, err
+	}
+	return decodeAncillaryHandoff(raw)
+}
+
+func (r *FulfillmentRepository) SaveRideExecution(ctx context.Context, view *domain.RideExecutionView) error {
+	data, err := json.Marshal(rideExecutionSnapshotFromDomain(view))
+	if err != nil {
+		return err
+	}
+	_, err = r.db.DBFor(ctx).Exec(ctx, `INSERT INTO ride_execution_views(ride_request_id, data) VALUES ($1, $2) ON CONFLICT (ride_request_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`, view.RideRequestID, data)
+	return err
+}
+
+func (r *FulfillmentRepository) FindRideExecution(ctx context.Context, rideRequestID string) (*domain.RideExecutionView, error) {
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM ride_execution_views WHERE ride_request_id = $1 LIMIT 1`, strings.TrimSpace(rideRequestID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, application.ErrNotFound
+	}
+	var raw json.RawMessage
+	if err := rows.Scan(&raw); err != nil {
+		return nil, err
+	}
+	return decodeRideExecution(raw)
+}
+
 type segmentStatusSnapshot struct {
 	SegmentStatusRecordID string                           `json:"segmentStatusRecordId"`
 	CommandID             string                           `json:"commandId"`
@@ -138,6 +189,65 @@ func decodeSegmentStatus(raw []byte) (*domain.SegmentStatusRecord, error) {
 		return nil, err
 	}
 	return &domain.SegmentStatusRecord{SegmentStatusRecordID: domain.SegmentStatusRecordID(s.SegmentStatusRecordID), CommandID: s.CommandID, SegmentRef: domain.SegmentRef(s.SegmentRef), ScheduledServiceRef: s.ScheduledServiceRef, ServiceDate: s.ServiceDate, Status: domain.SegmentOperationalStatus(s.Status), EstimatedArrivalAt: utcPtr(s.EstimatedArrivalAt), ArrivedAt: utcPtr(s.ArrivedAt), CancelledAt: utcPtr(s.CancelledAt), ObservedAt: s.ObservedAt.UTC(), SourceSystem: s.SourceSystem, CreatedAt: s.CreatedAt.UTC()}, nil
+}
+
+type ancillaryHandoffSnapshot struct {
+	AncillaryOrderItemID string                            `json:"ancillaryOrderItemId"`
+	JourneyOrderID       string                            `json:"journeyOrderId"`
+	TravelerRef          string                            `json:"travelerRef"`
+	SegmentRef           string                            `json:"segmentRef,omitempty"`
+	CatalogItemID        string                            `json:"catalogItemId"`
+	ServiceType          string                            `json:"serviceType"`
+	EntitlementRef       string                            `json:"entitlementRef,omitempty"`
+	ProviderRef          string                            `json:"providerRef,omitempty"`
+	Status               string                            `json:"status"`
+	ReadyAt              *time.Time                        `json:"readyAt,omitempty"`
+	Facts                []domain.AncillaryFulfillmentFact `json:"facts"`
+	CreatedAt            time.Time                         `json:"createdAt"`
+	UpdatedAt            time.Time                         `json:"updatedAt"`
+}
+
+func ancillaryHandoffSnapshotFromDomain(h *domain.AncillaryFulfillmentHandoff) ancillaryHandoffSnapshot {
+	return ancillaryHandoffSnapshot{AncillaryOrderItemID: h.AncillaryOrderItemID, JourneyOrderID: string(h.JourneyOrderID), TravelerRef: string(h.TravelerRef), SegmentRef: string(h.SegmentRef), CatalogItemID: h.CatalogItemID, ServiceType: h.ServiceType, EntitlementRef: string(h.EntitlementRef), ProviderRef: h.ProviderRef, Status: h.Status, ReadyAt: utcPtr(h.ReadyAt), Facts: append([]domain.AncillaryFulfillmentFact(nil), h.Facts...), CreatedAt: h.CreatedAt.UTC(), UpdatedAt: h.UpdatedAt.UTC()}
+}
+
+func decodeAncillaryHandoff(raw []byte) (*domain.AncillaryFulfillmentHandoff, error) {
+	var s ancillaryHandoffSnapshot
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	return &domain.AncillaryFulfillmentHandoff{AncillaryOrderItemID: s.AncillaryOrderItemID, JourneyOrderID: domain.OrderRef(s.JourneyOrderID), TravelerRef: domain.TravelerRef(s.TravelerRef), SegmentRef: domain.SegmentRef(s.SegmentRef), CatalogItemID: s.CatalogItemID, ServiceType: s.ServiceType, EntitlementRef: domain.EntitlementRef(s.EntitlementRef), ProviderRef: s.ProviderRef, Status: s.Status, ReadyAt: utcPtr(s.ReadyAt), Facts: append([]domain.AncillaryFulfillmentFact(nil), s.Facts...), CreatedAt: s.CreatedAt.UTC(), UpdatedAt: s.UpdatedAt.UTC()}, nil
+}
+
+type rideExecutionSnapshot struct {
+	RideRequestID    string                         `json:"rideRequestId"`
+	RideAssignmentID string                         `json:"rideAssignmentId"`
+	RiderAccountID   string                         `json:"riderAccountId"`
+	TravelerRef      string                         `json:"travelerRef"`
+	PickupRef        string                         `json:"pickupRef"`
+	DropoffRef       string                         `json:"dropoffRef"`
+	DriverRef        string                         `json:"driverRef"`
+	VehicleRef       string                         `json:"vehicleRef"`
+	Status           string                         `json:"status"`
+	DriverArrivedAt  *time.Time                     `json:"driverArrivedAt,omitempty"`
+	RideStartedAt    *time.Time                     `json:"rideStartedAt,omitempty"`
+	RideEndedAt      *time.Time                     `json:"rideEndedAt,omitempty"`
+	FinalFareRef     string                         `json:"finalFareRef,omitempty"`
+	Evidence         []domain.RideExecutionEvidence `json:"evidence"`
+	CreatedAt        time.Time                      `json:"createdAt"`
+	UpdatedAt        time.Time                      `json:"updatedAt"`
+}
+
+func rideExecutionSnapshotFromDomain(v *domain.RideExecutionView) rideExecutionSnapshot {
+	return rideExecutionSnapshot{RideRequestID: v.RideRequestID, RideAssignmentID: v.RideAssignmentID, RiderAccountID: v.RiderAccountID, TravelerRef: string(v.TravelerRef), PickupRef: v.PickupRef, DropoffRef: v.DropoffRef, DriverRef: v.DriverRef, VehicleRef: v.VehicleRef, Status: v.Status, DriverArrivedAt: utcPtr(v.DriverArrivedAt), RideStartedAt: utcPtr(v.RideStartedAt), RideEndedAt: utcPtr(v.RideEndedAt), FinalFareRef: v.FinalFareRef, Evidence: append([]domain.RideExecutionEvidence(nil), v.Evidence...), CreatedAt: v.CreatedAt.UTC(), UpdatedAt: v.UpdatedAt.UTC()}
+}
+
+func decodeRideExecution(raw []byte) (*domain.RideExecutionView, error) {
+	var s rideExecutionSnapshot
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	return &domain.RideExecutionView{RideRequestID: s.RideRequestID, RideAssignmentID: s.RideAssignmentID, RiderAccountID: s.RiderAccountID, TravelerRef: domain.TravelerRef(s.TravelerRef), PickupRef: s.PickupRef, DropoffRef: s.DropoffRef, DriverRef: s.DriverRef, VehicleRef: s.VehicleRef, Status: s.Status, DriverArrivedAt: utcPtr(s.DriverArrivedAt), RideStartedAt: utcPtr(s.RideStartedAt), RideEndedAt: utcPtr(s.RideEndedAt), FinalFareRef: s.FinalFareRef, Evidence: append([]domain.RideExecutionEvidence(nil), s.Evidence...), CreatedAt: s.CreatedAt.UTC(), UpdatedAt: s.UpdatedAt.UTC()}, nil
 }
 
 type ProcessedEvents struct{ db ContextDBProvider }

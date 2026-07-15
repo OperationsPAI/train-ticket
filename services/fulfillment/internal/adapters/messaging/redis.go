@@ -40,7 +40,7 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, streams []string, group
 }
 
 func FulfillmentSubscriptions() []string {
-	return []string{streamPrefix + "entitlement-ticketing", streamPrefix + "booking-orchestration"}
+	return []string{streamPrefix + "entitlement-ticketing", streamPrefix + "booking-orchestration", streamPrefix + "ancillary-service", streamPrefix + "dispatch"}
 }
 func FulfillmentGroup() string { return consumerGroup }
 
