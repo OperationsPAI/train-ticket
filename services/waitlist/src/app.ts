@@ -20,6 +20,7 @@ export type AppDependencies = Readonly<{
   offerManagement?: OfferManagementClient;
   now?: () => Date;
   storage?: AppStorage;
+  applicationService?: WaitlistApplicationService;
 }>;
 
 const defaultRepository = new InMemoryWaitlistRepository();
@@ -33,15 +34,18 @@ export function resetWaitlistStore(): void { defaultRepository.clear(); defaultP
 export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   const app = Fastify({ logger: false });
   const runCommand = dependencies.storage?.runCommand ?? inMemoryCommandRunner(dependencies);
-  const commandService = (repository: WaitlistRepository, publisher: EventPublisher) => new WaitlistApplicationService(
-    repository,
-    publisher,
-    dependencies.farePricing,
-    dependencies.capacityAvailability,
-    dependencies.journeyOrder,
-    dependencies.now,
-    dependencies.offerManagement,
-  );
+  const sharedApplicationService = dependencies.applicationService;
+  const commandService = dependencies.storage || !sharedApplicationService
+    ? (repository: WaitlistRepository, publisher: EventPublisher) => new WaitlistApplicationService(
+      repository,
+      publisher,
+      dependencies.farePricing,
+      dependencies.capacityAvailability,
+      dependencies.journeyOrder,
+      dependencies.now,
+      dependencies.offerManagement,
+    )
+    : () => sharedApplicationService;
   const idempotencyStore = dependencies.idempotencyStore ?? defaultIdempotency;
 
   app.addHook("onRequest", async (request, reply) => {
