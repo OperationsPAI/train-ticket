@@ -1,8 +1,8 @@
 # Current Project Status
 
-Last updated: 2026-07-12
+Last updated: 2026-07-15
 
-## Status: Phase 3 domain enrichment complete (22 services enriched with real-world business logic)
+## Status: Phase 3 domain enrichment complete; consumer activation batch reconciled
 
 The greenfield DDD rewrite is a working, end-to-end-verified system. All
 Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
@@ -10,9 +10,10 @@ Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
 and certified by the e2e suite.
 
 Wave 11 completed the persistence baseline from
-`docs/08-contracts/persistence.md`: all 23 deployed business services use
-PostgreSQL aggregate snapshot rows with optimistic concurrency, transactional
-outbox publishing, and durable `processed_events` consumer dedup/idempotency.
+`docs/08-contracts/persistence.md` for the original deployed business-service
+set: PostgreSQL aggregate snapshot rows with optimistic concurrency,
+transactional outbox publishing, and durable `processed_events` consumer
+dedup/idempotency. The deployed business-service set has since grown to 38.
 Redis Streams remain the event bus; Redis is transport only, not a system of
 record. It runs without a persistent volume — a Redis pod deletion wipes
 streams and consumer groups by design, and services recover from PostgreSQL
@@ -21,16 +22,27 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 
 ## What runs today
 
-23 deployed business services + Redis Streams + PostgreSQL, all under
-`deploy/k8s/`, with service images built by `deploy/build-images.sh`:
+38 deployed business services + Redis Streams + PostgreSQL, all under
+`deploy/k8s/`, each with a Dockerfile at `deploy/docker/<service>/Dockerfile`.
+`deploy/build-images.sh` currently builds 34 of them; four deployed services —
+group-booking, invoicing, loyalty-membership, and travel-insurance — have
+Dockerfiles under `deploy/docker/` but are not yet in the script's `services`
+array, so their images are built separately (a known build-script gap).
+`service-catalog.json` currently catalogs 33 of these contexts; the deployed set
+also includes corporate-travel, group-booking, loyalty-membership,
+marketing-campaign, and travel-insurance:
 
 | Language | Services |
 |---|---|
-| Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, journey-order, payment, post-sales, traveler-profile, wallet-promotion |
-| Python (FastAPI) | disruption-recovery, fare-pricing, legacy-acl, reporting, risk-compliance, transfer-management, trip-planning |
-| Node (TS) | account, ancillary-service, customer-service, notification, offer-management |
-| Go | dispatch, fulfillment, place-network, provider-integration, service-plan, supplier-catalog |
-| Rust | capacity-availability, entitlement-ticketing, waitlist |
+| Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, group-booking, journey-order, marketing-campaign, payment, post-sales, traveler-profile, wallet-promotion |
+| Python (FastAPI) | corporate-travel, disruption-recovery, fare-pricing, identity-verification, legacy-acl, reporting, risk-compliance, transfer-management |
+| Node (TS) | account, ancillary-service, customer-service, loyalty-membership, notification, offer-management, waitlist |
+| Go | dispatch, fulfillment, payment-channel, place-network, provider-integration, seat-assignment, service-plan, supplier-catalog, travel-insurance |
+| Rust | capacity-availability, entitlement-ticketing, invoicing, trip-planning |
+
+The deployed `trip-planning` image builds the Rust `services/trip-planning-rs`
+(its Dockerfile compiles that crate; a legacy Python `services/trip-planning`
+tree remains in the repo but is not what ships).
 
 Wave 15 activated **waitlist** (ADR-0002): sold-out demand now queues with
 deadline, payment guarantee and fairness invariants, matches released
@@ -94,6 +106,20 @@ real-world business logic while maintaining backward API compatibility:
 - **reporting**: real-time metrics, anomaly detection
 - **finance-settlement**: daily reconciliation, supplier settlement
 
+## Consumer activation and waitlist conformance (REQ-320..344, REQ-350..370)
+
+The post-enrichment WorkGraph batch activated the remaining event consumers and
+closed the waitlist conformance tail. Reporting now subscribes to every bounded
+context stream for operational rollups. Notification, Customer Service, Journey
+Order, Offer Management, Post Sales, Fulfillment, Finance Settlement, Fare
+Pricing, Traveler Profile, Trip Planning, Payment, and Risk Compliance consume
+the event subsets implemented in their stream configs and handlers. Waitlist
+conformance work tightened the queue/payment-guarantee lifecycle and the
+consumer activation docs have been reconciled so producer event rows distinguish
+active subscribers from still-deferred touchpoints. No remaining deferred
+consumer label should describe a service that is already subscribed and handling
+the event.
+
 Total WorkGraph tasks: done/=187. PRs #307..#329 merged.
 
 ## Verification baseline
@@ -138,7 +164,7 @@ ack-skipped with a WARN; true transients retry. Every DLQ entry now carries
 consumerGroup / failureReason / deadLetteredAt / attempts for attribution.
 
 Wave 13 delivered the observability baseline: an OTel collector runs in
-the integration cluster and all 23 services export OTLP traces through the
+the integration cluster and all deployed services export OTLP traces through the
 five language kits (HTTP server spans plus event-consumer spans carrying
 stream/consumerGroup/eventId/eventType/correlationId; W3C traceparent on
 outbound HTTP; env-driven and zero-overhead when OTEL_* is absent). The DLQ
@@ -161,16 +187,10 @@ e2e smoke (13-observability.sh, receiver-counter based).
 
 ## Current backlog
 
-Nothing queued. Next per ADR-0002: disruption-recovery + ancillary-service,
-then transfer-management. Known small debts: ~~loadgen's ConfigMap is created imperatively by
-deploy/loadgen/run.sh (a stale copy masked new journeys for a day — should move
-under kustomize)~~ — resolved: `loadgen-config-*` is generated from
-`deploy/loadgen/config.yaml` and config changes roll the Deployment;
-Wallet/Promotion's finance/notification consumers remain documented-deferred.
-
-Known accepted gaps after Phase 2: payment remains a simulated provider
-boundary; legacy-acl rebook books the first leg only (caller follows up) — both
-by explicit ruling.
+Nothing queued. ADR-0002 activation and the subsequent consumer-activation /
+waitlist-conformance batch are complete. Known accepted gaps after Phase 2:
+payment remains a simulated provider boundary; legacy-acl rebook books the
+first leg only (caller follows up) — both by explicit ruling.
 
 ## Historical note
 
