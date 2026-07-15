@@ -94,6 +94,10 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
     statusCode: 200,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).accept(param(request, "entryId"), optionalObjectBody(request.body), ctx.correlationId)),
   }));
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/archive-sweep", async (_request, _ctx) => ({
+    statusCode: 200,
+    body: { archived: await runCommand((repository, publisher) => commandService(repository, publisher).archiveTerminalRequests()) },
+  }));
   app.get("/api/v1/waitlist/segments/:segmentRef/:departureDate/queue", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).queueInfo(param(request, "segmentRef"), param(request, "departureDate"), query(request).seatClass, query(request).entryId))
   )));

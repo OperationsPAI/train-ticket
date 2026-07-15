@@ -105,6 +105,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return [...this.entries.values()].filter((entry) => entry.status === "MATCHING" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
   }
 
+  async findArchivable(): Promise<readonly WaitlistEntry[]> {
+    return [...this.entries.values()].filter((entry) => isArchivableStatus(entry.status));
+  }
+
   async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
     return [...this.entries.values()].find((entry) => entry.journeyOrderRef === journeyOrderRef);
   }
@@ -128,7 +132,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
-    const matching = [...this.entries.values()].filter((entry) => entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
+    const matching = [...this.entries.values()].filter((entry) => entry.status !== "CLOSED" && entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
     const classForQueue = (seatClass ?? matching[0]?.seatClass ?? "SECOND") as FareClass;
     return new WaitlistQueue(segmentRef, departureDate, classForQueue, matching.filter((entry) => entry.seatClass === classForQueue));
   }
@@ -238,6 +242,16 @@ export class WaitlistApplicationService {
     return this.promotion.expireDueOffers(correlationId);
   }
 
+  async archiveTerminalRequests(): Promise<readonly WaitlistRequestResource[]> {
+    const archived: WaitlistRequestResource[] = [];
+    for (const entry of await this.repository.findArchivable()) {
+      entry.close();
+      const snapshot = await this.repository.save(entry);
+      archived.push(toWaitlistRequestResource(snapshot));
+    }
+    return archived;
+  }
+
   private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {
     const travelerRefs = request.travelerRef ? [request.travelerRef] : request.travelerRefs ?? [];
     const seatClass = request.seatClass ?? request.travelClass ?? "SECOND";
@@ -277,6 +291,10 @@ export class WaitlistApplicationService {
 
 function isActiveStatus(status: WaitlistEntrySnapshot["status"]): boolean {
   return status === "DRAFT" || status === "QUEUED" || status === "MATCHING" || status === "SUSPENDED";
+}
+
+function isArchivableStatus(status: WaitlistEntrySnapshot["status"]): boolean {
+  return status === "FULFILLED" || status === "EXPIRED" || status === "CANCELLED";
 }
 
 function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistRequestResource {

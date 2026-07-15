@@ -58,6 +58,24 @@ test("PostgresWaitlistRepository.save rejects stale loaded version", async () =>
   await assert.rejects(() => repository.save(persistedEntry(2)), OptimisticConcurrencyConflict);
 });
 
+test("PostgresWaitlistRepository finds archivable terminal rows", async () => {
+  const db = new FakeDb();
+  const repository = new PostgresWaitlistRepository(db as never);
+
+  await repository.findArchivable();
+
+  assert.match(db.calls[0].sql, /status IN \('FULFILLED', 'EXPIRED', 'CANCELLED'\)/u);
+});
+
+test("PostgresWaitlistRepository queue queries exclude CLOSED archival rows", async () => {
+  const db = new FakeDb();
+  const repository = new PostgresWaitlistRepository(db as never);
+
+  await repository.queueFor("seg-1", "2026-07-20", "SECOND");
+
+  assert.match(db.calls[0].sql, /status <> 'CLOSED'/u);
+});
+
 test("PostgresWaitlistRepository.add translates unique violation to conflict", async () => {
   const repository = new PostgresWaitlistRepository(new UniqueViolationDb() as never);
   const entry = WaitlistEntry.create({

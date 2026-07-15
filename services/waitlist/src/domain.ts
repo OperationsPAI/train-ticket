@@ -229,6 +229,13 @@ export class WaitlistEntry {
     this._status = "CANCELLED";
   }
 
+  close(): void {
+    if (this._status !== "FULFILLED" && this._status !== "EXPIRED" && this._status !== "CANCELLED") {
+      throw new DomainError("INVALID_TRANSITION", `Cannot close ${this._status} waitlist entry`);
+    }
+    this._status = "CLOSED";
+  }
+
   toSnapshot(queuePosition = 0): WaitlistEntrySnapshot {
     return {
       entryId: this.entryId,
