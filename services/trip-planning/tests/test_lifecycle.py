@@ -43,7 +43,7 @@ class ProductionMessagingWiringTest(unittest.TestCase):
             wait_for_handlers(subscriber)
             self.assertEqual(len(subscriber.handlers), 1)
             streams, group, consumer_name, _handler = subscriber.handlers[0]
-            self.assertEqual(streams, ["events:place-network", "events:service-plan", "events:capacity-availability"])
+            self.assertEqual(streams, ["events:place-network", "events:service-plan", "events:capacity-availability", "events:transfer-management"])
             self.assertEqual(group, "trip-planning")
             self.assertTrue(consumer_name.startswith("trip-planning-"))
             event = EventEnvelope(eventId="evt-upstream", eventType="PlaceUpdated", producer="place-network", payload={"placeRef": "station:A"})
