@@ -36,16 +36,7 @@ final class InboundEventPayload {
     }
 
     Money requiredMoney(String field) {
-        Map<?, ?> money = asMap(payload.get(field), field);
-        Object currency = money.get("currency");
-        Object minorUnits = money.get("minorUnits");
-        if (!(currency instanceof String currencyCode) || currencyCode.isBlank()) {
-            throw new DomainRuleViolation(field + ".currency is required");
-        }
-        if (!(minorUnits instanceof Number number)) {
-            throw new DomainRuleViolation(field + ".minorUnits is required");
-        }
-        return Money.fromMinorUnits(number.longValue(), currencyCode);
+        return moneyFromObject(payload.get(field), field);
     }
 
     Money moneyFromApprovedActions() {
@@ -95,8 +86,12 @@ final class InboundEventPayload {
                 return text;
             }
         }
-        Object direct = payload.get("orderId");
-        return direct instanceof String text && !text.isBlank() ? text : null;
+        return optionalTextValue("orderId");
+    }
+
+    String optionalTextValue(String field) {
+        Object value = payload.get(field);
+        return value instanceof String text && !text.isBlank() ? text : null;
     }
 
     private static Money moneyFromObject(Object value, String field) {

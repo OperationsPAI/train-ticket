@@ -31,6 +31,9 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             }
             dispatch(envelope);
             return HandlerResult.SUCCESS;
+        } catch (AckSkipEventException exception) {
+            LOGGER.warn("eventType={} eventId={} ack-skipped: {}", envelope.eventType(), envelope.eventId(), exception.getMessage());
+            return HandlerResult.SUCCESS;
         } catch (DomainRuleViolation | IllegalArgumentException exception) {
             // The nested command transaction may already be rollback-only, so a
             // clean commit of SUCCESS is impossible here anyway; classify FATAL
@@ -66,6 +69,8 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             handleChannelRefundSucceeded(envelope);
         } else if ("ChannelRefundFailed".equals(envelope.eventType()) || "ChannelRefundMissed".equals(envelope.eventType())) {
             handleChannelRefundFailed(envelope);
+        } else if ("AncillaryOrderItemRefundPending".equals(envelope.eventType())) {
+            handleAncillaryOrderItemRefundPending(envelope);
         }
     }
 
@@ -157,30 +162,56 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             // nothing to refund, so this event is a no-op for payment.
             return;
         }
-        com.trainticket.payment.domain.ChannelRef route = paymentCommands.getIntent(intentId).channelRef();
-        if (route != null && isSimChannel(route.channel()) && route.channelOrderId() != null && route.channelTransactionId() != null) {
-            paymentCommands.requestRefund(
-                intentId,
-                amount,
-                reason == null ? "post-sales-approved" : reason,
-                caseId,
-                caseId,
-                envelope.correlationId(),
-                route
-            );
+        requestRefund(intentId, amount, reason == null ? "post-sales-approved" : reason, caseId, caseId, envelope.correlationId());
+    }
+
+    private void handleAncillaryOrderItemRefundPending(EventEnvelope envelope) {
+        InboundEventPayload payload = InboundEventPayload.from(envelope);
+        String recommendation = payload.requiredText("recommendation");
+        if ("NO_REFUND".equals(recommendation) || "MANUAL_REVIEW".equals(recommendation)) {
             return;
         }
-        paymentCommands.requestRefund(
+        if (!"FULL_REFUND".equals(recommendation) && !"PARTIAL_REFUND".equals(recommendation)) {
+            throw new AckSkipEventException("unknown ancillary refund recommendation " + recommendation);
+        }
+        Money amount = payload.requiredMoney("refundableAmount");
+        if (amount.isZero()) {
+            return;
+        }
+        String intentId = paymentCommands.findIntentIdByBusinessRef(payload.requiredText("journeyOrderId")).orElse(null);
+        if (intentId == null) {
+            throw new AckSkipEventException("no payment intent found for ancillary refund request");
+        }
+        requestRefund(
             intentId,
             amount,
-            reason == null ? "post-sales-approved" : reason,
-            caseId,
-            caseId,
+            payload.requiredText("reasonCode"),
+            businessCaseRef(payload),
+            "ancillary-refund:" + envelope.eventId(),
             envelope.correlationId()
         );
     }
 
-    private static boolean isSimChannel(String channel) {
-        return "ALIPAY_SIM".equals(channel) || "WECHAT_SIM".equals(channel) || "UNIONPAY_SIM".equals(channel);
+    private void requestRefund(String intentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId) {
+        com.trainticket.payment.domain.ChannelRef route = paymentCommands.getIntent(intentId).channelRef();
+        if (route != null && route.channel() != null && route.channelOrderId() != null && route.channelTransactionId() != null) {
+            paymentCommands.requestRefund(intentId, amount, reason, businessCaseRef, idempotencyKey, correlationId, route);
+            return;
+        }
+        paymentCommands.requestRefund(intentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
+    }
+
+    private static String businessCaseRef(InboundEventPayload payload) {
+        String postSalesCaseId = payload.optionalTextValue("postSalesCaseId");
+        if (postSalesCaseId != null) {
+            return postSalesCaseId;
+        }
+        return "ancillary:" + payload.requiredText("ancillaryOrderItemId");
+    }
+
+    private static final class AckSkipEventException extends RuntimeException {
+        private AckSkipEventException(String message) {
+            super(message);
+        }
     }
 }
