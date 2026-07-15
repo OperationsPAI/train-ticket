@@ -1,6 +1,6 @@
 # Payment Channel — Events & Commands
 
-Last updated: 2026-07-10
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -90,7 +90,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | `CreateChannelOrder` command accepted from Payment handoff. |
 
 **Payload:**
@@ -116,7 +116,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | `SubmitChannelOrder` records an outbound SIM submit attempt. |
 
 **Payload:**
@@ -139,7 +139,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | SIM deterministically accepts the order but finality is not yet known. |
 
 **Payload:**
@@ -234,7 +234,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | `QueryChannelOrder` records deterministic status query evidence. |
 
 **Payload:**
@@ -277,7 +277,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | `CreateChannelRefund` command accepted from Payment handoff. |
 
 **Payload:**
@@ -311,7 +311,7 @@ out of `ACCEPTED`.
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | `SubmitChannelRefund` records an outbound SIM refund attempt. |
 
 **Payload:**
@@ -409,7 +409,7 @@ out of `ACCEPTED`.
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | none in this wave (payment ack-skips operational attempt/query facts per messaging.md row 20a; deferred: reporting) |
+| **Consumers** | reporting (payment ack-skips operational attempt/query facts per messaging.md row 20a) |
 | **Trigger** | `QueryChannelRefund` records deterministic refund query evidence. |
 
 **Payload:**
@@ -505,7 +505,7 @@ out of `ACCEPTED`.
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | finance-settlement ack-skip if it owns the match; none in this wave (deferred: reporting). |
+| **Consumers** | reporting; finance-settlement ack-skip if it owns the match. |
 | **Trigger** | Statement matching links a line to platform/channel facts. |
 
 **Payload:**
@@ -557,7 +557,7 @@ out of `ACCEPTED`.
 | Field | Description |
 |---|---|
 | **Producer** | payment-channel |
-| **Consumers** | finance-settlement ack-skip; none in this wave (deferred: reporting). |
+| **Consumers** | reporting; finance-settlement ack-skip. |
 | **Trigger** | A discrepancy is linked to an existing Finance reconciliation case. |
 
 **Payload:**

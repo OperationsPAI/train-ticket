@@ -1,6 +1,6 @@
 # Identity Verification — Events & Commands
 
-Last updated: 2026-07-10
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -9,9 +9,9 @@ This contract enumerates the Identity Verification events for ADR-0003 wave A. I
 Activation-wave rulings:
 
 - **RULING (ADR-0003 wave A):** SIM 公安网关 is a deterministic, seedable in-process simulator. The default policy maps the normalized document number tail digit as `0`-`5` -> pass, `6`-`8` -> reject, and `9` -> manual review. No real公安/学信/民政/军残/铁路 endpoint, credential, token, or raw payload is used or emitted.
-- Journey Order uses the synchronous pre-order hook documented in the HTTP API before accepting order creation; Identity Verification events do not create Journey Order state transitions.
-- Fare & Pricing uses only the read-only certificate query for discount-rule eligibility. This event surface publishes certificate facts but does not compute fare amounts or Money.
-- Purchase-limit fact events are published for future Risk & Compliance consumption. Risk & Compliance is not an active consumer in this wave and no `AssessRisk` command is emitted by this context.
+- Journey Order uses the synchronous pre-order hook documented in the HTTP API before accepting order creation; Identity Verification events do not create Journey Order state transitions, but Journey Order now consumes identity and eligibility facts for projections and idempotent convergence.
+- Fare & Pricing uses the read-only certificate query for discount-rule eligibility and now consumes certificate/usage facts to maintain its eligibility read model. This event surface does not compute fare amounts or Money.
+- Purchase-limit fact events are now active Risk & Compliance inputs for duplicate-ticket/risk tracking. Customer Service consumes the failed/missed exception subset for support context.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and all timestamps are RFC3339 UTC. Envelope fields, including optional trace context propagation, follow `docs/08-contracts/messaging.md` and `docs/08-contracts/shared-primitives.md`. Event payloads MUST NOT carry unmasked document numbers, full names, birth dates, SIM raw request/response, or external credentials.
 
@@ -92,7 +92,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: traveler-profile, journey-order, customer-service) |
+| **Consumers** | traveler-profile, journey-order; deferred: customer-service |
 | **Trigger** | `RegisterCredential` accepts hashed/masked credential material. |
 
 **Payload:**
@@ -116,7 +116,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: journey-order, customer-service, reporting) |
+| **Consumers** | journey-order, reporting; deferred: customer-service |
 | **Trigger** | `StartVerificationCase` creates a new case for a credential and purpose. |
 
 **Payload:**
@@ -138,7 +138,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: reporting) |
+| **Consumers** | reporting |
 | **Trigger** | Case material is submitted to the deterministic SIM adapter. |
 
 **Payload:**
@@ -160,7 +160,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: journey-order, traveler-profile, customer-service, reporting) |
+| **Consumers** | journey-order, traveler-profile, reporting; deferred: customer-service |
 | **Trigger** | Deterministic SIM result is `MATCH` or an audited override produces a passed conclusion. |
 
 **Payload:**
@@ -184,7 +184,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: journey-order, traveler-profile, customer-service, reporting) |
+| **Consumers** | journey-order, traveler-profile, customer-service, reporting |
 | **Trigger** | Deterministic SIM result is rejected, manual review is required, or audited conclusion fails. |
 
 **Payload:**
@@ -207,7 +207,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: fare-pricing, journey-order, customer-service) |
+| **Consumers** | fare-pricing, journey-order; deferred: customer-service |
 | **Trigger** | `RegisterEligibilityCertificate` stores certificate material hash and policy scope. |
 
 **Payload:**
@@ -238,7 +238,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: fare-pricing, journey-order, customer-service) |
+| **Consumers** | fare-pricing, journey-order; deferred: customer-service |
 | **Trigger** | Certificate material passes the deterministic eligibility simulator or audit. |
 
 **Payload:**
@@ -268,7 +268,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: journey-order, fare-pricing; future: risk-compliance) |
+| **Consumers** | journey-order, fare-pricing |
 | **Trigger** | Order intent reserves one annual certificate usage. |
 
 **Payload:**
@@ -291,7 +291,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: journey-order, fare-pricing; future: risk-compliance) |
+| **Consumers** | journey-order, fare-pricing |
 | **Trigger** | A protected Journey Order was accepted and consumes the reserved usage. |
 
 **Payload:**
@@ -313,7 +313,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (deferred: journey-order, fare-pricing; future: risk-compliance) |
+| **Consumers** | journey-order, fare-pricing |
 | **Trigger** | A reservation is released because order creation is abandoned, cancelled before protection, or precondition fails. |
 
 **Payload:**
@@ -335,7 +335,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (future: risk-compliance; deferred: reporting) |
+| **Consumers** | risk-compliance, reporting |
 | **Trigger** | Pre-order check records an idempotent fact for a protected identity scope. |
 
 **Payload:**
@@ -361,7 +361,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (future: risk-compliance; deferred: reporting) |
+| **Consumers** | risk-compliance, reporting |
 | **Trigger** | Journey Order acceptance confirms a recorded purchase-limit fact. |
 
 **Payload:**
@@ -381,7 +381,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (future: risk-compliance; deferred: reporting) |
+| **Consumers** | risk-compliance, reporting |
 | **Trigger** | Order intent is abandoned or cancelled before the protection point. |
 
 **Payload:**
@@ -402,7 +402,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (future: risk-compliance; deferred: reporting) |
+| **Consumers** | risk-compliance, customer-service, reporting |
 | **Trigger** | A monitor detects no confirm/release before the fact TTL bucket. |
 
 **Payload:**
@@ -422,7 +422,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | none in this wave (future: risk-compliance; deferred: reporting) |
+| **Consumers** | risk-compliance, customer-service, reporting |
 | **Trigger** | Ledger detects a conflict or invariant violation while recording or reconciling a limit fact. |
 
 **Payload:**
@@ -457,4 +457,4 @@ Identity Verification may consume `RiskBlockApplied` and `RiskBlockLifted` from 
 | `journey-order` | Event/command mapping | Do not add new order lifecycle events for identity results in this wave; existing create rejection uses existing validation/domain error paths. |
 | `fare-pricing` | Quote eligibility adapter | Query active `EligibilityCertificate` summaries read-only before discount evaluation. |
 | `fare-pricing` | Discount enum mapping | Map `STUDENT`, `CHILD`, `MILITARY_DISABLED` without changing Money fields. |
-| `risk-compliance` | Future subscription placeholder | No active consumer in this wave; future consumer will deduplicate purchase-limit facts by envelope `eventId` and fact ID. |
+| `risk-compliance` | Purchase-limit fact projection | Actively consumes `PurchaseLimitFactRecorded`, `PurchaseLimitFactConfirmed`, `PurchaseLimitFactReleased`, `PurchaseLimitFactMissed`, and `PurchaseLimitFactFailed` from `events:identity-verification`; deduplicate by envelope `eventId` and fact ID. |

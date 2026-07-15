@@ -1,6 +1,6 @@
 # Ancillary Service — Events & Commands
 
-Last updated: 2026-07-09
+Last updated: 2026-07-15
 
 ## Scope and activation-wave rulings
 
@@ -29,9 +29,10 @@ Activation-wave rulings:
 - Ancillary Service subscribes only to `JourneyOrderCancelled` from
   `events:journey-order` in this wave. It cancels associated non-terminal order
   items idempotently and emits normal cancellation lifecycle facts.
-- Finance Settlement, Notification, and Post Sales are intended consumers for the
-  published event surface, but concrete consumer implementations are deferred to
-  later waves. Reporting may consume events for read models and metrics.
+- Finance Settlement, Notification, Post Sales, Journey Order, Offer Management,
+  Fulfillment, Payment, and Reporting now consume the event subsets listed below.
+  Catalog-item notifications remain a documented future touchpoint until the
+  notification service maps those event types.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
@@ -122,7 +123,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: offer-management, notification, reporting |
+| **Consumers** | offer-management, reporting; deferred: notification |
 | **Trigger** | `PublishCatalogItem` command publishes a configured catalog item. |
 
 **Payload:**
@@ -153,7 +154,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: offer-management, notification, reporting |
+| **Consumers** | offer-management, reporting; deferred: notification |
 | **Trigger** | `SuspendCatalogItem` command pauses sale of a published or suspended item. |
 
 **Payload:**
@@ -174,7 +175,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: offer-management, notification, reporting |
+| **Consumers** | offer-management, reporting; deferred: notification |
 | **Trigger** | `SupersedeCatalogItem` command replaces a catalog version. |
 
 **Payload:**
@@ -196,7 +197,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: offer-management, journey-order, notification, reporting |
+| **Consumers** | offer-management, journey-order, notification, reporting |
 | **Trigger** | `QuoteAncillaryOffer` command succeeds after minimum eligibility and Fare & Pricing dynamic-rule pricing or catalog fallback pricing. |
 
 **Payload:**
@@ -229,7 +230,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: offer-management, journey-order, notification, reporting |
+| **Consumers** | offer-management, journey-order, notification, reporting |
 | **Trigger** | Quote validity window elapsed or explicit scheduler/domain expiry. |
 
 **Payload:**
@@ -252,7 +253,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, notification, reporting |
+| **Consumers** | journey-order, notification, reporting |
 | **Trigger** | `SelectAncillaryOffer` creates an ancillary order item from a valid quote. |
 
 **Payload:**
@@ -282,7 +283,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, notification, reporting |
+| **Consumers** | journey-order, notification, reporting |
 | **Trigger** | `ConfirmAncillaryItem` begins supplier/voucher/entitlement confirmation but is not final. |
 
 **Payload fields:** same identity, reference, `payableAmount`, and
@@ -295,7 +296,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, notification, reporting |
+| **Consumers** | journey-order, notification, reporting |
 | **Trigger** | `ConfirmAncillaryItem` confirms the service after required prerequisites. |
 
 **Payload fields:** same identity, reference, `payableAmount`, and
@@ -308,7 +309,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: fulfillment, journey-order, notification, reporting |
+| **Consumers** | fulfillment, journey-order, notification, reporting |
 | **Trigger** | `MarkFulfillmentReady` records voucher, seat, consign, or service-window readiness. |
 
 **Payload fields:** same identity/reference fields as
@@ -321,7 +322,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, finance-settlement, notification, post-sales, reporting |
+| **Consumers** | journey-order, finance-settlement, notification, post-sales, reporting |
 | **Trigger** | A fulfillment fact completes the service, such as meal issued, lounge redeemed, fast track used, pickup completed, baggage/consign completed, or insurance activated. |
 
 **Payload fields:** same identity/reference fields as
@@ -333,7 +334,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, notification, post-sales, reporting |
+| **Consumers** | journey-order, notification, post-sales, reporting |
 | **Trigger** | Confirmation or fulfillment fails, including provider fulfillment failure facts. |
 
 **Payload fields:** same identity/reference fields as
@@ -346,7 +347,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, finance-settlement, notification, post-sales, reporting |
+| **Consumers** | journey-order, finance-settlement, notification, post-sales, reporting |
 | **Trigger** | Explicit cancel command or `JourneyOrderCancelled` consumed from Journey Order. |
 
 **Payload:**
@@ -374,7 +375,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: payment, finance-settlement, notification, post-sales, reporting |
+| **Consumers** | payment, finance-settlement, notification, post-sales, reporting |
 | **Trigger** | `SuggestAncillaryRefund` determines a refund is due; Payment execution is deferred. |
 
 **Payload:**
@@ -401,7 +402,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: journey-order, finance-settlement, notification, post-sales, reporting |
+| **Consumers** | journey-order, finance-settlement, notification, post-sales, reporting |
 | **Trigger** | `RecordAncillaryRefunded` records external Payment or operations refund completion. |
 
 **Payload:**
@@ -425,7 +426,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | deferred: fulfillment, finance-settlement, notification, post-sales, reporting |
+| **Consumers** | fulfillment, finance-settlement, notification, post-sales, reporting |
 | **Trigger** | `RecordFulfillmentFact` appends an idempotent fulfillment fact to an order item. |
 
 **Payload:**
@@ -489,9 +490,4 @@ No Journey Order contract shape is changed by this subscription.
 
 | Downstream context | Deferred events | Purpose when activated |
 |---|---|---|
-| Finance Settlement | `AncillaryOrderItemFulfilled`, `AncillaryOrderItemCancelled`, `AncillaryOrderItemRefundPending`, `AncillaryOrderItemRefunded`, `AncillaryFulfillmentFactRecorded` | Revenue recognition, refund/retention facts, supplier-cost read models. |
-| Notification | quoted/expired, order-item lifecycle, refund, and fulfillment-fact events | User-facing ancillary confirmations, failures, voucher/redeem, and refund progress. |
-| Post Sales | order-item cancellation, failure, fulfillment, refund-pending/refunded, fulfillment facts | Main-ticket after-sales impact evaluation and future compensation workflows. |
-| Journey Order | order-item selected/confirmed/ready/fulfilled/cancelled/refunded lifecycle | Future order-detail projection only; this wave does not modify Journey Order contracts. |
-| Fulfillment | `AncillaryOrderItemFulfillmentReady`, `AncillaryFulfillmentFactRecorded`, selected completion lifecycle facts | Future service voucher and evidence handoff. |
-| Reporting | all Ancillary Service events | Attach rate, refund rate, fulfillment failure, and supplier-performance read models. |
+| Notification | catalog item publish/suspend/supersede events | Optional traveler/ops catalog availability messages; notification currently handles offer/order/refund/fulfillment triggers only. |
