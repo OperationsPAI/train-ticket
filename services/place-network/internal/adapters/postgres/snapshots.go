@@ -25,7 +25,7 @@ type placeSnapshot struct {
 
 type walkingEdgeSnapshot struct {
 	ToNodeID           string `json:"toNodeId"`
-	WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+	WalkingTimeMinutes *int   `json:"walkingTimeMinutes,omitempty"`
 }
 
 type nodeSnapshot struct {
@@ -49,7 +49,7 @@ func placeSnapshotFromDomain(place domain.Place) placeSnapshot {
 func nodeSnapshotFromDomain(node domain.TransportNode) nodeSnapshot {
 	walkingEdges := make([]walkingEdgeSnapshot, len(node.WalkingEdges))
 	for i, edge := range node.WalkingEdges {
-		walkingEdges[i] = walkingEdgeSnapshot{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+		walkingEdges[i] = walkingEdgeSnapshot{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
 	}
 	return nodeSnapshot{ID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: append([]domain.TransportMode(nil), node.ServingModes...), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdges, CreatedAt: node.CreatedAt.UTC()}
 }

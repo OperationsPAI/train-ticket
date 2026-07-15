@@ -105,7 +105,7 @@ func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*Cre
 
 type WalkingEdgeResponse struct {
 	ToNodeID           string `json:"toNodeId"`
-	WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+	WalkingTimeMinutes *int   `json:"walkingTimeMinutes,omitempty"`
 }
 
 type NodeSummary struct {
@@ -194,7 +194,7 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 
 type WalkingEdgeRequest struct {
 	ToNodeID           string
-	WalkingTimeMinutes int
+	WalkingTimeMinutes *int
 }
 
 type CreateTransportNodeRequest struct {
@@ -329,7 +329,7 @@ func walkingEdgesToResponse(edges []domain.WalkingEdge) []WalkingEdgeResponse {
 	}
 	out := make([]WalkingEdgeResponse, len(edges))
 	for i, edge := range edges {
-		out[i] = WalkingEdgeResponse{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+		out[i] = WalkingEdgeResponse{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
 	}
 	return out
 }
@@ -340,7 +340,7 @@ func walkingEdgesToPayload(edges []domain.WalkingEdge) []domain.WalkingEdgePaylo
 	}
 	out := make([]domain.WalkingEdgePayload, len(edges))
 	for i, edge := range edges {
-		out[i] = domain.WalkingEdgePayload{ToNodeID: edge.ToNodeID, WalkingTimeMinutes: edge.WalkingTimeMinutes}
+		out[i] = domain.WalkingEdgePayload{ToNodeID: edge.ToNodeID, WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
 	}
 	return out
 }

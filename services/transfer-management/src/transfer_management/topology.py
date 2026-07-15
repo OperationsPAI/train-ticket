@@ -20,7 +20,7 @@ class PlaceNetworkValidationError(ValueError):
 @dataclass(frozen=True, slots=True)
 class WalkingEdge:
     toNodeId: str
-    walkingTimeMinutes: int
+    walkingTimeMinutes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +54,7 @@ class TopologySnapshot:
 
     @property
     def walkingTimeMinutes(self) -> int | None:
-        direct_edges = [edge.walkingTimeMinutes for edge in self.fromNode.walkingEdges if edge.toNodeId == self.toNode.nodeId]
+        direct_edges = [edge.walkingTimeMinutes for edge in self.fromNode.walkingEdges if edge.toNodeId == self.toNode.nodeId and edge.walkingTimeMinutes is not None]
         return min(direct_edges) if direct_edges else None
 
 
@@ -154,7 +154,5 @@ def _walking_edges(value: Any) -> tuple[WalkingEdge, ...]:
         if not to_node_id:
             raise PlaceNetworkUnavailable("place-network walkingEdges item missing toNodeId")
         walking_time = _optional_non_negative_int(item.get("walkingTimeMinutes"), "walkingTimeMinutes")
-        if walking_time is None:
-            raise PlaceNetworkUnavailable("place-network walkingEdges item missing walkingTimeMinutes")
         edges.append(WalkingEdge(to_node_id, walking_time))
     return tuple(edges)
