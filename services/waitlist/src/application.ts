@@ -99,6 +99,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return [...this.entries.values()].filter((entry) => entry.status === "MATCHING" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
   }
 
+  async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
+    return [...this.entries.values()].find((entry) => entry.journeyOrderRef === journeyOrderRef);
+  }
+
   async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
     const queue = this.buildQueue(segmentRef, departureDate, seatClass);
     return queue.allEntries().map((entry) => this.snapshot(entry));
@@ -187,6 +191,24 @@ export class WaitlistApplicationService {
 
   async handleCapacityFreed(event: WaitlistCapacityFreed, correlationId?: string) {
     return this.promotion.onCapacityFreed(event, correlationId);
+  }
+
+  async handleJourneyOrderConfirmed(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
+    const entry = await this.repository.findByJourneyOrderRef?.(orderId);
+    if (!entry) return undefined;
+    if (entry.status === "FULFILLED") return toWaitlistRequestResource(await this.snapshot(entry));
+    const now = this.now();
+    entry.accept(now, orderId);
+    const snapshot = await this.repository.save(entry);
+    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, orderId, null, correlationId)]);
+    return toWaitlistRequestResource(snapshot);
+  }
+
+  async handleJourneyOrderCancelled(orderId: string): Promise<WaitlistRequestResource | undefined> {
+    const entry = await this.repository.findByJourneyOrderRef?.(orderId);
+    if (!entry || entry.status !== "MATCHING") return undefined;
+    entry.returnToQueue();
+    return toWaitlistRequestResource(await this.repository.save(entry));
   }
 
   async expireDueOffers(correlationId?: string) {
