@@ -3,6 +3,7 @@ package com.trainticket.payment.application;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.payment.domain.Money;
@@ -96,6 +97,31 @@ class PaymentMessagingApplicationTest {
     }
 
     @Test
+    void ancillaryRefundPendingRequestsRefundAndDeduplicatesByEnvelopeEventId() {
+        FakeEventPublisher publisher = new FakeEventPublisher();
+        PaymentCommandService commands = testPaymentCommandService(Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC), publisher);
+        String paymentIntentId = commands.createIntent("jo-ancillary", "purchase", Money.fromMinorUnits(1000, "CNY"), "trav-1", "idem-create-ancillary", "corr-create").paymentIntentId();
+        commands.captureIntent(paymentIntentId, "idem-capture-ancillary", "corr-create");
+        PaymentInboundEventHandler handler = new PaymentInboundEventHandler(new ConsumedEventDeduplicator(), commands);
+        EventEnvelope refundPending = ancillaryRefundPending("evt-0194f2e0-7b3e-7610-8284-5c26e8b0c006", "jo-ancillary", 400L);
+
+        assertEquals(HandlerResult.SUCCESS, handler.handle(refundPending));
+        assertEquals(HandlerResult.SUCCESS, handler.handle(refundPending));
+
+        EventEnvelope requested = publisher.published().stream()
+            .filter(envelope -> "RefundRequested".equals(envelope.eventType()))
+            .findFirst()
+            .orElse(null);
+        assertNotNull(requested);
+        Map<?, ?> payload = assertInstanceOf(Map.class, requested.payload());
+        assertEquals(paymentIntentId, payload.get("paymentIntentId"));
+        assertEquals("ancillary:aoi-1", payload.get("businessCaseRef"));
+        assertEquals("SERVICE_NOT_PROVIDED", payload.get("reason"));
+        assertEquals(Map.of("currency", "CNY", "minorUnits", 400L), payload.get("amount"));
+        assertEquals(1, publisher.published().stream().filter(envelope -> "RefundRequested".equals(envelope.eventType())).count());
+    }
+
+    @Test
     void mapsRefundFailedPayloadToContractShape() {
         EventEnvelope envelope = EventEnvelopeMapper.fromDomainEvent(new com.trainticket.payment.domain.RefundFailed(
             new EventEnvelope(
@@ -149,6 +175,33 @@ class PaymentMessagingApplicationTest {
                 "segmentRef", "seg-1",
                 "travelerRef", "trav-1",
                 "idempotencyKey", idempotencyKey
+            )
+        );
+    }
+
+    private static EventEnvelope ancillaryRefundPending(String eventId, String journeyOrderId, long refundableMinorUnits) {
+        return new EventEnvelope(
+            eventId,
+            "AncillaryOrderItemRefundPending",
+            Instant.parse("2026-07-05T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c112",
+            "ancillary-service",
+            1,
+            Map.ofEntries(
+                Map.entry("ancillaryOrderItemId", "aoi-1"),
+                Map.entry("journeyOrderId", journeyOrderId),
+                Map.entry("travelerRef", "trav-1"),
+                Map.entry("catalogItemId", "aci-1"),
+                Map.entry("serviceType", "MEAL"),
+                Map.entry("payableAmount", Map.of("currency", "CNY", "minorUnits", 600L)),
+                Map.entry("refundableAmount", Map.of("currency", "CNY", "minorUnits", refundableMinorUnits)),
+                Map.entry("recommendation", "PARTIAL_REFUND"),
+                Map.entry("reasonCode", "SERVICE_NOT_PROVIDED"),
+                Map.entry("previousStatus", "CANCELLED"),
+                Map.entry("status", "REFUND_PENDING"),
+                Map.entry("requestedAt", "2026-07-05T10:31:00Z"),
+                Map.entry("aggregateVersion", 3)
             )
         );
     }
