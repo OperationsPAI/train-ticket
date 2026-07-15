@@ -24,7 +24,7 @@ data:
     processors:
       memory_limiter:
         check_interval: 5s
-        limit_mib: 96
+        limit_mib: 768
       batch:
         timeout: 2s
         send_batch_size: 1024
@@ -116,10 +116,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 256Mi
             limits:
-              cpu: 250m
-              memory: 128Mi
+              cpu: 500m
+              memory: 1Gi
           readinessProbe:
             httpGet:
               path: /
