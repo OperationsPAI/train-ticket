@@ -95,7 +95,7 @@ public final class TravelerProfile {
         }
         profile.verificationFacts.clear();
         for (ExternalVerificationFact fact : Objects.requireNonNull(verificationFacts, "verificationFacts are required")) {
-            profile.verificationFacts.put(fact.credentialRecordId(), fact);
+            profile.verificationFacts.put(verificationFactKey(fact), fact);
         }
         profile.preferences = Objects.requireNonNull(preferences, "preferences are required");
         profile.domainEvents.clear();
@@ -307,35 +307,73 @@ public final class TravelerProfile {
 
     public void recordExternalVerificationFact(ExternalVerificationFact fact) {
         requireNotDeactivated();
-        ExternalVerificationFact current = verificationFacts.get(fact.credentialRecordId());
-        if (current == null) {
-            verificationFacts.put(fact.credentialRecordId(), fact);
-            return;
-        }
-        if (!current.recordedAt().isAfter(fact.recordedAt())) {
-            verificationFacts.put(fact.credentialRecordId(), mergeVerificationFact(current, fact));
+        ExternalVerificationFact enrichedFact = enrichWithRegisteredCredentialMaterial(fact);
+        verificationFacts.put(verificationFactKey(enrichedFact), enrichedFact);
+        if (enrichedFact.status() == ExternalVerificationStatus.REGISTERED) {
+            reconcilePreviouslyRecordedFailures(enrichedFact);
+        } else if (makesDocumentUnusable(enrichedFact)) {
+            markMatchingDocumentUnusable(enrichedFact);
         }
     }
 
-    private static ExternalVerificationFact mergeVerificationFact(ExternalVerificationFact current, ExternalVerificationFact next) {
-        return new ExternalVerificationFact(
-            next.credentialRecordId(),
-            next.verificationCaseId(),
-            next.status(),
-            next.documentType() == null ? current.documentType() : next.documentType(),
-            next.maskedDocumentNo() == null ? current.maskedDocumentNo() : next.maskedDocumentNo(),
-            next.documentHash() == null ? current.documentHash() : next.documentHash(),
-            next.policyVersion(),
-            next.reasonCode(),
-            next.validFrom(),
-            next.validUntil() == null ? current.validUntil() : next.validUntil(),
-            next.recordedAt(),
-            next.sourceEventId()
-        );
+    private ExternalVerificationFact enrichWithRegisteredCredentialMaterial(ExternalVerificationFact fact) {
+        if (fact.hasDocumentMaterial()) {
+            return fact;
+        }
+        ExternalVerificationFact registration = latestRegistrationForCredential(fact.credentialRecordId());
+        if (registration == null) {
+            return fact;
+        }
+        return fact.withDocumentMaterialFrom(registration);
+    }
+
+    private ExternalVerificationFact latestRegistrationForCredential(String credentialRecordId) {
+        ExternalVerificationFact latest = null;
+        for (ExternalVerificationFact candidate : verificationFacts.values()) {
+            if (candidate.status() == ExternalVerificationStatus.REGISTERED
+                && candidate.credentialRecordId().equals(credentialRecordId)
+                && (latest == null || !candidate.recordedAt().isBefore(latest.recordedAt()))) {
+                latest = candidate;
+            }
+        }
+        return latest;
+    }
+
+    private void reconcilePreviouslyRecordedFailures(ExternalVerificationFact registration) {
+        for (ExternalVerificationFact candidate : verificationFacts.values()) {
+            if (makesDocumentUnusable(candidate) && candidate.credentialRecordId().equals(registration.credentialRecordId())) {
+                markMatchingDocumentUnusable(candidate.withDocumentMaterialFrom(registration));
+            }
+        }
+    }
+
+    private static boolean makesDocumentUnusable(ExternalVerificationFact fact) {
+        return fact.status() == ExternalVerificationStatus.FAILED || fact.status() == ExternalVerificationStatus.MANUAL_REVIEW_REQUIRED;
+    }
+
+    private void markMatchingDocumentUnusable(ExternalVerificationFact fact) {
+        if (fact.documentHash() == null) {
+            return;
+        }
+        for (Document document : documents.values()) {
+            if (document.documentNumberHash().equals(fact.documentHash())) {
+                document.revoke("identity-verification " + fact.status().name() + " for case " + fact.verificationCaseId());
+            }
+        }
     }
 
     public ExternalVerificationFact verificationFactForCredential(String credentialRecordId) {
-        return verificationFacts.get(requireText(credentialRecordId, "credentialRecordId"));
+        return verificationFacts.values().stream()
+            .filter(fact -> fact.credentialRecordId().equals(requireText(credentialRecordId, "credentialRecordId")))
+            .max((left, right) -> left.recordedAt().compareTo(right.recordedAt()))
+            .orElse(null);
+    }
+
+    private static String verificationFactKey(ExternalVerificationFact fact) {
+        if (fact.verificationCaseId() == null) {
+            return fact.credentialRecordId() + ":" + fact.sourceEventId();
+        }
+        return fact.credentialRecordId() + ":" + fact.verificationCaseId() + ":" + fact.sourceEventId();
     }
 
     // --- Preference commands ---

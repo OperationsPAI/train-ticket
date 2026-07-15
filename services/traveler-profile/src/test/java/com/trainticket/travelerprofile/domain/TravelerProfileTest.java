@@ -298,6 +298,34 @@ class TravelerProfileTest {
             profile.requireCanReferenceForNewBooking(NOW));
     }
 
+    @Test
+    void identityVerificationFailureRevokesMatchingDocumentAndPreservesCaseHistory() {
+        TravelerProfile profile = sampleActiveProfile();
+        Document primary = profile.primaryDocument();
+        ExternalVerificationFact registered = new ExternalVerificationFact(
+            "crd-1", null, ExternalVerificationStatus.REGISTERED,
+            "ID_CARD", primary.maskedDocumentRef(), primary.documentNumberHash(),
+            null, null, null, null, NOW.minusSeconds(60), "evt-registered"
+        );
+        profile.recordExternalVerificationFact(registered);
+        profile.recordExternalVerificationFact(new ExternalVerificationFact(
+            "crd-1", "ivc-pass", ExternalVerificationStatus.PASSED,
+            null, null, null, "iv-policy-2026", null,
+            NOW, FUTURE, NOW, "evt-passed"
+        ));
+        profile.recordExternalVerificationFact(new ExternalVerificationFact(
+            "crd-1", "ivc-fail", ExternalVerificationStatus.FAILED,
+            null, null, null, "iv-policy-2026", "NAME_DOCUMENT_MISMATCH",
+            null, null, NOW.plusSeconds(30), "evt-failed"
+        ));
+
+        assertEquals(DocumentStatus.REVOKED, primary.status());
+        assertThrows(DomainRuleViolation.class, () -> profile.requireCanReferenceForNewBooking(NOW.plusSeconds(31)));
+        assertEquals(3, profile.verificationFacts().size());
+        assertTrue(profile.verificationFacts().stream().anyMatch(fact -> "ivc-pass".equals(fact.verificationCaseId())));
+        assertTrue(profile.verificationFacts().stream().anyMatch(fact -> "ivc-fail".equals(fact.verificationCaseId())));
+    }
+
     // ==============================
     // Eligibility Management
     // ==============================
