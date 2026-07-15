@@ -1,11 +1,13 @@
 package com.trainticket.financesettlement.adapters.http;
 
+import com.trainticket.financesettlement.application.AncillaryFinancialFact;
 import com.trainticket.financesettlement.application.BenefitCostEntry;
 import com.trainticket.financesettlement.application.ChannelStatementProjection;
 import com.trainticket.financesettlement.application.DomainEventEnvelopeMapper;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService.Page;
 import com.trainticket.financesettlement.domain.Invoice;
+import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationBatch;
 import com.trainticket.financesettlement.domain.ReconciliationEntry;
 import com.trainticket.financesettlement.domain.SupplierSettlement;
@@ -97,6 +99,16 @@ public class FinanceSettlementController {
     ) {
         Page<BenefitCostEntry> page = service.listBenefitCosts(accountId, limit, offset);
         return new PagedResponse<>(page.items().stream().map(BenefitCostResponse::from).toList(), page.total(), page.limit(), page.offset());
+    }
+
+    @GetMapping("/api/v1/ancillary-financial-facts")
+    public PagedResponse<AncillaryFinancialFactResponse> listAncillaryFinancialFacts(
+        @RequestParam(required = false) String journeyOrderId,
+        @RequestParam(defaultValue = "20") int limit,
+        @RequestParam(defaultValue = "0") int offset
+    ) {
+        Page<AncillaryFinancialFact> page = service.listAncillaryFinancialFacts(journeyOrderId, limit, offset);
+        return new PagedResponse<>(page.items().stream().map(AncillaryFinancialFactResponse::from).toList(), page.total(), page.limit(), page.offset());
     }
 
     @GetMapping("/api/v1/reconciliation-cases")
@@ -311,6 +323,38 @@ public class FinanceSettlementController {
         }
     }
 
+    public record AncillaryFinancialFactResponse(
+        String eventId,
+        String eventType,
+        String factKind,
+        String ancillaryOrderItemId,
+        String journeyOrderId,
+        String serviceType,
+        String supplierRef,
+        Map<String, Object> payableAmount,
+        Map<String, Object> refundableAmount,
+        Map<String, Object> refundedAmount,
+        Map<String, Object> retainedAmount,
+        Instant occurredAt
+    ) {
+        static AncillaryFinancialFactResponse from(AncillaryFinancialFact fact) {
+            return new AncillaryFinancialFactResponse(
+                fact.eventId(),
+                fact.eventType(),
+                fact.factKind(),
+                fact.ancillaryOrderItemId(),
+                fact.journeyOrderId(),
+                fact.serviceType(),
+                fact.supplierRef(),
+                moneyPayloadOrNull(fact.payableAmount()),
+                moneyPayloadOrNull(fact.refundableAmount()),
+                moneyPayloadOrNull(fact.refundedAmount()),
+                moneyPayloadOrNull(fact.retainedAmount()),
+                fact.occurredAt()
+            );
+        }
+    }
+
     public record GenerateInvoiceRequest(String orderId) {}
 
     public record InvoiceResponse(
@@ -331,6 +375,10 @@ public class FinanceSettlementController {
                 invoice.generatedAt()
             );
         }
+    }
+
+    private static Map<String, Object> moneyPayloadOrNull(Money money) {
+        return money == null ? null : DomainEventEnvelopeMapper.moneyPayload(money);
     }
 
     public record PagedResponse<T>(List<T> items, long total, int limit, int offset) {}

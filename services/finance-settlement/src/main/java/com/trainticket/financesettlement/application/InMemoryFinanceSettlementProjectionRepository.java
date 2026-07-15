@@ -14,6 +14,7 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     private final ConcurrentMap<String, FinanceSettlementEventHandler.PaymentCaptureFact> capturesByOrderId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Money> approvedRefundsByCaseId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, BenefitCostEntry> benefitCostEntriesByEventId = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, AncillaryFinancialFact> ancillaryFinancialFactsByEventId = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ChannelStatementProjection> channelStatementsById = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ChannelStatementLineProjection> channelStatementLinesById = new ConcurrentHashMap<>();
 
@@ -90,6 +91,33 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     public long countBenefitCostEntries(String accountId) {
         return benefitCostEntriesByEventId.values().stream()
             .filter(entry -> accountId == null || accountId.isBlank() || accountId.equals(entry.accountId()))
+            .count();
+    }
+
+    @Override
+    public void saveAncillaryFinancialFact(AncillaryFinancialFact fact) {
+        ancillaryFinancialFactsByEventId.put(fact.eventId(), fact);
+    }
+
+    @Override
+    public Optional<AncillaryFinancialFact> findAncillaryFinancialFact(String eventId) {
+        return Optional.ofNullable(ancillaryFinancialFactsByEventId.get(eventId));
+    }
+
+    @Override
+    public List<AncillaryFinancialFact> findAncillaryFinancialFacts(String journeyOrderId, int limit, int offset) {
+        return ancillaryFinancialFactsByEventId.values().stream()
+            .filter(fact -> journeyOrderId == null || journeyOrderId.isBlank() || journeyOrderId.equals(fact.journeyOrderId()))
+            .sorted(Comparator.comparing(AncillaryFinancialFact::occurredAt).reversed().thenComparing(AncillaryFinancialFact::eventId))
+            .skip(offset)
+            .limit(limit)
+            .toList();
+    }
+
+    @Override
+    public long countAncillaryFinancialFacts(String journeyOrderId) {
+        return ancillaryFinancialFactsByEventId.values().stream()
+            .filter(fact -> journeyOrderId == null || journeyOrderId.isBlank() || journeyOrderId.equals(fact.journeyOrderId()))
             .count();
     }
 

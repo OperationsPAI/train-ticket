@@ -159,6 +159,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
                 if (service != null) applyPostSales(envelope, payload);
             }
             case "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired" -> recordBenefitCostEntry(envelope, payload);
+            case "AncillaryOrderItemFulfilled", "AncillaryOrderItemCancelled", "AncillaryOrderItemRefundPending", "AncillaryOrderItemRefunded", "AncillaryFulfillmentFactRecorded" -> handleAncillaryFinancialEvent(envelope, payload);
             case "ChannelStatementGenerated", "ChannelStatementFrozen" -> recordChannelStatement(envelope, payload);
             case "ChannelStatementLineMatched" -> recordChannelStatementLine(envelope, payload);
             case "ReconciliationDiscrepancyOpened" -> openChannelDiscrepancy(envelope, payload);
@@ -279,6 +280,248 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             normalizedBenefitCostEventType(envelope.eventType()),
             benefitOccurredAt(envelope, payload)
         ));
+    }
+
+    private void handleAncillaryFinancialEvent(EventEnvelope envelope, Map<String, Object> payload) {
+        AncillaryFinancialFact fact = ancillaryFinancialFact(envelope, payload);
+        projections.saveAncillaryFinancialFact(fact);
+        if (service == null) {
+            return;
+        }
+        switch (envelope.eventType()) {
+            case "AncillaryOrderItemFulfilled" -> recognizeAncillaryRevenue(envelope, fact);
+            case "AncillaryOrderItemCancelled" -> accrueAncillaryRetention(envelope, fact);
+            case "AncillaryOrderItemRefundPending" -> recordAncillaryRefundPending(envelope, fact, payload);
+            case "AncillaryOrderItemRefunded" -> applyAncillaryRefund(envelope, fact);
+            case "AncillaryFulfillmentFactRecorded" -> reconcileAncillaryFulfillmentFact(envelope, fact, payload);
+            default -> { }
+        }
+    }
+
+    private AncillaryFinancialFact ancillaryFinancialFact(EventEnvelope envelope, Map<String, Object> payload) {
+        Money payableAmount = optionalMoney(payload, "payableAmount").orElse(null);
+        Money refundableAmount = optionalMoney(payload, "refundableAmount").orElse(null);
+        Money refundedAmount = optionalMoney(payload, "refundedAmount").orElse(null);
+        Money retainedAmount = retainedAncillaryAmount(envelope.eventType(), payableAmount, refundableAmount, refundedAmount);
+        return new AncillaryFinancialFact(
+            envelope.eventId(),
+            envelope.eventType(),
+            ancillaryFactKind(envelope.eventType()),
+            text(payload, "ancillaryOrderItemId"),
+            text(payload, "journeyOrderId"),
+            ancillaryServiceType(payload),
+            supplierReferenceForAncillary(payload),
+            payableAmount,
+            refundableAmount,
+            refundedAmount,
+            retainedAmount,
+            ancillaryOccurredAt(envelope, payload)
+        );
+    }
+
+    private void recognizeAncillaryRevenue(EventEnvelope envelope, AncillaryFinancialFact fact) {
+        Money payableAmount = fact.payableAmount();
+        if (payableAmount == null || payableAmount.isZero()) {
+            return;
+        }
+        if (hasRevenueRecognitionForSourceEvent(fact.eventId())) {
+            return;
+        }
+        RevenueRecognition recognition = RevenueRecognition.recognize(
+            fact.journeyOrderId(),
+            fact.ancillaryOrderItemId(),
+            "ancillary",
+            payableAmount,
+            "ancillary-fulfillment-v1",
+            fact.eventId(),
+            fact.occurredAt(),
+            clock.instant(),
+            causationIdOrEventId(envelope),
+            envelope.correlationId()
+        );
+        service.saveAndPublish(recognition);
+        service.accrueFeesForPaymentCapture(fact.journeyOrderId(), payableAmount, Money.zero(payableAmount.currency()), fact.eventId(), clock.instant(), causationIdOrEventId(envelope), envelope.correlationId());
+    }
+
+    private void accrueAncillaryRetention(EventEnvelope envelope, AncillaryFinancialFact fact) {
+        Money retainedAmount = fact.retainedAmount();
+        if (retainedAmount == null || retainedAmount.isZero()) {
+            return;
+        }
+        service.accrueFeesForRefund(fact.journeyOrderId(), retainedAmount, retainedAmount.currency(), fact.eventId(), clock.instant(), causationIdOrEventId(envelope), envelope.correlationId());
+    }
+
+    private void recordAncillaryRefundPending(EventEnvelope envelope, AncillaryFinancialFact fact, Map<String, Object> payload) {
+        Money refundableAmount = fact.refundableAmount();
+        if (refundableAmount == null || refundableAmount.isZero()) {
+            return;
+        }
+        optionalText(payload, "postSalesCaseId").ifPresent(caseId -> projections.saveApprovedRefund(caseId, refundableAmount));
+        projections.saveApprovedRefund(fact.ancillaryOrderItemId(), refundableAmount);
+        projections.saveApprovedRefund(fact.journeyOrderId() + ":" + fact.ancillaryOrderItemId(), refundableAmount);
+        if ("MANUAL_REVIEW".equals(optionalText(payload, "recommendation").orElse(""))) {
+            ReconciliationCase open = ReconciliationCase.open(
+                fact.journeyOrderId(),
+                "",
+                "refund-lag",
+                refundableAmount.negate(),
+                Money.zero(refundableAmount.currency()),
+                "Ancillary refund pending requires manual finance review for item " + fact.ancillaryOrderItemId(),
+                clock.instant(),
+                causationIdOrEventId(envelope),
+                envelope.correlationId()
+            );
+            service.saveAndPublish(open);
+        }
+    }
+
+    private void applyAncillaryRefund(EventEnvelope envelope, AncillaryFinancialFact fact) {
+        Money refundedAmount = fact.refundedAmount();
+        if (refundedAmount == null || refundedAmount.isZero()) {
+            return;
+        }
+        Optional<RevenueRecognition> matchingRecognition = serviceRevenue(fact.journeyOrderId()).stream()
+            .filter(recognition -> fact.ancillaryOrderItemId().equals(recognition.orderItemId()))
+            .filter(recognition -> "ancillary".equals(recognition.componentCode()))
+            .filter(recognition -> !recognition.reversed())
+            .filter(recognition -> sameCurrency(recognition.amount(), refundedAmount))
+            .filter(recognition -> recognition.amount().compareTo(refundedAmount) >= 0)
+            .findFirst();
+        if (matchingRecognition.isEmpty()) {
+            ReconciliationCase open = ReconciliationCase.open(
+                fact.journeyOrderId(),
+                "",
+                "refund-lag",
+                refundedAmount.negate(),
+                Money.zero(refundedAmount.currency()),
+                "Ancillary refund could not be matched to recognized revenue for item " + fact.ancillaryOrderItemId(),
+                clock.instant(),
+                causationIdOrEventId(envelope),
+                envelope.correlationId()
+            );
+            service.saveAndPublish(open);
+            return;
+        }
+        RevenueRecognition originalRecognition = matchingRecognition.get();
+        int firstUnpublishedEventIndex = originalRecognition.domainEvents().size();
+        originalRecognition.reverse(
+            "ancillary refund recorded",
+            fact.eventId(),
+            refundedAmount,
+            clock.instant(),
+            causationIdOrEventId(envelope),
+            causationIdOrEventId(envelope),
+            envelope.correlationId()
+        );
+        service.saveAndPublish(originalRecognition, firstUnpublishedEventIndex);
+        service.accrueFeesForRefund(fact.journeyOrderId(), refundedAmount, refundedAmount.currency(), fact.eventId(), clock.instant(), causationIdOrEventId(envelope), envelope.correlationId());
+    }
+
+    private void reconcileAncillaryFulfillmentFact(EventEnvelope envelope, AncillaryFinancialFact fact, Map<String, Object> payload) {
+        if (!"FULFILLED".equals(optionalText(payload, "status").orElse(""))) {
+            return;
+        }
+        List<RevenueRecognition> recognitions = serviceRevenue(fact.journeyOrderId()).stream()
+            .filter(recognition -> fact.ancillaryOrderItemId().equals(recognition.orderItemId()))
+            .filter(recognition -> "ancillary".equals(recognition.componentCode()))
+            .toList();
+        Money actual = recognitions.stream()
+            .map(RevenueRecognition::netAmount)
+            .filter(amount -> fact.payableAmount() == null || sameCurrency(amount, fact.payableAmount()))
+            .reduce(fact.payableAmount() == null ? Money.zero(Currency.getInstance("CNY")) : Money.zero(fact.payableAmount().currency()), Money::plus);
+        Money expected = fact.payableAmount() == null ? actual : fact.payableAmount();
+        if (!recognitions.isEmpty() && sameMoney(expected, actual)) {
+            service.publishReconciliationCompleted(
+                fact.journeyOrderId(),
+                "",
+                expected,
+                actual,
+                recognitions.stream().map(RevenueRecognition::revenueRecognitionId).toList(),
+                List.of(fact.eventId()),
+                "MATCHED",
+                clock.instant(),
+                causationIdOrEventId(envelope),
+                envelope.correlationId()
+            );
+        }
+    }
+
+    private boolean hasRevenueRecognitionForSourceEvent(String sourceEventId) {
+        return serviceRevenueBySourceEvent(sourceEventId).isPresent();
+    }
+
+    private Optional<RevenueRecognition> serviceRevenueBySourceEvent(String sourceEventId) {
+        return projections.findAncillaryFinancialFact(sourceEventId)
+            .stream()
+            .flatMap(fact -> serviceRevenue(fact.journeyOrderId()).stream())
+            .filter(recognition -> sourceEventId.equals(recognition.sourceEventId()))
+            .findFirst();
+    }
+
+    private static String ancillaryFactKind(String eventType) {
+        return switch (eventType) {
+            case "AncillaryOrderItemFulfilled" -> "REVENUE_RECOGNITION";
+            case "AncillaryOrderItemCancelled" -> "RETENTION_FACT";
+            case "AncillaryOrderItemRefundPending" -> "REFUND_PENDING";
+            case "AncillaryOrderItemRefunded" -> "REFUND_RECORDED";
+            case "AncillaryFulfillmentFactRecorded" -> "SUPPLIER_COST_FACT";
+            default -> "UNKNOWN";
+        };
+    }
+
+    private static Money retainedAncillaryAmount(String eventType, Money payableAmount, Money refundableAmount, Money refundedAmount) {
+        if ("AncillaryOrderItemCancelled".equals(eventType) && payableAmount != null && refundableAmount != null && sameCurrency(payableAmount, refundableAmount)) {
+            Money retainedAmount = payableAmount.minus(refundableAmount);
+            return retainedAmount.isNegative() ? Money.zero(payableAmount.currency()) : retainedAmount;
+        }
+        if ("AncillaryOrderItemRefunded".equals(eventType) && payableAmount != null && refundedAmount != null && sameCurrency(payableAmount, refundedAmount)) {
+            Money retainedAmount = payableAmount.minus(refundedAmount);
+            return retainedAmount.isNegative() ? Money.zero(payableAmount.currency()) : retainedAmount;
+        }
+        return null;
+    }
+
+    private static String ancillaryServiceType(Map<String, Object> payload) {
+        return optionalText(payload, "serviceType")
+            .or(() -> catalogSnapshot(payload).flatMap(snapshot -> optionalText(snapshot, "serviceType")))
+            .orElseThrow(() -> new IllegalArgumentException("serviceType is required"));
+    }
+
+    private static String supplierReferenceForAncillary(Map<String, Object> payload) {
+        return optionalText(payload, "providerRef")
+            .or(() -> optionalText(payload, "entitlementRef"))
+            .or(() -> fulfillmentFact(payload).flatMap(fact -> optionalText(fact, "providerRef")))
+            .orElse(null);
+    }
+
+    private static Instant ancillaryOccurredAt(EventEnvelope envelope, Map<String, Object> payload) {
+        String timestampField = switch (envelope.eventType()) {
+            case "AncillaryOrderItemFulfilled" -> "fulfilledAt";
+            case "AncillaryOrderItemCancelled" -> "cancelledAt";
+            case "AncillaryOrderItemRefundPending" -> "requestedAt";
+            case "AncillaryOrderItemRefunded" -> "refundedAt";
+            case "AncillaryFulfillmentFactRecorded" -> null;
+            default -> null;
+        };
+        if (timestampField != null) {
+            return optionalText(payload, timestampField).map(Instant::parse).orElse(envelope.occurredAt());
+        }
+        return fulfillmentFact(payload)
+            .flatMap(fact -> optionalText(fact, "occurredAt"))
+            .map(Instant::parse)
+            .orElse(envelope.occurredAt());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Optional<Map<String, Object>> catalogSnapshot(Map<String, Object> payload) {
+        Object value = payload.get("catalogSnapshot");
+        return value instanceof Map<?, ?> raw ? Optional.of((Map<String, Object>) raw) : Optional.empty();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Optional<Map<String, Object>> fulfillmentFact(Map<String, Object> payload) {
+        Object value = payload.get("fulfillmentFact");
+        return value instanceof Map<?, ?> raw ? Optional.of((Map<String, Object>) raw) : Optional.empty();
     }
 
     private static Money benefitCostAmount(String eventType, Map<String, Object> payload) {
@@ -540,6 +783,11 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     private static Optional<String> optionalText(Map<String, Object> payload, String name) {
         Object value = payload.get(name);
         return value instanceof String text && !text.isBlank() ? Optional.of(text) : Optional.empty();
+    }
+
+    private static Optional<Money> optionalMoney(Map<String, Object> payload, String name) {
+        Object value = payload.get(name);
+        return value == null ? Optional.empty() : Optional.of(money(value, name));
     }
 
     @SuppressWarnings("unchecked")

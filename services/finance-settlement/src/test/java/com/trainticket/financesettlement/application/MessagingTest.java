@@ -467,6 +467,119 @@ class MessagingTest {
     }
 
     @Test
+    void ancillaryFulfilledRecognizesRevenueRecordsFactAndDeduplicatesReplay() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), new InMemoryInvoiceRepository(), projections,
+            publisher, new DomainEventEnvelopeMapper(), Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC));
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents,
+            new InMemoryPaymentIntentOrderReferenceRepository(),
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            projections,
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC),
+            service
+        );
+        EventEnvelope fulfilled = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e401", "AncillaryOrderItemFulfilled", Instant.parse("2026-07-05T09:59:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e401", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e401", "ancillary-service", 1, Map.ofEntries(
+                Map.entry("ancillaryOrderItemId", "aoi-0194f2e0-7b3e-7610-8284-5c26e8b0e401"),
+                Map.entry("journeyOrderId", "ord-ancillary-1"),
+                Map.entry("travelerRef", "trav-1"),
+                Map.entry("segmentRef", "seg-1"),
+                Map.entry("catalogSnapshot", Map.of(
+                    "catalogItemId", "aci-meal-1",
+                    "catalogItemVersion", 3,
+                    "serviceType", "MEAL",
+                    "attachmentScope", "SEGMENT",
+                    "displayName", "Dinner meal",
+                    "unitPrice", Map.of("currency", "CNY", "minorUnits", 3500),
+                    "purchaseCutoffHoursBeforeDeparture", 2,
+                    "eligibilityRuleVersion", "ancillary-eligibility-v1",
+                    "fulfillmentMethod", "PROVIDER_CONFIRMATION"
+                )),
+                Map.entry("payableAmount", Map.of("currency", "CNY", "minorUnits", 3500)),
+                Map.entry("refundableAmount", Map.of("currency", "CNY", "minorUnits", 0)),
+                Map.entry("fulfillmentFact", Map.of(
+                    "fulfillmentFactId", "aff-1",
+                    "factType", "MEAL_ISSUED",
+                    "providerRef", "meal-provider-1",
+                    "occurredAt", "2026-07-05T09:58:30Z",
+                    "recordedAt", "2026-07-05T09:59:00Z",
+                    "performedBy", "PROVIDER",
+                    "idempotencyRef", "provider-meal-1",
+                    "compensable", false
+                )),
+                Map.entry("previousStatus", "FULFILLMENT_READY"),
+                Map.entry("status", "FULFILLED"),
+                Map.entry("fulfilledAt", "2026-07-05T09:59:00Z"),
+                Map.entry("aggregateVersion", 5)
+            ));
+
+        assertEquals(HandlerResult.SUCCESS, handler.handle(fulfilled));
+        assertEquals(HandlerResult.SUCCESS, handler.handle(fulfilled));
+
+        assertEquals(1, consumedEvents.saveCount);
+        AncillaryFinancialFact fact = projections.findAncillaryFinancialFact(fulfilled.eventId()).orElseThrow();
+        assertEquals("REVENUE_RECOGNITION", fact.factKind());
+        assertEquals("ord-ancillary-1", fact.journeyOrderId());
+        assertEquals("MEAL", fact.serviceType());
+        assertEquals("meal-provider-1", fact.supplierRef());
+        assertEquals(Money.of("CNY", "35.00"), fact.payableAmount());
+        EventEnvelope recognized = publisher.published.stream().filter(e -> "RevenueRecognized".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals("ancillary", ((Map<?, ?>) recognized.payload()).get("componentCode"));
+        assertEquals("aoi-0194f2e0-7b3e-7610-8284-5c26e8b0e401", ((Map<?, ?>) recognized.payload()).get("orderItemId"));
+        assertEquals(3500L, ((Map<?, ?>) ((Map<?, ?>) recognized.payload()).get("amount")).get("minorUnits"));
+        assertEquals(1, publisher.published.stream().filter(e -> "RevenueRecognized".equals(e.eventType())).count());
+    }
+
+    @Test
+    void ancillaryRefundPendingStoresRefundReadModelWithoutPublishingForAutomaticReview() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), new InMemoryInvoiceRepository(), projections,
+            publisher, new DomainEventEnvelopeMapper(), Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC));
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents,
+            new InMemoryPaymentIntentOrderReferenceRepository(),
+            new InMemorySegmentBookingOrderReferenceRepository(),
+            projections,
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC),
+            service
+        );
+
+        HandlerResult result = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e402", "AncillaryOrderItemRefundPending", Instant.parse("2026-07-05T10:01:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e402", null, "ancillary-service", 1, Map.ofEntries(
+                Map.entry("ancillaryOrderItemId", "aoi-refund-1"),
+                Map.entry("journeyOrderId", "ord-ancillary-refund"),
+                Map.entry("travelerRef", "trav-1"),
+                Map.entry("catalogItemId", "aci-meal-1"),
+                Map.entry("serviceType", "MEAL"),
+                Map.entry("payableAmount", Map.of("currency", "CNY", "minorUnits", 3500)),
+                Map.entry("refundableAmount", Map.of("currency", "CNY", "minorUnits", 3000)),
+                Map.entry("recommendation", "PARTIAL_REFUND"),
+                Map.entry("reasonCode", "USER_CANCELLED"),
+                Map.entry("postSalesCaseId", "psc-ancillary-1"),
+                Map.entry("previousStatus", "CANCELLED"),
+                Map.entry("status", "REFUND_PENDING"),
+                Map.entry("requestedAt", "2026-07-05T10:00:30Z"),
+                Map.entry("aggregateVersion", 6)
+            )));
+
+        assertEquals(HandlerResult.SUCCESS, result);
+        assertEquals(Money.of("CNY", "30.00"), projections.findApprovedRefund("psc-ancillary-1").orElseThrow());
+        AncillaryFinancialFact fact = projections.findAncillaryFinancialFact("evt-0194f2e0-7b3e-7610-8284-5c26e8b0e402").orElseThrow();
+        assertEquals("REFUND_PENDING", fact.factKind());
+        assertEquals(Money.of("CNY", "30.00"), fact.refundableAmount());
+        assertTrue(publisher.published.isEmpty());
+    }
+
+    @Test
     void unknownWalletEventTypeAckSkipsWithoutCostEntry() {
         InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
         InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
