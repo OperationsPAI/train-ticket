@@ -18,6 +18,7 @@ from reporting import (
     FunnelStepCount,
     FunnelView,
     ContextEventRollup,
+    ContextCountItem,
     MetricCategory,
     MetricDefinition,
     MetricGranularity,
@@ -472,6 +473,36 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
 
         self.assertEqual(rollups[("waitlist", "WaitlistQueued")].count, 1)
         self.assertEqual(rollups[("waitlist", "WaitlistExpired")].anomaly_rate, 1.0)
+
+    def test_context_count_report_sorts_by_count_then_stable_value(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        aggregator.record(OperationalEvent("dispatch-1", "DispatchRequested", NOW, source_context="dispatch"))
+        aggregator.record(OperationalEvent("waitlist-1", "WaitlistQueued", NOW, source_context="waitlist"))
+        aggregator.record(OperationalEvent("waitlist-2", "WaitlistExpired", NOW + timedelta(minutes=1), source_context="waitlist"))
+        aggregator.record(OperationalEvent("ancillary-1", "AncillaryQuoted", NOW, source_context="ancillary-service"))
+
+        report = aggregator.context_count_report("source_context", at=NOW + timedelta(minutes=2))
+
+        self.assertEqual([item.value for item in report.items], ["waitlist", "ancillary-service", "dispatch"])
+        self.assertEqual([item.count for item in report.items], [2, 1, 1])
+        self.assertEqual(report.total_count, 4)
+
+    def test_context_count_report_supports_event_type_dimension(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        aggregator.record(OperationalEvent("dispatch-1", "DispatchRequested", NOW, source_context="dispatch"))
+        aggregator.record(OperationalEvent("dispatch-2", "DispatchRequested", NOW + timedelta(seconds=1), source_context="dispatch"))
+        aggregator.record(OperationalEvent("dispatch-3", "DispatchFailed", NOW + timedelta(seconds=2), source_context="dispatch"))
+        aggregator.record(OperationalEvent("waitlist-1", "WaitlistQueued", NOW + timedelta(seconds=3), source_context="waitlist"))
+
+        report = aggregator.context_count_report("event_type", at=NOW + timedelta(minutes=2))
+
+        self.assertEqual([item.value for item in report.items], ["DispatchRequested", "DispatchFailed", "WaitlistQueued"])
+        self.assertEqual([item.count for item in report.items], [2, 1, 1])
+        self.assertEqual(report.total_count, 4)
+
+    def test_context_count_report_rejects_invalid_counts(self) -> None:
+        with self.assertRaisesRegex(ReportingError, "count must be positive"):
+            ContextCountItem("source_context", "waitlist", 0)
 
     def test_context_rollup_rejects_invalid_counts(self) -> None:
         with self.assertRaisesRegex(ReportingError, "count must be positive"):

@@ -13,6 +13,7 @@ from reporting.domain import (
     AnomalyDetected,
     AnomalyDetector,
     ConsumedEventLog,
+    ContextCountReport,
     ConsumedEventRecord,
     DashboardReadModel,
     MetricAggregator,
@@ -110,6 +111,9 @@ class ReportingReadRepository:
 
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
         return self.metric_aggregator.route_metrics(at)
+
+    def context_count_report(self, group_by: str = "source_context", limit: int = 20, at: datetime | None = None) -> ContextCountReport:
+        return self.metric_aggregator.context_count_report(group_by=group_by, limit=limit, at=at)
 
     def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
         return self.metric_aggregator.revenue_report(group_by=group_by, limit=limit, at=at)
@@ -319,6 +323,9 @@ class ReportingApplicationService:
 
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
         return self.repository.route_metrics(at)
+
+    def context_count_report(self, group_by: str = "source_context", limit: int = 20, at: datetime | None = None) -> ContextCountReport:
+        return self.repository.context_count_report(group_by=group_by, limit=limit, at=at)
 
     def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
         return self.repository.revenue_report(group_by=group_by, limit=limit, at=at)
