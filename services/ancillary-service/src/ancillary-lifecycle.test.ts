@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 
-import { createEventEnvelope, InMemoryEventPublisher } from "@trainticket/ts-kit";
+import { createEventEnvelope, InMemoryEventPublisher, isUuidV7 } from "@trainticket/ts-kit";
 
 import { AncillaryApplicationService, InMemoryAncillaryRepository } from "./application.js";
 import { AncillaryCatalogItem, AncillaryOffer, AncillaryOrderItem, type CatalogInput } from "./domain.js";
@@ -51,7 +52,21 @@ async function selectedOrderItem(overrides: Partial<CatalogInput> = {}) {
 function assertLastEventId(publisher: InMemoryEventPublisher, eventType: string, aggregateId: string, version: number): void {
   const event = publisher.findByEventType(eventType).at(-1);
   assert.ok(event, `${eventType} was not published`);
-  assert.equal(event.eventId, `ancillary-service:${eventType}:${aggregateId}:${version}`);
+  assertDeterministicEventId(event.eventId, `ancillary-service:${eventType}:${aggregateId}:${version}`);
+}
+
+function assertDeterministicEventId(eventId: string | undefined, seed: string): void {
+  assert.equal(eventId, deterministicEventIdFromSeed(seed));
+  assert.ok(eventId?.startsWith("evt-"));
+  assert.ok(isUuidV7(eventId.slice("evt-".length)));
+}
+
+function deterministicEventIdFromSeed(seed: string): string {
+  const bytes = createHash("sha256").update(seed).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `evt-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 describe("ancillary domain state machines", () => {
@@ -151,7 +166,10 @@ describe("ancillary integration-event regressions", () => {
     assertLastEventId(flow.publisher, "AncillaryOrderItemFulfillmentReady", flow.item.ancillaryOrderItemId, ready.aggregateVersion);
     const fulfilled = await flow.service.recordFulfillmentFact(flow.item.ancillaryOrderItemId, { factType: "MEAL_ISSUED", occurredAt: "2026-07-09T10:20:00.000Z", performedBy: "PROVIDER", idempotencyRef: "meal-done" }, CORR);
     const fact = fulfilled.fulfillmentFacts[0];
-    assert.equal(flow.publisher.findByEventType("AncillaryFulfillmentFactRecorded").at(-1)?.eventId, `ancillary-service:AncillaryFulfillmentFactRecorded:${flow.item.ancillaryOrderItemId}:${fact.fulfillmentFactId}`);
+    assertDeterministicEventId(
+      flow.publisher.findByEventType("AncillaryFulfillmentFactRecorded").at(-1)?.eventId,
+      `ancillary-service:AncillaryFulfillmentFactRecorded:${flow.item.ancillaryOrderItemId}:${fact.fulfillmentFactId}`,
+    );
     assertLastEventId(flow.publisher, "AncillaryOrderItemFulfilled", flow.item.ancillaryOrderItemId, fulfilled.aggregateVersion);
 
     const failed = await selectedOrderItem({ attachmentScope: "JOURNEY", requiresSegmentRef: false });
