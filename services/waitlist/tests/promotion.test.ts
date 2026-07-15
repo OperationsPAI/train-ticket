@@ -39,7 +39,8 @@ test("WaitlistCapacityFreed promotes highest-priority queued entry", async () =>
   assert.equal(result.promoted[0]?.waitlistRequestId, platinum.waitlistRequestId);
   assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
   assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistHoldAuthorized").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
 });
 
 test("expired matching attempt returns to queue, releases hold, and frees capacity", async () => {
@@ -49,24 +50,25 @@ test("expired matching attempt returns to queue, releases hold, and frees capaci
   const capacity = new StubCapacity();
   const service = new WaitlistApplicationService(repository, publisher, new StubFarePricing(), capacity, new StubJourneyOrder(), () => current, new StubOfferManagement());
   const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, eventId: "evt-capacity-1" });
 
   current = new Date("2026-01-01T00:16:00.000Z");
   await service.expireDueOffers();
 
   assert.equal((await service.get(first.waitlistRequestId)).status, "MATCHING");
   assert.deepEqual(capacity.released, [`hold-${first.waitlistRequestId}`]);
-  assert.equal(publisher.findByEventType("WaitlistOfferExpired").length, 1);
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 2);
+  assert.equal(publisher.findByEventType("WaitlistQueued").filter((event) => event.payload.requeueReason === "MATCH_EXPIRED").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 2);
 });
 
-test("accept promotion creates journey order and publishes accepted event", async () => {
+test("accept promotion records journey order and waits for confirmation", async () => {
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, eventId: "evt-capacity-1" });
   const order = await service.accept(entry.waitlistRequestId, { paymentMethodRef: "pm-1" });
   assert.equal(order.orderId, `ord-${entry.waitlistRequestId}`);
-  assert.equal((await service.get(entry.waitlistRequestId)).status, "FULFILLED");
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "MATCHING");
+  assert.equal((await service.get(entry.waitlistRequestId)).journeyOrderRef, `ord-${entry.waitlistRequestId}`);
 });
 
 test("accept does not mutate entry when journey order creation fails", async () => {
@@ -75,7 +77,7 @@ test("accept does not mutate entry when journey order creation fails", async () 
   }
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new FailingJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, eventId: "evt-capacity-1" });
 
   await assert.rejects(() => service.accept(entry.waitlistRequestId), /downstream unavailable/);
 

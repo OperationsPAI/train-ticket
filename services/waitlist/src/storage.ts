@@ -12,11 +12,11 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
     await this.db.query(
-      `INSERT INTO waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt],
+      `INSERT INTO waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt, 3],
     );
-    entry.markPersisted(1);
+    entry.markPersisted(3);
     return this.snapshot(entry);
   }
 
@@ -31,9 +31,9 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     if (loadedVersion < 1) throw new OptimisticConcurrencyConflict(`Waitlist entry ${entry.entryId} has no loaded version`);
     const result = await this.db.query(
       `UPDATE waitlist_entries
-       SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, version=version+1, updated_at=now()
+       SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, offer_version=$9, version=version+1, updated_at=now()
        WHERE entry_id=$1 AND version=$8`,
-      [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, loadedVersion],
+      [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, loadedVersion, snapshot.offerVersion ?? null],
     );
     if (result.rowCount === 0) throw new OptimisticConcurrencyConflict(`Waitlist entry ${entry.entryId} was modified by another writer`);
     entry.markPersisted(loadedVersion + 1);
@@ -155,7 +155,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     fareQuoteId: row.fare_quote_id ?? (typeof data.fareQuoteId === "string" ? data.fareQuoteId : undefined),
     capacityHoldId: row.capacity_hold_id ?? (typeof data.capacityHoldId === "string" ? data.capacityHoldId : undefined),
     offerId: typeof data.offerId === "string" ? data.offerId : undefined,
-    offerVersion: typeof data.offerVersion === "number" ? data.offerVersion : undefined,
+    offerVersion: row.offer_version ?? (typeof data.offerVersion === "number" ? data.offerVersion : undefined),
     itineraryRef: typeof data.itineraryRef === "string" ? data.itineraryRef : undefined,
     deadline: typeof data.deadline === "string" ? data.deadline : deadlineFromDepartureDate(dateString(row.departure_date)),
     paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : `pay-auth-${row.entry_id}`,
@@ -200,6 +200,7 @@ type WaitlistRow = Readonly<{
   offer_expires_at: Date | string | null;
   fare_quote_id: string | null;
   capacity_hold_id: string | null;
+  offer_version: number | null;
   data: Record<string, unknown> | null;
   version: string | number | bigint;
   created_at: Date | string;

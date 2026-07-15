@@ -81,13 +81,13 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/api/v1/waitlist/entries/:entryId", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
   )));
-  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request) => ({
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"))),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"), cancellationReason(request.body), ctx.correlationId)),
   }));
-  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request) => ({
+  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"))),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"), cancellationReason(request.body), ctx.correlationId)),
   }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries/:entryId/accept", async (request, ctx) => ({
     statusCode: 200,
@@ -142,6 +142,9 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }
 function param(request: FastifyRequest, name: string): string { return (request.params as Record<string, string>)[name] ?? ""; }
 function query(request: FastifyRequest): Record<string, string | undefined> { return request.query as Record<string, string | undefined>; }
+function cancellationReason(body: unknown): string {
+  return typeof body === "object" && body !== null && typeof (body as Record<string, unknown>).reason === "string" ? (body as Record<string, string>).reason : "USER_REQUESTED";
+}
 function parsePageNumber(value: string | undefined, fallback: number, max: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   if (!Number.isFinite(parsed) || parsed < 0) return fallback;

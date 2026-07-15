@@ -193,9 +193,19 @@ export class WaitlistEntry {
     this._offerVersion = offerVersion;
   }
 
-  accept(now: Date, journeyOrderRef: string): void {
-    this.ensureOfferAcceptable(now);
+  authorizeHold(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
+    this.offer(offerId, offerVersion, fareQuoteId, capacityHoldId, now, expiresAt);
+  }
+
+  startMatch(journeyOrderRef: string): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can record a journey order reference");
     this.recordJourneyOrderRef(journeyOrderRef);
+  }
+
+  accept(now: Date, journeyOrderRef?: string): void {
+    this.ensureOfferAcceptable(now);
+    if (journeyOrderRef) this.recordJourneyOrderRef(journeyOrderRef);
+    if (!this._journeyOrderRef) throw new DomainError("PRECONDITION_FAILED", "Waitlist fulfillment requires a journeyOrderRef");
     this._status = "FULFILLED";
   }
 
