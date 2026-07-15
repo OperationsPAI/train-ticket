@@ -149,6 +149,35 @@ func (p *ProcessedEvents) Claim(ctx context.Context, eventID string) (bool, erro
 	return storage.NewProcessedEvents(p.db.DBFor(ctx)).TryRecord(ctx, eventID, "")
 }
 
+func (r *FulfillmentRepository) SaveExternalFulfillmentHandoff(ctx context.Context, handoff *domain.ExternalFulfillmentHandoff) error {
+	data, err := json.Marshal(handoff)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.DBFor(ctx).Exec(ctx, `INSERT INTO external_fulfillment_handoffs(producer, source_ref, data, updated_at) VALUES ($1, $2, $3, now()) ON CONFLICT (producer, source_ref) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`, handoff.Producer, handoff.SourceRef, data)
+	return err
+}
+
+func (r *FulfillmentRepository) FindExternalFulfillmentHandoff(ctx context.Context, producer string, sourceRef string) (*domain.ExternalFulfillmentHandoff, error) {
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM external_fulfillment_handoffs WHERE producer = $1 AND source_ref = $2 LIMIT 1`, producer, sourceRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, application.ErrNotFound
+	}
+	var raw json.RawMessage
+	if err := rows.Scan(&raw); err != nil {
+		return nil, err
+	}
+	var handoff domain.ExternalFulfillmentHandoff
+	if err := json.Unmarshal(raw, &handoff); err != nil {
+		return nil, err
+	}
+	return &handoff, nil
+}
+
 type recordSnapshot struct {
 	FulfillmentRecordID string                   `json:"fulfillmentRecordId"`
 	EntitlementID       string                   `json:"entitlementId"`

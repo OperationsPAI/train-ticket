@@ -50,6 +50,11 @@ type FulfillmentRepository interface {
 	FindByEntitlementSegment(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error)
 }
 
+type ExternalFulfillmentRepository interface {
+	SaveExternalFulfillmentHandoff(ctx context.Context, handoff *domain.ExternalFulfillmentHandoff) error
+	FindExternalFulfillmentHandoff(ctx context.Context, producer string, sourceRef string) (*domain.ExternalFulfillmentHandoff, error)
+}
+
 type SegmentStatusRepository interface {
 	SaveSegmentStatus(ctx context.Context, record *domain.SegmentStatusRecord) (bool, error)
 	FindSegmentStatusByCommandID(ctx context.Context, commandID string) (*domain.SegmentStatusRecord, error)
@@ -66,15 +71,17 @@ type IDGenerator func(prefix string) string
 type Clock func() time.Time
 
 type Service struct {
-	repo     FulfillmentRepository
-	segments SegmentStatusRepository
-	pub      EventPublisher
-	consumed ConsumedEventLog
-	idGen    IDGenerator
-	clock    Clock
-	uow      UnitOfWork
-	mu       sync.Mutex
-	tickets  map[string]TicketProjection
+	repo        FulfillmentRepository
+	external    ExternalFulfillmentRepository
+	segments    SegmentStatusRepository
+	pub         EventPublisher
+	consumed    ConsumedEventLog
+	idGen       IDGenerator
+	clock       Clock
+	uow         UnitOfWork
+	mu          sync.Mutex
+	tickets     map[string]TicketProjection
+	externalMem map[string]*domain.ExternalFulfillmentHandoff
 }
 
 type TicketProjection struct {
@@ -94,7 +101,8 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	segments, _ := repo.(SegmentStatusRepository)
-	return &Service{repo: repo, segments: segments, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}}
+	external, _ := repo.(ExternalFulfillmentRepository)
+	return &Service{repo: repo, external: external, segments: segments, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}, externalMem: map[string]*domain.ExternalFulfillmentHandoff{}}
 }
 
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
@@ -107,6 +115,13 @@ func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 func (s *Service) WithSegmentStatusRepository(repo SegmentStatusRepository) *Service {
 	if s != nil {
 		s.segments = repo
+	}
+	return s
+}
+
+func (s *Service) WithExternalFulfillmentRepository(repo ExternalFulfillmentRepository) *Service {
+	if s != nil {
+		s.external = repo
 	}
 	return s
 }
@@ -361,6 +376,12 @@ func (s *Service) applySubscribedEvent(ctx context.Context, envelope EventEnvelo
 		return s.applyEntitlementVoided(envelope.Payload)
 	case "SegmentTicketed":
 		return s.applySegmentTicketed(ctx, envelope.Payload)
+	case "AncillaryOrderItemFulfillmentReady":
+		return s.applyAncillaryFulfillmentReady(ctx, envelope)
+	case "AncillaryFulfillmentFactRecorded":
+		return s.applyAncillaryFulfillmentFactRecorded(ctx, envelope)
+	case "DriverArrived", "RideStarted", "RideEnded":
+		return s.applyDispatchFulfillmentMilestone(ctx, envelope)
 	default:
 		return nil
 	}
@@ -842,10 +863,11 @@ type InMemoryRepository struct {
 	byTuple          map[string]domain.FulfillmentRecordID
 	segmentByID      map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord
 	segmentByCommand map[string]domain.SegmentStatusRecordID
+	external         map[string]*domain.ExternalFulfillmentHandoff
 }
 
 func NewInMemoryRepository() *InMemoryRepository {
-	return &InMemoryRepository{byID: map[domain.FulfillmentRecordID]*domain.FulfillmentRecord{}, byTuple: map[string]domain.FulfillmentRecordID{}, segmentByID: map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord{}, segmentByCommand: map[string]domain.SegmentStatusRecordID{}}
+	return &InMemoryRepository{byID: map[domain.FulfillmentRecordID]*domain.FulfillmentRecord{}, byTuple: map[string]domain.FulfillmentRecordID{}, segmentByID: map[domain.SegmentStatusRecordID]*domain.SegmentStatusRecord{}, segmentByCommand: map[string]domain.SegmentStatusRecordID{}, external: map[string]*domain.ExternalFulfillmentHandoff{}}
 }
 
 func (r *InMemoryRepository) Save(_ context.Context, record *domain.FulfillmentRecord) error {
@@ -896,6 +918,23 @@ func (r *InMemoryRepository) FindSegmentStatusByCommandID(_ context.Context, com
 		return nil, ErrNotFound
 	}
 	return cloneSegmentStatus(r.segmentByID[id]), nil
+}
+
+func (r *InMemoryRepository) SaveExternalFulfillmentHandoff(_ context.Context, handoff *domain.ExternalFulfillmentHandoff) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.external[externalHandoffKey(handoff.Producer, handoff.SourceRef)] = cloneExternalHandoff(handoff)
+	return nil
+}
+
+func (r *InMemoryRepository) FindExternalFulfillmentHandoff(_ context.Context, producer string, sourceRef string) (*domain.ExternalFulfillmentHandoff, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	handoff, ok := r.external[externalHandoffKey(producer, sourceRef)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneExternalHandoff(handoff), nil
 }
 
 func cloneSegmentStatus(record *domain.SegmentStatusRecord) *domain.SegmentStatusRecord {
