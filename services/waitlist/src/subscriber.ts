@@ -46,7 +46,7 @@ export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFre
   const departureDate = string(payload.departureDate);
   const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? payload.quantity ?? 1);
   const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : typeof payload.classRef === "string" ? payload.classRef : undefined;
-  return { segmentRef, departureDate, freedSlots, seatClass };
+  return { segmentRef, departureDate, freedSlots, seatClass, capacityReleaseRef: envelope.eventId };
 }
 
 export function parseJourneyOrderId(envelope: EventEnvelope): string {

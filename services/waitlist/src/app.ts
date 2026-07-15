@@ -81,13 +81,13 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/api/v1/waitlist/entries/:entryId", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
   )));
-  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request) => ({
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"))),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"), request.body as any, ctx.correlationId)),
   }));
-  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request) => ({
+  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"))),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"), request.body as any, ctx.correlationId)),
   }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries/:entryId/accept", async (request, ctx) => ({
     statusCode: 200,
