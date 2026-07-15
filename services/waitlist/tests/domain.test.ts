@@ -31,3 +31,36 @@ test("matching entries return to queue instead of cancelling directly", () => {
   assert.equal(entry.offerId, undefined);
   assert.equal(entry.offerExpiresAt, null);
 });
+
+test("close only archives terminal fulfilled expired or cancelled entries", () => {
+  const fulfilled = WaitlistEntry.fromSnapshot({
+    entryId: "wl-fulfilled",
+    accountId: "acc",
+    travelerRefs: ["t1"],
+    segmentRef: "seg",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND",
+    priorityScore: 50,
+    status: "FULFILLED",
+    queuePosition: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    offeredAt: null,
+    offerExpiresAt: null,
+    deadline: "2026-07-20T00:00:00.000Z",
+    paymentGuaranteeRef: "pay-auth-1",
+    intentFingerprint: "intent-1",
+  });
+  const expired = WaitlistEntry.fromSnapshot({ ...fulfilled.toSnapshot(), entryId: "wl-expired", status: "EXPIRED" });
+  const cancelled = WaitlistEntry.fromSnapshot({ ...fulfilled.toSnapshot(), entryId: "wl-cancelled", status: "CANCELLED" });
+  const queued = WaitlistEntry.create({ entryId: "wl-queued", accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: { groupSize: 1, fareClass: "SECOND" } });
+
+  fulfilled.close();
+  expired.close();
+  cancelled.close();
+
+  assert.equal(fulfilled.status, "CLOSED");
+  assert.equal(expired.status, "CLOSED");
+  assert.equal(cancelled.status, "CLOSED");
+  assert.throws(() => queued.close(), DomainError);
+  assert.throws(() => fulfilled.close(), DomainError);
+});

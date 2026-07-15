@@ -62,6 +62,11 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return result.rows.map(entryFromRow);
   }
 
+  async findArchivable(): Promise<readonly WaitlistEntry[]> {
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status IN ('FULFILLED', 'EXPIRED', 'CANCELLED') ORDER BY updated_at ASC, entry_id ASC`) as QueryResult<WaitlistRow>;
+    return result.rows.map(entryFromRow);
+  }
+
   async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
     const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE data->>'journeyOrderRef' = $1 ORDER BY created_at ASC LIMIT 1`, [journeyOrderRef]) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
@@ -72,7 +77,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     const seatClause = seatClass ? "AND seat_class = $3" : "";
     if (seatClass) params.push(seatClass);
     const result = await this.db.query(
-      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
+      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} AND status <> 'CLOSED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
       params,
     ) as QueryResult<WaitlistRow>;
     const entries = result.rows.map(entryFromRow);

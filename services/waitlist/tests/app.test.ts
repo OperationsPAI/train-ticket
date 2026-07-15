@@ -210,6 +210,59 @@ test("duplicate active traveler and intent returns conflict", async () => {
   await app.close();
 });
 
+test("on-demand archival sweep closes cancelled request and contract GET still retrieves it", async () => {
+  resetWaitlistStore();
+  const app = createApp();
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/v1/waitlist-requests",
+    headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c140" },
+    payload: {
+      accountId: "acc-1",
+      travelerRef: "tvl-archive",
+      segmentRef: "seg-archive",
+      travelClass: "SECOND",
+      deadline: "2026-07-20T00:00:00.000Z",
+      paymentGuaranteeRef: "pay-auth-archive",
+      itineraryRef: "itn-archive",
+      intentFingerprint: "intent-archive",
+    },
+  });
+  assert.equal(create.statusCode, 201);
+  const waitlistRequestId = create.json().waitlistRequestId;
+
+  const cancel = await app.inject({ method: "POST", url: `/api/v1/waitlist-requests/${waitlistRequestId}/cancel`, headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c141" }, payload: { reason: "traveler requested cancellation" } });
+  assert.equal(cancel.statusCode, 200);
+
+  const queueBefore = await app.inject({ method: "GET", url: "/api/v1/waitlist/segments/seg-archive/2026-07-20/queue" });
+  assert.equal(queueBefore.json().totalQueued, 0);
+
+  const sweep = await app.inject({ method: "POST", url: "/api/v1/waitlist/archive-sweep", headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c142" }, payload: {} });
+  assert.equal(sweep.statusCode, 200);
+  assert.equal(sweep.json().archived[0].waitlistRequestId, waitlistRequestId);
+  assert.equal(sweep.json().archived[0].status, "CLOSED");
+
+  const get = await app.inject({ method: "GET", url: `/api/v1/waitlist-requests/${waitlistRequestId}` });
+  assert.equal(get.statusCode, 200);
+  assert.deepEqual(Object.keys(get.json()).sort(), [
+    "accountId",
+    "deadline",
+    "intentFingerprint",
+    "itineraryRef",
+    "paymentGuaranteeRef",
+    "segmentRef",
+    "status",
+    "travelClass",
+    "travelerRef",
+    "waitlistRequestId",
+  ]);
+  assert.equal(get.json().status, "CLOSED");
+
+  const queueAfter = await app.inject({ method: "GET", url: "/api/v1/waitlist/segments/seg-archive/2026-07-20/queue" });
+  assert.equal(queueAfter.json().totalQueued, 0);
+  await app.close();
+});
+
 test("cancel requires reason and handles null body defensively", async () => {
   const invalidBodies = [{}, { reason: "" }, "null"];
   for (const [index, payload] of invalidBodies.entries()) {
