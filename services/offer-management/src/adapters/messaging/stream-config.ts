@@ -8,6 +8,8 @@ export const SUBSCRIBED_STREAMS: readonly string[] = [
   "events:fare-pricing",
   "events:trip-planning",
   "events:traveler-profile",
+  "events:transfer-management",
+  "events:ancillary-service",
 ];
 
 export function consumerName(instanceId?: string): string {
