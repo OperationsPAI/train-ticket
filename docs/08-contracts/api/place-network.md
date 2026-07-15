@@ -56,7 +56,7 @@ Registers a new geographic place.
 | `code` | string | Short code, if set. |
 | `timezone` | string | IANA timezone, if set. |
 | `status` | enum | Current status. |
-| `nodes` | array | List of associated transport nodes using the TransportNode shape below, including optional access-time weights when configured. |
+| `nodes` | array | List of associated transport nodes using a summary shape (`nodeId`, `displayName`, `servingModes`, and optional access-time weights when configured). |
 
 **Error codes:** `NOT_FOUND`
 
@@ -82,7 +82,7 @@ Registers a new geographic place.
 | `displayName` | string | yes | Display name (e.g. "Platform 3"). |
 | `servingModes` | string[] | yes | Transport modes served (e.g. `["RAIL"]`). |
 | `accessTimeMinutes` | integer | no | Non-negative walking/wayfinding access-time weight in whole minutes for entering/leaving this node. Omitted when unknown. |
-| `walkingEdges` | array | no | Optional directed walking/access edges from this node to adjacent transport nodes. Each item is `{toNodeId, walkingTimeMinutes}` where `toNodeId` is a TransportNode ID (`tnd-<uuid>` or configured node ref) and `walkingTimeMinutes` is a non-negative integer in whole minutes. Omitted or empty when no edge weights are configured. |
+| `walkingEdges` | array | no | Optional directed walking/access edges from this node to adjacent transport nodes. Each item is `{toNodeId, walkingTimeMinutes}` where `toNodeId` is a TransportNode ID (`tnd-<uuid>` or configured node ref) and `walkingTimeMinutes` is an optional non-negative integer in whole minutes. Omit `walkingTimeMinutes` when the edge exists but its weight is unknown; explicit `0` is a valid zero-minute weight. Omit `walkingEdges` or use an empty array when no edges are configured. |
 
 **Response (201):**
 
@@ -93,7 +93,7 @@ Registers a new geographic place.
 | `displayName` | string | Display name. |
 | `servingModes` | string[] | Transport modes. |
 | `accessTimeMinutes` | integer | Optional; same semantics and minute units as request. Present only when configured. |
-| `walkingEdges` | array | Optional; same `{toNodeId, walkingTimeMinutes}` directed edge shape as request. Present only when one or more edge weights are configured. |
+| `walkingEdges` | array | Optional; same `{toNodeId, walkingTimeMinutes}` directed edge shape as request. Present only when one or more walking/access edges are configured; per-edge `walkingTimeMinutes` is omitted when unknown and present as `0` when explicitly configured as zero. |
 | `createdAt` | timestamp | Creation time. |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND` (placeId), `CONFLICT`
