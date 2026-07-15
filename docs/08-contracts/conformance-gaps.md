@@ -1,10 +1,20 @@
 # Conformance Gaps — Field-Level Mismatches
 
-Last updated: 2026-07-04
+Last updated: 2026-07-15
 
 This document lists concrete mismatches between the contract specification
 (`docs/08-contracts/`) and the current service implementations. Each gap MUST
 be resolved before integration testing (联调).
+
+> **Reconciled 2026-07-15:** Of the 14 gaps that were still unmarked after the
+> 2026-07-04 pre-integration audit, 11 are now resolved (GAP-006, 007, 008, 009,
+> 012, 015, 016, 017, 018, 020, 026), 1 is N/A because the cited code was retired
+> (GAP-013 — the Python trip-planning is retired; the deployed image builds the
+> Rust `services/trip-planning-rs`), and 2 remain genuinely open: **GAP-005**
+> (shared-kernel-rust ID wrappers still validate non-empty only, no prefix check)
+> and **GAP-021** (services deliberately *ignore* unknown `eventType` rather than
+> rejecting it — a design decision to revisit, not yet a rejection path). The 19
+> gaps marked resolved in the original audit are unchanged.
 
 ## 1. Money Representation
 
@@ -23,11 +33,11 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Canonical Prefix |
 |---|---|---|---|---|
-| GAP-005 | shared-kernel-rust | `platform/shared-kernel-rust/src/lib.rs` | Generic wrappers without prefix validation. | `plc-`, `tvl-`, `seg-` |
-| GAP-006 | capacity-availability | `services/capacity-availability/src/lib.rs` | Free-form strings without prefix convention. | `hold-<uuid>` |
-| GAP-007 | booking-orchestration | `SegmentBooking.java` | `UUID.randomUUID()` without prefix. | `sb-<uuid>` |
-| GAP-008 | payment | `PaymentIntent.java` | `UUID.randomUUID()` without prefix. | `pi-<uuid>` |
-| GAP-009 | journey-order | `JourneyOrder.java` | `UUID.randomUUID()` without prefix. | `ord-<uuid>` |
+| GAP-005 | shared-kernel-rust | `platform/shared-kernel-rust/src/lib.rs` | Generic wrappers without prefix validation. | ⚠️ OPEN: the `id_type!` macro (`lib.rs:350`) still validates only non-empty; `PlaceRef`/`TravelerRef`/`SegmentRef` accept any string with no `plc-`/`tvl-`/`seg-` prefix check (Phase 3 tech debt). |
+| GAP-006 | capacity-availability | `services/capacity-availability/src/lib.rs` | Free-form strings without prefix convention. | ✅ RESOLVED: hold IDs minted as `format!("hold-{}", uuid::Uuid::now_v7())` (`services/capacity-availability/src/application.rs:319`); snapshots as `avs-`. |
+| GAP-007 | booking-orchestration | `SegmentBooking.java` | `UUID.randomUUID()` without prefix. | ✅ RESOLVED: aggregate no longer mints its own ID — it validates a supplied `segmentBookingId` via `requireText` (`SegmentBooking.java:39`), and callers pass canonical `sb-<uuidv7>` (e.g. `deploy/e2e/02-purchase.sh:73`, controller contract). |
+| GAP-008 | payment | `PaymentIntent.java` | `UUID.randomUUID()` without prefix. | ✅ RESOLVED: `new PaymentIntent("pi-" + UUID.randomUUID(), …)` (`services/payment/.../domain/PaymentIntent.java:181`). |
+| GAP-009 | journey-order | `JourneyOrder.java` | `UUID.randomUUID()` without prefix. | ✅ RESOLVED: `"ord-" + UuidV7.generate()` (`services/journey-order/.../domain/JourneyOrder.java:75`). |
 
 ## 3. Event Envelope Compliance
 
@@ -37,7 +47,7 @@ be resolved before integration testing (联调).
 |---|---|---|---|---|
 | GAP-010 | journey-order | `JourneyOrderCreated.java` | Events use `EventMetadata`, not `EventEnvelope`. | ✅ RESOLVED: replaced `EventMetadata` with canonical `EventEnvelope`. |
 | GAP-011 | payment | `PaymentIntent.java` | Events use `PaymentEvent` with `EventMetadata`. | ✅ RESOLVED: replaced `EventMetadata` with canonical `EventEnvelope`. |
-| GAP-012 | booking-orchestration | `BookingSaga.java` | Events use `DomainEvent` base. | Same as GAP-010. |
+| GAP-012 | booking-orchestration | `BookingSaga.java` | Events use `DomainEvent` base. | ✅ RESOLVED: `publishEvents()` maps every `DomainEvent` to a `ContractEvent` and emits a canonical `EventEnvelope` (`services/booking-orchestration/.../application/BookingOrchestrationService.java:668-682`). |
 
 | GAP-010-A | entitlement-ticketing | `src/lib.rs` | Domain events are bare structs without EventEnvelope. | ✅ RESOLVED: added `EventEnvelope` type with `wrap_domain_event()` helper per shared-primitives.md. |
 | GAP-010-B | supplier-catalog | `internal/domain/events.go` | Domain events are bare structs without EventEnvelope. | ✅ RESOLVED: added `EventEnvelope` type with `WrapDomainEvent()` helper per shared-primitives.md. |
@@ -48,7 +58,7 @@ be resolved before integration testing (联调).
 
 | # | Service | File | Issue | Required |
 |---|---|---|---|---|
-| GAP-013 | trip-planning | `domain.py` | Accepts both camelCase and snake_case. | All JSON fields MUST be camelCase. |
+| GAP-013 | trip-planning | `domain.py` | Accepts both camelCase and snake_case. | ✅ N/A (retired): the Python `services/trip-planning` is retired; the deployed `trip-planning` image builds the Rust `services/trip-planning-rs` (`deploy/docker/trip-planning/Dockerfile:6-11`), so `domain.py` no longer ships. |
 | GAP-014 | offer-management | `domain.ts` | Enums are PascalCase (`"Quoted"`). | ✅ RESOLVED: added `mapAvailabilityConfidence()` mapping function per docs/08-contracts/events/capacity-availability.md mapping table. Internal enums remain PascalCase; boundary converts to contract canonical SCREAMING_SNAKE. |
 
 ## 5. Missing Event Publications
@@ -57,10 +67,10 @@ be resolved before integration testing (联调).
 
 | # | Context | Event | Status |
 |---|---|---|---|
-| GAP-015 | booking-orchestration | `BookingSagaStarted` | Not published as cross-context event. |
-| GAP-016 | payment | `PaymentIntentCreated` | Not published as cross-context `EventEnvelope`. |
-| GAP-017 | payment | `RefundSettled` | Not published as cross-context `EventEnvelope`. |
-| GAP-018 | capacity-availability | `AvailabilitySnapshot` | Not published as standalone event (currently only a read-model projection). |
+| GAP-015 | booking-orchestration | `BookingSagaStarted` | ✅ RESOLVED: published as cross-context `EventEnvelope` with `eventType` `BookingSagaStarted` (`services/booking-orchestration/.../application/BookingOrchestrationService.java:688-690`, via `publishEvents`). |
+| GAP-016 | payment | `PaymentIntentCreated` | ✅ RESOLVED: carries an `EventEnvelope` (`services/payment/.../domain/PaymentIntentCreated.java:5`, minted at `PaymentIntent.java:182`), mapped in `EventEnvelopeMapper.java:45` and published via `PaymentCommandService`. |
+| GAP-017 | payment | `RefundSettled` | ✅ RESOLVED: carries an `EventEnvelope` (`services/payment/.../domain/RefundSettled.java:5`, minted at `Refund.java:216`), mapped in `EventEnvelopeMapper.java:119` and published via `PaymentCommandService`. |
+| GAP-018 | capacity-availability | `AvailabilitySnapshot` | ✅ RESOLVED: emitted as a standalone `CapacitySnapshotUpdated` domain event carrying the snapshot (`services/capacity-availability/src/domain.rs:1111`), published as an `EventEnvelope` with `eventType` `CapacitySnapshotUpdated` (`application.rs:814-815`). |
 
 ## 6. Field Naming Inconsistencies
 
@@ -76,8 +86,8 @@ be resolved before integration testing (联调).
 
 | # | Service | Issue |
 |---|---|---|
-| GAP-020 | all | No service validates `schemaVersion` on incoming events. |
-| GAP-021 | all | No service rejects events with unknown `eventType`. |
+| GAP-020 | all | ✅ RESOLVED: `schemaVersion` is now validated at the shared envelope boundary — go-kit rejects an unsupported version (`platform/go-kit/messaging/envelope.go:93`), java-kit rejects non-positive (`platform/java-kit/.../EventEnvelope.java:49`), and TS consumers validate it (`services/notification/.../notification-service.ts:828`). |
+| GAP-021 | all | ⚠️ OPEN: inbound handlers deliberately *ignore* unknown `eventType` (safe-ignore pub/sub pattern, e.g. `services/capacity-availability/src/application.rs:42` `_ => HandlerResult::Success`; `journey-order` `default -> new Success()`); no service *rejects* it. The requested canonical (reject) was not adopted — a design decision to revisit rather than a rejection path yet built. |
 
 ## 8. TravelerRef Shape Mismatches
 
@@ -96,7 +106,7 @@ be resolved before integration testing (联调).
 |---|---|---|---|---|
 | GAP-024 | offer-management | `services/offer-management/src/domain.ts` | Uses `eligibilitySnapshotRef?: SnapshotId` (free-form string) instead of structured `EligibilityRef`. | ✅ RESOLVED: replaced with structured `eligibilityRef` matching contract. |
 | GAP-025 | journey-order | `services/journey-order/.../domain/OfferSnapshotRef.java` | Carries `ruleSnapshotId: String` (free-form string) instead of structured `EligibilityRef`. Missing `eligibilityRef` in `TravelerRef`. | ✅ RESOLVED: added `EligibilityRef` record and `TravelerRef.eligibilityRef` field. |
-| GAP-026 | traveler-profile | `services/traveler-profile` | Produces `EligibilitySummary` (definition pending — no domain code on base branch yet). Must align with canonical `EligibilityRef` shape. | `EligibilityRef` with `eligibilityId`, `eligibilityType`, `eligibilitySource`, `evidenceHash`, `verifiedAt`. |
+| GAP-026 | traveler-profile | `services/traveler-profile` | Produces `EligibilitySummary` (definition pending — no domain code on base branch yet). Must align with canonical `EligibilityRef` shape. | ✅ RESOLVED: domain code now ships — `EligibilitySummary` carries the canonical identity fields `eligibilityId`, `eligibilityType`, `eligibilitySource`, `evidenceHash` (`services/traveler-profile/.../domain/EligibilitySummary.java:7-10`), and the service emits a canonical `elig-`-prefixed `eligibilityRef` (`TravelerProfileService.java:199`). Validity is modeled as `validFrom`/`validUntil` rather than a single `verifiedAt`. |
 
 ## 10. Offer → Order Reference Alignment
 
