@@ -171,7 +171,7 @@ are part of this normative enum.
 | Field | Description |
 |---|---|
 | **Producer** | disruption-recovery |
-| **Consumers** | reporting; deferred: notification |
+| **Consumers** | reporting |
 | **Trigger** | Accepted report opens a new incident instead of merging into an existing one. |
 
 **Payload:**
