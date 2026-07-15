@@ -1,4 +1,5 @@
-import { newCommandId, newCorrelationId, type EventEnvelope, type EventPublisher } from "@trainticket/ts-kit";
+import { createHash } from "node:crypto";
+import { createEventEnvelope, type EventEnvelope, type EventPublisher } from "@trainticket/ts-kit";
 import type { WaitlistEntrySnapshot } from "./domain.js";
 
 export const WAITLIST_PRODUCER = "waitlist";
@@ -131,16 +132,26 @@ export function waitlistEventIdSeed(eventType: WaitlistEventType, waitlistReques
 }
 
 function waitlistEnvelope(eventType: WaitlistEventType, entry: WaitlistEntrySnapshot, aggregateVersion: number, payload: WaitlistEventPayload, correlationId?: string, occurredAt?: string): EventEnvelope<WaitlistEventPayload> {
-  return Object.freeze({
-    eventId: waitlistEventIdSeed(eventType, entry.entryId, aggregateVersion),
+  const envelope = createEventEnvelope({
+    eventId: deterministicEventId(waitlistEventIdSeed(eventType, entry.entryId, aggregateVersion)),
     eventType,
-    schemaVersion: 1,
     producer: WAITLIST_PRODUCER,
-    causationId: newCommandId(),
-    correlationId: correlationId ?? newCorrelationId(),
-    occurredAt: occurredAt ?? new Date().toISOString(),
-    payload: Object.freeze(omitUndefined(payload)),
+    correlationId,
+    occurredAt,
+    payload,
   });
+  return Object.freeze({
+    ...envelope,
+    eventId: waitlistEventIdSeed(eventType, entry.entryId, aggregateVersion),
+  });
+}
+
+function deterministicEventId(seed: string): string {
+  const hash = createHash("sha256").update(seed).digest();
+  hash[6] = (hash[6] & 0x0f) | 0x70;
+  hash[8] = (hash[8] & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString("hex");
+  return `evt-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 function travelerRef(entry: WaitlistEntrySnapshot): string {
@@ -149,8 +160,4 @@ function travelerRef(entry: WaitlistEntrySnapshot): string {
 
 function itineraryRef(entry: WaitlistEntrySnapshot): string {
   return entry.itineraryRef ?? entry.segmentRef;
-}
-
-function omitUndefined(payload: WaitlistEventPayload): WaitlistEventPayload {
-  return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
 }

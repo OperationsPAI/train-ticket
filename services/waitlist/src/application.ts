@@ -1,7 +1,7 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
-import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
+import { publishAll, waitlistCancelled, waitlistExpired, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
   accountId: string;
@@ -99,6 +99,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     return [...this.entries.values()].filter((entry) => entry.status === "MATCHING" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
+  }
+
+  async findExpired(now: Date): Promise<readonly WaitlistEntry[]> {
+    return [...this.entries.values()].filter((entry) => entry.status === "QUEUED" && new Date(entry.deadline) <= now);
   }
 
   async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
@@ -224,7 +228,20 @@ export class WaitlistApplicationService {
   }
 
   async expireDueOffers(correlationId?: string) {
+    await this.expireDueWaitlistRequests(correlationId);
     return this.promotion.expireDueOffers(correlationId);
+  }
+
+  async expireDueWaitlistRequests(correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
+    const expiredAt = this.now().toISOString();
+    const expired: WaitlistEntrySnapshot[] = [];
+    for (const entry of await this.repository.findExpired(new Date(expiredAt))) {
+      entry.expire();
+      const snapshot = await this.repository.save(entry);
+      expired.push(snapshot);
+      if (this.publisher) await publishAll(this.publisher, [waitlistExpired(snapshot, expiredAt, entry.loadedVersion, correlationId)]);
+    }
+    return expired;
   }
 
   private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {

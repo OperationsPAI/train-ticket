@@ -34,13 +34,14 @@ test("WaitlistCapacityFreed promotes highest-priority queued entry", async () =>
   const regular = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
   const platinum = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
 
-  const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, eventId: "evt-capacity-1" });
 
   assert.equal(result.promoted[0]?.waitlistRequestId, platinum.waitlistRequestId);
   assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
   assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
   assert.equal(publisher.findByEventType("WaitlistHoldAuthorized").length, 1);
   assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted")[0]?.payload.matchedCapacityReleaseRef, "evt-capacity-1");
 });
 
 test("expired matching attempt returns to queue, releases hold, and frees capacity", async () => {
@@ -55,10 +56,10 @@ test("expired matching attempt returns to queue, releases hold, and frees capaci
   current = new Date("2026-01-01T00:16:00.000Z");
   await service.expireDueOffers();
 
-  assert.equal((await service.get(first.waitlistRequestId)).status, "MATCHING");
+  assert.equal((await service.get(first.waitlistRequestId)).status, "QUEUED");
   assert.deepEqual(capacity.released, [`hold-${first.waitlistRequestId}`]);
   assert.equal(publisher.findByEventType("WaitlistQueued").filter((event) => event.payload.requeueReason === "MATCH_EXPIRED").length, 1);
-  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 2);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
 });
 
 test("accept promotion records journey order and waits for confirmation", async () => {

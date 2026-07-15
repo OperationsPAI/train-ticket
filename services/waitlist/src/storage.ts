@@ -56,6 +56,11 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return result.rows.map(entryFromRow);
   }
 
+  async findExpired(now: Date): Promise<readonly WaitlistEntry[]> {
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'QUEUED' AND data->>'deadline' <= $1 ORDER BY data->>'deadline' ASC, created_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
+    return result.rows.map(entryFromRow);
+  }
+
   async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
     const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE data->>'journeyOrderRef' = $1 ORDER BY created_at ASC LIMIT 1`, [journeyOrderRef]) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;

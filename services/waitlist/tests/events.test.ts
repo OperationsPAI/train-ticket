@@ -88,3 +88,19 @@ test("journey order confirmation publishes WaitlistFulfilled", async () => {
   assert.equal(fulfilled?.payload.journeyOrderRef, order.orderId);
   assert.equal(fulfilled?.payload.status, "FULFILLED");
 });
+
+test("expired queued request publishes WaitlistExpired with deterministic id", async () => {
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-02T00:00:00.000Z"), new StubOfferManagement());
+  const request = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", deadline: "2026-01-01T00:00:00.000Z", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itn", intentFingerprint: "intent" });
+
+  await service.expireDueWaitlistRequests();
+
+  const expired = publisher.findByEventType("WaitlistExpired")[0];
+  assert.equal(expired?.eventId, waitlistEventIdSeed("WaitlistExpired", request.waitlistRequestId, 4));
+  assert.equal(expired?.payload.waitlistRequestId, request.waitlistRequestId);
+  assert.equal(expired?.payload.deadline, "2026-01-01T00:00:00.000Z");
+  assert.equal(expired?.payload.expiredAt, "2026-01-02T00:00:00.000Z");
+  assert.equal(expired?.payload.status, "EXPIRED");
+  assert.equal((await service.get(request.waitlistRequestId)).status, "EXPIRED");
+});

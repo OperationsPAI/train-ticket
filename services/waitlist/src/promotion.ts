@@ -33,6 +33,7 @@ export interface WaitlistRepository {
   findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findByJourneyOrderRef?(journeyOrderRef: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
+  findExpired(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
   listByTraveler(travelerRef: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
 }
@@ -144,6 +145,25 @@ export class PromotionOrchestrator {
   ) {}
 
   async onCapacityFreed(event: WaitlistCapacityFreed, correlationId?: string): Promise<PromotionResult> {
+    if (!event.eventId) throw new DomainError("PRECONDITION_FAILED", "CapacityReleased eventId is required to publish WaitlistMatchStarted");
+    return this.promoteQueuedEntries(event, event.eventId, correlationId);
+  }
+
+  async expireDueOffers(correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
+    const now = this.now();
+    const expired: WaitlistEntrySnapshot[] = [];
+    for (const entry of await this.repository.findExpiredOffers(now)) {
+      const capacityHoldId = entry.capacityHoldId;
+      entry.returnToQueue();
+      if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
+      const snapshot = await this.repository.save(entry);
+      expired.push(snapshot);
+      await publishAll(this.publisher, [waitlistQueued(snapshot, now.toISOString(), entry.loadedVersion, correlationId, { requeueReason: "MATCH_EXPIRED" })]);
+    }
+    return expired;
+  }
+
+  private async promoteQueuedEntries(event: WaitlistCapacityFreed, matchedCapacityReleaseRef: string, correlationId?: string): Promise<PromotionResult> {
     const promoted: PromotedWaitlistRequest[] = [];
     const offers: WaitlistOffer[] = [];
     const slots = Math.max(0, Math.floor(event.freedSlots));
@@ -162,25 +182,10 @@ export class PromotionOrchestrator {
       offers.push(offer);
       await publishAll(this.publisher, [
         waitlistHoldAuthorized(snapshot, now.toISOString(), entry.loadedVersion, correlationId),
-        waitlistMatchStarted(snapshot, event.eventId ?? "capacity-release:unknown", now.toISOString(), entry.loadedVersion, correlationId),
+        waitlistMatchStarted(snapshot, matchedCapacityReleaseRef, now.toISOString(), entry.loadedVersion, correlationId),
       ]);
     }
     return { promoted, offers };
-  }
-
-  async expireDueOffers(correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
-    const now = this.now();
-    const expired: WaitlistEntrySnapshot[] = [];
-    for (const entry of await this.repository.findExpiredOffers(now)) {
-      const capacityHoldId = entry.capacityHoldId;
-      entry.returnToQueue();
-      if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
-      const snapshot = await this.repository.save(entry);
-      expired.push(snapshot);
-      await publishAll(this.publisher, [waitlistQueued(snapshot, now.toISOString(), entry.loadedVersion, correlationId, { requeueReason: "MATCH_EXPIRED" })]);
-      await this.onCapacityFreed({ segmentRef: entry.segmentRef, departureDate: entry.departureDate, seatClass: entry.seatClass, freedSlots: 1 }, correlationId);
-    }
-    return expired;
   }
 }
 
