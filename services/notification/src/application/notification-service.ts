@@ -339,12 +339,15 @@ function triggerBusinessRef(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.waitlistRequestId)
     ?? stringValue(payload.journeyOrderRef)
     ?? stringValue(payload.postSalesCaseId)
+    ?? stringValue(payload.ancillaryOrderItemId)
+    ?? stringValue(payload.ancillaryOfferId)
+    ?? stringValue(payload.rideRequestId)
     ?? stringValue(recordValue(payload.connection)?.connectionId)
     ?? stringValue(payload.businessRef);
   return businessRef ? `${envelope.eventType}:${businessRef}` : undefined;
 }
 
-type FieldType = "array" | "boolean" | "money" | "object" | "string";
+type FieldType = "array" | "boolean" | "money" | "number" | "object" | "string";
 
 type RequiredField = Readonly<{
   name: string;
@@ -588,7 +591,207 @@ const CONTRACT_FIELDS_BY_EVENT: Readonly<Record<string, readonly RequiredField[]
     { name: "riskLevel", type: "string" },
     { name: "recoveredAt", type: "string" },
   ],
+  AncillaryOfferQuoted: [
+    { name: "ancillaryOfferId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "catalogSnapshot", type: "object" },
+    { name: "quantity", type: "number" },
+    { name: "unitPrice", type: "money" },
+    { name: "totalPrice", type: "money" },
+    { name: "eligibility", type: "object" },
+    { name: "validFrom", type: "string" },
+    { name: "expiresAt", type: "string" },
+    { name: "status", type: "string" },
+    { name: "quotedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ],
+  AncillaryOfferExpired: [
+    { name: "ancillaryOfferId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "catalogItemId", type: "string" },
+    { name: "previousStatus", type: "string" },
+    { name: "reason", type: "string" },
+    { name: "expiredAt", type: "string" },
+    { name: "status", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ],
+  AncillaryOrderItemSelected: ancillaryOrderItemFields([
+    { name: "ancillaryOfferId", type: "string" },
+    { name: "offerVersion", type: "number" },
+    { name: "catalogSnapshot", type: "object" },
+    { name: "quantity", type: "number" },
+    { name: "payableAmount", type: "money" },
+    { name: "refundableAmount", type: "money" },
+    { name: "assessedFees", type: "array" },
+    { name: "status", type: "string" },
+    { name: "selectedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ]),
+  AncillaryOrderItemPendingConfirmation: ancillaryOrderItemFields([
+    { name: "payableAmount", type: "money" },
+    { name: "refundableAmount", type: "money" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "transitionedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ]),
+  AncillaryOrderItemConfirmed: ancillaryOrderItemFields([
+    { name: "payableAmount", type: "money" },
+    { name: "refundableAmount", type: "money" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "confirmedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ]),
+  AncillaryOrderItemFulfillmentReady: ancillaryOrderItemFields([
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "readyAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ]),
+  AncillaryOrderItemFulfilled: ancillaryOrderItemFields([
+    { name: "fulfillmentFact", type: "object" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "fulfilledAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ]),
+  AncillaryOrderItemFailed: ancillaryOrderItemFields([
+    { name: "failureCode", type: "string" },
+    { name: "compensable", type: "boolean" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "failedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ]),
+  AncillaryOrderItemCancelled: [
+    { name: "ancillaryOrderItemId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "catalogItemId", type: "string" },
+    { name: "serviceType", type: "string" },
+    { name: "payableAmount", type: "money" },
+    { name: "refundableAmount", type: "money" },
+    { name: "reasonCode", type: "string" },
+    { name: "source", type: "string" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "cancelledAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ],
+  AncillaryOrderItemRefundPending: [
+    { name: "ancillaryOrderItemId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "catalogItemId", type: "string" },
+    { name: "serviceType", type: "string" },
+    { name: "payableAmount", type: "money" },
+    { name: "refundableAmount", type: "money" },
+    { name: "recommendation", type: "string" },
+    { name: "reasonCode", type: "string" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "requestedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ],
+  AncillaryOrderItemRefunded: [
+    { name: "ancillaryOrderItemId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "catalogItemId", type: "string" },
+    { name: "serviceType", type: "string" },
+    { name: "refundRef", type: "string" },
+    { name: "refundedAmount", type: "money" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "refundedAt", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ],
+  AncillaryFulfillmentFactRecorded: [
+    { name: "ancillaryOrderItemId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "catalogItemId", type: "string" },
+    { name: "serviceType", type: "string" },
+    { name: "fulfillmentFact", type: "object" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+    { name: "aggregateVersion", type: "number" },
+  ],
+  DispatchRequested: [
+    { name: "rideRequestId", type: "string" },
+    { name: "riderAccountId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "pickupRef", type: "string" },
+    { name: "dropoffRef", type: "string" },
+    { name: "timeWindow", type: "object" },
+    { name: "intentFingerprint", type: "string" },
+    { name: "status", type: "string" },
+    { name: "requestedAt", type: "string" },
+  ],
+  DriverAssigned: dispatchAssignmentFields([{ name: "etaSeconds", type: "number" }, { name: "assignedAt", type: "string" }, { name: "status", type: "string" }]),
+  DriverEtaUpdated: dispatchAssignmentFields([{ name: "etaSeconds", type: "number" }, { name: "updatedAt", type: "string" }, { name: "status", type: "string" }], false),
+  DriverArrived: dispatchAssignmentFields([{ name: "arrivedAt", type: "string" }, { name: "status", type: "string" }]),
+  RideStarted: dispatchAssignmentFields([{ name: "startedAt", type: "string" }, { name: "status", type: "string" }]),
+  RideEnded: dispatchAssignmentFields([{ name: "startedAt", type: "string" }, { name: "endedAt", type: "string" }, { name: "status", type: "string" }]),
+  DriverCancelled: [
+    { name: "rideRequestId", type: "string" },
+    { name: "rideAssignmentId", type: "string" },
+    { name: "riderAccountId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "driverRef", type: "string" },
+    { name: "vehicleRef", type: "string" },
+    { name: "cancelledAt", type: "string" },
+    { name: "reason", type: "string" },
+    { name: "status", type: "string" },
+    { name: "nextStatus", type: "string" },
+  ],
+  DispatchUserCancelled: [
+    { name: "rideRequestId", type: "string" },
+    { name: "riderAccountId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "pickupRef", type: "string" },
+    { name: "dropoffRef", type: "string" },
+    { name: "cancelledAt", type: "string" },
+    { name: "reason", type: "string" },
+    { name: "status", type: "string" },
+  ],
+  DispatchNoShowRecorded: dispatchAssignmentFields([{ name: "recordedAt", type: "string" }, { name: "status", type: "string" }]),
+  DispatchFailed: [
+    { name: "rideRequestId", type: "string" },
+    { name: "riderAccountId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    { name: "pickupRef", type: "string" },
+    { name: "dropoffRef", type: "string" },
+    { name: "intentFingerprint", type: "string" },
+    { name: "failedAt", type: "string" },
+    { name: "reason", type: "string" },
+    { name: "previousStatus", type: "string" },
+    { name: "status", type: "string" },
+  ],
 });
+
+function ancillaryOrderItemFields(extra: readonly RequiredField[]): readonly RequiredField[] {
+  return [
+    { name: "ancillaryOrderItemId", type: "string" },
+    { name: "journeyOrderId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    ...extra,
+  ];
+}
+
+function dispatchAssignmentFields(extra: readonly RequiredField[], includePlaces = true): readonly RequiredField[] {
+  return [
+    { name: "rideRequestId", type: "string" },
+    { name: "rideAssignmentId", type: "string" },
+    { name: "riderAccountId", type: "string" },
+    { name: "travelerRef", type: "string" },
+    ...(includePlaces ? [{ name: "pickupRef", type: "string" } as const, { name: "dropoffRef", type: "string" } as const] : []),
+    { name: "driverRef", type: "string" },
+    { name: "vehicleRef", type: "string" },
+    ...extra,
+  ];
+}
 
 function validateTriggerContract(envelope: EventEnvelope): void {
   const envelopeViolations = envelopeContractViolations(envelope);
@@ -648,6 +851,8 @@ function fieldViolation(payload: Record<string, unknown>, field: RequiredField):
       return typeof value === "boolean" ? [] : [`payload.${field.name} must be a boolean`];
     case "money":
       return isMoney(value) ? [] : [`payload.${field.name} must be Money`];
+    case "number":
+      return typeof value === "number" && Number.isFinite(value) ? [] : [`payload.${field.name} must be a number`];
     case "object":
       return recordValue(value) === undefined ? [`payload.${field.name} must be an object`] : [];
     case "string":
@@ -729,6 +934,50 @@ function mappingFor(eventType: string): TriggerMapping | undefined {
       return connectionMissedMapping();
     case "ConnectionRecovered":
       return connectionRecoveredMapping();
+    case "AncillaryOfferQuoted":
+      return ancillaryMapping("ANCILLARY_OFFER_QUOTED", "ANCILLARY_OFFER_QUOTED", ancillaryOfferVariables);
+    case "AncillaryOfferExpired":
+      return ancillaryMapping("ANCILLARY_OFFER_EXPIRED", "ANCILLARY_OFFER_EXPIRED", ancillaryOfferVariables);
+    case "AncillaryOrderItemSelected":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_SELECTED", "ANCILLARY_ORDER_ITEM_SELECTED", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemPendingConfirmation":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_PENDING_CONFIRMATION", "ANCILLARY_ORDER_ITEM_PENDING_CONFIRMATION", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemConfirmed":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_CONFIRMED", "ANCILLARY_ORDER_ITEM_CONFIRMED", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemFulfillmentReady":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_FULFILLMENT_READY", "ANCILLARY_ORDER_ITEM_FULFILLMENT_READY", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemFulfilled":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_FULFILLED", "ANCILLARY_ORDER_ITEM_FULFILLED", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemFailed":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_FAILED", "ANCILLARY_ORDER_ITEM_FAILED", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemCancelled":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_CANCELLED", "ANCILLARY_ORDER_ITEM_CANCELLED", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemRefundPending":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_REFUND_PENDING", "ANCILLARY_ORDER_ITEM_REFUND_PENDING", ancillaryOrderItemVariables);
+    case "AncillaryOrderItemRefunded":
+      return ancillaryMapping("ANCILLARY_ORDER_ITEM_REFUNDED", "ANCILLARY_ORDER_ITEM_REFUNDED", ancillaryOrderItemVariables);
+    case "AncillaryFulfillmentFactRecorded":
+      return ancillaryMapping("ANCILLARY_FULFILLMENT_FACT_RECORDED", "ANCILLARY_FULFILLMENT_FACT_RECORDED", ancillaryOrderItemVariables);
+    case "DispatchRequested":
+      return dispatchMapping("DISPATCH_REQUESTED", "DISPATCH_REQUESTED");
+    case "DriverAssigned":
+      return dispatchMapping("DRIVER_ASSIGNED", "DRIVER_ASSIGNED");
+    case "DriverEtaUpdated":
+      return dispatchMapping("DRIVER_ETA_UPDATED", "DRIVER_ETA_UPDATED");
+    case "DriverArrived":
+      return dispatchMapping("DRIVER_ARRIVED", "DRIVER_ARRIVED");
+    case "RideStarted":
+      return dispatchMapping("RIDE_STARTED", "RIDE_STARTED");
+    case "RideEnded":
+      return dispatchMapping("RIDE_ENDED", "RIDE_ENDED");
+    case "DriverCancelled":
+      return dispatchMapping("DRIVER_CANCELLED", "DRIVER_CANCELLED");
+    case "DispatchUserCancelled":
+      return dispatchMapping("DISPATCH_USER_CANCELLED", "DISPATCH_USER_CANCELLED");
+    case "DispatchNoShowRecorded":
+      return dispatchMapping("DISPATCH_NO_SHOW_RECORDED", "DISPATCH_NO_SHOW_RECORDED");
+    case "DispatchFailed":
+      return dispatchMapping("DISPATCH_FAILED", "DISPATCH_FAILED");
     default:
       return undefined;
   }
@@ -988,6 +1237,130 @@ function connectionRecoveredMapping(): TriggerMapping {
   );
 }
 
+function ancillaryMapping(
+  templateCode: NotificationTemplateType,
+  intent: string,
+  variables: (payload: Record<string, unknown>) => Record<string, string>,
+): TriggerMapping {
+  return {
+    templateCode,
+    templateType: templateCode,
+    intent,
+    channel: "PUSH",
+    recipient: (payload) => stringValue(payload.travelerRef) ?? recipientFromDirectFields(payload),
+    variables,
+  };
+}
+
+function ancillaryOfferVariables(payload: Record<string, unknown>): Record<string, string> {
+  const catalog = recordValue(payload.catalogSnapshot);
+  return {
+    ...pickStringVariables(payload, ["ancillaryOfferId", "journeyOrderId", "travelerRef", "catalogItemId", "reason", "status", "quotedAt", "expiredAt", "expiresAt"]),
+    catalogItemId: stringValue(payload.catalogItemId) ?? stringValue(catalog?.catalogItemId) ?? "--",
+    serviceType: stringValue(payload.serviceType) ?? stringValue(catalog?.serviceType) ?? "--",
+    serviceName: stringValue(catalog?.displayName) ?? stringValue(payload.serviceType) ?? stringValue(payload.catalogItemId) ?? "--",
+    amount: moneyString(payload.totalPrice) ?? moneyString(payload.unitPrice) ?? "--",
+    reason: stringValue(payload.reason) ?? stringValue(payload.reasonCode) ?? "--",
+    expiresAt: stringValue(payload.expiresAt) ?? "--",
+  };
+}
+
+function ancillaryOrderItemVariables(payload: Record<string, unknown>): Record<string, string> {
+  const catalog = recordValue(payload.catalogSnapshot);
+  const fulfillmentFact = recordValue(payload.fulfillmentFact);
+  return {
+    ...pickStringVariables(payload, [
+      "ancillaryOrderItemId",
+      "journeyOrderId",
+      "travelerRef",
+      "segmentRef",
+      "entitlementRef",
+      "ancillaryOfferId",
+      "catalogItemId",
+      "serviceType",
+      "confirmationRef",
+      "providerRef",
+      "failureCode",
+      "reasonCode",
+      "recommendation",
+      "refundRef",
+      "status",
+      "previousStatus",
+      "selectedAt",
+      "transitionedAt",
+      "confirmedAt",
+      "readyAt",
+      "fulfilledAt",
+      "failedAt",
+      "cancelledAt",
+      "requestedAt",
+      "refundedAt",
+    ]),
+    catalogItemId: stringValue(payload.catalogItemId) ?? stringValue(catalog?.catalogItemId) ?? "--",
+    serviceType: stringValue(payload.serviceType) ?? stringValue(catalog?.serviceType) ?? "--",
+    serviceName: stringValue(catalog?.displayName) ?? stringValue(payload.serviceType) ?? stringValue(payload.catalogItemId) ?? "--",
+    amount: moneyString(payload.refundedAmount) ?? moneyString(payload.refundableAmount) ?? moneyString(payload.payableAmount) ?? "--",
+    confirmationRef: stringValue(payload.confirmationRef) ?? "--",
+    providerRef: stringValue(payload.providerRef) ?? stringValue(fulfillmentFact?.providerRef) ?? "--",
+    factType: stringValue(fulfillmentFact?.factType) ?? "--",
+    failureCode: stringValue(payload.failureCode) ?? "--",
+    reasonCode: stringValue(payload.reasonCode) ?? "--",
+    recommendation: stringValue(payload.recommendation) ?? "--",
+    refundRef: stringValue(payload.refundRef) ?? "--",
+  };
+}
+
+function dispatchMapping(templateCode: NotificationTemplateType, intent: string): TriggerMapping {
+  return {
+    templateCode,
+    templateType: templateCode,
+    intent,
+    channel: "PUSH",
+    recipient: (payload) => stringValue(payload.travelerRef) ?? stringValue(payload.riderAccountId) ?? recipientFromDirectFields(payload),
+    variables: dispatchVariables,
+  };
+}
+
+function dispatchVariables(payload: Record<string, unknown>): Record<string, string> {
+  return {
+    ...pickStringVariables(payload, [
+      "rideRequestId",
+      "rideAssignmentId",
+      "riderAccountId",
+      "travelerRef",
+      "pickupRef",
+      "dropoffRef",
+      "driverRef",
+      "vehicleRef",
+      "status",
+      "nextStatus",
+      "reason",
+      "previousStatus",
+      "estimatedFareRef",
+      "finalFareRef",
+      "requestedAt",
+      "assignedAt",
+      "updatedAt",
+      "arrivedAt",
+      "startedAt",
+      "endedAt",
+      "cancelledAt",
+      "recordedAt",
+      "failedAt",
+    ]),
+    etaMinutes: etaMinutes(payload.etaSeconds),
+    finalFareRef: stringValue(payload.finalFareRef) ?? "--",
+    reason: stringValue(payload.reason) ?? "--",
+  };
+}
+
+function etaMinutes(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+  return String(Math.max(0, Math.ceil(value / 60)));
+}
+
 function transferManagementMapping(
   templateCode: string,
   intent: string | ((payload: Record<string, unknown>) => string),
@@ -1120,7 +1493,11 @@ function recipientFromOrderEvent(payload: Record<string, unknown>): string | und
 }
 
 function recipientFromDirectFields(payload: Record<string, unknown>): string | undefined {
-  return stringValue(payload.recipientRef) ?? stringValue(payload.travelerId) ?? stringValue(payload.accountId) ?? stringValue(payload.actorRef);
+  return stringValue(payload.recipientRef)
+    ?? stringValue(payload.travelerId)
+    ?? stringValue(payload.accountId)
+    ?? stringValue(payload.riderAccountId)
+    ?? stringValue(payload.actorRef);
 }
 
 function recipientFromDisruptionAlert(payload: Record<string, unknown>): string | undefined {

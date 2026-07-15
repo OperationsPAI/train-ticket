@@ -831,4 +831,104 @@ describe("notification messaging integration surface", () => {
     );
   });
 
+
+  it("consumes ancillary-service order-item and dispatch lifecycle events", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+
+    assert.equal(await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03601",
+      eventType: "AncillaryOrderItemFulfillmentReady",
+      schemaVersion: 1,
+      producer: "ancillary-service",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b03601",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b03601",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        ancillaryOrderItemId: "aoi-360",
+        journeyOrderId: "ord-360",
+        travelerRef: "tvl-360",
+        segmentRef: "seg-360",
+        providerRef: "voucher-360",
+        entitlementRef: "ent-360",
+        previousStatus: "CONFIRMED",
+        status: "FULFILLMENT_READY",
+        readyAt: "2026-07-05T10:00:00.000Z",
+        aggregateVersion: 4,
+      },
+    }), "delivered");
+
+    assert.equal(await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03602",
+      eventType: "RideEnded",
+      schemaVersion: 1,
+      producer: "dispatch",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b03602",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b03602",
+      occurredAt: "2026-07-05T10:20:00.000Z",
+      payload: {
+        rideRequestId: "rrq-360",
+        rideAssignmentId: "ras-360",
+        riderAccountId: "acc-360",
+        travelerRef: "tvl-360",
+        pickupRef: "place-pickup-360",
+        dropoffRef: "place-dropoff-360",
+        driverRef: "drv-360",
+        vehicleRef: "veh-360",
+        startedAt: "2026-07-05T10:05:00.000Z",
+        endedAt: "2026-07-05T10:20:00.000Z",
+        finalFareRef: "fare-360",
+        status: "COMPLETED",
+      },
+    }), "delivered");
+
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => [envelope.payload.templateType, envelope.payload.intent, envelope.payload.recipientRef, envelope.payload.channel]),
+      [
+        ["ANCILLARY_ORDER_ITEM_FULFILLMENT_READY", "ANCILLARY_ORDER_ITEM_FULFILLMENT_READY", "tvl-360", "PUSH"],
+        ["RIDE_ENDED", "RIDE_ENDED", "tvl-360", "PUSH"],
+      ],
+    );
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => envelope.payload.templateCode),
+      ["ANCILLARY_ORDER_ITEM_FULFILLMENT_READY", "RIDE_ENDED"],
+    );
+  });
+
+  it("deduplicates repeated dispatch eventIds before scheduling", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const service = new NotificationApplicationService(publisher);
+    const handler = new DeduplicatingEventHandler((envelope) => service.handleExternalTrigger(envelope).then(() => successfulHandling()));
+    const event: EventEnvelope = {
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b03603",
+      eventType: "DriverAssigned",
+      schemaVersion: 1,
+      producer: "dispatch",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b03603",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b03603",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        rideRequestId: "rrq-361",
+        rideAssignmentId: "ras-361",
+        riderAccountId: "acc-361",
+        travelerRef: "tvl-361",
+        pickupRef: "place-pickup-361",
+        dropoffRef: "place-dropoff-361",
+        driverRef: "drv-361",
+        vehicleRef: "veh-361",
+        etaSeconds: 420,
+        assignedAt: "2026-07-05T10:00:00.000Z",
+        status: "DRIVER_ARRIVING",
+      },
+    };
+
+    assert.deepEqual(await handler.handle(event), { ok: true });
+    assert.deepEqual(await handler.handle(event), { ok: true });
+    assert.equal(publisher.envelopes.filter((envelope) => envelope.eventType === "NotificationScheduled").length, 1);
+  });
+
 });

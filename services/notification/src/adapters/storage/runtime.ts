@@ -214,6 +214,50 @@ function templateCodeFor(envelope: EventEnvelope): string | undefined {
       return "CONNECTION_MISSED";
     case "ConnectionRecovered":
       return stringValue(envelope.payload.replacementConnectionId) ? "CONNECTION_REACCOMMODATED" : "CONNECTION_RECOVERED";
+    case "AncillaryOfferQuoted":
+      return "ANCILLARY_OFFER_QUOTED";
+    case "AncillaryOfferExpired":
+      return "ANCILLARY_OFFER_EXPIRED";
+    case "AncillaryOrderItemSelected":
+      return "ANCILLARY_ORDER_ITEM_SELECTED";
+    case "AncillaryOrderItemPendingConfirmation":
+      return "ANCILLARY_ORDER_ITEM_PENDING_CONFIRMATION";
+    case "AncillaryOrderItemConfirmed":
+      return "ANCILLARY_ORDER_ITEM_CONFIRMED";
+    case "AncillaryOrderItemFulfillmentReady":
+      return "ANCILLARY_ORDER_ITEM_FULFILLMENT_READY";
+    case "AncillaryOrderItemFulfilled":
+      return "ANCILLARY_ORDER_ITEM_FULFILLED";
+    case "AncillaryOrderItemFailed":
+      return "ANCILLARY_ORDER_ITEM_FAILED";
+    case "AncillaryOrderItemCancelled":
+      return "ANCILLARY_ORDER_ITEM_CANCELLED";
+    case "AncillaryOrderItemRefundPending":
+      return "ANCILLARY_ORDER_ITEM_REFUND_PENDING";
+    case "AncillaryOrderItemRefunded":
+      return "ANCILLARY_ORDER_ITEM_REFUNDED";
+    case "AncillaryFulfillmentFactRecorded":
+      return "ANCILLARY_FULFILLMENT_FACT_RECORDED";
+    case "DispatchRequested":
+      return "DISPATCH_REQUESTED";
+    case "DriverAssigned":
+      return "DRIVER_ASSIGNED";
+    case "DriverEtaUpdated":
+      return "DRIVER_ETA_UPDATED";
+    case "DriverArrived":
+      return "DRIVER_ARRIVED";
+    case "RideStarted":
+      return "RIDE_STARTED";
+    case "RideEnded":
+      return "RIDE_ENDED";
+    case "DriverCancelled":
+      return "DRIVER_CANCELLED";
+    case "DispatchUserCancelled":
+      return "DISPATCH_USER_CANCELLED";
+    case "DispatchNoShowRecorded":
+      return "DISPATCH_NO_SHOW_RECORDED";
+    case "DispatchFailed":
+      return "DISPATCH_FAILED";
     case "PostSalesEligibilityEvaluated":
       return "post_sales_eligibility";
     case "PostSalesDecisionQuoted":
@@ -241,9 +285,10 @@ function recipientRefsFor(payload: Record<string, unknown>): readonly string[] {
   const connection = recordFromUnknown(payload.connection);
   const direct = stringValue(payload.recipientRef)
     ?? stringValue(payload.travelerId)
-    ?? stringValue(payload.accountId)
-    ?? stringValue(payload.actorRef)
     ?? stringValue(payload.travelerRef)
+    ?? stringValue(payload.accountId)
+    ?? stringValue(payload.riderAccountId)
+    ?? stringValue(payload.actorRef)
     ?? firstString(payload.affectedOrderIds)
     ?? stringValue(payload.journeyOrderId)
     ?? stringValue(payload.serviceAlertId);
@@ -294,6 +339,9 @@ function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
     ?? stringValue(payload.waitlistRequestId)
     ?? stringValue(payload.journeyOrderRef)
     ?? stringValue(payload.postSalesCaseId)
+    ?? stringValue(payload.ancillaryOrderItemId)
+    ?? stringValue(payload.ancillaryOfferId)
+    ?? stringValue(payload.rideRequestId)
     ?? stringValue(connection?.connectionId)
     ?? stringValue(payload.businessRef);
   return direct ? `${envelope.eventType}:${direct}` : undefined;

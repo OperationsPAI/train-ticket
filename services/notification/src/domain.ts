@@ -89,7 +89,29 @@ export type NotificationTemplateType =
   | "CONNECTION_MISSED"
   | "CONNECTION_RECOVERED"
   | "CONNECTION_REACCOMMODATED"
-  | "DISRUPTION_REBOOK";
+  | "DISRUPTION_REBOOK"
+  | "ANCILLARY_OFFER_QUOTED"
+  | "ANCILLARY_OFFER_EXPIRED"
+  | "ANCILLARY_ORDER_ITEM_SELECTED"
+  | "ANCILLARY_ORDER_ITEM_PENDING_CONFIRMATION"
+  | "ANCILLARY_ORDER_ITEM_CONFIRMED"
+  | "ANCILLARY_ORDER_ITEM_FULFILLMENT_READY"
+  | "ANCILLARY_ORDER_ITEM_FULFILLED"
+  | "ANCILLARY_ORDER_ITEM_FAILED"
+  | "ANCILLARY_ORDER_ITEM_CANCELLED"
+  | "ANCILLARY_ORDER_ITEM_REFUND_PENDING"
+  | "ANCILLARY_ORDER_ITEM_REFUNDED"
+  | "ANCILLARY_FULFILLMENT_FACT_RECORDED"
+  | "DISPATCH_REQUESTED"
+  | "DRIVER_ASSIGNED"
+  | "DRIVER_ETA_UPDATED"
+  | "DRIVER_ARRIVED"
+  | "RIDE_STARTED"
+  | "RIDE_ENDED"
+  | "DRIVER_CANCELLED"
+  | "DISPATCH_USER_CANCELLED"
+  | "DISPATCH_NO_SHOW_RECORDED"
+  | "DISPATCH_FAILED";
 
 // ─── Value Objects ─────────────────────────────────────────────────────────────
 
@@ -899,6 +921,28 @@ export function builtInNotificationTemplates(): readonly NotificationTemplate[] 
     templateSet("CONNECTION_RECOVERED", "接续恢复完成", "您的接续 {connectionId} 已恢复，{recoverySummary}。", "接续已恢复", "接续恢复完成"),
     templateSet("CONNECTION_REACCOMMODATED", "接续已重新安排", "您的接续已重新安排至 {replacementConnectionId}，下一段出发时间 {nextDepartureAt}。", "接续已重新安排", "接续已重新安排"),
     templateSet("DISRUPTION_REBOOK", "列车取消改签", "由于列车取消，已为您改签至 {newTrainNumber} {newDepartureTime}", "已改签至{newTrainNumber}", "已为您改签"),
+    templateSet("ANCILLARY_OFFER_QUOTED", "附加服务报价已生成", "您的附加服务 {serviceName} 报价 {amount}，有效至 {expiresAt}", "附加服务{serviceName}报价{amount}", "附加服务报价"),
+    templateSet("ANCILLARY_OFFER_EXPIRED", "附加服务报价已过期", "您的附加服务报价 {ancillaryOfferId} 已过期，原因：{reason}", "附加服务报价已过期", "报价已过期"),
+    templateSet("ANCILLARY_ORDER_ITEM_SELECTED", "附加服务已选择", "您已选择 {serviceName}，订单 {journeyOrderId}，待确认", "已选择{serviceName}", "附加服务已选择"),
+    templateSet("ANCILLARY_ORDER_ITEM_PENDING_CONFIRMATION", "附加服务确认中", "您的附加服务 {serviceName} 正在确认，参考 {confirmationRef}", "附加服务确认中", "确认中"),
+    templateSet("ANCILLARY_ORDER_ITEM_CONFIRMED", "附加服务已确认", "您的附加服务 {serviceName} 已确认，参考 {confirmationRef}", "附加服务已确认", "服务已确认"),
+    templateSet("ANCILLARY_ORDER_ITEM_FULFILLMENT_READY", "附加服务可使用", "您的附加服务 {serviceName} 已可使用，凭证 {providerRef}", "{serviceName}可使用", "服务可使用"),
+    templateSet("ANCILLARY_ORDER_ITEM_FULFILLED", "附加服务已完成", "您的附加服务 {serviceName} 已完成，状态 {status}", "附加服务已完成", "服务已完成"),
+    templateSet("ANCILLARY_ORDER_ITEM_FAILED", "附加服务处理失败", "您的附加服务 {serviceName} 处理失败，原因：{failureCode}", "附加服务失败：{failureCode}", "服务失败"),
+    templateSet("ANCILLARY_ORDER_ITEM_CANCELLED", "附加服务已取消", "您的附加服务 {serviceName} 已取消，原因：{reasonCode}", "附加服务已取消", "服务已取消"),
+    templateSet("ANCILLARY_ORDER_ITEM_REFUND_PENDING", "附加服务退款处理中", "您的附加服务退款 {amount} 正在处理，建议：{recommendation}", "附加服务退款处理中", "退款处理中"),
+    templateSet("ANCILLARY_ORDER_ITEM_REFUNDED", "附加服务退款完成", "您的附加服务退款 {amount} 已完成，退款单 {refundRef}", "附加服务退款完成", "退款完成"),
+    templateSet("ANCILLARY_FULFILLMENT_FACT_RECORDED", "附加服务进度更新", "您的附加服务 {serviceName} 有新进度：{factType}", "附加服务进度：{factType}", "服务进度更新"),
+    templateSet("DISPATCH_REQUESTED", "接送请求已提交", "您的接送请求 {rideRequestId} 已提交，状态 {status}", "接送请求已提交", "接送已请求"),
+    templateSet("DRIVER_ASSIGNED", "司机已接单", "司机 {driverRef} 已接单，车辆 {vehicleRef}，预计 {etaMinutes} 分钟到达", "司机已接单，约{etaMinutes}分钟到达", "司机已接单"),
+    templateSet("DRIVER_ETA_UPDATED", "司机到达时间更新", "司机 {driverRef} 预计 {etaMinutes} 分钟到达", "司机约{etaMinutes}分钟到达", "ETA更新"),
+    templateSet("DRIVER_ARRIVED", "司机已到达", "司机 {driverRef} 已到达上车点 {pickupRef}", "司机已到达上车点", "司机已到达"),
+    templateSet("RIDE_STARTED", "行程已开始", "您的接送行程 {rideRequestId} 已开始，目的地 {dropoffRef}", "接送行程已开始", "行程开始"),
+    templateSet("RIDE_ENDED", "行程已完成", "您的接送行程 {rideRequestId} 已完成，最终费用参考 {finalFareRef}", "接送行程已完成", "行程完成"),
+    templateSet("DRIVER_CANCELLED", "司机取消接单", "司机已取消本次接单，系统将继续为您匹配", "司机取消，继续匹配", "司机取消"),
+    templateSet("DISPATCH_USER_CANCELLED", "接送请求已取消", "您的接送请求 {rideRequestId} 已取消，原因：{reason}", "接送请求已取消", "接送已取消"),
+    templateSet("DISPATCH_NO_SHOW_RECORDED", "未上车记录", "接送请求 {rideRequestId} 已记录未上车，请查看规则或联系客服", "已记录未上车", "未上车记录"),
+    templateSet("DISPATCH_FAILED", "接送匹配失败", "您的接送请求 {rideRequestId} 未能完成匹配，原因：{reason}", "接送匹配失败", "匹配失败"),
   ].flat());
 }
 
@@ -916,7 +960,14 @@ function renderTemplate(template: string, variables: Readonly<Record<string, str
 }
 
 function isAggregatableTemplate(type: NotificationTemplateType): boolean {
-  return !type.startsWith("RECOVERY_") && !type.startsWith("CONNECTION_") && type !== "TRANSFER_AT_RISK" && type !== "DISRUPTION_ALERT";
+  return !type.startsWith("RECOVERY_")
+    && !type.startsWith("CONNECTION_")
+    && !type.startsWith("ANCILLARY_")
+    && !type.startsWith("DISPATCH_")
+    && !type.startsWith("DRIVER_")
+    && !type.startsWith("RIDE_")
+    && type !== "TRANSFER_AT_RISK"
+    && type !== "DISRUPTION_ALERT";
 }
 
 function aggregationPriority(type: NotificationTemplateType): number {
@@ -947,6 +998,28 @@ function aggregationPriority(type: NotificationTemplateType): number {
     case "CONNECTION_MISSED":
     case "CONNECTION_RECOVERED":
     case "CONNECTION_REACCOMMODATED":
+    case "ANCILLARY_OFFER_QUOTED":
+    case "ANCILLARY_OFFER_EXPIRED":
+    case "ANCILLARY_ORDER_ITEM_SELECTED":
+    case "ANCILLARY_ORDER_ITEM_PENDING_CONFIRMATION":
+    case "ANCILLARY_ORDER_ITEM_CONFIRMED":
+    case "ANCILLARY_ORDER_ITEM_FULFILLMENT_READY":
+    case "ANCILLARY_ORDER_ITEM_FULFILLED":
+    case "ANCILLARY_ORDER_ITEM_FAILED":
+    case "ANCILLARY_ORDER_ITEM_CANCELLED":
+    case "ANCILLARY_ORDER_ITEM_REFUND_PENDING":
+    case "ANCILLARY_ORDER_ITEM_REFUNDED":
+    case "ANCILLARY_FULFILLMENT_FACT_RECORDED":
+    case "DISPATCH_REQUESTED":
+    case "DRIVER_ASSIGNED":
+    case "DRIVER_ETA_UPDATED":
+    case "DRIVER_ARRIVED":
+    case "RIDE_STARTED":
+    case "RIDE_ENDED":
+    case "DRIVER_CANCELLED":
+    case "DISPATCH_USER_CANCELLED":
+    case "DISPATCH_NO_SHOW_RECORDED":
+    case "DISPATCH_FAILED":
       return 6;
   }
 }
