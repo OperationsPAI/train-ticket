@@ -1,12 +1,13 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
-import { publishAll, waitlistEntryPromoted, waitlistOfferExpired } from "./publisher.js";
+import { publishAll, waitlistExpired, waitlistHoldAuthorized, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
   segmentRef: string;
   departureDate: string;
   seatClass?: string;
   freedSlots: number;
+  capacityReleaseRef?: string;
 }>;
 
 export type WaitlistOffer = Readonly<{
@@ -159,7 +160,10 @@ export class PromotionOrchestrator {
       const snapshot = await this.repository.save(entry);
       promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
-      await publishAll(this.publisher, [waitlistEntryPromoted(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [
+        waitlistHoldAuthorized(snapshot, entry.loadedVersion, correlationId, now.toISOString()),
+        waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef ?? "unknown", correlationId, now.toISOString()),
+      ]);
     }
     return { promoted, offers };
   }
@@ -168,13 +172,12 @@ export class PromotionOrchestrator {
     const now = this.now();
     const expired: WaitlistEntrySnapshot[] = [];
     for (const entry of await this.repository.findExpiredOffers(now)) {
-      const offer = offerFromEntry(entry);
       const capacityHoldId = entry.capacityHoldId;
-      entry.returnToQueue();
+      entry.expire();
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
       const snapshot = await this.repository.save(entry);
       expired.push(snapshot);
-      await publishAll(this.publisher, [waitlistOfferExpired(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [waitlistExpired(snapshot, entry.loadedVersion, correlationId, now.toISOString())]);
       await this.onCapacityFreed({ segmentRef: entry.segmentRef, departureDate: entry.departureDate, seatClass: entry.seatClass, freedSlots: 1 }, correlationId);
     }
     return expired;

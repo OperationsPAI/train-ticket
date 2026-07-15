@@ -39,10 +39,11 @@ test("WaitlistCapacityFreed promotes highest-priority queued entry", async () =>
   assert.equal(result.promoted[0]?.waitlistRequestId, platinum.waitlistRequestId);
   assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
   assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistHoldAuthorized").length, 1);
 });
 
-test("expired matching attempt returns to queue, releases hold, and frees capacity", async () => {
+test("expired matching attempt expires, releases hold, and frees capacity", async () => {
   let current = new Date("2026-01-01T00:00:00.000Z");
   const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
@@ -54,19 +55,21 @@ test("expired matching attempt returns to queue, releases hold, and frees capaci
   current = new Date("2026-01-01T00:16:00.000Z");
   await service.expireDueOffers();
 
-  assert.equal((await service.get(first.waitlistRequestId)).status, "MATCHING");
+  assert.equal((await service.get(first.waitlistRequestId)).status, "EXPIRED");
   assert.deepEqual(capacity.released, [`hold-${first.waitlistRequestId}`]);
-  assert.equal(publisher.findByEventType("WaitlistOfferExpired").length, 1);
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 2);
+  assert.equal(publisher.findByEventType("WaitlistExpired").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
 });
 
-test("accept promotion creates journey order and publishes accepted event", async () => {
-  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+test("accept promotion creates journey order and records order ref", async () => {
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
   const order = await service.accept(entry.waitlistRequestId, { paymentMethodRef: "pm-1" });
   assert.equal(order.orderId, `ord-${entry.waitlistRequestId}`);
-  assert.equal((await service.get(entry.waitlistRequestId)).status, "FULFILLED");
+  assert.equal((await service.get(entry.waitlistRequestId)).journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 0);
 });
 
 test("accept does not mutate entry when journey order creation fails", async () => {
