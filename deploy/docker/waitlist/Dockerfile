@@ -8,7 +8,7 @@ COPY services/waitlist/package.json services/waitlist/package-lock.json services
 RUN --mount=type=cache,target=/root/.npm cd services/waitlist && npm ci --install-links
 COPY services/waitlist/src ./services/waitlist/src
 COPY services/waitlist/migrations ./services/waitlist/migrations
-RUN cd services/waitlist && npx tsc --noEmit false --outDir dist
+RUN cd services/waitlist && npx tsc --noEmit false --rootDir src --outDir dist
 
 FROM node:26-alpine
 WORKDIR /app
