@@ -14,6 +14,8 @@ import com.trainticket.travelerprofile.domain.Document;
 import com.trainticket.travelerprofile.domain.DocumentStatus;
 import com.trainticket.travelerprofile.domain.DocumentType;
 import com.trainticket.travelerprofile.domain.EligibilitySummary;
+import com.trainticket.travelerprofile.domain.ExternalVerificationFact;
+import com.trainticket.travelerprofile.domain.ExternalVerificationStatus;
 import com.trainticket.travelerprofile.domain.PreferenceSnapshot;
 import com.trainticket.travelerprofile.domain.TravelerProfile;
 import com.trainticket.travelerprofile.domain.TravelerProfileEvent;
@@ -80,6 +82,22 @@ public final class TravelerJson {
             node.put("revoked", summary.revoked());
             putNullable(node, "revocationReason", summary.revocationReason());
         }
+        ArrayNode verificationFacts = root.putArray("verificationFacts");
+        for (ExternalVerificationFact fact : profile.verificationFacts()) {
+            ObjectNode node = verificationFacts.addObject();
+            node.put("credentialRecordId", fact.credentialRecordId());
+            putNullable(node, "verificationCaseId", fact.verificationCaseId());
+            node.put("status", fact.status().name());
+            putNullable(node, "documentType", fact.documentType());
+            putNullable(node, "maskedDocumentNo", fact.maskedDocumentNo());
+            putNullable(node, "documentHash", fact.documentHash());
+            putNullable(node, "policyVersion", fact.policyVersion());
+            putNullable(node, "reasonCode", fact.reasonCode());
+            putNullable(node, "validFrom", fact.validFrom() == null ? null : fact.validFrom().toString());
+            putNullable(node, "validUntil", fact.validUntil() == null ? null : fact.validUntil().toString());
+            node.put("recordedAt", fact.recordedAt().toString());
+            node.put("sourceEventId", fact.sourceEventId());
+        }
         root.set("domainEvents", objectMapper.valueToTree(profile.domainEvents()));
         return new TravelerSnapshot(root);
     }
@@ -100,13 +118,22 @@ public final class TravelerJson {
         for (JsonNode node : root.path("eligibilitySummaries")) {
             eligibilities.add(EligibilitySummary.rehydrate(text(node, "eligibilityId"), text(node, "eligibilityType"), text(node, "eligibilitySource"), text(node, "evidenceHash"), Instant.parse(text(node, "validFrom")), Instant.parse(text(node, "validUntil")), node.path("revoked").asBoolean(false), node.path("revocationReason").asText(null)));
         }
+        List<ExternalVerificationFact> verificationFacts = new ArrayList<>();
+        for (JsonNode node : root.path("verificationFacts")) {
+            verificationFacts.add(new ExternalVerificationFact(
+                text(node, "credentialRecordId"), nullableText(node, "verificationCaseId"), ExternalVerificationStatus.valueOf(text(node, "status")),
+                nullableText(node, "documentType"), nullableText(node, "maskedDocumentNo"), nullableText(node, "documentHash"),
+                nullableText(node, "policyVersion"), nullableText(node, "reasonCode"), nullableInstant(node, "validFrom"),
+                nullableInstant(node, "validUntil"), Instant.parse(text(node, "recordedAt")), text(node, "sourceEventId")
+            ));
+        }
         JsonNode pref = root.path("preferences");
         Map<String, String> values = map(pref.path("values"), objectMapper);
         Map<String, String> assistance = map(pref.path("assistanceNeeds"), objectMapper);
         TravelerProfile profile = TravelerProfile.rehydrate(
             text(root, "profileId"), text(root, "travelerRef"), text(root, "aggregateAccountId"), text(root, "displayName"), text(root, "birthDate"),
             TravelerProfileStatus.valueOf(text(root, "status")), root.path("statusReason").asText(null), documents, primaryDocumentId, eligibilities,
-            new PreferenceSnapshot(values, assistance, pref.path("version").asInt(1)), List.of());
+            verificationFacts, new PreferenceSnapshot(values, assistance, pref.path("version").asInt(1)), List.of());
         return new TravelerState(profile, text(root, "travelerId"), text(root, "snapshotVersion"), text(root, "accountId"), TravelerType.valueOf(text(root, "travelerType")), text(root, "givenName"), text(root, "familyName"), root.path("contactEmail").asText(null), root.path("contactPhone").asText(null), Instant.parse(text(root, "createdAt")), Instant.parse(text(root, "updatedAt")));
     }
 
@@ -116,6 +143,7 @@ public final class TravelerJson {
     }
 
     private static Instant nullableInstant(JsonNode node, String field) { String value = node.path(field).asText(null); return value == null || value.isBlank() ? null : Instant.parse(value); }
+    private static String nullableText(JsonNode node, String field) { String value = node.path(field).asText(null); return value == null || value.isBlank() ? null : value; }
     private static String maskedDocumentRef(JsonNode node) {
         String value = node.path("maskedDocumentRef").asText(null);
         if (value != null && !value.isBlank()) {
