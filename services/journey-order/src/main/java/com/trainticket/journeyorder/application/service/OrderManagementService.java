@@ -708,8 +708,11 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private EventSubscriber.HandlerResult handleConnectionMissed(EventEnvelope envelope) {
         requirePayloadFields(envelope, "connection", "contractType", "recoveryRequired", "missedAt");
-        StoredOrder stored = storedOrderFromConnection(envelope);
-        JourneyOrder order = stored.order();
+        Optional<StoredOrder> stored = storedOrderFromConnection(envelope);
+        if (stored.isEmpty()) {
+            return ackSkipUnlinkedConnection(envelope);
+        }
+        JourneyOrder order = stored.get().order();
         try {
             order.recordConnectionMissed(
                 requiredConnectionText(envelope, "connectionId"),
@@ -720,14 +723,17 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         } catch (DomainRuleViolation | IllegalStateException ex) {
             return ackSkipStateRace(envelope, order);
         }
-        stateRepository.saveOrder(order, stored.idempotencyKey());
+        stateRepository.saveOrder(order, stored.get().idempotencyKey());
         return new EventSubscriber.Success();
     }
 
     private EventSubscriber.HandlerResult handleConnectionRecovered(EventEnvelope envelope) {
         requirePayloadFields(envelope, "connection", "status", "riskLevel", "recoveredAt");
-        StoredOrder stored = storedOrderFromConnection(envelope);
-        JourneyOrder order = stored.order();
+        Optional<StoredOrder> stored = storedOrderFromConnection(envelope);
+        if (stored.isEmpty()) {
+            return ackSkipUnlinkedConnection(envelope);
+        }
+        JourneyOrder order = stored.get().order();
         try {
             order.recordConnectionRecovered(
                 requiredConnectionText(envelope, "connectionId"),
@@ -738,7 +744,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         } catch (DomainRuleViolation | IllegalStateException ex) {
             return ackSkipStateRace(envelope, order);
         }
-        stateRepository.saveOrder(order, stored.idempotencyKey());
+        stateRepository.saveOrder(order, stored.get().idempotencyKey());
         return new EventSubscriber.Success();
     }
 
@@ -902,9 +908,12 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return storedOrderFromId(acceptedByRef);
     }
 
-    private StoredOrder storedOrderFromConnection(EventEnvelope envelope) {
-        String orderId = requiredConnectionText(envelope, "journeyOrderId");
-        return storedOrderFromId(orderId);
+    private Optional<StoredOrder> storedOrderFromConnection(EventEnvelope envelope) {
+        String orderId = connectionText(envelope, "journeyOrderId", null);
+        if (orderId == null || orderId.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(storedOrderFromId(orderId));
     }
 
     private StoredOrder storedOrderFromId(String orderId) {
@@ -922,6 +931,12 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private static EventSubscriber.HandlerResult ackSkipStateRace(EventEnvelope envelope, JourneyOrder order) {
         LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} currentStatus={} reason=STATE_RACE_OR_RULE_NOOP",
             envelope.eventType(), envelope.eventId(), order.orderId(), order.state());
+        return new EventSubscriber.Success();
+    }
+
+    private static EventSubscriber.HandlerResult ackSkipUnlinkedConnection(EventEnvelope envelope) {
+        LOGGER.warn("ack-skip journey-order event={} eventId={} connectionId={} reason=NO_LINKED_ORDER",
+            envelope.eventType(), envelope.eventId(), connectionText(envelope, "connectionId", "unknown"));
         return new EventSubscriber.Success();
     }
 
