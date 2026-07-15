@@ -54,7 +54,8 @@ The wire status enum is the 8-state machine from the Waitlist domain document:
 | `CLOSED` | Terminal archival state. | - |
 
 `FULFILLED`, `EXPIRED`, and `CANCELLED` rest observable via GET; `CLOSED` is
-reached from them only by a future archival sweep (not yet implemented).
+reached from them by the archival sweep, which is implemented (see
+`archiveTerminalRequests()` in `services/waitlist/src/application.ts`).
 
 No `FAILED` status is exposed in this contract; a failed matching attempt rolls
 back to `QUEUED` when the associated journey order is cancelled.
