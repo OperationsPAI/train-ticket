@@ -85,6 +85,28 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return entries.map((entry) => entry.toSnapshot(positionIn(entries, entry.entryId)));
   }
 
+  async listByTraveler(travelerRef: string, options: { status?: string; limit: number; offset: number }): Promise<{ items: readonly WaitlistEntrySnapshot[]; total: number }> {
+    const params: unknown[] = [travelerRef];
+    const statusClause = options.status ? "AND status = $2" : "";
+    if (options.status) params.push(options.status);
+    const limitIndex = params.length + 1;
+    const offsetIndex = params.length + 2;
+    params.push(options.limit, options.offset);
+    const result = await this.db.query(
+      `SELECT *, count(*) OVER() AS total_count
+       FROM waitlist_entries
+       WHERE traveler_ref = $1 ${statusClause}
+       ORDER BY created_at DESC, entry_id ASC
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      params,
+    ) as QueryResult<WaitlistRow & { total_count?: number | string }>;
+    const total = result.rows[0]?.total_count === undefined ? 0 : Number(result.rows[0].total_count);
+    return {
+      items: result.rows.map((row) => entryFromRow(row).toSnapshot(0)),
+      total,
+    };
+  }
+
   async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
     const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE journey_order_ref = $1`, [journeyOrderRef]) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;

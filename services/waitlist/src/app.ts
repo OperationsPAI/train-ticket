@@ -66,6 +66,9 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
     statusCode: 201,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
   }));
+  app.get("/api/v1/waitlist-requests", async (request, reply) => handleRead(reply, request, () => (
+    runCommand((repository, publisher) => commandService(repository, publisher).listByTraveler(query(request).travelerRef, query(request).status, query(request).limit, query(request).offset))
+  )));
   app.get("/api/v1/waitlist-requests/:entryId", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
   )));

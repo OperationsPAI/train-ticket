@@ -73,6 +73,7 @@ export type CreateWaitlistEntry = Readonly<{
   intentFingerprint: string;
   priority: Omit<PriorityInput, "groupSize" | "fareClass"> & Partial<Pick<PriorityInput, "groupSize" | "fareClass">>;
   createdAt?: Date;
+  now?: Date;
 }>;
 
 export class DomainError extends Error {
@@ -133,6 +134,8 @@ export class WaitlistEntry {
     }
     const deadline = new Date(command.deadline);
     if (!Number.isFinite(deadline.getTime())) throw new DomainError("VALIDATION_FAILED", "deadline must be a valid RFC3339 timestamp");
+    const now = command.now ?? command.createdAt ?? new Date();
+    if (deadline <= now) throw new DomainError("PRECONDITION_FAILED", "deadline must be in the future at creation");
     const seatClass = command.travelClass ?? command.seatClass ?? "SECOND";
     const departureDate = command.departureDate ?? command.deadline.slice(0, 10);
     const groupSize = command.priority.groupSize ?? travelerRefs.length;
@@ -242,6 +245,13 @@ export class WaitlistEntry {
     this._capacityHoldId = capacityHoldId;
     this._offerId = offerId;
     this._offerVersion = offerVersion;
+    return this.advanceVersion();
+  }
+
+  recordJourneyOrderRef(journeyOrderRef: string): number {
+    this.assertStatus("MATCHING", "Only matching waitlist requests can record a journey order reference");
+    assertNonEmpty(journeyOrderRef, "journeyOrderRef");
+    this._journeyOrderRef = journeyOrderRef;
     return this.advanceVersion();
   }
 

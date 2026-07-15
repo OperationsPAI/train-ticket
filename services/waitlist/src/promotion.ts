@@ -32,7 +32,12 @@ export interface WaitlistRepository {
   findExpired(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   findArchivable(): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
+  listByTraveler?(travelerRef: string, options: { status?: string; limit: number; offset: number }): Promise<{ items: readonly WaitlistEntrySnapshot[]; total: number }> | { items: readonly WaitlistEntrySnapshot[]; total: number };
   findByJourneyOrderRef?(journeyOrderRef: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
+}
+
+export interface JourneyOrderCreationClient {
+  createOrder(entry: WaitlistEntry): Promise<{ orderId: string; seatAssignment: unknown }>;
 }
 
 export interface FarePricingClient {
@@ -137,6 +142,7 @@ export class PromotionOrchestrator {
     private readonly farePricing: FarePricingClient,
     private readonly capacityAvailability: CapacityAvailabilityClient,
     private readonly publisher: EventPublisher,
+    private readonly journeyOrder: JourneyOrderCreationClient,
     private readonly offerManagement: OfferManagementClient = new HttpOfferManagementClient(),
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -156,6 +162,9 @@ export class PromotionOrchestrator {
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
       const hold = await this.capacityAvailability.hold(entry, quote.fareQuoteId);
       entry.recordHold(commercialOffer.offerId, commercialOffer.offerVersion, quote.fareQuoteId, hold.capacityHoldId);
+      snapshot = await this.repository.save(entry);
+      const order = await this.journeyOrder.createOrder(entry);
+      entry.recordJourneyOrderRef(order.orderId);
       snapshot = await this.repository.save(entry);
       const offer = {
         offerId: commercialOffer.offerId,

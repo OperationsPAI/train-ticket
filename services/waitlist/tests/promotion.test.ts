@@ -25,7 +25,7 @@ class StubJourneyOrder implements JourneyOrderClient {
   async createOrder(entry: WaitlistEntry) { return { orderId: `ord-${entry.entryId}`, seatAssignment: { segmentRef: entry.segmentRef } }; }
 }
 
-test("CapacityReleased starts matching for highest-priority queued request", async () => {
+test("CapacityReleased starts matching and creates journey order for highest-priority queued request", async () => {
   const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
   const fare = new StubFarePricing();
@@ -37,7 +37,9 @@ test("CapacityReleased starts matching for highest-priority queued request", asy
   const result = await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
   assert.equal(result.promoted[0]?.entryId, platinum.waitlistRequestId);
-  assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
+  const promoted = await service.get(platinum.waitlistRequestId);
+  assert.equal(promoted.status, "MATCHING");
+  assert.equal(promoted.journeyOrderRef, `ord-${platinum.waitlistRequestId}`);
   assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
   assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
   assert.equal(publisher.findByEventType("WaitlistHoldAuthorized").length, 1);
@@ -56,28 +58,48 @@ test("deadline expiry publishes WaitlistExpired", async () => {
   assert.equal(publisher.findByEventType("WaitlistExpired").length, 1);
 });
 
-test("accept promotion creates journey order and publishes fulfilled event", async () => {
+test("journey order confirmation fulfills matching request", async () => {
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join(contractRequest({ travelerRef: "t1" }));
   await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
-  const order = await service.accept(entry.waitlistRequestId, { paymentMethodRef: "pm-1" });
-  assert.equal(order.orderId, `ord-${entry.waitlistRequestId}`);
+  await service.handleJourneyOrderConfirmed({ eventId: "jo-confirmed", journeyOrderRef: `ord-${entry.waitlistRequestId}` });
   assert.equal((await service.get(entry.waitlistRequestId)).status, "FULFILLED");
   assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);
 });
 
-test("accept does not mutate request when journey order creation fails", async () => {
-  class FailingJourneyOrder implements JourneyOrderClient {
-    async createOrder(): Promise<never> { throw new Error("downstream unavailable"); }
+test("journey order cancellation requeues with associated order reference", async () => {
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const entry = await service.join(contractRequest({ travelerRef: "t1" }));
+  await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  await service.handleJourneyOrderCancelled({ eventId: "jo-cancelled", journeyOrderRef: `ord-${entry.waitlistRequestId}` });
+
+  const current = await service.get(entry.waitlistRequestId);
+  const queuedEvents = publisher.findByEventType("WaitlistQueued");
+  assert.equal(current.status, "QUEUED");
+  assert.equal(current.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(queuedEvents.at(-1)?.payload.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+});
+
+test("legacy accept does not mutate request when journey order creation fails", async () => {
+  class FirstOrderSucceedsThenFails implements JourneyOrderClient {
+    private calls = 0;
+    async createOrder(entry: WaitlistEntry) {
+      this.calls += 1;
+      if (this.calls > 1) throw new Error("downstream unavailable");
+      return { orderId: `ord-${entry.entryId}`, seatAssignment: null };
+    }
   }
-  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new FailingJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new FirstOrderSucceedsThenFails(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join(contractRequest({ travelerRef: "t1" }));
   await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
   await assert.rejects(() => service.accept(entry.waitlistRequestId), /downstream unavailable/);
 
-  assert.equal((await service.get(entry.waitlistRequestId)).status, "MATCHING");
+  const current = await service.get(entry.waitlistRequestId);
+  assert.equal(current.status, "MATCHING");
+  assert.equal(current.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
 });
 
 function contractRequest(overrides: Partial<Parameters<WaitlistApplicationService["join"]>[0]>) {
