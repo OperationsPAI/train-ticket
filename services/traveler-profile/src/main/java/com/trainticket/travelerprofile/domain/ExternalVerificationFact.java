@@ -34,6 +34,27 @@ public record ExternalVerificationFact(
         sourceEventId = requireText(sourceEventId, "sourceEventId");
     }
 
+    public boolean hasDocumentMaterial() {
+        return documentType != null || maskedDocumentNo != null || documentHash != null;
+    }
+
+    public ExternalVerificationFact withDocumentMaterialFrom(ExternalVerificationFact source) {
+        return new ExternalVerificationFact(
+            credentialRecordId,
+            verificationCaseId,
+            status,
+            documentType == null ? source.documentType() : documentType,
+            maskedDocumentNo == null ? source.maskedDocumentNo() : maskedDocumentNo,
+            documentHash == null ? source.documentHash() : documentHash,
+            policyVersion,
+            reasonCode,
+            validFrom,
+            validUntil,
+            recordedAt,
+            sourceEventId
+        );
+    }
+
     private static Instant requireWhen(boolean required, Instant value, String name) {
         if (required && value == null) {
             throw new DomainRuleViolation(name + " is required");
