@@ -123,7 +123,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | offer-management, reporting; deferred: notification |
+| **Consumers** | offer-management, reporting |
 | **Trigger** | `PublishCatalogItem` command publishes a configured catalog item. |
 
 **Payload:**
@@ -154,7 +154,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | offer-management, reporting; deferred: notification |
+| **Consumers** | offer-management, reporting |
 | **Trigger** | `SuspendCatalogItem` command pauses sale of a published or suspended item. |
 
 **Payload:**
@@ -175,7 +175,7 @@ All monetary values use the shared `Money` shape: `currency` plus integer
 | Field | Description |
 |---|---|
 | **Producer** | ancillary-service |
-| **Consumers** | offer-management, reporting; deferred: notification |
+| **Consumers** | offer-management, reporting |
 | **Trigger** | `SupersedeCatalogItem` command replaces a catalog version. |
 
 **Payload:**
@@ -485,9 +485,3 @@ terminal (`FULFILLED`, `REFUNDED`, or terminal `CANCELLED`), it emits
 - `reasonCode = JOURNEY_ORDER_CANCELLED`
 
 No Journey Order contract shape is changed by this subscription.
-
-## Deferred downstream touchpoints
-
-| Downstream context | Deferred events | Purpose when activated |
-|---|---|---|
-| Notification | catalog item publish/suspend/supersede events | Optional traveler/ops catalog availability messages; notification currently handles offer/order/refund/fulfillment triggers only. |
