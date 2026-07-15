@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
 import { createApp, resetWaitlistStore } from "../src/app.js";
 
 test("health endpoint returns 200", async () => {
@@ -260,6 +261,41 @@ test("on-demand archival sweep closes cancelled request and contract GET still r
 
   const queueAfter = await app.inject({ method: "GET", url: "/api/v1/waitlist/segments/seg-archive/2026-07-20/queue" });
   assert.equal(queueAfter.json().totalQueued, 0);
+  await app.close();
+});
+
+test("in-memory app can share an application service with periodic archival", async () => {
+  const applicationService = new WaitlistApplicationService(new InMemoryWaitlistRepository());
+  const app = createApp({ applicationService });
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/v1/waitlist-requests",
+    headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c143" },
+    payload: {
+      accountId: "acc-1",
+      travelerRef: "tvl-shared-archive",
+      segmentRef: "seg-shared-archive",
+      travelClass: "SECOND",
+      deadline: "2026-07-20T00:00:00.000Z",
+      paymentGuaranteeRef: "pay-auth-shared-archive",
+      itineraryRef: "itn-shared-archive",
+      intentFingerprint: "intent-shared-archive",
+    },
+  });
+  assert.equal(create.statusCode, 201);
+  const waitlistRequestId = create.json().waitlistRequestId;
+
+  const cancel = await app.inject({ method: "POST", url: `/api/v1/waitlist-requests/${waitlistRequestId}/cancel`, headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c144" }, payload: { reason: "traveler requested cancellation" } });
+  assert.equal(cancel.statusCode, 200);
+
+  const archived = await applicationService.archiveTerminalRequests();
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0]?.waitlistRequestId, waitlistRequestId);
+  assert.equal(archived[0]?.status, "CLOSED");
+
+  const get = await app.inject({ method: "GET", url: `/api/v1/waitlist-requests/${waitlistRequestId}` });
+  assert.equal(get.statusCode, 200);
+  assert.equal(get.json().status, "CLOSED");
   await app.close();
 });
 
