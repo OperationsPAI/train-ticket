@@ -30,6 +30,47 @@ CREATE TABLE IF NOT EXISTS offer_upstream_travelers (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS offer_upstream_transfer_plans (
+  id         text PRIMARY KEY,
+  version    bigint NOT NULL,
+  data       jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS offer_upstream_connection_contracts (
+  id         text PRIMARY KEY,
+  version    bigint NOT NULL,
+  data       jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS offer_upstream_connection_contracts_connection_idx
+  ON offer_upstream_connection_contracts ((data->>'connectionId'));
+
+CREATE TABLE IF NOT EXISTS offer_upstream_mct_rules (
+  id         text PRIMARY KEY,
+  version    bigint NOT NULL,
+  data       jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS offer_upstream_ancillary_catalog (
+  id         text PRIMARY KEY,
+  version    bigint NOT NULL,
+  data       jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS offer_upstream_ancillary_offers (
+  id         text PRIMARY KEY,
+  version    bigint NOT NULL,
+  data       jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS offer_upstream_ancillary_offers_traveler_idx
+  ON offer_upstream_ancillary_offers ((data->>'travelerRef'));
+
 CREATE TABLE IF NOT EXISTS outbox (
   seq          bigserial PRIMARY KEY,
   event_id     text NOT NULL UNIQUE,

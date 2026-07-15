@@ -353,6 +353,87 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.deepEqual(second.json(), first.json());
   });
 
+
+  it("adds transfer and ancillary disclosures from newly consumed upstream events", async () => {
+    const repository = await seededUpstreamRepository();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+    const occurredAt = now.toISOString();
+
+    await applyUpstreamEvent(repository, makeEnvelope("TransferPlanEvaluated", "transfer-management", {
+      transferPlanId: "tpl-1",
+      itineraryRef: "itin-456",
+      planningSnapshotVersion: 1,
+      status: "EVALUATED",
+      evaluationVersion: 2,
+      connectionIds: ["con-1"],
+      riskPolicyVersion: "builtin-v1",
+      evaluatedAt: occurredAt,
+    }));
+    await applyUpstreamEvent(repository, makeEnvelope("ConnectionContractProposed", "transfer-management", {
+      connectionContractId: "cct-1",
+      connectionId: "con-1",
+      contractType: "PROTECTED",
+      status: "ELIGIBLE",
+      responsibleParty: "PLATFORM",
+      coverageSummary: "Protected connection coverage is available.",
+      disclosureVersion: "disc-v1",
+      proposedAt: occurredAt,
+    }));
+    await applyUpstreamEvent(repository, makeEnvelope("MctRulePublished", "transfer-management", {
+      mctRuleId: "mct-1",
+      version: 1,
+      previousStatus: "DRAFT",
+      status: "PUBLISHED",
+      fromNodeType: "STATION",
+      toNodeType: "STATION",
+      transferCategory: "SAME_STATION",
+      minimumMinutes: 12,
+      conditions: {},
+      validFrom: occurredAt,
+      publishedBy: { actorType: "SYSTEM", actorId: "system" },
+      publishedAt: occurredAt,
+    }));
+    await applyUpstreamEvent(repository, makeEnvelope("AncillaryCatalogItemPublished", "ancillary-service", {
+      catalogItemId: "aci-1",
+      version: 1,
+      serviceType: "LOUNGE",
+      displayName: "Station lounge",
+      attachmentScope: "JOURNEY",
+      modalities: ["train"],
+      price: { currency: "CNY", minorUnits: 1200 },
+      salesWindow: { startAt: occurredAt, endAt: expiresAt },
+      purchaseCutoffHoursBeforeDeparture: 1,
+      eligibilityRuleVersion: "elig-v1",
+      requiresEntitlementRef: false,
+      requiresSegmentRef: false,
+      fulfillmentMethod: "VOUCHER",
+      status: "PUBLISHED",
+      publishedAt: occurredAt,
+      aggregateVersion: 1,
+    }));
+
+    const app = createApp({}, { upstreamRepository: repository });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/offers",
+      headers: { "idempotency-key": uuidV7() },
+      body: { accountId: "acct-1", channelId: "web", itineraryRef: "itin-456", travelerRefs: ["tvl-001"] },
+    });
+
+    assert.equal(response.statusCode, 201);
+    const body = response.json() as { offerId: string };
+    const detail = await app.inject({ method: "GET", url: `/api/v1/offers/${body.offerId}` });
+    assert.equal(detail.statusCode, 200);
+    const detailBody = detail.json() as { riskDisclosures: readonly { messageCode: string; relatedRef?: string; text: string }[] };
+    assert.ok(detailBody.riskDisclosures.some((disclosure) => disclosure.messageCode === "TRANSFER_PLAN_EVALUATED" && disclosure.relatedRef === "tpl-1"));
+    assert.ok(detailBody.riskDisclosures.some((disclosure) => disclosure.messageCode === "CONNECTION_CONTRACT_ELIGIBLE" && disclosure.text === "Protected connection coverage is available."));
+    assert.ok(detailBody.riskDisclosures.some((disclosure) => disclosure.messageCode === "MCT_RULE_PUBLISHED" && disclosure.relatedRef === "mct-1"));
+    assert.ok(detailBody.riskDisclosures.some((disclosure) => disclosure.messageCode === "ANCILLARY_CATALOG_ITEM_AVAILABLE" && disclosure.relatedRef === "aci-1"));
+
+    await app.close();
+  });
+
   it("rejects idempotency key reused with different body using 422 IDEMPOTENCY_KEY_REUSED", async () => {
     const upstreamRepository = await seededUpstreamRepository();
     const app = createApp({}, { upstreamRepository });
