@@ -25,7 +25,7 @@ type PlaceUpdatedEvent struct {
 
 type WalkingEdgePayload struct {
 	ToNodeID           TransportNodeID `json:"toNodeId"`
-	WalkingTimeMinutes int             `json:"walkingTimeMinutes"`
+	WalkingTimeMinutes *int            `json:"walkingTimeMinutes,omitempty"`
 }
 
 type TransportNodeUpdatedEvent struct {

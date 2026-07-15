@@ -123,9 +123,30 @@ func TestGetTransportNodeHappyPath(t *testing.T) {
 	}
 	var resp application.GetTransportNodeResponse
 	decode(t, rec, &resp)
-	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" || resp.AccessTimeMinutes == nil || *resp.AccessTimeMinutes != 7 || len(resp.WalkingEdges) != 1 || resp.WalkingEdges[0].ToNodeID != "tnd-next" || resp.WalkingEdges[0].WalkingTimeMinutes != 5 {
+	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" || resp.AccessTimeMinutes == nil || *resp.AccessTimeMinutes != 7 || len(resp.WalkingEdges) != 1 || resp.WalkingEdges[0].ToNodeID != "tnd-next" || resp.WalkingEdges[0].WalkingTimeMinutes == nil || *resp.WalkingEdges[0].WalkingTimeMinutes != 5 {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
+}
+
+func TestWalkingEdgeWalkingTimeDistinguishesOmittedFromExplicitZero(t *testing.T) {
+	router := setupTestRouter(nil)
+	place := createPlace(t, router, "Transfer Station", "STATION", "0194f2e0-7b3e-7010-8284-5c26e8b00010")
+	rec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Transfer Hall", "servingModes": []string{"TRAIN"}, "walkingEdges": []map[string]any{{"toNodeId": "tnd-unknown"}, {"toNodeId": "tnd-zero", "walkingTimeMinutes": 0}}}, "0194f2e0-7b3e-7011-8284-5c26e8b00011")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	decode(t, rec, &created)
+	assertWalkingEdgesOmitUnknownAndKeepZero(t, created)
+
+	nodeID, _ := created["nodeId"].(string)
+	getRec := perform(router, http.MethodGet, "/api/v1/transport-nodes/"+nodeID, nil)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+	var fetched map[string]any
+	decode(t, getRec, &fetched)
+	assertWalkingEdgesOmitUnknownAndKeepZero(t, fetched)
 }
 
 func TestValidationFailureErrorBody(t *testing.T) {
@@ -234,6 +255,31 @@ func createPlaceWithReferenceData(t *testing.T, router *gin.Engine, name, placeT
 	var resp application.CreatePlaceResponse
 	decode(t, rec, &resp)
 	return resp
+}
+
+func assertWalkingEdgesOmitUnknownAndKeepZero(t *testing.T, body map[string]any) {
+	t.Helper()
+	edges, ok := body["walkingEdges"].([]any)
+	if !ok || len(edges) != 2 {
+		t.Fatalf("expected two walking edges, got %#v", body["walkingEdges"])
+	}
+	unknown, ok := edges[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first walking edge object, got %#v", edges[0])
+	}
+	if unknown["toNodeId"] != "tnd-unknown" {
+		t.Fatalf("unexpected first walking edge: %#v", unknown)
+	}
+	if _, exists := unknown["walkingTimeMinutes"]; exists {
+		t.Fatalf("omitted walkingTimeMinutes must stay omitted, got %#v", unknown)
+	}
+	zero, ok := edges[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected second walking edge object, got %#v", edges[1])
+	}
+	if zero["toNodeId"] != "tnd-zero" || zero["walkingTimeMinutes"] != float64(0) {
+		t.Fatalf("explicit zero walkingTimeMinutes must stay zero, got %#v", zero)
+	}
 }
 
 func performJSON(router *gin.Engine, method, path string, body any, idempotencyKey string) *httptest.ResponseRecorder {

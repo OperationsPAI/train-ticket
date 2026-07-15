@@ -38,4 +38,4 @@ Last updated: 2026-06-28
 | `displayName` | string | yes | Display name. |
 | `servingModes` | string[] | yes | Transport modes served. |
 | `accessTimeMinutes` | integer | no | Non-negative walking/wayfinding access-time weight in whole minutes for entering/leaving this node. Omitted when unknown. |
-| `walkingEdges` | array | no | Optional directed walking/access edges from this node to adjacent transport nodes. Each item is `{toNodeId, walkingTimeMinutes}` where `toNodeId` is a TransportNode ID (`tnd-<uuid>` or configured node ref) and `walkingTimeMinutes` is a non-negative integer in whole minutes. Omitted or empty when no edge weights are configured. |
+| `walkingEdges` | array | no | Optional directed walking/access edges from this node to adjacent transport nodes. Each item is `{toNodeId, walkingTimeMinutes}` where `toNodeId` is a TransportNode ID (`tnd-<uuid>` or configured node ref) and `walkingTimeMinutes` is an optional non-negative integer in whole minutes. Omit `walkingTimeMinutes` when the edge exists but its weight is unknown; explicit `0` is a valid zero-minute weight. Omit `walkingEdges` or use an empty array when no edges are configured. |

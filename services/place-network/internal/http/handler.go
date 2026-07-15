@@ -94,7 +94,7 @@ func (h *Handler) CreateTransportNode(ctx *gin.Context) {
 		AccessTimeMinutes *int     `json:"accessTimeMinutes"`
 		WalkingEdges      []struct {
 			ToNodeID           string `json:"toNodeId" binding:"required"`
-			WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+			WalkingTimeMinutes *int   `json:"walkingTimeMinutes,omitempty"`
 		} `json:"walkingEdges"`
 	}
 	if err := ctx.ShouldBindJSON(&req); err != nil {
