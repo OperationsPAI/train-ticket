@@ -3,6 +3,8 @@ package com.trainticket.postsales.application;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -10,30 +12,36 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class PostSalesEventHandler {
+    private static final Logger LOGGER = LoggerFactory.getLogger(PostSalesEventHandler.class);
+
     private final ConsumedEventLog consumedEventLog;
     private final PostSalesApplicationService applicationService;
+    private final PostSalesExternalEventPolicy externalEventPolicy;
     private final TransactionTemplate transactionTemplate;
 
     public PostSalesEventHandler(ConsumedEventLog consumedEventLog, PostSalesApplicationService applicationService) {
-        this(consumedEventLog, applicationService, (PlatformTransactionManager) null);
+        this(consumedEventLog, applicationService, new PostSalesExternalEventPolicy(applicationService), (PlatformTransactionManager) null);
     }
 
     @Autowired
     public PostSalesEventHandler(
         ConsumedEventLog consumedEventLog,
         PostSalesApplicationService applicationService,
+        PostSalesExternalEventPolicy externalEventPolicy,
         Optional<PlatformTransactionManager> transactionManager
     ) {
-        this(consumedEventLog, applicationService, transactionManager.orElse(null));
+        this(consumedEventLog, applicationService, externalEventPolicy, transactionManager.orElse(null));
     }
 
     PostSalesEventHandler(
         ConsumedEventLog consumedEventLog,
         PostSalesApplicationService applicationService,
+        PostSalesExternalEventPolicy externalEventPolicy,
         PlatformTransactionManager transactionManager
     ) {
         this.consumedEventLog = consumedEventLog;
         this.applicationService = applicationService;
+        this.externalEventPolicy = externalEventPolicy;
         this.transactionTemplate = transactionManager == null ? null : new TransactionTemplate(transactionManager);
     }
 
@@ -64,6 +72,11 @@ public class PostSalesEventHandler {
                 if (segmentBookingRef != null) {
                     applicationService.applyForSegmentBooking(segmentBookingRef, envelope.eventId(), envelope.correlationId());
                 }
+            } else if (externalEventPolicy.handles(envelope.eventType())) {
+                externalEventPolicy.handle(envelope);
+            } else {
+                LOGGER.warn("ack-skip post-sales event={} eventId={} producer={} reason=UNKNOWN_EVENT_TYPE",
+                    envelope.eventType(), envelope.eventId(), envelope.producer());
             }
             return EventSubscriber.HandlerResult.SUCCESS;
         } catch (RuntimeException exception) {

@@ -1,17 +1,20 @@
 package com.trainticket.postsales.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.postsales.domain.PostSalesCase;
+import com.trainticket.postsales.domain.PostSalesCaseStatus;
 import com.trainticket.postsales.domain.PostSalesCaseType;
 import com.trainticket.postsales.domain.PostSalesScope;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -131,6 +134,161 @@ class MessagingPortsTest {
     }
 
     @Test
+    void handlesAncillaryCancellationWithEventIdDedupAndOpensRefundCase() {
+        RecordingConsumedEventLog log = new RecordingConsumedEventLog();
+        InMemoryPostSalesRepository repository = new InMemoryPostSalesRepository();
+        InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
+        InMemoryPostSalesExternalEventProjectionStore projectionStore = new InMemoryPostSalesExternalEventProjectionStore();
+        PostSalesApplicationService service = new PostSalesApplicationService(
+            repository,
+            ignored -> { },
+            ignored -> java.util.Optional.empty(),
+            contextStore,
+            projectionStore,
+            java.time.Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), java.time.ZoneOffset.UTC)
+        );
+        PostSalesEventHandler handler = new PostSalesEventHandler(
+            log,
+            service,
+            new PostSalesExternalEventPolicy(service),
+            (org.springframework.transaction.PlatformTransactionManager) null
+        );
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d101",
+            "AncillaryOrderItemCancelled",
+            Instant.parse("2026-07-05T10:29:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d111",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d112",
+            "ancillary-service",
+            1,
+            ancillaryCancelledPayload()
+        );
+
+        assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
+        assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
+
+        assertEquals(1, log.recorded.size());
+        AncillaryPostSalesProjection projection = projectionStore.findAncillaryByItemId("aoi-1").orElseThrow();
+        assertEquals("CANCELLED", projection.status());
+        PostSalesCase opened = repository.findByIdempotencyKey("ancillary-service:evt-0194f2e0-7b3e-7610-8284-5c26e8b0d101:refund").orElseThrow();
+        assertEquals(opened.caseId(), projection.postSalesCaseId());
+        assertEquals(PostSalesCaseType.REFUND, opened.caseType());
+        assertEquals(List.of("aoi-1"), opened.scope().orderItemRefs());
+    }
+
+    @Test
+    void linksLaterAncillaryCancellationToExistingActiveRefundCase() {
+        RecordingConsumedEventLog log = new RecordingConsumedEventLog();
+        InMemoryPostSalesRepository repository = new InMemoryPostSalesRepository();
+        InMemoryPostSalesExternalEventProjectionStore projectionStore = new InMemoryPostSalesExternalEventProjectionStore();
+        PostSalesApplicationService service = new PostSalesApplicationService(
+            repository,
+            ignored -> { },
+            ignored -> java.util.Optional.empty(),
+            new InMemoryPostSalesPolicyContextStore(),
+            projectionStore,
+            java.time.Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), java.time.ZoneOffset.UTC)
+        );
+        PostSalesCase activeMainRefund = PostSalesCase.rehydrate(
+            "case-main-refund-1",
+            "ord-ancillary-1",
+            PostSalesCaseType.REFUND,
+            PostSalesScope.ticket("ticket-1", "seg-1", "tvl-1", "ent-1"),
+            "CUSTOMER_REQUEST",
+            "acct-1",
+            "main-refund-key-1",
+            PostSalesCaseStatus.OPENED,
+            null,
+            List.of(),
+            null,
+            null,
+            List.of()
+        );
+        repository.save(activeMainRefund);
+        PostSalesEventHandler handler = new PostSalesEventHandler(
+            log,
+            service,
+            new PostSalesExternalEventPolicy(service),
+            (org.springframework.transaction.PlatformTransactionManager) null
+        );
+        Map<String, Object> secondCancellationPayload = ancillaryCancelledPayload();
+        secondCancellationPayload.put("ancillaryOrderItemId", "aoi-2");
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d104",
+            "AncillaryOrderItemCancelled",
+            Instant.parse("2026-07-05T10:29:30Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d117",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d118",
+            "ancillary-service",
+            1,
+            secondCancellationPayload
+        );
+
+        assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
+
+        assertEquals(1, log.recorded.size());
+        assertEquals(1, repository.findAll().size());
+        AncillaryPostSalesProjection projection = projectionStore.findAncillaryByItemId("aoi-2").orElseThrow();
+        assertEquals("CANCELLED", projection.status());
+        assertEquals("case-main-refund-1", projection.postSalesCaseId());
+    }
+
+    @Test
+    void handlesDispatchRideEndedProjection() {
+        RecordingConsumedEventLog log = new RecordingConsumedEventLog();
+        InMemoryPostSalesExternalEventProjectionStore projectionStore = new InMemoryPostSalesExternalEventProjectionStore();
+        PostSalesApplicationService service = new PostSalesApplicationService(
+            new InMemoryPostSalesRepository(),
+            ignored -> { },
+            ignored -> java.util.Optional.empty(),
+            new InMemoryPostSalesPolicyContextStore(),
+            projectionStore,
+            java.time.Clock.systemUTC()
+        );
+        PostSalesEventHandler handler = new PostSalesEventHandler(
+            log,
+            service,
+            new PostSalesExternalEventPolicy(service),
+            (org.springframework.transaction.PlatformTransactionManager) null
+        );
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d102",
+            "RideEnded",
+            Instant.parse("2026-07-05T10:40:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d113",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d114",
+            "dispatch",
+            1,
+            dispatchRideEndedPayload()
+        );
+
+        assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
+
+        DispatchPostSalesProjection projection = projectionStore.findDispatchByRideRequestId("rrq-1").orElseThrow();
+        assertEquals("COMPLETED", projection.status());
+        assertEquals("fare-final-1", projection.finalFareRef());
+    }
+
+    @Test
+    void unknownEventTypeIsAckSkipped() {
+        RecordingConsumedEventLog log = new RecordingConsumedEventLog();
+        PostSalesEventHandler handler = new PostSalesEventHandler(log, new NoOpPostSalesApplicationService());
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d103",
+            "ConformantUnknownFact",
+            Instant.parse("2026-07-05T10:30:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d115",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d116",
+            "dispatch",
+            1,
+            Map.of("status", "NEW_STATE")
+        );
+
+        assertDoesNotThrow(() -> assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope)));
+        assertEquals(1, log.recorded.size());
+    }
+
+    @Test
     void fakeSubscriberUsesDeliveryCountForDlqDecision() {
         FakeDeliveryCounterSubscriber subscriber = new FakeDeliveryCounterSubscriber();
         EventEnvelope envelope = new EventEnvelope(
@@ -151,6 +309,42 @@ class MessagingPortsTest {
 
         assertEquals(1, subscriber.dlq.size());
         assertEquals("evt-0194f2e0-7b3e-7610-8284-5c26e8b0d004", subscriber.dlq.getFirst().eventId());
+    }
+
+    private static Map<String, Object> dispatchRideEndedPayload() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("rideRequestId", "rrq-1");
+        payload.put("rideAssignmentId", "ras-1");
+        payload.put("riderAccountId", "acct-1");
+        payload.put("travelerRef", "tvl-1");
+        payload.put("pickupRef", "place-pickup");
+        payload.put("dropoffRef", "place-dropoff");
+        payload.put("driverRef", "drv-1");
+        payload.put("vehicleRef", "veh-1");
+        payload.put("startedAt", "2026-07-05T10:10:00Z");
+        payload.put("endedAt", "2026-07-05T10:40:00Z");
+        payload.put("finalFareRef", "fare-final-1");
+        payload.put("status", "COMPLETED");
+        return payload;
+    }
+
+    private static Map<String, Object> ancillaryCancelledPayload() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("ancillaryOrderItemId", "aoi-1");
+        payload.put("journeyOrderId", "ord-ancillary-1");
+        payload.put("travelerRef", "tvl-1");
+        payload.put("segmentRef", "seg-1");
+        payload.put("catalogItemId", "aci-1");
+        payload.put("serviceType", "MEAL");
+        payload.put("payableAmount", Map.of("currency", "CNY", "minorUnits", 1000));
+        payload.put("refundableAmount", Map.of("currency", "CNY", "minorUnits", 800));
+        payload.put("reasonCode", "JOURNEY_ORDER_CANCELLED");
+        payload.put("source", "JOURNEY_ORDER_CANCELLED");
+        payload.put("previousStatus", "CONFIRMED");
+        payload.put("status", "CANCELLED");
+        payload.put("cancelledAt", "2026-07-05T10:29:00Z");
+        payload.put("aggregateVersion", 4);
+        return payload;
     }
 
     private static PostSalesCase approvedCase() {
