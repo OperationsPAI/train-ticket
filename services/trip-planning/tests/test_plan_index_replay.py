@@ -50,6 +50,75 @@ class PlanIndexReplayTest(unittest.TestCase):
         self.assertEqual(leg["originStopRef"], "node-origin-new")
         self.assertEqual(leg["destinationStopRef"], "node-destination-new")
 
+    def test_transfer_management_mct_rule_filters_infeasible_connections(self) -> None:
+        plan_store = PlanStore()
+        for envelope in _connecting_sequence_events():
+            plan_store.apply_envelope(envelope)
+
+        before_rule = plan_store.candidates("plc-origin", "plc-destination", "2026-08-01")
+        self.assertEqual(len(before_rule), 1)
+        self.assertEqual([leg.service_segment_ref for leg in before_rule[0].legs], ["seg-origin-hub", "seg-hub-destination"])
+
+        applied = plan_store.apply_envelope(EventEnvelope(
+            eventId="evt-mct-published",
+            eventType="MctRulePublished",
+            producer="transfer-management",
+            payload={
+                "mctRuleId": "mct-cross-station",
+                "version": 1,
+                "previousStatus": "VALIDATED",
+                "status": "PUBLISHED",
+                "fromNodeType": "STATION",
+                "toNodeType": "STATION",
+                "transferCategory": "SAME_STATION",
+                "minimumMinutes": 20,
+                "conditions": {},
+                "validFrom": "2026-01-01T00:00:00Z",
+                "publishedBy": {"actorType": "SYSTEM", "actorId": "ops"},
+                "publishedAt": "2026-07-01T00:00:00Z",
+            },
+        ))
+        duplicate_applied = plan_store.apply_envelope(EventEnvelope(
+            eventId="evt-mct-published",
+            eventType="MctRulePublished",
+            producer="transfer-management",
+            payload={
+                "mctRuleId": "mct-cross-station",
+                "version": 1,
+                "previousStatus": "VALIDATED",
+                "status": "PUBLISHED",
+                "fromNodeType": "STATION",
+                "toNodeType": "STATION",
+                "transferCategory": "SAME_STATION",
+                "minimumMinutes": 0,
+                "conditions": {},
+                "validFrom": "2026-01-01T00:00:00Z",
+                "publishedBy": {"actorType": "SYSTEM", "actorId": "ops"},
+                "publishedAt": "2026-07-01T00:00:00Z",
+            },
+        ))
+
+        self.assertTrue(applied)
+        self.assertFalse(duplicate_applied)
+        self.assertEqual(plan_store.candidates("plc-origin", "plc-destination", "2026-08-01"), [])
+
+        plan_store.apply_envelope(EventEnvelope(
+            eventId="evt-mct-retired",
+            eventType="MctRuleRetired",
+            producer="transfer-management",
+            payload={
+                "mctRuleId": "mct-cross-station",
+                "version": 1,
+                "previousStatus": "PUBLISHED",
+                "status": "RETIRED",
+                "retiredBy": {"actorType": "SYSTEM", "actorId": "ops"},
+                "retireReason": "superseded",
+                "retiredAt": "2026-07-02T00:00:00Z",
+            },
+        ))
+
+        self.assertEqual(len(plan_store.candidates("plc-origin", "plc-destination", "2026-08-01")), 1)
+
     def test_place_search_matches_any_node_for_same_place_not_first_node_only(self) -> None:
         old_nodes = [
             EventEnvelope(
@@ -93,6 +162,55 @@ class PlanIndexReplayTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["itineraries"][0]["legs"][0]["serviceSegmentRef"], "seg-real-080")
+
+
+def _connecting_sequence_events() -> list[EventEnvelope]:
+    return [
+        EventEnvelope(
+            eventId="evt-origin-node-connect",
+            eventType="TransportNodeRegistered",
+            producer="place-network",
+            payload={"nodeId": "node-origin", "placeId": "plc-origin", "displayName": "origin", "servingModes": ["TRAIN"]},
+        ),
+        EventEnvelope(
+            eventId="evt-hub-arrival-node",
+            eventType="TransportNodeRegistered",
+            producer="place-network",
+            payload={"nodeId": "node-hub-arrival", "placeId": "plc-hub", "displayName": "hub arrival", "servingModes": ["TRAIN"]},
+        ),
+        EventEnvelope(
+            eventId="evt-destination-node-connect",
+            eventType="TransportNodeRegistered",
+            producer="place-network",
+            payload={"nodeId": "node-destination", "placeId": "plc-destination", "displayName": "destination", "servingModes": ["TRAIN"]},
+        ),
+        EventEnvelope(
+            eventId="evt-seg-origin-hub",
+            eventType="ServicePlanChanged",
+            producer="service-plan",
+            payload={
+                "segmentRef": "seg-origin-hub",
+                "scheduledServiceRef": "ss-origin-hub",
+                "originStopRef": "node-origin",
+                "destinationStopRef": "node-hub-arrival",
+                "departureTime": "2026-08-01T09:00:00Z",
+                "arrivalTime": "2026-08-01T10:00:00Z",
+            },
+        ),
+        EventEnvelope(
+            eventId="evt-seg-hub-destination",
+            eventType="ServicePlanChanged",
+            producer="service-plan",
+            payload={
+                "segmentRef": "seg-hub-destination",
+                "scheduledServiceRef": "ss-hub-destination",
+                "originStopRef": "node-hub-arrival",
+                "destinationStopRef": "node-destination",
+                "departureTime": "2026-08-01T10:10:00Z",
+                "arrivalTime": "2026-08-01T11:00:00Z",
+            },
+        ),
+    ]
 
 
 def _standard_api_sequence_events() -> list[EventEnvelope]:

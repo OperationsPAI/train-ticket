@@ -33,6 +33,21 @@ CREATE TABLE IF NOT EXISTS plan_nodes (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_plan_nodes_place ON plan_nodes (place_id, node_id);
+CREATE TABLE IF NOT EXISTS plan_mct_rules (
+  mct_rule_id text NOT NULL,
+  version integer NOT NULL,
+  status text NOT NULL,
+  from_node_type text NOT NULL,
+  to_node_type text NOT NULL,
+  transfer_category text NOT NULL,
+  minimum_minutes integer NOT NULL,
+  valid_from timestamptz,
+  valid_until timestamptz,
+  data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (mct_rule_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_mct_rules_lookup ON plan_mct_rules (status, from_node_type, to_node_type, transfer_category);
 CREATE TABLE IF NOT EXISTS itinerary_snapshots (
   id text PRIMARY KEY,
   version bigint NOT NULL,

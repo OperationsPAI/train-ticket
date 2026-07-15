@@ -16,9 +16,10 @@ from fastapi.responses import JSONResponse
 
 from train_ticket_platform.observability import init_opentelemetry
 from .application import search_itineraries, search_itineraries_from_payload
-from .domain import AvailabilityHint, Itinerary, LegCandidate, PriceHint, TripIntent, TripPlanningValidationError
+from .domain import AvailabilityHint, Itinerary, LegCandidate, MinimumConnectionTimeRule, PriceHint, TripIntent, TripPlanningValidationError
 from .application_ports import EventPublisher, EventSubscriber
 from .events import PublishFailed, build_itinerary_proposed_event, new_uuid7
+from .read_model import build_itineraries, segment_from_payload
 from train_ticket_platform.idempotency import configure_idempotency_middleware
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OptimisticConcurrencyError, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
@@ -249,6 +250,8 @@ class PlanStore:
         self.services: dict[str, dict[str, object]] = {}
         self.segments: dict[str, dict[str, object]] = {}
         self.node_place: dict[str, str] = {}
+        self.node_payloads: dict[str, dict[str, object]] = {}
+        self.mct_rules: dict[tuple[str, int], MinimumConnectionTimeRule] = {}
         self.applied_event_ids: set[str] = set()
 
     def clear(self) -> None:
@@ -256,6 +259,8 @@ class PlanStore:
             self.services.clear()
             self.segments.clear()
             self.node_place.clear()
+            self.node_payloads.clear()
+            self.mct_rules.clear()
             self.applied_event_ids.clear()
 
     def apply_envelope(self, envelope: Any) -> bool:
@@ -287,8 +292,18 @@ class PlanStore:
         elif event_type in ("TransportNodeRegistered", "TransportNodeAdded", "TransportNodeUpdated"):
             node = str(payload.get("nodeId", ""))
             place = str(payload.get("placeId", ""))
-            if node and place:
-                self.node_place[node] = place
+            if node:
+                self.node_payloads[node] = dict(payload)
+                if place:
+                    self.node_place[node] = place
+        elif event_type == "MctRulePublished":
+            rule = MinimumConnectionTimeRule.from_transfer_event(payload)
+            self.mct_rules[(rule.mct_rule_id, rule.version)] = rule
+        elif event_type == "MctRuleRetired":
+            rule_id = str(payload.get("mctRuleId", ""))
+            version = int(payload.get("version", 0))
+            if rule_id and version:
+                self.mct_rules.pop((rule_id, version), None)
 
     def _matches(self, stop_ref: str, requested: str) -> bool:
         requested_place = self.node_place.get(requested)
@@ -301,50 +316,24 @@ class PlanStore:
         )
 
     def candidates(self, origin_ref: str, destination_ref: str, departure_date: str) -> list[Itinerary]:
-        found: list[Itinerary] = []
         with self._lock:
-            for seg_ref, seg in self.segments.items():
-                origin_stop = str(seg.get("originStopRef", ""))
-                destination_stop = str(seg.get("destinationStopRef", ""))
-                departure_raw = str(seg.get("departureTime", ""))
-                if not departure_raw.startswith(departure_date):
-                    continue
-                if not (self._matches(origin_stop, origin_ref) and self._matches(destination_stop, destination_ref)):
-                    continue
-                departure_time = datetime.fromisoformat(departure_raw.replace("Z", "+00:00"))
-                arrival_raw = str(seg.get("arrivalTime", departure_raw))
-                arrival_time = datetime.fromisoformat(arrival_raw.replace("Z", "+00:00"))
-                service_ref = str(seg.get("scheduledServiceRef", ""))
-                found.append(Itinerary(
-                    legs=(
-                        LegCandidate(
-                            service_plan_ref=service_ref,
-                            service_segment_ref=seg_ref,
-                            origin_stop_ref=origin_stop,
-                            destination_stop_ref=destination_stop,
-                            departure_time=departure_time,
-                            arrival_time=arrival_time,
-                            mode="train",
-                            stop_refs=(origin_stop, destination_stop),
-                            segment_refs=(seg_ref,),
-                        ),
-                    ),
-                    price_hint=PriceHint(
-                        amount_minor=0,
-                        currency="CNY",
-                        snapshot_ref=f"fare-snapshot:{seg_ref}",
-                        captured_at=departure_time,
-                        confidence=50,
-                    ),
-                    availability_hint=AvailabilityHint(
-                        status="UNKNOWN",
-                        snapshot_ref=f"availability-snapshot:{seg_ref}",
-                        captured_at=departure_time,
-                        confidence=50,
-                    ),
-                    planning_snapshot_refs=(f"planning-snapshot:{seg_ref}",),
-                ))
-        return found
+            segments = tuple(
+                record
+                for seg_ref, payload in self.segments.items()
+                if (record := segment_from_payload(seg_ref, payload)) is not None
+            )
+            node_place = dict(self.node_place)
+            node_payloads = {node_id: dict(payload) for node_id, payload in self.node_payloads.items()}
+            mct_rules = tuple(self.mct_rules.values())
+        return build_itineraries(
+            origin_ref=origin_ref,
+            destination_ref=destination_ref,
+            departure_date=departure_date,
+            segments=segments,
+            node_place=node_place,
+            node_payloads=node_payloads,
+            mct_rules=mct_rules,
+        )
 
 
 _plan_store = PlanStore()
