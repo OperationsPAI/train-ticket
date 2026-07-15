@@ -92,7 +92,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | traveler-profile, journey-order; deferred: customer-service |
+| **Consumers** | traveler-profile, journey-order |
 | **Trigger** | `RegisterCredential` accepts hashed/masked credential material. |
 
 **Payload:**
@@ -116,7 +116,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | journey-order, reporting; deferred: customer-service |
+| **Consumers** | journey-order, reporting |
 | **Trigger** | `StartVerificationCase` creates a new case for a credential and purpose. |
 
 **Payload:**
@@ -160,7 +160,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | journey-order, traveler-profile, reporting; deferred: customer-service |
+| **Consumers** | journey-order, traveler-profile, reporting |
 | **Trigger** | Deterministic SIM result is `MATCH` or an audited override produces a passed conclusion. |
 
 **Payload:**
@@ -207,7 +207,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | fare-pricing, journey-order; deferred: customer-service |
+| **Consumers** | fare-pricing, journey-order |
 | **Trigger** | `RegisterEligibilityCertificate` stores certificate material hash and policy scope. |
 
 **Payload:**
@@ -238,7 +238,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | Field | Description |
 |---|---|
 | **Producer** | identity-verification |
-| **Consumers** | fare-pricing, journey-order; deferred: customer-service |
+| **Consumers** | fare-pricing, journey-order |
 | **Trigger** | Certificate material passes the deterministic eligibility simulator or audit. |
 
 **Payload:**
