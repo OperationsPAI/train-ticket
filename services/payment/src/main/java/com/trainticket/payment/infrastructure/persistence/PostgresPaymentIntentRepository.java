@@ -57,10 +57,10 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
     public List<PaymentIntent> findExpiredOpenIntents(Instant now, int limit) {
         return jdbc.query(
             "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots "
-                + "WHERE (data->>'expiresAt')::timestamptz <= ? AND data->>'status' IN ('CREATED','AUTHORIZED') "
-                + "ORDER BY (data->>'expiresAt')::timestamptz ASC LIMIT ?",
+                + "WHERE (data->>'expiresAt')::timestamp <= ?::timestamp AND data->>'status' IN ('CREATED','AUTHORIZED') "
+                + "ORDER BY (data->>'expiresAt')::timestamp ASC LIMIT ?",
             (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
-            java.sql.Timestamp.from(now),
+            now.toString(),
             limit
         );
     }
