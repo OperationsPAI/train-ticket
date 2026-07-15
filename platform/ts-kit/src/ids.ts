@@ -50,7 +50,7 @@ export function newCorrelationId(): string {
 }
 
 export function canonicalEventId(value: string): string {
-  if (value.startsWith("ancillary-service:")) {
+  if (value.startsWith("ancillary-service:") || value.startsWith("waitlist:")) {
     return value;
   }
   return prefixedId("evt", value);

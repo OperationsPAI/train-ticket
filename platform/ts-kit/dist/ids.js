@@ -37,7 +37,7 @@ export function newCorrelationId() {
     return prefixedId("corr");
 }
 export function canonicalEventId(value) {
-    if (value.startsWith("ancillary-service:")) {
+    if (value.startsWith("ancillary-service:") || value.startsWith("waitlist:")) {
         return value;
     }
     return prefixedId("evt", value);

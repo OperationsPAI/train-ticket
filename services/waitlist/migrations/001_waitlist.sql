@@ -1,14 +1,17 @@
 CREATE TABLE IF NOT EXISTS waitlist_entries (
     entry_id text PRIMARY KEY,
     account_id text NOT NULL,
+    traveler_ref text,
     traveler_refs jsonb NOT NULL,
     segment_ref text NOT NULL,
     departure_date date NOT NULL,
     seat_class text NOT NULL,
     priority_score integer NOT NULL CHECK (priority_score >= 0 AND priority_score <= 100),
-    status text NOT NULL CHECK (status IN ('QUEUED', 'OFFERED', 'ACCEPTED', 'EXPIRED', 'CANCELLED')),
-    offered_at timestamptz,
-    offer_expires_at timestamptz,
+    status text NOT NULL CHECK (status IN ('DRAFT', 'QUEUED', 'MATCHING', 'FULFILLED', 'EXPIRED', 'CANCELLED', 'SUSPENDED', 'CLOSED')),
+    deadline timestamptz,
+    payment_guarantee_ref text,
+    itinerary_ref text,
+    intent_fingerprint text,
     fare_quote_id text,
     capacity_hold_id text,
     offer_version integer,
@@ -18,13 +21,28 @@ CREATE TABLE IF NOT EXISTS waitlist_entries (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE waitlist_entries ADD COLUMN IF NOT EXISTS traveler_ref text;
+ALTER TABLE waitlist_entries ADD COLUMN IF NOT EXISTS deadline timestamptz;
+ALTER TABLE waitlist_entries ADD COLUMN IF NOT EXISTS payment_guarantee_ref text;
+ALTER TABLE waitlist_entries ADD COLUMN IF NOT EXISTS itinerary_ref text;
+ALTER TABLE waitlist_entries ADD COLUMN IF NOT EXISTS intent_fingerprint text;
+ALTER TABLE waitlist_entries DROP CONSTRAINT IF EXISTS waitlist_entries_status_check;
+ALTER TABLE waitlist_entries ADD CONSTRAINT waitlist_entries_status_check CHECK (status IN ('DRAFT', 'QUEUED', 'MATCHING', 'FULFILLED', 'EXPIRED', 'CANCELLED', 'SUSPENDED', 'CLOSED'));
+
 CREATE INDEX IF NOT EXISTS waitlist_queue_order_idx
     ON waitlist_entries (segment_ref, departure_date, seat_class, priority_score DESC, created_at ASC, entry_id)
     WHERE status = 'QUEUED';
 
-CREATE INDEX IF NOT EXISTS waitlist_offer_expiry_idx
-    ON waitlist_entries (offer_expires_at)
-    WHERE status = 'OFFERED';
+CREATE INDEX IF NOT EXISTS waitlist_deadline_idx
+    ON waitlist_entries (deadline)
+    WHERE status IN ('QUEUED', 'MATCHING', 'SUSPENDED');
+
+CREATE UNIQUE INDEX IF NOT EXISTS waitlist_active_intent_unique_idx
+    ON waitlist_entries (traveler_ref, intent_fingerprint)
+    WHERE status IN ('DRAFT', 'QUEUED', 'MATCHING', 'SUSPENDED');
+
+CREATE INDEX IF NOT EXISTS waitlist_traveler_list_idx
+    ON waitlist_entries (traveler_ref, created_at DESC, entry_id);
 
 CREATE TABLE IF NOT EXISTS waitlist_offers (
     offer_id text PRIMARY KEY,
