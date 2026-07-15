@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
-import { WaitlistEntry } from "../src/domain.js";
+import { DomainError, WaitlistEntry } from "../src/domain.js";
 import { PostgresWaitlistRepository, ProcessedEventRepository } from "../src/storage.js";
 
 class FakeDb {
@@ -14,6 +14,12 @@ class FakeDb {
   async query(sql: string, params: readonly unknown[] = []) {
     this.calls.push({ sql, params });
     return { rows: [], rowCount: this.rowCounts[this.calls.length - 1] ?? 0 };
+  }
+}
+
+class UniqueViolationDb {
+  async query(): Promise<never> {
+    throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
   }
 }
 
@@ -50,6 +56,26 @@ test("PostgresWaitlistRepository.save rejects stale loaded version", async () =>
   const repository = new PostgresWaitlistRepository(db as never);
 
   await assert.rejects(() => repository.save(persistedEntry(2)), OptimisticConcurrencyConflict);
+});
+
+test("PostgresWaitlistRepository.add translates unique violation to conflict", async () => {
+  const repository = new PostgresWaitlistRepository(new UniqueViolationDb() as never);
+  const entry = WaitlistEntry.create({
+    accountId: "acc-1",
+    travelerRefs: ["tvl-1"],
+    segmentRef: "seg-1",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND",
+    priority: { groupSize: 1, fareClass: "SECOND" },
+    paymentGuaranteeRef: "pay-auth-1",
+    itineraryRef: "itn-1",
+    intentFingerprint: "intent-1",
+  });
+
+  await assert.rejects(
+    () => repository.add(entry),
+    (error) => error instanceof DomainError && error.code === "CONFLICT",
+  );
 });
 
 test("ProcessedEventRepository records by event_id primary key only", async () => {
