@@ -1,7 +1,7 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
-import { publishAll, waitlistEntryAccepted, waitlistEntryCreated } from "./publisher.js";
+import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
   accountId: string;
@@ -22,6 +22,7 @@ export type JoinWaitlistRequest = Readonly<{
 }>;
 
 export type AcceptPromotionRequest = Readonly<{ paymentMethodRef?: string }>;
+export type CancelWaitlistRequest = Readonly<{ reason?: string }>;
 export type AcceptPromotionResponse = Readonly<{ orderId: string; seatAssignment: unknown }>;
 export type QueueInfo = Readonly<{ totalQueued: number; myPosition: number | null; estimatedPromotionRate: number }>;
 export type WaitlistRequestList = Readonly<{
@@ -80,6 +81,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     this.entries.set(entry.entryId, entry);
+    entry.markPersisted(1);
     return this.snapshot(entry);
   }
 
@@ -87,6 +89,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     this.entries.set(entry.entryId, entry);
+    entry.markPersisted(entry.loadedVersion + 1);
     return this.snapshot(entry);
   }
 
@@ -150,7 +153,14 @@ export class WaitlistApplicationService {
   async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistRequestResource> {
     const entry = WaitlistEntry.create(this.toCreateCommand(request));
     const snapshot = await this.repository.add(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryCreated(snapshot, correlationId)]);
+    const aggregateVersion = entry.loadedVersion;
+    if (this.publisher) {
+      await publishAll(this.publisher, [
+        waitlistRequestCreated(snapshot, aggregateVersion, correlationId),
+        waitlistPaymentAuthorizationRequested(snapshot, aggregateVersion, correlationId),
+        waitlistQueued(snapshot, aggregateVersion, correlationId, snapshot.createdAt),
+      ]);
+    }
     return toWaitlistRequestResource(snapshot);
   }
 
@@ -165,11 +175,13 @@ export class WaitlistApplicationService {
     return { items: page.map(toWaitlistRequestResource), total: snapshots.length, limit, offset };
   }
 
-  async cancel(entryId: string): Promise<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }> {
+  async cancel(entryId: string, request: CancelWaitlistRequest = {}, correlationId?: string): Promise<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }> {
     const entry = await this.requireEntry(entryId);
+    const cancelledAt = this.now().toISOString();
     entry.cancel();
     const snapshot = await this.repository.save(entry);
-    return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt: this.now().toISOString() };
+    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, request.reason ?? "", correlationId, cancelledAt)]);
+    return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt };
   }
 
   async accept(entryId: string, request: AcceptPromotionRequest = {}, correlationId?: string): Promise<AcceptPromotionResponse> {
@@ -177,9 +189,8 @@ export class WaitlistApplicationService {
     const now = this.now();
     entry.ensureOfferAcceptable(now);
     const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
-    entry.accept(now, order.orderId);
-    const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, order.seatAssignment, correlationId)]);
+    entry.attachJourneyOrder(order.orderId);
+    await this.repository.save(entry);
     return order;
   }
 
@@ -200,15 +211,18 @@ export class WaitlistApplicationService {
     const now = this.now();
     entry.accept(now, orderId);
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, orderId, null, correlationId)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistFulfilled(snapshot, entry.loadedVersion, orderId, correlationId, now.toISOString())]);
     return toWaitlistRequestResource(snapshot);
   }
 
-  async handleJourneyOrderCancelled(orderId: string): Promise<WaitlistRequestResource | undefined> {
+  async handleJourneyOrderCancelled(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
     const entry = await this.repository.findByJourneyOrderRef?.(orderId);
     if (!entry || entry.status !== "MATCHING") return undefined;
+    const queuedAt = this.now().toISOString();
     entry.returnToQueue();
-    return toWaitlistRequestResource(await this.repository.save(entry));
+    const snapshot = await this.repository.save(entry);
+    if (this.publisher) await publishAll(this.publisher, [waitlistQueued(snapshot, entry.loadedVersion, correlationId, queuedAt, { journeyOrderRef: orderId })]);
+    return toWaitlistRequestResource(snapshot);
   }
 
   async expireDueOffers(correlationId?: string) {

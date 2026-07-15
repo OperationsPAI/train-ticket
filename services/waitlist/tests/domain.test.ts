@@ -19,11 +19,10 @@ test("queue orders by priority descending then createdAt ascending", () => {
   assert.equal(queue.positionOf("wl-old"), 2);
 });
 
-test("matching entries return to queue instead of expiring or cancelling directly", () => {
+test("matching entries return to queue instead of cancelling directly", () => {
   const entry = WaitlistEntry.create({ entryId: "wl-match", accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: { loyaltyTier: "GOLD", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:00:00.000Z") });
   entry.offer("offer-1", 1, "fare-1", "hold-1", new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-01T00:15:00.000Z"));
 
-  assert.throws(() => entry.expire(), DomainError);
   assert.throws(() => entry.cancel(), DomainError);
 
   entry.returnToQueue();

@@ -32,11 +32,12 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     const result = await this.db.query(
       `UPDATE waitlist_entries
        SET status=$2, offered_at=$3, offer_expires_at=$4, fare_quote_id=$5, capacity_hold_id=$6, data=$7, version=version+1, updated_at=now()
-       WHERE entry_id=$1 AND version=$8`,
+       WHERE entry_id=$1 AND version=$8
+       RETURNING version`,
       [snapshot.entryId, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, loadedVersion],
     );
     if (result.rowCount === 0) throw new OptimisticConcurrencyConflict(`Waitlist entry ${entry.entryId} was modified by another writer`);
-    entry.markPersisted(loadedVersion + 1);
+    entry.markPersisted(Number((result as QueryResult<{ version: string | number | bigint }>).rows[0]?.version ?? loadedVersion + 1));
     return this.snapshot(entry);
   }
 

@@ -207,7 +207,7 @@ export class WaitlistEntry {
   }
 
   expire(): void {
-    this.assertStatus("QUEUED", `Cannot expire ${this._status} waitlist entry`);
+    if (this._status !== "QUEUED" && this._status !== "MATCHING") throw new DomainError("INVALID_TRANSITION", `Cannot expire ${this._status} waitlist entry`);
     this._status = "EXPIRED";
   }
 
@@ -263,6 +263,11 @@ export class WaitlistEntry {
 
   private assertStatus(expected: WaitlistStatus, message: string): void {
     if (this._status !== expected) throw new DomainError("INVALID_TRANSITION", message);
+  }
+
+  attachJourneyOrder(journeyOrderRef: string): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can be attached to a journey order");
+    this.recordJourneyOrderRef(journeyOrderRef);
   }
 
   private recordJourneyOrderRef(journeyOrderRef: string): void {
