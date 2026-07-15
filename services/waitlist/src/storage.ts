@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Redis } from "ioredis";
 import { MigrationRunner, OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
+import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
 
 export class PostgresWaitlistRepository implements WaitlistRepository {
@@ -11,11 +11,18 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
-    await this.db.query(
-      `INSERT INTO waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt],
-    );
+    try {
+      await this.db.query(
+        `INSERT INTO waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt],
+      );
+    } catch (error) {
+      if (isActiveRequestUniqueViolation(error)) {
+        throw new DomainError("CONFLICT", "An active waitlist request already exists for this traveler and intent");
+      }
+      throw error;
+    }
     entry.markPersisted(1);
     return this.snapshot(entry);
   }
@@ -177,6 +184,10 @@ function positionIn(entries: readonly WaitlistEntry[], entryId: string): number 
   const queued = entries.filter((entry) => entry.status === "QUEUED");
   const index = queued.findIndex((entry) => entry.entryId === entryId);
   return index < 0 ? 0 : index + 1;
+}
+
+function isActiveRequestUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown; constraint?: unknown }).code === "23505" && (error as { constraint?: unknown }).constraint === "waitlist_active_traveler_intent_unique";
 }
 
 function dateString(value: Date | string): string { return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10); }

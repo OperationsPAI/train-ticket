@@ -80,6 +80,9 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    if (this.hasActiveRequestFor(entry.travelerRefs[0] ?? "", entry.intentFingerprint)) {
+      throw new DomainError("CONFLICT", "An active waitlist request already exists for this traveler and intent");
+    }
     this.entries.set(entry.entryId, entry);
     entry.markPersisted(1);
     return this.snapshot(entry);
@@ -119,6 +122,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   clear(): void { this.entries.clear(); }
+
+  private hasActiveRequestFor(travelerRef: string, intentFingerprint: string): boolean {
+    return [...this.entries.values()].some((entry) => entry.travelerRefs[0] === travelerRef && entry.intentFingerprint === intentFingerprint && isActiveStatus(entry.status));
+  }
 
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
     const matching = [...this.entries.values()].filter((entry) => entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
@@ -176,11 +183,12 @@ export class WaitlistApplicationService {
   }
 
   async cancel(entryId: string, request: CancelWaitlistRequest = {}, correlationId?: string): Promise<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }> {
+    const reason = requiredString(asCancelRequest(request).reason, "reason");
     const entry = await this.requireEntry(entryId);
     const cancelledAt = this.now().toISOString();
     entry.cancel();
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, request.reason ?? "", correlationId, cancelledAt)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, reason, correlationId, cancelledAt)]);
     return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt };
   }
 
@@ -280,6 +288,20 @@ function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistReq
     status: snapshot.status,
     journeyOrderRef: snapshot.journeyOrderRef,
   };
+}
+
+function isActiveStatus(status: WaitlistEntrySnapshot["status"]): boolean {
+  return status === "DRAFT" || status === "QUEUED" || status === "MATCHING" || status === "SUSPENDED";
+}
+
+function asCancelRequest(request: unknown): Partial<CancelWaitlistRequest> {
+  if (typeof request !== "object" || request === null || Array.isArray(request)) throw new DomainError("VALIDATION_FAILED", "request body is required");
+  return request as Partial<CancelWaitlistRequest>;
+}
+
+function requiredString(value: string | undefined, field: string): string {
+  if (!value || value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+  return value;
 }
 
 function daysBefore(departureDate: string): number {

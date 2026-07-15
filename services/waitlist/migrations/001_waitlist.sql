@@ -26,6 +26,10 @@ CREATE INDEX IF NOT EXISTS waitlist_offer_expiry_idx
     ON waitlist_entries (offer_expires_at)
     WHERE status = 'MATCHING';
 
+CREATE UNIQUE INDEX IF NOT EXISTS waitlist_active_traveler_intent_unique
+    ON waitlist_entries ((traveler_refs->>0), (data->>'intentFingerprint'))
+    WHERE status IN ('DRAFT', 'QUEUED', 'MATCHING', 'SUSPENDED');
+
 CREATE TABLE IF NOT EXISTS waitlist_offers (
     offer_id text PRIMARY KEY,
     entry_id text NOT NULL REFERENCES waitlist_entries(entry_id),

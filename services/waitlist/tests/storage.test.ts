@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
-import { WaitlistEntry } from "../src/domain.js";
+import { DomainError, WaitlistEntry } from "../src/domain.js";
 import { PostgresWaitlistRepository, ProcessedEventRepository } from "../src/storage.js";
 
 class FakeDb {
@@ -14,6 +14,13 @@ class FakeDb {
   async query(sql: string, params: readonly unknown[] = []) {
     this.calls.push({ sql, params });
     return { rows: [], rowCount: this.rowCounts[this.calls.length - 1] ?? 0 };
+  }
+}
+
+class FailingDb extends FakeDb {
+  async query(sql: string, params: readonly unknown[] = []): Promise<{ rows: never[]; rowCount: number }> {
+    this.calls.push({ sql, params });
+    throw { code: "23505", constraint: "waitlist_active_traveler_intent_unique" };
   }
 }
 
@@ -31,6 +38,23 @@ function persistedEntry(version: number): WaitlistEntry {
   entry.cancel();
   return entry;
 }
+
+test("PostgresWaitlistRepository.add translates active duplicate unique violation to conflict", async () => {
+  const repository = new PostgresWaitlistRepository(new FailingDb() as never);
+  const entry = WaitlistEntry.create({
+    accountId: "acc-1",
+    travelerRefs: ["tvl-1"],
+    segmentRef: "seg-1",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND",
+    intentFingerprint: "intent-1",
+    paymentGuaranteeRef: "pay-auth-1",
+    itineraryRef: "itn-1",
+    priority: { groupSize: 1, fareClass: "SECOND" },
+  });
+
+  await assert.rejects(repository.add(entry), (error) => error instanceof DomainError && error.code === "CONFLICT");
+});
 
 test("PostgresWaitlistRepository.save uses loaded version in OCC predicate", async () => {
   const db = new FakeDb([1, 0]);
@@ -70,4 +94,14 @@ test("processed_events primary key change is applied by a follow-up migration", 
   assert.match(migration, /DROP CONSTRAINT IF EXISTS processed_events_pkey/u);
   assert.match(migration, /DROP NOT NULL/u);
   assert.match(migration, /ADD PRIMARY KEY \(event_id\)/u);
+});
+
+test("active traveler-intent uniqueness is enforced by migration", async () => {
+  const migrationsDir = join(process.cwd(), "migrations");
+  const migration = await readFile(join(migrationsDir, "003_active_traveler_intent_unique.sql"), "utf8");
+
+  assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS waitlist_active_traveler_intent_unique/u);
+  assert.match(migration, /traveler_refs->>0/u);
+  assert.match(migration, /data->>'intentFingerprint'/u);
+  assert.match(migration, /status IN \('DRAFT', 'QUEUED', 'MATCHING', 'SUSPENDED'\)/u);
 });

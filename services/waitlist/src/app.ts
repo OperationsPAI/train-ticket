@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
-import { InMemoryWaitlistRepository, WaitlistApplicationService, type JourneyOrderClient } from "./application.js";
+import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest, type JourneyOrderClient } from "./application.js";
 import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
 
@@ -58,10 +58,13 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
   app.get("/metadata", async () => metadata());
 
-  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => ({
-    statusCode: 201,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
-  }));
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => {
+    validateCreateWaitlistRequest(request.body);
+    return {
+      statusCode: 201,
+      body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
+    };
+  });
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries", async (request, ctx) => ({
     statusCode: 201,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
@@ -69,7 +72,7 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/api/v1/waitlist-requests", async (request, reply) => handleRead(reply, request, () => {
     const params = query(request);
     return runCommand((repository, publisher) => commandService(repository, publisher).listByTraveler(
-      params.travelerRef ?? "",
+      requiredString(params.travelerRef, "travelerRef"),
       params.status as any,
       parsePageNumber(params.limit, 20, 100),
       parsePageNumber(params.offset, 0, Number.MAX_SAFE_INTEGER),
@@ -101,8 +104,7 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.setErrorHandler((error, request, reply) => {
     const ctx = requestContext(request);
     if (error instanceof DomainError) {
-      const status = error.code === "NOT_FOUND" ? 404 : error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION" ? 409 : 400;
-      sendError(reply, status, error.code, error.message, ctx, { domainCode: error.code });
+      sendError(reply, statusForDomainError(error), error.code, error.message, ctx, { domainCode: error.code });
       return;
     }
     sendError(reply, 500, "INTERNAL_ERROR", errorMessage(error), ctx);
@@ -133,10 +135,37 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
   try { return reply.status(200).send(await operation()); }
   catch (error) {
     const ctx = requestContext(request);
-    if (error instanceof DomainError) sendError(reply, error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message, ctx, { domainCode: error.code });
+    if (error instanceof DomainError) sendError(reply, statusForDomainError(error), error.code, error.message, ctx, { domainCode: error.code });
     else throw error;
     return reply;
   }
+}
+
+function validateCreateWaitlistRequest(body: unknown): void {
+  const request = asCreateRequest(body);
+  requiredString(request.accountId, "accountId");
+  requiredString(request.travelerRef ?? request.travelerRefs?.[0], "travelerRef");
+  requiredString(request.segmentRef, "segmentRef");
+  requiredString(request.deadline, "deadline");
+  requiredString(request.paymentGuaranteeRef, "paymentGuaranteeRef");
+  requiredString(request.itineraryRef, "itineraryRef");
+  requiredString(request.intentFingerprint, "intentFingerprint");
+}
+
+function asCreateRequest(body: unknown): Partial<JoinWaitlistRequest> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new DomainError("VALIDATION_FAILED", "request body is required");
+  return body as Partial<JoinWaitlistRequest>;
+}
+
+function requiredString(value: string | undefined, field: string): string {
+  if (!value || value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+  return value;
+}
+
+function statusForDomainError(error: DomainError): number {
+  if (error.code === "NOT_FOUND") return 404;
+  if (error.code === "CONFLICT" || error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION") return 409;
+  return 400;
 }
 
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }
