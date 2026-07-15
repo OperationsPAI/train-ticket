@@ -23,7 +23,11 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 ## What runs today
 
 38 deployed business services + Redis Streams + PostgreSQL, all under
-`deploy/k8s/`, with service images built by `deploy/build-images.sh`.
+`deploy/k8s/`, each with a Dockerfile at `deploy/docker/<service>/Dockerfile`.
+`deploy/build-images.sh` currently builds 34 of them; four deployed services —
+group-booking, invoicing, loyalty-membership, and travel-insurance — have
+Dockerfiles under `deploy/docker/` but are not yet in the script's `services`
+array, so their images are built separately (a known build-script gap).
 `service-catalog.json` currently catalogs 33 of these contexts; the deployed set
 also includes corporate-travel, group-booking, loyalty-membership,
 marketing-campaign, and travel-insurance:
@@ -31,10 +35,14 @@ marketing-campaign, and travel-insurance:
 | Language | Services |
 |---|---|
 | Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, group-booking, journey-order, marketing-campaign, payment, post-sales, traveler-profile, wallet-promotion |
-| Python (FastAPI) | corporate-travel, disruption-recovery, fare-pricing, identity-verification, legacy-acl, reporting, risk-compliance, transfer-management, trip-planning |
+| Python (FastAPI) | corporate-travel, disruption-recovery, fare-pricing, identity-verification, legacy-acl, reporting, risk-compliance, transfer-management |
 | Node (TS) | account, ancillary-service, customer-service, loyalty-membership, notification, offer-management, waitlist |
 | Go | dispatch, fulfillment, payment-channel, place-network, provider-integration, seat-assignment, service-plan, supplier-catalog, travel-insurance |
-| Rust | capacity-availability, entitlement-ticketing, invoicing |
+| Rust | capacity-availability, entitlement-ticketing, invoicing, trip-planning |
+
+The deployed `trip-planning` image builds the Rust `services/trip-planning-rs`
+(its Dockerfile compiles that crate; a legacy Python `services/trip-planning`
+tree remains in the repo but is not what ships).
 
 Wave 15 activated **waitlist** (ADR-0002): sold-out demand now queues with
 deadline, payment guarantee and fairness invariants, matches released
