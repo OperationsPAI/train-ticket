@@ -1,4 +1,4 @@
-import { type EventPublisher } from "@trainticket/ts-kit";
+import { isPrefixedUuidV7, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import { publishAll, waitlistExpired, waitlistHoldAuthorized, waitlistMatchStarted } from "./publisher.js";
 
@@ -7,7 +7,7 @@ export type WaitlistCapacityFreed = Readonly<{
   departureDate: string;
   seatClass?: string;
   freedSlots: number;
-  capacityReleaseRef?: string;
+  capacityReleaseRef: string;
 }>;
 
 export type WaitlistOffer = Readonly<{
@@ -150,6 +150,7 @@ export class PromotionOrchestrator {
     for (let index = 0; index < slots; index++) {
       const entry = await this.repository.findTopQueued(event.segmentRef, event.departureDate, event.seatClass);
       if (!entry) break;
+      assertCapacityReleaseRef(event.capacityReleaseRef);
       const quote = await this.farePricing.quote(entry);
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
       const hold = await this.capacityAvailability.hold(entry, quote.fareQuoteId);
@@ -162,7 +163,7 @@ export class PromotionOrchestrator {
       offers.push(offer);
       await publishAll(this.publisher, [
         waitlistHoldAuthorized(snapshot, entry.loadedVersion, correlationId, now.toISOString()),
-        waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef ?? "unknown", correlationId, now.toISOString()),
+        waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString()),
       ]);
     }
     return { promoted, offers };
@@ -178,7 +179,6 @@ export class PromotionOrchestrator {
       const snapshot = await this.repository.save(entry);
       expired.push(snapshot);
       await publishAll(this.publisher, [waitlistExpired(snapshot, entry.loadedVersion, correlationId, now.toISOString())]);
-      await this.onCapacityFreed({ segmentRef: entry.segmentRef, departureDate: entry.departureDate, seatClass: entry.seatClass, freedSlots: 1 }, correlationId);
     }
     return expired;
   }
@@ -189,6 +189,12 @@ export function offerFromEntry(entry: WaitlistEntry): WaitlistOffer {
     throw new DomainError("PRECONDITION_FAILED", "Waitlist entry does not have an active offer");
   }
   return { offerId: entry.offerId, offerVersion: entry.offerVersion, entryId: entry.entryId, fareQuoteId: entry.fareQuoteId, capacityHoldId: entry.capacityHoldId, expiresAt: entry.offerExpiresAt.toISOString() };
+}
+
+function assertCapacityReleaseRef(capacityReleaseRef: string): void {
+  if (!isPrefixedUuidV7(capacityReleaseRef, ["evt"])) {
+    throw new DomainError("VALIDATION_FAILED", "capacityReleaseRef must be the consumed CapacityReleased eventId");
+  }
 }
 
 function trimRight(value: string): string { return value.replace(/\/+$/u, ""); }
