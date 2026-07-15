@@ -46,7 +46,7 @@ public final class JourneyOrder {
         this.channelRef = requireText(channelRef, "channelRef");
         this.idempotencyKey = requireText(idempotencyKey, "idempotencyKey");
         this.offerSnapshot = Objects.requireNonNull(offerSnapshot, "offerSnapshot is required");
-        this.travelers = List.copyOf(Objects.requireNonNull(travelers, "travelers are required"));
+        this.travelers = new ArrayList<>(Objects.requireNonNull(travelers, "travelers are required"));
         this.segments = List.copyOf(Objects.requireNonNull(segments, "segments are required"));
         this.orderItems = new ArrayList<>(Objects.requireNonNull(orderItems, "orderItems are required"));
         this.timeline = new ArrayList<>();
@@ -131,7 +131,7 @@ public final class JourneyOrder {
     public String channelRef() { return channelRef; }
     public String idempotencyKey() { return idempotencyKey; }
     public OfferSnapshotRef offerSnapshot() { return offerSnapshot; }
-    public List<TravelerRef> travelers() { return travelers; }
+    public List<TravelerRef> travelers() { return List.copyOf(travelers); }
     public List<SegmentOrderSnapshot> segments() { return segments; }
     public List<OrderItem> orderItems() { return List.copyOf(orderItems); }
     public List<TimelineFact> timeline() { return List.copyOf(timeline); }
@@ -243,6 +243,175 @@ public final class JourneyOrder {
         ));
     }
 
+    public void addOrUpdateAncillaryOrderItem(
+        String ancillaryOrderItemId,
+        String travelerRef,
+        String segmentRef,
+        String catalogItemId,
+        String serviceType,
+        Money payableAmount,
+        Instant occurredAt,
+        String status
+    ) {
+        requireNonTerminalForDetailUpdates();
+        if (orderItems.stream().noneMatch(item -> item.orderItemId().equals(ancillaryOrderItemId))) {
+            orderItems.add(new OrderItem(
+                ancillaryOrderItemId,
+                OrderItemType.ANCILLARY_SERVICE,
+                "ancillary " + requireText(serviceType, "serviceType"),
+                Money.zero(Objects.requireNonNull(payableAmount, "payableAmount is required").currency()),
+                requireText(catalogItemId, "catalogItemId"),
+                List.of(new OrderLineBinding(ancillaryOrderItemId, requireText(travelerRef, "travelerRef"), blankToEmpty(segmentRef), ancillaryOrderItemId))
+            ));
+            monetarySummary = MonetarySummary.fromItems(orderItems);
+        }
+        recordTimeline(
+            "AncillaryOrderItem" + requireText(status, "status"),
+            occurredAt,
+            "ancillary-service",
+            "ancillary order item " + status,
+            Map.of("ancillaryOrderItemId", ancillaryOrderItemId, "serviceType", serviceType)
+        );
+    }
+
+    public void recordAncillaryOrderItemLifecycle(
+        String ancillaryOrderItemId,
+        String serviceType,
+        String status,
+        Instant occurredAt,
+        String reason
+    ) {
+        requireNonTerminalForDetailUpdates();
+        String safeServiceType = serviceType == null || serviceType.isBlank() ? "UNKNOWN" : serviceType;
+        recordTimeline(
+            "AncillaryOrderItem" + requireText(status, "status"),
+            occurredAt,
+            "ancillary-service",
+            reason == null || reason.isBlank() ? "ancillary order item " + status : reason,
+            Map.of("ancillaryOrderItemId", requireText(ancillaryOrderItemId, "ancillaryOrderItemId"), "serviceType", safeServiceType)
+        );
+    }
+
+    public void cancelAncillaryOrderItem(String ancillaryOrderItemId, String serviceType, String reason, Instant occurredAt) {
+        requireNonTerminalForDetailUpdates();
+        orderItems.stream()
+            .filter(item -> item.orderItemId().equals(ancillaryOrderItemId))
+            .findFirst()
+            .ifPresent(item -> item.cancel(reason));
+        monetarySummary = MonetarySummary.fromItems(orderItems);
+        recordAncillaryOrderItemLifecycle(ancillaryOrderItemId, serviceType, "CANCELLED", occurredAt, reason);
+    }
+
+    public void recordTransferContractConfirmed(String connectionId, String connectionContractId, String contractType, Instant occurredAt) {
+        requireNonTerminalForDetailUpdates();
+        recordTimeline(
+            "ConnectionContractConfirmed",
+            occurredAt,
+            "transfer-management",
+            "connection contract confirmed",
+            Map.of(
+                "connectionId", requireText(connectionId, "connectionId"),
+                "connectionContractId", requireText(connectionContractId, "connectionContractId"),
+                "contractType", requireText(contractType, "contractType")
+            )
+        );
+    }
+
+    public void recordConnectionMissed(String connectionId, String contractType, boolean recoveryRequired, Instant occurredAt) {
+        requireNonTerminalForDetailUpdates();
+        recordTimeline(
+            "ConnectionMissed",
+            occurredAt,
+            "transfer-management",
+            recoveryRequired ? "connection missed; recovery required" : "connection missed",
+            Map.of(
+                "connectionId", requireText(connectionId, "connectionId"),
+                "contractType", requireText(contractType, "contractType"),
+                "recoveryRequired", Boolean.toString(recoveryRequired)
+            )
+        );
+    }
+
+    public void recordConnectionRecovered(String connectionId, String recoveryCaseId, String replacementConnectionId, Instant occurredAt) {
+        requireNonTerminalForDetailUpdates();
+        Map<String, String> attributes = new java.util.LinkedHashMap<>();
+        attributes.put("connectionId", requireText(connectionId, "connectionId"));
+        if (recoveryCaseId != null && !recoveryCaseId.isBlank()) {
+            attributes.put("recoveryCaseId", recoveryCaseId);
+        }
+        if (replacementConnectionId != null && !replacementConnectionId.isBlank()) {
+            attributes.put("replacementConnectionId", replacementConnectionId);
+        }
+        recordTimeline("ConnectionRecovered", occurredAt, "transfer-management", "connection recovered", attributes);
+    }
+
+    public void recordTravelerVerificationStatus(String travelerId, String status, String referenceId, Instant occurredAt) {
+        requireNonTerminalForDetailUpdates();
+        TravelerRef existing = travelers.stream()
+            .filter(traveler -> traveler.travelerId().equals(travelerId))
+            .findFirst()
+            .orElseThrow(() -> new DomainRuleViolation("unknown traveler " + travelerId));
+        if ("PASSED".equals(status)) {
+            replaceTraveler(existing, new TravelerRef(
+                existing.travelerId(),
+                existing.travelerType(),
+                existing.maskedDocumentRef(),
+                new EligibilityRef(referenceId, "IDENTITY_VERIFICATION", "identity-verification", null, occurredAt)
+            ));
+        }
+        recordTimeline(
+            "TravelerVerification" + requireText(status, "status"),
+            occurredAt,
+            "identity-verification",
+            "traveler verification " + status,
+            Map.of("travelerId", travelerId, "verificationRef", requireText(referenceId, "referenceId"))
+        );
+    }
+
+    public void recordTravelerEligibilityStatus(String travelerId, String eligibilityCertificateId, String eligibilityType, String status, Instant occurredAt) {
+        requireNonTerminalForDetailUpdates();
+        TravelerRef existing = travelers.stream()
+            .filter(traveler -> traveler.travelerId().equals(travelerId))
+            .findFirst()
+            .orElseThrow(() -> new DomainRuleViolation("unknown traveler " + travelerId));
+        if ("ACTIVE".equals(status) || "CONFIRMED".equals(status)) {
+            replaceTraveler(existing, new TravelerRef(
+                existing.travelerId(),
+                existing.travelerType(),
+                existing.maskedDocumentRef(),
+                new EligibilityRef(eligibilityCertificateId, eligibilityType, "identity-verification", null, occurredAt)
+            ));
+        }
+        recordTimeline(
+            "TravelerEligibility" + requireText(status, "status"),
+            occurredAt,
+            "identity-verification",
+            "traveler eligibility " + status,
+            Map.of("travelerId", travelerId, "eligibilityCertificateId", eligibilityCertificateId, "eligibilityType", eligibilityType)
+        );
+    }
+
+    private void replaceTraveler(TravelerRef existing, TravelerRef replacement) {
+        int index = travelers.indexOf(existing);
+        if (index < 0) {
+            throw new DomainRuleViolation("unknown traveler " + existing.travelerId());
+        }
+        travelers.set(index, replacement);
+    }
+
+    private void requireNonTerminalForDetailUpdates() {
+        if (isTerminalState()) {
+            throw new DomainRuleViolation("terminal JourneyOrder cannot accept detail projection updates");
+        }
+    }
+
+    private boolean isTerminalState() {
+        return switch (state) {
+            case CANCELLED, COMPLETED, FAILED -> true;
+            default -> false;
+        };
+    }
+
     private void requireCreateInvariants() {
         if (travelers.isEmpty()) {
             throw new DomainRuleViolation("JourneyOrder requires at least one traveler snapshot");
@@ -294,6 +463,10 @@ public final class JourneyOrder {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    private static String blankToEmpty(String value) {
+        return value == null || value.isBlank() ? "" : value;
     }
 
     private static String requireText(String value, String name) {

@@ -10,7 +10,10 @@ public final class RedisJourneyOrderSubscriptions {
         "events:traveler-profile",
         "events:risk-compliance",
         "events:account",
-        "events:entitlement-ticketing"
+        "events:entitlement-ticketing",
+        "events:ancillary-service",
+        "events:identity-verification",
+        "events:transfer-management"
     );
     private static final String GROUP = "journey-order";
 

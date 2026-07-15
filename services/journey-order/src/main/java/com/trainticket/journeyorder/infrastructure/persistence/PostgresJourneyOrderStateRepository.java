@@ -77,6 +77,26 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public List<OrderManagementService.StoredOrder> findOrdersByTraveler(String travelerId) {
+        return jdbc.query(
+            """
+                SELECT id
+                FROM journey_order_snapshots
+                WHERE data->'travelers' @> ?::jsonb
+                ORDER BY (data->>'createdAt')::timestamptz DESC
+                """,
+            (rs, rowNum) -> findOrder(rs.getString("id")).orElseThrow(),
+            travelerContainmentJson(travelerId)
+        );
+    }
+
+    private String travelerContainmentJson(String travelerId) {
+        com.fasterxml.jackson.databind.node.ArrayNode array = mapper.createArrayNode();
+        array.addObject().put("travelerId", travelerId);
+        return array.toString();
+    }
+
+    @Override
     public List<OrderManagementService.StoredOrder> listOrders(String accountId, String status, int limit, int offset) {
         boolean byAccount = accountId != null && !accountId.isBlank();
         boolean byStatus = status != null && !status.isBlank();

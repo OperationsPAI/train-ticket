@@ -551,6 +551,120 @@ class OrderManagementServiceTest {
 
 
     @Test
+    void ancillaryOrderItemSelectedAddsOrderDetailWithEventIdDedup() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
+        JourneyOrderResult created = orderService.createOrder(
+            new JourneyOrderRequest("account-ancillary", "offer-ancillary", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-ancillary-selected",
+            "corr-1"
+        );
+        published.clear();
+
+        EventEnvelope selected = ancillarySelectedEvent(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d001",
+            created.orderId()
+        );
+
+        assertEquals(new EventSubscriber.Success(), orderService.handle(selected));
+        assertEquals(new EventSubscriber.Success(), orderService.handle(selected));
+
+        com.trainticket.journeyorder.domain.JourneyOrder stored = repository.findOrder(created.orderId()).orElseThrow().order();
+        assertEquals(2, stored.orderItems().size());
+        assertTrue(stored.orderItems().stream().anyMatch(item -> item.orderItemId().equals("aoi-0194f2e0-7b3e-7610-8284-5c26e8b0d010")));
+        assertEquals(1, stored.timeline().stream()
+            .filter(fact -> fact.factType().equals("AncillaryOrderItemSELECTED"))
+            .count());
+        assertTrue(repository.isEventProcessed(selected.eventId()));
+    }
+
+    @Test
+    void connectionMissedRecordsRecoveryDisplay() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
+        JourneyOrderResult created = orderService.createOrder(
+            new JourneyOrderRequest("account-transfer", "offer-transfer", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-transfer-missed",
+            "corr-1"
+        );
+
+        EventSubscriber.HandlerResult result = orderService.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d021",
+            "ConnectionMissed",
+            Instant.parse("2026-07-05T10:10:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d022",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d023",
+            "transfer-management",
+            1,
+            Map.of(
+                "connection", Map.of(
+                    "connectionId", "con-0194f2e0-7b3e-7610-8284-5c26e8b0d024",
+                    "transferPlanId", "tpl-0194f2e0-7b3e-7610-8284-5c26e8b0d025",
+                    "itineraryRef", "itn-1",
+                    "journeyOrderId", created.orderId(),
+                    "previousSegmentRef", "seg-1",
+                    "nextSegmentRef", "seg-2",
+                    "travelerRefs", List.of("tvl-1")
+                ),
+                "previousStatus", "AT_RISK",
+                "status", "MISSED",
+                "riskLevel", "MISSED",
+                "contractType", "PROTECTED",
+                "missedAt", "2026-07-05T10:10:00Z",
+                "missedCause", "PREVIOUS_SEGMENT_DELAYED",
+                "window", Map.of("availableMinutes", 0, "mctMinutes", 10),
+                "recoveryRequired", true
+            )
+        ));
+
+        assertEquals(new EventSubscriber.Success(), result);
+        com.trainticket.journeyorder.domain.JourneyOrder stored = repository.findOrder(created.orderId()).orElseThrow().order();
+        assertTrue(stored.timeline().stream().anyMatch(fact ->
+            fact.factType().equals("ConnectionMissed")
+                && fact.attributes().get("connectionId").equals("con-0194f2e0-7b3e-7610-8284-5c26e8b0d024")
+                && fact.attributes().get("recoveryRequired").equals("true")));
+    }
+
+    @Test
+    void verificationPassedLinksTravelerStatus() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
+        JourneyOrderResult created = orderService.createOrder(
+            new JourneyOrderRequest("account-verification", "offer-verification", 1, List.of("tvl-verified"), List.of("seg-1")),
+            "idem-verification-passed",
+            "corr-1"
+        );
+
+        EventSubscriber.HandlerResult result = orderService.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d031",
+            "VerificationPassed",
+            Instant.parse("2026-07-05T10:11:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d032",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d033",
+            "identity-verification",
+            1,
+            Map.ofEntries(
+                Map.entry("verificationCaseId", "ivc-0194f2e0-7b3e-7610-8284-5c26e8b0d034"),
+                Map.entry("travelerId", "tvl-verified"),
+                Map.entry("credentialRecordId", "crd-0194f2e0-7b3e-7610-8284-5c26e8b0d035"),
+                Map.entry("simOutcome", "MATCH"),
+                Map.entry("simResultRef", "simop-1"),
+                Map.entry("verificationStatus", "PASSED"),
+                Map.entry("validFrom", "2026-07-05T10:11:00Z"),
+                Map.entry("validUntil", "2027-07-05T10:11:00Z"),
+                Map.entry("policyVersion", "identity-v1"),
+                Map.entry("completedAt", "2026-07-05T10:11:00Z"),
+                Map.entry("aggregateVersion", 2)
+            )
+        ));
+
+        assertEquals(new EventSubscriber.Success(), result);
+        com.trainticket.journeyorder.domain.JourneyOrder stored = repository.findOrder(created.orderId()).orElseThrow().order();
+        assertTrue(stored.timeline().stream().anyMatch(fact -> fact.factType().equals("TravelerVerificationPASSED")));
+        assertEquals("ivc-0194f2e0-7b3e-7610-8284-5c26e8b0d034", stored.travelers().getFirst().eligibilityRef().eligibilityId());
+    }
+
+    @Test
     void orderConfirmationConfirmsIdentityPreOrderCheck() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
         RecordingIdentityVerificationPort identity = new RecordingIdentityVerificationPort();
@@ -617,6 +731,44 @@ class OrderManagementServiceTest {
         if (obj == null) throw new AssertionError("Expected non-null");
     }
 
+
+    private static EventEnvelope ancillarySelectedEvent(String eventId, String orderId) {
+        return new EventEnvelope(
+            eventId,
+            "AncillaryOrderItemSelected",
+            Instant.parse("2026-07-05T10:05:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d011",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d012",
+            "ancillary-service",
+            1,
+            Map.ofEntries(
+                Map.entry("ancillaryOrderItemId", "aoi-0194f2e0-7b3e-7610-8284-5c26e8b0d010"),
+                Map.entry("journeyOrderId", orderId),
+                Map.entry("travelerRef", "tvl-1"),
+                Map.entry("segmentRef", "seg-1"),
+                Map.entry("entitlementRef", "ent-1"),
+                Map.entry("ancillaryOfferId", "aof-0194f2e0-7b3e-7610-8284-5c26e8b0d013"),
+                Map.entry("offerVersion", 1),
+                Map.entry("catalogSnapshot", Map.of(
+                    "catalogItemId", "aci-0194f2e0-7b3e-7610-8284-5c26e8b0d014",
+                    "serviceType", "MEAL",
+                    "displayName", "Dinner",
+                    "attachmentScope", "SEGMENT",
+                    "unitPrice", Map.of("currency", "CNY", "minorUnits", 2500),
+                    "purchaseCutoffHoursBeforeDeparture", 2,
+                    "eligibilityRuleVersion", "ancillary-v1",
+                    "fulfillmentMethod", "VOUCHER"
+                )),
+                Map.entry("quantity", 1),
+                Map.entry("payableAmount", Map.of("currency", "CNY", "minorUnits", 2500)),
+                Map.entry("refundableAmount", Map.of("currency", "CNY", "minorUnits", 2500)),
+                Map.entry("assessedFees", List.of()),
+                Map.entry("status", "SELECTED"),
+                Map.entry("selectedAt", "2026-07-05T10:05:00Z"),
+                Map.entry("aggregateVersion", 1)
+            )
+        );
+    }
 
     private static EventEnvelope entitlementIssuedEvent(String eventId, String orderId) {
         return new EventEnvelope(

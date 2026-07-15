@@ -391,7 +391,19 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 case "AccountClosureStarted" -> handleAccountClosureStarted(envelope);
                 case "AccountClosed" -> handleAccountClosed(envelope);
                 case "EntitlementIssued" -> handleEntitlementIssued(envelope);
-                case "OfferExpired", "OfferQuoted",
+                case "AncillaryOrderItemSelected" -> handleAncillaryOrderItemSnapshot(envelope);
+                case "AncillaryOrderItemPendingConfirmation", "AncillaryOrderItemConfirmed", "AncillaryOrderItemFulfillmentReady",
+                    "AncillaryOrderItemFulfilled", "AncillaryOrderItemFailed", "AncillaryOrderItemRefunded" -> handleAncillaryOrderItemLifecycle(envelope);
+                case "AncillaryOrderItemCancelled" -> handleAncillaryOrderItemCancelled(envelope);
+                case "ConnectionContractConfirmed" -> handleConnectionContractConfirmed(envelope);
+                case "ConnectionMissed" -> handleConnectionMissed(envelope);
+                case "ConnectionRecovered" -> handleConnectionRecovered(envelope);
+                case "CredentialRegistered" -> handleCredentialRegistered(envelope);
+                case "VerificationCaseStarted" -> handleVerificationCaseStarted(envelope);
+                case "VerificationPassed", "VerificationFailed" -> handleVerificationOutcome(envelope);
+                case "EligibilityCertificateRegistered", "EligibilityCertificateVerified" -> handleEligibilityCertificate(envelope);
+                case "EligibilityUsageReserved", "EligibilityUsageConfirmed", "EligibilityUsageReleased" -> handleEligibilityUsage(envelope);
+                case "OfferExpired", "OfferQuoted", "AncillaryOfferQuoted", "AncillaryOfferExpired",
                     "TravelerProfileUpdated", "TravelerSnapshotUpdated", "TravelerDocumentVerified", "TravelerEligibilityChanged",
                     "SessionOpened", "SessionRevoked", "PreferenceUpdated" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.Success();
@@ -401,6 +413,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         } catch (InvalidEventPayload ex) {
             return new EventSubscriber.FatalError(ex.getMessage());
         } catch (NotFoundException ex) {
+            stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer());
             return ackSkipMissingOrder(envelope);
         } catch (DataAccessException ex) {
             LOGGER.error("DataAccessException handling {} eventId={}: {}", envelope.eventType(), envelope.eventId(), ex.getMessage(), ex);
@@ -616,6 +629,226 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return new EventSubscriber.Success();
     }
 
+    private EventSubscriber.HandlerResult handleAncillaryOrderItemSnapshot(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "ancillaryOrderItemId", "journeyOrderId", "travelerRef", "payableAmount", "status");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
+        try {
+            order.addOrUpdateAncillaryOrderItem(
+                requiredTextPayload(envelope, "ancillaryOrderItemId"),
+                requiredTextPayload(envelope, "travelerRef"),
+                textPayload(envelope, "segmentRef", ""),
+                ancillaryCatalogItemId(envelope),
+                ancillaryServiceType(envelope),
+                moneyPayload(envelope, "payableAmount"),
+                envelope.occurredAt(),
+                requiredTextPayload(envelope, "status")
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAncillaryOrderItemLifecycle(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "ancillaryOrderItemId", "journeyOrderId", "status");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
+        try {
+            order.recordAncillaryOrderItemLifecycle(
+                requiredTextPayload(envelope, "ancillaryOrderItemId"),
+                textPayload(envelope, "serviceType", "UNKNOWN"),
+                requiredTextPayload(envelope, "status"),
+                envelope.occurredAt(),
+                ancillaryReason(envelope)
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleAncillaryOrderItemCancelled(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "ancillaryOrderItemId", "journeyOrderId", "serviceType", "reasonCode", "status");
+        StoredOrder stored = storedOrderFromPayload(envelope);
+        JourneyOrder order = stored.order();
+        try {
+            order.cancelAncillaryOrderItem(
+                requiredTextPayload(envelope, "ancillaryOrderItemId"),
+                requiredTextPayload(envelope, "serviceType"),
+                requiredTextPayload(envelope, "reasonCode"),
+                envelope.occurredAt()
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleConnectionContractConfirmed(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "connectionContractId", "connectionId", "contractType", "status", "confirmedAt");
+        StoredOrder stored = storedOrderFromAcceptedByRef(envelope);
+        JourneyOrder order = stored.order();
+        try {
+            order.recordTransferContractConfirmed(
+                requiredTextPayload(envelope, "connectionId"),
+                requiredTextPayload(envelope, "connectionContractId"),
+                requiredTextPayload(envelope, "contractType"),
+                envelope.occurredAt()
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleConnectionMissed(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "connection", "contractType", "recoveryRequired", "missedAt");
+        StoredOrder stored = storedOrderFromConnection(envelope);
+        JourneyOrder order = stored.order();
+        try {
+            order.recordConnectionMissed(
+                requiredConnectionText(envelope, "connectionId"),
+                requiredTextPayload(envelope, "contractType"),
+                booleanPayload(envelope, "recoveryRequired"),
+                envelope.occurredAt()
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleConnectionRecovered(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "connection", "status", "riskLevel", "recoveredAt");
+        StoredOrder stored = storedOrderFromConnection(envelope);
+        JourneyOrder order = stored.order();
+        try {
+            order.recordConnectionRecovered(
+                requiredConnectionText(envelope, "connectionId"),
+                textPayload(envelope, "recoveryCaseId", null),
+                textPayload(envelope, "replacementConnectionId", null),
+                envelope.occurredAt()
+            );
+        } catch (DomainRuleViolation | IllegalStateException ex) {
+            return ackSkipStateRace(envelope, order);
+        }
+        stateRepository.saveOrder(order, stored.idempotencyKey());
+        return new EventSubscriber.Success();
+    }
+
+    private EventSubscriber.HandlerResult handleCredentialRegistered(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "credentialRecordId", "travelerId", "credentialStatus", "registeredAt");
+        return updateOrdersForTraveler(
+            requiredTextPayload(envelope, "travelerId"),
+            envelope,
+            (order) -> order.recordTravelerVerificationStatus(
+                requiredTextPayload(envelope, "travelerId"),
+                requiredTextPayload(envelope, "credentialStatus"),
+                requiredTextPayload(envelope, "credentialRecordId"),
+                envelope.occurredAt()
+            )
+        );
+    }
+
+    private EventSubscriber.HandlerResult handleVerificationCaseStarted(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "verificationCaseId", "travelerId", "credentialRecordId", "purpose", "verificationStatus", "startedAt");
+        return updateOrdersForTraveler(
+            requiredTextPayload(envelope, "travelerId"),
+            envelope,
+            (order) -> order.recordTravelerVerificationStatus(
+                requiredTextPayload(envelope, "travelerId"),
+                requiredTextPayload(envelope, "verificationStatus"),
+                requiredTextPayload(envelope, "verificationCaseId"),
+                envelope.occurredAt()
+            )
+        );
+    }
+
+    private EventSubscriber.HandlerResult handleVerificationOutcome(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "verificationCaseId", "travelerId", "credentialRecordId", "verificationStatus", "completedAt");
+        return updateOrdersForTraveler(
+            requiredTextPayload(envelope, "travelerId"),
+            envelope,
+            (order) -> order.recordTravelerVerificationStatus(
+                requiredTextPayload(envelope, "travelerId"),
+                requiredTextPayload(envelope, "verificationStatus"),
+                requiredTextPayload(envelope, "verificationCaseId"),
+                envelope.occurredAt()
+            )
+        );
+    }
+
+    private EventSubscriber.HandlerResult handleEligibilityCertificate(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "eligibilityCertificateId", "travelerId", "eligibilityType", "certificateStatus");
+        return updateOrdersForTraveler(
+            requiredTextPayload(envelope, "travelerId"),
+            envelope,
+            (order) -> order.recordTravelerEligibilityStatus(
+                requiredTextPayload(envelope, "travelerId"),
+                requiredTextPayload(envelope, "eligibilityCertificateId"),
+                requiredTextPayload(envelope, "eligibilityType"),
+                requiredTextPayload(envelope, "certificateStatus"),
+                envelope.occurredAt()
+            )
+        );
+    }
+
+    private EventSubscriber.HandlerResult handleEligibilityUsage(EventEnvelope envelope) {
+        requirePayloadFields(envelope, "usageReservationId", "eligibilityCertificateId", "travelerId");
+        StoredOrder directOrder = textPayload(envelope, "journeyOrderId", null) == null ? null : storedOrderFromPayload(envelope);
+        if (directOrder != null) {
+            JourneyOrder order = directOrder.order();
+            try {
+                order.recordTravelerEligibilityStatus(
+                    requiredTextPayload(envelope, "travelerId"),
+                    requiredTextPayload(envelope, "eligibilityCertificateId"),
+                    textPayload(envelope, "eligibilityType", "USAGE"),
+                    usageStatus(envelope),
+                    envelope.occurredAt()
+                );
+            } catch (DomainRuleViolation | IllegalStateException ex) {
+                return ackSkipStateRace(envelope, order);
+            }
+            stateRepository.saveOrder(order, directOrder.idempotencyKey());
+            return new EventSubscriber.Success();
+        }
+        return updateOrdersForTraveler(
+            requiredTextPayload(envelope, "travelerId"),
+            envelope,
+            (order) -> order.recordTravelerEligibilityStatus(
+                requiredTextPayload(envelope, "travelerId"),
+                requiredTextPayload(envelope, "eligibilityCertificateId"),
+                textPayload(envelope, "eligibilityType", "USAGE"),
+                usageStatus(envelope),
+                envelope.occurredAt()
+            )
+        );
+    }
+
+    private EventSubscriber.HandlerResult updateOrdersForTraveler(String travelerId, EventEnvelope envelope, java.util.function.Consumer<JourneyOrder> updater) {
+        List<StoredOrder> storedOrders = stateRepository.findOrdersByTraveler(travelerId);
+        if (storedOrders.isEmpty()) {
+            LOGGER.warn("ack-skip journey-order event={} eventId={} travelerId={} reason=NO_MATCHING_ORDER", envelope.eventType(), envelope.eventId(), travelerId);
+            return new EventSubscriber.Success();
+        }
+        for (StoredOrder stored : storedOrders) {
+            JourneyOrder order = stored.order();
+            try {
+                updater.accept(order);
+            } catch (DomainRuleViolation | IllegalStateException ex) {
+                ackSkipStateRace(envelope, order);
+                continue;
+            }
+            stateRepository.saveOrder(order, stored.idempotencyKey());
+        }
+        return new EventSubscriber.Success();
+    }
 
     private void confirmIdentityPreOrderCheck(String orderId, String causationId, String correlationId) {
         stateRepository.findIdentityPreOrderCheckId(orderId)
@@ -658,6 +891,19 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (orderId == null || orderId.isBlank()) {
             throw new InvalidEventPayload("event payload missing orderId/businessRef");
         }
+        return storedOrderFromId(orderId);
+    }
+
+    private StoredOrder storedOrderFromAcceptedByRef(EventEnvelope envelope) {
+        String acceptedByRef = requiredTextPayload(envelope, "acceptedByRef");
+        if (!acceptedByRef.startsWith("ord-")) {
+            throw new NotFoundException("Connection contract acceptance is not linked to a JourneyOrder: " + acceptedByRef);
+        }
+        return storedOrderFromId(acceptedByRef);
+    }
+
+    private StoredOrder storedOrderFromConnection(EventEnvelope envelope) {
+        String orderId = requiredConnectionText(envelope, "journeyOrderId");
         return storedOrderFromId(orderId);
     }
 
@@ -718,14 +964,112 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         if (orderId == null) {
             orderId = textPayload(envelope, "journeyOrderId", null);
         }
+        if (orderId == null) {
+            orderId = connectionText(envelope, "journeyOrderId", null);
+        }
         return orderId == null ? "unknown" : orderId;
     }
 
-    private static String textPayload(EventEnvelope envelope, String field, String fallback) {
-        if (!(envelope.payload() instanceof Map<?, ?> payload)) {
+    private static String ancillaryCatalogItemId(EventEnvelope envelope) {
+        String catalogItemId = textPayload(envelope, "catalogItemId", null);
+        if (catalogItemId != null) {
+            return catalogItemId;
+        }
+        Object snapshot = objectPayload(envelope, "catalogSnapshot");
+        if (snapshot instanceof Map<?, ?> catalogSnapshot) {
+            Object value = catalogSnapshot.get("catalogItemId");
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return String.valueOf(value);
+            }
+        }
+        throw new InvalidEventPayload("event payload missing catalogItemId");
+    }
+
+    private static String ancillaryServiceType(EventEnvelope envelope) {
+        String serviceType = textPayload(envelope, "serviceType", null);
+        if (serviceType != null) {
+            return serviceType;
+        }
+        Object snapshot = objectPayload(envelope, "catalogSnapshot");
+        if (snapshot instanceof Map<?, ?> catalogSnapshot) {
+            Object value = catalogSnapshot.get("serviceType");
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return String.valueOf(value);
+            }
+        }
+        throw new InvalidEventPayload("event payload missing serviceType");
+    }
+
+    private static String ancillaryReason(EventEnvelope envelope) {
+        String reason = textPayload(envelope, "failureCode", null);
+        if (reason == null) {
+            reason = textPayload(envelope, "refundRef", null);
+        }
+        if (reason == null) {
+            reason = textPayload(envelope, "status", "ancillary lifecycle update");
+        }
+        return reason;
+    }
+
+    private static String usageStatus(EventEnvelope envelope) {
+        return switch (envelope.eventType()) {
+            case "EligibilityUsageReserved" -> "RESERVED";
+            case "EligibilityUsageConfirmed" -> "CONFIRMED";
+            case "EligibilityUsageReleased" -> "RELEASED";
+            default -> requiredTextPayload(envelope, "status");
+        };
+    }
+
+    private static Money moneyPayload(EventEnvelope envelope, String field) {
+        Object value = objectPayload(envelope, field);
+        if (!(value instanceof Map<?, ?> money)) {
+            throw new InvalidEventPayload("event payload missing " + field);
+        }
+        Object currency = money.get("currency");
+        Object minorUnits = money.get("minorUnits");
+        if (currency == null || String.valueOf(currency).isBlank() || minorUnits == null) {
+            throw new InvalidEventPayload("event payload missing " + field + ".currency/minorUnits");
+        }
+        return Money.fromMinorUnits(Long.parseLong(String.valueOf(minorUnits)), String.valueOf(currency));
+    }
+
+    private static boolean booleanPayload(EventEnvelope envelope, String field) {
+        Object value = objectPayload(envelope, field);
+        if (value == null) {
+            throw new InvalidEventPayload("event payload missing " + field);
+        }
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private static String requiredConnectionText(EventEnvelope envelope, String field) {
+        String value = connectionText(envelope, field, null);
+        if (value == null || value.isBlank()) {
+            throw new InvalidEventPayload("event payload missing connection." + field);
+        }
+        return value;
+    }
+
+    private static String connectionText(EventEnvelope envelope, String field, String fallback) {
+        Object connection = objectPayload(envelope, "connection");
+        if (!(connection instanceof Map<?, ?> connectionMap)) {
             return fallback;
         }
-        Object value = payload.get(field);
+        Object value = connectionMap.get(field);
+        return value == null ? fallback : String.valueOf(value);
+    }
+
+    private static Object objectPayload(EventEnvelope envelope, String field) {
+        if (!(envelope.payload() instanceof Map<?, ?> payload)) {
+            return null;
+        }
+        return payload.get(field);
+    }
+
+    private static String textPayload(EventEnvelope envelope, String field, String fallback) {
+        Object value = objectPayload(envelope, field);
         return value == null ? fallback : String.valueOf(value);
     }
 

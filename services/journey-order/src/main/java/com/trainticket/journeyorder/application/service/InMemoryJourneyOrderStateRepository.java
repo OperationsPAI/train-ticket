@@ -29,6 +29,13 @@ public class InMemoryJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public List<OrderManagementService.StoredOrder> findOrdersByTraveler(String travelerId) {
+        return orders.values().stream()
+            .filter(order -> order.order().travelers().stream().anyMatch(traveler -> traveler.travelerId().equals(travelerId)))
+            .toList();
+    }
+
+    @Override
     public List<OrderManagementService.StoredOrder> listOrders(String accountId, String status, int limit, int offset) {
         return orders.values().stream()
             .filter(order -> accountId == null || accountId.isBlank() || order.order().accountId().equals(accountId))
