@@ -626,6 +626,44 @@ class OrderManagementServiceTest {
     }
 
     @Test
+    void connectionMissedWithoutLinkedOrderIsAckSkippedAndDeduplicated() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
+
+        EventEnvelope missed = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d026",
+            "ConnectionMissed",
+            Instant.parse("2026-07-05T10:10:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d027",
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d028",
+            "transfer-management",
+            1,
+            Map.of(
+                "connection", Map.of(
+                    "connectionId", "con-0194f2e0-7b3e-7610-8284-5c26e8b0d029",
+                    "transferPlanId", "tpl-0194f2e0-7b3e-7610-8284-5c26e8b0d030",
+                    "itineraryRef", "itn-unlinked",
+                    "previousSegmentRef", "seg-1",
+                    "nextSegmentRef", "seg-2",
+                    "travelerRefs", List.of("tvl-unlinked")
+                ),
+                "previousStatus", "AT_RISK",
+                "status", "MISSED",
+                "riskLevel", "MISSED",
+                "contractType", "PROTECTED",
+                "missedAt", "2026-07-05T10:10:00Z",
+                "missedCause", "PREVIOUS_SEGMENT_DELAYED",
+                "window", Map.of("availableMinutes", 0, "mctMinutes", 10),
+                "recoveryRequired", true
+            )
+        );
+
+        assertEquals(new EventSubscriber.Success(), orderService.handle(missed));
+        assertEquals(new EventSubscriber.Success(), orderService.handle(missed));
+        assertTrue(repository.isEventProcessed(missed.eventId()));
+    }
+
+    @Test
     void verificationPassedLinksTravelerStatus() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
         OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
