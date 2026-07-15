@@ -1,9 +1,11 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -282,6 +284,96 @@ func TestFulfillmentCompletedPublishesContractEvent(t *testing.T) {
 	}
 	if _, ok := payload["segmentRef"]; ok {
 		t.Fatalf("FulfillmentCompleted payload must match contract exactly, got segmentRef")
+	}
+}
+
+func TestConsumesAncillaryFulfillmentReadyAndFact(t *testing.T) {
+	repo := NewInMemoryRepository()
+	log := NewInMemoryConsumedEventLog()
+	service := NewService(repo, NoopPublisher{}, log, nil, nil)
+	ready := EventEnvelope{EventID: "evt-anc-ready", EventType: "AncillaryOrderItemFulfillmentReady", Producer: "ancillary-service", SchemaVersion: 1, Payload: json.RawMessage(`{"ancillaryOrderItemId":"aoi-ready1","journeyOrderId":"ord-ready1","travelerRef":"tvl-ready1","segmentRef":"seg-ready1","catalogSnapshot":{"catalogItemId":"aci-meal1","serviceType":"MEAL"},"providerRef":"voucher-123","entitlementRef":"ent-ready1","previousStatus":"CONFIRMED","status":"FULFILLMENT_READY","readyAt":"2026-07-05T10:00:00Z","aggregateVersion":3}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), ready); err != nil {
+		t.Fatalf("ready event: %v", err)
+	}
+	handoff, err := repo.FindAncillaryHandoff(context.Background(), "aoi-ready1")
+	if err != nil {
+		t.Fatalf("find handoff: %v", err)
+	}
+	if handoff.Status != "FULFILLMENT_READY" || handoff.ProviderRef != "voucher-123" || handoff.ReadyAt == nil {
+		t.Fatalf("unexpected ready handoff: %#v", handoff)
+	}
+	fact := EventEnvelope{EventID: "evt-anc-fact", EventType: "AncillaryFulfillmentFactRecorded", Producer: "ancillary-service", SchemaVersion: 1, Payload: json.RawMessage(`{"ancillaryOrderItemId":"aoi-ready1","journeyOrderId":"ord-ready1","travelerRef":"tvl-ready1","segmentRef":"seg-ready1","catalogItemId":"aci-meal1","serviceType":"MEAL","fulfillmentFact":{"fulfillmentFactId":"aff-fact1","factType":"MEAL_ISSUED","providerRef":"voucher-123","occurredAt":"2026-07-05T10:05:00Z","recordedAt":"2026-07-05T10:06:00Z","performedBy":"PROVIDER","idempotencyRef":"provider-event-1","compensable":false},"previousStatus":"FULFILLMENT_READY","status":"FULFILLED","aggregateVersion":4}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), fact); err != nil {
+		t.Fatalf("fact event: %v", err)
+	}
+	if err := service.HandleSubscribedEvent(context.Background(), fact); err != nil {
+		t.Fatalf("duplicate fact event: %v", err)
+	}
+	handoff, err = repo.FindAncillaryHandoff(context.Background(), "aoi-ready1")
+	if err != nil {
+		t.Fatalf("find handoff after fact: %v", err)
+	}
+	if handoff.Status != "FULFILLED" || len(handoff.Facts) != 1 || handoff.Facts[0].SourceEventID != "evt-anc-fact" {
+		t.Fatalf("unexpected fact handoff: %#v", handoff)
+	}
+}
+
+func TestConsumesDispatchRideLifecycle(t *testing.T) {
+	repo := NewInMemoryRepository()
+	service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil)
+	arrived := EventEnvelope{EventID: "evt-ride-arrived", EventType: "DriverArrived", Producer: "dispatch", SchemaVersion: 1, Payload: json.RawMessage(`{"rideRequestId":"rrq-ride1","rideAssignmentId":"ras-ride1","riderAccountId":"acct-1","travelerRef":"tvl-ride1","pickupRef":"place-a","dropoffRef":"place-b","driverRef":"drv-1","vehicleRef":"veh-1","arrivedAt":"2026-07-05T10:00:00Z","status":"DRIVER_ARRIVED"}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), arrived); err != nil {
+		t.Fatalf("arrived: %v", err)
+	}
+	ended := EventEnvelope{EventID: "evt-ride-ended", EventType: "RideEnded", Producer: "dispatch", SchemaVersion: 1, Payload: json.RawMessage(`{"rideRequestId":"rrq-ride1","rideAssignmentId":"ras-ride1","riderAccountId":"acct-1","travelerRef":"tvl-ride1","pickupRef":"place-a","dropoffRef":"place-b","driverRef":"drv-1","vehicleRef":"veh-1","startedAt":"2026-07-05T10:03:00Z","endedAt":"2026-07-05T10:30:00Z","finalFareRef":"fare-final-1","status":"COMPLETED"}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), ended); err != nil {
+		t.Fatalf("ended: %v", err)
+	}
+	view, err := repo.FindRideExecution(context.Background(), "rrq-ride1")
+	if err != nil {
+		t.Fatalf("find ride execution: %v", err)
+	}
+	if view.Status != "COMPLETED" || view.DriverArrivedAt == nil || view.RideEndedAt == nil || view.FinalFareRef != "fare-final-1" || len(view.Evidence) != 2 {
+		t.Fatalf("unexpected ride view: %#v", view)
+	}
+}
+
+func TestAckSkipsUnexpectedExternalLifecycleStatusesWithWarn(t *testing.T) {
+	repo := NewInMemoryRepository()
+	service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil)
+	var logs bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(originalWriter) })
+
+	wrongDispatch := EventEnvelope{EventID: "evt-ride-bad-status", EventType: "DriverArrived", Producer: "dispatch", SchemaVersion: 1, Payload: json.RawMessage(`{"rideRequestId":"rrq-badstatus1","rideAssignmentId":"ras-badstatus1","riderAccountId":"acct-1","travelerRef":"tvl-badstatus1","pickupRef":"place-a","dropoffRef":"place-b","driverRef":"drv-1","vehicleRef":"veh-1","arrivedAt":"2026-07-05T10:00:00Z","status":"ASSIGNED"}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), wrongDispatch); err != nil {
+		t.Fatalf("wrong dispatch status should be ack-skipped, got %v", err)
+	}
+	if _, err := repo.FindRideExecution(context.Background(), "rrq-badstatus1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong dispatch status mutated ride view: %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "WARN") || !strings.Contains(got, "evt-ride-bad-status") || !strings.Contains(got, "ack-skip") {
+		t.Fatalf("expected WARN ack-skip log for dispatch status, got %q", got)
+	}
+
+	ready := EventEnvelope{EventID: "evt-anc-bad-ready", EventType: "AncillaryOrderItemFulfillmentReady", Producer: "ancillary-service", SchemaVersion: 1, Payload: json.RawMessage(`{"ancillaryOrderItemId":"aoi-badstatus1","journeyOrderId":"ord-badstatus1","travelerRef":"tvl-badstatus1","segmentRef":"seg-badstatus1","catalogSnapshot":{"catalogItemId":"aci-meal1","serviceType":"MEAL"},"providerRef":"voucher-123","previousStatus":"CONFIRMED","status":"FULFILLMENT_READY","readyAt":"2026-07-05T10:00:00Z","aggregateVersion":3}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), ready); err != nil {
+		t.Fatalf("ready event: %v", err)
+	}
+	wrongAncillaryFact := EventEnvelope{EventID: "evt-anc-bad-status", EventType: "AncillaryFulfillmentFactRecorded", Producer: "ancillary-service", SchemaVersion: 1, Payload: json.RawMessage(`{"ancillaryOrderItemId":"aoi-badstatus1","journeyOrderId":"ord-badstatus1","travelerRef":"tvl-badstatus1","segmentRef":"seg-badstatus1","catalogItemId":"aci-meal1","serviceType":"MEAL","fulfillmentFact":{"fulfillmentFactId":"aff-badstatus1","factType":"MEAL_ISSUED","providerRef":"voucher-123","occurredAt":"2026-07-05T10:05:00Z","recordedAt":"2026-07-05T10:06:00Z","performedBy":"PROVIDER","idempotencyRef":"provider-event-1","compensable":false},"previousStatus":"FULFILLMENT_READY","status":"SOMETHING_NEW","aggregateVersion":4}`)}
+	if err := service.HandleSubscribedEvent(context.Background(), wrongAncillaryFact); err != nil {
+		t.Fatalf("wrong ancillary status should be ack-skipped, got %v", err)
+	}
+	handoff, err := repo.FindAncillaryHandoff(context.Background(), "aoi-badstatus1")
+	if err != nil {
+		t.Fatalf("find handoff: %v", err)
+	}
+	if handoff.Status != "FULFILLMENT_READY" || len(handoff.Facts) != 0 {
+		t.Fatalf("wrong ancillary status mutated handoff: %#v", handoff)
+	}
+	if got := logs.String(); !strings.Contains(got, "evt-anc-bad-status") {
+		t.Fatalf("expected WARN ack-skip log for ancillary status, got %q", got)
 	}
 }
 
