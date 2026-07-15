@@ -1,8 +1,9 @@
 # Local kind integration environment
 
-This directory contains the Docker and Kubernetes assets for running the 23
-integration-ready Train Ticket services plus Redis Streams and PostgreSQL in a
-local kind cluster for 联调.
+This directory contains the Docker and Kubernetes assets for running the ~38
+deployed Train Ticket business services (`deploy/k8s/services.yaml` currently
+defines 38 Deployments) plus Redis Streams and PostgreSQL in a local kind
+cluster for 联调.
 
 ## Prerequisites
 
@@ -27,11 +28,15 @@ LOAD_INTO_KIND=0 deploy/build-images.sh local
 ```
 
 The script builds images as `train-ticket/<service>:<tag>` using the per-service
-Dockerfiles under `deploy/docker/`. It covers the 23 deployed business services;
-the six future-scope skeleton services are not part of the deployed set. The
-loadgen image is built by `deploy/loadgen/run.sh` from
-`deploy/docker/loadgen/Dockerfile`. PostgreSQL uses the stock
-`postgres:16-alpine` image and is not built or loaded by `build-images.sh`.
+Dockerfiles under `deploy/docker/`. Its `services=(…)` array builds 34 of the
+deployed business services. Four services that are deployed (they have
+Deployments in `deploy/k8s/services.yaml` and Dockerfiles under
+`deploy/docker/`) are **not** in that array and must be built separately:
+`group-booking`, `invoicing`, `loyalty-membership`, and `travel-insurance` — a
+known `build-images.sh` gap. The loadgen image is built by
+`deploy/loadgen/run.sh` from `deploy/docker/loadgen/Dockerfile`. PostgreSQL uses
+the stock `postgres:16-alpine` image and is not built or loaded by
+`build-images.sh`.
 
 ## Deploy
 
