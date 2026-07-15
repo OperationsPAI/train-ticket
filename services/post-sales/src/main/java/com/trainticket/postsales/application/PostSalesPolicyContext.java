@@ -78,6 +78,21 @@ public record PostSalesPolicyContext(
         );
     }
 
+    public PostSalesPolicyContext withAncillaryComponent(Money ancillaryAmount, boolean ancillaryUsed) {
+        if (ancillaryAmount == null) {
+            return this;
+        }
+        return new PostSalesPolicyContext(
+            journeyOrderId,
+            departureTime,
+            travelerTypesByRef,
+            groupSize,
+            appliedChangeCount,
+            originalFare,
+            refundComponents.withAncillary(ancillaryAmount, ancillaryUsed)
+        );
+    }
+
     public record RefundWaterfallComponents(
         Money baseFare,
         Money taxes,
@@ -99,6 +114,20 @@ public record PostSalesPolicyContext(
         public static RefundWaterfallComponents empty(Currency currency) {
             Money zero = Money.zero(currency);
             return new RefundWaterfallComponents(zero, zero, zero, zero, zero, zero, false);
+        }
+
+        public RefundWaterfallComponents withAncillary(Money ancillaryAmount, boolean used) {
+            Money compatibleAmount = convertIfZeroCurrency(ancillaryAmount, baseFare);
+            compatibleAmount.compareTo(baseFare);
+            return new RefundWaterfallComponents(
+                baseFare,
+                taxes,
+                platformServiceFee,
+                supplierServiceFee,
+                compatibleAmount,
+                discounts,
+                used || ancillaryUsed
+            );
         }
 
         public RefundWaterfall toWaterfall(Money fallbackBaseFare) {

@@ -22,6 +22,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,16 +34,25 @@ public class PostSalesApplicationService {
     private final EventPublisher eventPublisher;
     private final AdjustmentQuotePort adjustmentQuotePort;
     private final PostSalesPolicyContextStore policyContextStore;
+    private final PostSalesExternalEventProjectionStore externalEventProjectionStore;
     private final Clock clock;
     private final RefundPolicyEngine refundPolicyEngine = new RefundPolicyEngine();
     private final ChangePolicyEngine changePolicyEngine = new ChangePolicyEngine();
 
     public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
             AdjustmentQuotePort adjustmentQuotePort, PostSalesPolicyContextStore policyContextStore, Clock clock) {
+        this(repository, eventPublisher, adjustmentQuotePort, policyContextStore, new InMemoryPostSalesExternalEventProjectionStore(), clock);
+    }
+
+    @Autowired
+    public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
+            AdjustmentQuotePort adjustmentQuotePort, PostSalesPolicyContextStore policyContextStore,
+            PostSalesExternalEventProjectionStore externalEventProjectionStore, Clock clock) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.adjustmentQuotePort = adjustmentQuotePort;
         this.policyContextStore = policyContextStore;
+        this.externalEventProjectionStore = externalEventProjectionStore;
         this.clock = clock;
     }
 
@@ -237,6 +248,75 @@ public class PostSalesApplicationService {
 
     public void recordPolicyContext(PostSalesPolicyContext context) {
         policyContextStore.save(context);
+    }
+
+    public void recordAncillaryProjection(AncillaryPostSalesProjection projection) {
+        externalEventProjectionStore.saveAncillary(projection);
+        policyContextStore.findByOrderId(projection.journeyOrderId())
+            .map(context -> context.withAncillaryComponent(
+                money(projection.refundableAmount()),
+                "FULFILLED".equals(projection.status())
+            ))
+            .ifPresent(policyContextStore::save);
+    }
+
+    public void recordDispatchProjection(DispatchPostSalesProjection projection) {
+        externalEventProjectionStore.saveDispatch(projection);
+    }
+
+    public PostSalesCase openCompensationForAncillaryFailure(AncillaryPostSalesProjection projection) {
+        String idempotencyKey = "ancillary-service:" + projection.lastEventId() + ":compensation";
+        return open(new OpenCaseCommand(
+            projection.journeyOrderId(),
+            PostSalesCaseType.COMPENSATION,
+            scopeForAncillary(projection),
+            reasonOrDefault(projection.failureCode(), "ANCILLARY_FAILURE"),
+            "ancillary-service",
+            idempotencyKey,
+            "cmd-" + projection.lastEventId(),
+            projection.lastEventId()
+        ));
+    }
+
+    public PostSalesCase linkRefundForAncillaryCancellation(AncillaryPostSalesProjection projection) {
+        String idempotencyKey = "ancillary-service:" + projection.lastEventId() + ":refund";
+        return repository.findByIdempotencyKey(idempotencyKey)
+            .or(() -> existingActiveRefundCaseForOrder(projection.journeyOrderId()))
+            .orElseGet(() -> open(new OpenCaseCommand(
+                projection.journeyOrderId(),
+                PostSalesCaseType.REFUND,
+                scopeForAncillary(projection),
+                reasonOrDefault(projection.reasonCode(), "ANCILLARY_CANCELLED"),
+                "ancillary-service",
+                idempotencyKey,
+                "cmd-" + projection.lastEventId(),
+                projection.lastEventId()
+            )));
+    }
+
+    private Optional<PostSalesCase> existingActiveRefundCaseForOrder(String journeyOrderId) {
+        return repository.findActiveRefundCaseForOrder(journeyOrderId);
+    }
+
+    private static PostSalesScope scopeForAncillary(AncillaryPostSalesProjection projection) {
+        return new PostSalesScope(
+            List.of(projection.ancillaryOrderItemId()),
+            optionalList(projection.segmentRef()),
+            List.of(projection.travelerRef()),
+            List.of()
+        );
+    }
+
+    private static List<String> optionalList(String value) {
+        return value == null || value.isBlank() ? List.of() : List.of(value);
+    }
+
+    private static Money money(ExternalMoney externalMoney) {
+        return externalMoney == null ? null : Money.fromMinorUnits(externalMoney.minorUnits(), externalMoney.currency());
+    }
+
+    private static String reasonOrDefault(String reason, String fallback) {
+        return reason == null || reason.isBlank() ? fallback : reason;
     }
 
     private static RefundClassification classify(String reasonCode) {

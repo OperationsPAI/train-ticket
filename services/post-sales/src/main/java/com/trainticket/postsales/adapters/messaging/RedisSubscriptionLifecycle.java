@@ -21,7 +21,9 @@ public class RedisSubscriptionLifecycle {
             List.of(
                 RedisStreamNames.forProducer("capacity-availability"),
                 RedisStreamNames.forProducer("journey-order"),
-                RedisStreamNames.forProducer("disruption-recovery")
+                RedisStreamNames.forProducer("disruption-recovery"),
+                RedisStreamNames.forProducer("ancillary-service"),
+                RedisStreamNames.forProducer("dispatch")
             ),
             RedisStreamNames.CONSUMER_GROUP,
             properties.consumerName(),

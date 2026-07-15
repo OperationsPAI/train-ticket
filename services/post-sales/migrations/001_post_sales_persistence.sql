@@ -16,4 +16,22 @@ CREATE INDEX IF NOT EXISTS idx_post_sales_active_refunds_case_id ON post_sales_a
 CREATE TABLE IF NOT EXISTS outbox (seq bigserial PRIMARY KEY, event_id text NOT NULL UNIQUE, stream text NOT NULL, envelope jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), published_at timestamptz);
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished_seq ON outbox (seq) WHERE published_at IS NULL;
 CREATE TABLE IF NOT EXISTS processed_events (event_id text PRIMARY KEY, stream text, processed_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS post_sales_ancillary_projections (
+  ancillary_order_item_id text PRIMARY KEY,
+  journey_order_id text NOT NULL,
+  status text NOT NULL,
+  data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_post_sales_ancillary_projections_journey_order_id ON post_sales_ancillary_projections(journey_order_id);
+CREATE INDEX IF NOT EXISTS idx_post_sales_ancillary_projections_status ON post_sales_ancillary_projections(status);
+CREATE TABLE IF NOT EXISTS post_sales_dispatch_projections (
+  ride_request_id text PRIMARY KEY,
+  rider_account_id text NOT NULL,
+  status text NOT NULL,
+  data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_post_sales_dispatch_projections_rider_account_id ON post_sales_dispatch_projections(rider_account_id);
+CREATE INDEX IF NOT EXISTS idx_post_sales_dispatch_projections_status ON post_sales_dispatch_projections(status);
 CREATE TABLE IF NOT EXISTS idempotency_records (key text PRIMARY KEY, request_hash text NOT NULL, status_code int NOT NULL, response_body jsonb, created_at timestamptz NOT NULL DEFAULT now());
