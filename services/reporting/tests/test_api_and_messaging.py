@@ -225,12 +225,17 @@ class EndpointTest(unittest.TestCase):
         service = ReportingApplicationService()
         service.handle_event(EventEnvelope(eventId="evt-dispatch-failed", eventType="DispatchFailed", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="dispatch", schemaVersion=1, payload={"dispatchId": "disp-1"}, causationId="evt-source"))
         service.handle_event(EventEnvelope(eventId="evt-dispatch-requested", eventType="DispatchRequested", occurredAt="2026-07-05T10:30:01.000Z", correlationId="corr-1", producer="dispatch", schemaVersion=1, payload={"dispatchId": "disp-2"}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-waitlist-queued", eventType="WaitlistQueued", occurredAt="2026-07-05T10:30:02.000Z", correlationId="corr-1", producer="waitlist", schemaVersion=1, payload={"waitlistRequestId": "wlr-1"}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-ancillary-quoted", eventType="AncillaryQuoted", occurredAt="2026-07-05T10:30:03.000Z", correlationId="corr-1", producer="ancillary-service", schemaVersion=1, payload={"quoteId": "anc-1"}, causationId="evt-source"))
 
         response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=source_context")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["items"][0]["value"], "dispatch")
-        self.assertEqual(response.json()["items"][0]["count"], 2)
+        body = response.json()
+        self.assertEqual([item["value"] for item in body["items"]], ["dispatch", "ancillary-service", "waitlist"])
+        self.assertEqual([item["count"] for item in body["items"]], [2, 1, 1])
+        self.assertEqual(body["items"][0]["revenue"], {"amount": "0.00", "currency": "USD"})
+        self.assertEqual(body["totalRevenue"], {"amount": "0.00", "currency": "USD"})
 
 
 class MessagingTest(unittest.TestCase):

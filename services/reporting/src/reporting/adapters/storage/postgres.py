@@ -21,6 +21,7 @@ from reporting.domain import (
     AnomalyDetected,
     AnomalyDetector,
     AnomalySeverity,
+    ContextCountReport,
     DashboardReadModel,
     MetricAggregator,
     MetricCategory,
@@ -450,9 +451,14 @@ class PostgresReportingApplicationService:
         with self._pool.connection() as conn:
             return self._load_aggregator(conn).route_metrics(at)
 
+    def context_count_report(self, group_by: str = "source_context", limit: int = 20, at: datetime | None = None) -> ContextCountReport:
+        with self._pool.connection() as conn:
+            return self._load_aggregator(conn).context_count_report(group_by=group_by, limit=limit, at=at)
+
     def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
         if group_by not in {"route", "seat_class", "channel", "passenger_type", "time_period"}:
-            return self._load_revenue_from_events(group_by, limit, at)
+            with self._pool.connection() as conn:
+                return self._load_aggregator(conn).revenue_report(group_by=group_by, limit=limit, at=at)
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """
@@ -468,10 +474,6 @@ class PostgresReportingApplicationService:
         items = tuple(self._revenue_item_from_view(group_by, row) for row in rows)
         total = sum((item.revenue.amount for item in items), Decimal("0.00"))
         return RevenueReport(at or utc_now(), group_by, items, Money(total, items[0].revenue.currency if items else "USD"))
-
-    def _load_revenue_from_events(self, group_by: str, limit: int, at: datetime | None) -> RevenueReport:
-        with self._pool.connection() as conn:
-            return self._load_aggregator(conn).revenue_report(group_by=group_by, limit=limit, at=at)
 
     @staticmethod
     def _revenue_item_from_view(group_by: str, row: Sequence[Any]) -> RevenueItem:

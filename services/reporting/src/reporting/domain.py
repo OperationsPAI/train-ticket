@@ -632,6 +632,35 @@ class MetricSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextCountItem:
+    dimension: str
+    value: str
+    count: int
+
+    def __post_init__(self) -> None:
+        if self.dimension not in {"source_context", "event_type"}:
+            raise ReportingError("context count item dimension is invalid")
+        if not self.value.strip():
+            raise ReportingError("context count item value is required")
+        if self.count < 1:
+            raise ReportingError("context count item count must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class ContextCountReport:
+    generated_at: datetime
+    group_by: str
+    items: tuple[ContextCountItem, ...]
+    total_count: int
+
+    def __post_init__(self) -> None:
+        if self.group_by not in {"source_context", "event_type"}:
+            raise ReportingError("context count report dimension is invalid")
+        if self.total_count < 0:
+            raise ReportingError("context count report total_count cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
 class RevenueItem:
     dimension: str
     value: str
@@ -774,6 +803,25 @@ class MetricAggregator:
             for (context, event_type), bucket in sorted(grouped.items())
         )
 
+    def context_count_report(self, group_by: str = "source_context", limit: int = 20, at: datetime | None = None) -> ContextCountReport:
+        if limit < 1:
+            raise ReportingError("context count report limit must be positive")
+        dimensions = {
+            "source_context": lambda event: event.source_context,
+            "event_type": lambda event: event.event_type,
+        }
+        if group_by not in dimensions:
+            raise ReportingError("unsupported context count report dimension")
+        grouped: dict[str, int] = {}
+        for event in self.events:
+            value = dimensions[group_by](event) or "unknown"
+            grouped[value] = grouped.get(value, 0) + 1
+        items = tuple(
+            ContextCountItem(group_by, value, count)
+            for value, count in sorted(grouped.items(), key=lambda item: (-item[1], item[0]))[:limit]
+        )
+        return ContextCountReport(at or datetime.now(UTC), group_by, items, sum(grouped.values()))
+
     def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
         if limit < 1:
             raise ReportingError("revenue report limit must be positive")
@@ -784,22 +832,19 @@ class MetricAggregator:
             "channel": lambda event: event.channel,
             "passenger_type": lambda event: event.passenger_type,
             "time_period": lambda event: event.occurred_at.astimezone(UTC).strftime("%Y-%m-%dT%H:00:00Z"),
-            "source_context": lambda event: event.source_context,
-            "event_type": lambda event: event.event_type,
         }
         if group_by not in dimensions:
             raise ReportingError("unsupported revenue report dimension")
         grouped: dict[str, list[OperationalEvent]] = {}
         for event in self.events:
-            if group_by not in {"source_context", "event_type"} and (not event.is_payment_captured or event.amount is None):
+            if not event.is_payment_captured or event.amount is None:
                 continue
             value = dimensions[group_by](event) or "unknown"
             grouped.setdefault(value, []).append(event)
         items = tuple(
             sorted(
                 (self._revenue_item(group_by, value, events) for value, events in grouped.items()),
-                key=lambda item: item.revenue.amount,
-                reverse=True,
+                key=lambda item: (-item.revenue.amount, item.value),
             )[:limit]
         )
         total = sum((item.revenue.amount for item in items), Decimal("0.00"))
@@ -855,7 +900,7 @@ class MetricAggregator:
 
     def _revenue_item(self, dimension: str, value: str, events: list[OperationalEvent]) -> RevenueItem:
         revenue = sum((event.amount.amount for event in events if event.amount is not None), Decimal("0.00"))
-        count = len(events) if dimension in {"source_context", "event_type"} else sum(1 for event in events if event.amount is not None)
+        count = sum(1 for event in events if event.amount is not None)
         distance = sum((event.distance_km or Decimal("0")) for event in events)
         yield_per_km = Decimal("0.00") if distance == 0 else (revenue / distance).quantize(Decimal("0.01"))
         return RevenueItem(
