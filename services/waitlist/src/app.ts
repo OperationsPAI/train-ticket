@@ -101,8 +101,7 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.setErrorHandler((error, request, reply) => {
     const ctx = requestContext(request);
     if (error instanceof DomainError) {
-      const status = error.code === "NOT_FOUND" ? 404 : error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION" ? 409 : 400;
-      sendError(reply, status, error.code, error.message, ctx, { domainCode: error.code });
+      sendError(reply, statusForDomainError(error), error.code, error.message, ctx, { domainCode: error.code });
       return;
     }
     sendError(reply, 500, "INTERNAL_ERROR", errorMessage(error), ctx);
@@ -133,10 +132,17 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
   try { return reply.status(200).send(await operation()); }
   catch (error) {
     const ctx = requestContext(request);
-    if (error instanceof DomainError) sendError(reply, error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message, ctx, { domainCode: error.code });
+    if (error instanceof DomainError) sendError(reply, statusForDomainError(error), error.code, error.message, ctx, { domainCode: error.code });
     else throw error;
     return reply;
   }
+}
+
+function statusForDomainError(error: DomainError): number {
+  if (error.code === "NOT_FOUND") return 404;
+  if (error.code === "PRECONDITION_FAILED") return 412;
+  if (error.code === "INVALID_TRANSITION" || error.code === "CONFLICT") return 409;
+  return 400;
 }
 
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }

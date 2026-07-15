@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Redis } from "ioredis";
 import { MigrationRunner, OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
+import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
 
 export class PostgresWaitlistRepository implements WaitlistRepository {
@@ -11,11 +11,16 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const snapshot = entry.toSnapshot(0);
-    await this.db.query(
-      `INSERT INTO waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt],
-    );
+    try {
+      await this.db.query(
+        `INSERT INTO waitlist_entries (entry_id, account_id, traveler_refs, segment_ref, departure_date, seat_class, priority_score, status, offered_at, offer_expires_at, fare_quote_id, capacity_hold_id, data, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [snapshot.entryId, snapshot.accountId, JSON.stringify(snapshot.travelerRefs), snapshot.segmentRef, snapshot.departureDate, snapshot.seatClass, snapshot.priorityScore, snapshot.status, snapshot.offeredAt, snapshot.offerExpiresAt, snapshot.fareQuoteId ?? null, snapshot.capacityHoldId ?? null, snapshot, snapshot.createdAt],
+      );
+    } catch (error) {
+      if (isActiveRequestUniqueViolation(error)) throw activeDuplicateConflict();
+      throw error;
+    }
     entry.markPersisted(1);
     return this.snapshot(entry);
   }
@@ -186,6 +191,12 @@ function defaultIntentFingerprint(travelerRefs: unknown, segmentRef: string, dep
   const travelerRef = Array.isArray(travelerRefs) ? String(travelerRefs[0] ?? "unknown") : "unknown";
   return `${travelerRef}:${segmentRef}:${departureDate}:${seatClass}`;
 }
+function isActiveRequestUniqueViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const pgError = error as { code?: unknown; constraint?: unknown };
+  return pgError.code === "23505" && pgError.constraint === "waitlist_active_request_unique_idx";
+}
+function activeDuplicateConflict(): DomainError { return new DomainError("CONFLICT", "An active waitlist request already exists for this traveler and intent"); }
 function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> { return error instanceof Error ? { name: error.name || "Error", message: error.message || "Storage failed" } : { name: typeof error, message: "Storage failed" }; }
 
 type WaitlistRow = Readonly<{

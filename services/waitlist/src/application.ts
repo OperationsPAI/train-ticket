@@ -4,10 +4,10 @@ import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagem
 import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
-  accountId: string;
+  accountId?: string;
   travelerRefs?: readonly string[];
   travelerRef?: string;
-  segmentRef: string;
+  segmentRef?: string;
   departureDate?: string;
   seatClass?: FareClass;
   travelClass?: FareClass;
@@ -80,6 +80,9 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    if (this.hasActiveDuplicate(entry)) {
+      throw new DomainError("CONFLICT", "An active waitlist request already exists for this traveler and intent");
+    }
     this.entries.set(entry.entryId, entry);
     entry.markPersisted(1);
     return this.snapshot(entry);
@@ -133,6 +136,14 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   private position(entry: WaitlistEntry): number {
     return this.buildQueue(entry.segmentRef, entry.departureDate, entry.seatClass).positionOf(entry.entryId);
   }
+
+  private hasActiveDuplicate(entry: WaitlistEntry): boolean {
+    const travelerRef = entry.travelerRefs[0] ?? "";
+    return [...this.entries.values()].some((candidate) => candidate.entryId !== entry.entryId
+      && activeStatuses.has(candidate.status)
+      && candidate.travelerRefs[0] === travelerRef
+      && candidate.intentFingerprint === entry.intentFingerprint);
+  }
 }
 
 export class WaitlistApplicationService {
@@ -150,7 +161,7 @@ export class WaitlistApplicationService {
     this.promotion = new PromotionOrchestrator(repository, farePricing, capacityAvailability, publisher ?? { publish: async () => undefined }, offerManagement, now);
   }
 
-  async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistRequestResource> {
+  async join(request: JoinWaitlistRequest | null | undefined, correlationId?: string): Promise<WaitlistRequestResource> {
     const entry = WaitlistEntry.create(this.toCreateCommand(request));
     const snapshot = await this.repository.add(entry);
     const aggregateVersion = entry.loadedVersion;
@@ -170,17 +181,24 @@ export class WaitlistApplicationService {
   }
 
   async listByTraveler(travelerRef: string, status?: WaitlistEntrySnapshot["status"], limit = 20, offset = 0): Promise<WaitlistRequestList> {
+    assertRequiredString(travelerRef, "travelerRef");
     const snapshots = (await this.repository.listByTraveler(travelerRef)).filter((entry) => !status || entry.status === status);
     const page = snapshots.slice(offset, offset + limit);
     return { items: page.map(toWaitlistRequestResource), total: snapshots.length, limit, offset };
   }
 
   async cancel(entryId: string, request: CancelWaitlistRequest = {}, correlationId?: string): Promise<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }> {
+    const reason = assertRequiredString(request.reason, "reason");
     const entry = await this.requireEntry(entryId);
     const cancelledAt = this.now().toISOString();
-    entry.cancel();
+    try {
+      entry.cancel();
+    } catch (error) {
+      if (error instanceof DomainError && error.code === "INVALID_TRANSITION") throw new DomainError("PRECONDITION_FAILED", error.message);
+      throw error;
+    }
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, request.reason ?? "", correlationId, cancelledAt)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, reason, correlationId, cancelledAt)]);
     return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt };
   }
 
@@ -229,27 +247,29 @@ export class WaitlistApplicationService {
     return this.promotion.expireDueOffers(correlationId);
   }
 
-  private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {
-    const travelerRefs = request.travelerRefs ?? (request.travelerRef ? [request.travelerRef] : []);
-    const seatClass = request.seatClass ?? request.travelClass ?? "SECOND";
-    const departureDate = request.departureDate ?? dateFromDeadline(request.deadline);
+  private toCreateCommand(request: JoinWaitlistRequest | null | undefined): CreateWaitlistEntry {
+    const payload = request ?? {};
+    const travelerRef = assertRequiredString(payload.travelerRef, "travelerRef");
+    const deadline = assertRequiredString(payload.deadline, "deadline");
+    const departureDate = payload.departureDate ?? dateFromDeadline(deadline);
+    const seatClass = payload.seatClass ?? payload.travelClass ?? "SECOND";
     return {
-      accountId: request.accountId,
-      travelerRefs,
-      segmentRef: request.segmentRef,
+      accountId: assertRequiredString(payload.accountId, "accountId"),
+      travelerRefs: [travelerRef],
+      segmentRef: assertRequiredString(payload.segmentRef, "segmentRef"),
       departureDate,
       seatClass,
-      itineraryRef: request.itineraryRef ?? request.segmentRef,
-      deadline: request.deadline,
-      paymentGuaranteeRef: request.paymentGuaranteeRef,
-      intentFingerprint: request.intentFingerprint,
+      itineraryRef: assertRequiredString(payload.itineraryRef, "itineraryRef"),
+      deadline,
+      paymentGuaranteeRef: assertRequiredString(payload.paymentGuaranteeRef, "paymentGuaranteeRef"),
+      intentFingerprint: assertRequiredString(payload.intentFingerprint, "intentFingerprint"),
       priority: {
-        loyaltyTier: request.loyaltyTier ?? "NONE",
-        tripCount: request.tripCount ?? 0,
-        daysBefore: request.daysBefore ?? daysBefore(departureDate),
-        groupSize: travelerRefs.length,
+        loyaltyTier: payload.loyaltyTier ?? "NONE",
+        tripCount: payload.tripCount ?? 0,
+        daysBefore: payload.daysBefore ?? daysBefore(departureDate),
+        groupSize: 1,
         fareClass: seatClass,
-        specialStatus: request.specialStatus ?? "NONE",
+        specialStatus: payload.specialStatus ?? "NONE",
       },
     };
   }
@@ -265,6 +285,8 @@ export class WaitlistApplicationService {
     return queue.find((candidate) => candidate.entryId === entry.entryId) ?? entry.toSnapshot(0);
   }
 }
+
+const activeStatuses = new Set<WaitlistEntrySnapshot["status"]>(["DRAFT", "QUEUED", "MATCHING", "SUSPENDED"]);
 
 function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistRequestResource {
   return {
@@ -288,7 +310,11 @@ function daysBefore(departureDate: string): number {
   return Math.max(0, Math.ceil((departure - Date.now()) / (24 * 60 * 60 * 1000)));
 }
 
-function dateFromDeadline(deadline?: string): string {
-  if (!deadline) return new Date().toISOString().slice(0, 10);
+function dateFromDeadline(deadline: string): string {
   return deadline.slice(0, 10);
+}
+
+function assertRequiredString(value: string | undefined, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+  return value;
 }

@@ -3,17 +3,19 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
-import { WaitlistEntry } from "../src/domain.js";
+import { DomainError, WaitlistEntry } from "../src/domain.js";
 import { PostgresWaitlistRepository, ProcessedEventRepository } from "../src/storage.js";
 
 class FakeDb {
   public readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];
 
-  constructor(private readonly rowCounts: readonly number[] = []) {}
+  constructor(private readonly rowCounts: readonly number[] = [], private readonly errors: Readonly<Record<number, unknown>> = {}) {}
 
   async query(sql: string, params: readonly unknown[] = []) {
     this.calls.push({ sql, params });
-    return { rows: [], rowCount: this.rowCounts[this.calls.length - 1] ?? 0 };
+    const callNumber = this.calls.length;
+    if (this.errors[callNumber]) throw this.errors[callNumber];
+    return { rows: [], rowCount: this.rowCounts[callNumber - 1] ?? 0 };
   }
 }
 
@@ -25,6 +27,10 @@ function persistedEntry(version: number): WaitlistEntry {
     departureDate: "2026-07-20",
     seatClass: "SECOND",
     priority: { groupSize: 1, fareClass: "SECOND" },
+    itineraryRef: "itn-1",
+    deadline: "2026-07-20T00:00:00.000Z",
+    paymentGuaranteeRef: "pay-auth-1",
+    intentFingerprint: "intent-1",
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
   });
   entry.markPersisted(version);
@@ -50,6 +56,24 @@ test("PostgresWaitlistRepository.save rejects stale loaded version", async () =>
   const repository = new PostgresWaitlistRepository(db as never);
 
   await assert.rejects(() => repository.save(persistedEntry(2)), OptimisticConcurrencyConflict);
+});
+
+test("PostgresWaitlistRepository.add translates duplicate active unique violations to conflict", async () => {
+  const db = new FakeDb([], { 1: { code: "23505", constraint: "waitlist_active_request_unique_idx" } });
+  const repository = new PostgresWaitlistRepository(db as never);
+
+  await assert.rejects(() => repository.add(WaitlistEntry.create({
+    accountId: "acc-1",
+    travelerRefs: ["tvl-1"],
+    segmentRef: "seg-1",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND",
+    priority: { groupSize: 1, fareClass: "SECOND" },
+    itineraryRef: "itn-1",
+    deadline: "2026-07-20T00:00:00.000Z",
+    paymentGuaranteeRef: "pay-auth-1",
+    intentFingerprint: "intent-1",
+  })), (error: unknown) => error instanceof DomainError && error.code === "CONFLICT");
 });
 
 test("ProcessedEventRepository records by event_id primary key only", async () => {

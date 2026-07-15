@@ -52,15 +52,15 @@ export type CreateWaitlistEntry = Readonly<{
   departureDate: string;
   seatClass: FareClass;
   priority: Omit<PriorityInput, "groupSize" | "fareClass"> & Partial<Pick<PriorityInput, "groupSize" | "fareClass">>;
-  itineraryRef?: string;
-  deadline?: string;
-  paymentGuaranteeRef?: string;
-  intentFingerprint?: string;
+  itineraryRef: string;
+  deadline: string;
+  paymentGuaranteeRef: string;
+  intentFingerprint: string;
   createdAt?: Date;
 }>;
 
 export class DomainError extends Error {
-  constructor(public readonly code: "VALIDATION_FAILED" | "INVALID_TRANSITION" | "NOT_FOUND" | "PRECONDITION_FAILED", message: string) {
+  constructor(public readonly code: "VALIDATION_FAILED" | "INVALID_TRANSITION" | "NOT_FOUND" | "PRECONDITION_FAILED" | "CONFLICT", message: string) {
     super(message);
     this.name = "DomainError";
   }
@@ -99,9 +99,14 @@ export class WaitlistEntry {
 
   static create(command: CreateWaitlistEntry): WaitlistEntry {
     assertNonEmpty(command.accountId, "accountId");
-    if (command.travelerRefs.length === 0) throw new DomainError("VALIDATION_FAILED", "travelerRefs must contain at least one traveler");
+    if (command.travelerRefs.length === 0) throw new DomainError("VALIDATION_FAILED", "travelerRef is required");
+    assertNonEmpty(command.travelerRefs[0] ?? "", "travelerRef");
     assertNonEmpty(command.segmentRef, "segmentRef");
     assertNonEmpty(command.departureDate, "departureDate");
+    assertNonEmpty(command.itineraryRef, "itineraryRef");
+    assertNonEmpty(command.deadline, "deadline");
+    assertNonEmpty(command.paymentGuaranteeRef, "paymentGuaranteeRef");
+    assertNonEmpty(command.intentFingerprint, "intentFingerprint");
     const groupSize = command.priority.groupSize ?? command.travelerRefs.length;
     const fareClass = command.priority.fareClass ?? command.seatClass;
     const priorityScore = PriorityCalculator.calculate({ ...command.priority, groupSize, fareClass });
@@ -121,10 +126,10 @@ export class WaitlistEntry {
       undefined,
       undefined,
       undefined,
-      command.itineraryRef ?? command.segmentRef,
-      command.deadline ?? deadlineFromDepartureDate(command.departureDate),
-      command.paymentGuaranteeRef ?? `pay-auth-${uuidV7()}`,
-      command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs[0] ?? "unknown", command.segmentRef, command.departureDate, command.seatClass),
+      command.itineraryRef,
+      command.deadline,
+      command.paymentGuaranteeRef,
+      command.intentFingerprint,
     );
   }
 
