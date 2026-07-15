@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from decimal import Decimal
 import json
 from typing import Any
 
@@ -154,9 +155,13 @@ def _rule_from_json(data: Mapping[str, Any]) -> FareRule:
         explanation=_explanation_from_json(data["explanation"]),
         refundable=bool(data["refundable"]),
         seat_class_multipliers={str(key): value for key, value in (data.get("seatClassMultipliers") or DEFAULT_SEAT_CLASS_MULTIPLIERS).items()},
-        per_km_rate=data.get("perKmRate"),
+        per_km_rate=Decimal(str(data["perKmRate"])) if data.get("perKmRate") is not None else None,
         minimum_fare=_money_from_json(data["minimumFare"]) if data.get("minimumFare") else None,
-        distance_discount_threshold_km=data.get("distanceDiscountThresholdKm"),
+        distance_discount_threshold_km=(
+            Decimal(str(data["distanceDiscountThresholdKm"]))
+            if data.get("distanceDiscountThresholdKm") is not None
+            else None
+        ),
         distance_discount_pct=int(data.get("distanceDiscountPct") or 0),
     )
 
