@@ -2,6 +2,7 @@ package com.trainticket.payment.adapters.paymentchannel;
 
 import com.trainticket.payment.application.PaymentChannelClient;
 import com.trainticket.payment.domain.ChannelRef;
+import com.trainticket.payment.domain.ChannelRouter;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
@@ -41,7 +42,7 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
             "paymentIntentId", intent.paymentIntentId(),
             "businessRef", intent.businessRef(),
             "purpose", intent.purpose(),
-            "channel", ref.channel(),
+            "channel", ChannelRouter.channelFacingId(ref.channel()),
             "amount", money(intent.amount()),
             "sourceCommandId", commandId(orderIdempotencyKey),
             "correlationId", correlationId
@@ -62,7 +63,7 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
             "paymentIntentId", intent.paymentIntentId(),
             "channelOrderId", ref.channelOrderId(),
             "originalChannelTransactionId", ref.channelTransactionId(),
-            "channel", ref.channel(),
+            "channel", ChannelRouter.channelFacingId(ref.channel()),
             "amount", money(refund.amount()),
             "refundReasonCode", refund.reasonCode(),
             "sourceCommandId", commandId(refundIdempotencyKey),
