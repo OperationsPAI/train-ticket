@@ -196,6 +196,17 @@ public class FinanceSettlementApplicationService {
         return new Page<>(items, projections.countBenefitCostEntries(accountId), limit, offset);
     }
 
+    public Page<AncillaryFinancialFact> listAncillaryFinancialFacts(String journeyOrderId, int limit, int offset) {
+        if (limit < 1 || limit > 100) {
+            throw new ValidationException("limit must be between 1 and 100");
+        }
+        if (offset < 0) {
+            throw new ValidationException("offset must not be negative");
+        }
+        List<AncillaryFinancialFact> items = projections.findAncillaryFinancialFacts(journeyOrderId, limit, offset);
+        return new Page<>(items, projections.countAncillaryFinancialFacts(journeyOrderId), limit, offset);
+    }
+
     public Invoice generateInvoice(String orderId, String correlationId) {
         requireText(orderId, "orderId");
         return invoices.findByOrderId(orderId).orElseGet(() -> {

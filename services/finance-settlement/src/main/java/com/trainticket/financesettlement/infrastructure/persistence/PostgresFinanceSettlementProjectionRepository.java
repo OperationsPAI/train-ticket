@@ -1,6 +1,7 @@
 package com.trainticket.financesettlement.infrastructure.persistence;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import com.trainticket.financesettlement.application.AncillaryFinancialFact;
 import com.trainticket.financesettlement.application.BenefitCostEntry;
 import com.trainticket.financesettlement.application.ChannelStatementLineProjection;
 import com.trainticket.financesettlement.application.ChannelStatementProjection;
@@ -291,6 +292,87 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     }
 
     @Override
+    public void saveAncillaryFinancialFact(AncillaryFinancialFact fact) {
+        jdbc.update(
+            """
+                INSERT INTO ancillary_financial_facts(event_id, event_type, fact_kind, ancillary_order_item_id, journey_order_id,
+                  service_type, supplier_ref, payable_currency, payable_amount, refundable_currency, refundable_amount,
+                  refunded_currency, refunded_amount, retained_currency, retained_amount, occurred_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (event_id) DO UPDATE SET
+                  event_type = EXCLUDED.event_type,
+                  fact_kind = EXCLUDED.fact_kind,
+                  ancillary_order_item_id = EXCLUDED.ancillary_order_item_id,
+                  journey_order_id = EXCLUDED.journey_order_id,
+                  service_type = EXCLUDED.service_type,
+                  supplier_ref = EXCLUDED.supplier_ref,
+                  payable_currency = EXCLUDED.payable_currency,
+                  payable_amount = EXCLUDED.payable_amount,
+                  refundable_currency = EXCLUDED.refundable_currency,
+                  refundable_amount = EXCLUDED.refundable_amount,
+                  refunded_currency = EXCLUDED.refunded_currency,
+                  refunded_amount = EXCLUDED.refunded_amount,
+                  retained_currency = EXCLUDED.retained_currency,
+                  retained_amount = EXCLUDED.retained_amount,
+                  occurred_at = EXCLUDED.occurred_at,
+                  updated_at = now()
+                """,
+            fact.eventId(),
+            fact.eventType(),
+            fact.factKind(),
+            fact.ancillaryOrderItemId(),
+            fact.journeyOrderId(),
+            fact.serviceType(),
+            fact.supplierRef(),
+            currencyCode(fact.payableAmount()),
+            amountValue(fact.payableAmount()),
+            currencyCode(fact.refundableAmount()),
+            amountValue(fact.refundableAmount()),
+            currencyCode(fact.refundedAmount()),
+            amountValue(fact.refundedAmount()),
+            currencyCode(fact.retainedAmount()),
+            amountValue(fact.retainedAmount()),
+            Timestamp.from(fact.occurredAt())
+        );
+    }
+
+    @Override
+    public Optional<AncillaryFinancialFact> findAncillaryFinancialFact(String eventId) {
+        return jdbc.query(
+            "SELECT * FROM ancillary_financial_facts WHERE event_id = ?",
+            rs -> rs.next() ? Optional.of(mapAncillaryFinancialFact(rs)) : Optional.empty(),
+            eventId
+        );
+    }
+
+    @Override
+    public List<AncillaryFinancialFact> findAncillaryFinancialFacts(String journeyOrderId, int limit, int offset) {
+        if (journeyOrderId == null || journeyOrderId.isBlank()) {
+            return jdbc.query(
+                "SELECT * FROM ancillary_financial_facts ORDER BY occurred_at DESC, event_id ASC LIMIT ? OFFSET ?",
+                (rs, rowNum) -> mapAncillaryFinancialFact(rs),
+                limit,
+                offset
+            );
+        }
+        return jdbc.query(
+            "SELECT * FROM ancillary_financial_facts WHERE journey_order_id = ? ORDER BY occurred_at DESC, event_id ASC LIMIT ? OFFSET ?",
+            (rs, rowNum) -> mapAncillaryFinancialFact(rs),
+            journeyOrderId,
+            limit,
+            offset
+        );
+    }
+
+    @Override
+    public long countAncillaryFinancialFacts(String journeyOrderId) {
+        Long count = journeyOrderId == null || journeyOrderId.isBlank()
+            ? jdbc.queryForObject("SELECT count(*) FROM ancillary_financial_facts", Long.class)
+            : jdbc.queryForObject("SELECT count(*) FROM ancillary_financial_facts WHERE journey_order_id = ?", Long.class, journeyOrderId);
+        return count == null ? 0L : count;
+    }
+
+    @Override
     public void saveChannelStatement(ChannelStatementProjection s) {
         jdbc.update(
             """
@@ -345,6 +427,23 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
         return count == null ? 0L : count;
     }
 
+    private AncillaryFinancialFact mapAncillaryFinancialFact(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new AncillaryFinancialFact(
+            rs.getString("event_id"),
+            rs.getString("event_type"),
+            rs.getString("fact_kind"),
+            rs.getString("ancillary_order_item_id"),
+            rs.getString("journey_order_id"),
+            rs.getString("service_type"),
+            rs.getString("supplier_ref"),
+            nullableMoney(rs.getString("payable_currency"), rs.getString("payable_amount")),
+            nullableMoney(rs.getString("refundable_currency"), rs.getString("refundable_amount")),
+            nullableMoney(rs.getString("refunded_currency"), rs.getString("refunded_amount")),
+            nullableMoney(rs.getString("retained_currency"), rs.getString("retained_amount")),
+            rs.getTimestamp("occurred_at").toInstant()
+        );
+    }
+
     private ChannelStatementProjection mapStatement(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new ChannelStatementProjection(
             rs.getString("channel_statement_id"),
@@ -362,6 +461,18 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             rs.getTimestamp("frozen_at") == null ? null : rs.getTimestamp("frozen_at").toInstant(),
             rs.getString("source_event_id")
         );
+    }
+
+    private static String currencyCode(Money money) {
+        return money == null ? null : money.currency().getCurrencyCode();
+    }
+
+    private static BigDecimal amountValue(Money money) {
+        return money == null ? null : money.amount();
+    }
+
+    private static Money nullableMoney(String currency, String amount) {
+        return currency == null || amount == null ? null : money(currency, amount);
     }
 
     private static Money money(String currency, String amount) {

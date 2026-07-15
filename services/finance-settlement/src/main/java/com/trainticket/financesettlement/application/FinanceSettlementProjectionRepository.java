@@ -30,6 +30,14 @@ public interface FinanceSettlementProjectionRepository {
 
     long countBenefitCostEntries(String accountId);
 
+    default void saveAncillaryFinancialFact(AncillaryFinancialFact fact) {}
+
+    default Optional<AncillaryFinancialFact> findAncillaryFinancialFact(String eventId) { return Optional.empty(); }
+
+    default List<AncillaryFinancialFact> findAncillaryFinancialFacts(String journeyOrderId, int limit, int offset) { return List.of(); }
+
+    default long countAncillaryFinancialFacts(String journeyOrderId) { return 0; }
+
     default void saveChannelStatement(ChannelStatementProjection statement) {}
 
     default Optional<ChannelStatementProjection> findChannelStatement(String channelStatementId) { return Optional.empty(); }
