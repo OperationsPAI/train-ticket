@@ -80,6 +80,9 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    if (this.hasActiveDuplicate(entry.travelerRefs[0] ?? "", entry.intentFingerprint)) {
+      throw new DomainError("CONFLICT", "An active waitlist request already exists for this traveler and intent");
+    }
     this.entries.set(entry.entryId, entry);
     entry.markPersisted(1);
     return this.snapshot(entry);
@@ -119,6 +122,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   clear(): void { this.entries.clear(); }
+
+  private hasActiveDuplicate(travelerRef: string, intentFingerprint: string): boolean {
+    return [...this.entries.values()].some((entry) => isActiveStatus(entry.status) && entry.travelerRefs[0] === travelerRef && entry.intentFingerprint === intentFingerprint);
+  }
 
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
     const matching = [...this.entries.values()].filter((entry) => entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
@@ -176,11 +183,13 @@ export class WaitlistApplicationService {
   }
 
   async cancel(entryId: string, request: CancelWaitlistRequest = {}, correlationId?: string): Promise<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }> {
+    const body = objectBody(request);
+    const reason = requiredString(body, "reason");
     const entry = await this.requireEntry(entryId);
     const cancelledAt = this.now().toISOString();
     entry.cancel();
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, request.reason ?? "", correlationId, cancelledAt)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, entry.loadedVersion, reason, correlationId, cancelledAt)]);
     return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt };
   }
 
@@ -230,7 +239,7 @@ export class WaitlistApplicationService {
   }
 
   private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {
-    const travelerRefs = request.travelerRefs ?? (request.travelerRef ? [request.travelerRef] : []);
+    const travelerRefs = request.travelerRef ? [request.travelerRef] : request.travelerRefs ?? [];
     const seatClass = request.seatClass ?? request.travelClass ?? "SECOND";
     const departureDate = request.departureDate ?? dateFromDeadline(request.deadline);
     return {
@@ -266,6 +275,10 @@ export class WaitlistApplicationService {
   }
 }
 
+function isActiveStatus(status: WaitlistEntrySnapshot["status"]): boolean {
+  return status === "DRAFT" || status === "QUEUED" || status === "MATCHING" || status === "SUSPENDED";
+}
+
 function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistRequestResource {
   return {
     waitlistRequestId: snapshot.entryId,
@@ -280,6 +293,19 @@ function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistReq
     status: snapshot.status,
     journeyOrderRef: snapshot.journeyOrderRef,
   };
+}
+
+function objectBody(value: unknown): CancelWaitlistRequest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new DomainError("VALIDATION_FAILED", "Request body must be a JSON object");
+  }
+  return value as CancelWaitlistRequest;
+}
+
+function requiredString(body: CancelWaitlistRequest, field: "reason"): string {
+  const value = body[field];
+  if (typeof value !== "string" || value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+  return value;
 }
 
 function daysBefore(departureDate: string): number {

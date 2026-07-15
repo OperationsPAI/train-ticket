@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
-import { InMemoryWaitlistRepository, WaitlistApplicationService, type JourneyOrderClient } from "./application.js";
+import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest, type JourneyOrderClient } from "./application.js";
 import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
 
@@ -60,16 +60,17 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
 
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => ({
     statusCode: 201,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(createBody(request.body), ctx.correlationId)),
   }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries", async (request, ctx) => ({
     statusCode: 201,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(createBody(request.body), ctx.correlationId)),
   }));
   app.get("/api/v1/waitlist-requests", async (request, reply) => handleRead(reply, request, () => {
     const params = query(request);
+    const travelerRef = requiredQueryString(params, "travelerRef");
     return runCommand((repository, publisher) => commandService(repository, publisher).listByTraveler(
-      params.travelerRef ?? "",
+      travelerRef,
       params.status as any,
       parsePageNumber(params.limit, 20, 100),
       parsePageNumber(params.offset, 0, Number.MAX_SAFE_INTEGER),
@@ -83,15 +84,15 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   )));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"), request.body as any, ctx.correlationId)),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"), cancelBody(request.body), ctx.correlationId)),
   }));
   stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"), request.body as any, ctx.correlationId)),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"), cancelBody(request.body), ctx.correlationId)),
   }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries/:entryId/accept", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).accept(param(request, "entryId"), request.body as any, ctx.correlationId)),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).accept(param(request, "entryId"), optionalObjectBody(request.body), ctx.correlationId)),
   }));
   app.get("/api/v1/waitlist/segments/:segmentRef/:departureDate/queue", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).queueInfo(param(request, "segmentRef"), param(request, "departureDate"), query(request).seatClass, query(request).entryId))
@@ -101,8 +102,11 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.setErrorHandler((error, request, reply) => {
     const ctx = requestContext(request);
     if (error instanceof DomainError) {
-      const status = error.code === "NOT_FOUND" ? 404 : error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION" ? 409 : 400;
-      sendError(reply, status, error.code, error.message, ctx, { domainCode: error.code });
+      sendError(reply, statusForDomainError(error), error.code, error.message, ctx, { domainCode: error.code });
+      return;
+    }
+    if (isJsonBodyParseError(error, request)) {
+      sendError(reply, 400, "VALIDATION_FAILED", errorMessage(error), ctx, { domainCode: "VALIDATION_FAILED" });
       return;
     }
     sendError(reply, 500, "INTERNAL_ERROR", errorMessage(error), ctx);
@@ -133,7 +137,7 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
   try { return reply.status(200).send(await operation()); }
   catch (error) {
     const ctx = requestContext(request);
-    if (error instanceof DomainError) sendError(reply, error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message, ctx, { domainCode: error.code });
+    if (error instanceof DomainError) sendError(reply, statusForDomainError(error), error.code, error.message, ctx, { domainCode: error.code });
     else throw error;
     return reply;
   }
@@ -142,6 +146,45 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }
 function param(request: FastifyRequest, name: string): string { return (request.params as Record<string, string>)[name] ?? ""; }
 function query(request: FastifyRequest): Record<string, string | undefined> { return request.query as Record<string, string | undefined>; }
+function statusForDomainError(error: DomainError): number {
+  if (error.code === "NOT_FOUND") return 404;
+  if (error.code === "CONFLICT" || error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION") return 409;
+  return 400;
+}
+function createBody(body: unknown): JoinWaitlistRequest {
+  const parsed = objectBody(body);
+  for (const field of ["accountId", "travelerRef", "segmentRef", "deadline", "paymentGuaranteeRef", "itineraryRef", "intentFingerprint"]) requiredString(parsed, field);
+  return parsed as unknown as JoinWaitlistRequest;
+}
+function cancelBody(body: unknown): Record<string, unknown> {
+  const parsed = objectBody(body);
+  requiredString(parsed, "reason");
+  return parsed;
+}
+function objectBody(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new DomainError("VALIDATION_FAILED", "Request body must be a JSON object");
+  return body as Record<string, unknown>;
+}
+function optionalObjectBody(body: unknown): Record<string, unknown> {
+  if (body === undefined) return {};
+  return objectBody(body);
+}
+function requiredString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string" || value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+  return value;
+}
+function requiredQueryString(params: Record<string, string | undefined>, field: string): string {
+  const value = params[field];
+  if (typeof value !== "string" || value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+  return value;
+}
+function isJsonBodyParseError(error: unknown, request: FastifyRequest): boolean {
+  if (request.method !== "POST" && request.method !== "DELETE") return false;
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; statusCode?: unknown };
+  return candidate.statusCode === 400 || candidate.code === "FST_ERR_CTP_EMPTY_JSON_BODY" || candidate.code === "FST_ERR_CTP_INVALID_JSON_BODY";
+}
 function parsePageNumber(value: string | undefined, fallback: number, max: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   if (!Number.isFinite(parsed) || parsed < 0) return fallback;
