@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from train_ticket_platform.observability import init_opentelemetry
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
-from .domain import AnomalyDetected, DashboardReadModel, MetricCategory, MetricDefinition, MetricSnapshot, ReportingError, RevenueReport, RouteMetrics
+from .domain import AnomalyDetected, ContextCountReport, DashboardReadModel, MetricCategory, MetricDefinition, MetricSnapshot, Money, ReportingError, RevenueReport, RouteMetrics
 from train_ticket_platform.idempotency import configure_idempotency_middleware
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
@@ -142,6 +142,26 @@ def operational_snapshot_to_json(snapshot: MetricSnapshot) -> dict[str, object]:
                 "anomalyRate": rollup.anomaly_rate,
             }
             for rollup in snapshot.context_rollups
+        ],
+    }
+
+
+def context_count_report_to_revenue_json(report: ContextCountReport) -> dict[str, object]:
+    return {
+        "generatedAt": rfc3339_utc(report.generated_at),
+        "groupBy": report.group_by,
+        "totalRevenue": money_to_json(Money("0.00", "USD")),
+        "items": [
+            {
+                "dimension": item.dimension,
+                "value": item.value,
+                "revenue": money_to_json(Money("0.00", "USD")),
+                "count": item.count,
+                "yieldPerKm": "0.00",
+                "ancillaryAttachRate": 0.0,
+                "insuranceAttachRate": 0.0,
+            }
+            for item in report.items
         ],
     }
 
@@ -321,6 +341,8 @@ def configure_reporting_endpoints(app: FastAPI, service: ReportingApplicationSer
     @app.get("/api/v1/metrics/revenue")
     def get_revenue_report(groupBy: str = "route", limit: int = Query(20)) -> dict[str, object]:
         _validate_pagination(limit, 0)
+        if groupBy in {"source_context", "event_type"}:
+            return context_count_report_to_revenue_json(service.context_count_report(group_by=groupBy, limit=limit))
         return revenue_report_to_json(service.revenue_report(group_by=groupBy, limit=limit))
 
     @app.get("/api/v1/metrics/anomalies")
