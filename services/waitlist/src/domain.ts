@@ -60,7 +60,7 @@ export type CreateWaitlistEntry = Readonly<{
 }>;
 
 export class DomainError extends Error {
-  constructor(public readonly code: "VALIDATION_FAILED" | "INVALID_TRANSITION" | "NOT_FOUND" | "PRECONDITION_FAILED", message: string) {
+  constructor(public readonly code: "VALIDATION_FAILED" | "INVALID_TRANSITION" | "NOT_FOUND" | "PRECONDITION_FAILED" | "CONFLICT", message: string) {
     super(message);
     this.name = "DomainError";
   }
