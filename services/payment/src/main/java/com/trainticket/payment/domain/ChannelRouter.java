@@ -126,4 +126,20 @@ public final class ChannelRouter {
             default -> value;
         };
     }
+
+    /**
+     * Inverse of {@link #normalize}: maps an internal channel id to the
+     * payment-channel-facing (simulated provider) channel id used on the
+     * payment-channel handoff contract. Channels without a provider mapping
+     * pass through unchanged.
+     */
+    public static String channelFacingId(String channelId) {
+        String value = Objects.requireNonNull(channelId, "channelId is required").trim();
+        return switch (value) {
+            case "ALIPAY" -> "ALIPAY_SIM";
+            case "WECHAT_PAY" -> "WECHAT_SIM";
+            case "UNIONPAY" -> "UNIONPAY_SIM";
+            default -> value;
+        };
+    }
 }
