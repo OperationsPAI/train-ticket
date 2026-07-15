@@ -19,8 +19,14 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const memoryEventService = new WaitlistApplicationService(undefined, messaging.publisher);
   const eventService = {
     handleCapacityFreed: (event: WaitlistCapacityFreed, correlationId?: string) => storage
-      ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).handleCapacityFreed(event, correlationId))
+      ? storage.runConsumedEvent({ eventId: event.eventId, stream: "events:capacity-availability" }, (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleCapacityFreed(event, correlationId))
       : memoryEventService.handleCapacityFreed(event, correlationId),
+    handleJourneyOrderConfirmed: (event: { eventId?: string; waitlistRequestId?: string; journeyOrderRef: string }, correlationId?: string) => storage
+      ? storage.runConsumedEvent({ eventId: event.eventId ?? event.journeyOrderRef, stream: "events:journey-order" }, (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderConfirmed(event, correlationId))
+      : memoryEventService.handleJourneyOrderConfirmed(event, correlationId),
+    handleJourneyOrderCancelled: (event: { eventId?: string; waitlistRequestId?: string; journeyOrderRef: string }, correlationId?: string) => storage
+      ? storage.runConsumedEvent({ eventId: event.eventId ?? event.journeyOrderRef, stream: "events:journey-order" }, (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderCancelled(event, correlationId))
+      : memoryEventService.handleJourneyOrderCancelled(event, correlationId),
   };
   const subscription = messaging.subscriber.subscribe(SUBSCRIBED_STREAMS, CONSUMER_GROUP, consumerName(options.instanceId ?? process.env.HOSTNAME), createWaitlistEventHandler(eventService), abortController.signal);
   subscription.catch((error: unknown) => {
@@ -29,13 +35,21 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   });
   const expiryTimer = setInterval(() => {
     const operation = storage
-      ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).expireDueOffers())
-      : memoryEventService.expireDueOffers();
-    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist offer expiry scan failed"));
+      ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).expireDueRequests())
+      : memoryEventService.expireDueRequests();
+    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist expiry scan failed"));
   }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "60000", 10));
+  const archivalTimer = setInterval(() => {
+    const operation = storage
+      ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).archivalSweep())
+      : memoryEventService.archivalSweep();
+    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist archival sweep failed"));
+  }, Number.parseInt(process.env.WAITLIST_ARCHIVAL_SWEEP_MS ?? "300000", 10));
   expiryTimer.unref();
+  archivalTimer.unref();
   app.addHook("onClose", async () => {
     clearInterval(expiryTimer);
+    clearInterval(archivalTimer);
     abortController.abort();
     messaging.subscriber.stop?.();
     await messaging.close();

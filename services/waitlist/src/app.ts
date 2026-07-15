@@ -58,20 +58,35 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
   app.get("/metadata", async () => metadata());
 
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => ({
+    statusCode: 201,
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
+  }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries", async (request, ctx) => ({
     statusCode: 201,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
   }));
+  app.get("/api/v1/waitlist-requests/:entryId", async (request, reply) => handleRead(reply, request, () => (
+    runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
+  )));
   app.get("/api/v1/waitlist/entries/:entryId", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
   )));
-  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request) => ({
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:entryId/cancel", async (request, ctx) => ({
     statusCode: 200,
-    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"))),
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"), request.body as any, ctx.correlationId)),
+  }));
+  stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request, ctx) => ({
+    statusCode: 200,
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"), request.body as any, ctx.correlationId)),
   }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries/:entryId/accept", async (request, ctx) => ({
     statusCode: 200,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).accept(param(request, "entryId"), request.body as any, ctx.correlationId)),
+  }));
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/archive-sweep", async () => ({
+    statusCode: 200,
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).archivalSweep()),
   }));
   app.get("/api/v1/waitlist/segments/:segmentRef/:departureDate/queue", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).queueInfo(param(request, "segmentRef"), param(request, "departureDate"), query(request).seatClass, query(request).entryId))
@@ -81,7 +96,7 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.setErrorHandler((error, request, reply) => {
     const ctx = requestContext(request);
     if (error instanceof DomainError) {
-      const status = error.code === "NOT_FOUND" ? 404 : error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION" ? 409 : 400;
+      const status = error.code === "NOT_FOUND" ? 404 : error.code === "PRECONDITION_FAILED" || error.code === "INVALID_TRANSITION" || error.code === "CONFLICT" ? 409 : 400;
       sendError(reply, status, error.code, error.message, ctx, { domainCode: error.code });
       return;
     }

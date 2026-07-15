@@ -25,61 +25,75 @@ class StubJourneyOrder implements JourneyOrderClient {
   async createOrder(entry: WaitlistEntry) { return { orderId: `ord-${entry.entryId}`, seatAssignment: { segmentRef: entry.segmentRef } }; }
 }
 
-test("WaitlistCapacityFreed promotes highest-priority queued entry", async () => {
+test("CapacityReleased starts matching for highest-priority queued request", async () => {
   const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
   const fare = new StubFarePricing();
   const capacity = new StubCapacity();
   const service = new WaitlistApplicationService(repository, publisher, fare, capacity, new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const regular = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
-  const platinum = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
+  const regular = await service.join(contractRequest({ travelerRef: "t1", loyaltyTier: "NONE" }));
+  const platinum = await service.join(contractRequest({ travelerRef: "t2", loyaltyTier: "PLATINUM" }));
 
-  const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  const result = await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
-  assert.equal(result.promoted[0]?.entryId, platinum.entryId);
-  assert.equal((await service.get(platinum.entryId)).status, "OFFERED");
-  assert.equal((await service.get(regular.entryId)).status, "QUEUED");
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 1);
+  assert.equal(result.promoted[0]?.entryId, platinum.waitlistRequestId);
+  assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
+  assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
+  assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistHoldAuthorized").length, 1);
 });
 
-test("expired offer releases hold and promotes next queued entry", async () => {
+test("deadline expiry publishes WaitlistExpired", async () => {
   let current = new Date("2026-01-01T00:00:00.000Z");
-  const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
-  const capacity = new StubCapacity();
-  const service = new WaitlistApplicationService(repository, publisher, new StubFarePricing(), capacity, new StubJourneyOrder(), () => current, new StubOfferManagement());
-  const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  const second = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "GOLD", tripCount: 0, daysBefore: 20 });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => current, new StubOfferManagement());
+  const entry = await service.join(contractRequest({ travelerRef: "t1", deadline: "2026-01-01T00:15:00.000Z" }));
 
   current = new Date("2026-01-01T00:16:00.000Z");
-  await service.expireDueOffers();
+  await service.expireDueRequests();
 
-  assert.equal((await service.get(first.entryId)).status, "EXPIRED");
-  assert.equal((await service.get(second.entryId)).status, "OFFERED");
-  assert.deepEqual(capacity.released, [`hold-${first.entryId}`]);
-  assert.equal(publisher.findByEventType("WaitlistOfferExpired").length, 1);
-  assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 2);
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "EXPIRED");
+  assert.equal(publisher.findByEventType("WaitlistExpired").length, 1);
 });
 
-test("accept promotion creates journey order and publishes accepted event", async () => {
-  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
-  const order = await service.accept(entry.entryId, { paymentMethodRef: "pm-1" });
-  assert.equal(order.orderId, `ord-${entry.entryId}`);
-  assert.equal((await service.get(entry.entryId)).status, "ACCEPTED");
+test("accept promotion creates journey order and publishes fulfilled event", async () => {
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const entry = await service.join(contractRequest({ travelerRef: "t1" }));
+  await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  const order = await service.accept(entry.waitlistRequestId, { paymentMethodRef: "pm-1" });
+  assert.equal(order.orderId, `ord-${entry.waitlistRequestId}`);
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "FULFILLED");
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);
 });
 
-test("accept does not mutate entry when journey order creation fails", async () => {
+test("accept does not mutate request when journey order creation fails", async () => {
   class FailingJourneyOrder implements JourneyOrderClient {
     async createOrder(): Promise<never> { throw new Error("downstream unavailable"); }
   }
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new FailingJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
+  const entry = await service.join(contractRequest({ travelerRef: "t1" }));
+  await service.handleCapacityFreed({ eventId: "cap-1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
-  await assert.rejects(() => service.accept(entry.entryId), /downstream unavailable/);
+  await assert.rejects(() => service.accept(entry.waitlistRequestId), /downstream unavailable/);
 
-  assert.equal((await service.get(entry.entryId)).status, "OFFERED");
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "MATCHING");
 });
+
+function contractRequest(overrides: Partial<Parameters<WaitlistApplicationService["join"]>[0]>) {
+  return {
+    accountId: "acc",
+    travelerRef: "t1",
+    segmentRef: "seg",
+    departureDate: "2026-07-20",
+    travelClass: "SECOND" as const,
+    deadline: "2026-07-20T00:00:00.000Z",
+    paymentGuaranteeRef: "pay-auth-1",
+    itineraryRef: "itin-1",
+    intentFingerprint: `intent-${overrides.travelerRef ?? "t1"}`,
+    loyaltyTier: "PLATINUM" as const,
+    tripCount: 0,
+    daysBefore: 20,
+    ...overrides,
+  };
+}

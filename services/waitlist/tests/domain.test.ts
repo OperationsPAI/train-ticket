@@ -11,9 +11,12 @@ test("platinum member scores higher than non-member", () => {
 });
 
 test("queue orders by priority descending then createdAt ascending", () => {
-  const older = WaitlistEntry.create({ entryId: "wl-old", accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: { loyaltyTier: "GOLD", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:00:00.000Z") });
-  const newer = WaitlistEntry.create({ entryId: "wl-new", accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: { loyaltyTier: "GOLD", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:01:00.000Z") });
-  const platinum = WaitlistEntry.create({ entryId: "wl-vip", accountId: "acc", travelerRefs: ["t3"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: { loyaltyTier: "PLATINUM", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:02:00.000Z") });
+  const older = WaitlistEntry.create({ entryId: "wl-old", accountId: "acc", travelerRef: "t1", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", deadline: "2026-07-20T00:00:00.000Z", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itin-1", intentFingerprint: "intent-1", priority: { loyaltyTier: "GOLD", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:00:00.000Z") });
+  const newer = WaitlistEntry.create({ entryId: "wl-new", accountId: "acc", travelerRef: "t2", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", deadline: "2026-07-20T00:00:00.000Z", paymentGuaranteeRef: "pay-auth-2", itineraryRef: "itin-2", intentFingerprint: "intent-2", priority: { loyaltyTier: "GOLD", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:01:00.000Z") });
+  const platinum = WaitlistEntry.create({ entryId: "wl-vip", accountId: "acc", travelerRef: "t3", segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", deadline: "2026-07-20T00:00:00.000Z", paymentGuaranteeRef: "pay-auth-3", itineraryRef: "itin-3", intentFingerprint: "intent-3", priority: { loyaltyTier: "PLATINUM", tripCount: 10, daysBefore: 10 }, createdAt: new Date("2026-01-01T00:02:00.000Z") });
+  older.enqueue();
+  newer.enqueue();
+  platinum.enqueue();
   const queue = new WaitlistQueue("seg", "2026-07-20", "SECOND", [newer, older, platinum]);
   assert.deepEqual(queue.queuedEntries().map((entry) => entry.entryId), ["wl-vip", "wl-old", "wl-new"]);
   assert.equal(queue.positionOf("wl-old"), 2);

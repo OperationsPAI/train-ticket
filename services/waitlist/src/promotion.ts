@@ -1,8 +1,9 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
-import { publishAll, waitlistEntryPromoted, waitlistOfferExpired } from "./publisher.js";
+import { publishAll, waitlistHoldAuthorized, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
+  eventId: string;
   segmentRef: string;
   departureDate: string;
   seatClass?: string;
@@ -15,7 +16,7 @@ export type WaitlistOffer = Readonly<{
   entryId: string;
   fareQuoteId: string;
   capacityHoldId: string;
-  expiresAt: string;
+  expiresAt?: string;
 }>;
 
 export type PromotionResult = Readonly<{
@@ -28,8 +29,10 @@ export interface WaitlistRepository {
   get(entryId: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
   findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
-  findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
+  findExpired(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
+  findArchivable(): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
+  findByJourneyOrderRef?(journeyOrderRef: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
 }
 
 export interface FarePricingClient {
@@ -83,7 +86,7 @@ export class HttpOfferManagementClient implements OfferManagementClient {
       body: JSON.stringify({
         accountId: entry.accountId,
         channelId: this.channelId,
-        itineraryRef: entry.itineraryRef ?? entry.segmentRef,
+        itineraryRef: entry.itineraryRef,
         travelerRefs: entry.travelerRefs,
         quoteRequestId: fareQuoteId,
       }),
@@ -107,7 +110,7 @@ export class HttpCapacityAvailabilityClient implements CapacityAvailabilityClien
       headers: { "content-type": "application/json", "Idempotency-Key": entry.capacityHoldIdempotencyKey },
       body: JSON.stringify({
         segmentRef: entry.segmentRef,
-        travelerRef: entry.travelerRefs[0],
+        travelerRef: entry.travelerRef,
         classRef: entry.seatClass,
         quantity: entry.travelerRefs.length,
         segmentBookingId: entry.capacitySegmentBookingId,
@@ -145,43 +148,35 @@ export class PromotionOrchestrator {
     for (let index = 0; index < slots; index++) {
       const entry = await this.repository.findTopQueued(event.segmentRef, event.departureDate, event.seatClass);
       if (!entry) break;
+      const startedAt = this.now();
+      entry.startMatching(startedAt, event.eventId);
+      let snapshot = await this.repository.save(entry);
+      await publishAll(this.publisher, [waitlistMatchStarted(snapshot, event.eventId, startedAt, correlationId)]);
       const quote = await this.farePricing.quote(entry);
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
       const hold = await this.capacityAvailability.hold(entry, quote.fareQuoteId);
-      const now = this.now();
-      const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
-      const offer = { offerId: commercialOffer.offerId, offerVersion: commercialOffer.offerVersion, entryId: entry.entryId, fareQuoteId: quote.fareQuoteId, capacityHoldId: hold.capacityHoldId, expiresAt: expiresAt.toISOString() };
-      entry.offer(offer.offerId, offer.offerVersion, quote.fareQuoteId, hold.capacityHoldId, now, expiresAt);
-      const snapshot = await this.repository.save(entry);
+      entry.recordHold(commercialOffer.offerId, commercialOffer.offerVersion, quote.fareQuoteId, hold.capacityHoldId);
+      snapshot = await this.repository.save(entry);
+      const offer = {
+        offerId: commercialOffer.offerId,
+        offerVersion: commercialOffer.offerVersion,
+        entryId: entry.entryId,
+        fareQuoteId: quote.fareQuoteId,
+        capacityHoldId: hold.capacityHoldId,
+      };
       promoted.push(snapshot);
       offers.push(offer);
-      await publishAll(this.publisher, [waitlistEntryPromoted(snapshot, offer, correlationId)]);
+      await publishAll(this.publisher, [waitlistHoldAuthorized(snapshot, this.now(), correlationId)]);
     }
     return { promoted, offers };
-  }
-
-  async expireDueOffers(correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
-    const now = this.now();
-    const expired: WaitlistEntrySnapshot[] = [];
-    for (const entry of await this.repository.findExpiredOffers(now)) {
-      const offer = offerFromEntry(entry);
-      const capacityHoldId = entry.capacityHoldId;
-      entry.expire(now);
-      if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
-      const snapshot = await this.repository.save(entry);
-      expired.push(snapshot);
-      await publishAll(this.publisher, [waitlistOfferExpired(snapshot, offer, correlationId)]);
-      await this.onCapacityFreed({ segmentRef: entry.segmentRef, departureDate: entry.departureDate, seatClass: entry.seatClass, freedSlots: 1 }, correlationId);
-    }
-    return expired;
   }
 }
 
 export function offerFromEntry(entry: WaitlistEntry): WaitlistOffer {
-  if (!entry.offerId || !entry.offerVersion || !entry.fareQuoteId || !entry.capacityHoldId || !entry.offerExpiresAt) {
+  if (!entry.offerId || !entry.offerVersion || !entry.fareQuoteId || !entry.capacityHoldId) {
     throw new DomainError("PRECONDITION_FAILED", "Waitlist entry does not have an active offer");
   }
-  return { offerId: entry.offerId, offerVersion: entry.offerVersion, entryId: entry.entryId, fareQuoteId: entry.fareQuoteId, capacityHoldId: entry.capacityHoldId, expiresAt: entry.offerExpiresAt.toISOString() };
+  return { offerId: entry.offerId, offerVersion: entry.offerVersion, entryId: entry.entryId, fareQuoteId: entry.fareQuoteId, capacityHoldId: entry.capacityHoldId };
 }
 
 function trimRight(value: string): string { return value.replace(/\/+$/u, ""); }

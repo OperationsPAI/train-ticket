@@ -1,21 +1,33 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
-import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
+import { ACTIVE_WAITLIST_STATUSES, DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot, type WaitlistRequestResource } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
-import { publishAll, waitlistEntryAccepted, waitlistEntryCreated } from "./publisher.js";
+import { publishAll, waitlistCancelled, waitlistExpired, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
   accountId: string;
-  travelerRefs: readonly string[];
+  travelerRef?: string;
+  travelerRefs?: readonly string[];
   segmentRef: string;
-  departureDate: string;
-  seatClass: FareClass;
+  departureDate?: string;
+  seatClass?: FareClass;
+  travelClass?: FareClass;
+  deadline?: string;
+  paymentGuaranteeRef?: string;
+  itineraryRef?: string;
+  intentFingerprint?: string;
   loyaltyTier?: PriorityInput["loyaltyTier"];
   tripCount?: number;
   daysBefore?: number;
   specialStatus?: PriorityInput["specialStatus"];
-  itineraryRef?: string;
 }>;
 
+export type CancelWaitlistRequest = Readonly<{ reason?: string }>;
+
+export type JourneyOrderEvent = Readonly<{
+  eventId?: string;
+  waitlistRequestId?: string;
+  journeyOrderRef: string;
+}>;
 export type AcceptPromotionRequest = Readonly<{ paymentMethodRef?: string }>;
 export type AcceptPromotionResponse = Readonly<{ orderId: string; seatAssignment: unknown }>;
 export type QueueInfo = Readonly<{ totalQueued: number; myPosition: number | null; estimatedPromotionRate: number }>;
@@ -54,6 +66,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    this.ensureNoActiveDuplicate(entry);
+    entry.authorizePaymentReference();
+    entry.enqueue();
+    entry.markPersisted();
     this.entries.set(entry.entryId, entry);
     return this.snapshot(entry);
   }
@@ -61,6 +77,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   async get(entryId: string): Promise<WaitlistEntry | undefined> { return this.entries.get(entryId); }
 
   async save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
+    entry.markPersisted();
     this.entries.set(entry.entryId, entry);
     return this.snapshot(entry);
   }
@@ -70,16 +87,29 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return queue.nextQueued();
   }
 
-  async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
-    return [...this.entries.values()].filter((entry) => entry.status === "OFFERED" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
+  async findExpired(now: Date): Promise<readonly WaitlistEntry[]> {
+    return [...this.entries.values()].filter((entry) => ACTIVE_WAITLIST_STATUSES.includes(entry.status) && entry.deadline <= now);
+  }
+
+  async findArchivable(): Promise<readonly WaitlistEntry[]> {
+    return [...this.entries.values()].filter((entry) => entry.status === "FULFILLED" || entry.status === "EXPIRED" || entry.status === "CANCELLED");
   }
 
   async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
     const queue = this.buildQueue(segmentRef, departureDate, seatClass);
-    return queue.allEntries().map((entry) => this.snapshot(entry));
+    return queue.activeEntries().map((entry) => this.snapshot(entry));
+  }
+
+  async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
+    return [...this.entries.values()].find((entry) => entry.journeyOrderRef === journeyOrderRef);
   }
 
   clear(): void { this.entries.clear(); }
+
+  private ensureNoActiveDuplicate(entry: WaitlistEntry): void {
+    const duplicate = [...this.entries.values()].find((candidate) => candidate.travelerRef === entry.travelerRef && candidate.intentFingerprint === entry.intentFingerprint && ACTIVE_WAITLIST_STATUSES.includes(candidate.status));
+    if (duplicate) throw new DomainError("CONFLICT", "An active waitlist request already exists for this traveler and intent");
+  }
 
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
     const matching = [...this.entries.values()].filter((entry) => entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
@@ -111,33 +141,40 @@ export class WaitlistApplicationService {
     this.promotion = new PromotionOrchestrator(repository, farePricing, capacityAvailability, publisher ?? { publish: async () => undefined }, offerManagement, now);
   }
 
-  async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistEntrySnapshot & { estimatedWaitMinutes: number }> {
+  async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistRequestResource> {
     const entry = WaitlistEntry.create(this.toCreateCommand(request));
     const snapshot = await this.repository.add(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryCreated(snapshot, correlationId)]);
-    return { ...snapshot, estimatedWaitMinutes: Math.max(5, snapshot.queuePosition * 15) };
+    if (this.publisher) {
+      await publishAll(this.publisher, [
+        waitlistRequestCreated({ ...snapshot, version: 1, status: "DRAFT" }, correlationId),
+        waitlistPaymentAuthorizationRequested({ ...snapshot, version: 2, status: "DRAFT" }, this.now(), correlationId),
+        waitlistQueued(snapshot, this.now(), correlationId),
+      ]);
+    }
+    return this.resource(snapshot);
   }
 
-  async get(entryId: string): Promise<WaitlistEntrySnapshot> {
+  async get(entryId: string): Promise<WaitlistRequestResource> {
     const entry = await this.requireEntry(entryId);
-    return this.snapshot(entry);
+    return entry.toResource();
   }
 
-  async cancel(entryId: string): Promise<{ cancelled: true }> {
+  async cancel(entryId: string, request: CancelWaitlistRequest = {}, correlationId?: string): Promise<{ waitlistRequestId: string; status: "CANCELLED"; cancelledAt: string }> {
     const entry = await this.requireEntry(entryId);
-    entry.cancel();
-    await this.repository.save(entry);
-    return { cancelled: true };
+    const cancelledAt = this.now();
+    entry.cancel(cancelledAt);
+    const snapshot = await this.repository.save(entry);
+    if (this.publisher) await publishAll(this.publisher, [waitlistCancelled(snapshot, cancelledAt, request.reason ?? "user_cancelled", correlationId)]);
+    return { waitlistRequestId: entryId, status: "CANCELLED", cancelledAt: cancelledAt.toISOString() };
   }
 
   async accept(entryId: string, request: AcceptPromotionRequest = {}, correlationId?: string): Promise<AcceptPromotionResponse> {
     const entry = await this.requireEntry(entryId);
-    const now = this.now();
-    entry.ensureOfferAcceptable(now);
     const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
-    entry.accept(now);
+    const fulfilledAt = this.now();
+    entry.fulfill(order.orderId, fulfilledAt);
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistEntryAccepted(snapshot, order.orderId, order.seatAssignment, correlationId)]);
+    if (this.publisher) await publishAll(this.publisher, [waitlistFulfilled(snapshot, fulfilledAt, correlationId)]);
     return order;
   }
 
@@ -151,38 +188,95 @@ export class WaitlistApplicationService {
     return this.promotion.onCapacityFreed(event, correlationId);
   }
 
+
+  async handleJourneyOrderConfirmed(event: JourneyOrderEvent, correlationId?: string) {
+    const entry = await this.findJourneyEntry(event);
+    if (entry.status === "FULFILLED") return entry.toResource();
+    const fulfilledAt = this.now();
+    entry.fulfill(event.journeyOrderRef, fulfilledAt);
+    const snapshot = await this.repository.save(entry);
+    if (this.publisher) await publishAll(this.publisher, [waitlistFulfilled(snapshot, fulfilledAt, correlationId)]);
+    return this.resource(snapshot);
+  }
+
+  async handleJourneyOrderCancelled(event: JourneyOrderEvent, correlationId?: string) {
+    const entry = await this.findJourneyEntry(event);
+    if (entry.status === "QUEUED") return entry.toResource();
+    entry.requeueAfterJourneyOrderCancelled(event.journeyOrderRef);
+    const snapshot = await this.repository.save(entry);
+    if (this.publisher) await publishAll(this.publisher, [waitlistQueued(snapshot, this.now(), correlationId)]);
+    return this.resource(snapshot);
+  }
+
+  async expireDueRequests(correlationId?: string) {
+    const now = this.now();
+    const expired: WaitlistEntrySnapshot[] = [];
+    for (const entry of await this.repository.findExpired(now)) {
+      entry.expire(now);
+      const snapshot = await this.repository.save(entry);
+      expired.push(snapshot);
+      if (this.publisher) await publishAll(this.publisher, [waitlistExpired(snapshot, now, correlationId)]);
+    }
+    return expired;
+  }
+
   async expireDueOffers(correlationId?: string) {
-    return this.promotion.expireDueOffers(correlationId);
+    return this.expireDueRequests(correlationId);
+  }
+
+  async archivalSweep(): Promise<readonly WaitlistRequestResource[]> {
+    const now = this.now();
+    const closed: WaitlistRequestResource[] = [];
+    for (const entry of await this.repository.findArchivable()) {
+      entry.close(now);
+      const snapshot = await this.repository.save(entry);
+      closed.push(this.resource(snapshot));
+    }
+    return closed;
   }
 
   private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {
+    const travelerRefs = request.travelerRefs ?? (request.travelerRef ? [request.travelerRef] : []);
+    const deadline = request.deadline ?? `${request.departureDate ?? "2099-01-01"}T00:00:00.000Z`;
     return {
       accountId: request.accountId,
-      travelerRefs: request.travelerRefs,
+      travelerRefs,
       segmentRef: request.segmentRef,
-      departureDate: request.departureDate,
-      seatClass: request.seatClass,
+      departureDate: request.departureDate ?? deadline.slice(0, 10),
+      seatClass: request.seatClass ?? request.travelClass ?? "SECOND",
+      deadline,
+      paymentGuaranteeRef: request.paymentGuaranteeRef ?? "pay-auth-test",
       itineraryRef: request.itineraryRef ?? request.segmentRef,
+      intentFingerprint: request.intentFingerprint ?? `${travelerRefs[0] ?? "unknown"}:${request.segmentRef}:${deadline}`,
       priority: {
         loyaltyTier: request.loyaltyTier ?? "NONE",
         tripCount: request.tripCount ?? 0,
-        daysBefore: request.daysBefore ?? daysBefore(request.departureDate),
-        groupSize: request.travelerRefs.length,
-        fareClass: request.seatClass,
+        daysBefore: request.daysBefore ?? daysBefore(deadline.slice(0, 10)),
+        groupSize: travelerRefs.length,
+        fareClass: request.seatClass ?? request.travelClass ?? "SECOND",
         specialStatus: request.specialStatus ?? "NONE",
       },
     };
   }
 
-  private async requireEntry(entryId: string): Promise<WaitlistEntry> {
-    const entry = await this.repository.get(entryId);
-    if (!entry) throw new DomainError("NOT_FOUND", "Waitlist entry was not found");
+
+  private async findJourneyEntry(event: JourneyOrderEvent): Promise<WaitlistEntry> {
+    const entry = event.waitlistRequestId
+      ? await this.repository.get(event.waitlistRequestId)
+      : await this.repository.findByJourneyOrderRef?.(event.journeyOrderRef);
+    if (!entry) throw new DomainError("NOT_FOUND", "Waitlist request was not found for journey order event");
     return entry;
   }
 
-  private async snapshot(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
-    const queue = await this.repository.queueFor(entry.segmentRef, entry.departureDate, entry.seatClass);
-    return queue.find((candidate) => candidate.entryId === entry.entryId) ?? entry.toSnapshot(0);
+  private async requireEntry(entryId: string): Promise<WaitlistEntry> {
+    const entry = await this.repository.get(entryId);
+    if (!entry) throw new DomainError("NOT_FOUND", "Waitlist request was not found");
+    return entry;
+  }
+
+  private resource(snapshot: WaitlistEntrySnapshot): WaitlistRequestResource {
+    const { waitlistRequestId, accountId, travelerRef, segmentRef, travelClass, deadline, paymentGuaranteeRef, itineraryRef, intentFingerprint, status, journeyOrderRef } = snapshot;
+    return removeUndefined({ waitlistRequestId, accountId, travelerRef, segmentRef, travelClass, deadline, paymentGuaranteeRef, itineraryRef, intentFingerprint, status, journeyOrderRef });
   }
 }
 
@@ -190,4 +284,8 @@ function daysBefore(departureDate: string): number {
   const departure = new Date(`${departureDate}T00:00:00.000Z`).getTime();
   if (!Number.isFinite(departure)) return 0;
   return Math.max(0, Math.ceil((departure - Date.now()) / (24 * 60 * 60 * 1000)));
+}
+
+function removeUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }

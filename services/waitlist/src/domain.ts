@@ -1,9 +1,12 @@
 import { uuidV7 } from "@trainticket/ts-kit";
 
-export type WaitlistStatus = "QUEUED" | "OFFERED" | "ACCEPTED" | "EXPIRED" | "CANCELLED";
+export type WaitlistStatus = "DRAFT" | "QUEUED" | "MATCHING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "SUSPENDED" | "CLOSED";
 export type LoyaltyTier = "PLATINUM" | "GOLD" | "SILVER" | "NONE";
 export type FareClass = "BUSINESS" | "FIRST" | "SECOND" | "SECOND_CLASS" | "STANDING";
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
+
+export const ACTIVE_WAITLIST_STATUSES: readonly WaitlistStatus[] = ["DRAFT", "QUEUED", "MATCHING", "SUSPENDED"];
+export const ARCHIVABLE_WAITLIST_STATUSES: readonly WaitlistStatus[] = ["FULFILLED", "EXPIRED", "CANCELLED"];
 
 export type PriorityInput = Readonly<{
   loyaltyTier?: LoyaltyTier;
@@ -14,24 +17,39 @@ export type PriorityInput = Readonly<{
   specialStatus?: SpecialStatus | readonly SpecialStatus[];
 }>;
 
-export type WaitlistEntrySnapshot = Readonly<{
-  entryId: string;
+export type WaitlistRequestResource = Readonly<{
+  waitlistRequestId: string;
   accountId: string;
-  travelerRefs: readonly string[];
+  travelerRef: string;
   segmentRef: string;
+  travelClass?: string;
+  deadline: string;
+  paymentGuaranteeRef: string;
+  itineraryRef: string;
+  intentFingerprint: string;
+  status: WaitlistStatus;
+  journeyOrderRef?: string;
+}>;
+
+export type WaitlistEntrySnapshot = WaitlistRequestResource & Readonly<{
+  entryId: string;
+  version: number;
+  loadedVersion: number;
+  travelerRefs: readonly string[];
   departureDate: string;
   seatClass: FareClass;
   priorityScore: number;
-  status: WaitlistStatus;
   queuePosition: number;
   createdAt: string;
-  offeredAt: string | null;
-  offerExpiresAt: string | null;
+  matchingStartedAt: string | null;
+  deadlineExpiredAt: string | null;
+  cancelledAt: string | null;
+  fulfilledAt: string | null;
+  closedAt: string | null;
   fareQuoteId?: string;
   capacityHoldId?: string;
   offerId?: string;
   offerVersion?: number;
-  itineraryRef?: string;
   fareQuoteIdempotencyKey?: string;
   offerIdempotencyKey?: string;
   capacityHoldIdempotencyKey?: string;
@@ -43,17 +61,22 @@ export type WaitlistEntrySnapshot = Readonly<{
 export type CreateWaitlistEntry = Readonly<{
   entryId?: string;
   accountId: string;
-  travelerRefs: readonly string[];
+  travelerRef?: string;
+  travelerRefs?: readonly string[];
   segmentRef: string;
-  departureDate: string;
-  seatClass: FareClass;
+  departureDate?: string;
+  seatClass?: FareClass;
+  travelClass?: FareClass;
+  deadline: string;
+  paymentGuaranteeRef: string;
+  itineraryRef: string;
+  intentFingerprint: string;
   priority: Omit<PriorityInput, "groupSize" | "fareClass"> & Partial<Pick<PriorityInput, "groupSize" | "fareClass">>;
-  itineraryRef?: string;
   createdAt?: Date;
 }>;
 
 export class DomainError extends Error {
-  constructor(public readonly code: "VALIDATION_FAILED" | "INVALID_TRANSITION" | "NOT_FOUND" | "PRECONDITION_FAILED", message: string) {
+  constructor(public readonly code: "VALIDATION_FAILED" | "INVALID_TRANSITION" | "NOT_FOUND" | "PRECONDITION_FAILED" | "CONFLICT", message: string) {
     super(message);
     this.name = "DomainError";
   }
@@ -63,20 +86,29 @@ export class WaitlistEntry {
   private constructor(
     public readonly entryId: string,
     public readonly accountId: string,
-    public readonly travelerRefs: readonly string[],
+    public readonly travelerRef: string,
     public readonly segmentRef: string,
     public readonly departureDate: string,
     public readonly seatClass: FareClass,
     public readonly priorityScore: number,
     public readonly createdAt: Date,
+    public readonly deadline: Date,
+    public readonly paymentGuaranteeRef: string,
+    public readonly itineraryRef: string,
+    public readonly intentFingerprint: string,
     private _status: WaitlistStatus,
-    private _offeredAt: Date | null = null,
-    private _offerExpiresAt: Date | null = null,
+    private _version: number,
+    private _loadedVersion: number,
+    private _matchingStartedAt: Date | null = null,
+    private _deadlineExpiredAt: Date | null = null,
+    private _cancelledAt: Date | null = null,
+    private _fulfilledAt: Date | null = null,
+    private _closedAt: Date | null = null,
     private _fareQuoteId?: string,
     private _capacityHoldId?: string,
     private _offerId?: string,
     private _offerVersion?: number,
-    public readonly itineraryRef?: string,
+    private _journeyOrderRef?: string,
     private readonly _fareQuoteIdempotencyKey: string = uuidV7(),
     private readonly _offerIdempotencyKey: string = uuidV7(),
     private readonly _capacityHoldIdempotencyKey: string = uuidV7(),
@@ -87,29 +119,41 @@ export class WaitlistEntry {
 
   static create(command: CreateWaitlistEntry): WaitlistEntry {
     assertNonEmpty(command.accountId, "accountId");
-    if (command.travelerRefs.length === 0) throw new DomainError("VALIDATION_FAILED", "travelerRefs must contain at least one traveler");
+    const travelerRefs = command.travelerRefs ?? (command.travelerRef ? [command.travelerRef] : []);
+    if (travelerRefs.length === 0) throw new DomainError("VALIDATION_FAILED", "travelerRef is required");
+    const travelerRef = travelerRefs[0];
+    assertNonEmpty(travelerRef, "travelerRef");
     assertNonEmpty(command.segmentRef, "segmentRef");
-    assertNonEmpty(command.departureDate, "departureDate");
-    const groupSize = command.priority.groupSize ?? command.travelerRefs.length;
-    const fareClass = command.priority.fareClass ?? command.seatClass;
+    assertNonEmpty(command.deadline, "deadline");
+    assertNonEmpty(command.paymentGuaranteeRef, "paymentGuaranteeRef");
+    assertNonEmpty(command.itineraryRef, "itineraryRef");
+    assertNonEmpty(command.intentFingerprint, "intentFingerprint");
+    if (!isPaymentGuaranteeRef(command.paymentGuaranteeRef)) {
+      throw new DomainError("VALIDATION_FAILED", "paymentGuaranteeRef must start with pay-auth- or pi-");
+    }
+    const deadline = new Date(command.deadline);
+    if (!Number.isFinite(deadline.getTime())) throw new DomainError("VALIDATION_FAILED", "deadline must be a valid RFC3339 timestamp");
+    const seatClass = command.travelClass ?? command.seatClass ?? "SECOND";
+    const departureDate = command.departureDate ?? command.deadline.slice(0, 10);
+    const groupSize = command.priority.groupSize ?? travelerRefs.length;
+    const fareClass = command.priority.fareClass ?? seatClass;
     const priorityScore = PriorityCalculator.calculate({ ...command.priority, groupSize, fareClass });
     return new WaitlistEntry(
-      command.entryId ?? `wl-${uuidV7()}`,
+      command.entryId ?? `wlr-${uuidV7()}`,
       command.accountId,
-      [...command.travelerRefs],
+      travelerRef,
       command.segmentRef,
-      command.departureDate,
-      command.seatClass,
+      departureDate,
+      seatClass,
       priorityScore,
       command.createdAt ?? new Date(),
-      "QUEUED",
-      null,
-      null,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      deadline,
+      command.paymentGuaranteeRef,
       command.itineraryRef,
+      command.intentFingerprint,
+      "DRAFT",
+      1,
+      0,
     );
   }
 
@@ -117,20 +161,29 @@ export class WaitlistEntry {
     return new WaitlistEntry(
       snapshot.entryId,
       snapshot.accountId,
-      [...snapshot.travelerRefs],
+      snapshot.travelerRef,
       snapshot.segmentRef,
       snapshot.departureDate,
       snapshot.seatClass,
       snapshot.priorityScore,
       new Date(snapshot.createdAt),
+      new Date(snapshot.deadline),
+      snapshot.paymentGuaranteeRef,
+      snapshot.itineraryRef,
+      snapshot.intentFingerprint,
       snapshot.status,
-      snapshot.offeredAt ? new Date(snapshot.offeredAt) : null,
-      snapshot.offerExpiresAt ? new Date(snapshot.offerExpiresAt) : null,
+      snapshot.version,
+      snapshot.loadedVersion,
+      snapshot.matchingStartedAt ? new Date(snapshot.matchingStartedAt) : null,
+      snapshot.deadlineExpiredAt ? new Date(snapshot.deadlineExpiredAt) : null,
+      snapshot.cancelledAt ? new Date(snapshot.cancelledAt) : null,
+      snapshot.fulfilledAt ? new Date(snapshot.fulfilledAt) : null,
+      snapshot.closedAt ? new Date(snapshot.closedAt) : null,
       snapshot.fareQuoteId,
       snapshot.capacityHoldId,
       snapshot.offerId,
       snapshot.offerVersion,
-      snapshot.itineraryRef,
+      snapshot.journeyOrderRef,
       snapshot.fareQuoteIdempotencyKey,
       snapshot.offerIdempotencyKey,
       snapshot.capacityHoldIdempotencyKey,
@@ -141,12 +194,19 @@ export class WaitlistEntry {
   }
 
   get status(): WaitlistStatus { return this._status; }
-  get offeredAt(): Date | null { return this._offeredAt; }
-  get offerExpiresAt(): Date | null { return this._offerExpiresAt; }
+  get version(): number { return this._version; }
+  get loadedVersion(): number { return this._loadedVersion; }
+  get travelerRefs(): readonly string[] { return [this.travelerRef]; }
+  get matchingStartedAt(): Date | null { return this._matchingStartedAt; }
+  get cancelledAt(): Date | null { return this._cancelledAt; }
+  get fulfilledAt(): Date | null { return this._fulfilledAt; }
+  get deadlineExpiredAt(): Date | null { return this._deadlineExpiredAt; }
+  get closedAt(): Date | null { return this._closedAt; }
   get fareQuoteId(): string | undefined { return this._fareQuoteId; }
   get capacityHoldId(): string | undefined { return this._capacityHoldId; }
   get offerId(): string | undefined { return this._offerId; }
   get offerVersion(): number | undefined { return this._offerVersion; }
+  get journeyOrderRef(): string | undefined { return this._journeyOrderRef; }
   get fareQuoteIdempotencyKey(): string { return this._fareQuoteIdempotencyKey; }
   get offerIdempotencyKey(): string { return this._offerIdempotencyKey; }
   get capacityHoldIdempotencyKey(): string { return this._capacityHoldIdempotencyKey; }
@@ -154,67 +214,125 @@ export class WaitlistEntry {
   get journeyOrderIdempotencyKey(): string { return this._journeyOrderIdempotencyKey; }
   get capacitySegmentBookingId(): string { return this._capacitySegmentBookingId; }
 
-  offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
-    this.assertStatus("QUEUED", "Only queued waitlist entries can be offered");
-    if (expiresAt <= now) throw new DomainError("VALIDATION_FAILED", "Offer expiry must be in the future");
-    this._status = "OFFERED";
-    this._offeredAt = now;
-    this._offerExpiresAt = expiresAt;
+  authorizePaymentReference(): number {
+    this.assertStatus("DRAFT", "Only draft waitlist requests can authorize payment guarantee references");
+    return this.advanceVersion();
+  }
+
+  enqueue(): number {
+    if (this._status !== "DRAFT" && this._status !== "SUSPENDED") {
+      throw new DomainError("INVALID_TRANSITION", `Cannot queue ${this._status} waitlist request`);
+    }
+    this._status = "QUEUED";
+    return this.advanceVersion();
+  }
+
+  startMatching(now: Date, matchedCapacityReleaseRef: string): number {
+    this.assertStatus("QUEUED", "Only queued waitlist requests can start matching");
+    assertNonEmpty(matchedCapacityReleaseRef, "matchedCapacityReleaseRef");
+    this._status = "MATCHING";
+    this._matchingStartedAt = now;
+    return this.advanceVersion();
+  }
+
+  recordHold(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string): number {
+    this.assertStatus("MATCHING", "Only matching waitlist requests can record a hold");
     if (!Number.isInteger(offerVersion) || offerVersion < 1) throw new DomainError("VALIDATION_FAILED", "offerVersion must be positive");
     this._fareQuoteId = fareQuoteId;
     this._capacityHoldId = capacityHoldId;
     this._offerId = offerId;
     this._offerVersion = offerVersion;
+    return this.advanceVersion();
   }
 
-  accept(now: Date): void {
-    this.ensureOfferAcceptable(now);
-    this._status = "ACCEPTED";
-  }
-
-  ensureOfferAcceptable(now: Date): void {
-    this.assertStatus("OFFERED", "Only offered waitlist entries can be accepted");
-    if (this._offerExpiresAt && now > this._offerExpiresAt) {
-      throw new DomainError("PRECONDITION_FAILED", "Waitlist offer has expired");
+  fulfill(journeyOrderRef: string, now: Date): number {
+    if (this._status !== "MATCHING" && this._status !== "QUEUED") {
+      throw new DomainError("INVALID_TRANSITION", `Cannot fulfill ${this._status} waitlist request`);
     }
+    assertNonEmpty(journeyOrderRef, "journeyOrderRef");
+    this._status = "FULFILLED";
+    this._journeyOrderRef = journeyOrderRef;
+    this._fulfilledAt = now;
+    return this.advanceVersion();
   }
 
-  expire(now: Date): void {
-    if (this._status !== "OFFERED" && this._status !== "QUEUED") {
-      throw new DomainError("INVALID_TRANSITION", `Cannot expire ${this._status} waitlist entry`);
-    }
-    if (this._status === "OFFERED" && this._offerExpiresAt && now < this._offerExpiresAt) {
-      throw new DomainError("PRECONDITION_FAILED", "Waitlist offer has not reached its expiry time");
+  requeueAfterJourneyOrderCancelled(journeyOrderRef: string): number {
+    this.assertStatus("MATCHING", "Only matching waitlist requests can be requeued after journey order cancellation");
+    assertNonEmpty(journeyOrderRef, "journeyOrderRef");
+    this._journeyOrderRef = journeyOrderRef;
+    this._status = "QUEUED";
+    return this.advanceVersion();
+  }
+
+  expire(now: Date): number {
+    if (this._status !== "QUEUED" && this._status !== "MATCHING" && this._status !== "SUSPENDED") {
+      throw new DomainError("INVALID_TRANSITION", `Cannot expire ${this._status} waitlist request`);
     }
     this._status = "EXPIRED";
+    this._deadlineExpiredAt = now;
+    return this.advanceVersion();
   }
 
-  cancel(): void {
-    if (this._status === "ACCEPTED" || this._status === "EXPIRED") {
-      throw new DomainError("INVALID_TRANSITION", `Cannot cancel ${this._status} waitlist entry`);
+  cancel(now: Date): number {
+    if (this._status === "FULFILLED" || this._status === "EXPIRED" || this._status === "CANCELLED" || this._status === "CLOSED") {
+      throw new DomainError("PRECONDITION_FAILED", `Cannot cancel ${this._status} waitlist request`);
     }
     this._status = "CANCELLED";
+    this._cancelledAt = now;
+    return this.advanceVersion();
+  }
+
+  close(now: Date): number {
+    if (!ARCHIVABLE_WAITLIST_STATUSES.includes(this._status)) {
+      throw new DomainError("INVALID_TRANSITION", `Cannot close ${this._status} waitlist request`);
+    }
+    this._status = "CLOSED";
+    this._closedAt = now;
+    return this.advanceVersion();
+  }
+
+  markPersisted(): void {
+    this._loadedVersion = this._version;
+  }
+
+  toResource(): WaitlistRequestResource {
+    return omitUndefined({
+      waitlistRequestId: this.entryId,
+      accountId: this.accountId,
+      travelerRef: this.travelerRef,
+      segmentRef: this.segmentRef,
+      travelClass: this.seatClass,
+      deadline: this.deadline.toISOString(),
+      paymentGuaranteeRef: this.paymentGuaranteeRef,
+      itineraryRef: this.itineraryRef,
+      intentFingerprint: this.intentFingerprint,
+      status: this._status,
+      journeyOrderRef: this._journeyOrderRef,
+    });
   }
 
   toSnapshot(queuePosition = 0): WaitlistEntrySnapshot {
+    const resource = this.toResource();
     return {
+      ...resource,
       entryId: this.entryId,
-      accountId: this.accountId,
-      travelerRefs: [...this.travelerRefs],
-      segmentRef: this.segmentRef,
+      version: this._version,
+      loadedVersion: this._loadedVersion,
+      travelerRefs: [this.travelerRef],
       departureDate: this.departureDate,
       seatClass: this.seatClass,
       priorityScore: this.priorityScore,
-      status: this._status,
       queuePosition,
       createdAt: this.createdAt.toISOString(),
-      offeredAt: this._offeredAt?.toISOString() ?? null,
-      offerExpiresAt: this._offerExpiresAt?.toISOString() ?? null,
+      matchingStartedAt: this._matchingStartedAt?.toISOString() ?? null,
+      deadlineExpiredAt: this._deadlineExpiredAt?.toISOString() ?? null,
+      cancelledAt: this._cancelledAt?.toISOString() ?? null,
+      fulfilledAt: this._fulfilledAt?.toISOString() ?? null,
+      closedAt: this._closedAt?.toISOString() ?? null,
       fareQuoteId: this._fareQuoteId,
       capacityHoldId: this._capacityHoldId,
       offerId: this._offerId,
       offerVersion: this._offerVersion,
-      itineraryRef: this.itineraryRef,
       fareQuoteIdempotencyKey: this._fareQuoteIdempotencyKey,
       offerIdempotencyKey: this._offerIdempotencyKey,
       capacityHoldIdempotencyKey: this._capacityHoldIdempotencyKey,
@@ -222,6 +340,11 @@ export class WaitlistEntry {
       journeyOrderIdempotencyKey: this._journeyOrderIdempotencyKey,
       capacitySegmentBookingId: this._capacitySegmentBookingId,
     };
+  }
+
+  private advanceVersion(): number {
+    this._version += 1;
+    return this._version;
   }
 
   private assertStatus(expected: WaitlistStatus, message: string): void {
@@ -252,6 +375,10 @@ export class WaitlistQueue {
 
   queuedEntries(): readonly WaitlistEntry[] {
     return this.sorted().filter((entry) => entry.status === "QUEUED");
+  }
+
+  activeEntries(): readonly WaitlistEntry[] {
+    return this.sorted().filter((entry) => entry.status !== "CLOSED");
   }
 
   allEntries(): readonly WaitlistEntry[] { return this.sorted(); }
@@ -324,4 +451,12 @@ function specialPoints(status: SpecialStatus | readonly SpecialStatus[] = "NONE"
 
 function assertNonEmpty(value: string, field: string): void {
   if (value.trim().length === 0) throw new DomainError("VALIDATION_FAILED", `${field} is required`);
+}
+
+function isPaymentGuaranteeRef(value: string): boolean {
+  return value.startsWith("pay-auth-") || value.startsWith("pi-");
+}
+
+function omitUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }
