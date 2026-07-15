@@ -56,7 +56,7 @@ Registers a new geographic place.
 | `code` | string | Short code, if set. |
 | `timezone` | string | IANA timezone, if set. |
 | `status` | enum | Current status. |
-| `nodes` | array | List of associated transport nodes using the TransportNode shape below, including optional access-time weights when configured. |
+| `nodes` | array | List of associated transport nodes using a summary shape (`nodeId`, `displayName`, `servingModes`, and optional access-time weights when configured); use Get Transport Node for full TransportNode details. |
 
 **Error codes:** `NOT_FOUND`
 

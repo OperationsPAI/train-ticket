@@ -123,9 +123,51 @@ func TestGetTransportNodeHappyPath(t *testing.T) {
 	}
 	var resp application.GetTransportNodeResponse
 	decode(t, rec, &resp)
-	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" || resp.AccessTimeMinutes == nil || *resp.AccessTimeMinutes != 7 || len(resp.WalkingEdges) != 1 || resp.WalkingEdges[0].ToNodeID != "tnd-next" || resp.WalkingEdges[0].WalkingTimeMinutes != 5 {
+	if resp.NodeID != created.NodeID || resp.PlaceID != place.PlaceID || resp.CreatedAt != "2026-07-05T10:30:00Z" || resp.AccessTimeMinutes == nil || *resp.AccessTimeMinutes != 7 || len(resp.WalkingEdges) != 1 || resp.WalkingEdges[0].ToNodeID != "tnd-next" || resp.WalkingEdges[0].WalkingTimeMinutes == nil || *resp.WalkingEdges[0].WalkingTimeMinutes != 5 {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
+}
+
+func TestCreateTransportNodeDistinguishesOmittedAndZeroWalkingTime(t *testing.T) {
+	publisher := &recordingPublisher{}
+	router := setupTestRouter(publisher)
+	place := createPlace(t, router, "Beijing South", "STATION", "0194f2e0-7b3e-700d-8284-5c26e8b0000d")
+	createdRec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Transfer hall", "servingModes": []string{"TRAIN"}, "walkingEdges": []map[string]any{{"toNodeId": "tnd-fallback"}, {"toNodeId": "tnd-zero", "walkingTimeMinutes": 0}}}, "0194f2e0-7b3e-700e-8284-5c26e8b0000e")
+	if createdRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", createdRec.Code, createdRec.Body.String())
+	}
+	assertWalkingTimePresence(t, createdRec, []bool{false, true})
+
+	var created application.CreateTransportNodeResponse
+	decode(t, createdRec, &created)
+	if len(created.WalkingEdges) != 2 || created.WalkingEdges[0].WalkingTimeMinutes != nil || created.WalkingEdges[1].WalkingTimeMinutes == nil || *created.WalkingEdges[1].WalkingTimeMinutes != 0 {
+		t.Fatalf("unexpected create response: %#v", created.WalkingEdges)
+	}
+
+	getRec := perform(router, http.MethodGet, "/api/v1/transport-nodes/"+created.NodeID, nil)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+	assertWalkingTimePresence(t, getRec, []bool{false, true})
+
+	var got application.GetTransportNodeResponse
+	decode(t, getRec, &got)
+	if len(got.WalkingEdges) != 2 || got.WalkingEdges[0].WalkingTimeMinutes != nil || got.WalkingEdges[1].WalkingTimeMinutes == nil || *got.WalkingEdges[1].WalkingTimeMinutes != 0 {
+		t.Fatalf("unexpected get response: %#v", got.WalkingEdges)
+	}
+
+	payload, ok := publisher.last().Payload.(domain.TransportNodeUpdatedEvent)
+	if !ok {
+		t.Fatalf("unexpected event payload: %#v", publisher.last().Payload)
+	}
+	if len(payload.WalkingEdges) != 2 || payload.WalkingEdges[0].WalkingTimeMinutes != nil || payload.WalkingEdges[1].WalkingTimeMinutes == nil || *payload.WalkingEdges[1].WalkingTimeMinutes != 0 {
+		t.Fatalf("unexpected event walking edges: %#v", payload.WalkingEdges)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRawWalkingTimePresence(t, body, []bool{false, true})
 }
 
 func TestValidationFailureErrorBody(t *testing.T) {
@@ -266,6 +308,30 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode failed: %v; body=%s", err, rec.Body.String())
+	}
+}
+
+func assertWalkingTimePresence(t *testing.T, rec *httptest.ResponseRecorder, want []bool) {
+	t.Helper()
+	assertRawWalkingTimePresence(t, rec.Body.Bytes(), want)
+}
+
+func assertRawWalkingTimePresence(t *testing.T, data []byte, want []bool) {
+	t.Helper()
+	var body struct {
+		WalkingEdges []map[string]json.RawMessage `json:"walkingEdges"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("decode failed: %v; body=%s", err, data)
+	}
+	if len(body.WalkingEdges) != len(want) {
+		t.Fatalf("walking edge count mismatch: got %d want %d body=%s", len(body.WalkingEdges), len(want), data)
+	}
+	for i, edge := range body.WalkingEdges {
+		_, ok := edge["walkingTimeMinutes"]
+		if ok != want[i] {
+			t.Fatalf("walking edge %d walkingTimeMinutes presence mismatch: got %t want %t body=%s", i, ok, want[i], data)
+		}
 	}
 }
 

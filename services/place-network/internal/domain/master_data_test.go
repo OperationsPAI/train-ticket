@@ -31,6 +31,27 @@ func TestNewTransportNodeRequiresServingMode(t *testing.T) {
 	}
 }
 
+func TestTransportNodeWalkingTimeMinutesIsOptionalButNonNegative(t *testing.T) {
+	node, err := NewTransportNode("node-sha-hongqiao", "place-sha-hongqiao", "Shanghai Hongqiao Railway Station", []TransportMode{TransportModeTrain})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	zero := 0
+	node.SetAccessWeights(nil, []WalkingEdge{{ToNodeID: "node-fallback"}, {ToNodeID: "node-zero", WalkingTimeMinutes: &zero}})
+	if err := node.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if node.WalkingEdges[0].WalkingTimeMinutes != nil || node.WalkingEdges[1].WalkingTimeMinutes == nil || *node.WalkingEdges[1].WalkingTimeMinutes != 0 {
+		t.Fatalf("unexpected walking edges: %#v", node.WalkingEdges)
+	}
+
+	negative := -1
+	node.SetAccessWeights(nil, []WalkingEdge{{ToNodeID: "node-negative", WalkingTimeMinutes: &negative}})
+	if err := node.Validate(); err == nil || !strings.Contains(err.Error(), "walkingTimeMinutes") {
+		t.Fatalf("expected walkingTimeMinutes validation error, got %v", err)
+	}
+}
+
 func TestProviderPlaceMappingStandardRequiresTargetAndConfidence(t *testing.T) {
 	validFrom := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
 	_, err := NewProviderPlaceMapping("cr", "rail-import", "AOH", "Shanghai Hongqiao", nil, ProviderMappingStandard, 0.95, validFrom, nil, "")

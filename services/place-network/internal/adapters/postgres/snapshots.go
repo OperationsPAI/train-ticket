@@ -25,7 +25,7 @@ type placeSnapshot struct {
 
 type walkingEdgeSnapshot struct {
 	ToNodeID           string `json:"toNodeId"`
-	WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+	WalkingTimeMinutes *int   `json:"walkingTimeMinutes,omitempty"`
 }
 
 type nodeSnapshot struct {

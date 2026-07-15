@@ -127,7 +127,7 @@ func (p Place) Validate() error {
 
 type WalkingEdge struct {
 	ToNodeID           TransportNodeID
-	WalkingTimeMinutes int
+	WalkingTimeMinutes *int
 }
 
 // TransportNode binds a transport-meaningful node to a canonical Place. Service
@@ -167,12 +167,20 @@ func (n *TransportNode) SetAccessWeights(accessTimeMinutes *int, walkingEdges []
 	}
 	n.WalkingEdges = make([]WalkingEdge, len(walkingEdges))
 	for i, edge := range walkingEdges {
-		n.WalkingEdges[i] = WalkingEdge{ToNodeID: TransportNodeID(strings.TrimSpace(string(edge.ToNodeID))), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+		n.WalkingEdges[i] = WalkingEdge{ToNodeID: TransportNodeID(strings.TrimSpace(string(edge.ToNodeID))), WalkingTimeMinutes: copyOptionalInt(edge.WalkingTimeMinutes)}
 	}
 }
 
 func (n *TransportNode) MarkCreatedAt(createdAt time.Time) {
 	n.CreatedAt = createdAt.UTC()
+}
+
+func copyOptionalInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func (n TransportNode) Validate() error {
@@ -207,7 +215,7 @@ func (n TransportNode) Validate() error {
 		if toNodeID == "" {
 			return fmt.Errorf("walking edge toNodeId is required")
 		}
-		if edge.WalkingTimeMinutes < 0 {
+		if edge.WalkingTimeMinutes != nil && *edge.WalkingTimeMinutes < 0 {
 			return fmt.Errorf("walkingTimeMinutes must be non-negative")
 		}
 		if _, exists := seenEdges[toNodeID]; exists {

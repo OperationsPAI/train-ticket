@@ -105,7 +105,7 @@ func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*Cre
 
 type WalkingEdgeResponse struct {
 	ToNodeID           string `json:"toNodeId"`
-	WalkingTimeMinutes int    `json:"walkingTimeMinutes"`
+	WalkingTimeMinutes *int   `json:"walkingTimeMinutes,omitempty"`
 }
 
 type NodeSummary struct {
@@ -194,7 +194,7 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 
 type WalkingEdgeRequest struct {
 	ToNodeID           string
-	WalkingTimeMinutes int
+	WalkingTimeMinutes *int
 }
 
 type CreateTransportNodeRequest struct {
