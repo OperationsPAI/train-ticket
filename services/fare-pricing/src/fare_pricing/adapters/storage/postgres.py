@@ -8,13 +8,14 @@ from datetime import UTC, date, datetime
 import json
 from typing import Any
 
-from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
+from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
 from fare_pricing.domain import (
     AdjustmentQuote,
     AssessmentPurpose,
     AdvancePurchaseTier,
     CapacitySnapshot,
+    EligibilityCertificateSummary,
     FareBreakdown,
     FareQuote,
     FareRule,
@@ -234,6 +235,47 @@ def _quote_to_json(quote: FareQuote) -> dict[str, Any]:
     }
 
 
+def _certificate_to_json(certificate: EligibilityCertificateSummary) -> dict[str, Any]:
+    return {
+        "eligibilityCertificateId": certificate.eligibility_certificate_id,
+        "travelerId": certificate.traveler_id,
+        "credentialRecordId": certificate.credential_record_id,
+        "identityClusterId": certificate.identity_cluster_id,
+        "eligibilityType": certificate.eligibility_type,
+        "certificateStatus": certificate.certificate_status,
+        "validFrom": _dt(certificate.valid_from),
+        "validUntil": _dt(certificate.valid_until),
+        "policyYear": certificate.policy_year,
+        "policyVersion": certificate.policy_version,
+        "annualUsageLimit": certificate.annual_usage_limit,
+        "annualUsageReserved": certificate.annual_usage_reserved,
+        "annualUsageConfirmed": certificate.annual_usage_confirmed,
+        "applicableProductCodes": list(certificate.applicable_product_codes),
+        "aggregateVersion": certificate.aggregate_version,
+    }
+
+
+def _certificate_from_json(data: Mapping[str, Any] | str) -> EligibilityCertificateSummary:
+    data = _json_obj(data)
+    return EligibilityCertificateSummary(
+        eligibility_certificate_id=str(data["eligibilityCertificateId"]),
+        traveler_id=str(data["travelerId"]),
+        eligibility_type=str(data["eligibilityType"]),
+        certificate_status=str(data["certificateStatus"]),
+        valid_from=_parse_dt(str(data["validFrom"])),
+        valid_until=_parse_dt(str(data["validUntil"])),
+        policy_year=str(data["policyYear"]),
+        policy_version=str(data["policyVersion"]),
+        annual_usage_limit=int(data["annualUsageLimit"]),
+        annual_usage_reserved=int(data["annualUsageReserved"]),
+        annual_usage_confirmed=int(data["annualUsageConfirmed"]),
+        applicable_product_codes=tuple(str(item) for item in data.get("applicableProductCodes", ())),
+        aggregate_version=int(data["aggregateVersion"]),
+        credential_record_id=data.get("credentialRecordId"),
+        identity_cluster_id=data.get("identityClusterId"),
+    )
+
+
 def _quote_from_json(data: Mapping[str, Any] | str) -> FareQuote:
     data = _json_obj(data)
     return FareQuote(
@@ -342,6 +384,8 @@ class PostgresFarePricingStore:
         self._rule_sets = SnapshotRepository("fare_rule_set_snapshots")
         self._quotes = SnapshotRepository("fare_quote_snapshots")
         self._adjustment_quotes = SnapshotRepository("adjustment_quote_snapshots")
+        self._eligibility_certificates = SnapshotRepository("eligibility_certificate_cache")
+        self._processed = ProcessedEventsGuard()
 
     @contextmanager
     def transaction(self):
@@ -559,3 +603,51 @@ class PostgresFarePricingStore:
                 self._outbox.append(conn, envelope)
 
         self._with_conn(write)
+
+    def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
+        return bool(self._with_conn(lambda conn: self._processed.try_mark_processed(conn, event_id, stream)))
+
+    def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
+        def write(conn: Any) -> None:
+            current = self._eligibility_certificates.get(conn, certificate.eligibility_certificate_id)
+            if current is not None:
+                existing = _certificate_from_json(current[1])
+                if certificate.aggregate_version < existing.aggregate_version:
+                    return
+            self._eligibility_certificates.save(
+                conn,
+                certificate.eligibility_certificate_id,
+                _certificate_to_json(certificate),
+                None if current is None else int(current[0]),
+            )
+
+        self._with_conn(write)
+
+    def update_eligibility_usage_counts(self, certificate_id: str, reserved: int, confirmed: int, aggregate_version: int) -> None:
+        def write(conn: Any) -> None:
+            current = self._eligibility_certificates.get(conn, certificate_id)
+            if current is None:
+                return
+            certificate = _certificate_from_json(current[1]).with_usage_counts(reserved, confirmed, aggregate_version)
+            self._eligibility_certificates.save(conn, certificate_id, _certificate_to_json(certificate), int(current[0]))
+
+        self._with_conn(write)
+
+    def active_eligibility_certificates_for(
+        self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str
+    ) -> tuple[EligibilityCertificateSummary, ...]:
+        target_date = date.fromisoformat(journey_date)
+
+        def read(conn: Any) -> tuple[EligibilityCertificateSummary, ...]:
+            rows = conn.execute(
+                "SELECT data FROM eligibility_certificate_cache "
+                "WHERE data->>'travelerId' = %s AND data->>'eligibilityType' = %s AND data->>'certificateStatus' = 'ACTIVE'",
+                (traveler_id, eligibility_type.strip().upper()),
+            ).fetchall()
+            return tuple(
+                certificate
+                for row in rows
+                if (certificate := _certificate_from_json(row[0])).is_active_for(traveler_id, eligibility_type, target_date, product_code)
+            )
+
+        return self._with_conn(read)

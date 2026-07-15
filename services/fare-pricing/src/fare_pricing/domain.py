@@ -236,6 +236,89 @@ class CapacitySnapshot:
         return (Decimal(self.remaining_capacity) * Decimal("100") / Decimal(self.total_capacity)).quantize(Decimal("0.01"))
 
 
+ELIGIBILITY_TYPES = frozenset({"STUDENT", "CHILD", "MILITARY_DISABLED"})
+CERTIFICATE_STATUSES = frozenset({"DRAFT", "ACTIVE", "REJECTED", "EXPIRED", "REVOKED"})
+
+
+@dataclass(frozen=True, slots=True)
+class EligibilityCertificateSummary:
+    eligibility_certificate_id: str
+    traveler_id: str
+    eligibility_type: str
+    certificate_status: str
+    valid_from: datetime
+    valid_until: datetime
+    policy_year: str
+    policy_version: str
+    annual_usage_limit: int
+    annual_usage_reserved: int
+    annual_usage_confirmed: int
+    applicable_product_codes: tuple[str, ...]
+    aggregate_version: int
+    credential_record_id: str | None = None
+    identity_cluster_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.eligibility_certificate_id.strip():
+            raise PricingError("eligibility certificate id is required")
+        if not self.traveler_id.strip():
+            raise PricingError("eligibility certificate traveler id is required")
+        normalized_type = self.eligibility_type.strip().upper()
+        if normalized_type not in ELIGIBILITY_TYPES:
+            raise PricingError(f"unsupported eligibility type: {self.eligibility_type}")
+        normalized_status = self.certificate_status.strip().upper()
+        if normalized_status not in CERTIFICATE_STATUSES:
+            raise PricingError(f"unsupported certificate status: {self.certificate_status}")
+        if self.valid_until <= self.valid_from:
+            raise PricingError("eligibility certificate validity must end after it starts")
+        if self.annual_usage_limit < 0:
+            raise PricingError("annual usage limit cannot be negative")
+        if self.annual_usage_reserved < 0 or self.annual_usage_confirmed < 0:
+            raise PricingError("annual usage counters cannot be negative")
+        if self.aggregate_version < 0:
+            raise PricingError("eligibility certificate aggregate version cannot be negative")
+        product_codes = tuple(sorted({code.strip() for code in self.applicable_product_codes if code.strip()}))
+        object.__setattr__(self, "eligibility_type", normalized_type)
+        object.__setattr__(self, "certificate_status", normalized_status)
+        object.__setattr__(self, "applicable_product_codes", product_codes)
+
+    def with_usage_counts(self, reserved: int, confirmed: int, aggregate_version: int) -> Self:
+        if aggregate_version < self.aggregate_version:
+            return self
+        return EligibilityCertificateSummary(
+            self.eligibility_certificate_id,
+            self.traveler_id,
+            self.eligibility_type,
+            self.certificate_status,
+            self.valid_from,
+            self.valid_until,
+            self.policy_year,
+            self.policy_version,
+            self.annual_usage_limit,
+            reserved,
+            confirmed,
+            self.applicable_product_codes,
+            aggregate_version,
+            self.credential_record_id,
+            self.identity_cluster_id,
+        )
+
+    def is_active_for(self, traveler_id: str, eligibility_type: str, journey_date: date, product_code: str) -> bool:
+        if self.traveler_id != traveler_id or self.eligibility_type != eligibility_type.strip().upper():
+            return False
+        if self.certificate_status != "ACTIVE":
+            return False
+        if product_code not in self.applicable_product_codes:
+            return False
+        valid_start = self.valid_from.astimezone(UTC).date()
+        valid_end = self.valid_until.astimezone(UTC).date()
+        if not valid_start <= journey_date <= valid_end:
+            return False
+        if self.annual_usage_limit == 0:
+            return False
+        return (self.annual_usage_reserved + self.annual_usage_confirmed) < self.annual_usage_limit
+
+
 DEFAULT_ADVANCE_PURCHASE_TIERS: tuple[AdvancePurchaseTier, ...] = (
     AdvancePurchaseTier(21, None, Decimal("0.70"), "ADVANCE_PURCHASE_TIER_1"),
     AdvancePurchaseTier(14, 20, Decimal("0.80"), "ADVANCE_PURCHASE_TIER_2"),

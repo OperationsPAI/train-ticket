@@ -11,3 +11,13 @@ CREATE TABLE IF NOT EXISTS capacity_snapshot_cache (
 
 CREATE INDEX IF NOT EXISTS idx_capacity_snapshot_cache_departure
   ON capacity_snapshot_cache(departure_date, segment_ref);
+
+CREATE TABLE IF NOT EXISTS eligibility_certificate_cache (
+  id text PRIMARY KEY,
+  version bigint NOT NULL,
+  data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_eligibility_certificate_cache_lookup
+  ON eligibility_certificate_cache ((data->>'travelerId'), (data->>'eligibilityType'), (data->>'certificateStatus'));

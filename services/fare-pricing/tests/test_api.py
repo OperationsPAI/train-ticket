@@ -23,6 +23,7 @@ from fare_pricing import (
     calculate_fare_quote,
 )
 from fare_pricing.api import create_app
+from fare_pricing.handlers import handle_identity_verification_event
 from fare_pricing.application import deterministic_rule_set_event_id
 from fare_pricing.ids import uuid7
 from fare_pricing.application.service import InMemoryStore
@@ -37,12 +38,15 @@ def uuid7_key(suffix: int = 1) -> str:
     return f"0194f2e0-7b3e-7610-8284-{suffix:012d}"
 
 
-def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True) -> FareRule:
+def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True, eligibility_type: str | None = None) -> FareRule:
+    parameters = {"rule": rule_id}
+    if eligibility_type is not None:
+        parameters["eligibilityType"] = eligibility_type
     return FareRule(
         rule_id=rule_id,
         kind=kind,
         amount=Money(amount, "CNY"),
-        explanation=PriceExplanation(f"fare.{rule_id}", {"rule": rule_id}),
+        explanation=PriceExplanation(f"fare.{rule_id}", parameters),
         refundable=refundable,
     )
 
@@ -859,6 +863,57 @@ class FarePricingMessagingTest(unittest.TestCase):
         stream_events = publisher.published_envelopes_on_stream("events:fare-pricing")
         self.assertEqual(len(stream_events), 1)
         self.assertEqual(stream_events[0].event_id, "evt-stream-test")
+
+    def test_identity_verification_certificate_event_enables_eligibility_discount_and_deduplicates(self) -> None:
+        store = InMemoryStore()
+        store.fare_rule_sets["ruleset-main"] = published_rule_set(rule("student", RuleKind.DISCOUNT, "20.00", eligibility_type="STUDENT"))
+        client = make_app(store, FakeEventPublisher())
+        service = client.app.state.fare_pricing_service
+        envelope = EventEnvelope(
+            event_id="evt-elc-registered",
+            event_type="EligibilityCertificateVerified",
+            producer="identity-verification",
+            correlation_id="corr-test",
+            occurred_at=NOW,
+            payload={
+                "eligibilityCertificateId": "elc-123",
+                "travelerId": "tvl-student",
+                "credentialRecordId": "crd-123",
+                "eligibilityType": "STUDENT",
+                "certificateStatus": "ACTIVE",
+                "validFrom": "2026-07-10T00:00:00.000Z",
+                "validUntil": "2026-12-31T23:59:59.000Z",
+                "policyYear": "2026",
+                "policyVersion": "student-2026",
+                "annualUsageLimit": 4,
+                "annualUsageReserved": 0,
+                "annualUsageConfirmed": 0,
+                "applicableProductCodes": ["rail-standard"],
+                "verificationAttemptId": "eva-123",
+                "verifiedAt": "2026-07-03T11:00:00.000Z",
+                "aggregateVersion": 2,
+            },
+        )
+
+        handle_identity_verification_event(service, envelope)
+        handle_identity_verification_event(service, envelope)
+
+        self.assertEqual(store.processed_events, {"evt-elc-registered"})
+        self.assertEqual(len(store.eligibility_certificates), 1)
+        quote_resp = client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-student"],
+                "channel": "web",
+                "segmentRefs": ["seg-student"],
+                "departureTime": "2026-07-15T08:00:00.000Z",
+            },
+            headers={"Idempotency-Key": uuid7_key(950)},
+        )
+        self.assertEqual(quote_resp.status_code, 201, quote_resp.text)
+        discounts = quote_resp.json()["breakdown"]["discounts"]
+        self.assertIn("student", [item["ruleId"] for item in discounts])
+        self.assertEqual(quote_resp.json()["breakdown"]["total"], {"currency": "CNY", "minorUnits": 11800})
 
     def test_fake_subscriber_deduplicates_duplicate_event_ids(self) -> None:
         duplicate = EventEnvelope(
