@@ -47,7 +47,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
-    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'OFFERED' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE status = 'MATCHING' AND offer_expires_at <= $1 ORDER BY offer_expires_at ASC`, [now.toISOString()]) as QueryResult<WaitlistRow>;
     return result.rows.map(entryFromRow);
   }
 
@@ -58,6 +58,15 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     const result = await this.db.query(
       `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
       params,
+    ) as QueryResult<WaitlistRow>;
+    const entries = result.rows.map(entryFromRow);
+    return entries.map((entry) => entry.toSnapshot(positionIn(entries, entry.entryId)));
+  }
+
+  async listByTraveler(travelerRef: string): Promise<readonly WaitlistEntrySnapshot[]> {
+    const result = await this.db.query(
+      `SELECT * FROM waitlist_entries WHERE traveler_refs ? $1 ORDER BY created_at ASC, entry_id ASC`,
+      [travelerRef],
     ) as QueryResult<WaitlistRow>;
     const entries = result.rows.map(entryFromRow);
     return entries.map((entry) => entry.toSnapshot(positionIn(entries, entry.entryId)));
@@ -119,6 +128,10 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     offerId: typeof data.offerId === "string" ? data.offerId : undefined,
     offerVersion: typeof data.offerVersion === "number" ? data.offerVersion : undefined,
     itineraryRef: typeof data.itineraryRef === "string" ? data.itineraryRef : undefined,
+    deadline: typeof data.deadline === "string" ? data.deadline : deadlineFromDepartureDate(dateString(row.departure_date)),
+    paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : `pay-auth-${row.entry_id}`,
+    intentFingerprint: typeof data.intentFingerprint === "string" ? data.intentFingerprint : defaultIntentFingerprint(row.traveler_refs, row.segment_ref, dateString(row.departure_date), row.seat_class),
+    journeyOrderRef: typeof data.journeyOrderRef === "string" ? data.journeyOrderRef : undefined,
     fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
     offerIdempotencyKey: typeof data.offerIdempotencyKey === "string" ? data.offerIdempotencyKey : undefined,
     capacityHoldIdempotencyKey: typeof data.capacityHoldIdempotencyKey === "string" ? data.capacityHoldIdempotencyKey : undefined,
@@ -136,6 +149,11 @@ function positionIn(entries: readonly WaitlistEntry[], entryId: string): number 
 
 function dateString(value: Date | string): string { return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10); }
 function instantString(value: Date | string): string { return value instanceof Date ? value.toISOString() : new Date(value).toISOString(); }
+function deadlineFromDepartureDate(departureDate: string): string { return `${departureDate}T00:00:00.000Z`; }
+function defaultIntentFingerprint(travelerRefs: unknown, segmentRef: string, departureDate: string, seatClass: string): string {
+  const travelerRef = Array.isArray(travelerRefs) ? String(travelerRefs[0] ?? "unknown") : "unknown";
+  return `${travelerRef}:${segmentRef}:${departureDate}:${seatClass}`;
+}
 function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string }> { return error instanceof Error ? { name: error.name || "Error", message: error.message || "Storage failed" } : { name: typeof error, message: "Storage failed" }; }
 
 type WaitlistRow = Readonly<{

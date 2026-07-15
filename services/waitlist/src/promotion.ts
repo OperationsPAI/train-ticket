@@ -18,8 +18,10 @@ export type WaitlistOffer = Readonly<{
   expiresAt: string;
 }>;
 
+export type PromotedWaitlistRequest = WaitlistEntrySnapshot & Readonly<{ waitlistRequestId: string }>;
+
 export type PromotionResult = Readonly<{
-  promoted: readonly WaitlistEntrySnapshot[];
+  promoted: readonly PromotedWaitlistRequest[];
   offers: readonly WaitlistOffer[];
 }>;
 
@@ -30,6 +32,7 @@ export interface WaitlistRepository {
   findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
+  listByTraveler(travelerRef: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
 }
 
 export interface FarePricingClient {
@@ -139,7 +142,7 @@ export class PromotionOrchestrator {
   ) {}
 
   async onCapacityFreed(event: WaitlistCapacityFreed, correlationId?: string): Promise<PromotionResult> {
-    const promoted: WaitlistEntrySnapshot[] = [];
+    const promoted: PromotedWaitlistRequest[] = [];
     const offers: WaitlistOffer[] = [];
     const slots = Math.max(0, Math.floor(event.freedSlots));
     for (let index = 0; index < slots; index++) {
@@ -153,7 +156,7 @@ export class PromotionOrchestrator {
       const offer = { offerId: commercialOffer.offerId, offerVersion: commercialOffer.offerVersion, entryId: entry.entryId, fareQuoteId: quote.fareQuoteId, capacityHoldId: hold.capacityHoldId, expiresAt: expiresAt.toISOString() };
       entry.offer(offer.offerId, offer.offerVersion, quote.fareQuoteId, hold.capacityHoldId, now, expiresAt);
       const snapshot = await this.repository.save(entry);
-      promoted.push(snapshot);
+      promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
       await publishAll(this.publisher, [waitlistEntryPromoted(snapshot, offer, correlationId)]);
     }
@@ -166,7 +169,7 @@ export class PromotionOrchestrator {
     for (const entry of await this.repository.findExpiredOffers(now)) {
       const offer = offerFromEntry(entry);
       const capacityHoldId = entry.capacityHoldId;
-      entry.expire(now);
+      entry.returnToQueue();
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
       const snapshot = await this.repository.save(entry);
       expired.push(snapshot);
