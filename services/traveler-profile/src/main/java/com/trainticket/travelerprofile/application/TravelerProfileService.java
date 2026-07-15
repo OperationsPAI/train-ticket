@@ -10,10 +10,12 @@ import com.trainticket.travelerprofile.domain.Document;
 import com.trainticket.travelerprofile.domain.DocumentAdded;
 import com.trainticket.travelerprofile.domain.DocumentType;
 import com.trainticket.travelerprofile.domain.DocumentVerified;
+import com.trainticket.travelerprofile.domain.DomainRuleViolation;
 import com.trainticket.travelerprofile.domain.EligibilityExpired;
 import com.trainticket.travelerprofile.domain.EligibilityGranted;
 import com.trainticket.travelerprofile.domain.EligibilityRevoked;
 import com.trainticket.travelerprofile.domain.EligibilitySummary;
+import com.trainticket.travelerprofile.domain.ExternalVerificationFact;
 import com.trainticket.travelerprofile.domain.TravelerProfile;
 import com.trainticket.travelerprofile.domain.TravelerProfileEvent;
 import java.nio.charset.StandardCharsets;
@@ -200,6 +202,26 @@ public class TravelerProfileService {
         publishNewEvents(aggregate.domainEvents(), eventOffset, traveler);
         saveIdempotentResponse(key, requestFingerprint, result);
         return result;
+    }
+
+    @Transactional
+    public boolean recordIdentityVerificationFact(String travelerId, ExternalVerificationFact fact) {
+        TravelerState traveler = store.findByTravelerId(travelerId).orElse(null);
+        if (traveler == null) {
+            return false;
+        }
+        try {
+            traveler.aggregate().recordExternalVerificationFact(fact);
+        } catch (DomainRuleViolation exception) {
+            return false;
+        }
+        Instant updatedAt = fact.recordedAt().isAfter(traveler.updatedAt()) ? fact.recordedAt() : traveler.updatedAt();
+        store.save(new TravelerState(
+            traveler.aggregate(), traveler.travelerId(), nextSnapshotVersion(traveler.snapshotVersion()), traveler.accountId(),
+            traveler.travelerType(), traveler.givenName(), traveler.familyName(), traveler.contactEmail(), traveler.contactPhone(),
+            traveler.createdAt(), updatedAt
+        ));
+        return true;
     }
 
     private TravelerState find(String travelerId) {
@@ -446,7 +468,13 @@ public class TravelerProfileService {
     private TravelerProfileView toView(TravelerState state) {
         return new TravelerProfileView(
             state.travelerId(), state.snapshotVersion(), state.accountId(), state.travelerType(), state.givenName(), state.familyName(),
-            documentType(state), maskedDocumentRef(state), state.contactEmail(), state.contactPhone(), state.createdAt(), state.updatedAt()
+            documentType(state), maskedDocumentRef(state), state.contactEmail(), state.contactPhone(), state.createdAt(), state.updatedAt(),
+            state.aggregate().verificationFacts().stream()
+                .map(fact -> new VerificationFactView(
+                    fact.credentialRecordId(), fact.verificationCaseId(), fact.status().name(), fact.documentType(), fact.maskedDocumentNo(),
+                    fact.policyVersion(), fact.reasonCode(), fact.validFrom(), fact.validUntil(), fact.recordedAt()
+                ))
+                .toList()
         );
     }
 

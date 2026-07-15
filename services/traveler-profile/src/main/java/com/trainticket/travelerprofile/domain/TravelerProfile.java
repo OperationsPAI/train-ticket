@@ -20,6 +20,7 @@ public final class TravelerProfile {
     private final Map<String, Document> documents;
     private String primaryDocumentId;
     private final Map<String, EligibilitySummary> eligibilitySummaries;
+    private final Map<String, ExternalVerificationFact> verificationFacts;
     private PreferenceSnapshot preferences;
     private long version;
     private final List<TravelerProfileEvent> domainEvents;
@@ -39,6 +40,7 @@ public final class TravelerProfile {
         this.status = TravelerProfileStatus.DRAFT;
         this.documents = new HashMap<>();
         this.eligibilitySummaries = new HashMap<>();
+        this.verificationFacts = new HashMap<>();
         this.preferences = new PreferenceSnapshot(Collections.emptyMap(), Collections.emptyMap(), 1);
         this.domainEvents = new ArrayList<>();
     }
@@ -75,6 +77,7 @@ public final class TravelerProfile {
         List<Document> documents,
         String primaryDocumentId,
         List<EligibilitySummary> eligibilitySummaries,
+        List<ExternalVerificationFact> verificationFacts,
         PreferenceSnapshot preferences,
         List<TravelerProfileEvent> domainEvents
     ) {
@@ -89,6 +92,10 @@ public final class TravelerProfile {
         profile.eligibilitySummaries.clear();
         for (EligibilitySummary summary : Objects.requireNonNull(eligibilitySummaries, "eligibilitySummaries are required")) {
             profile.eligibilitySummaries.put(summary.eligibilityId(), summary);
+        }
+        profile.verificationFacts.clear();
+        for (ExternalVerificationFact fact : Objects.requireNonNull(verificationFacts, "verificationFacts are required")) {
+            profile.verificationFacts.put(fact.credentialRecordId(), fact);
         }
         profile.preferences = Objects.requireNonNull(preferences, "preferences are required");
         profile.domainEvents.clear();
@@ -107,6 +114,7 @@ public final class TravelerProfile {
     public List<Document> documents() { return List.copyOf(documents.values()); }
     public Document primaryDocument() { return primaryDocumentId != null ? documents.get(primaryDocumentId) : null; }
     public List<EligibilitySummary> eligibilitySummaries() { return List.copyOf(eligibilitySummaries.values()); }
+    public List<ExternalVerificationFact> verificationFacts() { return List.copyOf(verificationFacts.values()); }
     public PreferenceSnapshot preferences() { return preferences; }
     public long version() { return version; }
     public TravelerProfile withVersion(long version) {
@@ -295,6 +303,39 @@ public final class TravelerProfile {
         domainEvents.add(new EligibilityExpired(profileId, eligibilityId, summary.eligibilityType(),
             EventMetadata.create(now, sourceCommandId, causationId, correlationId,
                 Map.of("eligibilityType", summary.eligibilityType()))));
+    }
+
+    public void recordExternalVerificationFact(ExternalVerificationFact fact) {
+        requireNotDeactivated();
+        ExternalVerificationFact current = verificationFacts.get(fact.credentialRecordId());
+        if (current == null) {
+            verificationFacts.put(fact.credentialRecordId(), fact);
+            return;
+        }
+        if (!current.recordedAt().isAfter(fact.recordedAt())) {
+            verificationFacts.put(fact.credentialRecordId(), mergeVerificationFact(current, fact));
+        }
+    }
+
+    private static ExternalVerificationFact mergeVerificationFact(ExternalVerificationFact current, ExternalVerificationFact next) {
+        return new ExternalVerificationFact(
+            next.credentialRecordId(),
+            next.verificationCaseId(),
+            next.status(),
+            next.documentType() == null ? current.documentType() : next.documentType(),
+            next.maskedDocumentNo() == null ? current.maskedDocumentNo() : next.maskedDocumentNo(),
+            next.documentHash() == null ? current.documentHash() : next.documentHash(),
+            next.policyVersion(),
+            next.reasonCode(),
+            next.validFrom(),
+            next.validUntil() == null ? current.validUntil() : next.validUntil(),
+            next.recordedAt(),
+            next.sourceEventId()
+        );
+    }
+
+    public ExternalVerificationFact verificationFactForCredential(String credentialRecordId) {
+        return verificationFacts.get(requireText(credentialRecordId, "credentialRecordId"));
     }
 
     // --- Preference commands ---

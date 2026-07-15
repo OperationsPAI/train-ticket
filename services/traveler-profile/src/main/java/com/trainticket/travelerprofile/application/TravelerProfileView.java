@@ -1,6 +1,7 @@
 package com.trainticket.travelerprofile.application;
 
 import java.time.Instant;
+import java.util.List;
 
 public record TravelerProfileView(
     String travelerId,
@@ -14,6 +15,7 @@ public record TravelerProfileView(
     String contactEmail,
     String contactPhone,
     Instant createdAt,
-    Instant updatedAt
+    Instant updatedAt,
+    List<VerificationFactView> verificationFacts
 ) {
 }
