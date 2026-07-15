@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS waitlist_entries (
     departure_date date NOT NULL,
     seat_class text NOT NULL,
     priority_score integer NOT NULL CHECK (priority_score >= 0 AND priority_score <= 100),
-    status text NOT NULL CHECK (status IN ('QUEUED', 'OFFERED', 'ACCEPTED', 'EXPIRED', 'CANCELLED')),
+    status text NOT NULL CHECK (status IN ('DRAFT', 'QUEUED', 'MATCHING', 'FULFILLED', 'EXPIRED', 'CANCELLED', 'SUSPENDED', 'CLOSED')),
     offered_at timestamptz,
     offer_expires_at timestamptz,
     fare_quote_id text,
@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS waitlist_queue_order_idx
 
 CREATE INDEX IF NOT EXISTS waitlist_offer_expiry_idx
     ON waitlist_entries (offer_expires_at)
-    WHERE status = 'OFFERED';
+    WHERE status = 'MATCHING';
 
 CREATE TABLE IF NOT EXISTS waitlist_offers (
     offer_id text PRIMARY KEY,

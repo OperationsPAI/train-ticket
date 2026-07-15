@@ -36,28 +36,26 @@ test("WaitlistCapacityFreed promotes highest-priority queued entry", async () =>
 
   const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
-  assert.equal(result.promoted[0]?.entryId, platinum.entryId);
-  assert.equal((await service.get(platinum.entryId)).status, "OFFERED");
-  assert.equal((await service.get(regular.entryId)).status, "QUEUED");
+  assert.equal(result.promoted[0]?.waitlistRequestId, platinum.waitlistRequestId);
+  assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
+  assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
   assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 1);
 });
 
-test("expired offer releases hold and promotes next queued entry", async () => {
+test("expired matching attempt returns to queue, releases hold, and frees capacity", async () => {
   let current = new Date("2026-01-01T00:00:00.000Z");
   const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
   const capacity = new StubCapacity();
   const service = new WaitlistApplicationService(repository, publisher, new StubFarePricing(), capacity, new StubJourneyOrder(), () => current, new StubOfferManagement());
   const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  const second = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "GOLD", tripCount: 0, daysBefore: 20 });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
   current = new Date("2026-01-01T00:16:00.000Z");
   await service.expireDueOffers();
 
-  assert.equal((await service.get(first.entryId)).status, "EXPIRED");
-  assert.equal((await service.get(second.entryId)).status, "OFFERED");
-  assert.deepEqual(capacity.released, [`hold-${first.entryId}`]);
+  assert.equal((await service.get(first.waitlistRequestId)).status, "MATCHING");
+  assert.deepEqual(capacity.released, [`hold-${first.waitlistRequestId}`]);
   assert.equal(publisher.findByEventType("WaitlistOfferExpired").length, 1);
   assert.equal(publisher.findByEventType("WaitlistEntryPromoted").length, 2);
 });
@@ -66,9 +64,9 @@ test("accept promotion creates journey order and publishes accepted event", asyn
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
-  const order = await service.accept(entry.entryId, { paymentMethodRef: "pm-1" });
-  assert.equal(order.orderId, `ord-${entry.entryId}`);
-  assert.equal((await service.get(entry.entryId)).status, "ACCEPTED");
+  const order = await service.accept(entry.waitlistRequestId, { paymentMethodRef: "pm-1" });
+  assert.equal(order.orderId, `ord-${entry.waitlistRequestId}`);
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "FULFILLED");
 });
 
 test("accept does not mutate entry when journey order creation fails", async () => {
@@ -79,7 +77,7 @@ test("accept does not mutate entry when journey order creation fails", async () 
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
   await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1 });
 
-  await assert.rejects(() => service.accept(entry.entryId), /downstream unavailable/);
+  await assert.rejects(() => service.accept(entry.waitlistRequestId), /downstream unavailable/);
 
-  assert.equal((await service.get(entry.entryId)).status, "OFFERED");
+  assert.equal((await service.get(entry.waitlistRequestId)).status, "MATCHING");
 });

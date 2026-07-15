@@ -58,13 +58,33 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
   app.get("/metadata", async () => metadata());
 
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => ({
+    statusCode: 201,
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
+  }));
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist/entries", async (request, ctx) => ({
     statusCode: 201,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).join(request.body as any, ctx.correlationId)),
   }));
+  app.get("/api/v1/waitlist-requests", async (request, reply) => handleRead(reply, request, () => {
+    const params = query(request);
+    return runCommand((repository, publisher) => commandService(repository, publisher).listByTraveler(
+      params.travelerRef ?? "",
+      params.status as any,
+      parsePageNumber(params.limit, 20, 100),
+      parsePageNumber(params.offset, 0, Number.MAX_SAFE_INTEGER),
+    ));
+  }));
+  app.get("/api/v1/waitlist-requests/:waitlistRequestId", async (request, reply) => handleRead(reply, request, () => (
+    runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "waitlistRequestId")))
+  )));
   app.get("/api/v1/waitlist/entries/:entryId", async (request, reply) => handleRead(reply, request, () => (
     runCommand((repository, publisher) => commandService(repository, publisher).get(param(request, "entryId")))
   )));
+  stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests/:waitlistRequestId/cancel", async (request) => ({
+    statusCode: 200,
+    body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "waitlistRequestId"))),
+  }));
   stateChanging(app, idempotencyStore, "DELETE", "/api/v1/waitlist/entries/:entryId", async (request) => ({
     statusCode: 200,
     body: await runCommand((repository, publisher) => commandService(repository, publisher).cancel(param(request, "entryId"))),
@@ -122,3 +142,8 @@ async function handleRead(reply: FastifyReply, request: FastifyRequest, operatio
 function requestContext(request: FastifyRequest): RequestContext { return kitRequestContext({ headers: request.headers, id: request.id }); }
 function param(request: FastifyRequest, name: string): string { return (request.params as Record<string, string>)[name] ?? ""; }
 function query(request: FastifyRequest): Record<string, string | undefined> { return request.query as Record<string, string | undefined>; }
+function parsePageNumber(value: string | undefined, fallback: number, max: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.min(parsed, max);
+}
