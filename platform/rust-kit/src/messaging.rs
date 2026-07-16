@@ -1154,8 +1154,23 @@ pub mod redis_runtime {
                     }
                 };
                 for message in messages {
-                    self.process_message(ops, &group, &consumer_name, message, handler)
-                        .await?;
+                    if let Err(error) = self
+                        .process_message(ops, &group, &consumer_name, message, handler)
+                        .await
+                    {
+                        // A single message failing (transient handler/XACK/DLQ error)
+                        // must NOT tear down the whole subscriber: that thrashed Rust
+                        // services into long reconnect-backoff windows where they
+                        // silently stopped consuming (dropped saga/entitlement events).
+                        // Back off, recreate groups on NOGROUP, and re-loop; the
+                        // unacked message is retried via recover_pending next round.
+                        if run_once {
+                            return Err(error);
+                        }
+                        Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0)
+                            .await;
+                        break;
+                    }
                 }
                 if run_once {
                     return Ok(());
