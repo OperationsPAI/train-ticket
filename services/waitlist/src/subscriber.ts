@@ -25,10 +25,10 @@ export function createWaitlistEventHandler(service: WaitlistConsumedEventService
         return successfulHandling();
       }
       if (envelope.eventType === "CapacityReleased") {
-        // CapacityReleased is a lower-level hold-release fact and does NOT carry
-        // segmentRef/departureDate; only the purpose-built WaitlistCapacityFreed
-        // drives fulfillment. Try leniently; if the fulfillment fields are absent
-        // just ack (skip) rather than throwing fatally and poisoning the consumer.
+        // CapacityReleased is a lower-level hold-release fact. Fulfillment is
+        // driven by WaitlistCapacityFreed when present, but consume releases that
+        // carry segment metadata as a fallback; otherwise ack-skip to avoid
+        // poisoning the consumer with unrelated release facts.
         const freed = tryParseCapacityFreed(envelope);
         if (freed) await service.handleCapacityFreed(freed, envelope.correlationId, envelope);
         return successfulHandling();
@@ -53,15 +53,17 @@ export function createWaitlistEventHandler(service: WaitlistConsumedEventService
 // fields are absent (e.g. a generic CapacityReleased that is not waitlist-scoped).
 export function tryParseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed | undefined {
   const payload = envelope.payload as Record<string, unknown>;
-  if (typeof payload.segmentRef !== "string" || payload.segmentRef.trim().length === 0) return undefined;
-  if (typeof payload.departureDate !== "string" || payload.departureDate.trim().length === 0) return undefined;
+  const segmentRef = payload.segmentRef ?? payload.serviceSegmentRef;
+  const departureDate = payload.departureDate ?? dateFromCapacityPayload(payload);
+  if (typeof segmentRef !== "string" || segmentRef.trim().length === 0) return undefined;
+  if (typeof departureDate !== "string" || departureDate.trim().length === 0) return undefined;
   return parseCapacityFreed(envelope);
 }
 
 export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed {
   const payload = envelope.payload as Record<string, unknown>;
-  const segmentRef = string(payload.segmentRef);
-  const departureDate = string(payload.departureDate);
+  const segmentRef = string(payload.segmentRef ?? payload.serviceSegmentRef);
+  const departureDate = string(payload.departureDate ?? dateFromCapacityPayload(payload));
   const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? payload.quantity ?? 1);
   const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : typeof payload.classRef === "string" ? payload.classRef : undefined;
   return { segmentRef, departureDate, freedSlots, seatClass, capacityReleaseRef: envelope.eventId };
@@ -81,4 +83,14 @@ function number(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) throw new Error("WaitlistCapacityFreed event must include freedSlots >= 1");
   return parsed;
+}
+
+function dateFromCapacityPayload(payload: Record<string, unknown>): string | undefined {
+  const serviceSegmentRef = typeof payload.serviceSegmentRef === "string" ? payload.serviceSegmentRef : typeof payload.segmentRef === "string" ? payload.segmentRef : undefined;
+  return serviceSegmentRef ? dateFromSegmentRef(serviceSegmentRef) : undefined;
+}
+
+function dateFromSegmentRef(segmentRef: string): string | undefined {
+  const match = /(?:^|-)\d{4}-\d{2}-\d{2}(?:-|$)/u.exec(segmentRef);
+  return match?.[0].replace(/^-|-$/gu, "");
 }

@@ -193,6 +193,11 @@ export class WaitlistEntry {
     this._offerVersion = offerVersion;
   }
 
+  recordJourneyOrderStarted(journeyOrderRef: string): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can record a journey order");
+    this.recordJourneyOrderRef(journeyOrderRef);
+  }
+
   accept(now: Date, journeyOrderRef: string): void {
     this.ensureOfferAcceptable(now);
     this.recordJourneyOrderRef(journeyOrderRef);

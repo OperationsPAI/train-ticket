@@ -217,6 +217,7 @@ export class WaitlistApplicationService {
     const entry = await this.repository.findByJourneyOrderRef?.(orderId);
     if (!entry) return undefined;
     if (entry.status === "FULFILLED") return toWaitlistRequestResource(await this.snapshot(entry));
+    if (entry.status !== "MATCHING") return undefined;
     const now = this.now();
     entry.accept(now, orderId);
     const snapshot = await this.repository.save(entry);

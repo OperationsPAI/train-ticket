@@ -31,7 +31,7 @@ class StubJourneyOrder implements JourneyOrderClient {
   }
 }
 
-test("WaitlistCapacityFreed fulfills highest-priority queued entry through journey order", async () => {
+test("WaitlistCapacityFreed starts highest-priority queued entry and fulfills on journey-order confirmation", async () => {
   const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
   const fare = new StubFarePricing();
@@ -44,9 +44,9 @@ test("WaitlistCapacityFreed fulfills highest-priority queued entry through journ
   const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: CAPACITY_RELEASE_REF });
 
   assert.equal(result.promoted[0]?.waitlistRequestId, platinum.waitlistRequestId);
-  assert.equal(result.promoted[0]?.status, "FULFILLED");
+  assert.equal(result.promoted[0]?.status, "MATCHING");
   assert.equal(result.promoted[0]?.journeyOrderRef, `ord-${platinum.waitlistRequestId}`);
-  assert.equal((await service.get(platinum.waitlistRequestId)).status, "FULFILLED");
+  assert.equal((await service.get(platinum.waitlistRequestId)).status, "MATCHING");
   assert.equal((await service.get(platinum.waitlistRequestId)).journeyOrderRef, `ord-${platinum.waitlistRequestId}`);
   assert.equal((await service.get(regular.waitlistRequestId)).status, "QUEUED");
   assert.deepEqual(journeyOrder.orders, [platinum.waitlistRequestId]);
@@ -55,6 +55,11 @@ test("WaitlistCapacityFreed fulfills highest-priority queued entry through journ
   const matchStarted = publisher.findByEventType("WaitlistMatchStarted")[0];
   assert.equal(matchStarted?.payload.matchedCapacityReleaseRef, CAPACITY_RELEASE_REF);
   assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 1);
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 0);
+
+  await service.handleJourneyOrderConfirmed(`ord-${platinum.waitlistRequestId}`);
+
+  assert.equal((await service.get(platinum.waitlistRequestId)).status, "FULFILLED");
   const fulfilled = publisher.findByEventType("WaitlistFulfilled")[0];
   assert.equal(fulfilled?.payload.journeyOrderRef, `ord-${platinum.waitlistRequestId}`);
   assert.equal(fulfilled?.payload.status, "FULFILLED");
@@ -119,14 +124,20 @@ test("capacity freed without a CapacityReleased eventId is rejected before publi
   assert.equal(publisher.findByEventType("WaitlistMatchStarted").length, 0);
 });
 
-test("accept promotion creates journey order without recording order ref before confirmation", async () => {
+test("capacity freed records order ref and confirmation publishes fulfillment", async () => {
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
   const stored = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: CAPACITY_RELEASE_REF });
-  const fulfilled = await service.get(entry.waitlistRequestId);
+  const matching = await service.get(entry.waitlistRequestId);
 
   assert.equal(stored.promoted[0]?.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(matching.status, "MATCHING");
+  assert.equal(matching.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 0);
+
+  await service.handleJourneyOrderConfirmed(`ord-${entry.waitlistRequestId}`);
+  const fulfilled = await service.get(entry.waitlistRequestId);
   assert.equal(fulfilled.status, "FULFILLED");
   assert.equal(fulfilled.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
   assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);

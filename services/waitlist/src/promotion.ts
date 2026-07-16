@@ -168,11 +168,10 @@ export class PromotionOrchestrator {
       await publishAll(this.publisher, [waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString())]);
 
       const order = await journeyOrder.createOrder(entry);
-      entry.accept(this.now(), order.orderId);
+      entry.recordJourneyOrderStarted(order.orderId);
       snapshot = await this.repository.save(entry);
       promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
-      await publishAll(this.publisher, [waitlistFulfilled(snapshot, entry.loadedVersion, order.orderId, correlationId, this.now().toISOString())]);
     }
     return { promoted, offers };
   }

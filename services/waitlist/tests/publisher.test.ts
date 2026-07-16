@@ -94,17 +94,20 @@ test("cancel publishes WaitlistCancelled with supplied reason without defaulting
   assert.equal(event?.payload.status, "CANCELLED");
 });
 
-test("capacity-freed fulfillment publishes WaitlistFulfilled with journeyOrderRef", async () => {
+test("journey-order confirmation publishes WaitlistFulfilled with journeyOrderRef", async () => {
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itn", intentFingerprint: "intent" });
 
   const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123" });
-
-  assert.equal(result.promoted[0]?.status, "FULFILLED");
+  assert.equal(result.promoted[0]?.status, "MATCHING");
   assert.equal(result.promoted[0]?.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 0);
+
+  await service.handleJourneyOrderConfirmed(`ord-${entry.waitlistRequestId}`);
+
   const fulfilled = publisher.findByEventType("WaitlistFulfilled")[0];
-  assert.equal(fulfilled?.eventId, deterministicEventId(`waitlist:WaitlistFulfilled:${entry.waitlistRequestId}:3`));
+  assert.equal(fulfilled?.eventId, deterministicEventId(`waitlist:WaitlistFulfilled:${entry.waitlistRequestId}:4`));
   assert.equal(fulfilled?.payload.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
   assert.equal(fulfilled?.payload.status, "FULFILLED");
 });
