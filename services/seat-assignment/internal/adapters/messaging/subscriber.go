@@ -26,5 +26,5 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, consumerName string, ha
 	return s.bus.Subscribe(ctx, kitmsg.Subscription{Streams: SubscribedStreams(), Group: ConsumerGroup, ConsumerName: consumerName}, handler)
 }
 func SubscribedStreams() []string {
-	return []string{"events:booking-orchestration", "events:entitlement-ticketing", "events:post-sales"}
+	return []string{"events:booking-orchestration", "events:entitlement-ticketing", "events:post-sales", "events:capacity-availability"}
 }
