@@ -16,7 +16,7 @@ from reporting.application.service import ReportingApplicationService
 from reporting.adapters.messaging.publisher import RedisEventPublisher
 from reporting.adapters.messaging.stream_config import SUBSCRIBED_CONTEXTS, reporting_subscription_streams
 from reporting.adapters.messaging.subscriber import RedisEventSubscriber
-from reporting.domain import ReportingError
+from reporting.domain import ReadModelStatus, ReportingError
 
 
 class FakePublisher(EventPublisher):
@@ -355,6 +355,37 @@ class MessagingTest(unittest.TestCase):
 
         self.assertEqual(result.status.value, "TRANSIENT_ERROR")
         self.assertIn("projection store unavailable", result.message)
+
+    def test_revenue_event_rebuilds_dashboard_and_publishes_read_model_fact(self) -> None:
+        publisher = FakePublisher()
+        service = ReportingApplicationService(publisher=publisher)
+        dashboard_before = service.get_dashboard("dash-revenue")
+        assert dashboard_before is not None
+        assert dashboard_before.current_snapshot is not None
+
+        result = service.handle_event(EventEnvelope(
+            eventId="evt-reporting-revenue-rebuild",
+            eventType="PaymentCaptured",
+            occurredAt="2026-07-16T10:30:00.000Z",
+            correlationId="corr-1",
+            producer="payment",
+            schemaVersion=1,
+            payload={"capturedAmount": {"currency": "USD", "minorUnits": 35000}},
+            causationId="evt-source",
+        ))
+
+        dashboard_after = service.get_dashboard("dash-revenue")
+        assert dashboard_after is not None
+        assert dashboard_after.current_snapshot is not None
+        rebuild_events = [event for event in publisher.published if event.eventType == "ReadModelRebuilt"]
+        self.assertEqual(result.status.value, "SUCCESS")
+        self.assertEqual(dashboard_after.status, ReadModelStatus.READY)
+        self.assertGreater(dashboard_after.current_snapshot.event_count, dashboard_before.current_snapshot.event_count)
+        self.assertTrue(rebuild_events)
+        self.assertEqual(rebuild_events[-1].payload["dashboardId"], "dash-revenue")
+        self.assertEqual(rebuild_events[-1].payload["eventCount"], dashboard_after.current_snapshot.event_count)
+        self.assertEqual(str(service.revenue_report().total_revenue.amount), "350.00")
+        self.assertEqual(service.revenue_report().total_revenue.currency, "USD")
 
     def test_subscriber_dedups_duplicate_event_id(self) -> None:
         service = ReportingApplicationService()
