@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -322,7 +323,7 @@ def create_app(service: CorporateTravelService | None = None) -> FastAPI:
     app_service = service or CorporateTravelService(publisher=InMemoryEventPublisher(), repository=InMemoryCorporateTravelRepository())
     if database_config is not None and service is None:
         pool = DatabasePool(database_config)
-        migrations_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "migrations")
+        migrations_dir = Path(os.environ.get("MIGRATIONS_DIR", Path(__file__).resolve().parents[2] / "migrations"))
         run_migrations(pool, migrations_dir)
         repository = PostgresCorporateTravelRepository(pool)
         app_service = CorporateTravelService(repository=repository, unit_of_work=repository.transaction)

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from corporate_travel.api import create_app
+
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def create_payload() -> dict[str, object]:
@@ -16,6 +21,44 @@ def create_payload() -> dict[str, object]:
         "billingCalendar": {"billingPeriod": "2026-01", "cutoffAt": "2026-02-01T00:00:00Z", "dueAt": "2026-02-15T00:00:00Z"},
         "contact": {"displayName": "A*** Finance"},
     }
+
+
+def test_default_migrations_path_points_to_service_migrations(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class StubPool:
+        def __init__(self, config: object) -> None:
+            calls["config"] = config
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    class StubConfig:
+        @classmethod
+        def from_env(cls) -> object:
+            return object()
+
+    def fake_run_migrations(pool: object, migrations_dir: object) -> None:
+        calls["pool"] = pool
+        calls["migrations_dir"] = migrations_dir
+
+    monkeypatch.delenv("MIGRATIONS_DIR", raising=False)
+    monkeypatch.setattr("corporate_travel.api.DatabaseConfig", StubConfig)
+    monkeypatch.setattr("corporate_travel.api.DatabasePool", StubPool)
+    monkeypatch.setattr("corporate_travel.api.run_migrations", fake_run_migrations)
+
+    app = create_app()
+
+    assert app.state.corporate_travel_service is not None
+    assert calls["migrations_dir"] == SERVICE_ROOT / "migrations"
+
+
+def test_migration_creates_processed_events_table_not_legacy_inbox() -> None:
+    migration_sql = (SERVICE_ROOT / "migrations" / "001_corporate_travel.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS processed_events" in migration_sql
+    assert "event_id TEXT PRIMARY KEY" in migration_sql
+    assert "corporate_travel_inbox" not in migration_sql
 
 
 def test_health_and_agreement_endpoints() -> None:
