@@ -1209,7 +1209,7 @@ fn validate_issue_request(c: &IssueEntitlementRequest) -> PgResult<()> {
     validate_prefixed_uuid(&c.segment_booking_id, "segmentBookingId", "sb-")?;
     validate_prefixed_uuid(&c.journey_order_id, "journeyOrderId", "ord-")?;
     validate_prefixed_uuid(&c.traveler_ref, "travelerRef", "tvl-")?;
-    validate_prefixed_uuid(&c.segment_ref, "segmentRef", "seg-")?;
+    validate_prefixed(&c.segment_ref, "segmentRef", "seg-")?;
     if let Some(prefs) = &c.seat_preferences {
         if prefs.preference_version.trim().is_empty() {
             return Err(ApiErrorKind::ValidationFailed(
