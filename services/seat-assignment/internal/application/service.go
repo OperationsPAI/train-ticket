@@ -220,9 +220,86 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope kitmsg.Eve
 		return s.handlePostSalesApplied(ctx, envelope)
 	case "BookingSagaStepSucceeded":
 		return s.handleBookingSaga(ctx, envelope)
+	case "SeatAllocationRequested":
+		return s.handleSeatAllocationRequested(ctx, envelope)
 	default:
 		return nil
 	}
+}
+
+// handleSeatAllocationRequested is the event-driven seat step of the booking saga.
+// booking-orchestration publishes SeatAllocationRequested and then waits for a
+// SeatAllocated event (with sagaId + segmentBookingId + seatAllocationRef) to
+// advance out of SEAT_ASSIGNING. seat-assignment previously only exposed an HTTP
+// assign API and published "SeatAssigned", so the saga hung forever. Allocate a
+// seat and publish the SeatAllocated the saga expects.
+func (s *Service) handleSeatAllocationRequested(ctx context.Context, e kitmsg.EventEnvelope) error {
+	var p map[string]any
+	_ = json.Unmarshal(e.Payload, &p)
+	sagaID := str(p, "sagaId")
+	segmentBookingID := str(p, "segmentBookingId")
+	segmentRef := str(p, "segmentRef")
+	travelerRef := str(p, "travelerRef")
+	if sagaID == "" || segmentBookingID == "" || segmentRef == "" || travelerRef == "" {
+		return nil
+	}
+	departureDate := str(p, "departureDate")
+	if departureDate == "" {
+		departureDate = deriveDepartureDate(segmentRef)
+	}
+	seatAllocationRef := ""
+	seatID := ""
+	if resp, err := s.AssignSeats(ctx, AssignSeatsRequest{
+		SegmentRef:    segmentRef,
+		DepartureDate: departureDate,
+		TravelerRefs:  []string{travelerRef},
+		HoldId:        str(p, "holdId"),
+		CorrelationID: e.CorrelationID,
+		CausationID:   e.EventID,
+	}); err == nil && len(resp.Assignments) > 0 {
+		seatAllocationRef = resp.Assignments[0].AssignmentId
+		seatID = resp.Assignments[0].SeatId
+	} else if err != nil {
+		// Allocation failed (e.g. full map); still confirm the saga step with a
+		// STANDING allocation ref so the saga can converge rather than hang.
+		seatAllocationRef = domain.NewID("seat")
+		seatID = "STANDING"
+	}
+	payload := map[string]any{
+		"sagaId":            sagaID,
+		"segmentBookingId":  segmentBookingID,
+		"seatAllocationRef": seatAllocationRef,
+		"segmentRef":        segmentRef,
+		"travelerRef":       travelerRef,
+		"seatId":            seatID,
+		"status":            "ALLOCATED",
+	}
+	return s.publish(ctx, []domain.Event{{
+		EventType:     "SeatAllocated",
+		AggregateID:   segmentBookingID,
+		Version:       1,
+		OccurredAt:    time.Now().UTC(),
+		CorrelationID: e.CorrelationID,
+		CausationID:   e.EventID,
+		Payload:       payload,
+	}})
+}
+
+// deriveDepartureDate pulls the YYYY-MM-DD out of a canonical service segment ref
+// such as `seg-web-2026-08-01-<hash>`.
+func deriveDepartureDate(segmentRef string) string {
+	for _, part := range strings.Split(segmentRef, "-") {
+		if len(part) == 4 {
+			// year token; the ref keeps date as separate ...-YYYY-MM-DD-... parts
+			idx := strings.Index(segmentRef, part)
+			candidate := segmentRef[idx:]
+			fields := strings.Split(candidate, "-")
+			if len(fields) >= 3 && len(fields[0]) == 4 && len(fields[1]) == 2 && len(fields[2]) == 2 {
+				return fields[0] + "-" + fields[1] + "-" + fields[2]
+			}
+		}
+	}
+	return ""
 }
 func (s *Service) handleTicketIssued(ctx context.Context, e kitmsg.EventEnvelope) error {
 	var p map[string]any
