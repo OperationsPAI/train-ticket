@@ -20,8 +20,17 @@ type WaitlistConsumedEventService = Readonly<{
 export function createWaitlistEventHandler(service: WaitlistConsumedEventService) {
   return async (envelope: EventEnvelope): Promise<EventHandlerResult> => {
     try {
-      if (envelope.eventType === "CapacityReleased" || envelope.eventType === "WaitlistCapacityFreed") {
+      if (envelope.eventType === "WaitlistCapacityFreed") {
         await service.handleCapacityFreed(parseCapacityFreed(envelope), envelope.correlationId, envelope);
+        return successfulHandling();
+      }
+      if (envelope.eventType === "CapacityReleased") {
+        // CapacityReleased is a lower-level hold-release fact and does NOT carry
+        // segmentRef/departureDate; only the purpose-built WaitlistCapacityFreed
+        // drives fulfillment. Try leniently; if the fulfillment fields are absent
+        // just ack (skip) rather than throwing fatally and poisoning the consumer.
+        const freed = tryParseCapacityFreed(envelope);
+        if (freed) await service.handleCapacityFreed(freed, envelope.correlationId, envelope);
         return successfulHandling();
       }
       if (envelope.eventType === "JourneyOrderConfirmed") {
@@ -38,6 +47,15 @@ export function createWaitlistEventHandler(service: WaitlistConsumedEventService
       return fatalHandling(error instanceof Error ? error : new Error("Waitlist event handling failed"));
     }
   };
+}
+
+// Lenient variant: returns undefined instead of throwing when the fulfillment
+// fields are absent (e.g. a generic CapacityReleased that is not waitlist-scoped).
+export function tryParseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed | undefined {
+  const payload = envelope.payload as Record<string, unknown>;
+  if (typeof payload.segmentRef !== "string" || payload.segmentRef.trim().length === 0) return undefined;
+  if (typeof payload.departureDate !== "string" || payload.departureDate.trim().length === 0) return undefined;
+  return parseCapacityFreed(envelope);
 }
 
 export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed {
