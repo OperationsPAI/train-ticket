@@ -195,10 +195,19 @@ def _payload_value(payload: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _parse_occurred_at(value: str) -> datetime:
+def _parse_occurred_at(value: Any) -> datetime:
+    # EventEnvelope.occurredAt is typed ``datetime | str``: from_json_dict parses
+    # the wire timestamp into an aware datetime, while hand-built envelopes may
+    # still carry an RFC3339 string. Handle both — the previous str-only code
+    # called ``datetime.replace("Z", ...)`` on a datetime, whose replace() expects
+    # integer kwargs, raising "'str' object cannot be interpreted as an integer"
+    # and turning every consumed fact into a transient failure (dashboards never
+    # rebuilt, events:reporting stayed empty).
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-    except ValueError:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+    except (ValueError, AttributeError):
         return utc_now()
 
 
