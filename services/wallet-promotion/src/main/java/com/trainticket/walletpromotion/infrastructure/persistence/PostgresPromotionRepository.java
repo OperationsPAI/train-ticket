@@ -113,16 +113,18 @@ public class PostgresPromotionRepository implements PromotionRepository {
             SELECT data::text
               FROM promotion_instrument_snapshots
              WHERE data->>'status' IN ('ISSUED', 'RESERVED', 'RELEASED')
-               AND (data->>'validUntil')::numeric <= ?
-             ORDER BY (data->>'validUntil')::numeric
+               AND data->>'validUntil' <= ?
+             ORDER BY data->>'validUntil'
              LIMIT ?
             """;
-        // Snapshots store Instants as epoch decimals (internal convention);
-        // numeric comparison matches the numeric-expression index.
+        // validUntil is serialized as an RFC3339 UTC (Z) Instant string, which sorts
+        // chronologically as text (matching idx_promotion_expiry). The previous
+        // ::numeric cast assumed epoch decimals and silently matched nothing, so the
+        // scheduled expiry sweep never expired any benefit.
         return jdbc.query(
             sql,
             (rs, rowNumber) -> read(rs.getString(1), PromotionInstrument.class),
-            java.math.BigDecimal.valueOf(now.getEpochSecond()),
+            now.toString(),
             limit
         );
     }
