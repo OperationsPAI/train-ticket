@@ -62,10 +62,11 @@ impl PostgresInvoicingService {
             .execute(&mut **tx)
             .await
             .map_err(internal)?;
-        let row: (Value,) = sqlx::query_as("SELECT data FROM invoicing_state WHERE id = 1 FOR UPDATE")
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(internal)?;
+        let row: (Value,) =
+            sqlx::query_as("SELECT data FROM invoicing_state WHERE id = 1 FOR UPDATE")
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(internal)?;
         let (svc, publisher) = Self::engine();
         if row.0.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
             let snapshot: InvoicingStateSnapshot =
@@ -148,12 +149,18 @@ impl PostgresInvoicingService {
     fn requires_persistence(envelope: &rust_kit::messaging::EventEnvelope) -> bool {
         matches!(
             envelope.event_type.as_str(),
-            "InvoiceRequested" | "RequestEInvoice" | "IssueRedFlush"
-        ) && envelope.producer == "booking-orchestration"
-            || matches!(
-                envelope.event_type.as_str(),
-                "RequestEInvoice" | "IssueRedFlush"
-            )
+            "JourneyOrderCreated"
+                | "JourneyOrderConfirmed"
+                | "JourneyOrderPostSalesAdjusted"
+                | "RevenueRecognized"
+                | "InvoiceGenerated"
+                | "PostSalesApproved"
+                | "PostSalesApplied"
+                | "PostSalesFailed"
+                | "RequestEInvoice"
+                | "IssueRedFlush"
+        ) || (envelope.event_type == "InvoiceRequested"
+            && envelope.producer == "booking-orchestration")
     }
 
     async fn consume_in_tx(
@@ -209,25 +216,62 @@ macro_rules! delegate_mutation {
 
 #[async_trait::async_trait]
 impl InvoicingApi for PostgresInvoicingService {
-    async fn create_title(&self, cmd: CreateInvoiceTitleCommand, key: String, corr: String) -> Result<InvoiceTitle, InvoicingError> {
+    async fn create_title(
+        &self,
+        cmd: CreateInvoiceTitleCommand,
+        key: String,
+        corr: String,
+    ) -> Result<InvoiceTitle, InvoicingError> {
         delegate_mutation!(self, svc => svc.create_title(cmd, key, corr).await)
     }
-    async fn list_titles(&self, account_id: String, status: Option<TitleStatus>, limit: usize, offset: usize) -> Result<Page<InvoiceTitle>, InvoicingError> {
-        self.hydrate_read().await?.list_titles(account_id, status, limit, offset).await
+    async fn list_titles(
+        &self,
+        account_id: String,
+        status: Option<TitleStatus>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Page<InvoiceTitle>, InvoicingError> {
+        self.hydrate_read()
+            .await?
+            .list_titles(account_id, status, limit, offset)
+            .await
     }
     async fn get_title(&self, id: String) -> Result<InvoiceTitle, InvoicingError> {
         self.hydrate_read().await?.get_title(id).await
     }
-    async fn update_title(&self, id: String, cmd: UpdateInvoiceTitleCommand, key: String, corr: String) -> Result<InvoiceTitle, InvoicingError> {
+    async fn update_title(
+        &self,
+        id: String,
+        cmd: UpdateInvoiceTitleCommand,
+        key: String,
+        corr: String,
+    ) -> Result<InvoiceTitle, InvoicingError> {
         delegate_mutation!(self, svc => svc.update_title(id, cmd, key, corr).await)
     }
-    async fn set_default_title(&self, id: String, cmd: SetDefaultTitleCommand, key: String, corr: String) -> Result<InvoiceTitle, InvoicingError> {
+    async fn set_default_title(
+        &self,
+        id: String,
+        cmd: SetDefaultTitleCommand,
+        key: String,
+        corr: String,
+    ) -> Result<InvoiceTitle, InvoicingError> {
         delegate_mutation!(self, svc => svc.set_default_title(id, cmd, key, corr).await)
     }
-    async fn deactivate_title(&self, id: String, cmd: DeactivateTitleCommand, key: String, corr: String) -> Result<DeactivateTitleResponse, InvoicingError> {
+    async fn deactivate_title(
+        &self,
+        id: String,
+        cmd: DeactivateTitleCommand,
+        key: String,
+        corr: String,
+    ) -> Result<DeactivateTitleResponse, InvoicingError> {
         delegate_mutation!(self, svc => svc.deactivate_title(id, cmd, key, corr).await)
     }
-    async fn request_invoice(&self, cmd: RequestEInvoiceCommand, key: String, corr: String) -> Result<EInvoiceRequest, InvoicingError> {
+    async fn request_invoice(
+        &self,
+        cmd: RequestEInvoiceCommand,
+        key: String,
+        corr: String,
+    ) -> Result<EInvoiceRequest, InvoicingError> {
         delegate_mutation!(self, svc => svc.request_invoice(cmd, key, corr).await)
     }
     async fn get_request(&self, id: String) -> Result<EInvoiceRequest, InvoicingError> {
@@ -236,16 +280,76 @@ impl InvoicingApi for PostgresInvoicingService {
     async fn get_invoice(&self, id: String) -> Result<EInvoice, InvoicingError> {
         self.hydrate_read().await?.get_invoice(id).await
     }
-    async fn list_invoices(&self, order_id: String, invoice_type: Option<InvoiceType>, status: Option<InvoiceRequestStatus>, limit: usize, offset: usize) -> Result<Page<EInvoice>, InvoicingError> {
-        self.hydrate_read().await?.list_invoices(order_id, invoice_type, status, limit, offset).await
+    async fn list_invoices(
+        &self,
+        order_id: String,
+        invoice_type: Option<InvoiceType>,
+        status: Option<InvoiceRequestStatus>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Page<EInvoice>, InvoicingError> {
+        self.hydrate_read()
+            .await?
+            .list_invoices(order_id, invoice_type, status, limit, offset)
+            .await
     }
     async fn get_red_flush(&self, id: String) -> Result<RedFlushView, InvoicingError> {
         self.hydrate_read().await?.get_red_flush(id).await
     }
-    async fn list_red_flushes(&self, order_id: Option<String>, case_id: Option<String>, status: Option<RedFlushStatus>, limit: usize, offset: usize) -> Result<Page<RedFlushView>, InvoicingError> {
-        self.hydrate_read().await?.list_red_flushes(order_id, case_id, status, limit, offset).await
+    async fn list_red_flushes(
+        &self,
+        order_id: Option<String>,
+        case_id: Option<String>,
+        status: Option<RedFlushStatus>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Page<RedFlushView>, InvoicingError> {
+        self.hydrate_read()
+            .await?
+            .list_red_flushes(order_id, case_id, status, limit, offset)
+            .await
     }
-    async fn generate_itinerary(&self, order_id: String, traveler_refs: Vec<String>, segment_refs: Vec<String>, receipt_version: i64) -> Result<ItineraryReceiptProjection, InvoicingError> {
+    async fn generate_itinerary(
+        &self,
+        order_id: String,
+        traveler_refs: Vec<String>,
+        segment_refs: Vec<String>,
+        receipt_version: i64,
+    ) -> Result<ItineraryReceiptProjection, InvoicingError> {
         delegate_mutation!(self, svc => svc.generate_itinerary(order_id, traveler_refs, segment_refs, receipt_version).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope(event_type: &str, producer: &str) -> rust_kit::messaging::EventEnvelope {
+        rust_kit::messaging::EventEnvelope::new(
+            event_type,
+            rust_kit::messaging::now_rfc3339_utc(),
+            rust_kit::messaging::correlation_id(),
+            None::<String>,
+            producer,
+            serde_json::json!({}),
+        )
+    }
+
+    #[test]
+    fn projection_events_require_persistence() {
+        for (event_type, producer) in [
+            ("JourneyOrderConfirmed", "journey-order"),
+            ("InvoiceGenerated", "finance-settlement"),
+            ("RevenueRecognized", "finance-settlement"),
+            ("PostSalesApplied", "post-sales"),
+        ] {
+            assert!(PostgresInvoicingService::requires_persistence(&envelope(
+                event_type, producer,
+            )));
+        }
+        assert!(!PostgresInvoicingService::requires_persistence(&envelope(
+            "UnrelatedEvent",
+            "journey-order",
+        )));
     }
 }
