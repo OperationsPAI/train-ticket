@@ -46,7 +46,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
       ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).expireDueOffers())
       : inMemoryApplicationService().expireDueOffers();
     operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist offer expiry scan failed"));
-  }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "60000", 10));
+  }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "15000", 10));
   expiryTimer.unref();
   const archivalTimer = setInterval(() => {
     const operation = storage

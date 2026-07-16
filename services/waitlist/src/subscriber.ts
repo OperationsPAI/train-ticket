@@ -49,19 +49,20 @@ export function createWaitlistEventHandler(service: WaitlistConsumedEventService
   };
 }
 
-// Lenient variant: returns undefined instead of throwing when the fulfillment
-// fields are absent (e.g. a generic CapacityReleased that is not waitlist-scoped).
+// Lenient variant: returns undefined instead of throwing when the freed segment
+// cannot be identified (e.g. a generic CapacityReleased that carries no
+// segmentRef). departureDate is NOT required — CapacityReleased carries only
+// segmentRef, and the queue is keyed on segmentRef alone (see storage.ts).
 export function tryParseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed | undefined {
   const payload = envelope.payload as Record<string, unknown>;
   if (typeof payload.segmentRef !== "string" || payload.segmentRef.trim().length === 0) return undefined;
-  if (typeof payload.departureDate !== "string" || payload.departureDate.trim().length === 0) return undefined;
   return parseCapacityFreed(envelope);
 }
 
 export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed {
   const payload = envelope.payload as Record<string, unknown>;
   const segmentRef = string(payload.segmentRef);
-  const departureDate = string(payload.departureDate);
+  const departureDate = typeof payload.departureDate === "string" ? payload.departureDate : "";
   const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? payload.quantity ?? 1);
   const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : typeof payload.classRef === "string" ? payload.classRef : undefined;
   return { segmentRef, departureDate, freedSlots, seatClass, capacityReleaseRef: envelope.eventId };

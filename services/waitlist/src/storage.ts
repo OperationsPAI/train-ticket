@@ -46,12 +46,19 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return this.snapshot(entry);
   }
 
-  async findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> {
-    const params: unknown[] = [segmentRef, departureDate];
-    const seatClause = seatClass ? "AND seat_class = $3" : "";
+  async findTopQueued(segmentRef: string, _departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> {
+    // A segmentRef (seg-<uuid>) is minted per service-segment instance, so it
+    // uniquely identifies the service and its date — departureDate is redundant.
+    // It is also unreliable on the entry: when the create request omits it, the
+    // entry's departure_date is derived from the request deadline (not the
+    // segment's real date), and the CapacityReleased fulfillment trigger carries
+    // no departureDate at all. Match on segment_ref (+ class) so freed capacity
+    // actually promotes the queued entry.
+    const params: unknown[] = [segmentRef];
+    const seatClause = seatClass ? "AND seat_class = $2" : "";
     if (seatClass) params.push(seatClass);
     const result = await this.db.query(
-      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} AND status = 'QUEUED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC LIMIT 1`,
+      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 ${seatClause} AND status = 'QUEUED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC LIMIT 1`,
       params,
     ) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
@@ -78,12 +85,14 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
 
-  async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
-    const params: unknown[] = [segmentRef, departureDate];
-    const seatClause = seatClass ? "AND seat_class = $3" : "";
+  async queueFor(segmentRef: string, _departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
+    // Queue identity keys on segment_ref alone (see findTopQueued) so the queue
+    // is not split by unreliable deadline-derived departure_date values.
+    const params: unknown[] = [segmentRef];
+    const seatClause = seatClass ? "AND seat_class = $2" : "";
     if (seatClass) params.push(seatClass);
     const result = await this.db.query(
-      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} AND status <> 'CLOSED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
+      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 ${seatClause} AND status <> 'CLOSED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
       params,
     ) as QueryResult<WaitlistRow>;
     const entries = result.rows.map(entryFromRow);
