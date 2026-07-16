@@ -51,6 +51,9 @@ final class PostSalesPolicyContextMapper {
         ));
     }
 
+    private static final java.util.regex.Pattern SEGMENT_REF_DATE =
+        java.util.regex.Pattern.compile("(\\d{4})-(\\d{2})-(\\d{2})");
+
     private static Optional<Instant> earliestDeparture(Map<?, ?> payload, List<Map<?, ?>> segments) {
         List<Instant> candidates = new ArrayList<>();
         for (String field : List.of("departureTime", "departureAt")) {
@@ -61,7 +64,36 @@ final class PostSalesPolicyContextMapper {
                 text(segment, field).map(Instant::parse).ifPresent(candidates::add);
             }
         }
+        // JourneyOrderCreated/Confirmed events carry only segmentRefs (canonical
+        // slugs like seg-web-2026-08-01-<hash>) — no explicit departureTime — so
+        // the refund policy context would otherwise be dropped and every refund
+        // quote returns 0. The service date is embedded in the slug; derive it
+        // (start-of-day UTC) as a fallback departure when no explicit time exists.
+        if (candidates.isEmpty()) {
+            for (String segmentRef : textList(payload.get("segmentRefs"))) {
+                departureFromSegmentRef(segmentRef).ifPresent(candidates::add);
+            }
+        }
         return PostSalesPolicyContext.earliest(candidates);
+    }
+
+    private static Optional<Instant> departureFromSegmentRef(String segmentRef) {
+        if (segmentRef == null) {
+            return Optional.empty();
+        }
+        java.util.regex.Matcher matcher = SEGMENT_REF_DATE.matcher(segmentRef);
+        if (!matcher.find()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(java.time.LocalDate.of(
+                Integer.parseInt(matcher.group(1)),
+                Integer.parseInt(matcher.group(2)),
+                Integer.parseInt(matcher.group(3))
+            ).atStartOfDay(java.time.ZoneOffset.UTC).toInstant());
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
     }
 
     private static Map<String, String> travelerTypes(Object travelerRefsValue) {
