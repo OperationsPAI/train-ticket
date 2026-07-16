@@ -370,9 +370,12 @@ impl InMemoryInvoicingService {
         let saga_id = string_field(&e.payload, "sagaId").unwrap_or_default();
         let journey_order_id = string_field(&e.payload, "journeyOrderId").unwrap_or_default();
         let payment_ref = string_field(&e.payload, "paymentRef").unwrap_or_default();
-        if saga_id.is_empty() || journey_order_id.is_empty() || payment_ref.is_empty() {
+        if saga_id.is_empty() || journey_order_id.is_empty() {
+            // paymentRef is optional on the saga InvoiceRequested (empty in the
+            // normal flow); requiring it made invoicing skip every request and hang
+            // the booking saga at INVOICING. Only sagaId + journeyOrderId are needed.
             log::warn!(
-                "InvoiceRequested missing sagaId, journeyOrderId, or paymentRef, skipping: {}",
+                "InvoiceRequested missing sagaId or journeyOrderId, skipping: {}",
                 e.event_id,
             );
             self.state
