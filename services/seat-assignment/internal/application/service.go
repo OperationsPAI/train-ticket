@@ -28,6 +28,16 @@ type Repository interface {
 	FindAssignments(context.Context, string, string, string) ([]domain.SeatAssignment, error)
 	SaveAssignment(context.Context, *domain.SeatAssignment) error
 	UpdateAssignment(context.Context, *domain.SeatAssignment, int64) error
+	SaveSeatMap(context.Context, *domain.ContractSeatMap) error
+	UpdateSeatMap(context.Context, *domain.ContractSeatMap, int64) error
+	GetSeatMap(context.Context, string) (*domain.ContractSeatMap, int64, error)
+	FindSeatMaps(context.Context, string, string, string, int, int) ([]domain.ContractSeatMap, int, error)
+	SaveSeatAllocation(context.Context, *domain.ContractSeatAllocation) error
+	UpdateSeatAllocation(context.Context, *domain.ContractSeatAllocation, int64) error
+	GetSeatAllocation(context.Context, string) (*domain.ContractSeatAllocation, int64, error)
+	FindSeatAllocations(context.Context, string, string, int, int) ([]domain.ContractSeatAllocation, int, error)
+	FindActiveSeatAllocations(context.Context, string, string) ([]domain.ContractSeatAllocation, error)
+	FindSeatAllocationsByCapacityRecovery(context.Context, string, string, domain.StationInterval) ([]domain.ContractSeatAllocation, error)
 }
 
 type Service struct {
@@ -214,10 +224,14 @@ func (s *Service) Release(ctx context.Context, assignmentID, corr, cause string)
 }
 func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope kitmsg.EventEnvelope) error {
 	switch envelope.EventType {
-	case "TicketIssued":
+	case "TicketIssued", "EntitlementIssued":
 		return s.handleTicketIssued(ctx, envelope)
-	case "PostSalesApplied":
+	case "PostSalesApplied", "EntitlementVoided", "EntitlementIssueFailed":
 		return s.handlePostSalesApplied(ctx, envelope)
+	case "CapacityReleased":
+		return s.handleCapacityReleased(ctx, envelope)
+	case "CapacityHoldExpired":
+		return s.handleCapacityHoldExpired(ctx, envelope)
 	case "BookingSagaStepSucceeded":
 		return s.handleBookingSaga(ctx, envelope)
 	default:
@@ -227,6 +241,9 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope kitmsg.Eve
 func (s *Service) handleTicketIssued(ctx context.Context, e kitmsg.EventEnvelope) error {
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
+	if allocationID := str(p, "seatAllocationId"); allocationID != "" {
+		return s.confirmSeatAllocation(ctx, allocationID, str(p, "entitlementId"), e)
+	}
 	id := str(p, "assignmentId")
 	if id == "" {
 		id = str(p, "seatAssignmentId")
@@ -237,6 +254,34 @@ func (s *Service) handleTicketIssued(ctx context.Context, e kitmsg.EventEnvelope
 	_, err := s.Confirm(ctx, id, "", e.CorrelationID, e.EventID)
 	return err
 }
+
+func (s *Service) confirmSeatAllocation(ctx context.Context, allocationID, entitlementID string, e kitmsg.EventEnvelope) error {
+	if entitlementID == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	return s.tx(ctx, func(tx context.Context) error {
+		allocation, expected, err := s.repo.GetSeatAllocation(tx, allocationID)
+		if err != nil {
+			return nil
+		}
+		if allocation.Status == domain.AllocationStatusConfirmed {
+			return nil
+		}
+		if allocation.Status != domain.AllocationStatusAllocated && allocation.Status != domain.AllocationStatusStanding {
+			return nil
+		}
+		t := now
+		allocation.ConfirmedAt = &t
+		allocation.Status = domain.AllocationStatusConfirmed
+		if err := s.repo.UpdateSeatAllocation(tx, allocation, expected); err != nil {
+			return derr("CONFLICT", err.Error())
+		}
+		payload := map[string]any{"seatAllocationId": allocation.SeatAllocationID, "segmentBookingId": allocation.SegmentBookingID, "journeyOrderId": allocation.JourneyOrderID, "travelerRef": allocation.TravelerRef, "entitlementId": entitlementID, "seatRef": allocation.SeatRef, "confirmedAt": now, "sourceEventId": e.EventID, "status": allocation.Status}
+		return s.publish(tx, []domain.Event{{EventType: "SeatAllocationConfirmed", AggregateID: allocation.SeatAllocationID, Version: 2, OccurredAt: now, CorrelationID: e.CorrelationID, CausationID: e.EventID, Payload: payload}})
+	})
+}
+
 func (s *Service) handlePostSalesApplied(ctx context.Context, e kitmsg.EventEnvelope) error {
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
