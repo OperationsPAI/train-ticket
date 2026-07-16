@@ -196,11 +196,11 @@ public class PostSalesApplicationService {
 
         PostSalesPolicyContext policyContext = policyContextFor(postSalesCase, now, refundable);
         if (kind == DecisionKind.CHANGE) {
-            Money originalFare = policyContext.originalFareOr(refundable.isZero() ? amountDue : refundable);
-            Money newFare = amountDue.isZero() ? originalFare : originalFare.add(amountDue);
-            ChangeAssessment assessment = changePolicyEngine.evaluateChange(
+            Money originalFare = policyContext.originalFareOr(amountDue.isZero() ? refundable : amountDue);
+            ChangeAssessment assessment = changePolicyEngine.evaluateQuotedChange(
                 originalFare,
-                newFare,
+                amountDue,
+                refundable,
                 now,
                 policyContext.departureTime(),
                 policyContext.appliedChangeCount()
