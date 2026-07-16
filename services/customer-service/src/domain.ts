@@ -1239,9 +1239,12 @@ export class SimulatedResolutionPolicy {
     if (isTerminalCaseStatus(snapshot.status)) {
       return undefined;
     }
+    const handlingStartedAt = snapshot.escalationHistory.at(-1)?.escalatedAt ?? snapshot.slaTracker.firstResponseAt;
+    if (!handlingStartedAt) {
+      return undefined;
+    }
     const plan = planForLevel(snapshot.escalationLevel);
-    const levelStartedAt = snapshot.escalationHistory.at(-1)?.escalatedAt ?? snapshot.openedAt;
-    const dueAt = new Date(levelStartedAt.getTime() + plan.dueSeconds * 1_000);
+    const dueAt = new Date(handlingStartedAt.getTime() + plan.dueSeconds * 1_000);
     if (now.getTime() < dueAt.getTime()) {
       return undefined;
     }
