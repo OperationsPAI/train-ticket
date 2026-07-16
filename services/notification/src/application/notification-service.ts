@@ -159,14 +159,14 @@ export class NotificationApplicationService {
       : new ChannelFallbackChain(command.channel, availableChannels(await this.contacts.getContactProfile(command.recipientRef))).toArray();
 
     if (!command.transactionRequired && !await this.preferences.isEnabled(command.recipientRef, command.intent, channels[0])) {
-      return this.publishCancellation({ ...command, notificationTaskId: newNotificationTaskId(), channel: channels[0], templateCode: templateType ?? command.templateCode }, "SUPPRESSED_BY_PREFERENCES");
+      return this.publishCancellation({ ...command, notificationTaskId: newNotificationTaskId(), channel: channels[0], templateCode: command.templateCode }, "SUPPRESSED_BY_PREFERENCES");
     }
 
     const scheduledCommand: ScheduleNotification = {
       ...command,
       notificationTaskId: newNotificationTaskId(),
       channel: channels[0],
-      templateCode: templateType ?? command.templateCode,
+      templateCode: command.templateCode,
       variables: renderedVariables(command.variables, templateType, channels[0], this.renderer),
     };
     const { task, event: scheduled } = NotificationTaskAggregate.schedule(scheduledCommand);
@@ -247,6 +247,10 @@ function resolveTemplateType(mapping: TriggerMapping, payload: Record<string, un
   return typeof mapping.templateType === "function" ? mapping.templateType(payload) : mapping.templateType;
 }
 
+function resolveTemplateCode(mapping: TriggerMapping, templateType: NotificationTemplateType | undefined): string {
+  return mapping.templateCode === "ticket_issued" ? mapping.templateCode : templateType ?? mapping.templateCode;
+}
+
 function resolveIntent(mapping: TriggerMapping, payload: Record<string, unknown>): string {
   return typeof mapping.intent === "function" ? mapping.intent(payload) : mapping.intent;
 }
@@ -269,6 +273,7 @@ function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: Noti
   const businessRef = triggerBusinessRef(envelope);
   const aggregationRef = aggregationBusinessRef(envelope);
   const templateType = resolveTemplateType(mapping, payload);
+  const templateCode = resolveTemplateCode(mapping, templateType);
   const commands: ScheduleNotification[] = [];
   for (const recipientRef of recipientRefs) {
     if (aggregator && templateType && aggregationRef && aggregator.shouldSuppress({
@@ -287,7 +292,7 @@ function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: Noti
       correlationId: envelope.correlationId,
       causationId: envelope.eventId,
       recipientRef,
-      templateCode: templateType ?? mapping.templateCode,
+      templateCode,
       channel: mapping.channel,
       intent: resolveIntent(mapping, payload),
       transactionRequired: booleanValue(payload.transactionRequired) ?? true,
@@ -1041,13 +1046,13 @@ function refundMapping(): TriggerMapping {
 
 function ticketIssuedMapping(): TriggerMapping {
   return {
-    templateCode: "TICKET_ISSUED",
+    templateCode: "ticket_issued",
     templateType: "TICKET_ISSUED",
     intent: "TICKET_ISSUED",
-    channel: "PUSH",
-    recipient: (payload) => recipientFromDirectFields(payload) ?? stringValue(payload.travelerRef),
+    channel: "EMAIL",
+    recipient: (payload) => stringValue(payload.travelerRef) ?? recipientFromDirectFields(payload),
     variables: (payload) => ({
-      ...pickStringVariables(payload, ["entitlementId", "journeyOrderId", "orderId", "orderItemId", "segmentBookingId", "segmentRef", "credentialNo", "credentialType", "trainNumber", "seatInfo"]),
+      ...pickStringVariables(payload, ["entitlementId", "journeyOrderId", "orderId", "orderItemId", "segmentBookingId", "segmentRef", "issuePurpose", "credentialNo", "credentialType", "trainNumber", "seatInfo", "issuedAt"]),
       trainNumber: stringValue(payload.trainNumber) ?? stringValue(payload.segmentRef) ?? "--",
       seatInfo: stringValue(payload.seatInfo) ?? stringValue(payload.credentialType) ?? "--",
     }),
