@@ -6,6 +6,7 @@ import {
   InMemoryEventPublisher,
   NonConformantNotificationTrigger,
   NotificationApplicationService,
+  NOTIFICATION_SUBSCRIBED_STREAMS,
   NotificationTask,
   successfulHandling,
   toEventEnvelope,
@@ -372,6 +373,68 @@ describe("notification messaging integration surface", () => {
       },
     }), "delivered");
     assert.deepEqual(sentChannels, ["SMS"]);
+  });
+
+  it("subscribes to the entitlement-ticketing stream", () => {
+    assert.ok(NOTIFICATION_SUBSCRIBED_STREAMS.includes("events:entitlement-ticketing"));
+  });
+
+  it("maps EntitlementIssued to a ticket_issued EMAIL sent to the traveler", async () => {
+    const publisher = new InMemoryEventPublisher();
+    const sent: Array<{ channel: string; recipientRef: string; templateCode: string; subject?: string; body?: string }> = [];
+    const service = new NotificationApplicationService(
+      publisher,
+      undefined,
+      { send: (task) => {
+        sent.push({
+          channel: task.channel,
+          recipientRef: task.recipientRef,
+          templateCode: task.templateCode,
+          subject: task.variables.subject,
+          body: task.variables.body,
+        });
+        return { ok: true, providerMessageId: "smtp-ticket-issued" };
+      } },
+      undefined,
+      { getContactProfile: () => ({ emailAddress: "traveler@example.test" }) },
+    );
+
+    assert.equal(await service.handleExternalTrigger({
+      eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c240",
+      eventType: "EntitlementIssued",
+      schemaVersion: 1,
+      producer: "entitlement-ticketing",
+      correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c240",
+      causationId: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c240",
+      occurredAt: "2026-07-05T10:00:00.000Z",
+      payload: {
+        entitlementId: "ent-240",
+        segmentBookingId: "sb-240",
+        journeyOrderId: "ord-240",
+        travelerRef: "tvl-240",
+        segmentRef: "G240-2026-07-05",
+        issuePurpose: "INITIAL_PURCHASE",
+        credentialNo: "********1234",
+        credentialType: "ID_CARD",
+        trainNumber: "G240",
+        seatInfo: "05A",
+        issuedAt: "2026-07-05T10:00:00.000Z",
+      },
+    }), "delivered");
+
+    assert.deepEqual(sent, [{
+      channel: "EMAIL",
+      recipientRef: "tvl-240",
+      templateCode: "ticket_issued",
+      subject: "电子客票已出票",
+      body: "电子客票已出票：G240 05A，请凭身份证进站",
+    }]);
+    assert.deepEqual(
+      publisher.envelopes
+        .filter((envelope) => envelope.eventType === "NotificationScheduled")
+        .map((envelope) => [envelope.payload.templateCode, envelope.payload.templateType, envelope.payload.intent, envelope.payload.recipientRef, envelope.payload.channel]),
+      [["ticket_issued", undefined, "TICKET_ISSUED", "tvl-240", "EMAIL"]],
+    );
   });
 
   it("falls back from failed SMS to EMAIL", async () => {
