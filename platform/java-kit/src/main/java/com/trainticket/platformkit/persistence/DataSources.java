@@ -16,12 +16,25 @@ public final class DataSources {
         config.setPassword(parsed.password());
         config.setMaximumPoolSize(Integer.parseInt(
             System.getenv().getOrDefault("HIKARI_MAX_POOL_SIZE", "10")));
-        config.setMinimumIdle(1);
+        // Keep warm spares so a single closed/expired connection does not leave the
+        // pool empty and force an on-demand connect while a request is already in
+        // flight. A minIdle of 1 produced "Connection is not available, request
+        // timed out ... (total=1, active=1)" whenever a server-closed connection
+        // coincided with a burst; warm spares + a longer acquire timeout absorb it.
+        config.setMinimumIdle(Integer.parseInt(
+            System.getenv().getOrDefault("HIKARI_MIN_IDLE", "3")));
         config.setPoolName("platform-java-kit-postgres");
         config.setKeepaliveTime(30_000);
-        config.setMaxLifetime(600_000);
-        config.setConnectionTimeout(5_000);
+        // Recycle connections well before any server-side / proxy idle cutoff so a
+        // stale connection is never handed to a request.
+        config.setMaxLifetime(300_000);
+        // More headroom to acquire/replace a connection when Postgres is briefly
+        // slow (e.g. reconnect storms) instead of surfacing a 500 to the caller.
+        config.setConnectionTimeout(15_000);
         config.setValidationTimeout(3_000);
+        // Leave connectionTestQuery unset: the Postgres JDBC4 driver's isValid()
+        // aliveness check on checkout already evicts a closed connection and hands
+        // out a fresh one, which is cheaper and more reliable than a test query.
         return new HikariDataSource(config);
     }
 }
