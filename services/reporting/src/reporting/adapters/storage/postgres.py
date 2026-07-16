@@ -15,6 +15,7 @@ from reporting.application.service import (
     dashboard_consumes_event,
     default_repository,
     operational_event_from_envelope,
+    reporting_applies_event_type,
     rfc3339_utc,
     utc_now,
 )
@@ -298,6 +299,8 @@ class PostgresReportingApplicationService:
 
     def handle_event(self, envelope: EventEnvelope):
         from train_ticket_platform.messaging import HandlerResult
+        if not reporting_applies_event_type(envelope.eventType):
+            return HandlerResult.success()
         try:
             with self._pool.connection() as conn:
                 with conn.transaction():
