@@ -7,9 +7,12 @@ import type { WaitlistCapacityFreed } from "./promotion.js";
 
 export type BootstrapOptions = Readonly<{ host?: string; port?: number; redisUrl?: string; instanceId?: string }>;
 
+const DEFAULT_EXPIRY_SCAN_MS = 1000;
+
 export function runtimeHost(options: Pick<BootstrapOptions, "host"> = {}): string { return options.host ?? process.env.HOST ?? "0.0.0.0"; }
 export function runtimePort(options: Pick<BootstrapOptions, "port"> = {}): number { return options.port ?? Number.parseInt(process.env.PORT ?? "8080", 10); }
 export function runtimeRedisUrl(options: Pick<BootstrapOptions, "redisUrl"> = {}): string { return options.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379"; }
+export function runtimeWaitlistExpiryScanMs(): number { return Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? String(DEFAULT_EXPIRY_SCAN_MS), 10); }
 
 function consumedStream(envelope: EventEnvelope): string {
   return streamForProducer(envelope.producer);
@@ -46,7 +49,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
       ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).expireDueOffers())
       : inMemoryApplicationService().expireDueOffers();
     operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist offer expiry scan failed"));
-  }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "60000", 10));
+  }, runtimeWaitlistExpiryScanMs());
   expiryTimer.unref();
   const archivalTimer = setInterval(() => {
     const operation = storage
