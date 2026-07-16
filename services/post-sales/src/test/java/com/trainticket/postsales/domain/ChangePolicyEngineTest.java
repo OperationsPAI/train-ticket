@@ -10,39 +10,47 @@ class ChangePolicyEngineTest {
     private final ChangePolicyEngine engine = new ChangePolicyEngine();
 
     @Test
-    void firstChangeMoreThanFortyEightHoursBeforeDepartureOnlyPaysFareIncrease() {
-        ChangeAssessment assessment = engine.evaluateChange(Money.of("200.00", "CNY"), Money.of("260.00", "CNY"), REQUEST, REQUEST.plusSeconds(3 * 86_400), 0);
+    void sameFareChangePaysFlatDefaultChangeFee() {
+        ChangeAssessment assessment = engine.evaluateChange(Money.of("100.00", "CNY"), Money.of("100.00", "CNY"), REQUEST, REQUEST.plusSeconds(3 * 86_400), 0);
 
-        assertEquals(Money.of("0.00", "CNY"), assessment.changeFee());
-        assertEquals(Money.of("60.00", "CNY"), assessment.fareDifference());
-        assertEquals(Money.of("60.00", "CNY"), assessment.netPayable());
+        assertEquals(Money.of("15.00", "CNY"), assessment.changeFee());
+        assertEquals(Money.of("0.00", "CNY"), assessment.fareDifference());
+        assertEquals(Money.of("15.00", "CNY"), assessment.netPayable());
         assertEquals(Money.of("0.00", "CNY"), assessment.netRefundable());
     }
 
     @Test
-    void changeWithinFortyEightHoursPaysFareIncreasePlusChangeFee() {
+    void fareIncreaseAddsToFlatDefaultChangeFee() {
         ChangeAssessment assessment = engine.evaluateChange(Money.of("200.00", "CNY"), Money.of("260.00", "CNY"), REQUEST, REQUEST.plusSeconds(24 * 3_600), 0);
 
-        assertEquals(Money.of("40.00", "CNY"), assessment.changeFee());
+        assertEquals(Money.of("15.00", "CNY"), assessment.changeFee());
         assertEquals(Money.of("60.00", "CNY"), assessment.fareDifference());
-        assertEquals(Money.of("100.00", "CNY"), assessment.netPayable());
+        assertEquals(Money.of("75.00", "CNY"), assessment.netPayable());
     }
 
     @Test
-    void fareDecreaseIsRefundedNetOfChangeFee() {
+    void fareDecreaseIsRefundedNetOfFlatDefaultChangeFee() {
         ChangeAssessment assessment = engine.evaluateChange(Money.of("200.00", "CNY"), Money.of("140.00", "CNY"), REQUEST, REQUEST.plusSeconds(24 * 3_600), 0);
 
-        assertEquals(Money.of("40.00", "CNY"), assessment.changeFee());
+        assertEquals(Money.of("15.00", "CNY"), assessment.changeFee());
         assertEquals(Money.of("60.00", "CNY"), assessment.fareDifference());
-        assertEquals(Money.of("20.00", "CNY"), assessment.netRefundable());
+        assertEquals(Money.of("45.00", "CNY"), assessment.netRefundable());
         assertEquals(Money.of("0.00", "CNY"), assessment.netPayable());
     }
 
     @Test
-    void secondChangeAlwaysChargesTwentyPercentEvenWhenMoreThanFortyEightHoursBeforeDeparture() {
-        ChangeAssessment assessment = engine.evaluateChange(Money.of("200.00", "CNY"), Money.of("200.00", "CNY"), REQUEST, REQUEST.plusSeconds(5 * 86_400), 1);
+    void quotedSameFareChangeUsesAmountDueWithoutReapplyingChangeFee() {
+        ChangeAssessment assessment = engine.evaluateQuotedChange(
+            Money.of("100.00", "CNY"),
+            Money.of("15.00", "CNY"),
+            Money.zero("CNY"),
+            REQUEST,
+            REQUEST.plusSeconds(24 * 3_600),
+            0
+        );
 
-        assertEquals(Money.of("40.00", "CNY"), assessment.changeFee());
-        assertEquals(Money.of("40.00", "CNY"), assessment.netPayable());
+        assertEquals(Money.of("15.00", "CNY"), assessment.changeFee());
+        assertEquals(Money.of("0.00", "CNY"), assessment.fareDifference());
+        assertEquals(Money.of("15.00", "CNY"), assessment.netPayable());
     }
 }

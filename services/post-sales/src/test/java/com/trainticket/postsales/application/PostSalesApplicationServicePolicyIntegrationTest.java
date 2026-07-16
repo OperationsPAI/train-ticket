@@ -53,7 +53,7 @@ class PostSalesApplicationServicePolicyIntegrationTest {
     }
 
     @Test
-    void secondChangeUsesPersistedChangeCountAndActualDepartureContext() {
+    void changeUsesFarePricingAmountDueWithoutReapplyingChangeFee() {
         InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
         contextStore.save(new PostSalesPolicyContext(
             "ord-change-policy",
@@ -69,8 +69,30 @@ class PostSalesApplicationServicePolicyIntegrationTest {
 
         PostSalesCase evaluated = service.evaluate("psc-" + postSalesCase.caseId(), "cmd-evaluate", "corr-policy");
 
-        assertEquals(2_000, evaluated.decision().changeAssessment().changeFee().toMinorUnits());
-        assertEquals(7_000, evaluated.decision().changeAssessment().netPayable().toMinorUnits());
+        assertEquals(1_500, evaluated.decision().changeAssessment().changeFee().toMinorUnits());
+        assertEquals(5_000, evaluated.decision().changeAssessment().netPayable().toMinorUnits());
+    }
+
+    @Test
+    void sameFareChangeQuoteReturnsContractedDefaultChangeFeeAsAmountDue() {
+        InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
+        contextStore.save(new PostSalesPolicyContext(
+            "ord-change-same-fare",
+            NOW.plusSeconds(3 * 86_400),
+            Map.of("tvl-1", "ADULT"),
+            1,
+            0,
+            Money.of("75.00", "CNY"),
+            PostSalesPolicyContext.RefundWaterfallComponents.empty(java.util.Currency.getInstance("CNY"))
+        ));
+        PostSalesApplicationService service = service(contextStore, quote("adjq-change-same-fare", 0, "CNY", 1_500, "CNY"));
+        PostSalesCase postSalesCase = service.open(command("ord-change-same-fare", PostSalesCaseType.CHANGE, "idem-change-same-fare"));
+
+        PostSalesCase evaluated = service.evaluate("psc-" + postSalesCase.caseId(), "cmd-evaluate", "corr-policy");
+
+        assertEquals(1_500, evaluated.decision().amountSnapshot().extraChargeAmount().toMinorUnits());
+        assertEquals(1_500, evaluated.decision().changeAssessment().changeFee().toMinorUnits());
+        assertEquals(0, evaluated.decision().changeAssessment().fareDifference().toMinorUnits());
     }
 
     private static PostSalesApplicationService service(
