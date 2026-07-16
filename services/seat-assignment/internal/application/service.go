@@ -28,6 +28,16 @@ type Repository interface {
 	FindAssignments(context.Context, string, string, string) ([]domain.SeatAssignment, error)
 	SaveAssignment(context.Context, *domain.SeatAssignment) error
 	UpdateAssignment(context.Context, *domain.SeatAssignment, int64) error
+	SaveSeatMap(context.Context, *domain.ContractSeatMap) error
+	UpdateSeatMap(context.Context, *domain.ContractSeatMap, int64) error
+	GetSeatMap(context.Context, string) (*domain.ContractSeatMap, int64, error)
+	FindSeatMaps(context.Context, string, string, string, int, int) ([]domain.ContractSeatMap, int, error)
+	SaveSeatAllocation(context.Context, *domain.ContractSeatAllocation) error
+	UpdateSeatAllocation(context.Context, *domain.ContractSeatAllocation, int64) error
+	GetSeatAllocation(context.Context, string) (*domain.ContractSeatAllocation, int64, error)
+	FindSeatAllocations(context.Context, string, string, int, int) ([]domain.ContractSeatAllocation, int, error)
+	FindActiveSeatAllocations(context.Context, string, string) ([]domain.ContractSeatAllocation, error)
+	FindSeatAllocationsByHold(context.Context, string) ([]domain.ContractSeatAllocation, error)
 }
 
 type Service struct {
@@ -214,10 +224,14 @@ func (s *Service) Release(ctx context.Context, assignmentID, corr, cause string)
 }
 func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope kitmsg.EventEnvelope) error {
 	switch envelope.EventType {
-	case "TicketIssued":
+	case "TicketIssued", "EntitlementIssued":
 		return s.handleTicketIssued(ctx, envelope)
-	case "PostSalesApplied":
+	case "PostSalesApplied", "EntitlementVoided", "EntitlementIssueFailed":
 		return s.handlePostSalesApplied(ctx, envelope)
+	case "CapacityReleased":
+		return s.handleCapacityReleased(ctx, envelope)
+	case "CapacityHoldExpired":
+		return s.handleCapacityHoldExpired(ctx, envelope)
 	case "BookingSagaStepSucceeded":
 		return s.handleBookingSaga(ctx, envelope)
 	default:

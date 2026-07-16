@@ -128,6 +128,170 @@ func (r *Repository) FindAssignments(ctx context.Context, segmentRef, departureD
 	}
 	return out, rows.Err()
 }
+
+func (r *Repository) SaveSeatMap(ctx context.Context, m *domain.ContractSeatMap) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return conflict(kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_maps").Insert(ctx, m.SeatMapID, b))
+}
+func (r *Repository) UpdateSeatMap(ctx context.Context, m *domain.ContractSeatMap, expected int64) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	_, err = kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_maps").Save(ctx, m.SeatMapID, expected, b)
+	return conflict(err)
+}
+func (r *Repository) GetSeatMap(ctx context.Context, id string) (*domain.ContractSeatMap, int64, error) {
+	snap, ok, err := kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_maps").Get(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !ok {
+		return nil, 0, fmt.Errorf("not found")
+	}
+	var m domain.ContractSeatMap
+	if err := json.Unmarshal(snap.Data, &m); err != nil {
+		return nil, 0, err
+	}
+	return &m, snap.Version, nil
+}
+func (r *Repository) FindSeatMaps(ctx context.Context, scheduledServiceRef, serviceDate, status string, limit, offset int) ([]domain.ContractSeatMap, int, error) {
+	parts := []string{"data->>'scheduledServiceRef'=$1", "data->>'serviceDate'=$2"}
+	args := []any{scheduledServiceRef, serviceDate}
+	if strings.TrimSpace(status) != "" {
+		args = append(args, status)
+		parts = append(parts, fmt.Sprintf("data->>'status'=$%d", len(args)))
+	}
+	where := strings.Join(parts, " AND ")
+	var total int
+	if err := r.tx.DBFor(ctx).QueryRow(ctx, "SELECT count(*) FROM seat_maps WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, offset)
+	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_maps WHERE "+where+fmt.Sprintf(" ORDER BY updated_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.ContractSeatMap{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, 0, err
+		}
+		var m domain.ContractSeatMap
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, m)
+	}
+	return out, total, rows.Err()
+}
+func (r *Repository) SaveSeatAllocation(ctx context.Context, a *domain.ContractSeatAllocation) error {
+	b, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	return conflict(kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_allocations").Insert(ctx, a.SeatAllocationID, b))
+}
+func (r *Repository) UpdateSeatAllocation(ctx context.Context, a *domain.ContractSeatAllocation, expected int64) error {
+	b, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	_, err = kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_allocations").Save(ctx, a.SeatAllocationID, expected, b)
+	return conflict(err)
+}
+func (r *Repository) GetSeatAllocation(ctx context.Context, id string) (*domain.ContractSeatAllocation, int64, error) {
+	snap, ok, err := kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_allocations").Get(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !ok {
+		return nil, 0, fmt.Errorf("not found")
+	}
+	var a domain.ContractSeatAllocation
+	if err := json.Unmarshal(snap.Data, &a); err != nil {
+		return nil, 0, err
+	}
+	return &a, snap.Version, nil
+}
+func (r *Repository) FindSeatAllocations(ctx context.Context, segmentBookingID, status string, limit, offset int) ([]domain.ContractSeatAllocation, int, error) {
+	parts := []string{"data->>'segmentBookingId'=$1"}
+	args := []any{segmentBookingID}
+	if strings.TrimSpace(status) != "" {
+		args = append(args, status)
+		parts = append(parts, fmt.Sprintf("data->>'status'=$%d", len(args)))
+	}
+	where := strings.Join(parts, " AND ")
+	var total int
+	if err := r.tx.DBFor(ctx).QueryRow(ctx, "SELECT count(*) FROM seat_allocations WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, offset)
+	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_allocations WHERE "+where+fmt.Sprintf(" ORDER BY updated_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.ContractSeatAllocation{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, 0, err
+		}
+		var a domain.ContractSeatAllocation
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, a)
+	}
+	return out, total, rows.Err()
+}
+func (r *Repository) FindActiveSeatAllocations(ctx context.Context, scheduledServiceRef, serviceDate string) ([]domain.ContractSeatAllocation, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_allocations WHERE data->>'scheduledServiceRef'=$1 AND data->>'serviceDate'=$2 AND data->>'status' IN ('ALLOCATED','STANDING','CONFIRMED') ORDER BY id", scheduledServiceRef, serviceDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.ContractSeatAllocation{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var a domain.ContractSeatAllocation
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+func (r *Repository) FindSeatAllocationsByHold(ctx context.Context, holdID string) ([]domain.ContractSeatAllocation, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_allocations WHERE data->>'capacityHoldId'=$1 ORDER BY id", holdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.ContractSeatAllocation{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var a domain.ContractSeatAllocation
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func inventoryID(segmentRef, date string) string { return segmentRef + "|" + date }
 func conflict(err error) error {
 	if errors.Is(err, kitstorage.ErrConflict) {
