@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemoryEventPublisher, isUuidV7 } from "@trainticket/ts-kit";
-import { InMemoryWaitlistRepository, WaitlistApplicationService, type JourneyOrderClient } from "../src/application.js";
-import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient } from "../src/promotion.js";
+import { InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
+import type { CapacityAvailabilityClient, FarePricingClient, JourneyOrderClient, OfferManagementClient } from "../src/promotion.js";
 import type { WaitlistEntry } from "../src/domain.js";
 import { deterministicEventId } from "../src/publisher.js";
 
@@ -94,19 +94,17 @@ test("cancel publishes WaitlistCancelled with supplied reason without defaulting
   assert.equal(event?.payload.status, "CANCELLED");
 });
 
-test("journey order cancellation requeue publishes WaitlistQueued with journeyOrderRef", async () => {
+test("capacity-freed fulfillment publishes WaitlistFulfilled with journeyOrderRef", async () => {
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itn", intentFingerprint: "intent" });
-  await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123" });
-  await service.accept(entry.waitlistRequestId);
-  const matching = await service.get(entry.waitlistRequestId);
 
-  const requeued = await service.handleJourneyOrderCancelled(`ord-${entry.waitlistRequestId}`);
+  const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123" });
 
-  assert.equal(matching.status, "MATCHING");
-  assert.equal(requeued?.status, "QUEUED");
-  const queued = publisher.findByEventType("WaitlistQueued").at(-1);
-  assert.equal(queued?.eventId, deterministicEventId(`waitlist:WaitlistQueued:${entry.waitlistRequestId}:4`));
-  assert.equal(queued?.payload.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(result.promoted[0]?.status, "FULFILLED");
+  assert.equal(result.promoted[0]?.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  const fulfilled = publisher.findByEventType("WaitlistFulfilled")[0];
+  assert.equal(fulfilled?.eventId, deterministicEventId(`waitlist:WaitlistFulfilled:${entry.waitlistRequestId}:3`));
+  assert.equal(fulfilled?.payload.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
+  assert.equal(fulfilled?.payload.status, "FULFILLED");
 });

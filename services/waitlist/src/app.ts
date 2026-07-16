@@ -1,8 +1,8 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
-import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest, type JourneyOrderClient } from "./application.js";
-import type { CapacityAvailabilityClient, FarePricingClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
+import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest } from "./application.js";
+import type { CapacityAvailabilityClient, FarePricingClient, JourneyOrderClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
 
 type AppStorage = Readonly<{

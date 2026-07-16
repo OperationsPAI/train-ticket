@@ -68,7 +68,8 @@ export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFre
 }
 
 export function parseJourneyOrderId(envelope: EventEnvelope): string {
-  return string((envelope.payload as Record<string, unknown>).orderId);
+  const payload = envelope.payload as Record<string, unknown>;
+  return string(payload.orderId ?? payload.journeyOrderRef);
 }
 
 function string(value: unknown): string {

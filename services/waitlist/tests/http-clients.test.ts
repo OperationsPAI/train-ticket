@@ -10,7 +10,7 @@ function promotedEntry() {
   return entry;
 }
 
-test("HTTP downstream clients use documented endpoint shapes and idempotency keys", async () => {
+test("HTTP downstream clients use documented endpoint shapes and idempotency keys without payment calls", async () => {
   const calls: Array<{ url: string; method: string; headers: Headers; body: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -35,13 +35,15 @@ test("HTTP downstream clients use documented endpoint shapes and idempotency key
     globalThis.fetch = originalFetch;
   }
 
-  assert.deepEqual(calls.map((call) => [call.method, new URL(call.url).pathname]), [
+  const calledPaths = calls.map((call) => [call.method, new URL(call.url).pathname]);
+  assert.deepEqual(calledPaths, [
     ["POST", "/api/v1/fare-quotes"],
     ["POST", "/api/v1/offers"],
     ["POST", "/api/v1/capacity-holds"],
     ["POST", "/api/v1/capacity-holds/hold-1/release"],
     ["POST", "/api/v1/journey-orders"],
   ]);
+  assert.equal(calledPaths.some(([, path]) => String(path).includes("payment") || String(path).includes("capture")), false);
   assert.ok(calls.every((call) => call.headers.has("Idempotency-Key")));
   assert.deepEqual(calls[0]?.body, { travelerRefs: ["tvl-1", "tvl-2"], channel: "WEB", segmentRefs: ["seg-1"], productCode: "rail-standard" });
   assert.deepEqual({ ...(calls[2]?.body as Record<string, unknown>), segmentBookingId: undefined }, { segmentRef: "seg-1", travelerRef: "tvl-1", classRef: "SECOND", quantity: 2, segmentBookingId: undefined });

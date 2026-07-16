@@ -180,7 +180,7 @@ export class WaitlistEntry {
     this._loadedVersion = version;
   }
 
-  offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string, now: Date, expiresAt: Date): void {
+  offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string | undefined, now: Date, expiresAt: Date): void {
     this.assertStatus("QUEUED", "Only queued waitlist entries can begin matching");
     if (expiresAt <= now) throw new DomainError("VALIDATION_FAILED", "Offer expiry must be in the future");
     this._status = "MATCHING";
@@ -270,11 +270,6 @@ export class WaitlistEntry {
 
   private assertStatus(expected: WaitlistStatus, message: string): void {
     if (this._status !== expected) throw new DomainError("INVALID_TRANSITION", message);
-  }
-
-  attachJourneyOrder(journeyOrderRef: string): void {
-    this.assertStatus("MATCHING", "Only matching waitlist entries can be attached to a journey order");
-    this.recordJourneyOrderRef(journeyOrderRef);
   }
 
   private recordJourneyOrderRef(journeyOrderRef: string): void {

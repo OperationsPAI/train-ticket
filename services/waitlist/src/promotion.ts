@@ -1,6 +1,6 @@
 import { isPrefixedUuidV7, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
-import { publishAll, waitlistExpired, waitlistHoldAuthorized, waitlistMatchStarted } from "./publisher.js";
+import { publishAll, waitlistExpired, waitlistFulfilled, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
   segmentRef: string;
@@ -15,7 +15,7 @@ export type WaitlistOffer = Readonly<{
   offerVersion: number;
   entryId: string;
   fareQuoteId: string;
-  capacityHoldId: string;
+  capacityHoldId?: string;
   expiresAt: string;
 }>;
 
@@ -49,6 +49,12 @@ export interface OfferManagementClient {
 export interface CapacityAvailabilityClient {
   hold(entry: WaitlistEntry, fareQuoteId: string): Promise<{ capacityHoldId: string }>;
   releaseHold(entry: WaitlistEntry, capacityHoldId: string): Promise<void>;
+}
+
+export type JourneyOrderCreation = Readonly<{ orderId: string; seatAssignment?: unknown }>;
+
+export interface JourneyOrderClient {
+  createOrder(entry: WaitlistEntry): Promise<JourneyOrderCreation>;
 }
 
 export class HttpFarePricingClient implements FarePricingClient {
@@ -144,28 +150,29 @@ export class PromotionOrchestrator {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async onCapacityFreed(event: WaitlistCapacityFreed, correlationId?: string): Promise<PromotionResult> {
+  async onCapacityFreed(event: WaitlistCapacityFreed, journeyOrder: JourneyOrderClient, correlationId?: string): Promise<PromotionResult> {
+    assertCapacityReleaseRef(event.capacityReleaseRef);
     const promoted: PromotedWaitlistRequest[] = [];
     const offers: WaitlistOffer[] = [];
     const slots = Math.max(0, Math.floor(event.freedSlots));
     for (let index = 0; index < slots; index++) {
       const entry = await this.repository.findTopQueued(event.segmentRef, event.departureDate, event.seatClass);
       if (!entry) break;
-      assertCapacityReleaseRef(event.capacityReleaseRef);
       const quote = await this.farePricing.quote(entry);
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
-      const hold = await this.capacityAvailability.hold(entry, quote.fareQuoteId);
       const now = this.now();
       const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
-      const offer = { offerId: commercialOffer.offerId, offerVersion: commercialOffer.offerVersion, entryId: entry.entryId, fareQuoteId: quote.fareQuoteId, capacityHoldId: hold.capacityHoldId, expiresAt: expiresAt.toISOString() };
-      entry.offer(offer.offerId, offer.offerVersion, quote.fareQuoteId, hold.capacityHoldId, now, expiresAt);
-      const snapshot = await this.repository.save(entry);
+      const offer = { offerId: commercialOffer.offerId, offerVersion: commercialOffer.offerVersion, entryId: entry.entryId, fareQuoteId: quote.fareQuoteId, expiresAt: expiresAt.toISOString() };
+      entry.offer(offer.offerId, offer.offerVersion, quote.fareQuoteId, undefined, now, expiresAt);
+      let snapshot = await this.repository.save(entry);
+      await publishAll(this.publisher, [waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString())]);
+
+      const order = await journeyOrder.createOrder(entry);
+      entry.accept(this.now(), order.orderId);
+      snapshot = await this.repository.save(entry);
       promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
-      await publishAll(this.publisher, [
-        waitlistHoldAuthorized(snapshot, entry.loadedVersion, correlationId, now.toISOString()),
-        waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString()),
-      ]);
+      await publishAll(this.publisher, [waitlistFulfilled(snapshot, entry.loadedVersion, order.orderId, correlationId, this.now().toISOString())]);
     }
     return { promoted, offers };
   }
@@ -186,7 +193,7 @@ export class PromotionOrchestrator {
 }
 
 export function offerFromEntry(entry: WaitlistEntry): WaitlistOffer {
-  if (!entry.offerId || !entry.offerVersion || !entry.fareQuoteId || !entry.capacityHoldId || !entry.offerExpiresAt) {
+  if (!entry.offerId || !entry.offerVersion || !entry.fareQuoteId || !entry.offerExpiresAt) {
     throw new DomainError("PRECONDITION_FAILED", "Waitlist entry does not have an active offer");
   }
   return { offerId: entry.offerId, offerVersion: entry.offerVersion, entryId: entry.entryId, fareQuoteId: entry.fareQuoteId, capacityHoldId: entry.capacityHoldId, expiresAt: entry.offerExpiresAt.toISOString() };
