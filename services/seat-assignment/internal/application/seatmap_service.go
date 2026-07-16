@@ -349,10 +349,74 @@ func (s *Service) ListSeatAllocations(ctx context.Context, sb, status string, li
 }
 
 func validateAllocate(req AllocateSeatRequest) error {
-	if strings.TrimSpace(req.SegmentBookingID) == "" || strings.TrimSpace(req.JourneyOrderID) == "" || strings.TrimSpace(req.TravelerRef) == "" || strings.TrimSpace(req.SegmentRef) == "" || strings.TrimSpace(req.ScheduledServiceRef) == "" || strings.TrimSpace(req.ServiceDate) == "" || strings.TrimSpace(req.CapacityHoldID) == "" || strings.TrimSpace(req.CapacityUnitRef) == "" || strings.TrimSpace(req.ClassRef) == "" || !req.Interval.Valid() || req.ExpiresAt.IsZero() {
-		return derr("VALIDATION_FAILED", "segmentBookingId, journeyOrderId, travelerRef, segmentRef, scheduledServiceRef, serviceDate, capacityHoldId, capacityUnitRef, valid interval, classRef and expiresAt are required")
+	if strings.TrimSpace(req.SegmentBookingID) == "" || strings.TrimSpace(req.JourneyOrderID) == "" || strings.TrimSpace(req.TravelerRef) == "" || strings.TrimSpace(req.SegmentRef) == "" || strings.TrimSpace(req.ScheduledServiceRef) == "" || strings.TrimSpace(req.ServiceDate) == "" || strings.TrimSpace(req.CapacityHoldID) == "" || strings.TrimSpace(req.CapacityUnitRef) == "" || strings.TrimSpace(req.ClassRef) == "" || strings.TrimSpace(req.IssuePurpose) == "" || !req.Interval.Valid() || req.ExpiresAt.IsZero() {
+		return derr("VALIDATION_FAILED", "segmentBookingId, journeyOrderId, travelerRef, segmentRef, scheduledServiceRef, serviceDate, capacityHoldId, capacityUnitRef, valid interval, classRef, issuePurpose and expiresAt are required")
+	}
+	if !validIssuePurpose(req.IssuePurpose) {
+		return derr("VALIDATION_FAILED", "issuePurpose must be INITIAL, REPLACEMENT, MANUAL_RECOVERY, PROVIDER_REBUILD or DISRUPTION_REPLACEMENT")
+	}
+	if req.SeatPreferences != nil {
+		if err := validateSeatPreferences(*req.SeatPreferences); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func validIssuePurpose(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "INITIAL", "REPLACEMENT", "MANUAL_RECOVERY", "PROVIDER_REBUILD", "DISRUPTION_REPLACEMENT":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateSeatPreferences(pref domain.SeatPreferences) error {
+	if strings.TrimSpace(pref.PreferenceVersion) == "" {
+		return derr("VALIDATION_FAILED", "seatPreferences.preferenceVersion is required")
+	}
+	if !validAdjacencyPreference(pref.AdjacencyPreference) {
+		return derr("VALIDATION_FAILED", "seatPreferences.adjacencyPreference must be NONE, SAME_COACH, SAME_ROW, ADJACENT or SAME_COMPARTMENT")
+	}
+	for _, position := range pref.PreferredSeatPositions {
+		if !validSeatPosition(position) {
+			return derr("VALIDATION_FAILED", "seatPreferences.preferredSeatPositions contains an invalid seatPosition")
+		}
+	}
+	for _, position := range pref.PreferredBerthPositions {
+		if !validBerthPosition(position) {
+			return derr("VALIDATION_FAILED", "seatPreferences.preferredBerthPositions contains an invalid berthPosition")
+		}
+	}
+	return nil
+}
+
+func validAdjacencyPreference(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "", domain.AdjacencyNone, domain.AdjacencySameCoach, domain.AdjacencySameRow, domain.AdjacencyAdjacent, domain.AdjacencySameCompartment:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSeatPosition(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "WINDOW", "AISLE", "MIDDLE", "LOWER_DECK", "UPPER_DECK":
+		return true
+	default:
+		return false
+	}
+}
+
+func validBerthPosition(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "UPPER", "MIDDLE", "LOWER", "SIDE_UPPER", "SIDE_LOWER":
+		return true
+	default:
+		return false
+	}
 }
 func normalizedPref(p *domain.SeatPreferences) domain.SeatPreferences {
 	if p == nil {
