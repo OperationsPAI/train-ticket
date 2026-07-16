@@ -356,6 +356,26 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(result.status.value, "TRANSIENT_ERROR")
         self.assertIn("projection store unavailable", result.message)
 
+    def test_unmodeled_event_is_ack_skipped_without_projection(self) -> None:
+        publisher = FakePublisher()
+        service = ReportingApplicationService(publisher=publisher)
+
+        result = service.handle_event(EventEnvelope(
+            eventId="evt-seat-assignment-skip",
+            eventType="SeatAllocated",
+            occurredAt="2026-07-16T10:30:00.000Z",
+            correlationId="corr-1",
+            producer="seat-assignment",
+            schemaVersion=1,
+            payload={"seatAllocationId": "salloc-1", "segmentBookingId": "sb-1"},
+            causationId="evt-source",
+        ))
+
+        self.assertEqual(result.status.value, "SUCCESS")
+        self.assertFalse(service.repository.consumed_events.has_consumed("evt-seat-assignment-skip"))
+        self.assertEqual(service.repository.metric_aggregator.events, [])
+        self.assertEqual(publisher.published, [])
+
     def test_revenue_event_rebuilds_dashboard_and_publishes_read_model_fact(self) -> None:
         publisher = FakePublisher()
         service = ReportingApplicationService(publisher=publisher)
@@ -386,6 +406,28 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(rebuild_events[-1].payload["eventCount"], dashboard_after.current_snapshot.event_count)
         self.assertEqual(str(service.revenue_report().total_revenue.amount), "350.00")
         self.assertEqual(service.revenue_report().total_revenue.currency, "USD")
+
+        result = service.handle_event(EventEnvelope(
+            eventId="evt-reporting-order-confirmed-rebuild",
+            eventType="JourneyOrderConfirmed",
+            occurredAt="2026-07-16T10:31:00.000Z",
+            correlationId="corr-1",
+            producer="journey-order",
+            schemaVersion=1,
+            payload={"journeyOrderId": "ord-1", "routeId": "G123"},
+            causationId="evt-source",
+        ))
+
+        dashboard_after_order = service.get_dashboard("dash-revenue")
+        assert dashboard_after_order is not None
+        assert dashboard_after_order.current_snapshot is not None
+        rebuild_events = [event for event in publisher.published if event.eventType == "ReadModelRebuilt"]
+        self.assertEqual(result.status.value, "SUCCESS")
+        self.assertEqual(dashboard_after_order.status, ReadModelStatus.READY)
+        self.assertGreater(dashboard_after_order.current_snapshot.event_count, dashboard_after.current_snapshot.event_count)
+        self.assertEqual(len(rebuild_events), 2)
+        self.assertEqual(rebuild_events[-1].payload["dashboardId"], "dash-revenue")
+        self.assertEqual(rebuild_events[-1].payload["eventCount"], dashboard_after_order.current_snapshot.event_count)
 
     def test_subscriber_dedups_duplicate_event_id(self) -> None:
         service = ReportingApplicationService()
@@ -535,6 +577,20 @@ class PostgresProjectionTest(unittest.TestCase):
 
         pool = FakePool()
         service = PostgresReportingApplicationService(pool)
+        skipped = service.handle_event(EventEnvelope(
+            eventId="evt-pg-seat-skip",
+            eventType="SeatAllocated",
+            occurredAt="2026-07-05T10:30:00.000Z",
+            correlationId="corr-1",
+            producer="seat-assignment",
+            schemaVersion=1,
+            payload={"seatAllocationId": "salloc-1"},
+            causationId="evt-source",
+        ))
+        self.assertEqual(skipped.status.value, "SUCCESS")
+        self.assertEqual(pool.conn.processed, set())
+        self.assertEqual(pool.conn.metric_events, [])
+
         occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         for index in range(8):
             service.handle_event(EventEnvelope(eventId=f"evt-pg-pay-{index}", eventType="PaymentCaptured", occurredAt=occurred_at, correlationId="corr-1", producer="payment", schemaVersion=1, payload={"amount": "10.00", "currency": "USD"}, causationId="evt-source"))

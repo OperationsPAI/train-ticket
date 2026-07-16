@@ -54,6 +54,49 @@ REVENUE_DASHBOARD_SOURCE_EVENTS = (
 
 _REVENUE_RELEVANT_EVENT_TYPES = frozenset(REVENUE_DASHBOARD_SOURCE_EVENTS)
 
+_REPORTING_APPLIED_EVENT_TYPES = frozenset(
+    REVENUE_DASHBOARD_SOURCE_EVENTS
+    + (
+        "TripSearched",
+        "SearchPerformed",
+        "OfferSearchRequested",
+        "JourneyOrderCreated",
+        "OrderCreated",
+        "OrderConfirmed",
+        "BookingConfirmed",
+        "PaymentFailed",
+        "PaymentDeclined",
+        "PaymentCaptureFailed",
+        "CapacityUpdated",
+        "SeatInventoryUpdated",
+        "CapacityExhausted",
+        "ScalperBlocked",
+        "RiskBookingBlocked",
+        "SupportCaseOpened",
+        "WaitlistQueued",
+        "WaitlistExpired",
+        "DispatchRequested",
+        "DispatchFailed",
+        "AncillaryQuoted",
+        "AncillaryOrderItemRefunded",
+        "InsurancePolicyIssued",
+        "ChannelOrderFailed",
+        "ChannelRefundFailed",
+        "ChannelRefundSucceeded",
+    )
+)
+
+
+def reporting_applies_event_type(event_type: str) -> bool:
+    """Return whether Reporting has a projection rule for an upstream event.
+
+    The production subscriber is attached to broad context streams. Facts that
+    are not modeled by Reporting must be acknowledged as no-ops rather than
+    parsed into generic projections where payload shape mismatches can poison
+    the consumer group and eventually DLQ the message.
+    """
+    return event_type in _REPORTING_APPLIED_EVENT_TYPES
+
 
 def dashboard_consumes_event(dashboard: DashboardReadModel, event_type: str) -> bool:
     if dashboard.dashboard_id == "dash-revenue" and event_type in _REVENUE_RELEVANT_EVENT_TYPES:
@@ -365,6 +408,8 @@ class ReportingApplicationService:
         }
 
     def handle_event(self, envelope: EventEnvelope) -> HandlerResult:
+        if not reporting_applies_event_type(envelope.eventType):
+            return HandlerResult.success()
         try:
             if self.repository.record_consumed_event(envelope):
                 self._publish_detected_anomalies(envelope)
