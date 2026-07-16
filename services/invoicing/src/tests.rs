@@ -282,6 +282,122 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
 }
 
 #[tokio::test]
+async fn blue_invoice_request_uses_consumed_order_and_finance_projection() {
+    let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
+    let svc = InMemoryInvoicingService::new(publisher.clone());
+    let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "JourneyOrderConfirmed",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(format!("evt-{}", uuid::Uuid::now_v7())),
+        "journey-order",
+        serde_json::json!({
+            "orderId": "ord-blue",
+            "accountId": "acc-test",
+            "monetarySummary": {
+                "total": {"currency": "CNY", "minorUnits": 1000}
+            }
+        }),
+    ))
+    .await
+    .unwrap();
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "InvoiceGenerated",
+        rust_kit::messaging::now_rfc3339_utc(),
+        corr(),
+        Some(format!("evt-{}", uuid::Uuid::now_v7())),
+        "finance-settlement",
+        serde_json::json!({
+            "invoiceId": "finv-ord-blue",
+            "orderId": "ord-blue",
+            "invoiceNumber": "FIN-ORD-BLUE",
+            "totalAmount": {"currency": "CNY", "minorUnits": 1000},
+            "revenueRecognitionIds": ["rr-blue-1"],
+            "generatedAt": rust_kit::messaging::now_rfc3339_utc()
+        }),
+    ))
+    .await
+    .unwrap();
+    let basis = svc.snapshot().amounts.get("ord-blue").cloned().unwrap();
+
+    let req = svc
+        .request_invoice(
+            RequestEInvoiceCommand {
+                account_id: "acc-test".into(),
+                order_id: "ord-blue".into(),
+                title_id: title.title_id,
+                title_version: 1,
+                invoice_scope: InvoiceScope {
+                    scope_type: "ORDER".into(),
+                    order_item_refs: vec![],
+                    segment_refs: vec![],
+                    traveler_refs: vec![],
+                },
+                amount_basis: basis,
+                recipient_email: None,
+                gateway_profile: None,
+                sim_seed_ref: Some("accept-e2e".into()),
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(req.status, InvoiceRequestStatus::Issued);
+    let invoice = svc
+        .get_invoice(req.e_invoice_id.clone().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(invoice.order_id, "ord-blue");
+    assert_eq!(invoice.status, InvoiceRequestStatus::Issued);
+    assert!(publisher.events().iter().any(
+        |event| event.event_type == "EInvoiceIssued" && event.payload["orderId"] == "ord-blue"
+    ));
+}
+
+#[tokio::test]
+async fn blue_invoice_request_rejects_genuinely_unknown_order() {
+    let svc = InMemoryInvoicingService::default();
+    let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
+    let basis = project_amount(
+        &svc,
+        "ord-unknown",
+        "evt-01900000-0000-7000-8000-000000000004",
+    )
+    .await;
+
+    let err = svc
+        .request_invoice(
+            RequestEInvoiceCommand {
+                account_id: "acc-test".into(),
+                order_id: "ord-unknown".into(),
+                title_id: title.title_id,
+                title_version: 1,
+                invoice_scope: InvoiceScope {
+                    scope_type: "ORDER".into(),
+                    order_item_refs: vec![],
+                    segment_refs: vec![],
+                    traveler_refs: vec![],
+                },
+                amount_basis: basis,
+                recipient_email: None,
+                gateway_profile: None,
+                sim_seed_ref: Some("accept-e2e".into()),
+            },
+            key(),
+            corr(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, InvoicingError::PreconditionFailed(message) if message.contains("journey-order confirmation"))
+    );
+}
+
+#[tokio::test]
 async fn saga_invoice_requested_creates_invoice_and_publishes_generated() {
     let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
     let svc = InMemoryInvoicingService::new(publisher.clone());
