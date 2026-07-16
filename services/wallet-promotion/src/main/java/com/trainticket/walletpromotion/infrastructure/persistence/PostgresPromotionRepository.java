@@ -21,6 +21,7 @@ import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementSetter;
 
 public class PostgresPromotionRepository implements PromotionRepository {
     private final JdbcOperations jdbc;
@@ -226,20 +227,39 @@ public class PostgresPromotionRepository implements PromotionRepository {
     private int insertSnapshot(String table, String id, long newVersion, Object data) {
         return jdbc.update(
             "INSERT INTO " + table + "(id, version, data) VALUES (?, ?, ?::jsonb) ON CONFLICT DO NOTHING",
-            id,
-            newVersion,
-            json(data)
+            snapshotInsertParameters(id, newVersion, data)
         );
+    }
+
+    private PreparedStatementSetter snapshotInsertParameters(String id, long newVersion, Object data) {
+        String snapshotJson = json(data);
+        return statement -> {
+            statement.setString(1, id);
+            statement.setLong(2, newVersion);
+            statement.setString(3, snapshotJson);
+        };
     }
 
     private int updateSnapshot(String table, String id, long expectedVersion, long newVersion, Object data) {
         return jdbc.update(
             "UPDATE " + table + " SET version = ?, data = ?::jsonb, updated_at = now() WHERE id = ? AND version = ?",
-            newVersion,
-            json(data),
-            id,
-            expectedVersion
+            snapshotUpdateParameters(id, expectedVersion, newVersion, data)
         );
+    }
+
+    private PreparedStatementSetter snapshotUpdateParameters(
+        String id,
+        long expectedVersion,
+        long newVersion,
+        Object data
+    ) {
+        String snapshotJson = json(data);
+        return statement -> {
+            statement.setLong(1, newVersion);
+            statement.setString(2, snapshotJson);
+            statement.setString(3, id);
+            statement.setLong(4, expectedVersion);
+        };
     }
 
     private EventEnvelope envelope(WalletPromotionEvent event, PromotionInstrument benefit) {
