@@ -1,6 +1,6 @@
 import { type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
-import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
+import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
@@ -21,7 +21,7 @@ export type JoinWaitlistRequest = Readonly<{
   intentFingerprint?: string;
 }>;
 
-export type AcceptPromotionRequest = Readonly<{ paymentMethodRef?: string }>;
+export type AcceptPromotionRequest = Readonly<Record<string, unknown>>;
 export type CancelWaitlistRequest = Readonly<{ reason?: string }>;
 export type AcceptPromotionResponse = Readonly<{ orderId: string; seatAssignment: unknown }>;
 export type QueueInfo = Readonly<{ totalQueued: number; myPosition: number | null; estimatedPromotionRate: number }>;
@@ -46,14 +46,10 @@ export type WaitlistRequestResource = Readonly<{
   journeyOrderRef?: string;
 }>;
 
-export interface JourneyOrderClient {
-  createOrder(entry: WaitlistEntry, paymentMethodRef?: string): Promise<AcceptPromotionResponse>;
-}
-
 export class HttpJourneyOrderClient implements JourneyOrderClient {
   constructor(private readonly baseUrl = process.env.JOURNEY_ORDER_URL ?? process.env.JOURNEY_ORDER_BASE_URL ?? "http://journey-order") {}
 
-  async createOrder(entry: WaitlistEntry, _paymentMethodRef?: string): Promise<AcceptPromotionResponse> {
+  async createOrder(entry: WaitlistEntry): Promise<AcceptPromotionResponse> {
     if (!entry.offerId || !entry.offerVersion) {
       throw new DomainError("PRECONDITION_FAILED", "Waitlist entry does not have an orderable offer");
     }
@@ -102,7 +98,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   }
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
-    return [...this.entries.values()].filter((entry) => entry.status === "MATCHING" && entry.offerExpiresAt !== null && entry.offerExpiresAt <= now);
+    return [...this.entries.values()].filter((entry) => {
+      if (entry.status === "QUEUED") return hasDeadlinePassed(entry, now);
+      return entry.status === "MATCHING" && ((entry.offerExpiresAt !== null && entry.offerExpiresAt <= now) || hasDeadlinePassed(entry, now));
+    });
   }
 
   async findArchivable(): Promise<readonly WaitlistEntry[]> {
@@ -197,14 +196,11 @@ export class WaitlistApplicationService {
     return { waitlistRequestId: snapshot.entryId, status: "CANCELLED", cancelledAt };
   }
 
-  async accept(entryId: string, request: AcceptPromotionRequest = {}, correlationId?: string): Promise<AcceptPromotionResponse> {
+  async accept(entryId: string, _request: AcceptPromotionRequest = {}, _correlationId?: string): Promise<AcceptPromotionResponse> {
     const entry = await this.requireEntry(entryId);
-    const now = this.now();
-    entry.ensureOfferAcceptable(now);
-    const order = await this.journeyOrder.createOrder(entry, request.paymentMethodRef);
-    entry.attachJourneyOrder(order.orderId);
-    await this.repository.save(entry);
-    return order;
+    entry.ensureOfferAcceptable(this.now());
+    const order = await this.journeyOrder.createOrder(entry);
+    return { orderId: order.orderId, seatAssignment: order.seatAssignment ?? null };
   }
 
   async queueInfo(segmentRef: string, departureDate: string, seatClass?: string, entryId?: string): Promise<QueueInfo> {
@@ -214,7 +210,7 @@ export class WaitlistApplicationService {
   }
 
   async handleCapacityFreed(event: WaitlistCapacityFreed, correlationId?: string) {
-    return this.promotion.onCapacityFreed(event, correlationId);
+    return this.promotion.onCapacityFreed(event, this.journeyOrder, correlationId);
   }
 
   async handleJourneyOrderConfirmed(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
@@ -295,6 +291,11 @@ function isActiveStatus(status: WaitlistEntrySnapshot["status"]): boolean {
 
 function isArchivableStatus(status: WaitlistEntrySnapshot["status"]): boolean {
   return status === "FULFILLED" || status === "EXPIRED" || status === "CANCELLED";
+}
+
+function hasDeadlinePassed(entry: WaitlistEntry, now: Date): boolean {
+  const deadline = new Date(entry.deadline).getTime();
+  return Number.isFinite(deadline) && deadline <= now.getTime();
 }
 
 function toWaitlistRequestResource(snapshot: WaitlistEntrySnapshot): WaitlistRequestResource {
