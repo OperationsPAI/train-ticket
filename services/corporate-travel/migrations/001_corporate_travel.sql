@@ -54,12 +54,6 @@ CREATE TABLE IF NOT EXISTS corporate_billing_periods (
     CONSTRAINT corporate_billing_unique_period UNIQUE (corporate_id, agreement_id, billing_period)
 );
 
-CREATE TABLE IF NOT EXISTS corporate_travel_inbox (
-    event_id TEXT PRIMARY KEY,
-    event_type TEXT NOT NULL,
-    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS outbox_events (
     event_id TEXT PRIMARY KEY,
     producer TEXT NOT NULL,
