@@ -281,7 +281,7 @@ def test_reaccommodate_precondition_and_self_completion_skip() -> None:
     assert [e for e in store.take_outbox() if e.eventType == "ConnectionRecovered"] == []
 
 
-def test_fulfillment_segment_delayed_event_marks_connection_missed_when_mct_is_violated() -> None:
+def test_fulfillment_segment_delayed_event_marks_connection_at_risk_when_mct_is_violated_before_cutoff() -> None:
     from datetime import UTC, datetime
     from train_ticket_platform.events import EventEnvelope
     from transfer_management.application.service import TransferManagementService
@@ -299,7 +299,8 @@ def test_fulfillment_segment_delayed_event_marks_connection_missed_when_mct_is_v
 
     assert service.handle_fulfillment_event(envelope, "events:fulfillment") is True
     updated = service.get_connection(connection["connectionId"])
-    assert updated["status"] == "MISSED"
+    assert updated["status"] == "AT_RISK"
+    assert updated["latestEvaluation"]["riskLevel"] == "AT_RISK"
     assert store.mark_processed(envelope.eventId, "events:fulfillment") is False
 
 
