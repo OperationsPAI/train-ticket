@@ -10,8 +10,9 @@ from typing import Any
 
 from reporting.application.service import (
     PRODUCER,
-    REBUILD_DEBOUNCE_SECONDS,
     RebuildRun,
+    ReportingApplicationService,
+    dashboard_consumes_event,
     default_repository,
     operational_event_from_envelope,
     rfc3339_utc,
@@ -244,6 +245,8 @@ def _event_from_row(row: Sequence[Any]) -> OperationalEvent:
 
 
 class PostgresReportingApplicationService:
+    _next_rebuild_event_count = staticmethod(ReportingApplicationService._next_rebuild_event_count)
+
     def __init__(self, pool: Any, outbox: OutboxAppender | None = None) -> None:
         self._pool = pool
         self._outbox = outbox or OutboxAppender()
@@ -313,7 +316,7 @@ class PostgresReportingApplicationService:
                             self._append_anomaly_actions(conn, anomaly, envelope)
                     dashboards = self._all_dashboards(conn)
                     for dashboard, version in dashboards:
-                        if not dashboard.source_events or envelope.eventType in dashboard.source_events:
+                        if dashboard_consumes_event(dashboard, envelope.eventType):
                             stale = dashboard.mark_stale()
                             new_version = self._dashboards.save(conn, stale.dashboard_id, _dashboard_to_json(stale), version)
                             self._maybe_rebuild(conn, stale, new_version, envelope)
@@ -382,9 +385,7 @@ class PostgresReportingApplicationService:
         if dashboard.status is not ReadModelStatus.STALE:
             return
         now = utc_now()
-        if dashboard.last_built_at is not None and (now - dashboard.last_built_at).total_seconds() < REBUILD_DEBOUNCE_SECONDS:
-            return
-        event_count = self._processed_count(conn)
+        event_count = self._next_rebuild_event_count(dashboard, self._processed_count(conn))
         digest = "sha256-" + hashlib.sha256(f"{dashboard.dashboard_id}:{event_count}:{rfc3339_utc(now)}".encode()).hexdigest()[:16]
         rebuild_id = prefixed_uuid7("rebuild")
         rebuilt = dashboard.rebuild(rebuild_id, now, event_count, digest)

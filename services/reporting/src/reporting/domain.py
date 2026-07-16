@@ -485,7 +485,7 @@ _ORDER_EVENT_TYPES = {
 _SEARCH_EVENT_TYPES = {"TripSearched", "SearchPerformed", "OfferSearchRequested"}
 _PAYMENT_CAPTURED_EVENT_TYPES = {"PaymentCaptured", "RevenueRecognized", "PaymentSucceeded"}
 _PAYMENT_FAILED_EVENT_TYPES = {"PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed"}
-_REFUND_EVENT_TYPES = {"RefundSettled", "RefundCompleted", "RefundIssued"}
+_REFUND_EVENT_TYPES = {"RefundSettled", "RefundCompleted", "RefundIssued", "RevenueRecognitionReversed"}
 _CAPACITY_EVENT_TYPES = {"CapacityUpdated", "SeatInventoryUpdated", "CapacityExhausted"}
 _RISK_BLOCK_EVENT_TYPES = {"ScalperBlocked", "RiskBookingBlocked"}
 

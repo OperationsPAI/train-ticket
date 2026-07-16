@@ -36,9 +36,29 @@ from .ports import EventEnvelope, EventPublisher, HandlerResult
 PRODUCER = "reporting"
 logger = logging.getLogger(__name__)
 
-# Minimum seconds between rebuilds of the same dashboard (inline scheduler
-# for the bus-only RebuildReadModel command, api/reporting.md).
-REBUILD_DEBOUNCE_SECONDS = 10.0
+REVENUE_DASHBOARD_SOURCE_EVENTS = (
+    "PaymentCaptured",
+    "PaymentSucceeded",
+    "RefundSettled",
+    "RefundCompleted",
+    "RefundIssued",
+    "RevenueRecognized",
+    "RevenueRecognitionReversed",
+    "ReconciliationCompleted",
+    "InvoiceGenerated",
+    "JourneyOrderConfirmed",
+    "BoardingVerified",
+    "FulfillmentCompleted",
+    "NoShowRecorded",
+)
+
+_REVENUE_RELEVANT_EVENT_TYPES = frozenset(REVENUE_DASHBOARD_SOURCE_EVENTS)
+
+
+def dashboard_consumes_event(dashboard: DashboardReadModel, event_type: str) -> bool:
+    if dashboard.dashboard_id == "dash-revenue" and event_type in _REVENUE_RELEVANT_EVENT_TYPES:
+        return True
+    return not dashboard.source_events or event_type in dashboard.source_events
 
 
 def utc_now() -> datetime:
@@ -102,7 +122,7 @@ class ReportingReadRepository:
         normalized = operational_event_from_envelope(envelope)
         self.metric_aggregator.record(normalized)
         for dashboard_id, dashboard in list(self.dashboards.items()):
-            if not dashboard.source_events or envelope.eventType in dashboard.source_events:
+            if dashboard_consumes_event(dashboard, envelope.eventType):
                 self.dashboards[dashboard_id] = dashboard.mark_stale()
         return True
 
@@ -229,7 +249,7 @@ def operational_event_from_envelope(envelope: EventEnvelope) -> OperationalEvent
         confirmed=_parse_int(_payload_value(payload, "confirmed", "confirmedSeats", "bookedSeats", "usedSeats", "allocatedSeats")),
         booking_latency_ms=_parse_int(_payload_value(payload, "bookingLatencyMs", "latencyMs", "elapsedMs")),
         payment_failed=_parse_bool(_payload_value(payload, "paymentFailed", "failed", "declined") or envelope.eventType in {"PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed", "ChannelOrderFailed", "ChannelRefundFailed"}),
-        refunded=_parse_bool(_payload_value(payload, "refunded") or envelope.eventType in {"RefundSettled", "RefundCompleted", "RefundIssued", "ChannelRefundSucceeded", "AncillaryOrderItemRefunded"}),
+        refunded=_parse_bool(_payload_value(payload, "refunded") or envelope.eventType in {"RefundSettled", "RefundCompleted", "RefundIssued", "RevenueRecognitionReversed", "ChannelRefundSucceeded", "AncillaryOrderItemRefunded"}),
         scalper_blocked=_parse_bool(_payload_value(payload, "scalperBlocked", "blockedByRisk") or envelope.eventType in {"ScalperBlocked", "RiskBookingBlocked", "RiskBlockApplied"}),
         distance_km=_parse_decimal(_payload_value(payload, "distanceKm", "distance_km")),
         ancillary_attached=_parse_bool(_payload_value(payload, "ancillaryAttached", "ancillary_attach") or envelope.eventType.startswith("Ancillary")),
@@ -252,7 +272,7 @@ def default_repository() -> ReportingReadRepository:
         expression="SUM(payment.capturedAmount.minorUnits)",
         status=MetricStatus.PUBLISHED,
         published_at=published_at,
-        source_lineage=("PaymentCaptured", "RefundSettled"),
+        source_lineage=REVENUE_DASHBOARD_SOURCE_EVENTS,
     )
     support_metric = MetricDefinition(
         metric_id="metric-support-cases",
@@ -281,7 +301,7 @@ def default_repository() -> ReportingReadRepository:
         metrics=(MetricRef("metric-revenue", "1.0.0"),),
         current_snapshot=snapshot,
         last_built_at=published_at,
-        source_events=("RevenueRecognized", "ReconciliationCompleted", "InvoiceGenerated", "BoardingVerified", "FulfillmentCompleted", "NoShowRecorded"),
+        source_events=REVENUE_DASHBOARD_SOURCE_EVENTS,
     )
     return ReportingReadRepository(
         metrics={revenue_metric.metric_id: revenue_metric, support_metric.metric_id: support_metric},
@@ -397,18 +417,18 @@ class ReportingApplicationService:
         )
 
     def _rebuild_stale_dashboards(self, envelope: EventEnvelope) -> None:
-        """RebuildReadModel is a bus-only command with a 'manual or scheduled'
-        trigger (api/reporting.md); phase 1 schedules it inline — a stale
-        dashboard is rebuilt once the debounce window since its last build
-        has elapsed, and each rebuild publishes the ReadModelRebuilt fact."""
+        """Rebuild dashboards synchronously for relevant consumed facts.
+
+        Reporting has no separate scheduler in the greenfield runtime. A
+        revenue-relevant upstream fact must therefore make ``dash-revenue`` leave
+        BUILDING/STALE during the consumer callback and emit the
+        ``ReadModelRebuilt`` fact expected by downstream observers.
+        """
         now = utc_now()
         for dashboard_id, dashboard in list(self.repository.dashboards.items()):
             if dashboard.status is not ReadModelStatus.STALE:
                 continue
-            last_built = dashboard.last_built_at
-            if last_built is not None and (now - last_built).total_seconds() < REBUILD_DEBOUNCE_SECONDS:
-                continue
-            event_count = len(self.repository.consumed_events.records)
+            event_count = self._next_rebuild_event_count(dashboard, len(self.repository.consumed_events.records))
             digest = "sha256-" + hashlib.sha256(
                 f"{dashboard_id}:{event_count}:{rfc3339_utc(now)}".encode()
             ).hexdigest()[:16]
@@ -429,6 +449,11 @@ class ReportingApplicationService:
                 correlation_id=envelope.correlationId,
                 causation_id=envelope.eventId,
             )
+
+    @staticmethod
+    def _next_rebuild_event_count(dashboard: DashboardReadModel, consumed_count: int) -> int:
+        previous_event_count = 0 if dashboard.current_snapshot is None else dashboard.current_snapshot.event_count
+        return max(consumed_count, previous_event_count + 1)
 
     def publish_domain_event(
         self,
