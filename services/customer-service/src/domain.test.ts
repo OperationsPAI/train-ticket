@@ -227,13 +227,16 @@ describe("Customer Service domain foundation", () => {
       assert.deepEqual(rule, { fromLevel: "L1_AGENT", triggerCondition: "L1_UNRESOLVED_30M", toLevel: "L2_SPECIALIST" });
     });
 
-    it("selects simulated L1 resolution or escalation after ten seconds", () => {
-      const { case: autoResolved } = SupportCase.open(openCommand({ caseId: "sc-auto-resolve" }));
-      const { case: autoEscalated } = SupportCase.open(openCommand({ caseId: "sc-auto-escalate" }));
+    it("selects simulated L1 resolution or escalation after assignment handling starts", () => {
+      const { case: unassigned } = SupportCase.open(openCommand({ caseId: "sc-auto-resolve" }));
+      const { case: assignedAutoResolved } = unassigned.assign(assignCommand({ caseId: unassigned.id }));
+      const { case: assignableAutoEscalated } = SupportCase.open(openCommand({ caseId: "sc-auto-escalate" }));
+      const { case: assignedAutoEscalated } = assignableAutoEscalated.assign(assignCommand({ caseId: assignableAutoEscalated.id }));
 
-      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:09.000Z"), autoResolved.toSnapshot()), undefined);
-      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:10.000Z"), autoResolved.toSnapshot())?.action, "RESOLVE");
-      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:00:10.000Z"), autoEscalated.toSnapshot())?.action, "ESCALATE");
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:10:00.000Z"), unassigned.toSnapshot()), undefined);
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:03:09.000Z"), assignedAutoResolved.toSnapshot()), undefined);
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:03:10.000Z"), assignedAutoResolved.toSnapshot())?.action, "RESOLVE");
+      assert.equal(SimulatedResolutionPolicy.decisionAt(new Date("2026-07-03T10:03:10.000Z"), assignedAutoEscalated.toSnapshot())?.action, "ESCALATE");
     });
 
     it("rejects opening with missing required fields", () => {

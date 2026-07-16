@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { CustomerServiceApplication } from "./application/customer-service.js";
+import { OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
+
+import { CustomerServiceApplication, type OpenSupportCaseRequest } from "./application/customer-service.js";
 import { InMemoryEventPublisher, newCorrelationId } from "./application/messaging.js";
 import { createApp } from "./index.js";
+import {
+  SupportCase,
+  type CaseContextSnapshot,
+  type CaseTimelineSnapshot,
+  type CompensationOfferSnapshot,
+  type EvidenceRefSnapshot,
+  type ManualActionRequestSnapshot,
+  type SupportCaseSnapshot,
+} from "./domain.js";
+import { type CustomerServiceRepository } from "./application/ports/customer-service-repository.js";
 
 const openBody = {
   requesterRef: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b001",
@@ -21,10 +33,101 @@ function idempotencyKey(): string {
   return `018f2e00-7b3e-7610-8284-${idempotencySequence.toString(16).padStart(12, "0")}`;
 }
 
-async function openedCase(app = createApp()): Promise<string> {
-  const response = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers: { "idempotency-key": idempotencyKey() }, payload: openBody });
+async function openedCase(app = createApp(), overrides: Partial<OpenSupportCaseRequest> = {}): Promise<string> {
+  const response = await app.inject({ method: "POST", url: "/api/v1/support-cases", headers: { "idempotency-key": idempotencyKey() }, payload: { ...openBody, ...overrides } });
   assert.equal(response.statusCode, 201);
   return response.json().caseId as string;
+}
+
+class StaleOnResolveRepository implements CustomerServiceRepository {
+  private caseSnapshot?: SupportCaseSnapshot;
+  private version = 0n;
+
+  async findCase(caseId: string): Promise<Readonly<{ aggregate: SupportCase; version: bigint }> | undefined> {
+    return this.caseSnapshot?.caseId === caseId ? { aggregate: SupportCase.fromSnapshot(this.caseSnapshot), version: this.version } : undefined;
+  }
+
+  async saveNewCase(snapshot: SupportCaseSnapshot): Promise<{ version: bigint }> {
+    this.caseSnapshot = snapshot;
+    this.version = 1n;
+    return { version: this.version };
+  }
+
+  async saveCase(snapshot: SupportCaseSnapshot, expectedVersion: bigint): Promise<{ version: bigint }> {
+    if (snapshot.status === "Resolved") {
+      throw new OptimisticConcurrencyConflict(`Snapshot ${snapshot.caseId} was modified by another writer`);
+    }
+    if (expectedVersion !== this.version) {
+      throw new OptimisticConcurrencyConflict(`Snapshot ${snapshot.caseId} was modified by another writer`);
+    }
+    this.caseSnapshot = snapshot;
+    this.version += 1n;
+    return { version: this.version };
+  }
+
+  async listCases(): Promise<SupportCase[]> {
+    return this.caseSnapshot ? [SupportCase.fromSnapshot(this.caseSnapshot)] : [];
+  }
+
+  async listOpenCasesForEvaluation(): Promise<SupportCase[]> {
+    return [];
+  }
+
+  async findDuplicateOpenCase(): Promise<undefined> {
+    return undefined;
+  }
+
+  async findTimeline(): Promise<undefined> {
+    return undefined;
+  }
+
+  async saveNewTimeline(): Promise<{ version: bigint }> {
+    return { version: 1n };
+  }
+
+  async saveTimeline(_snapshot: CaseTimelineSnapshot, expectedVersion: bigint): Promise<{ version: bigint }> {
+    return { version: expectedVersion + 1n };
+  }
+
+  async evidenceForCase(): Promise<EvidenceRefSnapshot[]> {
+    return [];
+  }
+
+  async saveEvidence(): Promise<void> {}
+
+  async findManualAction(): Promise<undefined> {
+    return undefined;
+  }
+
+  async saveNewManualAction(): Promise<{ version: bigint }> {
+    return { version: 1n };
+  }
+
+  async saveManualAction(_snapshot: ManualActionRequestSnapshot, expectedVersion: bigint): Promise<{ version: bigint }> {
+    return { version: expectedVersion + 1n };
+  }
+
+  async findCompensationOffer(): Promise<undefined> {
+    return undefined;
+  }
+
+  async saveNewCompensationOffer(): Promise<{ version: bigint }> {
+    return { version: 1n };
+  }
+
+  async saveCompensationOffer(_snapshot: CompensationOfferSnapshot, expectedVersion: bigint): Promise<{ version: bigint }> {
+    return { version: expectedVersion + 1n };
+  }
+
+  async caseContextForCase(): Promise<CaseContextSnapshot[]> {
+    return [];
+  }
+
+  async saveCaseContext(): Promise<void> {}
+
+  async hasCaseContextForEvent(): Promise<boolean> {
+    return false;
+  }
 }
 
 describe("customer-service HTTP API", () => {
@@ -199,10 +302,19 @@ describe("customer-service HTTP API", () => {
     assert.equal(publisher.findByEventType("TicketEscalated").at(-1)?.payload.triggerCondition, "CUSTOMER_REQUEST");
   });
 
-  it("resolves, closes, and reopens a support case", async () => {
+  it("assigns and resolves an opened support case with documented command bodies", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
-    await app.inject({ method: "POST", url: `/api/v1/support-cases/${caseId}/assign`, headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d002" }, payload: { ownerQueue: "tier1" } });
+
+    const assigned = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/assign`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d002" },
+      payload: { ownerQueue: "tier1" },
+    });
+    assert.equal(assigned.statusCode, 200);
+    assert.equal(assigned.json().status, "IN_PROGRESS");
+    assert.equal(assigned.json().ownerQueue, "tier1");
 
     const resolved = await app.inject({
       method: "POST",
@@ -235,7 +347,7 @@ describe("customer-service HTTP API", () => {
   it("supports customer-request escalation and SLA evaluation endpoints", async () => {
     const publisher = new InMemoryEventPublisher();
     const app = createApp({ publisher });
-    const caseId = await openedCase(app);
+    const caseId = await openedCase(app, { businessReferences: { journeyOrderId: `ord-sla-${idempotencySequence}` } });
 
     const escalated = await app.inject({
       method: "POST",
@@ -382,6 +494,30 @@ describe("customer-service HTTP API", () => {
     const compensationEvents = publisher.findByEventType("CompensationOffered");
     assert.equal(compensationEvents.length, 1);
     assert.equal(compensationEvents[0].payload.ticketId, opened.caseId);
+  });
+
+  it("maps stale case version saves to PRECONDITION_FAILED for resolved-state guards", async () => {
+    const app = createApp({
+      application: new CustomerServiceApplication(new InMemoryEventPublisher(), new StaleOnResolveRepository()),
+    });
+    const caseId = await openedCase(app);
+    const assigned = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/assign`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d301" },
+      payload: { ownerQueue: "tier1" },
+    });
+    assert.equal(assigned.statusCode, 200);
+
+    const resolved = await app.inject({
+      method: "POST",
+      url: `/api/v1/support-cases/${caseId}/resolve`,
+      headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0d302" },
+      payload: { summary: "fixed", resolutionCode: "FIXED" },
+    });
+
+    assert.equal(resolved.statusCode, 412);
+    assert.equal(resolved.json().code, "PRECONDITION_FAILED");
   });
 
   it("returns NOT_FOUND for unknown cases", async () => {
