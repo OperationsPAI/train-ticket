@@ -109,9 +109,14 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             .map(tid -> new TravelerRef(tid, "ADULT"))
             .toList();
 
+        // NOTE: journey-order does not yet resolve the real offer itinerary, so the
+        // per-segment departure is a stub. It must fall in a refund-viable window
+        // (> 48h out) rather than the previous now+1day, which post-sales would
+        // otherwise classify as LT_48H_NON_REFUNDABLE and quote a zero refund. A
+        // 30-day offset yields the deterministic TIER_GT_15_DAYS bucket.
         List<SegmentOrderSnapshot> segments = request.segmentRefs().stream()
             .map(sid -> new SegmentOrderSnapshot(sid, "ORIG", "DEST", "TRAIN",
-                now.plusSeconds(86400), now.plusSeconds(111600), ""))
+                now.plusSeconds(30L * 86400L), now.plusSeconds(30L * 86400L + 25200L), ""))
             .toList();
 
         // Create minimal order items for the aggregate
@@ -228,6 +233,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 payload.put("monetarySummary", monetaryPayload(created.monetarySummary()));
                 payload.put("travelerRefs", created.travelerRefs().stream().map(OrderManagementService::travelerPayload).toList());
                 payload.put("segmentRefs", created.segmentRefs());
+                payload.put("segments", created.segments().stream().map(OrderManagementService::segmentPayload).toList());
                 payload.put("createdAt", created.createdAt().toString());
                 if (created.sourceIp() != null && !created.sourceIp().isBlank()) {
                     payload.put("sourceIp", created.sourceIp());
@@ -263,6 +269,17 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 "monetarySummary", monetaryPayload(adjusted.monetarySummary())
             );
         };
+    }
+
+    private static Map<String, Object> segmentPayload(com.trainticket.journeyorder.domain.SegmentOrderSnapshot segment) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("segmentRef", segment.segmentRef());
+        payload.put("origin", segment.origin());
+        payload.put("destination", segment.destination());
+        payload.put("transportMode", segment.transportMode());
+        payload.put("departureTime", segment.departureTime().toString());
+        payload.put("arrivalTime", segment.arrivalTime().toString());
+        return payload;
     }
 
     private static Map<String, Object> travelerPayload(TravelerRef traveler) {

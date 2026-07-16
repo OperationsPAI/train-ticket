@@ -17,8 +17,9 @@ req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
 check_code 200 "evaluate case"
 REFUNDABLE=$(jget "['refundableAmount']['minorUnits']")
 echo "  eligible=$(jget "['eligible']") refundable=$(jget "['refundableAmount']")"
-# fare 107.50 - refund fee 20.00 = 87.50 CNY (default rule set)
-[ "$REFUNDABLE" = "8750" ] && ok "refundable = 87.50 CNY (real adjustment quote)" || bad "refundable amount wrong ($REFUNDABLE, expected 8750)"
+# Order fare 100.00; segment departs ~30 days out -> RefundPolicyEngine
+# TIER_GT_15_DAYS applies a 5% penalty (500) -> refundable 95.00 CNY.
+[ "$REFUNDABLE" = "9500" ] && ok "refundable = 95.00 CNY (real adjustment quote)" || bad "refundable amount wrong ($REFUNDABLE, expected 9500)"
 
 echo "== 3. approve"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
@@ -78,8 +79,8 @@ FIN_OK=$(stream_mentions events:finance-settlement RevenueRecognized "$ORDER")
 [ "$FIN_OK" = "yes" ] && ok "RevenueRecognized for our order" || bad "no RevenueRecognized mentioning order"
 RECON_OK=$(stream_mentions events:finance-settlement ReconciliationCompleted "$ORDER")
 [ "$RECON_OK" = "yes" ] && ok "ReconciliationCompleted for our order" || bad "no ReconciliationCompleted mentioning order"
-REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognitionReversed '"minorUnits": 8750')
-[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reversal published" || bad "no 87.50 revenue reversal"
+REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognitionReversed '"minorUnits": 9500')
+[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reversal published" || bad "no 95.00 revenue reversal"
 invoice_event_count() {
   k exec "$(redis_pod)" -- redis-cli XREVRANGE events:finance-settlement + - COUNT 100 > /tmp/invoice-events.txt 2>/dev/null
   ORDER_REF="$ORDER" python3 - << 'PYEX'
