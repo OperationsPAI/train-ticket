@@ -2968,7 +2968,7 @@ impl EntitlementApi for InMemoryEntitlementService {
         validate_prefixed_uuid(&command.segment_booking_id, "segmentBookingId", "sb-")?;
         validate_prefixed_uuid(&command.journey_order_id, "journeyOrderId", "ord-")?;
         validate_prefixed_uuid(&command.traveler_ref, "travelerRef", "tvl-")?;
-        validate_prefixed_uuid(&command.segment_ref, "segmentRef", "seg-")?;
+        validate_prefixed(&command.segment_ref, "segmentRef", "seg-")?;
         let fingerprint = serde_json::to_string(&command).unwrap_or_default();
         if let Some(replayed) = self.replayed_response(&key, &fingerprint)? {
             if let IdempotentResponse::Issue(response) = replayed {
@@ -3436,6 +3436,21 @@ fn validate_prefixed_uuid(value: &str, field: &'static str, prefix: &'static str
     uuid::Uuid::parse_str(uuid_part).map_err(|_| {
         ApiErrorKind::ValidationFailed(format!("{field} must use {prefix}<uuid> format"))
     })?;
+    Ok(())
+}
+
+// Prefix-only validation for refs that are NOT uuids. segmentRef is the canonical
+// trip-planning service segment ref (e.g. `seg-web-2026-08-01-<hash>`), which the
+// rest of the system (fare-pricing, journey-order, booking-orchestration) accepts
+// as an opaque `seg-`-prefixed slug. Requiring `seg-<uuid>` here wrongly rejected
+// real refs and blocked every entitlement issue in the purchase funnel.
+fn validate_prefixed(value: &str, field: &'static str, prefix: &'static str) -> ApiResult<()> {
+    validate_non_empty(value, field)?;
+    if !value.starts_with(prefix) {
+        return Err(ApiErrorKind::ValidationFailed(format!(
+            "{field} must be {prefix}-prefixed"
+        )));
+    }
     Ok(())
 }
 
