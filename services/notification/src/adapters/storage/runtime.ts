@@ -191,7 +191,7 @@ function templateCodeFor(envelope: EventEnvelope): string | undefined {
     case "RefundSettled":
       return "REFUND_COMPLETED";
     case "EntitlementIssued":
-      return "TICKET_ISSUED";
+      return "ticket_issued";
     case "WaitlistFulfilled":
       return "WAITLIST_PROMOTED";
     case "ServiceAlertPublished":
