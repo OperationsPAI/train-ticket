@@ -271,6 +271,16 @@ PYEX
   req POST booking-orchestration "/api/v1/internal/booking-sagas/$WL_SAGA/request-reservation" "{\"segmentRef\":\"$SEG_F\",\"travelerRef\":\"$TVL_C\",\"segmentBookingId\":\"$WL_SB\"}"
   check_code 200 "staff requests reservation for waitlist order"
   sleep 5
+  # Waitlist is no-direct-payment: the promoted customer completes the purchase
+  # by capturing their guaranteed payment against the fulfillment order, exactly
+  # as buy_one does (reserve -> pay -> entitlement). Without this the saga stays
+  # in PENDING_PAYMENT and the order never confirms.
+  req POST payment /api/v1/payment-intents "{\"businessRef\":\"$WL_ORDER\",\"purpose\":\"purchase\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":10750},\"payerRef\":\"$ACCT_C\"}"
+  check_code 201 "create payment intent for waitlist order"
+  WL_PI=$(jget "['paymentIntentId']")
+  req POST payment "/api/v1/payment-intents/$WL_PI/capture" '{}'
+  [ "$LAST_CODE" = 200 ] || [ "$LAST_CODE" = 201 ] && ok "capture payment for waitlist order [$LAST_CODE]" || bad "capture payment for waitlist order [$LAST_CODE]"
+  sleep 5
   req POST entitlement-ticketing /api/v1/entitlements "{\"segmentBookingId\":\"$WL_SB\",\"journeyOrderId\":\"$WL_ORDER\",\"travelerRef\":\"$TVL_C\",\"segmentRef\":\"$SEG_F\",\"issuePurpose\":\"INITIAL\"}"
   check_code 201 "staff issues entitlement for waitlist order"
 fi
