@@ -2,13 +2,17 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/domain"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type DomainError struct{ Code, Message string }
@@ -28,6 +32,16 @@ type Repository interface {
 	FindAssignments(context.Context, string, string, string) ([]domain.SeatAssignment, error)
 	SaveAssignment(context.Context, *domain.SeatAssignment) error
 	UpdateAssignment(context.Context, *domain.SeatAssignment, int64) error
+	SaveSeatMap(context.Context, *domain.ContractSeatMap) error
+	UpdateSeatMap(context.Context, *domain.ContractSeatMap, int64) error
+	GetSeatMap(context.Context, string) (*domain.ContractSeatMap, int64, error)
+	FindSeatMaps(context.Context, string, string, string, int, int) ([]domain.ContractSeatMap, int, error)
+	SaveSeatAllocation(context.Context, *domain.ContractSeatAllocation) error
+	UpdateSeatAllocation(context.Context, *domain.ContractSeatAllocation, int64) error
+	GetSeatAllocation(context.Context, string) (*domain.ContractSeatAllocation, int64, error)
+	FindSeatAllocations(context.Context, string, string, int, int) ([]domain.ContractSeatAllocation, int, error)
+	FindActiveSeatAllocations(context.Context, string, string) ([]domain.ContractSeatAllocation, error)
+	FindSeatAllocationsByCapacityRecovery(context.Context, string, string, domain.StationInterval) ([]domain.ContractSeatAllocation, error)
 }
 
 type Service struct {
@@ -214,10 +228,14 @@ func (s *Service) Release(ctx context.Context, assignmentID, corr, cause string)
 }
 func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope kitmsg.EventEnvelope) error {
 	switch envelope.EventType {
-	case "TicketIssued":
+	case "TicketIssued", "EntitlementIssued":
 		return s.handleTicketIssued(ctx, envelope)
-	case "PostSalesApplied":
+	case "PostSalesApplied", "EntitlementVoided", "EntitlementIssueFailed":
 		return s.handlePostSalesApplied(ctx, envelope)
+	case "CapacityReleased":
+		return s.handleCapacityReleased(ctx, envelope)
+	case "CapacityHoldExpired":
+		return s.handleCapacityHoldExpired(ctx, envelope)
 	case "BookingSagaStepSucceeded":
 		return s.handleBookingSaga(ctx, envelope)
 	case "SeatAllocationRequested":
@@ -304,6 +322,9 @@ func deriveDepartureDate(segmentRef string) string {
 func (s *Service) handleTicketIssued(ctx context.Context, e kitmsg.EventEnvelope) error {
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
+	if allocationID := str(p, "seatAllocationId"); allocationID != "" {
+		return s.confirmSeatAllocation(ctx, allocationID, str(p, "entitlementId"), e)
+	}
 	id := str(p, "assignmentId")
 	if id == "" {
 		id = str(p, "seatAssignmentId")
@@ -314,9 +335,45 @@ func (s *Service) handleTicketIssued(ctx context.Context, e kitmsg.EventEnvelope
 	_, err := s.Confirm(ctx, id, "", e.CorrelationID, e.EventID)
 	return err
 }
+
+func (s *Service) confirmSeatAllocation(ctx context.Context, allocationID, entitlementID string, e kitmsg.EventEnvelope) error {
+	if entitlementID == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	return s.tx(ctx, func(tx context.Context) error {
+		allocation, expected, err := s.repo.GetSeatAllocation(tx, allocationID)
+		if err != nil {
+			return nil
+		}
+		if allocation.Status == domain.AllocationStatusConfirmed {
+			return nil
+		}
+		if allocation.Status != domain.AllocationStatusAllocated && allocation.Status != domain.AllocationStatusStanding {
+			return nil
+		}
+		t := now
+		allocation.ConfirmedAt = &t
+		allocation.Status = domain.AllocationStatusConfirmed
+		if err := s.repo.UpdateSeatAllocation(tx, allocation, expected); err != nil {
+			return derr("CONFLICT", err.Error())
+		}
+		payload := map[string]any{"seatAllocationId": allocation.SeatAllocationID, "segmentBookingId": allocation.SegmentBookingID, "journeyOrderId": allocation.JourneyOrderID, "travelerRef": allocation.TravelerRef, "entitlementId": entitlementID, "seatRef": allocation.SeatRef, "confirmedAt": now, "sourceEventId": e.EventID, "status": allocation.Status}
+		return s.publish(tx, []domain.Event{{EventType: "SeatAllocationConfirmed", AggregateID: allocation.SeatAllocationID, Version: 2, OccurredAt: now, CorrelationID: e.CorrelationID, CausationID: e.EventID, Payload: payload}})
+	})
+}
+
 func (s *Service) handlePostSalesApplied(ctx context.Context, e kitmsg.EventEnvelope) error {
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
+	reason := releaseReasonForEntitlementEvent(e.EventType, str(p, "reason"))
+	releasedAt := releaseTimeForEntitlementEvent(e.EventType, p)
+	if allocationID := str(p, "seatAllocationId"); allocationID != "" {
+		return s.releaseSeatAllocation(ctx, allocationID, reason, releasedAt, e)
+	}
+	if segmentBookingID := str(p, "segmentBookingId"); segmentBookingID != "" {
+		return s.releaseSeatAllocationsBySegmentBooking(ctx, segmentBookingID, reason, releasedAt, e)
+	}
 	id := str(p, "assignmentId")
 	if id == "" {
 		id = str(p, "seatAssignmentId")
@@ -341,6 +398,96 @@ func (s *Service) handlePostSalesApplied(ctx context.Context, e kitmsg.EventEnve
 		}
 	}
 	return nil
+}
+
+func (s *Service) releaseSeatAllocation(ctx context.Context, allocationID, releaseReason string, releasedAt time.Time, e kitmsg.EventEnvelope) error {
+	return s.tx(ctx, func(tx context.Context) error {
+		allocation, expected, err := s.repo.GetSeatAllocation(tx, allocationID)
+		if err != nil {
+			return nil
+		}
+		return s.releaseStoredSeatAllocation(tx, allocation, expected, releaseReason, releasedAt, e)
+	})
+}
+
+func (s *Service) releaseSeatAllocationsBySegmentBooking(ctx context.Context, segmentBookingID, releaseReason string, releasedAt time.Time, e kitmsg.EventEnvelope) error {
+	return s.tx(ctx, func(tx context.Context) error {
+		const pageSize = 100
+		for offset := 0; ; offset += pageSize {
+			allocations, total, err := s.repo.FindSeatAllocations(tx, segmentBookingID, "", pageSize, offset)
+			if err != nil {
+				return err
+			}
+			for i := range allocations {
+				allocation, expected, err := s.repo.GetSeatAllocation(tx, allocations[i].SeatAllocationID)
+				if err != nil {
+					continue
+				}
+				if err := s.releaseStoredSeatAllocation(tx, allocation, expected, releaseReason, releasedAt, e); err != nil {
+					return err
+				}
+			}
+			if offset+len(allocations) >= total || len(allocations) == 0 {
+				return nil
+			}
+		}
+	})
+}
+
+func (s *Service) releaseStoredSeatAllocation(ctx context.Context, allocation *domain.ContractSeatAllocation, expected int64, releaseReason string, releasedAt time.Time, e kitmsg.EventEnvelope) error {
+	if allocation.Status == domain.AllocationStatusReleased || allocation.Status == domain.AllocationStatusExpired {
+		return nil
+	}
+	if releaseReason == "" {
+		releaseReason = "MANUAL_CORRECTION"
+	}
+	if releasedAt.IsZero() {
+		releasedAt = time.Now().UTC()
+	}
+	allocation.Release(releasedAt)
+	if err := s.repo.UpdateSeatAllocation(ctx, allocation, expected); err != nil {
+		return derr("CONFLICT", err.Error())
+	}
+	payload := map[string]any{"seatAllocationId": allocation.SeatAllocationID, "segmentBookingId": allocation.SegmentBookingID, "journeyOrderId": allocation.JourneyOrderID, "travelerRef": allocation.TravelerRef, "capacityHoldId": allocation.CapacityHoldID, "seatRef": allocation.SeatRef, "releaseReason": releaseReason, "releasedAt": releasedAt.UTC(), "sourceEventId": e.EventID, "status": allocation.Status}
+	return s.publish(ctx, []domain.Event{{EventType: "SeatAllocationReleased", AggregateID: allocation.SeatAllocationID, Version: 2, OccurredAt: releasedAt.UTC(), CorrelationID: e.CorrelationID, CausationID: e.EventID, Payload: payload}})
+}
+
+func releaseReasonForEntitlementEvent(eventType, entitlementReason string) string {
+	switch eventType {
+	case "EntitlementIssueFailed":
+		return "ISSUE_FAILED"
+	case "EntitlementVoided":
+		switch strings.ToUpper(strings.TrimSpace(entitlementReason)) {
+		case "CHANGE":
+			return "CHANGED"
+		case "DISRUPTION":
+			return "DISRUPTION"
+		case "MANUAL_CORRECTION":
+			return "MANUAL_CORRECTION"
+		default:
+			return "VOIDED"
+		}
+	default:
+		return "MANUAL_CORRECTION"
+	}
+}
+
+func releaseTimeForEntitlementEvent(eventType string, payload map[string]any) time.Time {
+	keys := []string{"releasedAt"}
+	switch eventType {
+	case "EntitlementVoided":
+		keys = append([]string{"voidedAt"}, keys...)
+	case "EntitlementIssueFailed":
+		keys = append([]string{"failedAt"}, keys...)
+	}
+	for _, key := range keys {
+		if raw := str(payload, key); raw != "" {
+			if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+				return parsed.UTC()
+			}
+		}
+	}
+	return time.Now().UTC()
 }
 func (s *Service) handleBookingSaga(ctx context.Context, e kitmsg.EventEnvelope) error {
 	var p map[string]any
@@ -383,8 +530,19 @@ func (s *Service) publish(ctx context.Context, events []domain.Event) error {
 		return nil
 	}
 	for _, ev := range events {
-		env, err := kitmsg.NewEventEnvelope(ev.EventType, domain.Producer, ev.CorrelationID, ev.Payload, kitmsg.EnvelopeOptions{Now: ev.OccurredAt, CausationID: ev.CausationID, Context: ctx})
+		body, err := json.Marshal(ev.Payload)
 		if err != nil {
+			return derr("UNAVAILABLE", err.Error())
+		}
+		env := kitmsg.EventEnvelope{EventID: deterministicSeatAssignmentEventID(ev.EventType, ev.AggregateID, ev.Version), EventType: strings.TrimSpace(ev.EventType), OccurredAt: ev.OccurredAt.UTC(), CorrelationID: ids.CanonicalCorrelationID(ev.CorrelationID), Producer: domain.Producer, SchemaVersion: kitmsg.SchemaVersion, Payload: body}
+		if strings.TrimSpace(ev.CausationID) != "" {
+			env.CausationID = ids.CanonicalCausationID(ev.CausationID)
+		}
+		if traceparent, tracestate := traceContextFromContext(ctx); traceparent != "" {
+			env.Traceparent = traceparent
+			env.Tracestate = tracestate
+		}
+		if err := env.Validate(); err != nil {
 			return derr("UNAVAILABLE", err.Error())
 		}
 		if err := s.publisher.Publish(ctx, env); err != nil {
@@ -392,6 +550,21 @@ func (s *Service) publish(ctx context.Context, events []domain.Event) error {
 		}
 	}
 	return nil
+}
+
+func deterministicSeatAssignmentEventID(eventType, aggregateID string, aggregateVersion int64) string {
+	seed := fmt.Sprintf("seat-assignment:%s:%s:%d", strings.TrimSpace(eventType), strings.TrimSpace(aggregateID), aggregateVersion)
+	sum := sha256.Sum256([]byte(seed))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x70
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("evt-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func traceContextFromContext(ctx context.Context) (string, string) {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return strings.TrimSpace(carrier.Get("traceparent")), strings.TrimSpace(carrier.Get("tracestate"))
 }
 func dto(a domain.SeatAssignment, seat domain.Seat) AssignmentDTO {
 	return AssignmentDTO{AssignmentId: a.AssignmentId, SeatId: a.SeatId, TravelerRef: a.TravelerRef, CarNumber: seat.CarNumber, Row: seat.Row, Letter: seat.Letter, Position: seat.Position, Status: a.Status, ExpiresAt: a.ExpiresAt}

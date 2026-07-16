@@ -7,3 +7,10 @@ CREATE TABLE IF NOT EXISTS outbox (seq bigserial PRIMARY KEY, event_id text NOT 
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished_seq ON outbox (seq) WHERE published_at IS NULL;
 CREATE TABLE IF NOT EXISTS processed_events (event_id text PRIMARY KEY, stream text, processed_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS idempotency_records (key text PRIMARY KEY, request_hash text NOT NULL, status_code int NOT NULL, response_body jsonb, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS seat_maps (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_seat_maps_service_date_status ON seat_maps ((data->>'scheduledServiceRef'), (data->>'serviceDate'), (data->>'status'));
+CREATE TABLE IF NOT EXISTS seat_allocations (id text PRIMARY KEY, version bigint NOT NULL, data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_seat_allocations_segment_booking ON seat_allocations ((data->>'segmentBookingId'));
+CREATE INDEX IF NOT EXISTS idx_seat_allocations_hold ON seat_allocations ((data->>'capacityHoldId'));
+CREATE INDEX IF NOT EXISTS idx_seat_allocations_service_date ON seat_allocations ((data->>'scheduledServiceRef'), (data->>'serviceDate'));
+CREATE INDEX IF NOT EXISTS idx_seat_allocations_status ON seat_allocations ((data->>'status'));
