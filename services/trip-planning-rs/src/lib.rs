@@ -67,20 +67,35 @@ pub async fn build_runtime() -> Router {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.to_string());
 
     log::info!("trip-planning initializing Postgres storage");
-    let pool = match rust_kit::storage::Storage::from_env().await {
-        Ok(storage) => {
-            let migrations_dir = std::env::var("MIGRATIONS_DIR")
-                .unwrap_or_else(|_| "./migrations".to_string());
-            if let Err(e) = storage.migrate_dir(&migrations_dir).await {
-                log::error!("migration failed: {}", e);
+    // Trip Planning MUST have persistence: it publishes ItineraryProposed via the
+    // transactional outbox, and running degraded (pool = None) silently drops those
+    // events, collapsing the downstream offer/purchase funnel. Retry a transient
+    // startup outage, then fail hard so Kubernetes restarts the pod rather than
+    // leaving it permanently degraded.
+    let storage = {
+        let mut attempt = 0u32;
+        loop {
+            match rust_kit::storage::Storage::from_env().await {
+                Ok(storage) => break storage,
+                Err(e) => {
+                    attempt += 1;
+                    if attempt >= 10 {
+                        panic!("Postgres unavailable after {attempt} attempts: {e}");
+                    }
+                    log::warn!(
+                        "Postgres not ready (attempt {attempt}/10), retrying in 3s: {e}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
             }
-            Some(storage.pool().clone())
-        }
-        Err(e) => {
-            log::warn!("Postgres unavailable, running without persistence: {}", e);
-            None
         }
     };
+    let migrations_dir =
+        std::env::var("MIGRATIONS_DIR").unwrap_or_else(|_| "./migrations".to_string());
+    if let Err(e) = storage.migrate_dir(&migrations_dir).await {
+        log::error!("migration failed: {}", e);
+    }
+    let pool = Some(storage.pool().clone());
 
     let plan_index = Arc::new(PlanIndex::new());
 
