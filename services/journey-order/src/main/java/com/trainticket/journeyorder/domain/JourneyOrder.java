@@ -90,6 +90,7 @@ public final class JourneyOrder {
             order.monetarySummary,
             order.travelers,
             order.segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),
+            order.segments,
             now,
             blankToNull(sourceIp)
         ));
