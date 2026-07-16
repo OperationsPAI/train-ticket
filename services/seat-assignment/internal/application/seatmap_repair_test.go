@@ -88,6 +88,78 @@ func TestAdjacentAllocationRequiresSameGroupAndAdjacentKey(t *testing.T) {
 	}
 }
 
+func TestAllocateSeatValidatesContractRequiredEnums(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	svc := New(repo, &memPub{}, nil)
+	m, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CompositionVersion: "v1", CompositionSeed: "SMALL", MappingVersion: "sim-v1", ChangeScenario: "SMALL", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
+		t.Fatal(err)
+	}
+
+	missingPurpose := allocReq("sb-missing-purpose", "tvl", "hold", nil)
+	missingPurpose.IssuePurpose = ""
+	if _, err := svc.AllocateSeat(ctx, missingPurpose); err == nil {
+		t.Fatal("expected missing issuePurpose validation error")
+	}
+
+	missingPreferenceVersion := allocReq("sb-missing-pref", "tvl", "hold", &domain.SeatPreferences{AcceptStanding: true})
+	if _, err := svc.AllocateSeat(ctx, missingPreferenceVersion); err == nil {
+		t.Fatal("expected missing preferenceVersion validation error")
+	}
+
+	invalidPreference := allocReq("sb-invalid-pref", "tvl", "hold", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv", AdjacencyPreference: "SIDE_BY_SIDE"})
+	if _, err := svc.AllocateSeat(ctx, invalidPreference); err == nil {
+		t.Fatal("expected invalid adjacencyPreference validation error")
+	}
+
+	invalidSeatPosition := allocReq("sb-invalid-seat", "tvl", "hold", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv", PreferredSeatPositions: []string{"ROOF"}})
+	if _, err := svc.AllocateSeat(ctx, invalidSeatPosition); err == nil {
+		t.Fatal("expected invalid seatPosition validation error")
+	}
+
+	invalidBerthPosition := allocReq("sb-invalid-berth", "tvl", "hold", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv", PreferredBerthPositions: []string{"TOP"}})
+	if _, err := svc.AllocateSeat(ctx, invalidBerthPosition); err == nil {
+		t.Fatal("expected invalid berthPosition validation error")
+	}
+}
+
+func TestEntitlementReleaseBySegmentBookingReleasesSeatAllocation(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	pub := &memPub{}
+	svc := New(repo, pub, nil)
+	m, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CompositionVersion: "v1", CompositionSeed: "SMALL", MappingVersion: "sim-v1", ChangeScenario: "SMALL", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
+		t.Fatal(err)
+	}
+	alloc, err := svc.AllocateSeat(ctx, allocReq("sb-release", "tvl-release", "hold-release", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasedAt := time.Now().UTC().Truncate(time.Second)
+	payload, _ := json.Marshal(map[string]any{"segmentBookingId": "sb-release", "reason": "CHANGE", "voidedAt": releasedAt.Format(time.RFC3339)})
+	if err := svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "EntitlementVoided", CorrelationID: ids.NewCorrelationID(), Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := repo.GetSeatAllocation(ctx, alloc.SeatAllocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.AllocationStatusReleased || stored.ReleasedAt == nil || !stored.ReleasedAt.Equal(releasedAt) {
+		t.Fatalf("expected released allocation at event time, got %#v", stored)
+	}
+	if len(pub.payloads["SeatAllocationReleased"]) == 0 || pub.payloads["SeatAllocationReleased"][0]["releaseReason"] != "CHANGED" {
+		t.Fatalf("missing SeatAllocationReleased CHANGED event: %#v", pub.payloads["SeatAllocationReleased"])
+	}
+}
+
 func TestCapacityHoldExpiredExpiresSeatAllocations(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemRepo()
