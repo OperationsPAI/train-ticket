@@ -852,10 +852,6 @@ class TransferManagementService:
                 place_graph_version = topology.placeGraphVersion
         except (PlaceNetworkUnavailable, PlaceNetworkValidationError):
             degraded_reasons = ("PLACE_NETWORK_UNAVAILABLE",)
-        actual_arrival = window.actualArrivalAt or window.plannedArrivalAt
-        effective_mct = MinimumConnectionTime(connection.toNodeRef, connection.fromMode, connection.toMode, window.mctMinutes)
-        if MissedConnectionDetector().is_missed(actual_arrival, window.nextDepartureAt, effective_mct):
-            reasons.append("MISSED_CONNECTION_MCT_VIOLATION")
         evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), reasons, place_graph_version, degraded_reasons)
         updated = connection.apply_evaluation(evaluation, window, at)
         events = [self._risk_event(updated, previous_status if previous_status != updated.status else None, correlation_id, causation_id, at, report.segmentStatusReportId if report else None)]
