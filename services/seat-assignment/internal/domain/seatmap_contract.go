@@ -271,9 +271,16 @@ func (a *ContractSeatAllocation) Release(now time.Time) {
 	if a.Status == AllocationStatusReleased || a.Status == AllocationStatusExpired {
 		return
 	}
+	wasStanding := a.Status == AllocationStatusStanding || a.SeatRef.AllocationType == AllocationTypeStanding
 	t := now.UTC()
 	a.ReleasedAt = &t
 	a.Status = AllocationStatusReleased
+	if wasStanding {
+		a.SeatRef.AllocationType = AllocationTypeStanding
+		if a.SeatRef.DisplayLabel == "" {
+			a.SeatRef.DisplayLabel = AllocationTypeStanding
+		}
+	}
 }
 
 func (a *ContractSeatAllocation) Expire(now time.Time) {

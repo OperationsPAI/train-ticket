@@ -133,6 +133,53 @@ func TestCapacityReleasedMatchesHoldCapacityUnitAndInterval(t *testing.T) {
 	assertPublishedEventID(t, pub, "SeatAllocationReleased", deterministicSeatAssignmentEventID("SeatAllocationReleased", matching.SeatAllocationID, 2))
 }
 
+func TestCapacityReleasedPreservesStandingAllocationType(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	pub := &memPub{}
+	svc := New(repo, pub, nil)
+	m, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CompositionVersion: "v1", CompositionSeed: "SMALL", MappingVersion: "sim-v1", ChangeScenario: "SMALL", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"1", "2"} {
+		if _, err := svc.AllocateSeat(ctx, allocReq("sb-fill-"+id, "tvl-fill-"+id, "hold-fill-"+id, &domain.SeatPreferences{AcceptStanding: false, PreferenceVersion: "pv"})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	standing, err := svc.AllocateSeat(ctx, allocReq("sb-standing", "tvl-standing", "hold-standing", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv-standing"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standing.Status != domain.AllocationStatusStanding || standing.SeatRef.AllocationType != domain.AllocationTypeStanding {
+		t.Fatalf("expected standing allocation, got %#v", standing)
+	}
+
+	releasedAt := time.Date(2026, 8, 2, 12, 45, 0, 0, time.UTC)
+	payload, _ := json.Marshal(map[string]any{"holdId": "hold-standing", "capacityUnitRef": "cap-standard", "interval": domain.StationInterval{FromSeq: 1, ToSeq: 3}, "releasedAt": releasedAt.Format(time.RFC3339)})
+	if err := svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "CapacityReleased", CorrelationID: ids.NewCorrelationID(), Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, _, err := repo.GetSeatAllocation(ctx, standing.SeatAllocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.AllocationStatusReleased || stored.SeatRef.AllocationType != domain.AllocationTypeStanding {
+		t.Fatalf("expected released standing allocation, got %#v", stored)
+	}
+	if len(pub.payloads["SeatAllocationReleased"]) != 1 {
+		t.Fatalf("expected one release event, got %#v", pub.payloads["SeatAllocationReleased"])
+	}
+	seatRef, ok := pub.payloads["SeatAllocationReleased"][0]["seatRef"].(map[string]any)
+	if !ok || seatRef["allocationType"] != domain.AllocationTypeStanding {
+		t.Fatalf("expected released event seatRef allocationType STANDING, got %#v", pub.payloads["SeatAllocationReleased"][0])
+	}
+}
+
 func TestEntitlementVoidedReleasesSeatAllocation(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemRepo()
