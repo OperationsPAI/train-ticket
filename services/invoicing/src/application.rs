@@ -370,9 +370,9 @@ impl InMemoryInvoicingService {
         let saga_id = string_field(&e.payload, "sagaId").unwrap_or_default();
         let journey_order_id = string_field(&e.payload, "journeyOrderId").unwrap_or_default();
         let payment_ref = string_field(&e.payload, "paymentRef").unwrap_or_default();
-        if saga_id.is_empty() || journey_order_id.is_empty() {
+        if saga_id.is_empty() || journey_order_id.is_empty() || payment_ref.is_empty() {
             log::warn!(
-                "InvoiceRequested missing sagaId or journeyOrderId, skipping: {}",
+                "InvoiceRequested missing sagaId, journeyOrderId, or paymentRef, skipping: {}",
                 e.event_id,
             );
             self.state
