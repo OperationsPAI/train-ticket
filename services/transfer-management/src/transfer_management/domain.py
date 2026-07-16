@@ -783,7 +783,7 @@ class TransferRiskPolicy:
 
     def classify(self, available_minutes: int, buffer_minutes: int, reasons: Iterable[str]) -> tuple[RiskLevel, tuple[str, ...]]:
         explanation = list(reasons)
-        if "NEXT_SEGMENT_CANCELLED" in explanation or "PREVIOUS_SEGMENT_CANCELLED" in explanation or "MISSED_CONNECTION_MCT_VIOLATION" in explanation:
+        if "NEXT_SEGMENT_CANCELLED" in explanation or "PREVIOUS_SEGMENT_CANCELLED" in explanation:
             return RiskLevel.MISSED, tuple(dict.fromkeys(explanation))
         if available_minutes < 0:
             explanation.append("CUTOFF_EXPIRED")
