@@ -271,8 +271,14 @@ func (r *Repository) FindActiveSeatAllocations(ctx context.Context, scheduledSer
 	}
 	return out, rows.Err()
 }
-func (r *Repository) FindSeatAllocationsByCapacityRecovery(ctx context.Context, holdID, capacityUnitRef string, interval domain.StationInterval) ([]domain.ContractSeatAllocation, error) {
-	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_allocations WHERE data->>'capacityHoldId'=$1 AND data->>'capacityUnitRef'=$2 AND (data->'interval'->>'fromSeq')::int=$3 AND (data->'interval'->>'toSeq')::int=$4 ORDER BY id", holdID, capacityUnitRef, interval.FromSeq, interval.ToSeq)
+func (r *Repository) FindSeatAllocationsByCapacityRecovery(ctx context.Context, holdID, _ string, _ domain.StationInterval) ([]domain.ContractSeatAllocation, error) {
+	// A capacity hold release/expiry is always whole-hold (release_hold takes only
+	// a holdId), so capacityHoldId uniquely identifies the allocations to recover.
+	// The event's capacityUnitRef/interval describe the HOLD's pool slot (e.g.
+	// "01A"/{0,1}) which need not equal the allocation's requested unit/interval
+	// (e.g. "cap-standard"/{1,3}); filtering on them matched nothing, so the seat
+	// was never released. Match on capacityHoldId alone.
+	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_allocations WHERE data->>'capacityHoldId'=$1 ORDER BY id", holdID)
 	if err != nil {
 		return nil, err
 	}

@@ -95,10 +95,10 @@ func (r *memRepo) FindActiveSeatAllocations(_ context.Context, ss, date string) 
 	}
 	return out, nil
 }
-func (r *memRepo) FindSeatAllocationsByCapacityRecovery(_ context.Context, hold, capacityUnitRef string, interval domain.StationInterval) ([]domain.ContractSeatAllocation, error) {
+func (r *memRepo) FindSeatAllocationsByCapacityRecovery(_ context.Context, hold, _ string, _ domain.StationInterval) ([]domain.ContractSeatAllocation, error) {
 	out := []domain.ContractSeatAllocation{}
 	for _, a := range r.allocs {
-		if a.CapacityHoldID == hold && a.CapacityUnitRef == capacityUnitRef && a.Interval == interval {
+		if a.CapacityHoldID == hold {
 			out = append(out, *a)
 		}
 	}

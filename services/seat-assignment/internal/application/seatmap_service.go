@@ -608,7 +608,10 @@ func intFromAny(raw any) int {
 }
 
 func (s *Service) transitionAllocationsByCapacityRecovery(ctx context.Context, match capacityRecoveryMatch, e kitmsg.EventEnvelope, apply func(*domain.ContractSeatAllocation, time.Time), eventType, timeKey string, extra map[string]any) error {
-	if match.HoldID == "" || match.CapacityUnitRef == "" || !match.Interval.Valid() {
+	// A hold release/expiry is whole-hold, so a holdId is sufficient to recover the
+	// tied allocations; capacityUnitRef/interval reflect the hold's pool slot and
+	// are not required to match the allocation's requested values.
+	if match.HoldID == "" {
 		return nil
 	}
 	transitionedAt := time.Now().UTC()

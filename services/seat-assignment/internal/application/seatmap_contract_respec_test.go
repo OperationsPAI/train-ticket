@@ -80,7 +80,7 @@ func TestEntitlementIssuedConfirmsSeatAllocationAndEmitsContractEvent(t *testing
 	assertPublishedEventID(t, pub, "SeatAllocationConfirmed", deterministicSeatAssignmentEventID("SeatAllocationConfirmed", allocation.SeatAllocationID, 2))
 }
 
-func TestCapacityReleasedMatchesHoldCapacityUnitAndInterval(t *testing.T) {
+func TestCapacityReleasedReleasesAllAllocationsOnHold(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemRepo()
 	pub := &memPub{}
@@ -124,13 +124,28 @@ func TestCapacityReleasedMatchesHoldCapacityUnitAndInterval(t *testing.T) {
 			t.Fatalf("allocation %s status=%s want %s", id, stored.Status, want)
 		}
 	}
+	// A capacity hold release is whole-hold: every allocation tied to the hold is
+	// recovered, regardless of the allocation's requested unit/interval (which need
+	// not equal the hold's pool slot carried in the event).
 	mustStatus(matching.SeatAllocationID, domain.AllocationStatusReleased)
-	mustStatus(differentUnit.SeatAllocationID, domain.AllocationStatusAllocated)
-	mustStatus(differentInterval.SeatAllocationID, domain.AllocationStatusAllocated)
-	if len(pub.payloads["SeatAllocationReleased"]) != 1 {
-		t.Fatalf("expected one release event, got %#v", pub.payloads["SeatAllocationReleased"])
+	mustStatus(differentUnit.SeatAllocationID, domain.AllocationStatusReleased)
+	mustStatus(differentInterval.SeatAllocationID, domain.AllocationStatusReleased)
+	if len(pub.payloads["SeatAllocationReleased"]) != 3 {
+		t.Fatalf("expected three release events, got %#v", pub.payloads["SeatAllocationReleased"])
 	}
-	assertPublishedEventID(t, pub, "SeatAllocationReleased", deterministicSeatAssignmentEventID("SeatAllocationReleased", matching.SeatAllocationID, 2))
+	for _, alloc := range []string{matching.SeatAllocationID, differentUnit.SeatAllocationID, differentInterval.SeatAllocationID} {
+		want := deterministicSeatAssignmentEventID("SeatAllocationReleased", alloc, 2)
+		found := false
+		for _, event := range pub.events {
+			if event.EventType == "SeatAllocationReleased" && event.EventID == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing deterministic SeatAllocationReleased id %s for allocation %s in %#v", want, alloc, pub.types)
+		}
+	}
 }
 
 func TestEntitlementVoidedReleasesSeatAllocation(t *testing.T) {
