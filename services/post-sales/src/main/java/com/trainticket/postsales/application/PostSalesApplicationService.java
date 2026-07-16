@@ -90,7 +90,11 @@ public class PostSalesApplicationService {
         if (isTerminalNonRefundable(postSalesCase)) {
             throw new OrderNotRefundableException();
         }
-        if (postSalesCase.status().name().equals("APPROVED")) {
+        if (postSalesCase.status() == PostSalesCaseStatus.EXECUTING || postSalesCase.status() == PostSalesCaseStatus.APPLIED) {
+            return postSalesCase;
+        }
+        if (postSalesCase.status() == PostSalesCaseStatus.APPROVED) {
+            startApprovedExecution(postSalesCase, sourceCommandId, correlationId);
             return postSalesCase;
         }
         if (postSalesCase.decision() == null) {
@@ -103,8 +107,7 @@ public class PostSalesApplicationService {
                 .map(PostSalesPolicyContext::incrementAppliedChangeCount)
                 .ifPresent(policyContextStore::save);
         }
-        repository.save(postSalesCase);
-        publishNewEvents(postSalesCase);
+        startApprovedExecution(postSalesCase, sourceCommandId, correlationId);
         return postSalesCase;
     }
 
@@ -113,6 +116,12 @@ public class PostSalesApplicationService {
             .orElseThrow(() -> new CaseNotFoundException(caseId));
     }
 
+
+    private void startApprovedExecution(PostSalesCase postSalesCase, String sourceCommandId, String correlationId) {
+        postSalesCase.startExecution(clock.instant(), sourceCommandId, sourceCommandId, correlationId);
+        repository.save(postSalesCase);
+        publishNewEvents(postSalesCase);
+    }
 
     private PostSalesCase openNewCase(OpenCaseCommand command) {
         if (requiresExclusiveRefundSlot(command.caseType())) {
@@ -222,8 +231,35 @@ public class PostSalesApplicationService {
             return PostSalesDecision.change(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, changeFlowSnapshot, assessment, now, now.plusSeconds(900));
         }
 
-        Money penaltyBase = policyContext.originalFareOr(refundable.isZero() ? zero : refundable);
-        RefundAssessment assessment = refundPolicyEngine.evaluateRefund(
+        RefundAssessment assessment = refundAssessmentFor(postSalesCase, now, policyContext, refundable, zero);
+        AmountDecisionSnapshot amount = AmountDecisionSnapshot.refund(assessment.penaltyAmount(), assessment.refundableAmount(), assessment.explanation(), assessment.componentDecisions());
+        return PostSalesDecision.refund(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, assessment, now, now.plusSeconds(900));
+    }
+
+    private RefundAssessment refundAssessmentFor(
+        PostSalesCase postSalesCase,
+        Instant now,
+        PostSalesPolicyContext policyContext,
+        Money quotedRefundable,
+        Money zero
+    ) {
+        if (!quotedRefundable.isZero()) {
+            Money originalFare = policyContext.originalFareOr(quotedRefundable);
+            Money retainedAmount = originalFare.compareTo(quotedRefundable) > 0
+                ? Money.fromMinorUnits(originalFare.toMinorUnits() - quotedRefundable.toMinorUnits(), originalFare.currency().getCurrencyCode())
+                : zeroFor(quotedRefundable);
+            return new RefundAssessment(
+                quotedRefundable,
+                retainedAmount,
+                java.math.BigDecimal.ZERO,
+                "FARE_RULE_QUOTE",
+                "fare-pricing refundable amount applied to paid fare",
+                classify(postSalesCase.reasonCode()),
+                List.of()
+            );
+        }
+        Money penaltyBase = policyContext.originalFareOr(zero);
+        return refundPolicyEngine.evaluateRefund(
             policyContext.waterfallFor(penaltyBase),
             penaltyBase,
             now,
@@ -232,8 +268,10 @@ public class PostSalesApplicationService {
             policyContext.travelerType(postSalesCase.scope().travelerRefs()),
             policyContext.groupSize()
         );
-        AmountDecisionSnapshot amount = AmountDecisionSnapshot.refund(assessment.penaltyAmount(), assessment.refundableAmount(), assessment.explanation(), assessment.componentDecisions());
-        return PostSalesDecision.refund(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, assessment, now, now.plusSeconds(900));
+    }
+
+    private static Money zeroFor(Money money) {
+        return Money.zero(money.currency());
     }
 
     private PostSalesPolicyContext policyContextFor(PostSalesCase postSalesCase, Instant now, Money fallbackAmount) {

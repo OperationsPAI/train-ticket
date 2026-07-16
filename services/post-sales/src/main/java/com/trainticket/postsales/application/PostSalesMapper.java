@@ -167,7 +167,10 @@ public final class PostSalesMapper {
             payload.put("reason", rejected.reasonCode());
         } else if (event instanceof PostSalesApplied applied) {
             payload.put("orderId", applied.journeyOrderId());
-            payload.put("resultSummary", resultSummary(applied));
+            if (sourceCase != null) {
+                payload.put("scope", sourceCase.scope());
+            }
+            payload.put("resultSummary", resultSummary(applied, sourceCase));
         } else if (event instanceof PostSalesExecutionStarted executionStarted) {
             payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
             payload.put("approvalRef", executionStarted.approvalRef());
@@ -231,6 +234,14 @@ public final class PostSalesMapper {
     private static Map<String, Object> resultSummary(PostSalesApplied applied) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("description", applied.resultSummary());
+        return summary;
+    }
+
+    private static Map<String, Object> resultSummary(PostSalesApplied applied, PostSalesCase sourceCase) {
+        Map<String, Object> summary = resultSummary(applied);
+        if (sourceCase != null && sourceCase.decision() != null) {
+            summary.put("refundableAmount", money(sourceCase.decision().amountSnapshot().refundAmount()));
+        }
         return summary;
     }
 
