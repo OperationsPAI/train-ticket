@@ -18,6 +18,7 @@ import {
 import { InMemoryEventPublisher, newCommandId, type EventPublisher } from "./application/messaging.js";
 import {
   InMemoryIdempotencyStore,
+  OptimisticConcurrencyConflict,
   errorMessage,
   handleIdempotency,
   headerValue,
@@ -335,6 +336,10 @@ export function createApp(options: InstrumentationHooks | AppOptions = {}): Fast
       }
       const status = error.code.startsWith("CASE_NOT_") || error.code.startsWith("CLOSURE_") ? 422 : 400;
       sendError(reply, status, status === 422 ? "DOMAIN_RULE_VIOLATION" : "VALIDATION_FAILED", error.message, context, { domainCode: error.code });
+      return;
+    }
+    if (error instanceof OptimisticConcurrencyConflict && isPreconditionFailure(request)) {
+      sendError(reply, 412, "PRECONDITION_FAILED", error.message, context);
       return;
     }
     sendError(reply, 500, "UNAVAILABLE", errorMessage(error), context);
@@ -667,12 +672,12 @@ function apiStatus(status: string): "OPENED" | "IN_PROGRESS" | "RESOLVED" | "CLO
   return "IN_PROGRESS";
 }
 
-function isPreconditionFailure(request: FastifyRequest, domainCode: string): boolean {
+function isPreconditionFailure(request: FastifyRequest, domainCode?: string): boolean {
   const path = request.url.split("?")[0] ?? request.url;
   if (request.method !== "POST" || !/^\/api\/v1\/support-cases\/[^/]+\/(resolve|close)$/.test(path)) {
     return false;
   }
-  return domainCode === "CASE_NOT_RESOLVABLE" || domainCode === "CASE_NOT_CLOSABLE" || domainCode.startsWith("CLOSURE_");
+  return domainCode === undefined || domainCode === "CASE_NOT_RESOLVABLE" || domainCode === "CASE_NOT_CLOSABLE" || domainCode.startsWith("CLOSURE_");
 }
 
 function operatorRef(request: FastifyRequest): string {
