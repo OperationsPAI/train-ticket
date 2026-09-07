@@ -38,7 +38,7 @@ endpoints. Redis Streams remain the event bus; Redis AOF preserves stream and
 consumer-group state across Redis restarts.
 
 `deploy/e2e/12-restart.sh` is the whole-cluster restart certification script.
-It pauses `deploy/loadgen` when present, verifies aggregate snapshot row counts
+It pauses the `loadgen` Deployment when present, verifies aggregate snapshot row counts
 across workload restarts, runs a smoke flow after recovery, and resumes loadgen.
 The e2e suite now has 12 scripts and 159+ assertions.
 
