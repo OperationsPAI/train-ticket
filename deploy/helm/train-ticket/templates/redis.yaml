@@ -22,40 +22,58 @@ spec:
           image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.redis.image.repository "tag" .Values.redis.image.tag) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
-            - containerPort: 6379
+            - name: redis
+              containerPort: 6379
+          # Redis is the transport-only event bus (Streams) for the 38-service
+          # stack; it is NOT a system of record and runs with no persistent
+          # volume by design (see docs/00-current-status.md). AOF/appendonly is
+          # therefore not enabled: with no mounted volume the AOF would be
+          # written to the container's ephemeral filesystem, pure wasted IO and
+          # memory. Recovery is from PostgreSQL via the transactional outbox.
+          #
+          # maxmemory must stay BELOW the container memory limit so Redis
+          # enforces its own bound instead of being killed by the cgroup; the
+          # defaults keep it at ~75% of the limit, and the ~25% gap covers
+          # allocator fragmentation, client/replication buffers and other RSS
+          # overhead that maxmemory (which bounds only the logical dataset)
+          # does not account for. Policy stays noeviction: on an event bus,
+          # refusing writes is safer than silently dropping undelivered events;
+          # publishers cap stream growth with XADD MAXLEN ~ (EVENT_STREAM_MAXLEN).
           args:
-            - "--maxmemory"
-            - {{ .Values.redis.maxmemory | default "6gb" | quote }}
-            - "--maxmemory-policy"
-            - {{ .Values.redis.maxmemoryPolicy | default "allkeys-lru" | quote }}
-            - "--save"
+            - --maxmemory
+            - {{ .Values.redis.maxmemory | quote }}
+            - --maxmemory-policy
+            - {{ .Values.redis.maxmemoryPolicy | quote }}
+            - --save
             - ""
           readinessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
-            periodSeconds: 10
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 3
+            periodSeconds: 5
           livenessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
-            periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 5
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          {{- with .Values.redis.resources }}
           resources:
-            requests:
-              cpu: {{ (.Values.redis.resources).requests.cpu | default "500m" | quote }}
-              memory: {{ (.Values.redis.resources).requests.memory | default "1Gi" }}
-            limits:
-              cpu: {{ (.Values.redis.resources).limits.cpu | default "4" | quote }}
-              memory: {{ (.Values.redis.resources).limits.memory | default "8Gi" }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: train-ticket
 spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
   selector:
     app.kubernetes.io/name: redis
-  ports:
-    - port: 6379
-      targetPort: 6379
 {{- end }}

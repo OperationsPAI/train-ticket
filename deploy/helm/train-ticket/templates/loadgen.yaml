@@ -3,13 +3,24 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: loadgen
+  labels:
+    app.kubernetes.io/name: loadgen
+    app.kubernetes.io/part-of: train-ticket
 spec:
-  replicas: {{ .Values.loadgen.replicas | default 1 }}
+  replicas: {{ .Values.loadgen.replicas }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: loadgen
   template:
     metadata:
+      annotations:
+        # kustomize gets a rollout-on-config-change for free from
+        # configMapGenerator's name hash; Helm needs this explicitly, or editing
+        # loadgen-config.yaml and running `helm upgrade` leaves the running
+        # loadgen on the old config.
+        checksum/config: {{ (.Files.Glob "loadgen-config.yaml").AsConfig | sha256sum }}
       labels:
         app.kubernetes.io/name: loadgen
         app.kubernetes.io/part-of: train-ticket
@@ -22,7 +33,7 @@ spec:
             - -c
             - |
               echo "waiting for postgres..."
-              until nc -z postgres 5432; do sleep 2; done
+              until nc -z postgres-{{ .Values.postgres.defaultInstance }} 5432; do sleep 2; done
               echo "waiting for redis..."
               until nc -z redis 6379; do sleep 2; done
               echo "infra ready — loadgen will retry service connections internally"
@@ -30,22 +41,51 @@ spec:
         - name: loadgen
           image: {{ include "train-ticket.image" (dict "global" .Values.global "name" "loadgen") }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            # Required: the image bakes in no config, so this must point at the
+            # ConfigMap mount below. The ConfigMap key is "loadgen-config.yaml"
+            # (from Files.Glob), so it is projected to config.yaml via items.
+            - name: LOADGEN_CONFIG
+              value: /etc/loadgen/config.yaml
+            # Keep the Go runtime's CPU accounting aligned with the cgroup CPU
+            # limit below. Without this, GOMAXPROCS defaults to the node's core
+            # count, so the scheduler oversubscribes threads against the quota
+            # and burns time on context switching under load.
+            - name: GOMAXPROCS
+              value: {{ .Values.loadgen.gomaxprocs | quote }}
           volumeMounts:
             - name: config
-              mountPath: /config
+              mountPath: /etc/loadgen
+              readOnly: true
+            # /data holds everything that must outlive a container: the entity
+            # registry (run.state_file) and the per-request record file
+            # (recording.path). Both paths come from the ConfigMap, not from the
+            # image, so they can be moved without a rebuild.
             - name: state
               mountPath: /data
+          resources:
+            {{- toYaml .Values.loadgen.resources | nindent 12 }}
       volumes:
         - name: config
           configMap:
             name: loadgen-config
+            items:
+              - key: loadgen-config.yaml
+                path: config.yaml
         - name: state
-          emptyDir: {}
+          # Survives container restarts, not pod deletion; copy the record file
+          # out before deleting the pod:
+          #   kubectl -n <ns> cp <pod>:/data/requests.jsonl ./requests.jsonl
+          emptyDir:
+            sizeLimit: {{ .Values.loadgen.stateSizeLimit }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: loadgen-config
+  labels:
+    app.kubernetes.io/name: loadgen
+    app.kubernetes.io/part-of: train-ticket
 data:
   {{- (.Files.Glob "loadgen-config.yaml").AsConfig | nindent 2 }}
 {{- end }}
