@@ -9,18 +9,19 @@ import { Member, type MemberSnapshot, type SeatClass } from "./domain.js";
 import { type EventEnvelope, type EventPublisher } from "./ports.js";
 import { superviseSubscribe, type SubscribeSupervisor, type SupervisedConsumer, type SuperviseSubscribeOptions } from "./subscriber-retry.js";
 import {
-  MigrationRunner,
   OutboxAppender,
   OutboxRelay,
   PostgresIdempotencyStore,
   RedisStreamEventPublisher,
   RedisStreamEventSubscriber,
-  checkPostgresReadiness,
   connectRedisWithRetry,
   createPostgresPool,
   createRedisClient,
+  migrationsAwareReadiness,
   redisClientLiveness,
+  startMigrations,
   type IdempotencyStore,
+  type SchemaDetail,
 } from "@trainticket/ts-kit";
 
 export const JOURNEY_ORDER_STREAM = "events:journey-order";
@@ -219,13 +220,36 @@ export type LoyaltyStorage = Readonly<{
   publisher: EventPublisher & Readonly<{ close?: () => Promise<void> }>;
   idempotencyStore: IdempotencyStore;
   ready: () => Promise<boolean>;
+  /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */
+  schema: () => SchemaDetail;
   runCommand: <T>(operation: (application: LoyaltyMembershipApplicationService) => Promise<T>) => Promise<T>;
   stop: () => Promise<void>;
 }>;
 
+/**
+ * loyalty-membership is the one service whose migration handling had a
+ * DIFFERENT shape, so it gets a correspondingly different fix.
+ *
+ * The other six did `try { await migrations.apply(); } catch { console.error }`
+ * and then gated readiness on `migrations.isReady`, which is the permanent-503
+ * wedge. This service did neither: it awaited `apply()` bare, so a failure
+ * propagated up through `bootstrap()` into `main.ts`, which logs and calls
+ * `process.exit(1)` -- a CRASH LOOP rather than a wedge -- and its `ready()`
+ * only ran `checkPostgresReadiness(pool)`, never consulting migration state at
+ * all. That second half is its own latent bug: had the process survived a
+ * partially-applied migration, `/readyz` would have answered 200 while the
+ * schema was incomplete, which is the failure the whole readiness gate exists
+ * to prevent.
+ *
+ * Both are fixed the same way as everywhere else, and the crash loop is
+ * genuinely worse than what it is replaced by: CrashLoopBackOff caps at 5
+ * minutes between attempts, gives up its Redis connection and outbox relay on
+ * every cycle, and produces restart counts that mask the actual cause. The
+ * supervisor retries in-process on a 100ms -> 30s schedule while keeping the
+ * pod's HTTP listener and its logs alive to say why it is not ready.
+ */
 export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Promise<LoyaltyStorage> {
-  const migrations = new MigrationRunner(pool, join(dirname(fileURLToPath(import.meta.url)), "..", "migrations"));
-  await migrations.apply();
+  const migrations = await startMigrations(pool, join(dirname(fileURLToPath(import.meta.url)), "..", "migrations"), { service: "loyalty-membership" });
   // createRedisClient attaches an "error" listener and an infinite capped
   // backoff retry strategy, and registers a liveness component; `new Redis`
   // got none of that (2026-09-06 outage).
@@ -240,9 +264,17 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
     repository,
     publisher,
     idempotencyStore,
-    ready: () => checkPostgresReadiness(pool),
+    // Gate on migrations as the other six services already did. Without this,
+    // a pod whose schema is missing answers /readyz 200 and takes traffic that
+    // can only 500.
+    ready: migrationsAwareReadiness(migrations, pool),
+    schema: () => migrations.detail(),
     runCommand: async (operation) => operation(new LoyaltyMembershipApplicationService(repository, publisher)),
     stop: async () => {
+      // Stop the migration retry first: otherwise a shutdown during the retry
+      // window leaves a backoff timer running and can issue queries against a
+      // pool that is being torn down.
+      await migrations.stop();
       await relay.stop();
       redisClientLiveness(redis)?.dispose();
       await redis.quit();
