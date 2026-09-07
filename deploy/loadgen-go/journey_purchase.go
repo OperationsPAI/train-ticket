@@ -70,6 +70,27 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	}
 	orderID := getString(order, "orderId")
 
+	// Ancillary add-on hangs off the order as soon as it exists: ancillary
+	// offers are drafted against a journeyOrderId, and selecting one requires
+	// the order to be live. This is ancillary-service's only journey traffic.
+	ancCatalog, ancOffer, ancItem := MaybePurchaseAncillary(ctx, p, orderID, travelers[0], found.Segment)
+
+	// Mid-funnel probe over what exists so far, mirroring the read pressure a
+	// real client puts on the order/offer/quote reads before payment.
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		Order:              orderID,
+		Account:            entry.AccountID,
+		Offer:              getString(offer, "offerId"),
+		Itinerary:          found.Itinerary,
+		Quote:              getString(quote, "quoteId"),
+		Service:            found.Service,
+		Place:              found.OriginPlace,
+		Node:               found.OriginNode,
+		AncillaryCatalog:   ancCatalog,
+		AncillaryOffer:     ancOffer,
+		AncillaryOrderItem: ancItem,
+	})
+
 	// Risk gate — quick check, don't wait for full saga completion
 	status := pollOrderQuick(ctx, p, orderID, 3)
 	if status != "" && containsBlock(status) {
@@ -190,8 +211,29 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		Itinerary:     found.Itinerary,
 		Quote:         getString(quote, "quoteId"),
 		JourneyDate:   found.Date,
+
+		AncillaryCatalog:   ancCatalog,
+		AncillaryOffer:     ancOffer,
+		AncillaryOrderItem: ancItem,
+		Service:            found.Service,
+		OriginPlace:        found.OriginPlace,
+		OriginNode:         found.OriginNode,
 	}
+
+	// Post-purchase branches. Both are recorded on the Purchase so later
+	// journeys (and later probes) read back the same real ids.
+	titleID, invoiceReq, invoiceID := MaybeRequestInvoice(ctx, p, purchase)
+	purchase.InvoiceTitle = titleID
+	purchase.InvoiceRequest = invoiceReq
+	purchase.Invoice = invoiceID
+
+	benefitID, walletAccount := MaybeWalletPurchaseBenefit(ctx, p, entry.AccountID)
+	purchase.Benefit = benefitID
+	purchase.WalletAccount = walletAccount
+
 	p.Reg.AddPurchase(purchase)
+
+	MaybeReadProbe(ctx, p, probeRefsFromPurchase(purchase))
 	return "purchased", nil
 }
 
@@ -259,6 +301,13 @@ func handleNoCapacityWaitlist(ctx context.Context, p *Providers, account, travel
 
 	// Poll waitlist
 	terminal := pollWaitlist(ctx, p, waitlistID)
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		Account:          account,
+		Itinerary:        itinerary,
+		PaymentIntent:    paymentIntent,
+		Waitlist:         waitlistID,
+		WaitlistTraveler: traveler,
+	})
 	if terminal == "FULFILLED" || terminal == "EXPIRED" || terminal == "CANCELLED" {
 		p.Stats.RecordJourney("waitlist:" + lower(terminal))
 	}
@@ -269,8 +318,19 @@ func handleNoCapacityWaitlist(ctx context.Context, p *Providers, account, travel
 }
 
 func pollWaitlist(ctx context.Context, p *Providers, waitlistID string) string {
-	attempts := p.Cfg.Polling.Attempts
-	interval := time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))
+	// The waitlist section overrides the global polling budget when set, so a
+	// sold-out purchase does not hold a worker for the full saga poll window.
+	// Reads waitlist.poll_attempts / waitlist.poll_interval_seconds, falling
+	// back to the global polling.* budget when they are unset.
+	attempts := p.Cfg.Waitlist.PollAttempts
+	if attempts <= 0 {
+		attempts = p.Cfg.Polling.Attempts
+	}
+	intervalSecs := p.Cfg.Waitlist.PollIntervalSeconds
+	if intervalSecs <= 0 {
+		intervalSecs = p.Cfg.Polling.IntervalSeconds
+	}
+	interval := time.Duration(intervalSecs * float64(time.Second))
 	for i := 0; i < attempts; i++ {
 		code, data, _ := p.API.Request(ctx, "GET", "waitlist",
 			"/api/v1/waitlist-requests/"+url.PathEscape(waitlistID),

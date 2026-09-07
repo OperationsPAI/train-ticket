@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import hashlib
 import json
 import math
 import os
 import random
+import re
 import signal
 import string
 import sys
@@ -34,6 +36,28 @@ from typing import Any
 import aiohttp
 import redis.asyncio as aioredis
 import yaml
+
+from request_records import (
+    classify_transport_error,
+    new_trace_context,
+    open_recorder,
+    parse_traceparent,
+    recorder_trace_sampled,
+)
+
+# ---------------------------------------------------------------------------
+# Chain labelling for per-request records (issue #420).
+#
+# ApiClient is a single shared object, so the chain name cannot live on it. A
+# ContextVar rides the asyncio task instead: each task created by the
+# dispatcher gets its own copy of the context, so a chain label set inside
+# _run_chain applies to exactly the requests that chain makes, with no
+# plumbing through every chain function's signature.
+# ---------------------------------------------------------------------------
+
+current_chain: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_chain", default="unlabelled"
+)
 
 # ---------------------------------------------------------------------------
 # Utilities (compatible with loadgen conventions)
@@ -164,7 +188,7 @@ class StepFailed(Exception):
 
 
 class ApiClient:
-    def __init__(self, cfg: dict, latency: LatencyTracker):
+    def __init__(self, cfg: dict, latency: LatencyTracker, recorder: Any = None):
         self.template: str = cfg["target"]["base_url_template"]
         self.timeout = aiohttp.ClientTimeout(
             total=float(cfg["target"].get("request_timeout_seconds", 15))
@@ -173,6 +197,8 @@ class ApiClient:
         self.status_counts: Counter = Counter()
         self.error_counts: Counter = Counter()
         self._session: aiohttp.ClientSession | None = None
+        # None when per-request recording is disabled (issue #420).
+        self.recorder = recorder
 
     async def session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -195,6 +221,19 @@ class ApiClient:
             hdrs["Idempotency-Key"] = uuid7()
         endpoint_key = f"{service}:{method}:{path.split('?')[0]}"
 
+        # W3C trace context. The driver originates the trace, so it mints the
+        # traceparent rather than waiting for an instrumented client; the id it
+        # puts on the wire is the id it records, which is what makes a recorded
+        # row joinable to the server spans in Jaeger. A caller-supplied header
+        # wins and is read back instead.
+        if "traceparent" in hdrs:
+            tc = parse_traceparent(hdrs["traceparent"])
+        else:
+            tc = new_trace_context(recorder_trace_sampled(self.recorder))
+            hdrs["traceparent"] = tc.header
+
+        rec = self.recorder
+        start_ns = time.time_ns()
         t0 = time.monotonic()
         try:
             sess = await self.session()
@@ -206,11 +245,45 @@ class ApiClient:
                 data = {}
         except Exception as exc:
             self.error_counts[f"{service}:transport"] += 1
+            if rec is not None:
+                # status 0 + a non-empty error is the "never got a status"
+                # marker. These rows are the most interesting in the file:
+                # they are invisible in the service:status counters.
+                rec.record(
+                    start_ns,
+                    current_chain.get(),
+                    step,
+                    service,
+                    method,
+                    path,
+                    0,
+                    (time.monotonic() - t0) * 1000,
+                    classify_transport_error(exc),
+                    tc.trace_id,
+                    tc.span_id,
+                    tc.sampled,
+                )
             failure_step = f"{step}-transport" if step else f"{path}-transport"
             raise StepFailed(failure_step, f"transport: {exc}") from exc
         finally:
             elapsed_ms = (time.monotonic() - t0) * 1000
             self.latency.record(endpoint_key, elapsed_ms)
+
+        if rec is not None:
+            rec.record(
+                start_ns,
+                current_chain.get(),
+                step,
+                service,
+                method,
+                path,
+                status,
+                elapsed_ms,
+                "",
+                tc.trace_id,
+                tc.span_id,
+                tc.sampled,
+            )
 
         self.status_counts[f"{service}:{status}"] += 1
         if ok and status not in ok:
@@ -327,6 +400,7 @@ class StaffSim:
         await asyncio.sleep(self.rng.uniform(self.think_min, self.think_max))
 
     async def worker(self, stop: asyncio.Event) -> None:
+        current_chain.set("staff")
         while not stop.is_set():
             item = None
             for q in (self.state.q_reservation, self.state.q_ticketing):
@@ -870,11 +944,14 @@ async def resolve_routes(
 
 
 class StressDriver:
-    def __init__(self, cfg: dict, report_path: str | None):
+    def __init__(self, cfg: dict, report_path: str | None, records_path: str | None = None):
         self.cfg = cfg
         self.report_path = report_path
         self.latency = LatencyTracker()
-        self.api = ApiClient(cfg, self.latency)
+        # Per-request outcome records (issue #420). None when disabled; the
+        # aggregate report below is unchanged either way.
+        self.recorder = open_recorder(cfg, records_path)
+        self.api = ApiClient(cfg, self.latency, recorder=self.recorder)
         self.state = SharedState(redis_url=cfg["target"].get("redis_url", "redis://redis:6379"))
         self.routes: list[dict] = []
         self.rng = random.Random(cfg.get("seed", {}).get("seed"))
@@ -1000,6 +1077,31 @@ class StressDriver:
             flush=True,
         )
 
+    def close_recorder(self) -> None:
+        """Drain, flush and close the per-request record file.
+
+        Idempotent, so every exit path from run() can call it. Reports the
+        written/dropped counts on their own line -- the aggregate report JSON
+        is deliberately left untouched.
+        """
+        if self.recorder is None:
+            return
+        self.recorder.close()
+        written, dropped = self.recorder.counters()
+        print(
+            f"[records] {self.recorder.path}: {written} records written, {dropped} dropped",
+            flush=True,
+        )
+        if dropped:
+            print(
+                f"[records] WARNING {dropped} records dropped (buffer full). "
+                "Offered load was unaffected -- dropping is the deliberate trade -- "
+                "but the record file is incomplete; raise recording.buffer_records "
+                "or use faster storage.",
+                file=sys.stderr,
+                flush=True,
+            )
+
     async def run(self) -> dict:
         load = self.cfg.get("load", {})
         model = load.get("model", "closed")
@@ -1017,13 +1119,18 @@ class StressDriver:
             float(mix.get("purchase", 0)) > 0
             or float(mix.get("browse", 0)) > 0
         )
+        current_chain.set("bootstrap")
         routes = await resolve_routes(self.api, self.cfg, self.rng) if needs_routes else []
         self.routes = routes
         if needs_routes and not routes:
+            # Aborting before any load: still flush what bootstrap recorded,
+            # since those requests are exactly why route resolution failed.
+            self.close_recorder()
             return self._build_report()
 
         if float(mix.get("purchase", 0)) > 0:
             await self._bootstrap_identity_pool(workers * 3)
+        current_chain.set("unlabelled")
 
         # Normalize mix weights
         total_weight = sum(float(v) for v in mix.values() if float(v) > 0)
@@ -1082,6 +1189,11 @@ class StressDriver:
         stop.set()
         await asyncio.gather(*staff_tasks, return_exceptions=True)
         await self.api.close()
+
+        # Drain and close the record file after the last in-flight chain, so
+        # records buffered during shutdown still land. Done before the report
+        # is written so the two artifacts describe the same set of requests.
+        self.close_recorder()
 
         report = self._build_report()
         if self.report_path:
@@ -1149,6 +1261,10 @@ class StressDriver:
 
     async def _run_chain(self, chain_type: str, route: dict) -> None:
         self.total_dispatched += 1
+        # Tag every request this chain makes, so the record file can be split
+        # by chain. Set inside the task, so it affects only this task's
+        # context copy.
+        current_chain.set(chain_type)
         t0 = time.monotonic()
         try:
             if chain_type == "purchase":
@@ -1256,6 +1372,20 @@ def parse_args() -> argparse.Namespace:
         help="Override worker count from scenario",
     )
     parser.add_argument(
+        "--records",
+        default=None,
+        help="Path to write per-request JSON Lines records (one row per client "
+             "HTTP request). Defaults to <report-path-without-.json>-requests.jsonl. "
+             "Use --no-records to disable, or set recording.path in the scenario.",
+    )
+    parser.add_argument(
+        "--no-records",
+        dest="records",
+        action="store_const",
+        const="",
+        help="Disable per-request record output (aggregates are unaffected)",
+    )
+    parser.add_argument(
         "--purchase-report",
         "--seed-report",
         dest="purchase_report",
@@ -1287,7 +1417,19 @@ async def async_main() -> None:
         name = cfg.get("name", "stress")
         report_path = f"/tmp/{name}-report.json"
 
-    driver = StressDriver(cfg, report_path)
+    # Per-request records (issue #420) sit next to the aggregate report by
+    # default, so a run always produces both without an extra flag.
+    # --records "" (i.e. --no-records) turns them off; a scenario's
+    # recording.path overrides the default.
+    if args.records is None:
+        records_path = re.sub(r"\.json$", "", report_path) + "-requests.jsonl"
+    elif args.records == "":
+        records_path = None
+        cfg.setdefault("recording", {})["enabled"] = False
+    else:
+        records_path = args.records
+
+    driver = StressDriver(cfg, report_path, records_path)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -1301,6 +1443,9 @@ async def async_main() -> None:
     finally:
         stop.set()
         stats_task.cancel()
+        # Idempotent; this is the safety net for an exception mid-run, so a
+        # crashed scenario still leaves a readable record file behind.
+        driver.close_recorder()
 
     # Print summary
     print("\n" + "=" * 60, flush=True)
@@ -1311,6 +1456,14 @@ async def async_main() -> None:
     print(f"Eff. RPS:    {report.get('effective_rps')}", flush=True)
     print(f"Results:     {json.dumps(report.get('results', {}), indent=2)}", flush=True)
     print(f"Report:      {report_path}", flush=True)
+    if driver.recorder is not None:
+        written, dropped = driver.recorder.counters()
+        print(
+            f"Records:     {driver.recorder.path} ({written} rows"
+            + (f", {dropped} dropped" if dropped else "")
+            + ")",
+            flush=True,
+        )
     print("=" * 60, flush=True)
 
 

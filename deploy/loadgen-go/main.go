@@ -24,7 +24,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Convert Python-style {service} template to Go %s
+	// Convert the config's {service} placeholder to Go's %s
 	cfg.Target.BaseURLTemplate = ConvertTemplate(cfg.Target.BaseURLTemplate)
 
 	var seed int64
@@ -36,7 +36,23 @@ func main() {
 	rng := rand.New(rand.NewSource(seed))
 
 	stats := NewStats()
-	api := NewApiClient(cfg, stats)
+
+	// Per-request outcome recording (issue #420). nil when disabled; every
+	// Recorder method is nil-safe. Opened before any request is made so no
+	// request escapes unrecorded, and closed last so the buffer drains.
+	rec, err := NewRecorder(cfg)
+	if err != nil {
+		// A misconfigured record path is a measurement bug, not a reason to
+		// stop generating load: warn loudly and run without recording.
+		fmt.Fprintf(os.Stderr, "[recorder] disabled: %v\n", err)
+	}
+	if rec.Enabled() {
+		fmt.Printf("[recorder] per-request records -> %s (buffer %d, flush %.1fs, sampled_ratio %.3g)\n",
+			rec.Path(), cfg.Recording.BufferRecords,
+			cfg.Recording.FlushIntervalSeconds, cfg.Recording.SampledRatio())
+	}
+
+	api := NewApiClientWithRecorder(cfg, stats, rec)
 	reg := LoadRegistry(cfg.Run.StateFile)
 
 	// Context with signal handling
@@ -62,7 +78,7 @@ func main() {
 
 	// Bootstrap
 	if cfg.Bootstrap.Enabled {
-		if err := Bootstrap(ctx, cfg, api, reg, rng); err != nil {
+		if err := Bootstrap(WithChain(ctx, "bootstrap"), cfg, api, reg, rng); err != nil {
 			reg.mu.Lock()
 			routeCount := len(reg.Routes)
 			reg.mu.Unlock()
@@ -74,12 +90,13 @@ func main() {
 
 	// Staff workers
 	staffSim := NewStaffSim(cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())))
+	staffCtx := WithChain(ctx, "staff")
 	for i := 0; i < cfg.Staff.Workers; i++ {
 		wg.Add(1)
 		staffIdx := i
 		go func() {
 			defer wg.Done()
-			staffSim.Worker(ctx, staffIdx)
+			staffSim.Worker(staffCtx, staffIdx)
 		}()
 	}
 
@@ -88,7 +105,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			OpsWorker(ctx, cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())))
+			OpsWorker(WithChain(ctx, "ops"), cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())))
 		}()
 	}
 
@@ -96,18 +113,19 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		SchedulePublisher(ctx, cfg, api, reg, rand.New(rand.NewSource(rng.Int63())))
+		SchedulePublisher(WithChain(ctx, "schedule"), cfg, api, reg, rand.New(rand.NewSource(rng.Int63())))
 	}()
 
 	// Scalper workers
 	if cfg.Scalper.Enabled {
+		scalperCtx := WithChain(ctx, "scalper")
 		for i := 0; i < cfg.Scalper.Workers; i++ {
 			wg.Add(1)
 			scalperIdx := i
 			scalperSim := NewScalperSim(cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())), scalperIdx)
 			go func() {
 				defer wg.Done()
-				ScalperWorker(ctx, scalperIdx, cfg, scalperSim, stats)
+				ScalperWorker(scalperCtx, scalperIdx, cfg, scalperSim, stats)
 				scalperSim.Close()
 			}()
 		}
@@ -126,7 +144,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		reporter(ctx, cfg, stats, reg)
+		reporter(ctx, cfg, stats, reg, rec)
 	}()
 
 	// Wait for context cancellation then let all goroutines drain
@@ -140,6 +158,19 @@ func main() {
 	// Final state save and stats
 	reg.Save(cfg.Run.StateFile)
 	fmt.Printf("[final] %s\n", stats.JSON())
+	// Drain and close the record file last: the buffer may still hold records
+	// from journeys that finished during shutdown.
+	if rec.Enabled() {
+		rec.Close()
+		written, dropped := rec.Counters()
+		fmt.Printf("[recorder] %s: %d records written, %d dropped\n", rec.Path(), written, dropped)
+		if dropped > 0 {
+			fmt.Fprintf(os.Stderr,
+				"[recorder] WARNING %d records dropped (buffer full). Offered load was "+
+					"unaffected -- drops are the deliberate trade -- but the record file is "+
+					"incomplete; raise recording.buffer_records or use faster storage.\n", dropped)
+		}
+	}
 	staffSim.Close()
 }
 
@@ -150,6 +181,11 @@ func runJourney(ctx context.Context, p *Providers) {
 	p.ApplyPersona(persona)
 
 	name := WeightedChoice(p.Rng, p.JourneyMix)
+
+	// Tag every request this journey makes with the journey name, so the
+	// per-request record file can be split by journey. The ApiClient is a
+	// single shared object, so the label rides the context instead.
+	ctx = WithChain(ctx, name)
 
 	outcome, err := executeJourney(ctx, p, name)
 	if err != nil {
@@ -209,7 +245,7 @@ func executeJourney(ctx context.Context, p *Providers, name string) (string, err
 	}
 }
 
-func reporter(ctx context.Context, cfg *Config, stats *Stats, reg *Registry) {
+func reporter(ctx context.Context, cfg *Config, stats *Stats, reg *Registry, rec *Recorder) {
 	interval := time.Duration(cfg.Run.StatsIntervalSecs * float64(time.Second))
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -219,7 +255,13 @@ func reporter(ctx context.Context, cfg *Config, stats *Stats, reg *Registry) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// The aggregate snapshot line is unchanged, on purpose: existing
+			// tooling parses it. Recorder health goes on its own line.
 			fmt.Printf("[stats] %s\n", stats.JSON())
+			if rec.Enabled() {
+				written, dropped := rec.Counters()
+				fmt.Printf("[recorder] written=%d dropped=%d path=%s\n", written, dropped, rec.Path())
+			}
 			reg.Save(cfg.Run.StateFile)
 		}
 	}

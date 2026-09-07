@@ -25,6 +25,21 @@ func UUID7() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// opsCodeSuffix returns 8 uppercase hex chars drawn from the RANDOM tail of a
+// UUID7, for use in short business codes that services index uniquely.
+//
+// Never front-slice UUID7() for this. The leading hex digits are the
+// millisecond timestamp, so UUID7()[:8] is identical for ~65s and UUID7()[:5]
+// for ~3 days; such a "unique" code collides against a UNIQUE index almost
+// every time. The trailing group is 48 bits of randomness.
+// Takes 8 uppercase hex chars from the random tail, never the leading
+// timestamp bytes (those are constant for ~65s and would collide).
+func opsCodeSuffix() string {
+	u := UUID7()
+	tail := u[strings.LastIndex(u, "-")+1:]
+	return strings.ToUpper(tail[:8])
+}
+
 // NowISO returns the current time in ISO 8601 format (UTC).
 func NowISO() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05Z")
@@ -145,7 +160,7 @@ func ComputeDepartureDates(cfg *Config) []string {
 	return dates
 }
 
-// ConvertTemplate converts Python {service} template to Go %s format.
+// ConvertTemplate converts the config's {service} placeholder to Go %s.
 func ConvertTemplate(template string) string {
 	return strings.Replace(template, "{service}", "%s", 1)
 }

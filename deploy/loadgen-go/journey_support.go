@@ -36,6 +36,7 @@ func JourneySupport(ctx context.Context, p *Providers) (string, error) {
 		case p.Reg.QSupport <- work:
 		case <-ctx.Done():
 		}
+		MaybeReadProbe(ctx, p, ProbeRefs{SupportCase: caseID})
 	}
 	return "support_case", nil
 }

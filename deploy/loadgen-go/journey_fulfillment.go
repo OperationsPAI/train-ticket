@@ -66,5 +66,11 @@ func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
 	}
 
 	p.Reg.ReleasePurchase(purchase, "fulfilled")
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		FulfillmentRecord: purchase.FulfillmentRecord,
+		Entitlement:       purchase.Entitlement,
+		Order:             purchase.Order,
+		Account:           purchase.Account,
+	})
 	return "fulfilled", nil
 }

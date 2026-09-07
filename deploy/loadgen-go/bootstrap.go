@@ -542,7 +542,13 @@ func opsSweep(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, s
 	}
 
 	if rng.Float64() < cfg.Ops.PSupplierCatalogWrite {
-		suffix := UUID7()[:8]
+		// Derive the suffix from the RANDOM tail of the UUID7, not the leading
+		// timestamp. supplier-catalog uniquely indexes lower(profile) (i.e.
+		// supplierCode), lower(code) and lower(contractNo); UUID7's leading hex
+		// is the millisecond clock, so UUID7()[:8] is constant for ~65s and its
+		// first 5 chars for ~3 days, which made these codes collide with 409.
+		// Uses the random tail, not the leading timestamp bytes.
+		suffix := opsCodeSuffix()
 		_, supplier, _ := api.Request(ctx, "POST", "supplier-catalog", "/api/v1/suppliers",
 			map[string]interface{}{
 				"legalName":    "Loadgen Rail Supplier " + suffix + " Ltd",
@@ -558,7 +564,7 @@ func opsSweep(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, s
 				map[string]interface{}{
 					"supplierId":     supplierID,
 					"name":           "Loadgen Carrier " + suffix,
-					"code":           "LGC" + suffix[:5],
+					"code":           "LGC" + suffix,
 					"transportMode":  "RAIL",
 				}, nil, []int{201}, "ops-carrier-create")
 			if carrier != nil {

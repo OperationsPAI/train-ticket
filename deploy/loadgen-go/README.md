@@ -1,7 +1,9 @@
 # loadgen-go
 
-High-concurrency load generator for the train-ticket system, rewritten from
-Python to Go for 50-100x throughput improvement.
+High-concurrency load generator for the train-ticket system. This is the
+**only** load generator in the repo — it replaced an earlier Python
+implementation (`deploy/loadgen/`, removed) and is what
+`train-ticket/loadgen:local` builds from.
 
 ## Architecture
 
@@ -10,14 +12,11 @@ an independent building-block method on a `Providers` struct. Journeys are
 compositions of providers. This keeps journey definitions declarative and each
 provider independently testable.
 
-### Key differences from the Python version
-
-| Aspect | Python | Go |
-|--------|--------|-----|
-| Concurrency model | asyncio + multiprocessing | goroutines |
-| Effective parallelism | 32 actors (GIL-bound) | 200+ goroutines |
-| HTTP client | httpx AsyncClient | net/http with connection pooling |
-| Target RPS | ~16 | 1000+ |
+A single process runs the whole actor population on goroutines: customer
+workers (`run.workers`), staff workers (`staff.workers`), scalper workers,
+the ops sweep, and the schedule publisher, all sharing one HTTP connection
+pool and one in-memory entity registry. There is no process fan-out — scale
+by raising `run.workers`, not by adding replicas.
 
 ## Dual Mode
 
@@ -48,73 +47,62 @@ run:
 
 ## Usage
 
-### Build
+### Build and test
+
+This module is a member of the repository's root `go.work`, so the ordinary
+commands work with no environment setup:
 
 ```bash
-go build -o loadgen .
+go build ./...
+go test ./...
 ```
 
-### Run
+(The image build resolves the module standalone with `GOWORK=off`, since
+`go.work` is not part of the Docker context. The module's `go.mod` pins the
+same dependency versions the workspace resolves, so both paths build the same
+code.)
+
+### Run locally
 
 ```bash
-# Default config path
-./loadgen
-
-# Custom config
-LOADGEN_CONFIG=/path/to/config.yaml ./loadgen
+LOADGEN_CONFIG=../k8s/loadgen-config.yaml go run .
 ```
 
-### Docker
+`LOADGEN_CONFIG` defaults to `./config.yaml` if unset. Note that
+`deploy/loadgen-go/config.yaml` is a **local development sample**; the config
+that actually runs in the cluster is `deploy/k8s/loadgen-config.yaml`.
+
+### Docker / Kubernetes
+
+The image is built from `deploy/docker/loadgen/Dockerfile` (repo-root build
+context, consistent with every other service) by `deploy/build-images.sh`:
 
 ```bash
-docker build -t loadgen-go .
-docker run --rm -v /path/to/config.yaml:/etc/loadgen/config.yaml loadgen-go
+deploy/build-images.sh          # builds + kind-loads train-ticket/loadgen:local
+kubectl -n train-ticket apply -k deploy/k8s
 ```
 
-### Kubernetes
-
-Deploy as a single pod (replaces multi-process Python + 4 replicas):
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: loadgen
-spec:
-  replicas: 1
-  template:
-    spec:
-      containers:
-      - name: loadgen
-        image: loadgen-go:latest
-        env:
-        - name: LOADGEN_CONFIG
-          value: /etc/loadgen/config.yaml
-        volumeMounts:
-        - name: config
-          mountPath: /etc/loadgen
-        - name: state
-          mountPath: /data
-      volumes:
-      - name: config
-        configMap:
-          name: loadgen-config
-      - name: state
-        emptyDir: {}
-```
+The Deployment lives in `deploy/k8s/loadgen.yaml`. Configuration is supplied
+by the hashed `loadgen-config` ConfigMap generated from
+`deploy/k8s/loadgen-config.yaml`, so editing that file and re-applying rolls
+the pod automatically. No config is baked into the image.
 
 ## Configuration
 
-The Go version reads the same `config.yaml` format as the Python version.
-All keys are backward-compatible. New keys:
+Schema reference: `config.go`. Decoding is **non-strict** — an unrecognized or
+misspelled key is silently ignored rather than rejected, so it lands as a zero
+value and the knob goes quietly dead. `deployed_config_test.go` guards against
+this for the deployed ConfigMap: it strict-decodes the file, asserts the
+load-bearing fields survive decoding, and fails if a `behavior.*` /
+`defaults.*` key exists that no Go code reads.
 
-- `run.mode`: `"closed-loop"` (default) or `"open-loop"`
-- `run.target_rps`: target requests per second for open-loop mode
-- `run.ramp_duration_seconds`: linear ramp-up duration for open-loop mode
+Three `behavior.*` keys and the `long_tail` / `wallet_promotion` sections are
+currently parsed but **not consumed** — see the `GAP` comments in
+`deploy/k8s/loadgen-config.yaml` for exactly which, and what each did before.
 
 ## Journeys
 
-All 15 journey types from the Python version are implemented:
+All 15 journey types are implemented:
 
 1. **browse** - search + optional quote, then leave
 2. **purchase** - full funnel through to ticketing
@@ -125,7 +113,9 @@ All 15 journey types from the Python version are implemented:
 7. **legacy** - lifecycle through legacy-acl facade
 8. **ride** - dispatch ride request
 9. **disruption** - ops disruption recovery drill
-10. **transfer** - transfer management drill
+10. **transfer** - transfer management drill (seeds its own place-network
+    STATION place + transport node once per process, since transfer-management
+    validates connection node refs against place-network)
 11. **loyalty** - check/enroll loyalty tier
 12. **insurance** - travel insurance request
 13. **group_booking** - group booking with members
@@ -149,4 +139,101 @@ Periodic JSON snapshots are printed to stdout every `stats_interval_seconds`:
   "latency_ms": {"trip-planning": {"n": 120, "p50": 45.2, "p95": 112.1, "p99": 230.5, "max": 450.0}},
   "scalper": {"attempts": 12, "success": 8, "blocked": 1, "exhausted": 3, "ip_rotations": 24}
 }
+```
+
+## Per-request records
+
+In addition to (never instead of) the aggregate snapshot above, the generator
+writes **one JSON Lines row per client HTTP request** to `recording.path`.
+Configured under `recording:` in the ConfigMap; see the annotated block in
+`deploy/k8s/loadgen-config.yaml`.
+
+The snapshot keeps only a rolling 5000-sample latency buffer per service, so a
+spike that has scrolled out of the buffer is unrecoverable and any quantile
+nobody asked for before the run cannot be computed afterwards. One row per
+request makes a finished run re-sliceable by endpoint, journey or sub-window,
+and joinable to the server-side spans in Jaeger by trace id.
+
+```json
+{"ts":"2026-09-07T07:41:26.472196191Z","chain":"purchase","step":"confirm-order",
+ "service":"order","method":"POST","route":"/api/v1/orders/{id}/confirm",
+ "path":"/api/v1/orders/0190f0ab-1111-7000-8000-000000000001/confirm","status":201,
+ "latency_ms":12.346,"error":"","trace_id":"b0cf9eff63516f81efcd1daaf347da1e",
+ "span_id":"d307da84f5b9f9a7","sampled":true}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ts` | Request **start**, RFC3339 with nanoseconds, UTC |
+| `chain` | Journey name, or `staff` / `ops` / `scalper` / `bootstrap` / `schedule` |
+| `step` | Call-site step label (same value as the `StepError.Step`) |
+| `service` | Target service |
+| `method` | HTTP method |
+| `route` | Route template — id-looking segments collapsed to `{id}`, query dropped |
+| `path` | Raw requested path, query string included |
+| `status` | HTTP status; **`0` means no response was ever received** |
+| `latency_ms` | Wall time around `client.Do`, 3 decimals |
+| `error` | Transport-error marker (`timeout`, `connect_failed`, `connection_reset`, `read_failed`, `write_failed`, `canceled`, `transport`); `""` when a status was received |
+| `trace_id` | The `traceparent` trace id this request carried |
+| `span_id` | The client-side span id |
+| `sampled` | The `traceparent` sampled flag as sent |
+
+Every field is always present, so the file is a stable rectangle:
+
+```bash
+# error rate per route over a sub-window of a finished run
+jq -r 'select(.ts > "2026-09-07T07:40" and .ts < "2026-09-07T07:45")
+       | [.route, (.status|tostring)] | @tsv' requests.jsonl | sort | uniq -c
+
+# the trace ids behind the slowest 10 requests -- paste into Jaeger
+jq -s 'sort_by(-.latency_ms)[:10] | .[] | {latency_ms, route, trace_id}' requests.jsonl
+
+# requests that never got a status
+jq -c 'select(.status == 0)' requests.jsonl
+```
+
+### Trace correlation
+
+The generator is the **origin** of these requests, so it mints its own
+W3C `traceparent` (`00-<32 hex>-<16 hex>-01`) per request rather than waiting
+for an instrumented client; a caller-supplied `traceparent` is read back
+instead of replaced. `trace_id` in the record is therefore exactly the id the
+services received.
+
+The sampled flag is set (`01`) by default, deliberately: a conformant service
+honours an unsampled parent and records no span, which would leave the
+recorded trace id pointing at nothing in Jaeger. Lower
+`recording.trace_sampled_ratio` only to shed backend volume — rows then carry
+`sampled: false` so an analysis can distinguish "no span was ever recorded"
+from "the span is missing".
+
+Java, Python and TypeScript services extract an incoming `traceparent` today,
+so those spans join immediately. The Go and Rust runtimes currently discard it
+and start a new trace; server-side extraction for them is issue #419, and
+until that lands a recorded trace id will not find spans for a Go/Rust hop.
+
+### Load neutrality
+
+Recording must not change the offered load, so a request goroutine does
+exactly one thing per record: a **non-blocking** send of a value struct onto a
+buffered channel. Timestamp formatting, route templating, JSON encoding,
+buffered writes and rotation all happen on one dedicated writer goroutine, so
+disk latency can never back-pressure into the offered RPS. When the buffer is
+full records are **dropped and counted** — a quantified hole in the file beats
+an invisible dent in the load profile. Drops are reported on the `[recorder]`
+line and at shutdown.
+
+### Durability
+
+The file is opened `O_APPEND` (never truncated), flushed every
+`recording.flush_interval_seconds`, and rotated to `<path>.1` at
+`recording.max_file_megabytes`. In the cluster it lives on the `/data`
+emptyDir declared in `deploy/k8s/loadgen.yaml`, so it survives container
+restarts but not pod deletion — copy it out first:
+
+```bash
+kubectl -n train-ticket cp \
+  "$(kubectl -n train-ticket get pod -l app.kubernetes.io/name=loadgen \
+      -o jsonpath='{.items[0].metadata.name}')":/data/requests.jsonl \
+  ./requests.jsonl
 ```

@@ -137,6 +137,15 @@ func (p *Providers) OptionalChance(key string, def float64) bool {
 	return p.Rng.Float64() < p.CtxFloat(key, def)
 }
 
+// LongTailChance returns true with the probability configured under long_tail,
+// and always false when the whole long_tail section is disabled.
+func (p *Providers) LongTailChance(key string, def float64) bool {
+	if !p.Cfg.LongTailEnabled() {
+		return false
+	}
+	return p.Rng.Float64() < p.Cfg.LongTailFloat(key, def)
+}
+
 // Currency returns the configured currency code.
 func (p *Providers) Currency() string {
 	return p.Cfg.Currency()

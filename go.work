@@ -1,6 +1,7 @@
 go 1.26
 
 use (
+	./deploy/loadgen-go
 	./platform/go-kit
 	./platform/go-runtime
 	./services/dispatch

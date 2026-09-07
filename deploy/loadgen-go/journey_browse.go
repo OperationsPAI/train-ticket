@@ -23,9 +23,13 @@ func JourneyBrowse(ctx context.Context, p *Providers) (string, error) {
 	if p.Chance("p_abandon_after_search") {
 		return "browsed", nil
 	}
-	_, err = p.FareQuote(ctx, []string{tvl}, channel, []string{found.Segment})
+	quote, err := p.FareQuote(ctx, []string{tvl}, channel, []string{found.Segment})
 	if err != nil {
 		return "browsed", nil
 	}
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		Quote:     getString(quote, "quoteId"),
+		Itinerary: found.Itinerary,
+	})
 	return "browsed_with_quote", nil
 }

@@ -18,6 +18,11 @@ func JourneyInsurance(ctx context.Context, p *Providers) (string, error) {
 
 	now := time.Now().UTC()
 
+	// Full UUID7 for ancillaryOrderItemId: it is part of travel-insurance's
+	// duplicate-policy key (productCode, ancillaryOrderItemId, travelerRef,
+	// productVersion). A truncated one is constant for ~65s, so a repeat
+	// traveler in that window would silently get the existing policy replayed
+	// instead of a new one.
 	_, policy, err := p.API.Request(ctx, "POST", "travel-insurance", "/api/v1/policies",
 		map[string]interface{}{
 			"accountId":            entry.AccountID,
@@ -25,7 +30,7 @@ func JourneyInsurance(ctx context.Context, p *Providers) (string, error) {
 			"productCode":          "DELAY_INSURANCE",
 			"productVersion":       "v1",
 			"journeyOrderId":       "ord-" + UUID7(),
-			"ancillaryOrderItemId": "anc-" + UUID7()[:8],
+			"ancillaryOrderItemId": "anc-" + UUID7(),
 			"segmentRefs":          []string{"seg-ins-" + UUID7()[:8]},
 			"paymentIntentId":      "pi-" + UUID7()[:8],
 			"coverageStartAt":      now.Format(time.RFC3339),

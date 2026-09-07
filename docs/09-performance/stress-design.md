@@ -90,7 +90,7 @@ JourneyOrderCreated → StartBookingSaga → BookingSagaStarted
 
 ## 4. 驱动器与观测
 
-- **驱动器**:`deploy/stress/driver.py`——复用 loadgen 的请求构造代码,改造为:开环到达率控制(asyncio + 令牌桶)、逐请求延迟账本(端点级 p50/p95/p99/max、错误分类)、场景脚本化(S1–S6 各一配置)、结束时输出 JSON 报告供 auditor 合并。
+- **驱动器**:`deploy/stress/driver.py`——复用当时 Python loadgen 的请求构造代码（该实现已被 deploy/loadgen-go 取代）,改造为:开环到达率控制(asyncio + 令牌桶)、逐请求延迟账本(端点级 p50/p95/p99/max、错误分类)、场景脚本化(S1–S6 各一配置)、结束时输出 JSON 报告供 auditor 合并。
 - **观测三件套**:Jaeger 全链 trace(采样拉高)定位跳级延迟;`pg_stat_statements` 找热 SQL;Redis `XLEN`/`XPENDING` 按消费组测积压曲线。
 - **辅助对照**:无状态热点服务(fare-pricing/offer)可临时 2-3 副本对照单副本,分离"单聚合瓶颈"与"计算瓶颈"。
 
