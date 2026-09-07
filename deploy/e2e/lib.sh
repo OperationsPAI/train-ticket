@@ -1,13 +1,24 @@
 # Shared helpers for e2e chain scripts. Source this file.
-# Requires: kubectl context kind-arl-test, namespace train-ticket,
-# a long-lived curl pod named e2e-curl (created on demand).
+# Requires: a kubectl context pointing at the target cluster, namespace
+# train-ticket, and a long-lived curl pod named e2e-curl (created on demand).
 set -uo pipefail
 
-NS=train-ticket
-KCTX=kind-arl-test
+NS="${NAMESPACE:-train-ticket}"
+# The context was hardcoded to kind-arl-test, which silently broke every k()
+# call on any cluster not named that -- the real one here is kind-train-ticket.
+# Default to whatever context is currently selected so the scripts follow
+# kubeconfig, and keep KCTX overridable for callers that target a specific one.
+KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 REDIS_POD=""
 
-k() { kubectl --context "$KCTX" -n "$NS" "$@"; }
+# An empty context means "use the current one"; passing --context "" fails.
+k() {
+  if [ -n "$KCTX" ]; then
+    kubectl --context "$KCTX" -n "$NS" "$@"
+  else
+    kubectl -n "$NS" "$@"
+  fi
+}
 
 ensure_curl_pod() {
   # A finite sleep or an eviction leaves the pod in Completed/Failed, where

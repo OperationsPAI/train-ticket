@@ -155,8 +155,42 @@ check_code 201 "open post-sales case"
 CASE_RULE=$(jget "['caseId']")
 req POST post-sales "/api/v1/post-sales-cases/$CASE_RULE/evaluate" '{}'
 check_code 200 "evaluate refund"
-REFUND_RULE=$(jget "['refundableAmount']['minorUnits']")
-[ "$REFUND_RULE" = "9000" ] && ok "refundable = 90.00 CNY (120.00 - 30.00)" || bad "refundable wrong ($REFUND_RULE, expected 9000)"
+
+# What this step is actually for: proving the managed refund_fee rule (3000)
+# published above is the one fare-pricing applied, rather than the default set's
+# 2000. That shows up as the refund waterfall's penalty BASE -- base_fare 12000
+# minus refund_fee 3000 = 9000 -- not as refundableAmount.
+#
+# refundableAmount cannot be asserted here. This traveler is an ADULT and the
+# reason is CUSTOMER_REQUEST, so RefundPolicyEngine classifies it VOLUNTARY, and
+# every voluntary tier charges a penalty; only INVOLUNTARY_OVERRIDE and
+# STUDENT_GT_2D_FREE are zero-penalty. The assertion here used to be
+# `refundableAmount == 9000`, which silently demanded a zero penalty and so
+# could never pass for this scenario -- it was reading the penalty base and
+# calling it the refund. It failed before the hardcoded departure date was made
+# relative too; that change only altered which tier it lost in.
+#
+# The detail lives on the case, not on the evaluate response: evaluateResponse
+# returns only caseId/eligible/adjustmentQuoteId/refundableAmount/amountDue
+# (PostSalesMapper), while refundAssessment hangs off decision on the GET.
+req GET post-sales "/api/v1/post-sales-cases/$CASE_RULE"
+check_code 200 "fetch evaluated case"
+PENALTY_BASE=$(jget "['decision']['refundAssessment']['penaltyAmount']['minorUnits']")
+TIER_APPLIED=$(jget "['decision']['refundAssessment']['tierApplied']")
+REFUND_RULE=$(jget "['decision']['refundableAmount']['minorUnits']")
+[ "$PENALTY_BASE" = "9000" ] \
+  && ok "managed refund_fee applied: penalty base = 90.00 CNY (120.00 - 30.00)" \
+  || bad "managed refund_fee not applied (penalty base $PENALTY_BASE, expected 9000; tier=$TIER_APPLIED)"
+# A voluntary ADULT refund must land on a penalty-charging tier, never on one of
+# the two zero-penalty overrides -- if it ever does, the classification broke.
+case "$TIER_APPLIED" in
+  INVOLUNTARY_OVERRIDE|STUDENT_GT_2D_FREE)
+    bad "voluntary ADULT refund took a zero-penalty tier ($TIER_APPLIED)" ;;
+  "")
+    bad "refund assessment reported no tier" ;;
+  *)
+    ok "voluntary refund charged a penalty tier ($TIER_APPLIED, refundable=$REFUND_RULE)" ;;
+esac
 
 echo "== 5. restore default pricing (supersede back so later suite runs keep 107.50/8750)"
 RESTORE_VERSION="e2e-restore-$(date +%s)"
