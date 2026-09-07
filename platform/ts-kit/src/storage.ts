@@ -6,6 +6,7 @@ import type { Redis } from "ioredis";
 import type { Pool, PoolClient, PoolConfig, QueryResult } from "pg";
 
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
+import { registerLivenessComponent, type LivenessComponent } from "./liveness.js";
 import { type EventEnvelope, streamForProducer } from "./messaging.js";
 
 export type Database = Pool | PoolClient;
@@ -234,11 +235,16 @@ export type OutboxRelayOptions = Readonly<{
   batchSize?: number;
   streamMaxLen?: number;
   onFailure?: (error: unknown) => void;
+  /** Name used for the liveness component; defaults to "outbox-relay". */
+  name?: string;
+  /** Set false to opt out of liveness registration (tests). */
+  trackLiveness?: boolean;
 }>;
 
 export class OutboxRelay {
   private stopped = true;
   private loop?: Promise<void>;
+  private liveness?: LivenessComponent;
 
   constructor(
     private readonly pool: Pool,
@@ -251,16 +257,63 @@ export class OutboxRelay {
       return;
     }
     this.stopped = false;
-    this.loop = this.run().catch((error) => {
-      if (!this.stopped) {
-        this.options.onFailure?.(error);
-      }
-    });
+    if (this.options.trackLiveness !== false) {
+      this.liveness ??= registerLivenessComponent(this.options.name ?? "outbox-relay");
+    }
+    // The loop must never end while the relay is running. Previously a single
+    // rejection out of run() ended publication for the lifetime of the
+    // process, with one log line and no restart -- the service looked healthy
+    // and shipped no events. Supervise and restart instead.
+    this.loop = this.supervise();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.liveness?.dispose();
+    this.liveness = undefined;
     await this.loop;
+  }
+
+  private async supervise(): Promise<void> {
+    let restarts = 0;
+    while (!this.stopped) {
+      try {
+        await this.run();
+        return;
+      } catch (error) {
+        if (this.stopped) {
+          return;
+        }
+        restarts += 1;
+        this.liveness?.markUnhealthy(`outbox relay loop crashed: ${sanitizedRelayError(error).message}`);
+        this.reportFailure(error);
+        console.warn({
+          name: this.options.name ?? "outbox-relay",
+          restarts,
+          error: sanitizedRelayError(error),
+          message: "outbox relay loop crashed; restarting after backoff",
+        });
+        await sleep(Math.min(500 * 2 ** Math.min(restarts - 1, 6), 30_000));
+      }
+    }
+  }
+
+  /**
+   * A caller-supplied failure reporter must never be able to kill the relay.
+   * Pre-fix, `run()` called `options.onFailure` directly from its catch block,
+   * so a throwing reporter propagated out of `run()` and permanently ended
+   * publication with a single swallowed rejection.
+   */
+  private reportFailure(error: unknown): void {
+    try {
+      this.options.onFailure?.(error);
+    } catch (reportingError) {
+      console.error({
+        name: this.options.name ?? "outbox-relay",
+        message: "outbox relay failure reporter threw; continuing",
+        error: sanitizedRelayError(reportingError),
+      });
+    }
   }
 
   async runOnce(): Promise<number> {
@@ -310,12 +363,14 @@ export class OutboxRelay {
     while (!this.stopped) {
       try {
         await this.runOnce();
+        this.liveness?.markHealthy();
         pollCount++;
         if (pollCount % 20 === 0) {
           await this.cleanup();
         }
       } catch (error) {
-        this.options.onFailure?.(error);
+        this.liveness?.markUnhealthy(`outbox relay failing: ${sanitizedRelayError(error).message}`);
+        this.reportFailure(error);
       }
       await sleepUntil(() => this.stopped, interval);
     }
@@ -414,6 +469,13 @@ function sanitizedPostgresPoolError(error: Error): Readonly<{ name: string; mess
     message: error.message || "PostgreSQL pool connection error",
     code: typeof errorWithCode.code === "string" ? errorWithCode.code : undefined,
   };
+}
+
+function sanitizedRelayError(error: unknown): Readonly<{ name: string; message: string }> {
+  if (error instanceof Error) {
+    return { name: error.name || "Error", message: error.message || "Outbox relay failed" };
+  }
+  return { name: typeof error, message: String(error || "Outbox relay failed") };
 }
 
 function assertSqlIdentifier(identifier: string, label: string): string {

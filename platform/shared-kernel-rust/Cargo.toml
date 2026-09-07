@@ -9,10 +9,14 @@ path = "src/lib.rs"
 
 [dependencies]
 opentelemetry = "0.32.0"
+# Only the W3C TraceContext propagator is needed here; the SDK crate is where
+# the propagator implementation lives, matching platform/rust-kit messaging.
+opentelemetry_sdk = "0.32.0"
 axum = "0.8.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
 tokio = { version = "1.48", features = ["macros", "rt"] }
 tower = { version = "0.5.3", features = ["util"] }

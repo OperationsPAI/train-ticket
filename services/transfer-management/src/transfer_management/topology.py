@@ -6,6 +6,8 @@ from typing import Any, Mapping
 
 import httpx
 
+from train_ticket_platform.outbound import traced_httpx_client
+
 from transfer_management.domain import NodeType
 
 
@@ -87,7 +89,10 @@ class PlaceNetworkClient:
         last_error: Exception | None = None
         for _ in range(self.retries + 1):
             try:
-                with httpx.Client(timeout=self.timeout) as client:
+                # traced_httpx_client, not httpx.Client: the platform kit's
+                # request hook attaches the active span's W3C traceparent, so
+                # place-network's server span joins this trace.
+                with traced_httpx_client(timeout=self.timeout) as client:
                     response = client.get(f"{self.base_url}{path}", headers={"Accept": "application/json"})
                 if response.status_code == 404:
                     raise PlaceNetworkValidationError(f"place-network resource not found: {path}")

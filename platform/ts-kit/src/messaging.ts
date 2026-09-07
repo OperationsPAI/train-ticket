@@ -1,6 +1,7 @@
-import { Redis } from "ioredis";
+import { Redis, type RedisOptions } from "ioredis";
 
 import { activeTraceContext, endSpan, endSpanWithError, markSpanError, remoteTraceContext, startConsumerSpan } from "./observability.js";
+import { registerLivenessComponent, type LivenessComponent } from "./liveness.js";
 import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 
 export type EventEnvelope<TPayload extends Record<string, unknown> = Record<string, unknown>> = Readonly<{
@@ -243,6 +244,110 @@ const STREAM_MAXLEN = 100_000;
 
 export type SubscriberLoopFailureHandler = (error: unknown) => void;
 
+/**
+ * Reconnect backoff for every Redis client in this codebase.
+ *
+ * ioredis' built-in default is `Math.min(times * 50, 2000)`, which does retry
+ * forever -- but it is paired with `maxRetriesPerRequest: 20`, which is the
+ * real problem: after 20 reconnect attempts ioredis flushes the command queue
+ * and rejects every in-flight command with MaxRetriesPerRequestError. A
+ * blocking XREADGROUP sitting in that queue is rejected, and if the rejection
+ * is not handled the consumer loop's promise dies for good.
+ *
+ * Returning a number here unconditionally means ioredis NEVER gives up
+ * reconnecting (`closeHandler` only stops when retryStrategy returns a
+ * non-number).
+ */
+export function redisRetryStrategy(attempt: number): number {
+  return Math.min(100 * 2 ** Math.min(attempt - 1, 8), REDIS_MAX_RECONNECT_DELAY_MS);
+}
+
+const REDIS_MAX_RECONNECT_DELAY_MS = 30_000;
+
+/**
+ * Baseline options for every Redis client.
+ *
+ * - `retryStrategy`: capped exponential backoff, retried indefinitely.
+ * - `maxRetriesPerRequest: null`: never flush the command queue with
+ *   MaxRetriesPerRequestError. Commands wait for the reconnect instead of
+ *   being rejected into a promise nobody is watching.
+ * - `enableOfflineQueue`: queue commands issued while disconnected so they
+ *   run after the reconnect rather than throwing "Connection is closed".
+ * - `enableReadyCheck`: wait for Redis to finish LOADING before sending
+ *   commands, so a restarted Redis does not get commands it will reject.
+ */
+export function redisClientOptions(overrides: RedisOptions = {}): RedisOptions {
+  return {
+    lazyConnect: true,
+    retryStrategy: redisRetryStrategy,
+    maxRetriesPerRequest: null,
+    enableOfflineQueue: true,
+    enableReadyCheck: true,
+    connectTimeout: 10_000,
+    ...overrides,
+  };
+}
+
+/**
+ * Create a Redis client that reconnects indefinitely and never emits an
+ * "Unhandled error event".
+ *
+ * An ioredis client with no `error` listener routes connection errors through
+ * `silentEmit`, which just does `console.error("[ioredis] Unhandled error
+ * event:", ...)`. That is exactly the last line the `account` pod logged on
+ * 2026-09-06 before going silent for 17 hours. Attaching a listener keeps the
+ * error observable and, more importantly, keeps it from being the only trace
+ * of a client that has stopped working.
+ *
+ * The returned client feeds a liveness component so a permanently
+ * disconnected client eventually fails `/healthz` and kubelet restarts us.
+ */
+export function createRedisClient(url: string = redisUrl(), overrides: RedisOptions = {}, name = "redis"): Redis {
+  const client = new Redis(url, redisClientOptions(overrides));
+  redisLivenessComponents.set(client, attachRedisLifecycleLogging(client, name));
+  return client;
+}
+
+const redisLivenessComponents = new WeakMap<Redis, LivenessComponent>();
+
+/** The liveness component tracking this client, if it was built by createRedisClient. */
+export function redisClientLiveness(client: Redis): LivenessComponent | undefined {
+  return redisLivenessComponents.get(client);
+}
+
+export function attachRedisLifecycleLogging(client: Redis, name: string): LivenessComponent {
+  const component = registerLivenessComponent(`${name}.connection`);
+  const emitter = client as unknown as { on: (event: string, listener: (...args: unknown[]) => void) => unknown };
+
+  // Without this listener ioredis' silentEmit() falls back to
+  // console.error("[ioredis] Unhandled error event: ...") and the error is
+  // otherwise invisible. With it, connection errors are logged structurally
+  // and never escape as unhandled events.
+  emitter.on("error", (error: unknown) => {
+    component.markUnhealthy(`redis error: ${sanitizedErrorForLog(error).message}`);
+    console.warn({
+      name,
+      message: "redis connection error; ioredis will keep reconnecting",
+      error: sanitizedErrorForLog(error),
+    });
+  });
+  emitter.on("close", () => {
+    component.markUnhealthy("redis connection closed");
+  });
+  emitter.on("end", () => {
+    component.markUnhealthy("redis connection ended");
+  });
+  emitter.on("reconnecting", (delay: unknown) => {
+    component.markUnhealthy("redis reconnecting");
+    console.info({ name, message: "redis reconnecting", delayMs: typeof delay === "number" ? delay : undefined });
+  });
+  emitter.on("ready", () => {
+    component.markHealthy();
+    console.info({ name, message: "redis connection ready" });
+  });
+  return component;
+}
+
 type StreamEntry = [id: string, fields: string[]];
 type StreamMessages = [stream: string, entries: StreamEntry[]];
 type BatchEntry = Readonly<{ entry: StreamEntry; envelope: EventEnvelope; attempts: number }>;
@@ -274,7 +379,7 @@ export class RedisEventPublisher implements EventPublisher {
 }
 
 export class RedisStreamEventPublisher extends RedisEventPublisher {
-  constructor(redis: Redis = new Redis(redisUrl(), { lazyConnect: true })) {
+  constructor(redis: Redis = createRedisClient(redisUrl(), {}, "publisher")) {
     super(redis);
   }
 }
@@ -286,9 +391,17 @@ export class RedisEventSubscriber implements EventSubscriber {
   private startedPromise: Promise<void>;
   private resolveStarted!: () => void;
   private rejectStarted!: (error: unknown) => void;
+  private consumerLiveness?: LivenessComponent;
+  /**
+   * Set whenever the Redis connection drops. A restarted Redis has no
+   * consumer groups (this system treats Redis as transport only and replays
+   * from the Postgres outbox), so the groups must be re-created before the
+   * next read instead of erroring on NOGROUP forever.
+   */
+  private groupsNeedRecreate = false;
 
   constructor(
-    private readonly redis: Redis = new Redis(redisUrl(), { lazyConnect: true }),
+    private readonly redis: Redis = createRedisClient(redisUrl(), {}, "subscriber"),
     private readonly onLoopFailure: SubscriberLoopFailureHandler = defaultLoopFailureHandler,
     private readonly options: Readonly<{ thrownHandlerErrors?: "retry" | "dlq" }> = {},
   ) {
@@ -296,6 +409,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       this.resolveStarted = resolve;
       this.rejectStarted = reject;
     });
+    this.watchConnection();
   }
 
   started(): Promise<void> {
@@ -313,9 +427,11 @@ export class RedisEventSubscriber implements EventSubscriber {
       await this.ensureConnected();
       await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
       await this.pruneDeadConsumers(streams, group, consumerName);
+      this.consumerLiveness ??= registerLivenessComponent(`redis-consumer.${group}`);
+      this.consumerLiveness.markHealthy();
       this.resolveStarted();
-      this.startLoop(this.poll(streams, group, consumerName, handler, signal));
-      this.startLoop(this.recover(streams, group, consumerName, handler, signal));
+      this.superviseLoop("poll", group, () => this.poll(streams, group, consumerName, handler, signal), signal);
+      this.superviseLoop("recover", group, () => this.recover(streams, group, consumerName, handler, signal), signal);
     } catch (error) {
       this.stopped = true;
       this.rejectStarted(error);
@@ -325,6 +441,7 @@ export class RedisEventSubscriber implements EventSubscriber {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.consumerLiveness?.dispose();
     this.redis.disconnect();
     await Promise.allSettled([...this.loops]);
   }
@@ -333,16 +450,67 @@ export class RedisEventSubscriber implements EventSubscriber {
     await this.stop();
   }
 
-  private startLoop(loop: Promise<void>): void {
-    this.loops.add(loop);
-    loop.catch((error) => {
-      if (!this.stopped) {
-        this.onLoopFailure(new SubscribeFailed("Redis subscriber background loop failed", { cause: error }));
+  /**
+   * Track connection lifecycle so that (a) a reconnect triggers consumer
+   * group re-creation and (b) a permanently disconnected client is visible
+   * to the liveness probe.
+   */
+  private watchConnection(): void {
+    const emitter = this.redis as unknown as { on?: (event: string, listener: (...args: unknown[]) => void) => unknown };
+    if (typeof emitter.on !== "function") {
+      return;
+    }
+    emitter.on("close", () => {
+      this.groupsNeedRecreate = true;
+    });
+    emitter.on("ready", () => {
+      // Reconnected: the server may be a freshly restarted, empty Redis.
+      this.groupsNeedRecreate = true;
+    });
+  }
+
+  /**
+   * Run a background loop and RESTART it if it ever rejects.
+   *
+   * The previous implementation only logged:
+   *
+   *   loop.catch((error) => { if (!this.stopped) this.onLoopFailure(...) })
+   *
+   * which let a single rejection permanently end consumption while the
+   * process stayed up and `/healthz` kept returning 200. A supervised loop
+   * turns "the consumer died" into "the consumer restarts with backoff".
+   */
+  private superviseLoop(name: string, group: string, factory: () => Promise<void>, signal?: AbortSignal): void {
+    const supervised = (async () => {
+      let restarts = 0;
+      while (!this.stopped && !signal?.aborted) {
+        try {
+          await factory();
+          return;
+        } catch (error) {
+          if (this.stopped || signal?.aborted) {
+            return;
+          }
+          restarts += 1;
+          this.consumerLiveness?.markUnhealthy(`${name} loop crashed: ${sanitizedErrorForLog(error).message}`);
+          this.onLoopFailure(new SubscribeFailed("Redis subscriber background loop failed", { cause: error }));
+          console.warn({
+            service: group,
+            loop: name,
+            restarts,
+            error: sanitizedErrorForLog(error),
+            message: "subscriber loop crashed; restarting after backoff",
+          });
+          await sleep(loopRestartDelayMs(restarts));
+        }
       }
-    }).finally(() => this.loops.delete(loop));
+    })();
+    this.loops.add(supervised);
+    supervised.finally(() => this.loops.delete(supervised)).catch(() => {});
   }
 
   private async poll(streams: readonly string[], group: string, consumerName: string, handler: EventHandler, signal?: AbortSignal): Promise<void> {
+    let consecutiveFailures = 0;
     while (!this.stopped && !signal?.aborted) {
       const redisWithRead = this.redis as unknown as {
         call?: (...args: unknown[]) => Promise<unknown>;
@@ -353,6 +521,13 @@ export class RedisEventSubscriber implements EventSubscriber {
         throw new TypeError("Redis client does not support XREADGROUP");
       }
       try {
+        // A reconnect may have landed us on a freshly restarted, empty Redis
+        // with no streams and no consumer groups. Re-create them before
+        // reading so we never spin on NOGROUP forever.
+        if (this.groupsNeedRecreate) {
+          this.groupsNeedRecreate = false;
+          await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+        }
         const messages = await read(
           "XREADGROUP",
           "GROUP",
@@ -366,26 +541,38 @@ export class RedisEventSubscriber implements EventSubscriber {
           ...streams,
           ...streams.map(() => ">"),
         ) as StreamMessages[] | null;
+        consecutiveFailures = 0;
+        this.consumerLiveness?.markHealthy();
         await this.processMessages(messages, group, consumerName, handler);
       } catch (error) {
+        consecutiveFailures += 1;
         // Non-persistent redis loses consumer groups on restart; recreate then back off so a dead connection never hot-spins.
         console.warn({
           service: group,
           stream: streams.join(","),
           eventId: "unknown",
           deliveries: 0,
+          consecutiveFailures,
           error: sanitizedErrorForLog(error),
           message: "poll read failed; recreating group if missing and backing off",
         });
-        if (String(error).includes("NOGROUP")) {
-          await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+        // The consumer is not consuming right now. Liveness only fails if
+        // this persists past the grace period, so blips never flap the pod.
+        this.consumerLiveness?.markUnhealthy(`poll failing: ${sanitizedErrorForLog(error).message}`);
+        if (isMissingGroupError(error)) {
+          try {
+            await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
+          } catch {
+            // Redis may still be down; retry the re-create next iteration.
+            this.groupsNeedRecreate = true;
+          }
         }
         if (!isRecoverableRedisReadError(error)) {
           // Unknown errors are reported, never fatal: an unlisted driver
           // message must not silently kill the subscriber loop.
           this.onLoopFailure(error);
         }
-        await sleep(1_000);
+        await sleep(pollBackoffMs(consecutiveFailures));
       }
     }
   }
@@ -643,7 +830,12 @@ export class RedisEventSubscriber implements EventSubscriber {
 
   private async createGroup(stream: string, group: string): Promise<void> {
     try {
+      // MKSTREAM re-creates the stream too: after a Redis restart neither the
+      // stream nor the group exists, and "$" is the right start position
+      // because Redis is transport-only here (unpublished work is replayed
+      // from the Postgres outbox).
       await this.redis.xgroup("CREATE", stream, group, "$", "MKSTREAM");
+      console.info({ service: group, stream, message: "consumer group created" });
     } catch (error) {
       if (!String(error).includes("BUSYGROUP")) {
         throw error;
@@ -697,9 +889,9 @@ export type RedisMessagingAdapters = Readonly<{
 }>;
 
 export async function createRedisMessagingAdapters(url: string = redisUrl()): Promise<RedisMessagingAdapters> {
-  const publisherRedis = new Redis(url, { lazyConnect: true });
-  const subscriberRedis = new Redis(url, { lazyConnect: true });
-  await Promise.all([publisherRedis.connect(), subscriberRedis.connect()]);
+  const publisherRedis = createRedisClient(url, {}, "publisher");
+  const subscriberRedis = createRedisClient(url, {}, "subscriber");
+  await Promise.all([connectRedisWithRetry(publisherRedis, "publisher"), connectRedisWithRetry(subscriberRedis, "subscriber")]);
   return {
     publisher: new RedisEventPublisher(publisherRedis),
     subscriber: new RedisEventSubscriber(subscriberRedis),
@@ -725,6 +917,38 @@ export function dlqStreamKey(context: string): string {
 
 export function redisUrl(): string {
   return process.env.REDIS_URL ?? "redis://localhost:6379";
+}
+
+/**
+ * Connect a lazy client, retrying indefinitely with capped backoff.
+ *
+ * `Redis#connect()` rejects if the very first TCP attempt fails (ioredis sets
+ * status "end" and flushes the queue in that path), which turned a Redis that
+ * happened to be down at boot into a hard startup failure. Retrying here means
+ * startup waits for Redis instead of dying, and the client that comes out is
+ * one that reconnects on its own afterwards.
+ */
+export async function connectRedisWithRetry(client: Redis, name = "redis"): Promise<Redis> {
+  for (let attempt = 1; ; attempt += 1) {
+    const status = (client as unknown as { status?: string }).status;
+    if (status === "ready" || status === "connect" || status === "connecting") {
+      return client;
+    }
+    try {
+      await client.connect();
+      return client;
+    } catch (error) {
+      const delay = redisRetryStrategy(attempt);
+      console.warn({
+        name,
+        attempt,
+        retryInMs: delay,
+        error: sanitizedErrorForLog(error),
+        message: "redis connect failed; retrying",
+      });
+      await sleep(delay);
+    }
+  }
 }
 
 async function handleBatchWithConsumerSpans(handler: EventBatchHandler, envelopes: readonly EventEnvelope[], stream: string, consumerGroup: string): Promise<EventBatchHandlerOutput> {
@@ -805,7 +1029,26 @@ function eventIdForLog(envelopeJson: string): string {
 
 function isRecoverableRedisReadError(error: unknown): boolean {
   const message = String(error);
-  return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("READONLY") || message.includes("LOADING");
+  return message.includes("NOGROUP") || message.includes("Connection is closed") || message.includes("Connection is not established") || message.includes("ECONNREFUSED") || message.includes("ETIMEDOUT") || message.includes("ECONNRESET") || message.includes("EPIPE") || message.includes("READONLY") || message.includes("LOADING") || message.includes("MaxRetriesPerRequestError") || message.includes("max retries per request");
+}
+
+/**
+ * A restarted (non-persistent) Redis has no streams and no consumer groups,
+ * so XREADGROUP fails with NOGROUP until the group is re-created.
+ */
+export function isMissingGroupError(error: unknown): boolean {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return message.includes("NOGROUP");
+}
+
+/** Capped exponential backoff for a failing poll loop: 250ms -> 5s. */
+function pollBackoffMs(consecutiveFailures: number): number {
+  return Math.min(250 * 2 ** Math.min(Math.max(consecutiveFailures, 1) - 1, 5), 5_000);
+}
+
+/** Capped exponential backoff before restarting a crashed loop: 500ms -> 30s. */
+function loopRestartDelayMs(restarts: number): number {
+  return Math.min(500 * 2 ** Math.min(Math.max(restarts, 1) - 1, 6), REDIS_MAX_RECONNECT_DELAY_MS);
 }
 
 function sanitizedErrorForLog(error: unknown): Readonly<{ name: string; message: string; stack?: string }> {

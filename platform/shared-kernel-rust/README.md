@@ -49,3 +49,4 @@ The shared kernel also provides the Rust Axum-compatible service runtime seam:
 - `router()` / `router_with_config()` register `/health`, `/live`, `/livez`, `/ready`, `/readyz`, and `/metadata`.
 - `apply_runtime()` adds request/correlation ID propagation for service-specific Axum routes.
 - `RuntimeConfig::with_observer()` enables opt-in tracing through the `Observer` trait; the default is `NoopObserver` and requires no external infrastructure.
+- The runtime middleware extracts the inbound W3C `traceparent`/`tracestate` and passes it to `Observer::start` as the span parent, so a server span joins the caller's trace. An absent or malformed header yields `None` and the span starts a new trace root.

@@ -180,3 +180,123 @@ func spanAttributes(attrs []attribute.KeyValue) map[string]string {
 	}
 	return values
 }
+
+// tracedRouter installs an SDK provider exporting to memory and returns a router
+// whose server spans go through the shared tracing middleware.
+func tracedRouter(t *testing.T) (*gin.Engine, *tracetest.InMemoryExporter) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	ResetOTelForTest()
+	exporter := tracetest.NewInMemoryExporter()
+	shutdown, err := InitOTelSDK(OTelSDKConfig{ServiceName: "runtime-test", Exporter: exporter})
+	if err != nil {
+		t.Fatalf("init sdk: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = shutdown(context.Background())
+		ResetOTelForTest()
+	})
+	router := NewGinRouter(GinConfig{
+		Observer: NewOTelObserver(OTelObserverConfig{ServiceName: "runtime-test"}),
+	})
+	return router, exporter
+}
+
+func serveTraced(t *testing.T, router *gin.Engine, exporter *tracetest.InMemoryExporter, headers map[string]string) tracetest.SpanStub {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", recorder.Code)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected one server span, got %d", len(spans))
+	}
+	if spans[0].SpanKind != trace.SpanKindServer {
+		t.Fatalf("expected a server span, got %v", spans[0].SpanKind)
+	}
+	return spans[0]
+}
+
+// A caller's traceparent must make the server span join that trace rather than
+// opening a new root, which is what keeps a cross-service request one trace.
+func TestTracingMiddlewareJoinsIncomingTraceContext(t *testing.T) {
+	router, exporter := tracedRouter(t)
+
+	const (
+		traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+		spanID  = "00f067aa0ba902b7"
+	)
+	span := serveTraced(t, router, exporter, map[string]string{
+		"traceparent": "00-" + traceID + "-" + spanID + "-01",
+		"tracestate":  "vendor=t61rcWkgMzE",
+	})
+
+	if got := span.SpanContext.TraceID().String(); got != traceID {
+		t.Fatalf("server span did not join caller trace: got %s want %s", got, traceID)
+	}
+	if got := span.Parent.SpanID().String(); got != spanID {
+		t.Fatalf("unexpected parent span id: got %s want %s", got, spanID)
+	}
+	if !span.Parent.IsRemote() {
+		t.Fatalf("expected the extracted parent to be marked remote")
+	}
+	if got := span.SpanContext.TraceState().Get("vendor"); got != "t61rcWkgMzE" {
+		t.Fatalf("tracestate not propagated: %q", span.SpanContext.TraceState().String())
+	}
+}
+
+func TestTracingMiddlewareStartsRootSpanWithoutTraceparent(t *testing.T) {
+	router, exporter := tracedRouter(t)
+
+	span := serveTraced(t, router, exporter, nil)
+
+	if !span.SpanContext.IsValid() {
+		t.Fatalf("expected a valid root span context")
+	}
+	if span.Parent.IsValid() {
+		t.Fatalf("expected no parent, got %s", span.Parent.SpanID())
+	}
+}
+
+// A malformed traceparent must be ignored rather than rejected: the request
+// still succeeds and still produces a valid new root span.
+func TestTracingMiddlewareIgnoresMalformedTraceparent(t *testing.T) {
+	router, exporter := tracedRouter(t)
+
+	for _, header := range []string{
+		"not-a-traceparent",
+		"00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",
+	} {
+		t.Run(header, func(t *testing.T) {
+			exporter.Reset()
+			span := serveTraced(t, router, exporter, map[string]string{"traceparent": header})
+
+			if !span.SpanContext.IsValid() {
+				t.Fatalf("expected a valid root span context")
+			}
+			if span.Parent.IsValid() {
+				t.Fatalf("expected malformed trace context to be dropped, got parent %s", span.Parent.SpanID())
+			}
+		})
+	}
+}
+
+func TestExtractTraceContextLeavesContextUnchangedWithoutHeaders(t *testing.T) {
+	ctx := context.Background()
+	if got := trace.SpanContextFromContext(ExtractTraceContext(ctx, nil)); got.IsValid() {
+		t.Fatalf("expected no span context from nil headers, got %s", got.TraceID())
+	}
+	if got := trace.SpanContextFromContext(ExtractTraceContext(ctx, http.Header{})); got.IsValid() {
+		t.Fatalf("expected no span context from empty headers, got %s", got.TraceID())
+	}
+}

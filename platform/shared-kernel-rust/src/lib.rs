@@ -7,15 +7,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     Json, Router,
     extract::{Request, State},
-    http::{HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::get,
 };
 use opentelemetry::{
-    KeyValue, global,
-    trace::{Span as OTelSpanTrait, Tracer},
+    Context as OtelContext, KeyValue, global,
+    propagation::{Extractor, TextMapPropagator},
+    trace::{Span as OTelSpanTrait, TraceContextExt, Tracer},
 };
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -23,6 +25,8 @@ use serde_json::{Value, json};
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Standard inbound/outbound HTTP correlation identifier header.
 pub const CORRELATION_ID_HEADER: &str = "x-correlation-id";
+/// W3C trace context header carrying the caller's trace and span ids.
+pub const TRACEPARENT_HEADER: &str = "traceparent";
 
 static REQUEST_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -85,11 +89,56 @@ impl RequestContext {
 
 /// A no-op-by-default observability seam for opt-in tracing adapters.
 pub trait Observer: Send + Sync + 'static {
-    fn start(&self, context: &RequestContext, operation: &str, method: &str) -> Box<dyn Span>;
+    /// Start a server span for an inbound request.
+    ///
+    /// `parent` is the trace context extracted from the request headers by the
+    /// runtime middleware, or `None` when the caller sent no usable
+    /// `traceparent`. Implementations that trace must set it as the span parent
+    /// so the span joins the caller's trace.
+    fn start(
+        &self,
+        context: &RequestContext,
+        operation: &str,
+        method: &str,
+        parent: Option<&OtelContext>,
+    ) -> Box<dyn Span>;
 }
 
 pub trait Span: Send + Sync + 'static {
     fn end(&mut self, status: StatusCode);
+}
+
+/// Reads W3C trace context headers for the OpenTelemetry propagator.
+struct HeaderExtractor<'a>(&'a HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|name| name.as_str()).collect()
+    }
+}
+
+/// Extract the caller's W3C trace context (`traceparent` plus `tracestate`) so a
+/// server span can be parented to it.
+///
+/// Returns `None` when no `traceparent` is present and when the header is
+/// malformed: the propagator only yields a valid remote span context for a
+/// well-formed header, so a bad value degrades to a new trace root instead of
+/// failing the request.
+pub fn extract_trace_context(headers: &HeaderMap) -> Option<OtelContext> {
+    if !headers.contains_key(TRACEPARENT_HEADER) {
+        return None;
+    }
+    let context = TraceContextPropagator::new().extract(&HeaderExtractor(headers));
+    let span_context = context.span().span_context().clone();
+    if span_context.is_valid() && span_context.is_remote() {
+        Some(context)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -99,7 +148,13 @@ pub struct NoopObserver;
 struct NoopSpan;
 
 impl Observer for NoopObserver {
-    fn start(&self, _context: &RequestContext, _operation: &str, _method: &str) -> Box<dyn Span> {
+    fn start(
+        &self,
+        _context: &RequestContext,
+        _operation: &str,
+        _method: &str,
+        _parent: Option<&OtelContext>,
+    ) -> Box<dyn Span> {
         Box::new(NoopSpan)
     }
 }
@@ -147,9 +202,15 @@ impl OpenTelemetryObserver {
 }
 
 impl Observer for OpenTelemetryObserver {
-    fn start(&self, context: &RequestContext, operation: &str, method: &str) -> Box<dyn Span> {
+    fn start(
+        &self,
+        context: &RequestContext,
+        operation: &str,
+        method: &str,
+        parent: Option<&OtelContext>,
+    ) -> Box<dyn Span> {
         let tracer = global::tracer(self.tracer_name);
-        let span = tracer
+        let builder = tracer
             .span_builder(operation.to_owned())
             .with_kind(opentelemetry::trace::SpanKind::Server)
             .with_attributes(vec![
@@ -160,8 +221,13 @@ impl Observer for OpenTelemetryObserver {
                 KeyValue::new("http.method", method.to_owned()),
                 KeyValue::new("http.request_id", context.request_id().to_owned()),
                 KeyValue::new("http.correlation_id", context.correlation_id().to_owned()),
-            ])
-            .start(&tracer);
+            ]);
+        // A caller-supplied trace context becomes the remote parent; without one
+        // the span starts a new trace.
+        let span = match parent {
+            Some(parent) => builder.start_with_context(&tracer, parent),
+            None => builder.start(&tracer),
+        };
         Box::new(OpenTelemetrySpan { span })
     }
 }
@@ -267,9 +333,13 @@ async fn runtime_middleware(
         header_value(&request, CORRELATION_ID_HEADER).unwrap_or_else(|| request_id.clone());
     let context = RequestContext::new(request_id.clone(), correlation_id.clone());
     let operation = request.uri().path().to_string();
-    let mut span = config
-        .observer
-        .start(&context, &operation, request.method().as_str());
+    let parent = extract_trace_context(request.headers());
+    let mut span = config.observer.start(
+        &context,
+        &operation,
+        request.method().as_str(),
+        parent.as_ref(),
+    );
 
     request.extensions_mut().insert(context);
     let mut response = next.run(request).await;
@@ -648,6 +718,7 @@ mod tests {
                 context: &RequestContext,
                 operation: &str,
                 _method: &str,
+                _parent: Option<&OtelContext>,
             ) -> Box<dyn Span> {
                 self.operations.lock().unwrap().push(format!(
                     "{}:{}",
@@ -728,5 +799,183 @@ mod tests {
         assert_eq!(envelope.schema_version(), 1);
         assert_eq!(envelope.correlation_id().as_str(), "corr-1");
         assert_eq!(envelope.causation_id().unwrap().as_str(), "cmd-1");
+    }
+}
+
+#[cfg(test)]
+mod trace_context_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use opentelemetry::trace::{SpanId, TraceId};
+    use opentelemetry_sdk::trace::{
+        InMemorySpanExporter, InMemorySpanExporterBuilder, SdkTracerProvider, SpanData,
+    };
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use tower::ServiceExt;
+
+    const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const SPAN_ID: &str = "00f067aa0ba902b7";
+
+    /// The tracer provider is process-global, so tests running in parallel would
+    /// otherwise export spans into each other's exporter. The serial guard is a
+    /// blocking mutex, so requests are driven on a local runtime rather than by
+    /// `#[tokio::test]`, which would hold the guard across an await point.
+    fn test_serial() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime")
+            .block_on(future)
+    }
+
+    struct TestTracing {
+        provider: SdkTracerProvider,
+        exporter: InMemorySpanExporter,
+    }
+
+    impl TestTracing {
+        fn install() -> Self {
+            let exporter = InMemorySpanExporterBuilder::new().build();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            global::set_tracer_provider(provider.clone());
+            Self { provider, exporter }
+        }
+
+        fn take_server_span(&self) -> SpanData {
+            self.provider.force_flush().expect("flush spans");
+            let mut spans = self.exporter.get_finished_spans().expect("finished spans");
+            assert_eq!(spans.len(), 1, "expected exactly one server span");
+            self.exporter.reset();
+            let span = spans.remove(0);
+            assert_eq!(span.span_kind, opentelemetry::trace::SpanKind::Server);
+            span
+        }
+    }
+
+    impl Drop for TestTracing {
+        fn drop(&mut self) {
+            let _ = self.provider.shutdown();
+        }
+    }
+
+    fn traced_app() -> Router {
+        router_with_config(
+            RuntimeConfig::new(profile())
+                .with_observer(Arc::new(OpenTelemetryObserver::new("shared-kernel-test"))),
+        )
+    }
+
+    async fn get_health(headers: &[(&str, &str)]) {
+        let mut builder = Request::builder().uri("/health");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let response = traced_app()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .expect("request succeeds");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn server_span_joins_incoming_trace_context() {
+        let _serial = test_serial();
+        let tracing = TestTracing::install();
+
+        block_on(get_health(&[
+            ("traceparent", &format!("00-{TRACE_ID}-{SPAN_ID}-01")),
+            ("tracestate", "vendor=t61rcWkgMzE"),
+        ]));
+
+        let span = tracing.take_server_span();
+        assert_eq!(
+            span.span_context.trace_id(),
+            TraceId::from_hex(TRACE_ID).unwrap(),
+            "server span did not join the caller's trace"
+        );
+        assert_eq!(span.parent_span_id, SpanId::from_hex(SPAN_ID).unwrap());
+        assert_eq!(
+            span.span_context.trace_state().get("vendor"),
+            Some("t61rcWkgMzE"),
+            "tracestate was not propagated"
+        );
+    }
+
+    #[test]
+    fn server_span_without_traceparent_is_a_new_root() {
+        let _serial = test_serial();
+        let tracing = TestTracing::install();
+
+        block_on(get_health(&[]));
+
+        let span = tracing.take_server_span();
+        assert!(span.span_context.is_valid(), "expected a valid root span");
+        assert_eq!(
+            span.parent_span_id,
+            SpanId::INVALID,
+            "expected no parent span"
+        );
+    }
+
+    /// A malformed header must be ignored rather than rejected, so the request
+    /// still succeeds and still produces a valid new trace root.
+    #[test]
+    fn malformed_traceparent_still_produces_a_root_span() {
+        let _serial = test_serial();
+        let tracing = TestTracing::install();
+
+        for traceparent in [
+            "not-a-traceparent",
+            "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",
+            "",
+        ] {
+            block_on(get_health(&[("traceparent", traceparent)]));
+
+            let span = tracing.take_server_span();
+            assert!(
+                span.span_context.is_valid(),
+                "expected a valid root span for {traceparent:?}"
+            );
+            assert_eq!(
+                span.parent_span_id,
+                SpanId::INVALID,
+                "malformed traceparent {traceparent:?} was used as a parent"
+            );
+            assert_ne!(
+                span.span_context.trace_id(),
+                TraceId::from_hex(TRACE_ID).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn extract_trace_context_reports_only_usable_headers() {
+        let mut headers = HeaderMap::new();
+        assert!(extract_trace_context(&headers).is_none());
+
+        headers.insert("traceparent", "bogus".parse().unwrap());
+        assert!(extract_trace_context(&headers).is_none());
+
+        headers.insert(
+            "traceparent",
+            format!("00-{TRACE_ID}-{SPAN_ID}-01").parse().unwrap(),
+        );
+        let context = extract_trace_context(&headers).expect("valid trace context");
+        let span_context = context.span().span_context().clone();
+        assert_eq!(
+            span_context.trace_id(),
+            TraceId::from_hex(TRACE_ID).unwrap()
+        );
+        assert_eq!(span_context.span_id(), SpanId::from_hex(SPAN_ID).unwrap());
+        assert!(span_context.is_remote());
     }
 }
