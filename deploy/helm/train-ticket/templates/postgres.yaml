@@ -1,3 +1,4 @@
+{{- if .Values.postgres.enabled }}
 {{- range $name, $pg := .Values.postgres.instances }}
 ---
 apiVersion: v1
@@ -14,6 +15,15 @@ kind: ConfigMap
 metadata:
   name: postgres-{{ $name }}-initdb
 data:
+  # NOTE: /docker-entrypoint-initdb.d scripts are executed by the postgres image
+  # ONLY when PGDATA is empty (a FRESH data directory). This Deployment mounts a
+  # PersistentVolumeClaim, so on any cluster where this shard has already
+  # initialised, changing postgres.instances.<shard>.databases has NO effect on
+  # `helm upgrade` -- the new databases must be created by hand:
+  #   kubectl exec -n <ns> deploy/postgres-{{ $name }} -- \
+  #     psql -U trainticket -d postgres -c 'CREATE DATABASE group_booking'
+  # Keep the union of all shards' databases in sync with services.<name>.db
+  # (38 services -> 38 databases).
   init-databases.sh: |
     #!/bin/bash
     set -e
@@ -125,12 +135,27 @@ spec:
     - port: 5432
       targetPort: 5432
 {{- end }}
-{{/* Backward-compat: "postgres" service points to the default shard */}}
+{{/*
+Backward-compat: a bare "postgres" name resolves to the default shard, which is
+the one services with no explicit pgInstance are pointed at. Must be an
+explicitly configured shard name, not `keys ... | first` -- Helm's `keys` does
+not guarantee order, so that produced a different alias on every render and
+`helm upgrade` churned the Service. Fails the render loudly if the named shard
+does not exist.
+*/}}
+{{- $defaultInstance := .Values.postgres.defaultInstance }}
+{{- if not (hasKey .Values.postgres.instances $defaultInstance) }}
+{{- fail (printf "postgres.defaultInstance=%q is not a key of postgres.instances (%v)" $defaultInstance (keys .Values.postgres.instances | sortAlpha)) }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: train-ticket
 spec:
   type: ExternalName
-  externalName: postgres-{{ (keys .Values.postgres.instances | first) }}.{{ .Release.Namespace }}.svc.cluster.local
+  externalName: postgres-{{ $defaultInstance }}.{{ .Release.Namespace }}.svc.cluster.local
+{{- end }}

@@ -1,4 +1,6 @@
-# Load generator configuration.
+# Load generator configuration (Helm stress-test profile, consumed by the Go
+# loadgen in deploy/loadgen-go). Diverges from deploy/k8s/loadgen-config.yaml
+# deliberately: zero think time, higher worker/scalper counts.
 # Every probability / weight in here is a tunable hyperparameter; the code
 # never hardcodes a distribution. Weights need not sum to 1 — they are
 # normalized at runtime.
@@ -10,7 +12,8 @@ target:
   request_timeout_seconds: 10
 
 run:
-  workers: 50                 # concurrent virtual customers
+  mode: closed-loop           # or open-loop (paced by target_rps)
+  workers: 50                 # concurrent virtual customers (goroutines)
   duration_seconds: 0         # 0 = run until stopped
   seed: null                  # set an int for reproducible randomness
   think_time_seconds: { min: 0, max: 0 }        # zero think time for stress test
@@ -109,6 +112,7 @@ staff:
   p_support_classify_escalate_branch: 0.15  # classify -> assign -> escalate lifecycle coverage
   p_support_classify_close_branch: 0.15     # classify -> close, optionally reopen -> close
   p_support_reopen_after_close: 0.10        # only after the classify/close branch
+  p_seat_preferences: 0.03    # staff ticketing attaches a seatPreferences block
 
 # ---------------------------------------------------------------------------
 # Long-tail probes — conservative low-frequency coverage for read endpoints.
@@ -157,7 +161,7 @@ bootstrap:
 
 # ---------------------------------------------------------------------------
 # Default monetary / domain values — read by journey providers so nothing
-# is hardcoded in the Python source.
+# is hardcoded in the loadgen source.
 # ---------------------------------------------------------------------------
 defaults:
   currency: "CNY"
@@ -191,6 +195,37 @@ wallet_promotion:
 waitlist:
   poll_attempts: 8
   poll_interval_seconds: 4
+
+# ---------------------------------------------------------------------------
+# Per-request outcome records (issue #420). One JSON Lines row per client HTTP
+# request, carrying the trace id so each row can be joined to its server-side
+# spans in Jaeger. The aggregate `[stats]` snapshot is unchanged; this is
+# additional output.
+#
+# Feature parity with deploy/k8s/loadgen-config.yaml: the Go loadgen defaults
+# recording.enabled to FALSE, so omitting this section silently produced no
+# record file at all under Helm -- which matters more here than in kind, since
+# this profile is the stress-test one. The tuning values above are deliberately
+# divergent from kustomize; these are not.
+#
+# The path MUST live under the /data volume mounted by templates/loadgen.yaml --
+# anywhere else and the file dies with the container's writable layer. /data is
+# an emptyDir, so it survives container restarts but not pod deletion.
+#
+# Load-neutral by construction: request goroutines only do a non-blocking send
+# onto a buffered channel; all encoding and file IO happens on one writer
+# goroutine, so disk latency cannot back-pressure into the offered RPS.
+# ---------------------------------------------------------------------------
+recording:
+  enabled: true
+  path: /data/requests.jsonl   # must be under the /data volume (loadgen.yaml)
+  buffer_records: 65536        # hand-off channel depth; full => drop + count
+  flush_interval_seconds: 2    # bounds how stale the on-disk tail can be
+  max_file_megabytes: 512      # at the cap, rename to <path>.1 and start fresh
+  # The loadgen ORIGINATES these traces, so it owns the sampling decision. With
+  # flags=00 a conformant service records no span and the recorded trace id
+  # would point at nothing in Jaeger. Lower only to shed backend volume.
+  trace_sampled_ratio: 1.0
 
 # ---------------------------------------------------------------------------
 # Personas — probability overlays on top of global behavior.  Each worker
