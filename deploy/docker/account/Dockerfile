@@ -8,6 +8,10 @@ COPY services/account/package.json services/account/package-lock.json services/a
 RUN --mount=type=cache,target=/root/.npm cd services/account && npm ci --install-links
 COPY services/account/src ./services/account/src
 COPY services/account/migrations ./services/account/migrations
+# The service's own settings travel with its image: the registration budget is
+# read from ./config at startup, and a release that shipped without them would
+# boot into the failure the settings exist to prevent.
+COPY services/account/config ./services/account/config
 RUN cd services/account && npx tsc --noEmit false --outDir dist
 
 FROM node:26-alpine
@@ -17,6 +21,7 @@ COPY --from=builder --chown=app:app /src/services/account/package.json ./package
 COPY --from=builder --chown=app:app /src/services/account/node_modules ./node_modules
 COPY --from=builder --chown=app:app /src/services/account/dist ./dist
 COPY --from=builder --chown=app:app /src/services/account/migrations ./migrations
+COPY --from=builder --chown=app:app /src/services/account/config ./config
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080

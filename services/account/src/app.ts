@@ -10,6 +10,7 @@ import {
   type AccountRepository,
   type DomainErrorMapping,
 } from "./application.js";
+import { clientKeyFor, type RegistrationAdmission } from "./admission.js";
 import { type EventPublisher } from "./ports.js";
 import {
   InMemoryIdempotencyStore,
@@ -77,6 +78,12 @@ export type AppOptions = Readonly<{
 export type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
   runCommand?: <T>(operation: (application: AccountApplicationService) => Promise<T>) => Promise<T>;
+  /**
+   * Optional admission for the endpoint that mints accounts; a service without
+   * one admits every client. The store-backed runtime supplies it, because the
+   * count has to be the platform's rather than one process's.
+   */
+  registrationAdmission?: RegistrationAdmission;
 }>;
 
 type OTelSpan = Readonly<{
@@ -141,6 +148,30 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
   const idempotencyStore = appOptions.idempotencyStore ?? new InMemoryIdempotencyStore();
   const accountService = new AccountApplicationService(repository, publisher);
   const runWithService = appOptions.storage?.runCommand ?? (<T>(operation: (application: AccountApplicationService) => Promise<T>) => operation(accountService));
+  /**
+   * The registration budget, checked inside the idempotent operation rather than
+   * in front of the route: a replay of a registration that was already admitted
+   * asks for the same account, and it must not spend the client's window twice.
+   */
+  const admitRegistration = async (request: FastifyRequest): Promise<void> => {
+    const admission = appOptions.storage?.registrationAdmission;
+    if (!admission) {
+      return;
+    }
+    const clientKey = clientKeyFor(request.headers, request.ip, admission.settings);
+    if (await admission.admit(clientKey)) {
+      return;
+    }
+    // The refusal names the window and not the budget: how many new accounts the
+    // platform admits is the deployment's statement about the identity endpoint,
+    // while what a refused caller can act on is the moment its window turns.
+    throw new ApplicationError(
+      "TOO_MANY_REQUESTS",
+      `This client has opened its allowance of new accounts for the current ${admission.settings.windowSeconds}s window`,
+      429,
+      { windowSeconds: admission.settings.windowSeconds },
+    );
+  };
   const app: FastifyInstance = Fastify({ logger: false });
   const spans = new WeakMap<FastifyRequest, TraceSpan>();
 
@@ -176,6 +207,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
     await runIdempotentOperation(request, reply, idempotencyStore, 201, async (context, causationId) => {
       const body = objectBody(request.body);
       assertOptionalString(body.accountId, "accountId");
+      await admitRegistration(request);
       return runWithService((service) => service.createAccount({ accountId: body.accountId as string | undefined, correlationId: context.correlationId, causationId }));
     });
   });

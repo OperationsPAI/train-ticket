@@ -15,6 +15,15 @@ export {
   type TraceSpan,
 } from "./app.js";
 export { bootstrap, runtimeHost, runtimePort, type BootstrapOptions } from "./bootstrap.js";
+export {
+  InMemoryRegistrationAdmission,
+  REGISTRATION_ADMISSION_FILE,
+  clientKeyFor,
+  registrationAdmissionSettings,
+  windowStart,
+  type RegistrationAdmission,
+  type RegistrationAdmissionSettings,
+} from "./admission.js";
 export { InMemoryAccountRepository, InMemoryEventPublisher } from "./application.js";
 export { InMemoryIdempotencyStore } from "@trainticket/ts-kit";
 export type { EventEnvelope, EventPublisher, EventSubscriber, HandlerResult } from "./ports.js";

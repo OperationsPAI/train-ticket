@@ -18,12 +18,16 @@ import {
 import { type Pool } from "pg";
 
 import { AccountApplicationService } from "../../application.js";
+import { registrationAdmissionSettings, type RegistrationAdmission } from "../../admission.js";
 
 import { PostgresAccountRepository } from "./account-repository.js";
+import { PostgresRegistrationAdmission } from "./registration-admission.js";
 
 export type AccountStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   idempotencyStore: PostgresIdempotencyStore;
+  /** The per-client new-account budget, counted in this service's own store. */
+  registrationAdmission: RegistrationAdmission;
   runCommand: <T>(operation: (application: AccountApplicationService) => Promise<T>) => Promise<T>;
   stop: () => Promise<void>;
 }>;
@@ -53,6 +57,11 @@ export async function startAccountStorage(): Promise<AccountStorageRuntime> {
   return {
     ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
     idempotencyStore: new PostgresIdempotencyStore(pool),
+    // Read once at startup: a budget that could change while the pod serves
+    // would let two replicas of one release enforce two different windows, and
+    // a settings file that cannot be read is a boot failure rather than a
+    // service that admits everything.
+    registrationAdmission: new PostgresRegistrationAdmission(pool, registrationAdmissionSettings()),
     runCommand: (operation) => withAccountTransaction(pool, operation),
     stop: async () => {
       await relay.stop();
