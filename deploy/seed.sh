@@ -50,6 +50,47 @@ set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 E2E_DIR="${ROOT_DIR}/deploy/e2e"
+NS="${NAMESPACE:-train-ticket}"
+KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
+
+k() {
+  if [ -n "$KCTX" ]; then
+    kubectl --context "$KCTX" -n "$NS" "$@"
+  else
+    kubectl -n "$NS" "$@"
+  fi
+}
+
+# ── Pause the resident loadgen for the duration of seeding.
+#
+# WHY: 21-identity.sh asserts that six low-frequency events (PurchaseLimitFact*,
+# EligibilityUsage*) appear in events:identity-verification by scanning the last
+# 120 entries with XREVRANGE. The loadgen drives real-name verification
+# continuously, so it publishes VerificationCaseStarted / VerificationPassed /
+# CredentialRegistered into that same stream fast enough to push the e2e events
+# out of that window within seconds -- the stream sits pinned at its trim cap.
+# The assertion therefore passed or failed depending on how warmed-up the
+# loadgen happened to be: it passed when seeding ran just after a loadgen
+# restart and failed on a quiet re-deploy, which made `make deploy` flaky for a
+# reason that had nothing to do with the deployment.
+#
+# deploy/e2e/12-restart.sh already establishes this pattern; this reuses it. The
+# trap restores the original replica count on any exit path, including failure,
+# so a failed seed never leaves the cluster without load.
+LG_REPLICAS="$(k get deploy loadgen -o jsonpath='{.spec.replicas}' 2>/dev/null || echo '')"
+resume_loadgen() {
+  if [ -n "$LG_REPLICAS" ] && [ "$LG_REPLICAS" != "0" ]; then
+    k scale deploy loadgen --replicas="$LG_REPLICAS" >/dev/null 2>&1 \
+      && echo "seed: loadgen resumed (replicas=${LG_REPLICAS})" \
+      || echo "seed: WARNING could not resume loadgen -- scale it back manually" >&2
+  fi
+}
+trap resume_loadgen EXIT
+if [ -n "$LG_REPLICAS" ] && [ "$LG_REPLICAS" != "0" ]; then
+  k scale deploy loadgen --replicas=0 >/dev/null 2>&1 || true
+  k wait --for=delete pod -l app.kubernetes.io/name=loadgen --timeout=90s >/dev/null 2>&1 || true
+  echo "seed: loadgen paused (was replicas=${LG_REPLICAS})"
+fi
 
 # Keep this list ordered: 01 must run first, because 07 sources the .refs.env
 # it writes (P_BJ / P_SH / SERVICE_DATE).

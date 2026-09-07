@@ -71,12 +71,25 @@ postgres:
         - trip_planning
         - waitlist
         - wallet_promotion
-      maxConnections: 300
-      sharedBuffers: 256MB
+      # Sized with real headroom rather than "just enough not to OOM". The node
+      # this runs on has ~62Gi and only a few cores committed, so being frugal
+      # here buys nothing and has already cost two outages: Postgres was
+      # OOMKilled twice at a 512Mi limit, and a later attempt to trim
+      # max_connections to 250 -- sized against a 180-connection observation
+      # taken while the loadgen was still warming up -- was blown past during a
+      # rolling restart, when old and new pods hold their pools concurrently.
+      # Postgres then refused with "sorry, too many clients already", which
+      # broke transactions mid-flight and silently stopped identity-verification
+      # from publishing its outbox events.
+      #
+      # 500 connections at 8MB work_mem is the sizing constraint; shared_buffers
+      # stays at the conventional ~25% of the limit.
+      maxConnections: 500
+      sharedBuffers: 1GB
       workMem: 8MB
       resources:
-        requests: { cpu: 100m, memory: 256Mi }
-        limits: { cpu: '2', memory: 2Gi }
+        requests: { cpu: 250m, memory: 1Gi }
+        limits: { cpu: '4', memory: 4Gi }
 
 redis:
   enabled: true
@@ -88,11 +101,21 @@ redis:
   # is the ~75% ratio deploy/k8s/redis.yaml settled on after the 2026-09-06
   # OOMKill. Policy stays noeviction: on an event bus, refusing writes beats
   # silently dropping undelivered events. Change the two together.
-  maxmemory: 768mb
+  # maxmemory must stay BELOW resources.limits.memory so Redis enforces its own
+  # bound rather than being OOMKilled by the cgroup -- the ~75% ratio below
+  # covers allocator fragmentation and client output buffers, which maxmemory
+  # (a logical-dataset bound) does not account for. Policy stays noeviction: on
+  # an event bus, refusing writes beats silently dropping undelivered events.
+  # Change the two together.
+  #
+  # Redis was OOMKilled three times at a 256Mi limit with maxmemory unset. The
+  # limit is now generous on purpose: the node has ~62Gi and this is the event
+  # bus for 38 services, so headroom is far cheaper than another bus outage.
+  maxmemory: 3gb
   maxmemoryPolicy: noeviction
   resources:
-    requests: { cpu: 50m, memory: 256Mi }
-    limits: { cpu: 250m, memory: 1Gi }
+    requests: { cpu: 250m, memory: 1Gi }
+    limits: { cpu: '2', memory: 4Gi }
 
 # Durable trace store: Jaeger all-in-one on Badger. Retention and volume size
 # MUST be changed together -- see the capacity arithmetic and scaling table in
