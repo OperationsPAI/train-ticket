@@ -7,6 +7,8 @@ import time
 from typing import Any, Mapping
 from urllib import request, error
 
+from train_ticket_platform.outbound import traced_urllib_request
+
 _PROJECTION_LAG_CODES = frozenset({"MISSING_ORDER_PROJECTION", "MISSING_ENTITLEMENT_PROJECTION", "MISSING_WALLET_ACCOUNT"})
 _PROJECTION_RETRY_DELAYS_SECONDS = (0.2, 0.4, 0.8, 1.6, 3.2)
 
@@ -62,7 +64,10 @@ class DownstreamHttpClient:
     def _request(self, service: str, path: str, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
         import json
         base = getattr(self.urls, service)
-        req = request.Request(
+        # traced_urllib_request, not request.Request: the platform kit attaches
+        # the active span's W3C traceparent so the callee's server span joins
+        # this trace. The correlation and idempotency headers are unchanged.
+        req = traced_urllib_request(
             base + path,
             data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
             method="POST",

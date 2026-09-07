@@ -9,6 +9,10 @@ services without owning bounded-context state. It provides:
 - Request ID and correlation ID propagation/generation middleware.
 - HTTP server bootstrap defaults.
 - A no-op-by-default observer seam for opt-in tracing or metrics adapters.
+- W3C trace context extraction: `TracingMiddleware` reads the inbound
+  `traceparent`/`tracestate` so the server span joins the caller's trace. An
+  absent or malformed header leaves the context untouched and the span starts a
+  new trace root.
 
 ```bash
 go test ./...

@@ -4,6 +4,7 @@ from .events import EventEnvelope, envelope_factory, new_prefixed_uuid7, new_uui
 from .http import ApiError, canonical_error_body, error_response, register_exception_handlers
 from .idempotency import BoundedInMemoryIdempotencyStore, IdempotencyMiddleware, IdempotencyRecord, configure_idempotency_middleware, require_uuid7_idempotency_key
 from .observability import init_opentelemetry, instrument_fastapi_app, otel_tracing_enabled
+from .outbound import inject_trace_context, trace_context_headers, traced_httpx_client, traced_urllib_request
 from .messaging import (
     FatalHandlerError,
     HandlerResult,
@@ -30,6 +31,7 @@ __all__ = [
     "IdempotencyRecord",
     "init_opentelemetry",
     "instrument_fastapi_app",
+    "inject_trace_context",
     "PublishFailed",
     "RedisEventPublisher",
     "RedisEventSubscriber",
@@ -44,4 +46,7 @@ __all__ = [
     "otel_tracing_enabled",
     "register_exception_handlers",
     "require_uuid7_idempotency_key",
+    "trace_context_headers",
+    "traced_httpx_client",
+    "traced_urllib_request",
 ]

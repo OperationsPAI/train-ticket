@@ -4,6 +4,7 @@ import java.util.List;
 
 public final class RedisJourneyOrderSubscriptions {
     private static final List<String> STREAMS = List.of(
+        "events:booking-orchestration",
         "events:offer-management",
         "events:payment",
         "events:post-sales",

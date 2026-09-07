@@ -293,8 +293,9 @@ class OrderManagementServiceTest {
         JourneyOrderStateRepositoryAdapter failOnceRepository = new JourneyOrderStateRepositoryAdapter() {
             private boolean failedOnce = false;
             {
-                // Seed the order so the handler can find it
-                saveOrder(repository.findOrder(created.orderId()).orElseThrow().order(),
+                // Seed the order so the handler can find it. This is a fresh store, so the copy
+                // must re-enter at version 0 to satisfy the optimistic concurrency check.
+                saveOrder(repository.findOrder(created.orderId()).orElseThrow().order().withVersion(0),
                     repository.findOrder(created.orderId()).orElseThrow().idempotencyKey());
             }
 
