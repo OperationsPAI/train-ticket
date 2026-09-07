@@ -56,12 +56,12 @@ quote_total_with_retry() {
 ACCT_RULE="acc-$(uuid7)"
 RULE_VERSION="e2e-$(date -u +%Y%m%d%H%M%S)"
 RULE_BODY=$(cat <<JSON
-{"supplierId":"supplier-e2e","contractId":"contract-e2e","productCode":"rail-standard","mode":"rail","channel":"WEB","version":"$RULE_VERSION","effectiveWindow":{"startsAt":"2026-07-01T00:00:00Z","endsAt":"2026-12-31T00:00:00Z"},"rules":[{"ruleId":"base-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":12000},"explanation":{"code":"fare.base.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"refund-e2e","kind":"refund_fee","amount":{"currency":"CNY","minorUnits":3000},"explanation":{"code":"fare.refund.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"change-e2e","kind":"change_fee","amount":{"currency":"CNY","minorUnits":1500},"explanation":{"code":"fare.change.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true}]}
+{"supplierId":"supplier-e2e","contractId":"contract-e2e","productCode":"rail-standard","mode":"rail","channel":"WEB","version":"$RULE_VERSION","effectiveWindow":{"startsAt":"$WINDOW_STARTS_AT","endsAt":"$WINDOW_ENDS_AT"},"rules":[{"ruleId":"base-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":12000},"explanation":{"code":"fare.base.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"refund-e2e","kind":"refund_fee","amount":{"currency":"CNY","minorUnits":3000},"explanation":{"code":"fare.refund.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"change-e2e","kind":"change_fee","amount":{"currency":"CNY","minorUnits":1500},"explanation":{"code":"fare.change.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true}]}
 JSON
 )
 BUSINESS_VERSION="$RULE_VERSION-business"
 BUSINESS_BODY=$(cat <<JSON
-{"supplierId":"supplier-e2e","contractId":"contract-e2e-business","productCode":"rail-business","mode":"rail","channel":"WEB","version":"$BUSINESS_VERSION","effectiveWindow":{"startsAt":"2026-07-01T00:00:00Z","endsAt":"2026-12-31T00:00:00Z"},"rules":[{"ruleId":"base-business-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":18000},"explanation":{"code":"fare.base.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"refund-business-e2e","kind":"refund_fee","amount":{"currency":"CNY","minorUnits":4000},"explanation":{"code":"fare.refund.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"change-business-e2e","kind":"change_fee","amount":{"currency":"CNY","minorUnits":2000},"explanation":{"code":"fare.change.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true}]}
+{"supplierId":"supplier-e2e","contractId":"contract-e2e-business","productCode":"rail-business","mode":"rail","channel":"WEB","version":"$BUSINESS_VERSION","effectiveWindow":{"startsAt":"$WINDOW_STARTS_AT","endsAt":"$WINDOW_ENDS_AT"},"rules":[{"ruleId":"base-business-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":18000},"explanation":{"code":"fare.base.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"refund-business-e2e","kind":"refund_fee","amount":{"currency":"CNY","minorUnits":4000},"explanation":{"code":"fare.refund.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true},{"ruleId":"change-business-e2e","kind":"change_fee","amount":{"currency":"CNY","minorUnits":2000},"explanation":{"code":"fare.change.business.e2e","parameters":{"source":"07-fare-rules"}},"refundable":true}]}
 JSON
 )
 
@@ -87,7 +87,7 @@ check_code 201 "register traveler"
 TVL_RULE=$(jget "['travelerId']")
 verify_traveler "${TVL_RULE}"
 sleep 3
-req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"2026-08-01\",\"travelerRefs\":[\"$TVL_RULE\"],\"channel\":\"WEB\"}"
+req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"${SERVICE_DATE:-$JOURNEY_DATE}\",\"travelerRefs\":[\"$TVL_RULE\"],\"channel\":\"WEB\"}"
 check_code 200 "search itineraries"
 ITIN_RULE=$(jget "['itineraries'][0]['itineraryRef']")
 SEG_RULE=$(jget "['itineraries'][0]['legs'][0]['serviceSegmentRef']")
@@ -160,7 +160,12 @@ REFUND_RULE=$(jget "['refundableAmount']['minorUnits']")
 
 echo "== 5. restore default pricing (supersede back so later suite runs keep 107.50/8750)"
 RESTORE_VERSION="e2e-restore-$(date +%s)"
-req POST fare-pricing /api/v1/fare-rule-sets "{\"supplierId\":\"supplier-default\",\"contractId\":\"contract-default\",\"productCode\":\"rail-standard\",\"mode\":\"rail\",\"channel\":\"WEB\",\"version\":\"$RESTORE_VERSION\",\"effectiveWindow\":{\"startsAt\":\"2026-07-01T00:00:00Z\",\"endsAt\":\"2027-12-31T00:00:00Z\"},\"rules\":[{\"ruleId\":\"base\",\"kind\":\"base_fare\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":10000},\"explanation\":{\"code\":\"fare.base\",\"parameters\":{\"rule\":\"base\"}},\"refundable\":true},{\"ruleId\":\"tax\",\"kind\":\"tax\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":750},\"explanation\":{\"code\":\"fare.tax\",\"parameters\":{\"rule\":\"tax\"}},\"refundable\":true},{\"ruleId\":\"refund-fee\",\"kind\":\"refund_fee\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":2000},\"explanation\":{\"code\":\"fare.refund_fee\",\"parameters\":{\"rule\":\"refund-fee\"}},\"refundable\":true},{\"ruleId\":\"change-fee\",\"kind\":\"change_fee\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":1500},\"explanation\":{\"code\":\"fare.change_fee\",\"parameters\":{\"rule\":\"change-fee\"}},\"refundable\":true}]}"
+# The default supplier-default/contract-default set is the baseline every other
+# e2e script and the loadgen quote against, so it gets a deliberately longer
+# term (2 years) than the per-test sets above: it must outlive not just this run
+# but every later run against a cluster that is never re-seeded.
+RESTORE_ENDS_AT="$(iso_days 730)"
+req POST fare-pricing /api/v1/fare-rule-sets "{\"supplierId\":\"supplier-default\",\"contractId\":\"contract-default\",\"productCode\":\"rail-standard\",\"mode\":\"rail\",\"channel\":\"WEB\",\"version\":\"$RESTORE_VERSION\",\"effectiveWindow\":{\"startsAt\":\"$WINDOW_STARTS_AT\",\"endsAt\":\"$RESTORE_ENDS_AT\"},\"rules\":[{\"ruleId\":\"base\",\"kind\":\"base_fare\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":10000},\"explanation\":{\"code\":\"fare.base\",\"parameters\":{\"rule\":\"base\"}},\"refundable\":true},{\"ruleId\":\"tax\",\"kind\":\"tax\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":750},\"explanation\":{\"code\":\"fare.tax\",\"parameters\":{\"rule\":\"tax\"}},\"refundable\":true},{\"ruleId\":\"refund-fee\",\"kind\":\"refund_fee\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":2000},\"explanation\":{\"code\":\"fare.refund_fee\",\"parameters\":{\"rule\":\"refund-fee\"}},\"refundable\":true},{\"ruleId\":\"change-fee\",\"kind\":\"change_fee\",\"amount\":{\"currency\":\"CNY\",\"minorUnits\":1500},\"explanation\":{\"code\":\"fare.change_fee\",\"parameters\":{\"rule\":\"change-fee\"}},\"refundable\":true}]}"
 check_code 201 "create restore rule set"
 RESTORE_ID=$(jget "['ruleSetId']")
 req POST fare-pricing "/api/v1/fare-rule-sets/$RESTORE_ID/publish" '{}'

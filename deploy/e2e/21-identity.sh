@@ -37,10 +37,10 @@ create_traveler() {
 
 seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
   local svc=$1 ss seg
-  req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"$svc\",\"departureTime\":\"2026-08-02T09:00:00Z\",\"arrivalTime\":\"2026-08-02T14:30:00Z\",\"originNodeId\":\"$WL_N_A\",\"destinationNodeId\":\"$WL_N_B\"}"
+  req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"$svc\",\"departureTime\":\"${JOURNEY_DATE}T09:00:00Z\",\"arrivalTime\":\"${JOURNEY_DATE}T14:30:00Z\",\"originNodeId\":\"$WL_N_A\",\"destinationNodeId\":\"$WL_N_B\"}"
   check_code 201 "create waitlist scheduled service $svc"
   ss=$(jget "['scheduledServiceRef']")
-  req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$ss\",\"originStopRef\":\"$WL_N_A\",\"destinationStopRef\":\"$WL_N_B\",\"departureTime\":\"2026-08-02T09:00:00Z\",\"arrivalTime\":\"2026-08-02T14:30:00Z\"}"
+  req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$ss\",\"originStopRef\":\"$WL_N_A\",\"destinationStopRef\":\"$WL_N_B\",\"departureTime\":\"${JOURNEY_DATE}T09:00:00Z\",\"arrivalTime\":\"${JOURNEY_DATE}T14:30:00Z\"}"
   check_code 201 "create waitlist segment $svc"
   seg=$(jget "['segmentRef']")
   sleep 3
@@ -51,7 +51,7 @@ seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
 find_itinerary_for_segment() { # traveler segment -> sets FOUND_ITIN
   local tvl=$1 seg=$2 itin=""
   for attempt in $(seq 1 20); do
-    req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$WL_P_A\",\"destinationRef\":\"$WL_P_B\",\"departureDate\":\"2026-08-02\",\"travelerRefs\":[\"$tvl\"],\"channel\":\"WEB\"}"
+    req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$WL_P_A\",\"destinationRef\":\"$WL_P_B\",\"departureDate\":\"$JOURNEY_DATE\",\"travelerRefs\":[\"$tvl\"],\"channel\":\"WEB\"}"
     if [ "$LAST_CODE" = 200 ]; then
       itin=$(printf '%s' "$RESP" | SEG_REF="$seg" python3 -c '
 import os, sys, json
@@ -82,9 +82,18 @@ make_offer() { # traveler -> sets OFFER_ID/OFFER_VER (real quote->offer chain)
 
 RUN=$(uuid7 | tail -c 13)
 
+# A STUDENT eligibility certificate is a policy-year artifact. Anchor it so the
+# JOURNEY_DATE queried below (now+30d, from lib.sh) always lands strictly inside
+# the window on any run date -- never on a boundary, so a midnight rollover
+# between seeding and querying cannot flip the `validFrom <= day <= validUntil`
+# check that identity-verification applies.
+CERT_VALID_FROM="$(iso_days -30)"
+CERT_VALID_UNTIL="$(iso_days 335)"
+CERT_POLICY_YEAR="$(year_days 30)"
+
 register_credential() {
   local traveler=$1 tail=$2 idem_doc="1101011990${RUN:0:4}0$2"
-  req POST identity-verification /api/v1/identity-verification/credentials "{\"travelerId\":\"$traveler\",\"profileSnapshotVersion\":\"snap-1\",\"documentType\":\"ID_CARD\",\"maskedDocumentNo\":\"110***********$tail\",\"documentHash\":\"$(hash_doc "$idem_doc")\",\"canonicalNameHash\":\"name-$traveler\",\"validUntil\":\"2027-01-01T00:00:00Z\"}"
+  req POST identity-verification /api/v1/identity-verification/credentials "{\"travelerId\":\"$traveler\",\"profileSnapshotVersion\":\"snap-1\",\"documentType\":\"ID_CARD\",\"maskedDocumentNo\":\"110***********$tail\",\"documentHash\":\"$(hash_doc "$idem_doc")\",\"canonicalNameHash\":\"name-$traveler\",\"validUntil\":\"$CREDENTIAL_VALID_UNTIL\"}"
   check_code 201 "credential registered $traveler"
   CRED_ID=$(jget "['credentialRecordId']")
 }
@@ -93,64 +102,64 @@ register_credential() {
 register_credential tvl-e2e-pass-$RUN 5
 PASS_CRED=$CRED_ID
 # compute fingerprint as service does
-PASS_FP=$(python3 - "$RUN" <<'PY'
+PASS_FP=$(python3 - "$RUN" "$CREDENTIAL_VALID_UNTIL" <<'PY'
 import hashlib, sys
 run = sys.argv[1]
 doc = '1101011990' + run[:4] + '05'
-parts = ['name-tvl-e2e-pass-' + run, 'ID_CARD', hashlib.sha256(doc.encode()).hexdigest() + '5', '', '2027-01-01T00:00:00Z', '', 'snap-1']
+parts = ['name-tvl-e2e-pass-' + run, 'ID_CARD', hashlib.sha256(doc.encode()).hexdigest() + '5', '', sys.argv[2], '', 'snap-1']
 print(hashlib.sha256('|'.join(parts).encode()).hexdigest())
 PY
 )
-req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"tvl-e2e-pass-$RUN\",\"credentialRecordId\":\"$PASS_CRED\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$PASS_FP\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"tvl-e2e-pass-$RUN\",\"credentialRecordId\":\"$PASS_CRED\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$PASS_FP\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 check_code 201 "verification pass case"
 [ "$(jget "['status']")" = PASSED ] && ok "tail pass" || bad "tail pass"
 
 register_credential tvl-e2e-reject-$RUN 7
 REJECT_CRED=$CRED_ID
-REJECT_FP=$(python3 - "$RUN" <<'PY'
+REJECT_FP=$(python3 - "$RUN" "$CREDENTIAL_VALID_UNTIL" <<'PY'
 import hashlib, sys
 run = sys.argv[1]
 doc = '1101011990' + run[:4] + '07'
-parts = ['name-tvl-e2e-reject-' + run, 'ID_CARD', hashlib.sha256(doc.encode()).hexdigest() + '7', '', '2027-01-01T00:00:00Z', '', 'snap-1']
+parts = ['name-tvl-e2e-reject-' + run, 'ID_CARD', hashlib.sha256(doc.encode()).hexdigest() + '7', '', sys.argv[2], '', 'snap-1']
 print(hashlib.sha256('|'.join(parts).encode()).hexdigest())
 PY
 )
-req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"tvl-e2e-reject-$RUN\",\"credentialRecordId\":\"$REJECT_CRED\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$REJECT_FP\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"tvl-e2e-reject-$RUN\",\"credentialRecordId\":\"$REJECT_CRED\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$REJECT_FP\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 check_code 201 "verification reject case"
 [ "$(jget "['status']")" = FAILED ] && ok "tail reject" || bad "tail reject"
 
 register_credential tvl-e2e-manual-$RUN 9
 MANUAL_CRED=$CRED_ID
-MANUAL_FP=$(python3 - "$RUN" <<'PY'
+MANUAL_FP=$(python3 - "$RUN" "$CREDENTIAL_VALID_UNTIL" <<'PY'
 import hashlib, sys
 run = sys.argv[1]
 doc = '1101011990' + run[:4] + '09'
-parts = ['name-tvl-e2e-manual-' + run, 'ID_CARD', hashlib.sha256(doc.encode()).hexdigest() + '9', '', '2027-01-01T00:00:00Z', '', 'snap-1']
+parts = ['name-tvl-e2e-manual-' + run, 'ID_CARD', hashlib.sha256(doc.encode()).hexdigest() + '9', '', sys.argv[2], '', 'snap-1']
 print(hashlib.sha256('|'.join(parts).encode()).hexdigest())
 PY
 )
-req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"tvl-e2e-manual-$RUN\",\"credentialRecordId\":\"$MANUAL_CRED\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$MANUAL_FP\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"tvl-e2e-manual-$RUN\",\"credentialRecordId\":\"$MANUAL_CRED\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$MANUAL_FP\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 MANUAL_CASE=$(jget "['verificationCaseId']")
 [ "$(jget "['status']")" = MANUAL_REVIEW_REQUIRED ] && ok "tail manual" || bad "tail manual"
 req POST identity-verification "/api/v1/identity-verification/verification-cases/$MANUAL_CASE/manual-override" '{}'
 check_code 200 "manual override"
 
-req POST identity-verification /api/v1/identity-verification/eligibility-certificates "{\"travelerId\":\"tvl-e2e-pass-$RUN\",\"credentialRecordId\":\"$PASS_CRED\",\"eligibilityType\":\"STUDENT\",\"validFrom\":\"2026-01-01T00:00:00Z\",\"validUntil\":\"2026-12-31T00:00:00Z\",\"policyYear\":\"2026\",\"policyVersion\":\"student-v1\",\"annualUsageLimit\":4,\"applicableProductCodes\":[\"TRAIN\",\"identity-rail\"],\"certificateHash\":\"cert-e2e\",\"evidenceHash\":\"evidence-e2e\"}"
+req POST identity-verification /api/v1/identity-verification/eligibility-certificates "{\"travelerId\":\"tvl-e2e-pass-$RUN\",\"credentialRecordId\":\"$PASS_CRED\",\"eligibilityType\":\"STUDENT\",\"validFrom\":\"$CERT_VALID_FROM\",\"validUntil\":\"$CERT_VALID_UNTIL\",\"policyYear\":\"$CERT_POLICY_YEAR\",\"policyVersion\":\"student-v1\",\"annualUsageLimit\":4,\"applicableProductCodes\":[\"TRAIN\",\"identity-rail\"],\"certificateHash\":\"cert-e2e\",\"evidenceHash\":\"evidence-e2e\"}"
 check_code 201 "certificate registered"
-req GET identity-verification "/api/v1/identity-verification/eligibility-certificates?travelerId=tvl-e2e-pass-$RUN&eligibilityType=STUDENT&journeyDate=2026-02-01&productCode=TRAIN" ''
+req GET identity-verification "/api/v1/identity-verification/eligibility-certificates?travelerId=tvl-e2e-pass-$RUN&eligibilityType=STUDENT&journeyDate=$JOURNEY_DATE&productCode=TRAIN" ''
 check_code 200 "certificate query"
 [ "$(jget "['total']")" = 1 ] && ok "certificate visible to fare-pricing" || bad "certificate visible"
 
-req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-missing\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-missing-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"2026-02-01\",\"productCode\":\"TRAIN\",\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-missing\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-missing-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"$JOURNEY_DATE\",\"productCode\":\"TRAIN\",\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 [ "$(jget "['result']")" = REJECT ] && ok "unverified rejected" || bad "unverified rejected"
-req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-pass\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-pass-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"2026-02-01\",\"productCode\":\"TRAIN\",\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-pass\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-pass-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"$JOURNEY_DATE\",\"productCode\":\"TRAIN\",\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 [ "$(jget "['result']")" = PASS ] && ok "verified pre-order pass" || bad "verified pre-order pass"
 [ "$(xlen events:identity-verification)" -gt 0 ] && ok "identity events emitted" || bad "identity events emitted"
 
 # Fare-pricing certificate lookup assertion through the existing quote API.
 IDENTITY_RULE_VERSION="identity-e2e-$(date -u +%Y%m%d%H%M%S)"
 IDENTITY_RULE_BODY=$(cat <<JSON
-{"supplierId":"supplier-identity-e2e","contractId":"contract-identity-e2e","productCode":"identity-rail","mode":"rail","channel":"WEB","version":"$IDENTITY_RULE_VERSION","effectiveWindow":{"startsAt":"2026-01-01T00:00:00Z","endsAt":"2026-12-31T00:00:00Z"},"rules":[{"ruleId":"base-identity-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":10000},"explanation":{"code":"fare.base.identity","parameters":{"source":"21-identity"}},"refundable":true},{"ruleId":"student-identity-e2e","kind":"discount","amount":{"currency":"CNY","minorUnits":2000},"explanation":{"code":"fare.discount.student","parameters":{"eligibilityType":"STUDENT"}},"refundable":true}]}
+{"supplierId":"supplier-identity-e2e","contractId":"contract-identity-e2e","productCode":"identity-rail","mode":"rail","channel":"WEB","version":"$IDENTITY_RULE_VERSION","effectiveWindow":{"startsAt":"$WINDOW_STARTS_AT","endsAt":"$WINDOW_ENDS_AT"},"rules":[{"ruleId":"base-identity-e2e","kind":"base_fare","amount":{"currency":"CNY","minorUnits":10000},"explanation":{"code":"fare.base.identity","parameters":{"source":"21-identity"}},"refundable":true},{"ruleId":"student-identity-e2e","kind":"discount","amount":{"currency":"CNY","minorUnits":2000},"explanation":{"code":"fare.discount.student","parameters":{"eligibilityType":"STUDENT"}},"refundable":true}]}
 JSON
 )
 req POST fare-pricing /api/v1/fare-rule-sets "$IDENTITY_RULE_BODY"
@@ -185,13 +194,13 @@ VERIFIED_ORDER=$(jget "['orderId']")
 # flips mid-script race rollouts across runs (orchestrator ruling).
 
 # Reservation confirmation/release and purchase-limit event class assertions.
-req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-cert-confirm\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-pass-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"2026-02-01\",\"productCode\":\"TRAIN\",\"requestedEligibilityTypes\":[\"STUDENT\"],\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-cert-confirm\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-pass-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"$JOURNEY_DATE\",\"productCode\":\"TRAIN\",\"requestedEligibilityTypes\":[\"STUDENT\"],\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 check_code 201 "cert-confirm check created"
 CONFIRM_CHECK=$(jget "['preOrderCheckId']")
 CONFIRM_FACT=$(jget "['purchaseLimitFacts'][0]['purchaseLimitFactId']")
 req POST identity-verification "/api/v1/identity-verification/pre-order-checks/$CONFIRM_CHECK/confirm" '{"journeyOrderId":"ord-e2e-identity"}'
 check_code 200 "confirm identity pre-order"
-req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-cert-release\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-pass-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"2026-02-01\",\"productCode\":\"TRAIN\",\"requestedEligibilityTypes\":[\"STUDENT\"],\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+req POST identity-verification /api/v1/identity-verification/pre-order-checks "{\"orderIntentId\":\"oint-e2e-$RUN-cert-release\",\"accountId\":\"acct-e2e-$RUN\",\"offerId\":\"off-e2e\",\"offerVersion\":1,\"travelerRefs\":[\"tvl-e2e-pass-$RUN\"],\"segmentRefs\":[\"seg-e2e\"],\"journeyDate\":\"$JOURNEY_DATE\",\"productCode\":\"TRAIN\",\"requestedEligibilityTypes\":[\"STUDENT\"],\"limitPolicyVersion\":\"limit-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
 RELEASE_CHECK=$(jget "['preOrderCheckId']")
 req POST identity-verification "/api/v1/identity-verification/pre-order-checks/$RELEASE_CHECK/release" '{"releaseReason":"E2E_RELEASE"}'
 check_code 200 "release identity pre-order"

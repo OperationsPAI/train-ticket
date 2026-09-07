@@ -1968,6 +1968,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "opentelemetry",
+ "opentelemetry_sdk",
  "serde",
  "serde_json",
 ]

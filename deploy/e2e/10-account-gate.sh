@@ -18,7 +18,7 @@ create_offer_for_account() {
   verify_traveler "$traveler"
   sleep 3
 
-  req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"2026-08-01\",\"travelerRefs\":[\"$traveler\"],\"channel\":\"WEB\"}"
+  req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"${SERVICE_DATE:-$JOURNEY_DATE}\",\"travelerRefs\":[\"$traveler\"],\"channel\":\"WEB\"}"
   check_code 200 "search itinerary $suffix"
   itinerary=$(jget "['itineraries'][0]['itineraryRef']")
   segment=$(jget "['itineraries'][0]['legs'][0]['serviceSegmentRef']")

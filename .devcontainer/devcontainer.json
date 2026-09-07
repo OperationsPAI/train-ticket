@@ -11,7 +11,8 @@
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     "source=train-ticket-m2,target=/home/vscode/.m2,type=volume",
     "source=train-ticket-npm,target=/home/vscode/.npm,type=volume",
-    "source=train-ticket-cache,target=/home/vscode/.cache,type=volume"
+    "source=train-ticket-cache,target=/home/vscode/.cache,type=volume",
+    "source=train-ticket-uv,target=/home/vscode/.local/share/uv,type=volume"
   ],
   "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
   "customizations": {
@@ -22,12 +23,14 @@
         "ms-kubernetes-tools.vscode-kubernetes-tools",
         "ms-azuretools.vscode-docker",
         "ms-python.python",
+        "charliermarsh.ruff",
         "dbaeumer.vscode-eslint"
       ],
       "settings": {
         "java.configuration.updateBuildConfiguration": "automatic",
         "java.compile.nullAnalysis.mode": "automatic",
         "maven.executable.path": "/usr/bin/mvn",
+        "npm.packageManager": "pnpm",
         "python.defaultInterpreterPath": "/usr/bin/python3",
         "terminal.integrated.defaultProfile.linux": "bash"
       }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.marketingcampaign.application.CampaignRepository;
 import com.trainticket.marketingcampaign.application.DomainEventPayloads;
+import com.trainticket.marketingcampaign.application.DuplicateBusinessKeyException;
 import com.trainticket.marketingcampaign.domain.Campaign;
 import com.trainticket.marketingcampaign.domain.CampaignBudget;
 import com.trainticket.marketingcampaign.domain.CouponTemplate;
@@ -14,15 +15,22 @@ import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import com.trainticket.platformkit.persistence.OutboxAppender;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 public class PostgresCampaignRepository implements CampaignRepository {
+    private static final Logger LOGGER = LoggerFactory.getLogger(PostgresCampaignRepository.class);
+
     private final JdbcOperations jdbc;
     private final ObjectMapper mapper;
     private final OutboxAppender outbox;
@@ -39,7 +47,9 @@ public class PostgresCampaignRepository implements CampaignRepository {
 
     @Override
     public void saveCampaign(Campaign campaign) {
-        saveSnapshot("campaigns", "campaign_id", campaign.campaignId(), campaign.version(), campaign);
+        saveSnapshot("campaigns", "campaign_id", campaign.campaignId(), campaign.version(), campaign,
+            noOwnerColumns(),
+            () -> new DuplicateBusinessKeyException("externalKey", campaign.externalKey()));
         appendEvents(campaign.domainEvents());
     }
 
@@ -50,7 +60,9 @@ public class PostgresCampaignRepository implements CampaignRepository {
 
     @Override
     public void saveBudget(CampaignBudget budget) {
-        saveSnapshot("campaign_budgets", "budget_id", budget.budgetId(), budget.version(), budget);
+        saveSnapshot("campaign_budgets", "budget_id", budget.budgetId(), budget.version(), budget,
+            ownerColumns("campaign_id", budget.campaignId()),
+            () -> new DuplicateBusinessKeyException("campaignId", budget.campaignId()));
         appendEvents(budget.domainEvents());
     }
 
@@ -66,7 +78,9 @@ public class PostgresCampaignRepository implements CampaignRepository {
 
     @Override
     public void saveTemplate(CouponTemplate template) {
-        saveSnapshot("coupon_templates", "template_id", template.templateId(), template.version(), template);
+        saveSnapshot("coupon_templates", "template_id", template.templateId(), template.version(), template,
+            ownerColumns("campaign_id", template.campaignId()),
+            () -> new DuplicateBusinessKeyException("templateCode/templateVersion", template.templateCode() + "/" + template.templateVersion()));
         appendEvents(template.domainEvents());
     }
 
@@ -82,7 +96,10 @@ public class PostgresCampaignRepository implements CampaignRepository {
 
     @Override
     public void saveBatch(IssuanceBatch batch) {
-        saveSnapshot("issuance_batches", "batch_id", batch.issuanceBatchId(), batch.version(), batch);
+        saveSnapshot("issuance_batches", "batch_id", batch.issuanceBatchId(), batch.version(), batch,
+            ownerColumns("campaign_id", batch.campaignId(), "template_id", batch.templateId()),
+            () -> new DuplicateBusinessKeyException("campaignId/templateId/audienceSnapshotId",
+                batch.campaignId() + "/" + batch.templateId() + "/" + batch.audienceSnapshotId()));
         appendEvents(batch.domainEvents());
     }
 
@@ -100,25 +117,117 @@ public class PostgresCampaignRepository implements CampaignRepository {
         return jdbc.query(sql, rs -> rs.next() ? Optional.of(read(rs.getString(1), decoder)) : Optional.empty(), id);
     }
 
-    private void saveSnapshot(String table, String idColumn, String id, long newVersion, Object data) {
+    /**
+     * Persists a snapshot under optimistic concurrency control.
+     *
+     * <p>{@code ownerColumns} carries the denormalized owning-aggregate keys that the child tables declare
+     * {@code NOT NULL} with no default ({@code campaign_budgets.campaign_id}, {@code coupon_templates.campaign_id},
+     * {@code issuance_batches.campaign_id} and {@code issuance_batches.template_id}). They are real relational
+     * columns backed by foreign keys and by the indexes the parent-scoped reads use, so they must be written on
+     * every insert and refreshed on every update rather than left to be derived from {@code data}.
+     *
+     * <p>{@code duplicateBusinessKey} supplies the error raised when the insert violates a <em>business</em> unique
+     * index (for example {@code campaigns_external_key_idx}) rather than the aggregate's own primary key. Without
+     * that distinction a duplicate externalKey and a genuine lost-update race both surfaced as
+     * "snapshot version conflict for &lt;brand-new-id&gt;", which is actively misleading: the id in that message had
+     * just been generated locally and could not possibly have raced with anything.
+     */
+    private void saveSnapshot(String table, String idColumn, String id, long newVersion, Object data,
+                              Map<String, String> ownerColumns,
+                              Supplier<DuplicateBusinessKeyException> duplicateBusinessKey) {
         long expectedVersion = newVersion - 1;
         if (expectedVersion < 0) {
             throw new OptimisticConcurrencyException("snapshot version conflict for " + id);
         }
         int rows = expectedVersion == 0
-            ? insertSnapshot(table, idColumn, id, newVersion, data)
-            : updateSnapshot(table, idColumn, id, expectedVersion, newVersion, data);
+            ? insertSnapshot(table, idColumn, id, newVersion, data, ownerColumns, duplicateBusinessKey)
+            : updateSnapshot(table, idColumn, id, expectedVersion, newVersion, data, ownerColumns);
         if (rows == 0) {
+            LOGGER.warn("write rejected table={} id={} expectedVersion={} newVersion={} reason=SNAPSHOT_VERSION_CONFLICT",
+                table, id, expectedVersion, newVersion);
             throw new OptimisticConcurrencyException("snapshot version conflict for " + id);
         }
     }
 
-    private int insertSnapshot(String table, String idColumn, String id, long newVersion, Object data) {
-        return jdbc.update("INSERT INTO " + table + "(" + idColumn + ", version, data) VALUES (?, ?, ?::jsonb) ON CONFLICT DO NOTHING", id, newVersion, json(data));
+    private int insertSnapshot(String table, String idColumn, String id, long newVersion, Object data,
+                               Map<String, String> ownerColumns,
+                               Supplier<DuplicateBusinessKeyException> duplicateBusinessKey) {
+        StringBuilder columns = new StringBuilder(idColumn);
+        StringBuilder placeholders = new StringBuilder("?");
+        for (String ownerColumn : ownerColumns.keySet()) {
+            columns.append(", ").append(ownerColumn);
+            placeholders.append(", ?");
+        }
+        columns.append(", version, data");
+        placeholders.append(", ?, ?::jsonb");
+
+        List<Object> arguments = new ArrayList<>();
+        arguments.add(id);
+        arguments.addAll(ownerColumns.values());
+        arguments.add(newVersion);
+        arguments.add(json(data));
+
+        try {
+            // The conflict target is deliberately explicit. A bare "ON CONFLICT DO NOTHING" also swallows violations
+            // of the business unique indexes on this table, which then reach the caller mislabelled as a version
+            // conflict. Only a re-insert of the same aggregate id is a benign no-op. The target stays the primary
+            // key even now that owner columns are written: campaign_budgets_campaign_id_idx is a *business* unique
+            // index, so a second budget for the same campaign must surface as a duplicate business key, not be
+            // silently discarded.
+            return jdbc.update("INSERT INTO " + table + "(" + columns + ") VALUES (" + placeholders + ")"
+                + " ON CONFLICT (" + idColumn + ") DO NOTHING", arguments.toArray());
+        } catch (DuplicateKeyException exception) {
+            DuplicateBusinessKeyException duplicate = duplicateBusinessKey.get();
+            LOGGER.warn("write rejected table={} id={} {}={} reason=DUPLICATE_BUSINESS_KEY",
+                table, id, duplicate.keyName(), duplicate.keyValue());
+            throw duplicate;
+        }
     }
 
-    private int updateSnapshot(String table, String idColumn, String id, long expectedVersion, long newVersion, Object data) {
-        return jdbc.update("UPDATE " + table + " SET version = ?, data = ?::jsonb, updated_at = now() WHERE " + idColumn + " = ? AND version = ?", newVersion, json(data), id, expectedVersion);
+    private int updateSnapshot(String table, String idColumn, String id, long expectedVersion, long newVersion,
+                               Object data, Map<String, String> ownerColumns) {
+        StringBuilder assignments = new StringBuilder("version = ?, data = ?::jsonb, updated_at = now()");
+        List<Object> arguments = new ArrayList<>();
+        arguments.add(newVersion);
+        arguments.add(json(data));
+        // Owner columns are rewritten so a snapshot can never drift from the row that indexes and foreign keys see.
+        for (Map.Entry<String, String> owner : ownerColumns.entrySet()) {
+            assignments.append(", ").append(owner.getKey()).append(" = ?");
+            arguments.add(owner.getValue());
+        }
+        arguments.add(id);
+        arguments.add(expectedVersion);
+        return jdbc.update("UPDATE " + table + " SET " + assignments
+            + " WHERE " + idColumn + " = ? AND version = ?", arguments.toArray());
+    }
+
+    private static Map<String, String> noOwnerColumns() {
+        return Map.of();
+    }
+
+    private static Map<String, String> ownerColumns(String column, String value) {
+        Map<String, String> columns = new LinkedHashMap<>();
+        columns.put(column, requiredOwner(column, value));
+        return columns;
+    }
+
+    private static Map<String, String> ownerColumns(String firstColumn, String firstValue,
+                                                    String secondColumn, String secondValue) {
+        Map<String, String> columns = new LinkedHashMap<>();
+        columns.put(firstColumn, requiredOwner(firstColumn, firstValue));
+        columns.put(secondColumn, requiredOwner(secondColumn, secondValue));
+        return columns;
+    }
+
+    /**
+     * These columns are {@code NOT NULL} with no default, so a null here is a not-null violation at the database.
+     * Failing in Java names the offending column instead of surfacing an opaque SQLSTATE 23502.
+     */
+    private static String requiredOwner(String column, String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(column + " is required for the owning aggregate reference");
+        }
+        return value;
     }
 
     private void appendEvents(List<DomainEvent> events) {

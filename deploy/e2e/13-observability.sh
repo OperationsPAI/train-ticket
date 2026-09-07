@@ -39,7 +39,7 @@ curl_raw http://otel-collector:8888/metrics
 BEFORE=$(accepted_spans_total)
 if [ "$LAST_CODE" = "200" ] && [ -n "$BEFORE" ]; then ok "collector metrics endpoint reports accepted spans ($BEFORE)"; else bad "collector metrics endpoint unavailable (HTTP $LAST_CODE)"; BEFORE=0; fi
 
-api_req POST trip-planning /api/v1/itineraries/search '{"originRef":"obs-origin","destinationRef":"obs-destination","departureDate":"2026-08-01","travelerRefs":["obs-traveler"],"channel":"WEB"}'
+api_req POST trip-planning /api/v1/itineraries/search '{"originRef":"obs-origin","destinationRef":"obs-destination","departureDate":"'"$JOURNEY_DATE"'","travelerRefs":["obs-traveler"],"channel":"WEB"}'
 check_code 200 "search itineraries for trace smoke"
 
 SPAN_FOUND=0

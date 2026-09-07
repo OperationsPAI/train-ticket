@@ -7,6 +7,7 @@ FROM debian:${DEBIAN_TAG}
 
 ARG GO_VERSION=1.26.4
 ARG NODE_MAJOR=26
+ARG PNPM_VERSION=10
 ARG TYPESCRIPT_VERSION=6.0.3
 ARG HELM_VERSION=v3.15.4
 ARG KUBECTL_VERSION=v1.30.4
@@ -18,16 +19,44 @@ ARG USER_GID=${USER_UID}
 
 COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
 
+# Python package-index policy.
+#
+# uv resolves from upstream PyPI, deliberately *not* from the Tsinghua mirror:
+#   * No speed to gain. Every services/*/uv.lock pins artifact URLs on
+#     files.pythonhosted.org, so `uv sync --frozen` downloads straight from
+#     PyPI's CDN and never asks the index for them. The index is consulted
+#     only for build requirements that are not in the lock -- in practice
+#     `setuptools>=68`, the build backend of all 8 Python services.
+#   * Resolving through a mirror is actively harmful: `uv lock` would rewrite
+#     those locks to mirror URLs, reproducing the breakage that the
+#     services/*/package-lock.json files already have.
+#   * uv cannot fall back safely. Under the default `first-index` strategy a
+#     403 from the highest-priority index is fatal rather than "not found",
+#     and the only env-var-only way to make it fall back is
+#     `unsafe-best-match`, which merges versions across indexes and opens a
+#     dependency-confusion hole.
+# pip keeps the mirror, because pip *does* merge indexes and degrades
+# gracefully when one 403s, and it has no lockfile to rewrite. PIP_EXTRA_INDEX_URL
+# is the safety net that makes an unreachable mirror a non-event.
+#
+# Prefer UV_DEFAULT_INDEX over UV_INDEX_URL: `--index-url`/UV_INDEX_URL and
+# `--extra-index-url`/UV_EXTRA_INDEX_URL are deprecated in current uv in favour
+# of `--default-index`/UV_DEFAULT_INDEX and `--index`/UV_INDEX.
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME=/usr/local/cargo \
     JAVA_HOME=/opt/java/openjdk \
     MAVEN_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0" \
     NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
+    PNPM_HOME=/usr/local/share/pnpm \
     RUSTUP_HOME=/usr/local/rustup \
-    PATH="/opt/java/openjdk/bin:/usr/local/go/bin:/usr/local/cargo/bin:${PATH}" \
+    PATH="/opt/java/openjdk/bin:/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/share/pnpm:${PATH}" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_EXTRA_INDEX_URL=https://pypi.org/simple \
     PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_DEFAULT_INDEX=https://pypi.org/simple \
+    UV_LINK_MODE=copy \
     TZ=Asia/Shanghai
 
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
@@ -100,8 +129,9 @@ RUN install -m 0755 -d /etc/apt/keyrings \
         docker-compose-plugin \
         gh \
         nodejs \
-    && npm config set registry https://registry.npmmirror.com \
-    && npm install -g "typescript@${TYPESCRIPT_VERSION}" \
+    && npm install -g "pnpm@${PNPM_VERSION}" \
+    && pnpm config set registry https://registry.npmmirror.com \
+    && pnpm add -g "typescript@${TYPESCRIPT_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -135,7 +165,10 @@ RUN set -eux; \
     ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo; \
     ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc; \
     ln -sf /usr/local/cargo/bin/rustfmt /usr/local/bin/rustfmt; \
-    printf '%s\n' 'export PATH="/usr/local/go/bin:/usr/local/cargo/bin:${PATH}"' > /etc/profile.d/train-ticket-toolchains.sh
+    printf '%s\n' \
+        'export PNPM_HOME="/usr/local/share/pnpm"' \
+        'export PATH="/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/share/pnpm:${PATH}"' \
+        > /etc/profile.d/train-ticket-toolchains.sh
 
 RUN set -eux; \
     groupadd --gid "${USER_GID}" "${USERNAME}"; \
@@ -146,11 +179,13 @@ RUN set -eux; \
     chmod 0440 "/etc/sudoers.d/${USERNAME}"; \
     mkdir -p "/home/${USERNAME}/.m2" "/home/${USERNAME}/.cache" "/home/${USERNAME}/.skaffold" "/home/${USERNAME}/.npm"; \
     mkdir -p "${CARGO_HOME}/registry" "${CARGO_HOME}/git"; \
-    chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}" "${CARGO_HOME}" "${RUSTUP_HOME}"
+    mkdir -p "${PNPM_HOME}"; \
+    chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}" "${CARGO_HOME}" "${RUSTUP_HOME}" "${PNPM_HOME}"
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
-    && pip3 config set global.index-url "${PIP_INDEX_URL}" \
-    && pip3 config set global.timeout 120
+    && pip3 config --global set global.index-url "${PIP_INDEX_URL}" \
+    && pip3 config --global set global.extra-index-url "${PIP_EXTRA_INDEX_URL}" \
+    && pip3 config --global set global.timeout 120
 
 RUN mkdir -p /workspace/train-ticket \
     && chown -R "${USERNAME}:${USERNAME}" /workspace

@@ -40,6 +40,60 @@ h = b.hex(); print(f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}")
 PY
 }
 
+# --- Relative-time helpers ---------------------------------------------------
+# Every validity/effective window seeded by these scripts MUST be derived from
+# these helpers instead of an absolute literal. The services resolve windows
+# against the real wall clock (datetime.now(UTC)), and these scripts seed the
+# LIVE cluster, so a hardcoded date expires both the e2e suite and the seeded
+# production data on a fixed calendar day -- the failure mode that took out the
+# fare-pricing tests. Implemented with python3 (already a hard dependency here
+# for uuid7/jget) to avoid the GNU-vs-BSD `date -d` portability split.
+iso_offset() { # <seconds> -> RFC3339 UTC at now+seconds (negative allowed)
+  python3 - "$1" << 'PY'
+import sys, datetime
+print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+}
+iso_days() { # <days> -> RFC3339 UTC at now+days
+  python3 - "$1" << 'PY'
+import sys, datetime
+print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+}
+date_plus() { # <YYYY-MM-DD> <days> -> that date shifted by N days
+  python3 - "$1" "$2" << 'PY'
+import sys, datetime
+base = datetime.date.fromisoformat(sys.argv[1])
+print((base + datetime.timedelta(days=int(sys.argv[2]))).isoformat())
+PY
+}
+date_days() { # <days> -> YYYY-MM-DD at now+days
+  python3 - "$1" << 'PY'
+import sys, datetime
+print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%d'))
+PY
+}
+year_days() { # <days> -> YYYY at now+days
+  python3 - "$1" << 'PY'
+import sys, datetime
+print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y'))
+PY
+}
+
+# Shared window sizes, so every script expresses the same intent.
+# A national ID document is long-lived; 5 years outlives any cluster.
+CREDENTIAL_VALID_UNTIL="$(iso_days 1825)"
+# Travel is booked in advance; 30 days out is a normal advance purchase and is
+# comfortably inside every effective window seeded below.
+JOURNEY_DATE="$(date_days 30)"
+# Windows open 30 days in the past so they are already effective regardless of
+# clock skew between this runner and the cluster.
+WINDOW_STARTS_AT="$(iso_days -30)"
+# A supplier fare contract runs about a commercial year. Long enough that a
+# cluster left up for months keeps quoting, short enough to express intent.
+WINDOW_ENDS_AT="$(iso_days 365)"
+
+
 # req METHOD SERVICE PATH BODY -> sets RESP (body) and LAST_CODE globals
 LAST_CODE=""
 RESP=""
@@ -91,16 +145,16 @@ verify_traveler() {
   local doc="1101011990010105$((RANDOM % 900 + 100))5" # tail 5 => SIM pass (<=5)
   local dochash
   dochash="$(printf '%s' "$doc" | sha256sum | cut -c1-64)${doc: -1}" # SIM reads the appended tail digit
-  req POST identity-verification /api/v1/identity-verification/credentials "{\"travelerId\":\"$tvl\",\"profileSnapshotVersion\":\"snap-1\",\"documentType\":\"ID_CARD\",\"maskedDocumentNo\":\"110***********${doc: -2}\",\"documentHash\":\"$dochash\",\"canonicalNameHash\":\"name-$tvl\",\"validUntil\":\"2027-01-01T00:00:00Z\"}"
+  req POST identity-verification /api/v1/identity-verification/credentials "{\"travelerId\":\"$tvl\",\"profileSnapshotVersion\":\"snap-1\",\"documentType\":\"ID_CARD\",\"maskedDocumentNo\":\"110***********${doc: -2}\",\"documentHash\":\"$dochash\",\"canonicalNameHash\":\"name-$tvl\",\"validUntil\":\"$CREDENTIAL_VALID_UNTIL\"}"
   local cred
   cred=$(jget "['credentialRecordId']")
   local fp
-  fp=$(python3 - "$tvl" "$dochash" <<'PY'
+  fp=$(python3 - "$tvl" "$dochash" "$CREDENTIAL_VALID_UNTIL" <<'PY'
 import hashlib, sys
-parts = [f"name-{sys.argv[1]}", "ID_CARD", sys.argv[2], "", "2027-01-01T00:00:00Z", "", "snap-1"]
+parts = [f"name-{sys.argv[1]}", "ID_CARD", sys.argv[2], "", sys.argv[3], "", "snap-1"]
 print(hashlib.sha256("|".join(parts).encode()).hexdigest())
 PY
 )
-  req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"$tvl\",\"credentialRecordId\":\"$cred\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$fp\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"2026-01-01T00:00:00Z\"}"
+  req POST identity-verification /api/v1/identity-verification/verification-cases "{\"travelerId\":\"$tvl\",\"credentialRecordId\":\"$cred\",\"purpose\":\"ORDER_CREATION\",\"materialFingerprint\":\"$fp\",\"simPolicyVersion\":\"sim-tail-v1\",\"requestedAt\":\"$(iso_offset 0)\"}"
   [ "$(jget "['status']")" = PASSED ] || bad "verify_traveler $tvl status $(jget "['status']")"
 }

@@ -23,10 +23,10 @@ seed_corridor() { # -> sets WL_P_A/WL_P_B/WL_N_A/WL_N_B (fresh per run)
 
 seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
   local svc=$1 ss seg
-  req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"$svc\",\"departureTime\":\"2026-08-02T09:00:00Z\",\"arrivalTime\":\"2026-08-02T14:30:00Z\",\"originNodeId\":\"$WL_N_A\",\"destinationNodeId\":\"$WL_N_B\"}"
+  req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"$svc\",\"departureTime\":\"${JOURNEY_DATE}T09:00:00Z\",\"arrivalTime\":\"${JOURNEY_DATE}T14:30:00Z\",\"originNodeId\":\"$WL_N_A\",\"destinationNodeId\":\"$WL_N_B\"}"
   check_code 201 "create waitlist scheduled service $svc"
   ss=$(jget "['scheduledServiceRef']")
-  req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$ss\",\"originStopRef\":\"$WL_N_A\",\"destinationStopRef\":\"$WL_N_B\",\"departureTime\":\"2026-08-02T09:00:00Z\",\"arrivalTime\":\"2026-08-02T14:30:00Z\"}"
+  req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$ss\",\"originStopRef\":\"$WL_N_A\",\"destinationStopRef\":\"$WL_N_B\",\"departureTime\":\"${JOURNEY_DATE}T09:00:00Z\",\"arrivalTime\":\"${JOURNEY_DATE}T14:30:00Z\"}"
   check_code 201 "create waitlist segment $svc"
   seg=$(jget "['segmentRef']")
   sleep 3
@@ -43,7 +43,10 @@ seat_req() { # METHOD PATH BODY -> RESP/LAST_CODE
 }
 
 echo "== 20-seat: seat-assignment lifecycle"
-SS="ss-$(uuid7)"; DATE="2026-08-02"
+# A seat map / allocation is keyed on a FUTURE service date, and the hold
+# expiry below is gated by the real clock (SeatAssignment.IsActive compares
+# ExpiresAt.After(now)), so both must be relative.
+SS="ss-$(uuid7)"; DATE="$JOURNEY_DATE"
 seat_req POST /api/v1/seat-maps "{\"scheduledServiceRef\":\"$SS\",\"serviceDate\":\"$DATE\",\"compositionVersion\":\"v1\",\"compositionSeed\":\"SMALL\",\"mappingVersion\":\"sim-v1\",\"changeScenario\":\"SMALL\",\"operatorRef\":\"op-e2e\"}"
 check_code 201 "create SeatMap"
 SMAP=$(jget "['seatMapId']"); VER=$(jget "['seatMapVersion']"); SU=$(jget "['coaches'][0]['seatUnits'][0]['seatUnitRef']")
@@ -55,7 +58,8 @@ seat_req POST "/api/v1/seat-maps/$SMAP/seat-units/$SU/mark-unavailable" "{\"expe
 alloc_body() { python3 - "$SS" "$DATE" "$1" "$2" "$3" "$4" <<'PY'
 import json, sys
 ss,date,sb,tvl,hold,pref = sys.argv[1:]
-p={"segmentBookingId":sb,"journeyOrderId":"ord-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000001","travelerRef":tvl,"segmentRef":"seg-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000002","scheduledServiceRef":ss,"serviceDate":date,"capacityHoldId":hold,"capacityUnitRef":"cap-standard","interval":{"fromSeq":1,"toSeq":3},"classRef":"standard","issuePurpose":"INITIAL","expiresAt":"2026-08-02T08:00:00Z"}
+# Hold until shortly before the 09:00 departure, as the original fixture did.
+p={"segmentBookingId":sb,"journeyOrderId":"ord-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000001","travelerRef":tvl,"segmentRef":"seg-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000002","scheduledServiceRef":ss,"serviceDate":date,"capacityHoldId":hold,"capacityUnitRef":"cap-standard","interval":{"fromSeq":1,"toSeq":3},"classRef":"standard","issuePurpose":"INITIAL","expiresAt":date+"T08:00:00Z"}
 if pref != '-': p['seatPreferences']=json.loads(pref)
 print(json.dumps(p))
 PY

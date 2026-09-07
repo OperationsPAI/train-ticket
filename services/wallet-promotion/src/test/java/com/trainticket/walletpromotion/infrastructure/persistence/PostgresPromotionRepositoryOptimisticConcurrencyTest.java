@@ -34,6 +34,15 @@ import org.springframework.jdbc.core.PreparedStatementSetter;
 class PostgresPromotionRepositoryOptimisticConcurrencyTest {
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
+    // baseBenefit()'s validity window is pinned, so every call that the domain
+    // gates on time must be given an instant on that same pinned timeline.
+    // staleSnapshotUpdate... used to pass Instant.now() here; once the window
+    // closed (2026-08-01) reserve()'s requireNotExpired guard threw during the
+    // arrange step and the test errored before reaching its assertion. This
+    // test is about optimistic concurrency, not validity, so it must never
+    // depend on the wall clock.
+    private static final Instant WITHIN_VALIDITY = Instant.parse("2026-02-01T00:00:00Z");
+
     @Test
     void newSnapshotUsesInsertConflictGuard() {
         JdbcOperations jdbc = org.mockito.Mockito.mock(JdbcOperations.class);
@@ -115,7 +124,7 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
         PromotionInstrument stale = baseBenefit().reserve(
             new Money("USD", 10),
             WalletPromotionServiceTest.reason(ReasonType.ORDER_PURCHASE, "RESERVE", "ORDER", "ord-1"),
-            Instant.now()
+            WITHIN_VALIDITY
         );
 
         assertThatThrownBy(() -> repository.saveMutation(stale, wallet(stale), event(stale), null, null))
@@ -138,7 +147,7 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
             Instant.parse("2026-01-01T00:00:00Z"),
             Instant.parse("2026-08-01T00:00:00Z"),
             WalletPromotionServiceTest.reason(ReasonType.MANUAL_OPS, "TEST", "MANUAL_ACTION", "act-1"),
-            Instant.now()
+            Instant.parse("2026-01-01T00:00:00Z")
         );
     }
 
