@@ -29,25 +29,20 @@ Infra image path: registry/repo:tag
 {{- end -}}
 
 {{/*
-Common labels
+Common labels.
+
+Not currently used: the templates inline the two labels they actually need
+(app.kubernetes.io/name and /part-of), because those two are what
+deploy/k8s/*.yaml sets and what every selector in both paths matches on. Kept
+because adding managed-by/chart labels to a Deployment is a
+spec.selector-adjacent change that must be made deliberately, in one place.
+
+Call with a dict carrying both the root context and the name:
+  {{- include "train-ticket.labels" (dict "root" $ "name" $name) }}
 */}}
 {{- define "train-ticket.labels" -}}
 app.kubernetes.io/name: {{ .name }}
 app.kubernetes.io/part-of: train-ticket
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-helm.sh/chart: train-ticket-{{ .Chart.Version }}
-{{- end -}}
-
-{{/*
-Database URL
-*/}}
-{{- define "train-ticket.databaseUrl" -}}
-postgresql://{{ .Values.postgres.credentials.username }}:{{ .Values.postgres.credentials.password }}@postgres:5432/{{ .db }}
-{{- end -}}
-
-{{/*
-Redis URL
-*/}}
-{{- define "train-ticket.redisUrl" -}}
-redis://redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+helm.sh/chart: train-ticket-{{ .root.Chart.Version }}
 {{- end -}}

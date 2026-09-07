@@ -130,10 +130,59 @@ redis:
     limits:
       cpu: '4'
       memory: 8Gi
+# Durable trace store sizing for production. The chart default (10Gi / 12h) is
+# derived for a single kind node sustaining 35 edge RPS = 105 spans/s. Prod runs
+# the rates measured on the 20-node Volces VKE cluster, so the same 12h window
+# needs proportionally more disk. From the scaling table in
+# docs/07-observability/README.md:
+#
+#   220 edge RPS -> 660 spans/s -> 3.63 GiB/h -> 43.5 GiB per 12h window
+#
+# 50Gi is the table's provisioning figure for that row (~15% headroom over
+# 43.5 GiB). The retention window stays 12h: it is a requirement ("one full
+# stress scenario plus a comparable window before it"), not a capacity knob, and
+# at 50Gi the TTL remains the binding limit rather than the disk. Do not raise
+# one without the other.
+#
+# Memory is left at the chart default 2Gi limit / 1750MiB GOMEMLIMIT: the 1.76Gi
+# peak was measured during burst ingest and is a per-span-batch cost that does
+# not scale with total store size. CPU is raised because at 660 spans/s the
+# write path and Badger compaction are no longer idle.
+jaeger:
+  storage:
+    size: 50Gi
+    storageClass: ebs-ssd
+  resources:
+    requests:
+      cpu: '500m'
+      memory: 1Gi
+    limits:
+      cpu: '2'
+      memory: 2Gi
+# Collector queue raised with the span rate: 4000 batches covers ~6s of a
+# restart at the kind rate but under a second at 660 spans/s, which is shorter
+# than a pod replacement. memoryLimitMiB must stay above the queue and below
+# resources.limits.memory.
+otelCollector:
+  memoryLimitMiB: 3072
+  sendingQueue:
+    numConsumers: 8
+    queueSize: 20000
+  resources:
+    requests:
+      cpu: '500m'
+      memory: 1Gi
+    limits:
+      cpu: '2'
+      memory: 4Gi
 loadgen:
   enabled: true
   replicas: 30
-  workers: 200
+  # Concurrency comes from run.workers in the chart's loadgen-config.yaml.
+  gomaxprocs: 8
+  resources:
+    requests: { cpu: '2', memory: 1Gi }
+    limits: { cpu: '8', memory: 4Gi }
 defaults:
   env:
     OUTBOX_POLL_INTERVAL_MS: '50'
@@ -170,6 +219,8 @@ services:
   trip-planning:
     db: trip_planning
     replicas: 2
+    env:
+      MIGRATIONS_DIR: /app/migrations
     resources:
       requests: *svc_req
       limits: *svc_lim
@@ -177,6 +228,8 @@ services:
   fare-pricing:
     db: fare_pricing
     replicas: 1
+    env:
+      IDENTITY_VERIFICATION_URL: http://identity-verification:8080
     resources:
       requests: *svc_req
       limits: *svc_lim
