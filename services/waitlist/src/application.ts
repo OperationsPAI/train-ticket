@@ -1,4 +1,4 @@
-import { type EventPublisher } from "@trainticket/ts-kit";
+import { tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
@@ -53,7 +53,7 @@ export class HttpJourneyOrderClient implements JourneyOrderClient {
     if (!entry.offerId || !entry.offerVersion) {
       throw new DomainError("PRECONDITION_FAILED", "Waitlist entry does not have an orderable offer");
     }
-    const response = await fetch(`${this.baseUrl.replace(/\/+$/u, "")}/api/v1/journey-orders`, {
+    const response = await tracedFetch(`${this.baseUrl.replace(/\/+$/u, "")}/api/v1/journey-orders`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.journeyOrderIdempotencyKey },
       body: JSON.stringify({

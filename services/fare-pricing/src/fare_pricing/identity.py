@@ -6,6 +6,7 @@ import os
 from urllib import error, parse, request
 
 from fare_pricing.application.service import EligibilityCertificatePort
+from train_ticket_platform.outbound import traced_urllib_request
 
 
 class HttpEligibilityCertificateAdapter(EligibilityCertificatePort):
@@ -15,7 +16,10 @@ class HttpEligibilityCertificateAdapter(EligibilityCertificatePort):
 
     def has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
         query = parse.urlencode({"travelerId": traveler_id, "eligibilityType": eligibility_type, "journeyDate": journey_date, "productCode": product_code, "limit": 1, "offset": 0})
-        req = request.Request(self.base_url + "/api/v1/identity-verification/eligibility-certificates?" + query, method="GET", headers={"Accept": "application/json"})
+        # traced_urllib_request, not request.Request: the platform kit attaches
+        # the active span's W3C traceparent so identity-verification's server
+        # span joins this trace instead of starting its own.
+        req = traced_urllib_request(self.base_url + "/api/v1/identity-verification/eligibility-certificates?" + query, method="GET", headers={"Accept": "application/json"})
         try:
             with request.urlopen(req, timeout=self.timeout) as response:  # noqa: S310 in-cluster configured URL
                 data = json.loads(response.read().decode("utf-8") or "{}")

@@ -14,6 +14,7 @@ import com.trainticket.journeyorder.application.port.out.IdentityVerificationPor
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
+import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import com.trainticket.journeyorder.domain.AccountOrderGate;
 import com.trainticket.journeyorder.domain.AccountOrderState;
 import com.trainticket.journeyorder.domain.DomainRuleViolation;
@@ -28,17 +29,16 @@ import com.trainticket.journeyorder.domain.TravelerRef;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
@@ -371,9 +371,32 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         );
     }
 
+    /**
+     * Handles one consumed event.
+     *
+     * <p>Deliberately NOT {@code synchronized}. The platform subscriber dispatches events onto a
+     * pool of {@code CONSUMER_THREADS} handler threads; a method-level monitor would collapse that
+     * pool to an effective concurrency of 1 and hold the lock for the whole database transaction.
+     * This service holds no mutable instance state — correctness under concurrency comes from the
+     * persistence layer instead:
+     *
+     * <ul>
+     *   <li>Per-aggregate writes are guarded by version-based optimistic concurrency control in the
+     *       snapshot repository. The losing writer gets an {@link OptimisticConcurrencyException},
+     *       which is rolled back and reported as a {@link EventSubscriber.TransientError} so the
+     *       message stays in the pending list and is redelivered.</li>
+     *   <li>Duplicate delivery of the same {@code eventId} is caught by the {@code processed_events}
+     *       primary key. The insert is {@code ON CONFLICT DO NOTHING} and runs in the same
+     *       transaction as the state mutation, so a lost idempotency race cannot double-apply.</li>
+     *   <li>The {@code @Transactional} boundary is per invocation and Spring binds it to the calling
+     *       thread, so concurrent callers get independent transactions and independent rollbacks.</li>
+     * </ul>
+     *
+     * <p>Events for <em>different</em> aggregates therefore proceed fully in parallel.
+     */
     @Override
     @Transactional
-    public synchronized EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
+    public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
         try {
             if (stateRepository.isEventProcessed(envelope.eventId())) {
                 return new EventSubscriber.Success();
@@ -415,6 +438,21 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         } catch (NotFoundException ex) {
             stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer());
             return ackSkipMissingOrder(envelope);
+        } catch (OptimisticConcurrencyException ex) {
+            // A concurrent handler thread won the race for this aggregate. Roll back and let the
+            // message be redelivered; the retry re-reads the winner's state and re-applies cleanly.
+            LOGGER.info("optimistic concurrency conflict handling {} eventId={}: {}",
+                envelope.eventType(), envelope.eventId(), ex.getMessage());
+            rollbackCurrentTransactionIfActive();
+            return new EventSubscriber.TransientError(ex.getMessage());
+        } catch (DuplicateKeyException ex) {
+            // Two threads passed isEventProcessed for the same eventId and both reached an insert
+            // keyed by it (processed_events / outbox event_id). The duplicate proves the work is
+            // already committed or in flight elsewhere, so this is a retry, not a failure.
+            LOGGER.info("duplicate key handling {} eventId={} (concurrent duplicate delivery): {}",
+                envelope.eventType(), envelope.eventId(), ex.getMessage());
+            rollbackCurrentTransactionIfActive();
+            return new EventSubscriber.TransientError(ex.getMessage());
         } catch (DataAccessException ex) {
             LOGGER.error("DataAccessException handling {} eventId={}: {}", envelope.eventType(), envelope.eventId(), ex.getMessage(), ex);
             rollbackCurrentTransactionIfActive();

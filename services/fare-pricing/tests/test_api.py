@@ -31,11 +31,22 @@ from fare_pricing.ports import EventEnvelope
 from fare_pricing.ports.messaging import PublishFailed
 from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
 
-NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+# The HTTP API resolves rule sets against the real wall clock
+# (FarePricingService.find_published_rule_set_id defaults `at` to datetime.now).
+# These fixtures must therefore be anchored to "now" rather than to a fixed
+# calendar date, or every quote/adjustment test starts failing with
+# "No applicable fare rule set found" once the hard-coded effective window
+# falls into the past.
+NOW = datetime.now(UTC).replace(microsecond=0)
 
 
 def uuid7_key(suffix: int = 1) -> str:
     return f"0194f2e0-7b3e-7610-8284-{suffix:012d}"
+
+
+def iso_z(value: datetime) -> str:
+    """Serialize a datetime the way the HTTP contract expects (UTC, trailing Z)."""
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True, eligibility_type: str | None = None) -> FareRule:
@@ -115,8 +126,8 @@ class FarePricingApiTest(unittest.TestCase):
                 "channel": channel,
                 "version": version,
                 "effectiveWindow": {
-                    "startsAt": "2026-07-02T00:00:00Z",
-                    "endsAt": "2026-08-02T00:00:00Z",
+                    "startsAt": iso_z(NOW - timedelta(days=1)),
+                    "endsAt": iso_z(NOW + timedelta(days=30)),
                 },
                 "rules": [
                     {
@@ -374,6 +385,33 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertTrue(event.event_id.startswith("evt-"))
         self.assertTrue(event.causation_id.startswith("cmd-"))
         self.assertEqual(event.payload["quoteId"], data["quoteId"])
+
+    def test_departure_time_drives_advance_purchase_and_peak_components(self) -> None:
+        """departureTime reaches the pricing bands through the HTTP layer.
+
+        Asserted on the two components that are calendar-independent: a departure
+        >= 21 days out is always ADVANCE_PURCHASE_TIER_1, and an 08:00 departure
+        always lands in the 07-09 peak-hour band. The date surcharge is
+        deliberately not asserted here because it depends on the weekday the
+        suite happens to run on; exact peak/tier arithmetic is covered
+        deterministically in tests/test_domain.py.
+        """
+        departure = (NOW + timedelta(days=25)).replace(hour=8, minute=0, second=0, microsecond=0)
+        resp = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-123"],
+                "channel": "web",
+                "segmentRefs": ["seg-456"],
+                "departureTime": iso_z(departure),
+            },
+            headers={"Idempotency-Key": uuid7_key(120)},
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        components = resp.json()["breakdown"]
+        self.assertEqual(components["advancePurchaseTier"]["tierName"], "ADVANCE_PURCHASE_TIER_1")
+        self.assertEqual(components["advancePurchaseTier"]["multiplier"], "0.70")
+        self.assertEqual(components["peakAdjustment"]["hourAdjustment"], 15)
 
     def test_fare_quote_validation_failure(self) -> None:
         """Invalid requests produce 400 with canonical error body."""
@@ -881,8 +919,8 @@ class FarePricingMessagingTest(unittest.TestCase):
                 "credentialRecordId": "crd-123",
                 "eligibilityType": "STUDENT",
                 "certificateStatus": "ACTIVE",
-                "validFrom": "2026-07-10T00:00:00.000Z",
-                "validUntil": "2026-12-31T23:59:59.000Z",
+                "validFrom": iso_z(NOW - timedelta(days=30)),
+                "validUntil": iso_z(NOW + timedelta(days=180)),
                 "policyYear": "2026",
                 "policyVersion": "student-2026",
                 "annualUsageLimit": 4,
@@ -890,7 +928,7 @@ class FarePricingMessagingTest(unittest.TestCase):
                 "annualUsageConfirmed": 0,
                 "applicableProductCodes": ["rail-standard"],
                 "verificationAttemptId": "eva-123",
-                "verifiedAt": "2026-07-03T11:00:00.000Z",
+                "verifiedAt": iso_z(NOW - timedelta(days=30)),
                 "aggregateVersion": 2,
             },
         )
@@ -906,14 +944,16 @@ class FarePricingMessagingTest(unittest.TestCase):
                 "travelerRefs": ["tvl-student"],
                 "channel": "web",
                 "segmentRefs": ["seg-student"],
-                "departureTime": "2026-07-15T08:00:00.000Z",
             },
             headers={"Idempotency-Key": uuid7_key(950)},
         )
         self.assertEqual(quote_resp.status_code, 201, quote_resp.text)
         discounts = quote_resp.json()["breakdown"]["discounts"]
         self.assertIn("student", [item["ruleId"] for item in discounts])
-        self.assertEqual(quote_resp.json()["breakdown"]["total"], {"currency": "CNY", "minorUnits": 11800})
+        # No departureTime => no advance-purchase/peak multiplier, so the
+        # eligibility discount is asserted in isolation:
+        # base 100.00 + tax 7.50 + fee 5.00 - member 12.50 - student 20.00 = 80.00
+        self.assertEqual(quote_resp.json()["breakdown"]["total"], {"currency": "CNY", "minorUnits": 8000})
 
     def test_fake_subscriber_deduplicates_duplicate_event_ids(self) -> None:
         duplicate = EventEnvelope(

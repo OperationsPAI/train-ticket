@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from train_ticket_platform.outbound import traced_httpx_client
+
 
 class DownstreamError(RuntimeError):
     def __init__(self, message: str, code: str | None = None) -> None:
@@ -20,7 +22,10 @@ class DisruptionRecoveryClient:
 
     def report_missed_connection(self, body: Mapping[str, Any], idempotency_key: str, correlation_id: str) -> Mapping[str, Any]:
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            # traced_httpx_client, not httpx.Client: the platform kit's request
+            # hook attaches the active span's W3C traceparent per request, so
+            # disruption-recovery's server span joins this trace.
+            with traced_httpx_client(timeout=self.timeout) as client:
                 response = client.post(
                     f"{self.base_url}/api/v1/disruptions",
                     json=dict(body),
