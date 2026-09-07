@@ -30,6 +30,7 @@ import {
   type ErrorEnvelope,
   type IdempotencyStore,
   type RequestContext,
+  type SchemaDetail,
 } from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 
@@ -41,6 +42,12 @@ export type HealthStatus = Readonly<{
 export type ProbeStatus = Readonly<{
   status: "ok" | "not_ready" | "unhealthy";
   probe: "live" | "ready";
+  /**
+   * Present only when storage reports migration state AND migrations have not
+   * applied yet, so the default probe body shape that existing tests and
+   * clients assert is unchanged on the happy path. See `readyBody`.
+   */
+  schema?: SchemaDetail;
 }>;
 
 export type ServiceMetadata = Readonly<{
@@ -83,6 +90,8 @@ export type AppOptions = Readonly<{
 
 export type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
+  /** Optional migration retry state; reported on `/readyz` while migrations are still being applied. */
+  schema?: () => SchemaDetail;
   runCommand?: <T>(operation: (application: CustomerServiceApplication) => Promise<T>) => Promise<T>;
   runScheduledEvaluation?: () => Promise<number>;
 }>;
@@ -727,10 +736,31 @@ function liveBody(reply: { status: (statusCode: number) => unknown }): ProbeStat
   return probeBody("live");
 }
 
+/**
+ * Readiness.
+ *
+ * While database migrations are still being retried this stays 503 and the body
+ * says why (`schema: { schema: "migrating", attempts, retryingForMs, lastError }`).
+ * That is the OPPOSITE of the decision taken for a retrying event subscriber,
+ * which keeps `/readyz` at 200, and deliberately so: a dead consumer still
+ * leaves a fully working HTTP API, whereas a missing schema means every request
+ * hits a table that does not exist. Serving reads against a missing schema is
+ * worse than serving them with a dead consumer -- an honest 503 beats a 500
+ * that a caller may treat as terminal. See `superviseMigrations` in ts-kit for
+ * the full readiness/liveness reasoning.
+ *
+ * The change from the pre-fix behaviour is not the 503 itself -- that was
+ * already the gate -- but that it is now TEMPORARY: the background retry clears
+ * it when the database returns, instead of the pod needing a manual
+ * `kubectl rollout restart`.
+ */
 async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
   if (storage && !await storage.ready()) {
     reply.status(503);
-    return { status: "not_ready", probe: "ready" };
+    const schema = storage.schema?.();
+    return schema && schema.schema !== "applied"
+      ? { status: "not_ready", probe: "ready", schema }
+      : { status: "not_ready", probe: "ready" };
   }
   return probeBody("ready");
 }

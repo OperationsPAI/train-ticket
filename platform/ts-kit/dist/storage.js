@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { registerLivenessComponent } from "./liveness.js";
-import { streamForProducer } from "./messaging.js";
+import { redisRetryStrategy, streamForProducer } from "./messaging.js";
 export class OptimisticConcurrencyConflict extends Error {
     constructor(message = "Snapshot was modified by another writer") {
         super(message);
@@ -142,6 +142,221 @@ export class MigrationRunner {
             throw error;
         }
     }
+}
+/**
+ * Apply migrations, retrying indefinitely with capped exponential backoff.
+ *
+ * Background: every TypeScript service did
+ *
+ *   try { await migrations.apply(); } catch (e) { console.error(e); }
+ *
+ * and then gated readiness on `migrations.isReady`. A migration that failed
+ * ONCE at startup was therefore never retried: `isReady` stayed false for the
+ * life of the process and `/readyz` answered 503 forever. Liveness passed
+ * (correctly -- see below), so kubelet never restarted the pod, and the pod sat
+ * out of the Service endpoints while happily consuming events. That is exactly
+ * what happened on 2026-09-07 when PostgreSQL was OOMKilled at boot: account,
+ * customer-service, notification and offer-management all needed a manual
+ * `kubectl rollout restart`.
+ *
+ * The fix is the same idiom the Redis path already uses -- `connectRedisWithRetry`
+ * and the `superviseSubscribe` modules -- retry forever on `redisRetryStrategy`'s
+ * schedule (100ms -> 30s) so a database that is down or restarting at boot is
+ * recovered from without a pod restart.
+ *
+ * READINESS during the retry window: NOT ready, deliberately. This is the one
+ * place where the readiness decision made for the subscribe-retry case is
+ * inverted, and the inversion is the point:
+ *
+ *  - For a dead SUBSCRIBER, readiness stays 200 because the HTTP API still
+ *    works perfectly and withdrawing the pod's only endpoint would widen a
+ *    partial outage into a total one.
+ *  - For missing MIGRATIONS the HTTP API does NOT work: every read and write
+ *    goes to tables that do not exist yet, so serving traffic means answering
+ *    with `relation "..." does not exist` 500s. Serving reads against a missing
+ *    schema is worse than serving them with a dead consumer -- a 503 from a
+ *    withdrawn endpoint is an honest "not yet", a 500 from a missing table is a
+ *    hard error a caller may treat as terminal.
+ *  - So `isReady()` stays false while migrating, which keeps the pre-existing
+ *    `migrations.isReady ? checkPostgresReadiness(pool) : false` gate intact.
+ *    The change is that it is now a TEMPORARY false that the retry clears, not
+ *    a permanent one.
+ *
+ * EVENT CONSUMPTION during the retry window: left running. Handlers that touch
+ * a missing table throw, and the ts-kit subscriber turns a thrown handler error
+ * into either a retry (message stays pending, redelivered later) or a DLQ,
+ * depending on each service's `thrownHandlerErrors` setting. Blocking the
+ * subscribe until migrations land would be a bigger change than this defect
+ * warrants and would trade one wedge for another (the subscribe path has its
+ * own never-healthy liveness guard). Since the schema gap is measured in
+ * seconds once Postgres is back, and the outbox/`processed_events` machinery is
+ * idempotent, redelivery is the safe outcome. What we DO change is ordering at
+ * boot: the supervisor's first attempt is awaited before the service starts
+ * serving, exactly as `apply()` was awaited before, so the happy path is
+ * unchanged and a first-time success still means "schema ready before the first
+ * request".
+ *
+ * LIVENESS during the retry window: green, deliberately, and this is correct.
+ * `LivenessComponent` only expires a component that has been *continuously*
+ * unhealthy past its grace period AND has been healthy at least once
+ * (`everHealthy`). A migration that has never succeeded is exactly the
+ * never-healthy case, so liveness will not fire -- which is what we want, since
+ * restarting the process re-runs the same migration against the same down
+ * database and fixes nothing, while a restart storm across seven services makes
+ * a database outage worse. Both existing guards are preserved unchanged. The
+ * retry is the whole recovery mechanism and readiness is the honest signal;
+ * liveness is left to catch the case it can actually fix, a component that used
+ * to work and is now wedged. Accordingly the component registered here is
+ * marked healthy only once migrations have applied, at which point a LATER
+ * database wedge is on the existing `checkPostgresReadiness` path.
+ */
+export function superviseMigrations(runner, options = {}) {
+    const applyOnce = options.apply ?? (() => runner.apply());
+    const backoffMs = options.backoffMs ?? redisRetryStrategy;
+    const sleepFor = options.sleep ?? sleep;
+    const log = options.log ?? ((entry) => console.warn(entry));
+    const service = options.service ?? "service";
+    const stuckAfterMs = options.stuckAfterMs ?? DEFAULT_MIGRATION_STUCK_WARNING_MS;
+    const clock = options.clock ?? Date.now;
+    let state = "migrating";
+    let attempts = 0;
+    let stopped = false;
+    let lastFailure;
+    const startedAt = clock();
+    let nextStuckWarningAt = startedAt + stuckAfterMs;
+    // Resolved by stop() so a shutdown does not sit through a backoff that may
+    // be up to 30s long.
+    let interrupt;
+    const interrupted = new Promise((resolve) => {
+        interrupt = resolve;
+    });
+    let settleFirst;
+    const firstSettled = new Promise((resolve) => {
+        settleFirst = resolve;
+    });
+    let markApplied;
+    const appliedPromise = new Promise((resolve) => {
+        markApplied = resolve;
+    });
+    const loop = (async () => {
+        for (let attempt = 1; !stopped; attempt += 1) {
+            attempts = attempt;
+            try {
+                await applyOnce();
+                if (stopped) {
+                    return;
+                }
+                lastFailure = undefined;
+                state = "applied";
+                if (attempt > 1) {
+                    log({
+                        service,
+                        dependency: "postgres",
+                        attempt,
+                        recoveredAfterMs: clock() - startedAt,
+                        message: "database migrations applied after retry; service became ready without a restart",
+                    });
+                }
+                settleFirst();
+                markApplied();
+                return;
+            }
+            catch (error) {
+                lastFailure = error;
+                settleFirst();
+                if (stopped) {
+                    return;
+                }
+                const retryInMs = backoffMs(attempt);
+                const retryingForMs = clock() - startedAt;
+                const entry = {
+                    service,
+                    dependency: "postgres",
+                    attempt,
+                    retryInMs,
+                    retryingForMs,
+                    error: sanitizedMigrationError(error),
+                    message: "database migrations failed; service is NOT ready and will retry in background",
+                };
+                // Escalate periodically so "stuck migrating for ten minutes" is obvious
+                // in the logs without anyone reading the source.
+                if (retryingForMs >= stuckAfterMs && clock() >= nextStuckWarningAt) {
+                    nextStuckWarningAt = clock() + stuckAfterMs;
+                    console.error({
+                        ...entry,
+                        message: `database migrations have been failing for ${Math.round(retryingForMs / 1000)}s; /readyz is 503 and this pod is out of the Service endpoints until the database recovers. Liveness stays green on purpose: a restart would re-run the same migration against the same database.`,
+                    });
+                }
+                else {
+                    log(entry);
+                }
+                await Promise.race([sleepFor(retryInMs), interrupted]);
+            }
+        }
+    })();
+    const retryingForMs = () => state === "applied" ? 0 : Math.max(0, clock() - startedAt);
+    return {
+        state: () => state,
+        isReady: () => state === "applied",
+        failure: () => lastFailure,
+        attempts: () => attempts,
+        retryingForMs,
+        detail: () => state === "applied"
+            ? { schema: state, attempts }
+            : {
+                schema: state,
+                attempts,
+                retryingForMs: retryingForMs(),
+                ...(lastFailure === undefined ? {} : { lastError: sanitizedMigrationError(lastFailure).message }),
+            },
+        settled: () => firstSettled,
+        applied: () => appliedPromise,
+        stop: async () => {
+            stopped = true;
+            interrupt();
+            await loop.catch(() => undefined);
+        },
+    };
+}
+/** One minute. See `superviseMigrations`' stuck-warning escalation. */
+export const DEFAULT_MIGRATION_STUCK_WARNING_MS = 60_000;
+/**
+ * Start migrations and wait only for the FIRST attempt to settle.
+ *
+ * Success means the schema is in place before the service accepts traffic --
+ * identical to the old `await migrations.apply()` happy path. Failure means the
+ * supervisor keeps retrying in the background while the service starts up
+ * not-ready, instead of the old behaviour of swallowing the error and wedging
+ * `isReady` false forever.
+ */
+export async function startMigrations(pool, migrationsDirectory, options = {}) {
+    const supervisor = superviseMigrations(new MigrationRunner(pool, migrationsDirectory), options);
+    await supervisor.settled();
+    return supervisor;
+}
+/**
+ * The readiness gate every service's `ready()` should use.
+ *
+ * Two conditions, in order:
+ *
+ *  1. Migrations must have applied. Until they have, the tables the HTTP API
+ *     reads and writes do not exist, so answering 200 would invite traffic that
+ *     can only 500. This is the check `loyalty-membership` was missing
+ *     entirely -- its `ready()` ran `checkPostgresReadiness(pool)` alone, so a
+ *     reachable database with an incomplete schema reported ready.
+ *  2. The database must be reachable right now.
+ *
+ * Note the order matters for cost as well as correctness: while migrations are
+ * retrying we answer false without opening a pool connection per probe.
+ */
+export function migrationsAwareReadiness(migrations, pool, timeoutMs) {
+    return () => migrations.isReady() ? checkPostgresReadiness(pool, timeoutMs) : Promise.resolve(false);
+}
+function sanitizedMigrationError(error) {
+    if (error instanceof Error) {
+        return { name: error.name || "Error", message: error.message || "Database migration failed" };
+    }
+    return { name: typeof error, message: String(error || "Database migration failed") };
 }
 export class SnapshotRepository {
     db;
