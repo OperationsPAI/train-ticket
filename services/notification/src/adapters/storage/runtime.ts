@@ -1,8 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Redis } from "ioredis";
-
 import {
   MigrationRunner,
   OptimisticConcurrencyConflict,
@@ -10,7 +8,10 @@ import {
   OutboxRelay,
   ProcessedEventsGuard,
   checkPostgresReadiness,
+  connectRedisWithRetry,
   createPostgresPool,
+  createRedisClient,
+  redisClientLiveness,
   streamForProducer,
   withTransaction,
   type EventEnvelope,
@@ -38,10 +39,14 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     console.error(sanitizedErrorForLog(error));
   }
 
-  const redis = new Redis(redisUrl(), { lazyConnect: true });
-  await redis.connect();
+  // createRedisClient attaches an "error" listener and an infinite capped
+  // backoff retry strategy, and registers a liveness component; `new Redis`
+  // got none of that (2026-09-06 outage).
+  const redis = createRedisClient(redisUrl(), {}, "notification-outbox");
+  await connectRedisWithRetry(redis, "notification-outbox");
   const relay = new OutboxRelay(pool, redis, {
     pollIntervalMs: 250,
+    name: "notification-outbox-relay",
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
@@ -104,6 +109,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     }),
     stop: async () => {
       await relay.stop();
+      redisClientLiveness(redis)?.dispose();
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };

@@ -8,12 +8,14 @@ import {
   PostgresIdempotencyStore,
   ProcessedEventsGuard,
   checkPostgresReadiness,
+  connectRedisWithRetry,
   createPostgresPool,
+  createRedisClient,
+  redisClientLiveness,
   streamForProducer,
   withTransaction,
   type EventEnvelope,
 } from "@trainticket/ts-kit";
-import { Redis } from "ioredis";
 import { type Pool } from "pg";
 
 import { CustomerServiceApplication } from "../../application/customer-service.js";
@@ -39,10 +41,15 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
     console.error(sanitizedErrorForLog(error));
   }
 
-  const redis = new Redis(process.env.REDIS_URL ?? DEFAULT_REDIS_URL, { lazyConnect: true });
-  await redis.connect();
+  // createRedisClient attaches an "error" listener and an infinite capped
+  // backoff retry strategy, and registers a liveness component. Without them
+  // ioredis logged "[ioredis] Unhandled error event: ... ECONNREFUSED" once
+  // and the relay never published again (2026-09-06 outage).
+  const redis = createRedisClient(process.env.REDIS_URL ?? DEFAULT_REDIS_URL, {}, "customer-service-outbox");
+  await connectRedisWithRetry(redis, "customer-service-outbox");
   const relay = new OutboxRelay(pool, redis as never, {
     pollIntervalMs: 250,
+    name: "customer-service-outbox-relay",
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
@@ -74,6 +81,7 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
     stop: async () => {
       clearInterval(slaScheduler);
       await relay.stop();
+      redisClientLiveness(redis)?.dispose();
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };
