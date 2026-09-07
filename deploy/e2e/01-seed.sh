@@ -23,14 +23,19 @@ N_SH=$(jget "['nodeId']")
 check_code 201 "create node Shanghai Hongqiao"
 echo "  N_BJ=$N_BJ N_SH=$N_SH"
 
-echo "== 3. scheduled service G1234 (2026-08-01)"
-req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"G1234\",\"departureTime\":\"2026-08-01T09:00:00Z\",\"arrivalTime\":\"2026-08-01T14:30:00Z\",\"originNodeId\":\"$N_BJ\",\"destinationNodeId\":\"$N_SH\"}"
+# The seeded service must be a FUTURE departure, and every later script in
+# the chain has to agree on the date -- so it is derived once here from
+# lib.sh's JOURNEY_DATE and persisted through .refs.env rather than being a
+# literal that silently ages into the past.
+SERVICE_DATE="$JOURNEY_DATE"
+echo "== 3. scheduled service G1234 ($SERVICE_DATE)"
+req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"G1234\",\"departureTime\":\"${SERVICE_DATE}T09:00:00Z\",\"arrivalTime\":\"${SERVICE_DATE}T14:30:00Z\",\"originNodeId\":\"$N_BJ\",\"destinationNodeId\":\"$N_SH\"}"
 SS=$(jget "['scheduledServiceRef']")
 check_code 201 "create scheduled service"
 echo "  SS=$SS"
 
 echo "== 4. service segment"
-req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$SS\",\"originStopRef\":\"$N_BJ\",\"destinationStopRef\":\"$N_SH\",\"departureTime\":\"2026-08-01T09:00:00Z\",\"arrivalTime\":\"2026-08-01T14:30:00Z\"}"
+req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$SS\",\"originStopRef\":\"$N_BJ\",\"destinationStopRef\":\"$N_SH\",\"departureTime\":\"${SERVICE_DATE}T09:00:00Z\",\"arrivalTime\":\"${SERVICE_DATE}T14:30:00Z\"}"
 SEG=$(jget "['segmentRef']")
 check_code 201 "create service segment"
 echo "  SEG=$SEG"
@@ -54,6 +59,7 @@ N_BJ=$N_BJ
 N_SH=$N_SH
 SS=$SS
 SEG=$SEG
+SERVICE_DATE=$SERVICE_DATE
 EOF
 # script already cd'd to its own dir at the top; a second dirname "$0"
 # here resolves wrong when invoked from the repo root and the copy was

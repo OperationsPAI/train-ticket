@@ -33,7 +33,7 @@ if [ "$LAST_CODE" = 200 ]; then
 fi
 
 echo "== 1. verify boarding for purchased entitlement"
-BOARD_AT="2026-08-01T08:00:00Z"
+BOARD_AT="${SERVICE_DATE:-$JOURNEY_DATE}T08:00:00Z"
 req POST fulfillment /api/v1/fulfillment-records/boarding "{\"entitlementId\":\"$ENT\",\"segmentBookingId\":\"$SB\",\"journeyOrderId\":\"$ORDER\",\"travelerId\":\"$TVL\",\"segmentRef\":\"$SEG_FULFILL\",\"source\":\"GATE\",\"sourceEventId\":\"gate-$(uuid7)\",\"occurredAt\":\"$BOARD_AT\"}"
 check_code 201 "verify boarding"
 FR=$(jget "['fulfillmentRecordId']")
@@ -45,7 +45,7 @@ BV=$(find_event events:fulfillment BoardingVerified entitlementId "$ENT")
 [ -n "$BV" ] && ok "BoardingVerified fact published" || bad "missing BoardingVerified fact"
 
 echo "== 2. complete segment"
-DONE_AT="2026-08-01T13:30:00Z"
+DONE_AT="${SERVICE_DATE:-$JOURNEY_DATE}T13:30:00Z"
 req POST fulfillment /api/v1/fulfillment-records/completions "{\"entitlementId\":\"$ENT\",\"segmentBookingId\":\"$SB\",\"journeyOrderId\":\"$ORDER\",\"travelerId\":\"$TVL\",\"segmentRef\":\"$SEG_FULFILL\",\"completionSource\":\"ARRIVAL\",\"completedAt\":\"$DONE_AT\"}"
 check_code 201 "segment completed"
 sleep 5

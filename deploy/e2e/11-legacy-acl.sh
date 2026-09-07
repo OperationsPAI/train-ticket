@@ -79,7 +79,7 @@ legacy_step() {
 
 ACCT="acc-$(uuid7)"
 echo "== 1. preserve through legacy ACL"
-legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"2026-08-01\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
+legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"${SERVICE_DATE:-$JOURNEY_DATE}\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
 ORDER=$(jget "['data']['orderId']"); TOTAL=$(jget "['data']['total']['minorUnits']")
 echo "  ORDER=$ORDER totalMinor=$TOTAL"
 
@@ -105,7 +105,7 @@ echo "  FR=$FR"
 
 ACCT2="acc-$(uuid7)"
 echo "== 5. second order preserve"
-legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT2\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"2026-08-01\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
+legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT2\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"${SERVICE_DATE:-$JOURNEY_DATE}\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
 ORDER2=$(jget "['data']['orderId']"); TOTAL2=$(jget "['data']['total']['minorUnits']")
 legacy_step INSIDE_PAYMENT /api/v1/legacy/inside_payment "{\"orderId\":\"$ORDER2\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL2:-10750}}}"
 sleep 8
@@ -118,12 +118,12 @@ REFUNDABLE=$(jget "['data']['refundAmount']['minorUnits']")
 
 ACCT3="acc-$(uuid7)"
 echo "== 6. multi-leg rebook completes all replacement legs"
-legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT3\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"2026-08-01\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
+legacy_step PRESERVE /api/v1/legacy/preserve "{\"accountId\":\"$ACCT3\",\"contactsId\":\"$TVL\",\"tripId\":\"G1234\",\"seatType\":\"SECOND\",\"date\":\"${SERVICE_DATE:-$JOURNEY_DATE}\",\"from\":\"$P_BJ\",\"to\":\"$P_SH\"}"
 ORDER3=$(jget "['data']['orderId']"); TOTAL3=$(jget "['data']['total']['minorUnits']")
 legacy_step INSIDE_PAYMENT /api/v1/legacy/inside_payment "{\"orderId\":\"$ORDER3\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}}"
 sleep 8
 legacy_step TICKET_ISSUE /api/v1/legacy/ticket_issue "{\"orderId\":\"$ORDER3\"}"
-legacy_step REBOOK /api/v1/legacy/rebook "{\"orderId\":\"$ORDER3\",\"date\":\"2026-08-02\",\"seatType\":\"FIRST\",\"channelRef\":{\"channel\":\"ALIPAY_SIM\"},\"replacementLegs\":[{\"from\":\"$P_BJ\",\"to\":\"$P_SH\",\"date\":\"2026-08-02\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}},{\"from\":\"$P_BJ\",\"to\":\"$P_SH\",\"date\":\"2026-08-03\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}}]}"
+legacy_step REBOOK /api/v1/legacy/rebook "{\"orderId\":\"$ORDER3\",\"date\":\"$(date_plus "${SERVICE_DATE:-$JOURNEY_DATE}" 1)\",\"seatType\":\"FIRST\",\"channelRef\":{\"channel\":\"ALIPAY_SIM\"},\"replacementLegs\":[{\"from\":\"$P_BJ\",\"to\":\"$P_SH\",\"date\":\"$(date_plus "${SERVICE_DATE:-$JOURNEY_DATE}" 1)\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}},{\"from\":\"$P_BJ\",\"to\":\"$P_SH\",\"date\":\"$(date_plus "${SERVICE_DATE:-$JOURNEY_DATE}" 2)\",\"price\":{\"currency\":\"CNY\",\"minorUnits\":${TOTAL3:-10750}}}]}"
 REBOOKED_COUNT=$(echo "$RESP" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"].get("rebookedLegs", [])))' 2>/dev/null || echo 0)
 [ "$REBOOKED_COUNT" = "2" ] && ok "legacy rebook completed all replacement legs" || bad "legacy rebook completed $REBOOKED_COUNT replacement legs, expected 2"
 

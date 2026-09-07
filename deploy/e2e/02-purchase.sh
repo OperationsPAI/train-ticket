@@ -16,7 +16,7 @@ echo "  TVL=$TVL"
 sleep 3
 
 echo "== 1. trip search"
-req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"2026-08-01\",\"travelerRefs\":[\"$TVL\"],\"channel\":\"WEB\"}"
+req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$P_BJ\",\"destinationRef\":\"$P_SH\",\"departureDate\":\"${SERVICE_DATE:-$JOURNEY_DATE}\",\"travelerRefs\":[\"$TVL\"],\"channel\":\"WEB\"}"
 check_code 200 "search itineraries"
 ITIN=$(jget "['itineraries'][0]['itineraryRef']")
 SEG_FROM_SEARCH=$(jget "['itineraries'][0]['legs'][0]['serviceSegmentRef']")
@@ -141,5 +141,6 @@ SAGA=$SAGA
 ENT=$ENT
 FQ_TOTAL_MINOR=$FQ_TOTAL_MINOR
 OFFER_TOTAL_MINOR=$OFFER_TOTAL_MINOR
+SEG_FROM_SEARCH=$SEG_FROM_SEARCH
 EOF
 summary

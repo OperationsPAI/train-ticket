@@ -36,10 +36,10 @@ create_traveler() {
 
 seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
   local svc=$1 ss seg
-  req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"$svc\",\"departureTime\":\"2026-08-02T09:00:00Z\",\"arrivalTime\":\"2026-08-02T14:30:00Z\",\"originNodeId\":\"$WL_N_A\",\"destinationNodeId\":\"$WL_N_B\"}"
+  req POST service-plan /api/v1/scheduled-services "{\"carrierId\":\"car-$(uuid7)\",\"serviceNumber\":\"$svc\",\"departureTime\":\"${JOURNEY_DATE}T09:00:00Z\",\"arrivalTime\":\"${JOURNEY_DATE}T14:30:00Z\",\"originNodeId\":\"$WL_N_A\",\"destinationNodeId\":\"$WL_N_B\"}"
   check_code 201 "create waitlist scheduled service $svc"
   ss=$(jget "['scheduledServiceRef']")
-  req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$ss\",\"originStopRef\":\"$WL_N_A\",\"destinationStopRef\":\"$WL_N_B\",\"departureTime\":\"2026-08-02T09:00:00Z\",\"arrivalTime\":\"2026-08-02T14:30:00Z\"}"
+  req POST service-plan /api/v1/service-segments "{\"scheduledServiceRef\":\"$ss\",\"originStopRef\":\"$WL_N_A\",\"destinationStopRef\":\"$WL_N_B\",\"departureTime\":\"${JOURNEY_DATE}T09:00:00Z\",\"arrivalTime\":\"${JOURNEY_DATE}T14:30:00Z\"}"
   check_code 201 "create waitlist segment $svc"
   seg=$(jget "['segmentRef']")
   sleep 3
@@ -50,7 +50,7 @@ seed_segment() { # service-number -> sets SEEDED_SS/SEEDED_SEG
 find_itinerary_for_segment() { # traveler segment -> sets FOUND_ITIN
   local tvl=$1 seg=$2 itin=""
   for attempt in $(seq 1 20); do
-    req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$WL_P_A\",\"destinationRef\":\"$WL_P_B\",\"departureDate\":\"2026-08-02\",\"travelerRefs\":[\"$tvl\"],\"channel\":\"WEB\"}"
+    req POST trip-planning /api/v1/itineraries/search "{\"originRef\":\"$WL_P_A\",\"destinationRef\":\"$WL_P_B\",\"departureDate\":\"$JOURNEY_DATE\",\"travelerRefs\":[\"$tvl\"],\"channel\":\"WEB\"}"
     if [ "$LAST_CODE" = 200 ]; then
       itin=$(printf '%s' "$RESP" | SEG_REF="$seg" python3 -c '
 import os, sys, json
@@ -126,10 +126,10 @@ PYEX
 report_body() { local order=$1 suffix=$2 auto=${3:-} acct=${4:-} sb=${5:-} tvl=${6:-} ent=${7:-} seg=${8:-} ss=${9:-}
   [ -n "$seg" ] || seg="seg-0194f2e0-7b3e-7610-8000-${suffix}00000001"
   [ -n "$ss" ] || ss="ssch-dr-$suffix"
-  python3 - "$order" "$suffix" "$auto" "$acct" "$sb" "$tvl" "$ent" "$seg" "$ss" <<'PYJSON'
+  python3 - "$order" "$suffix" "$auto" "$acct" "$sb" "$tvl" "$ent" "$seg" "$ss" "$JOURNEY_DATE" <<'PYJSON'
 import json, sys
-order,suffix,auto,acct,sb,tvl,ent,seg,ss=sys.argv[1:]
-body={"disruptionType":"SERVICE_DELAY","scheduledServiceRef":ss,"segmentRef":seg,"serviceDate":"2026-08-02","evidence":{"evidenceRef":"ev-"+suffix,"sourceSystem":"ADMIN","sourceRecordId":"row-"+suffix,"summary":"Load-safe disruption drill"},"affectedOrderIds":[order],"reportedBy":{"actorType":"OPERATIONS","actorId":"ops-e2e"}}
+order,suffix,auto,acct,sb,tvl,ent,seg,ss,service_date=sys.argv[1:]
+body={"disruptionType":"SERVICE_DELAY","scheduledServiceRef":ss,"segmentRef":seg,"serviceDate":service_date,"evidence":{"evidenceRef":"ev-"+suffix,"sourceSystem":"ADMIN","sourceRecordId":"row-"+suffix,"summary":"Load-safe disruption drill"},"affectedOrderIds":[order],"reportedBy":{"actorType":"OPERATIONS","actorId":"ops-e2e"}}
 if auto: body["autoRecovery"]=auto
 if acct: body["accountId"]=acct
 if sb or tvl or ent:

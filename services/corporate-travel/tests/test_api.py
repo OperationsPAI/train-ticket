@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -10,12 +12,26 @@ from corporate_travel.api import create_app
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 
+
+# --- Calendar-independent effective window ------------------------------------
+# Agreement.activate() and Agreement.authorize_traveler() both gate on the real
+# wall clock (`at or datetime.now(UTC)`), rejecting anything at/after
+# effective_window.ends_at. An absolute literal here is therefore a time bomb:
+# the previous "2026-01-01 -> 2027-01-01" window would have started failing
+# every activation and authorization test on 2027-01-01.
+# A corporate travel agreement is a negotiated annual contract, so the window is
+# expressed as one year around NOW: already in force, and still in force for a
+# full year no matter when the suite runs.
+_NOW = datetime.now(UTC).replace(microsecond=0)
+EFFECTIVE_STARTS_AT = (_NOW - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+EFFECTIVE_ENDS_AT = (_NOW + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 def create_payload() -> dict[str, object]:
     return {
         "corporateId": "corp-1",
         "agreementCode": "ACME-2026",
         "legalName": "Acme Corp",
-        "effectiveWindow": {"startsAt": "2026-01-01T00:00:00Z", "endsAt": "2027-01-01T00:00:00Z"},
+        "effectiveWindow": {"startsAt": EFFECTIVE_STARTS_AT, "endsAt": EFFECTIVE_ENDS_AT},
         "priceRef": {"fareRuleRefs": ["fare-rule-1"], "ruleSetId": "rules", "ruleSetVersion": "1"},
         "monthlyCreditLimit": {"currency": "USD", "minorUnits": 100000},
         "billingCalendar": {"billingPeriod": "2026-01", "cutoffAt": "2026-02-01T00:00:00Z", "dueAt": "2026-02-15T00:00:00Z"},
