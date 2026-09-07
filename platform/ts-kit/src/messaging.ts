@@ -240,7 +240,40 @@ const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
 const MAX_DELIVERIES = 5;
-const STREAM_MAXLEN = 100_000;
+
+export const STREAM_MAXLEN_ENV = "EVENT_STREAM_MAXLEN";
+export const DEFAULT_STREAM_MAXLEN = 10_000;
+
+/**
+ * Resolves the per-stream entry cap. A blank, non-numeric or non-positive value falls
+ * back to the default rather than throwing or trimming to zero: a misconfigured cap that
+ * silently discarded every published event would be the worst outcome here.
+ */
+export function streamMaxLen(configured: string | undefined): number {
+  const trimmed = configured?.trim();
+  if (!trimmed) {
+    return DEFAULT_STREAM_MAXLEN;
+  }
+  const parsed = Number(trimmed);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  console.warn(
+    `${STREAM_MAXLEN_ENV}=${configured} is not a positive integer; using default ${DEFAULT_STREAM_MAXLEN}`,
+  );
+  return DEFAULT_STREAM_MAXLEN;
+}
+
+/**
+ * Cap on entries kept per stream. Redis streams are never read destructively, so without
+ * a cap every published event stays resident forever and eventually exhausts the Redis
+ * memory limit. Always applied as `MAXLEN ~` so XADD stays O(1).
+ */
+const STREAM_MAXLEN = streamMaxLen(process.env[STREAM_MAXLEN_ENV]);
+
+export function configuredStreamMaxLen(): number {
+  return STREAM_MAXLEN;
+}
 
 export type SubscriberLoopFailureHandler = (error: unknown) => void;
 

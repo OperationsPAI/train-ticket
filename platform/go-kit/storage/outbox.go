@@ -34,7 +34,7 @@ type OutboxRelay struct {
 }
 
 func NewOutboxRelay(db DBTX, redisClient *redis.Client) *OutboxRelay {
-	return &OutboxRelay{db: db, redis: redisClient, interval: 250 * time.Millisecond, maxLen: 100000}
+	return &OutboxRelay{db: db, redis: redisClient, interval: 250 * time.Millisecond, maxLen: messaging.MaxLen}
 }
 
 func (r *OutboxRelay) WithInterval(interval time.Duration) *OutboxRelay {

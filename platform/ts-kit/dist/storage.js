@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { registerLivenessComponent } from "./liveness.js";
-import { redisRetryStrategy, streamForProducer } from "./messaging.js";
+import { configuredStreamMaxLen, redisRetryStrategy, streamForProducer } from "./messaging.js";
 export class OptimisticConcurrencyConflict extends Error {
     constructor(message = "Snapshot was modified by another writer") {
         super(message);
@@ -493,7 +493,7 @@ export class OutboxRelay {
         }
         const pipeline = this.redis.pipeline();
         for (const row of result.rows) {
-            pipeline.xadd(row.stream, "MAXLEN", "~", String(this.options.streamMaxLen ?? 100_000), "*", "envelope", JSON.stringify(row.envelope));
+            pipeline.xadd(row.stream, "MAXLEN", "~", String(this.options.streamMaxLen ?? configuredStreamMaxLen()), "*", "envelope", JSON.stringify(row.envelope));
         }
         const publishResults = await pipeline.exec();
         if (!publishResults) {
