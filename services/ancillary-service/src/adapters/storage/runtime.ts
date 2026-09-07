@@ -1,7 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Redis } from "ioredis";
-import { MigrationRunner, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, ProcessedEventsGuard, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
+import { MigrationRunner, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, ProcessedEventsGuard, checkPostgresReadiness, connectRedisWithRetry, createPostgresPool, createRedisClient, redisClientLiveness, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import { type Pool } from "pg";
 import { AncillaryApplicationService } from "../../application.js";
 import { HttpFarePricingGateway, type AncillaryPricingGateway } from "../../pricing.js";
@@ -12,9 +11,10 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
   const pool = createPostgresPool();
   const migrations = new MigrationRunner(pool, migrationsDirectory());
   try { await migrations.apply(); } catch (error) { console.error(sanitizedErrorForLog(error)); }
-  const redis = new Redis(redisUrl, { lazyConnect: true });
-  await redis.connect();
-  const relay = new OutboxRelay(pool, redis, { pollIntervalMs: 250, onFailure: (error) => console.error(sanitizedErrorForLog(error)) });
+  // createRedisClient attaches an "error" listener and an infinite capped backoff retry strategy, and registers a liveness component; `new Redis(url)` got none of that (2026-09-06 outage).
+  const redis = createRedisClient(redisUrl, {}, "ancillary-outbox");
+  await connectRedisWithRetry(redis, "ancillary-outbox");
+  const relay = new OutboxRelay(pool, redis, { pollIntervalMs: 250, name: "ancillary-outbox-relay", onFailure: (error) => console.error(sanitizedErrorForLog(error)) });
   const pricingGateway = farePricingGatewayFromEnv();
   relay.start();
   return {
@@ -26,7 +26,7 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
       if (!await guard.tryStart(envelope.eventId, stream)) return "ack";
       return application.handleJourneyOrderCancelled(envelope);
     }, pricingGateway),
-    stop: async () => { await relay.stop(); await Promise.allSettled([redis.quit(), pool.end()]); },
+    stop: async () => { await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
 }
 async function withAncillaryTransaction<T>(pool: Pool, operation: (application: AncillaryApplicationService, client: any) => Promise<T>, pricingGateway?: AncillaryPricingGateway): Promise<T> {

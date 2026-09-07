@@ -1,13 +1,13 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Redis } from "ioredis";
 import type { Pool } from "pg";
 
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 import { InMemoryMemberRepository, LoyaltyMembershipApplicationService, type MemberRepository } from "./application.js";
 import { Member, type MemberSnapshot, type SeatClass } from "./domain.js";
 import { type EventEnvelope, type EventPublisher } from "./ports.js";
+import { superviseSubscribe, type SubscribeSupervisor, type SupervisedConsumer, type SuperviseSubscribeOptions } from "./subscriber-retry.js";
 import {
   MigrationRunner,
   OutboxAppender,
@@ -16,7 +16,10 @@ import {
   RedisStreamEventPublisher,
   RedisStreamEventSubscriber,
   checkPostgresReadiness,
+  connectRedisWithRetry,
   createPostgresPool,
+  createRedisClient,
+  redisClientLiveness,
   type IdempotencyStore,
 } from "@trainticket/ts-kit";
 
@@ -45,7 +48,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const publisher = storage ? storage.publisher : new RedisStreamEventPublisher();
   const repository = storage?.repository ?? new InMemoryMemberRepository();
   const application = new LoyaltyMembershipApplicationService(repository, publisher);
-  const subscriber = await startSubscriber(application);
+  const subscriber = startSubscriber(application);
 
   const app = createApp({
     instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
@@ -53,7 +56,13 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     publisher,
     idempotencyStore: storage?.idempotencyStore,
     storage,
+    eventConsumption: subscriber ? () => subscriber.state() : undefined,
   });
+  // Wait for the FIRST subscribe attempt only. Success means consumption is
+  // live before we accept traffic; failure means the supervisor is retrying in
+  // the background and we start serving HTTP anyway rather than crash-looping
+  // on a dependency that a restart cannot fix.
+  await subscriber?.settled();
   app.addHook("onClose", async () => {
     await subscriber?.close();
     if (storage) {
@@ -66,10 +75,39 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   return app;
 }
 
-async function startSubscriber(application: LoyaltyMembershipApplicationService): Promise<RedisStreamEventSubscriber | undefined> {
-  if (!process.env.REDIS_URL) {
+/**
+ * Start stream consumption, retrying subscribe in the background forever.
+ *
+ * Previously this awaited `subscribe()` once and, on failure, logged a warning
+ * and returned `undefined` -- leaving the process serving HTTP with no event
+ * consumption at all, permanently and silently, behind a green `/healthz`. No
+ * `redis-consumer.*` component was ever registered on that path, so the
+ * never-healthy guard (correctly) prevented liveness from ever firing, and a
+ * restart would not have helped because the failure recurs at subscribe time.
+ *
+ * A subscribe failure is now transient: `superviseSubscribe` keeps retrying
+ * with capped exponential backoff until it lands, at which point ts-kit
+ * registers `redis-consumer.loyalty-membership` and the existing liveness path
+ * takes over for any LATER wedge.
+ */
+export function startSubscriber<T extends SupervisedConsumer = RedisStreamEventSubscriber>(
+  application: LoyaltyMembershipApplicationService,
+  overrides: Pick<SuperviseSubscribeOptions<T>, "subscribe" | "backoffMs" | "sleep" | "log"> | undefined = undefined,
+): SubscribeSupervisor | undefined {
+  if (!overrides && !process.env.REDIS_URL) {
     return undefined;
   }
+  return superviseSubscribe<SupervisedConsumer>({
+    ...overrides,
+    // A fresh subscriber per attempt: a RedisEventSubscriber whose subscribe()
+    // rejected has set `stopped = true` for good, so reusing it would register
+    // a healthy consumer component whose loops exit immediately -- a green
+    // probe over silent non-consumption.
+    subscribe: overrides?.subscribe ?? (() => subscribeOnce(application)),
+  });
+}
+
+async function subscribeOnce(application: LoyaltyMembershipApplicationService): Promise<RedisStreamEventSubscriber> {
   const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "dlq" });
   try {
     await subscriber.subscribe([JOURNEY_ORDER_STREAM, PAYMENT_STREAM, POST_SALES_STREAM], "loyalty-membership", consumerName(), async (envelope) => {
@@ -89,15 +127,11 @@ async function startSubscriber(application: LoyaltyMembershipApplicationService)
     });
     return subscriber;
   } catch (error) {
+    // Release this attempt's client and liveness component before the retry
+    // creates the next one, so failed attempts cannot accumulate.
     await subscriber.stop().catch(() => undefined);
     await subscriber.close().catch(() => undefined);
-    console.warn({
-      service: "loyalty-membership",
-      dependency: "redis",
-      message: "event subscriber unavailable; HTTP API starting without stream consumption",
-      errorName: error instanceof Error ? error.name : "UnknownError",
-    });
-    return undefined;
+    throw error;
   }
 }
 
@@ -149,6 +183,7 @@ export async function handlePaymentCaptured(application: LoyaltyMembershipApplic
     correlationId: envelope.correlationId,
     causationId: envelope.eventId,
     seatClass: optionalSeatClass(payload.seatClass),
+    travelDate: optionalTravelDate(payload),
     routeCode: optionalStringField(payload.routeCode),
     routeName: optionalStringField(payload.routeName),
     isHoliday: typeof payload.isHoliday === "boolean" ? payload.isHoliday : undefined,
@@ -191,10 +226,14 @@ export type LoyaltyStorage = Readonly<{
 export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Promise<LoyaltyStorage> {
   const migrations = new MigrationRunner(pool, join(dirname(fileURLToPath(import.meta.url)), "..", "migrations"));
   await migrations.apply();
-  const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { lazyConnect: true });
+  // createRedisClient attaches an "error" listener and an infinite capped
+  // backoff retry strategy, and registers a liveness component; `new Redis`
+  // got none of that (2026-09-06 outage).
+  const redis = createRedisClient(process.env.REDIS_URL ?? "redis://localhost:6379", {}, "loyalty-membership-outbox");
+  await connectRedisWithRetry(redis, "loyalty-membership-outbox");
   const repository = new PostgresMemberRepository(pool);
   const publisher = new TransactionalOutboxPublisher(new OutboxAppender(pool));
-  const relay = new OutboxRelay(pool, redis, { onFailure: (error: unknown) => console.warn({ service: "loyalty-membership", dependency: "outbox", errorName: error instanceof Error ? error.name : "UnknownError" }) });
+  const relay = new OutboxRelay(pool, redis, { name: "loyalty-membership-outbox-relay", onFailure: (error: unknown) => console.warn({ service: "loyalty-membership", dependency: "outbox", errorName: error instanceof Error ? error.name : "UnknownError" }) });
   relay.start();
   const idempotencyStore = new PostgresIdempotencyStore(pool);
   return {
@@ -205,6 +244,7 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
     runCommand: async (operation) => operation(new LoyaltyMembershipApplicationService(repository, publisher)),
     stop: async () => {
       await relay.stop();
+      redisClientLiveness(redis)?.dispose();
       await redis.quit();
       await pool.end();
     },
@@ -318,6 +358,38 @@ function postSalesAppliedRefunded(resultSummary?: Record<string, unknown>, refun
   if (typeof resultSummary.refund === "boolean") return resultSummary.refund;
   if (typeof resultSummary.refunded === "boolean") return resultSummary.refunded;
   return true;
+}
+
+/**
+ * The date the member actually TRAVELS, when the upstream event carries it.
+ *
+ * The weekend/holiday accrual bonuses are defined against the travel date, not
+ * the purchase or capture date. `PaymentCaptured` is not currently specified to
+ * carry one (docs/08-contracts/events/payment.md), so this returns undefined for
+ * today's traffic and the domain awards the base rate rather than inventing a
+ * date -- see the note on `PointsCalculationInput`. The aliases follow the
+ * tolerant-reader precedent in services/reporting (`serviceDate`/`travelDate`/
+ * `departureDate`), so once any producer starts emitting one of these fields the
+ * bonus applies with no further change here.
+ *
+ * Accepts a full RFC3339 timestamp or a bare `YYYY-MM-DD` operating date. A
+ * value that is present but unparseable is ignored rather than thrown on: a
+ * malformed optional enrichment field must not stop the member being credited.
+ */
+function optionalTravelDate(payload: Record<string, unknown>): Date | undefined {
+  for (const field of ["travelDate", "serviceDate", "departureDate", "departureTime"]) {
+    const raw = optionalStringField(payload[field]);
+    if (!raw) {
+      continue;
+    }
+    // A bare YYYY-MM-DD is parsed as UTC midnight by Date, which is what the
+    // UTC-based weekday/holiday checks in the domain expect.
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return undefined;
 }
 
 function optionalSeatClass(value: unknown): SeatClass | undefined {

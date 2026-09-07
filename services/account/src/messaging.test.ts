@@ -19,7 +19,13 @@ class FakeRedisForSubscriber {
 
   async xgroup(): Promise<void> {}
 
-  async call(): Promise<unknown> {
+  async call(command: string): Promise<unknown> {
+    // The subscriber also issues XINFO CONSUMERS (dead-consumer pruning).
+    // Only XREADGROUP may consume a queued read; otherwise the first event
+    // is silently swallowed by the prune call.
+    if (command !== "XREADGROUP") {
+      return [];
+    }
     const next = this.reads.shift();
     if (next instanceof Error) {
       throw next;

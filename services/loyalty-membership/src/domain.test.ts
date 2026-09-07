@@ -26,6 +26,47 @@ describe("points calculation", () => {
     }), 1_800);
   });
 
+  it("scales the same fare by the weekday/weekend/holiday of the travel date supplied", () => {
+    const fare = { currency: "CNY", minorUnits: 50_000 } as const;
+    const base = { fare, seatClass: "SECOND_CLASS", memberTier: "SILVER" } as const;
+
+    // 2026-07-10 Fri, 2026-07-11 Sat, 2026-10-01 Thu (National Day).
+    const weekday = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-07-10T00:00:00.000Z") });
+    const weekend = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-07-11T00:00:00.000Z") });
+    const holiday = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-10-01T00:00:00.000Z") });
+
+    assert.equal(weekday, 500);
+    assert.equal(weekend, 750);
+    assert.equal(holiday, 1_000);
+    // The three must differ, otherwise the travel date is not reaching the
+    // multipliers at all -- which is exactly the bug this guards.
+    assert.equal(new Set([weekday, weekend, holiday]).size, 3);
+  });
+
+  it("awards the base rate when no travel date is known instead of guessing one", () => {
+    const fare = { currency: "CNY", minorUnits: 50_000 } as const;
+
+    const withoutDate = PointsCalculator.calculate({ fare, seatClass: "SECOND_CLASS", memberTier: "SILVER" });
+
+    assert.equal(withoutDate, 500);
+    assert.deepEqual(PointsCalculator.earningRule({ seatClass: "SECOND_CLASS", memberTier: "SILVER" }).bonusConditions, []);
+  });
+
+  it("still honours an explicit upstream isHoliday assertion with no travel date", () => {
+    const fare = { currency: "CNY", minorUnits: 50_000 } as const;
+
+    assert.equal(PointsCalculator.calculate({ fare, seatClass: "SECOND_CLASS", memberTier: "SILVER", isHoliday: true }), 1_000);
+  });
+
+  it("prices the birthday-month bonus off the travel month, not a fixed month", () => {
+    const fare = { currency: "CNY", minorUnits: 50_000 } as const;
+    const base = { fare, seatClass: "SECOND_CLASS", memberTier: "SILVER", memberBirthDate: new Date("1990-03-04T00:00:00.000Z") } as const;
+
+    // Travelling in the birthday month (March) doubles; travelling in July does not.
+    assert.equal(PointsCalculator.calculate({ ...base, travelDate: new Date("2026-03-11T00:00:00.000Z") }), 1_000);
+    assert.equal(PointsCalculator.calculate({ ...base, travelDate: new Date("2026-07-10T00:00:00.000Z") }), 500);
+  });
+
   it("keeps the backward-compatible helper as one point per CNY", () => {
     assert.equal(pointsForTicketPrice({ currency: "CNY", minorUnits: 0 }), 0);
     assert.equal(pointsForTicketPrice({ currency: "CNY", minorUnits: 100 }), 1);
@@ -98,6 +139,25 @@ describe("Member aggregate", () => {
     assert.equal(earned.points, 500);
     assert.equal(earned.sourceFactRef.eventType, "PAYMENT_CAPTURED");
     assert.equal(earned.sourceFactRef.aggregateId, "ord-001");
+  });
+
+  it("prices accrual off the travel date, not the day the payment was captured", () => {
+    // Same fare, same future trip, bought on a Saturday vs a Monday. The
+    // purchase day must not change the award; only the travel date may.
+    const travelDate = new Date("2026-07-15T08:00:00.000Z"); // Wednesday
+    const boughtOnWeekend = Member.enroll({ accountId: "acct-tv1", memberId: "mem-tv1" })
+      .accrueFromConfirmedOrder({ ...confirmedOrder, accountId: "acct-tv1", sourceEventId: "evt-tv1", confirmedAt: new Date("2026-07-11T10:00:00.000Z"), travelDate });
+    const boughtOnWeekday = Member.enroll({ accountId: "acct-tv2", memberId: "mem-tv2" })
+      .accrueFromConfirmedOrder({ ...confirmedOrder, accountId: "acct-tv2", sourceEventId: "evt-tv2", confirmedAt: new Date("2026-07-13T10:00:00.000Z"), travelDate });
+
+    assert.equal(boughtOnWeekend.member.redeemablePoints, 500);
+    assert.equal(boughtOnWeekday.member.redeemablePoints, 500);
+
+    // And a genuine weekend TRIP does earn the bonus, bought on a weekday.
+    const weekendTrip = Member.enroll({ accountId: "acct-tv3", memberId: "mem-tv3" })
+      .accrueFromConfirmedOrder({ ...confirmedOrder, accountId: "acct-tv3", sourceEventId: "evt-tv3", confirmedAt: new Date("2026-07-13T10:00:00.000Z"), travelDate: new Date("2026-07-11T08:00:00.000Z") });
+
+    assert.equal(weekendTrip.member.redeemablePoints, 750);
   });
 
   it("upgrades immediately to PLATINUM when annual points reach 10000", () => {

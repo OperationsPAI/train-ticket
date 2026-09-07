@@ -3,10 +3,10 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { AncillaryApplicationService, InMemoryAncillaryRepository, isDomainError, type AncillaryRepository } from "./application.js";
 import { serviceProfile } from "./profile.js";
 import { HttpFarePricingGateway, type AncillaryPricingGateway } from "./pricing.js";
-import { InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError as kitSendError, type ErrorEnvelope, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
+import { InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, livenessProbe, requestContext as kitRequestContext, requestFingerprint, sendError as kitSendError, type ErrorEnvelope, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 
 export type HealthStatus = Readonly<{ status: "ok"; service: typeof serviceProfile }>;
-export type ProbeStatus = Readonly<{ status: "ok" | "not_ready"; probe: "live" | "ready" }>;
+export type ProbeStatus = Readonly<{ status: "ok" | "not_ready" | "unhealthy"; probe: "live" | "ready" }>;
 export type ServiceMetadata = Readonly<{ service: typeof serviceProfile; observability: Readonly<{ tracing: "opt-in"; default: "noop" }> }>;
 export type ErrorBody = ErrorEnvelope;
 export type { RequestContext };
@@ -63,10 +63,10 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
   });
 
   app.get("/health", async () => healthBody());
-  app.get("/healthz", async () => healthBody());
+  app.get("/healthz", async (_request, reply) => healthzBody(reply));
   app.get("/metadata", async () => metadata());
-  app.get("/live", async () => probeBody("live"));
-  app.get("/livez", async () => probeBody("live"));
+  app.get("/live", async (_request, reply) => liveBody(reply));
+  app.get("/livez", async (_request, reply) => liveBody(reply));
   app.get("/ready", async (_request, reply) => readyBody(reply, dependencies.storage));
   app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
 
@@ -137,6 +137,56 @@ function quoteInput(request: FastifyRequest): { expectedVersion: number; validit
 type AppRequest = FastifyRequest;
 function healthBody(): HealthStatus { return { status: health(), service: serviceProfile }; }
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus { return { status: health(), probe }; }
+
+/**
+ * Liveness.
+ *
+ * A liveness probe that can never fail is what turned a 10-second Redis
+ * restart into a 20-hour outage: readiness pulled the pod out of the Service
+ * while liveness kept saying 200, so kubelet never restarted the wedged
+ * process.
+ *
+ * This is deliberately NOT a dependency check. `livenessProbe()` reports dead
+ * only once a registered component (Redis connection, stream consumer loop,
+ * outbox relay) has been *continuously* unhealthy past its grace period
+ * (REDIS_LIVENESS_GRACE_MS, default 5 minutes). A transient Redis blip
+ * reconnects in seconds and never trips it; a permanently wedged process
+ * gets restarted.
+ */
+function liveBody(reply: FastifyReply): ProbeStatus {
+  if (reportUnlive(reply)) {
+    return { status: "unhealthy", probe: "live" };
+  }
+  return probeBody("live");
+}
+
+/**
+ * `/healthz` answers the service-profile body here rather than the probe body,
+ * and existing clients depend on that shape, so only the status code changes
+ * when liveness fails.
+ */
+function healthzBody(reply: FastifyReply): HealthStatus | ProbeStatus {
+  return reportUnlive(reply) ? { status: "unhealthy", probe: "live" } : healthBody();
+}
+
+function reportUnlive(reply: FastifyReply): boolean {
+  const probe = livenessProbe();
+  if (probe.live) {
+    return false;
+  }
+  console.error({
+    service: serviceProfile.serviceId,
+    message: "liveness probe failing; process is wedged and only a restart can recover it",
+    failed: probe.failed.map((component) => ({
+      component: component.name,
+      reason: component.reason,
+      unhealthyForMs: component.unhealthyForMs,
+      gracePeriodMs: component.gracePeriodMs,
+    })),
+  });
+  reply.status(503);
+  return true;
+}
 async function readyBody(reply: FastifyReply, storage?: AppStorage): Promise<ProbeStatus> { const ready = storage ? await storage.ready() : true; if (!ready) reply.status(503); return { status: ready ? "ok" : "not_ready", probe: "ready" }; }
 function param(request: FastifyRequest, name: string): string { return (request.params as Record<string, string>)[name] ?? ""; }
 function query(request: FastifyRequest): Record<string, string | undefined> { return request.query as Record<string, string | undefined>; }

@@ -76,6 +76,57 @@ describe("payment event consumption", () => {
     assert.equal(sourceFactRef.eventType, "PAYMENT_CAPTURED");
     assert.equal(sourceFactRef.aggregateId, "ord-pay-msg");
   });
+
+  it("applies the weekend bonus from a travelDate on the event, not the capture day", async () => {
+    const repository = new InMemoryMemberRepository();
+    const service = new LoyaltyMembershipApplicationService(repository, new InMemoryEventPublisher());
+    // Captured on a Monday; the trip itself is on a Saturday.
+    const envelope = createEventEnvelope({
+      eventType: "PaymentCaptured",
+      producer: "payment",
+      payload: {
+        paymentIntentId: "pi-travel",
+        businessRef: "ord-travel",
+        accountId: "acct-travel",
+        capturedAmount: { currency: "CNY", minorUnits: 50_000 },
+        capturedAt: "2026-07-13T10:00:00.000Z",
+        travelDate: "2026-07-11",
+      },
+    });
+
+    await handlePaymentCaptured(service, envelope);
+
+    const member = await repository.findByAccountId("acct-travel");
+    assert.ok(member);
+    // 500 CNY base * 1.5 weekend = 750. Without the travelDate reaching the
+    // domain this would be the unmultiplied 500.
+    assert.equal(member.redeemablePoints, 750);
+  });
+
+  it("accrues the base rate when PaymentCaptured carries no travel date", async () => {
+    const repository = new InMemoryMemberRepository();
+    const service = new LoyaltyMembershipApplicationService(repository, new InMemoryEventPublisher());
+    // Captured on a Sunday, with no travel date at all: the purchase day must
+    // NOT earn a weekend bonus. This is the shape of today's production traffic
+    // and the exact case that was awarding 161 points instead of 107.
+    const envelope = createEventEnvelope({
+      eventType: "PaymentCaptured",
+      producer: "payment",
+      payload: {
+        paymentIntentId: "pi-nodate",
+        businessRef: "ord-nodate",
+        accountId: "acct-nodate",
+        capturedAmount: { currency: "CNY", minorUnits: 50_000 },
+        capturedAt: "2026-09-06T10:00:00.000Z",
+      },
+    });
+
+    await handlePaymentCaptured(service, envelope);
+
+    const member = await repository.findByAccountId("acct-nodate");
+    assert.ok(member);
+    assert.equal(member.redeemablePoints, 500);
+  });
 });
 
 
