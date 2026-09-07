@@ -21,19 +21,36 @@ spec:
         - name: redis
           image: redis:7-alpine
           imagePullPolicy: IfNotPresent
+          # Redis is the transport-only event bus (Streams) for the 38-service
+          # stack; it is NOT a system of record and runs with no persistent
+          # volume by design (see docs/00-current-status.md). AOF/appendonly is
+          # therefore removed: with no mounted volume the AOF was written to the
+          # container's ephemeral filesystem, pure wasted IO/memory that fed the
+          # OOMKill. Recovery is from PostgreSQL via the transactional outbox.
+          #
+          # maxmemory is set explicitly BELOW the container memory limit so Redis
+          # enforces its own bound instead of being killed by the cgroup. It is
+          # set to 768mb against a 1Gi (1024Mi) limit = ~75% headroom ratio; the
+          # ~25% gap covers allocator fragmentation, client/replication buffers
+          # and other RSS overhead that maxmemory (which bounds only the logical
+          # dataset) does not account for. Policy stays noeviction: on an event
+          # bus, refusing writes is safer than silently dropping undelivered
+          # events; the publishers cap stream growth with XADD MAXLEN ~.
           args:
-            - --appendonly
-            - "yes"
+            - --maxmemory
+            - "768mb"
+            - --maxmemory-policy
+            - noeviction
           ports:
             - name: redis
               containerPort: 6379
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 256Mi
             limits:
               cpu: 250m
-              memory: 256Mi
+              memory: 1Gi
           readinessProbe:
             tcpSocket:
               port: redis
