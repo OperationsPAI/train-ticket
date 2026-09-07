@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { context, trace } from "@opentelemetry/api";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 
-import { createEventEnvelope, HandlerError, InMemoryEventSubscriber, RedisEventSubscriber, type EventEnvelope } from "./messaging.js";
+import { configuredStreamMaxLen, createEventEnvelope, DEFAULT_STREAM_MAXLEN, HandlerError, InMemoryEventSubscriber, RedisEventPublisher, RedisEventSubscriber, STREAM_MAXLEN_ENV, streamMaxLen, type EventEnvelope } from "./messaging.js";
 import { initOpenTelemetry } from "./observability.js";
 import { isPrefixedUuidV7, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 
@@ -315,5 +315,71 @@ describe("EventEnvelope trace context", () => {
         process.env.OTEL_TRACES_EXPORTER = previousExporter;
       }
     }
+  });
+});
+describe("stream MAXLEN cap", () => {
+  it("publishes with approximate MAXLEN at the configured cap", async () => {
+    const xadds: unknown[][] = [];
+    const redis = {
+      xadd: async (...args: unknown[]) => { xadds.push(args); return "1-1"; },
+    };
+    const publisher = new RedisEventPublisher(redis as never);
+
+    await publisher.publish(createEventEnvelope({ eventType: "Capped", producer: "ts-kit-test", payload: {} }));
+
+    // Assert on the real command arguments rather than trusting the code path.
+    assert.deepEqual(xadds[0].slice(0, 5), ["events:ts-kit-test", "MAXLEN", "~", configuredStreamMaxLen(), "*"]);
+  });
+
+  it("caps DLQ writes with approximate MAXLEN at the configured cap", async () => {
+    const xadds: unknown[][] = [];
+    const redis = {
+      xadd: async (...args: unknown[]) => { xadds.push(args); return "1-1"; },
+      xack: async () => 1,
+    };
+    const subscriber = new RedisEventSubscriber(redis as never);
+    const envelope = createEventEnvelope({ eventType: "Poisoned", producer: "ts-kit-test", payload: {} });
+    const entry: [string, string[]] = ["1-0", ["envelope", JSON.stringify(envelope)]];
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+         .processEntry("events:ts-kit-test", "ts-kit", "consumer-a", entry, () => { throw new HandlerError("fatal", "bad payload"); });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(xadds[0].slice(0, 5), ["events:ts-kit-test:dlq", "MAXLEN", "~", configuredStreamMaxLen(), "*"]);
+  });
+
+  it("defaults to java-kit's cap and env var name", () => {
+    assert.equal(DEFAULT_STREAM_MAXLEN, 10_000);
+    assert.equal(STREAM_MAXLEN_ENV, "EVENT_STREAM_MAXLEN");
+  });
+
+  it("honours a configured override", () => {
+    assert.equal(streamMaxLen("2500"), 2500);
+    assert.equal(streamMaxLen(" 750 "), 750);
+  });
+
+  it("falls back to the default when unset, blank, non-numeric or non-positive", () => {
+    // Falling back beats trimming to zero: a cap of 0 would discard every event.
+    const warnings: unknown[] = [];
+    const originalWarn = console.warn;
+    console.warn = (value?: unknown) => { warnings.push(value); };
+    try {
+      assert.equal(streamMaxLen(undefined), DEFAULT_STREAM_MAXLEN);
+      assert.equal(streamMaxLen(""), DEFAULT_STREAM_MAXLEN);
+      assert.equal(streamMaxLen("   "), DEFAULT_STREAM_MAXLEN);
+      assert.equal(streamMaxLen("not-a-number"), DEFAULT_STREAM_MAXLEN);
+      assert.equal(streamMaxLen("0"), DEFAULT_STREAM_MAXLEN);
+      assert.equal(streamMaxLen("-5"), DEFAULT_STREAM_MAXLEN);
+      assert.equal(streamMaxLen("12.5"), DEFAULT_STREAM_MAXLEN);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 4);
+    assert.match(String(warnings[0]), /is not a positive integer/u);
   });
 });

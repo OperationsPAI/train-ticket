@@ -102,6 +102,15 @@ export declare class InMemoryEventSubscriber implements EventSubscriber {
     emit(envelope: EventEnvelope): Promise<boolean>;
     reset(): void;
 }
+export declare const STREAM_MAXLEN_ENV = "EVENT_STREAM_MAXLEN";
+export declare const DEFAULT_STREAM_MAXLEN = 10000;
+/**
+ * Resolves the per-stream entry cap. A blank, non-numeric or non-positive value falls
+ * back to the default rather than throwing or trimming to zero: a misconfigured cap that
+ * silently discarded every published event would be the worst outcome here.
+ */
+export declare function streamMaxLen(configured: string | undefined): number;
+export declare function configuredStreamMaxLen(): number;
 export type SubscriberLoopFailureHandler = (error: unknown) => void;
 /**
  * Reconnect backoff for every Redis client in this codebase.
