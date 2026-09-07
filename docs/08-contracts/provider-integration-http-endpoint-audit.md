@@ -92,12 +92,12 @@ Findings:
   or the cancellation path.
 
 ```bash
-git grep -n -I -E 'provider-reservations|provider-integration:8080|events:booking-orchestration|SegmentReservationRequested|SegmentBookingCancelled' -- deploy/loadgen deploy/e2e services/booking-orchestration services/provider-integration docs/08-contracts docs/02-domains/provider-integration.md docs/01-ddd-high-level/context-map.md docs/03-ddd-final/phase-1-contract.md
+git grep -n -I -E 'provider-reservations|provider-integration:8080|events:booking-orchestration|SegmentReservationRequested|SegmentBookingCancelled' -- deploy/loadgen-go deploy/e2e services/booking-orchestration services/provider-integration docs/08-contracts docs/02-domains/provider-integration.md docs/01-ddd-high-level/context-map.md docs/03-ddd-final/phase-1-contract.md
 ```
 
 Findings:
 
-- `deploy/loadgen` reads `events:booking-orchestration` for observation, but
+- `deploy/loadgen-go` reads `events:booking-orchestration` for observation, but
   does not call Provider Integration HTTP.
 - `deploy/e2e` inspects booking events and calls other HTTP APIs, but does not
   call Provider Integration reservation/cancel HTTP endpoints.

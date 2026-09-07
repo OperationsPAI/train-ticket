@@ -11,16 +11,20 @@ import com.trainticket.platformkit.idempotency.UuidV7;
 import com.trainticket.platformkit.messaging.EventEnvelopeFactory;
 import com.trainticket.platformkit.messaging.EventPublisher;
 import com.trainticket.platformkit.messaging.PrefixedIds;
+import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class MarketingCampaignService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(MarketingCampaignService.class);
     private static final String PRODUCER = "marketing-campaign";
 
     private final Clock clock;
@@ -49,8 +53,23 @@ public class MarketingCampaignService {
             command.window(),
             clock.instant()
         );
-        repository.saveCampaign(campaign);
+        try {
+            repository.saveCampaign(campaign);
+        } catch (DuplicateBusinessKeyException exception) {
+            // The caller reused an externalKey another campaign already owns. Retrying the identical request can
+            // never succeed; 409 is the correct answer and the externalKey belongs in the log so this is diagnosable
+            // server-side instead of only from the client's status codes.
+            LOGGER.warn("DraftCampaign rejected externalKey={} campaignId={} correlationId={} reason=DUPLICATE_EXTERNAL_KEY",
+                command.externalKey(), campaign.campaignId(), correlationId);
+            throw exception;
+        } catch (OptimisticConcurrencyException exception) {
+            LOGGER.warn("DraftCampaign rejected externalKey={} campaignId={} correlationId={} reason=SNAPSHOT_VERSION_CONFLICT",
+                command.externalKey(), campaign.campaignId(), correlationId);
+            throw exception;
+        }
         publish(campaign.domainEvents(), correlationId);
+        LOGGER.info("DraftCampaign accepted campaignId={} externalKey={} correlationId={}",
+            campaign.campaignId(), campaign.externalKey(), correlationId);
         return detail(campaign);
     }
 

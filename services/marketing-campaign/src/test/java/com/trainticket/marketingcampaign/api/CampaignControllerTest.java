@@ -1,5 +1,7 @@
 package com.trainticket.marketingcampaign.api;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -61,5 +63,37 @@ class CampaignControllerTest {
                 .content("{\"externalKey\":\"bad\",\"name\":\"Bad\"}"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.error").value("VALIDATION_FAILED"));
+    }
+
+    /**
+     * A reused externalKey is a real duplicate, so 409 is the correct answer and the uniqueness constraint stays.
+     * What is asserted here is that the rejection names the offending externalKey instead of reporting a version
+     * conflict on a campaignId the caller never supplied.
+     */
+    @Test
+    void duplicateExternalKeyIsRejectedAsConflictNamingTheKey() throws Exception {
+        String body = """
+            {
+              "externalKey":"autumn-2026",
+              "name":"Autumn sale",
+              "window":{"validFrom":"2026-09-01T00:00:00Z","validUntil":"2026-12-01T00:00:00Z"}
+            }
+            """;
+
+        mockMvc.perform(post("/api/v1/campaigns")
+                .header("Idempotency-Key", UuidV7.generate())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/campaigns")
+                .header("Idempotency-Key", UuidV7.generate())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("CONFLICT"))
+            .andExpect(jsonPath("$.message").value(containsString("externalKey")))
+            .andExpect(jsonPath("$.message").value(containsString("autumn-2026")))
+            .andExpect(jsonPath("$.message").value(not(containsString("snapshot version conflict"))));
     }
 }

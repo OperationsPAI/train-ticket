@@ -1,6 +1,7 @@
 package com.trainticket.marketingcampaign.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.trainticket.marketingcampaign.domain.CampaignWindow;
 import com.trainticket.marketingcampaign.domain.Money;
@@ -80,6 +81,36 @@ class MarketingCampaignServiceTest {
         MarketingCampaignService.BatchDetail running = service.startBatch(planned.issuanceBatchId(), null);
 
         assertThat(running.status()).isEqualTo("RUNNING");
+    }
+
+    /**
+     * Reusing an externalKey another campaign already owns is a genuine duplicate: the constraint is doing its job.
+     * The requirement is that the failure is reported as a duplicate business key naming the externalKey, not as an
+     * optimistic-concurrency conflict on a campaignId the caller never saw.
+     */
+    @Test
+    void redraftingWithATakenExternalKeyReportsADuplicateBusinessKey() {
+        service.draftCampaign(new MarketingCampaignService.DraftCampaignCommand("summer-2026", "Summer", window()), null);
+
+        assertThatThrownBy(() -> service.draftCampaign(
+            new MarketingCampaignService.DraftCampaignCommand("summer-2026", "Summer again", window()),
+            null
+        ))
+            .isInstanceOf(DuplicateBusinessKeyException.class)
+            .hasMessageContaining("externalKey")
+            .hasMessageContaining("summer-2026")
+            .hasMessageNotContaining("snapshot version conflict");
+    }
+
+    @Test
+    void distinctExternalKeysBothDraftSuccessfully() {
+        MarketingCampaignService.CampaignDetail first = service.draftCampaign(
+            new MarketingCampaignService.DraftCampaignCommand("promo-a", "Promo A", window()), null);
+        MarketingCampaignService.CampaignDetail second = service.draftCampaign(
+            new MarketingCampaignService.DraftCampaignCommand("promo-b", "Promo B", window()), null);
+
+        assertThat(first.campaignId()).isNotEqualTo(second.campaignId());
+        assertThat(second.status()).isEqualTo("DRAFT");
     }
 
     private static CampaignWindow window() {
