@@ -1,0 +1,50 @@
+# Values for the local kind integration cluster.
+#
+# The chart defaults target a real cluster (opspai/*:latest pulled from a
+# registry, a named StorageClass). kind is different in two ways that matter:
+#
+#   1. Images are built locally by deploy/build-images.sh and side-loaded with
+#      `kind load docker-image`, so they are tagged train-ticket/<svc>:local and
+#      exist only on the node. imagePullPolicy MUST stay IfNotPresent or the
+#      kubelet will try to pull a tag that no registry serves.
+#   2. kind ships a single `standard` StorageClass (local-path provisioner).
+#      Note it is hostPath-backed and does NOT enforce the requested size, so a
+#      PVC request here is a declaration of intent, not a cap -- for Jaeger the
+#      TTL is the only hard bound. See docs/07-observability/README.md.
+#
+# Resource limits are deliberately generous rather than minimal. This node has
+# ~62Gi and only a few cores committed, and being frugal has already cost three
+# OOMKills (Redis x3 at 256Mi, Postgres x2 at 512Mi, Jaeger x13 at 256Mi) plus
+# one connection-exhaustion outage. Headroom is cheaper than another one.
+
+global:
+  imageOrg: train-ticket
+  imageTag: local
+  imagePullPolicy: IfNotPresent
+
+postgres:
+  storage:
+    storageClass: standard
+  instances:
+    core:
+      # 500 connections is the sizing constraint, not an aspiration: a rolling
+      # restart holds old and new pods' pools concurrently, so the steady-state
+      # count roughly doubles for the duration. 250 was not enough and Postgres
+      # started refusing connections mid-deploy.
+      maxConnections: 500
+      sharedBuffers: 1GB
+      workMem: 8MB
+      resources:
+        requests: { cpu: 250m, memory: 1Gi }
+        limits: { cpu: '4', memory: 4Gi }
+
+redis:
+  maxmemory: 3gb
+  maxmemoryPolicy: noeviction
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }
+    limits: { cpu: '2', memory: 4Gi }
+
+jaeger:
+  storage:
+    storageClass: standard
