@@ -19,14 +19,18 @@ import {
 import { type Pool } from "pg";
 
 import { AccountApplicationService } from "../../application.js";
+import { registrationAdmissionSettings, type RegistrationAdmission } from "../../admission.js";
 
 import { PostgresAccountRepository } from "./account-repository.js";
+import { PostgresRegistrationAdmission } from "./registration-admission.js";
 
 export type AccountStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */
   schema: () => SchemaDetail;
   idempotencyStore: PostgresIdempotencyStore;
+  /** The per-client new-account budget, counted in this service's own store. */
+  registrationAdmission: RegistrationAdmission;
   runCommand: <T>(operation: (application: AccountApplicationService) => Promise<T>) => Promise<T>;
   stop: () => Promise<void>;
 }>;
@@ -59,6 +63,11 @@ export async function startAccountStorage(): Promise<AccountStorageRuntime> {
     ready: migrationsAwareReadiness(migrations, pool),
     schema: () => migrations.detail(),
     idempotencyStore: new PostgresIdempotencyStore(pool),
+    // Read once, at startup: a budget that could change while the pod serves
+    // would let two replicas of one release count two different windows, and a
+    // settings file that cannot be read has to be a boot failure rather than a
+    // service that admits everything.
+    registrationAdmission: new PostgresRegistrationAdmission(pool, registrationAdmissionSettings()),
     runCommand: (operation) => withAccountTransaction(pool, operation),
     stop: async () => {
       // Stop the migration retry first: otherwise a shutdown during the retry

@@ -1,0 +1,5 @@
+{
+  "windowSeconds": 30,
+  "maxNewAccountsPerClient": 1200,
+  "clientHeader": "x-forwarded-for"
+}
