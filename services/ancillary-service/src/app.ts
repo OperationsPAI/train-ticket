@@ -3,10 +3,11 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { AncillaryApplicationService, InMemoryAncillaryRepository, isDomainError, type AncillaryRepository } from "./application.js";
 import { serviceProfile } from "./profile.js";
 import { HttpFarePricingGateway, type AncillaryPricingGateway } from "./pricing.js";
-import { InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, livenessProbe, requestContext as kitRequestContext, requestFingerprint, sendError as kitSendError, type ErrorEnvelope, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
+import { InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, livenessProbe, requestContext as kitRequestContext, requestFingerprint, sendError as kitSendError, type ErrorEnvelope, type EventPublisher, type IdempotencyStore, type RequestContext, type SchemaDetail } from "@trainticket/ts-kit";
 
 export type HealthStatus = Readonly<{ status: "ok"; service: typeof serviceProfile }>;
-export type ProbeStatus = Readonly<{ status: "ok" | "not_ready" | "unhealthy"; probe: "live" | "ready" }>;
+/** `schema` is present only while migrations are still being retried, so the happy-path body shape is unchanged. See `readyBody`. */
+export type ProbeStatus = Readonly<{ status: "ok" | "not_ready" | "unhealthy"; probe: "live" | "ready"; schema?: SchemaDetail }>;
 export type ServiceMetadata = Readonly<{ service: typeof serviceProfile; observability: Readonly<{ tracing: "opt-in"; default: "noop" }> }>;
 export type ErrorBody = ErrorEnvelope;
 export type { RequestContext };
@@ -18,7 +19,7 @@ export type InstrumentationHooks = Readonly<{ onRequest?: (context: RequestConte
 type OTelSpan = Readonly<{ setAttribute?: (key: string, value: string | number) => void; setAttributes?: (attributes: Record<string, string | number>) => void; end?: () => void }>;
 type OTelTracer = Readonly<{ startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan }>;
 
-type AppStorage = Readonly<{ ready: () => boolean | Promise<boolean>; runCommand?: <T>(operation: (service: AncillaryApplicationService) => Promise<T>) => Promise<T> }>;
+type AppStorage = Readonly<{ ready: () => boolean | Promise<boolean>; /** Optional migration retry state; reported on `/readyz` while migrations are still being applied. */ schema?: () => SchemaDetail; runCommand?: <T>(operation: (service: AncillaryApplicationService) => Promise<T>) => Promise<T> }>;
 type AppDependencies = Readonly<{ repository?: AncillaryRepository; publisher?: EventPublisher; pricingGateway?: AncillaryPricingGateway; idempotencyStore?: IdempotencyStore; storage?: AppStorage }>;
 
 const defaultRepository = new InMemoryAncillaryRepository();
@@ -187,7 +188,31 @@ function reportUnlive(reply: FastifyReply): boolean {
   reply.status(503);
   return true;
 }
-async function readyBody(reply: FastifyReply, storage?: AppStorage): Promise<ProbeStatus> { const ready = storage ? await storage.ready() : true; if (!ready) reply.status(503); return { status: ready ? "ok" : "not_ready", probe: "ready" }; }
+/**
+ * Readiness.
+ *
+ * While database migrations are still being retried this stays 503 and the body
+ * says why (`schema: { schema: "migrating", attempts, retryingForMs, lastError }`).
+ * That is the OPPOSITE of the decision taken for a retrying event subscriber,
+ * which keeps `/readyz` at 200, and deliberately so: a dead consumer still
+ * leaves a fully working HTTP API, whereas a missing schema means every request
+ * hits a table that does not exist. Serving reads against a missing schema is
+ * worse than serving them with a dead consumer -- an honest 503 beats a 500
+ * that a caller may treat as terminal. See `superviseMigrations` in ts-kit for
+ * the full readiness/liveness reasoning.
+ *
+ * The change from the pre-fix behaviour is not the 503 itself -- that was
+ * already the gate -- but that it is now TEMPORARY: the background retry clears
+ * it when the database returns, instead of the pod needing a manual
+ * `kubectl rollout restart`.
+ */
+async function readyBody(reply: FastifyReply, storage?: AppStorage): Promise<ProbeStatus> {
+  const ready = storage ? await storage.ready() : true;
+  if (ready) return { status: "ok", probe: "ready" };
+  reply.status(503);
+  const schema = storage?.schema?.();
+  return schema && schema.schema !== "applied" ? { status: "not_ready", probe: "ready", schema } : { status: "not_ready", probe: "ready" };
+}
 function param(request: FastifyRequest, name: string): string { return (request.params as Record<string, string>)[name] ?? ""; }
 function query(request: FastifyRequest): Record<string, string | undefined> { return request.query as Record<string, string | undefined>; }
 function limit(request: FastifyRequest): number { return Math.min(Number(query(request).limit ?? 20), 100); }

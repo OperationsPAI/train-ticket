@@ -21,6 +21,7 @@ import {
   type ErrorEnvelope,
   type IdempotencyStore,
   type RequestContext,
+  type SchemaDetail,
 } from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
 import type { EventConsumptionState } from "./subscriber-retry.js";
@@ -39,6 +40,11 @@ export type ProbeStatus = Readonly<{
    * unchanged. See `readyBody` for why this is reported rather than gated on.
    */
   eventConsumption?: EventConsumptionState;
+  /**
+   * Present only while database migrations are still being retried, so the
+   * happy-path body shape is unchanged. See `readyBody`.
+   */
+  schema?: SchemaDetail;
 }>;
 
 export type ServiceMetadata = Readonly<{
@@ -74,6 +80,8 @@ export type AppOptions = Readonly<{
 
 export type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
+  /** Optional migration retry state; reported on `/readyz` while migrations are still being applied. */
+  schema?: () => SchemaDetail;
   runCommand?: <T>(operation: (application: LoyaltyMembershipApplicationService) => Promise<T>) => Promise<T>;
 }>;
 
@@ -336,12 +344,29 @@ function healthBody(): HealthStatus {
  *
  * Postgres readiness keeps its existing 503 behaviour: that one genuinely does
  * break the HTTP API, so removing the endpoint is correct there.
+ *
+ * DATABASE MIGRATIONS are the deliberate mirror image of the subscriber case
+ * above, and the contrast is why both decisions are right. A retrying
+ * SUBSCRIBER leaves the HTTP API fully working, so 503 would only destroy
+ * working capacity. Retrying MIGRATIONS mean the tables that enroll, redeem and
+ * member reads all touch do not exist yet, so every request would 500 with
+ * `relation "members" does not exist`; serving reads against a missing schema
+ * is worse than serving them with a dead consumer, and an honest 503 beats a
+ * 500 a caller may treat as terminal. Migrations therefore keep the 503 -- now
+ * reporting `schema` in the body so the state is diagnosable -- while the retry
+ * makes that 503 temporary instead of a wedge or a crash loop. See
+ * `superviseMigrations` in ts-kit for the full reasoning, including why
+ * liveness stays green throughout.
  */
 async function readyBody(reply: FastifyReply, storage?: AppStorage, eventConsumption?: () => EventConsumptionState): Promise<ProbeStatus> {
   const consumption = eventConsumption?.();
   if (storage && !(await storage.ready())) {
     reply.status(503);
-    return consumption ? { status: "not_ready", probe: "ready", eventConsumption: consumption } : { status: "not_ready", probe: "ready" };
+    const schema = storage.schema?.();
+    const body: ProbeStatus = consumption
+      ? { status: "not_ready", probe: "ready", eventConsumption: consumption }
+      : { status: "not_ready", probe: "ready" };
+    return schema && schema.schema !== "applied" ? { ...body, schema } : body;
   }
   return consumption ? { status: "ok", probe: "ready", eventConsumption: consumption } : probeBody("ready");
 }

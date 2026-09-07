@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MigrationRunner, OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, connectRedisWithRetry, createPostgresPool, createRedisClient, redisClientLiveness, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
+import { OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, connectRedisWithRetry, createPostgresPool, createRedisClient, migrationsAwareReadiness, redisClientLiveness, startMigrations, streamForProducer, withTransaction, type EventEnvelope, type SchemaDetail } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
@@ -120,6 +120,8 @@ export class ProcessedEventRepository {
 
 export type WaitlistStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
+  /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */
+  schema: () => SchemaDetail;
   idempotencyStore: PostgresIdempotencyStore;
   runCommand: <T>(operation: (repository: WaitlistRepository, publisher: TransactionalOutboxPublisher) => Promise<T>) => Promise<T>;
   runConsumedEvent: <T>(eventId: string, stream: string, operation: (repository: WaitlistRepository, publisher: TransactionalOutboxPublisher) => Promise<T>) => Promise<T | undefined>;
@@ -128,22 +130,24 @@ export type WaitlistStorageRuntime = Readonly<{
 
 export async function startWaitlistStorage(redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"): Promise<WaitlistStorageRuntime> {
   const pool = createPostgresPool();
-  const migrations = new MigrationRunner(pool, migrationsDirectory());
-  try { await migrations.apply(); } catch (error) { console.error(sanitizedErrorForLog(error)); }
+  // A migration failure used to be caught, logged once and abandoned, which wedged `isReady` false and `/readyz` at 503 for the life of the process (2026-09-07 Postgres OOMKill). `startMigrations` awaits the first attempt -- so a successful boot is unchanged and the schema is in place before we serve -- and, if it failed, keeps retrying in the background on the shared capped-backoff schedule until the database comes back. See `superviseMigrations` for the readiness/liveness reasoning.
+  const migrations = await startMigrations(pool, migrationsDirectory(), { service: "waitlist" });
   // createRedisClient attaches an "error" listener and an infinite capped backoff retry strategy, and registers a liveness component; `new Redis(url)` got none of that (2026-09-06 outage).
   const redis = createRedisClient(redisUrl, {}, "waitlist-outbox");
   await connectRedisWithRetry(redis, "waitlist-outbox");
   const relay = new OutboxRelay(pool, redis, { pollIntervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "50", 10), name: "waitlist-outbox-relay", onFailure: (error) => console.error(sanitizedErrorForLog(error)) });
   relay.start();
   return {
-    ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
+    ready: migrationsAwareReadiness(migrations, pool),
+    schema: () => migrations.detail(),
     idempotencyStore: new PostgresIdempotencyStore(pool),
     runCommand: (operation) => withTransaction(pool, async (client) => operation(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)))),
     runConsumedEvent: (eventId, stream, operation) => withTransaction(pool, async (client) => {
       if (!await new ProcessedEventRepository(client).record(eventId, stream)) return undefined;
       return operation(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)));
     }),
-    stop: async () => { await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
+    // Stop the migration retry first: otherwise a shutdown during the retry window leaves a backoff timer running and can issue queries against a pool that is being torn down.
+    stop: async () => { await migrations.stop(); await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
 }
 
