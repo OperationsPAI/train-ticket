@@ -20,13 +20,81 @@ import java.util.concurrent.ExecutionException;
 import org.slf4j.LoggerFactory;
 
 public final class LettuceRedisStreamOperations implements RedisStreamOperations {
+    static final String STREAM_MAXLEN_ENV = "EVENT_STREAM_MAXLEN";
+    static final long DEFAULT_STREAM_MAXLEN = 10_000L;
+    static final String AUTOCLAIM_MIN_IDLE_ENV = "AUTOCLAIM_MIN_IDLE_MS";
+    /**
+     * How long a message must sit pending before another consumer may reclaim it. Every reclaim
+     * increments Redis' redelivery counter, so this is also the tick rate of that counter: it must
+     * be long enough that an ordinary backlog cannot masquerade as repeated failure, and it should
+     * comfortably exceed the slowest expected handler. 5 minutes matches the idle window already
+     * used to declare a consumer dead.
+     */
+    static final long DEFAULT_AUTOCLAIM_MIN_IDLE_MS = 5 * 60 * 1_000L;
+
     private static final long BLOCK_MS = Long.parseLong(System.getenv().getOrDefault("CONSUMER_BLOCK_MS", "100"));
     private static final int BATCH_COUNT = Integer.parseInt(System.getenv().getOrDefault("CONSUMER_BATCH_COUNT", "100"));
+    /**
+     * Cap on entries kept per stream. Redis streams are never read destructively, so without a cap
+     * every published event stays resident forever and eventually exhausts the Redis memory limit.
+     */
+    private static final long STREAM_MAXLEN = streamMaxLen(System.getenv(STREAM_MAXLEN_ENV));
+    private static final long AUTOCLAIM_MIN_IDLE_MS = autoClaimMinIdleMillis(System.getenv(AUTOCLAIM_MIN_IDLE_ENV));
 
     private final StatefulRedisConnection<String, String> connection;
 
     public LettuceRedisStreamOperations(StatefulRedisConnection<String, String> connection) {
         this.connection = Objects.requireNonNull(connection, "connection is required");
+    }
+
+    /**
+     * {@code MAXLEN ~ n} — approximate trimming keeps XADD O(1) by letting Redis drop whole
+     * radix-tree nodes instead of walking to an exact length.
+     */
+    static XAddArgs cappedStreamArgs() {
+        return XAddArgs.Builder.maxlen(STREAM_MAXLEN).approximateTrimming();
+    }
+
+    static long configuredStreamMaxLen() {
+        return STREAM_MAXLEN;
+    }
+
+    static long configuredAutoClaimMinIdleMillis() {
+        return AUTOCLAIM_MIN_IDLE_MS;
+    }
+
+    static long autoClaimMinIdleMillis(String configured) {
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_AUTOCLAIM_MIN_IDLE_MS;
+        }
+        try {
+            long millis = Long.parseLong(configured.trim());
+            if (millis > 0) {
+                return millis;
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to the warning below
+        }
+        LoggerFactory.getLogger(LettuceRedisStreamOperations.class)
+            .warn("{}={} is not a positive integer; using default {}", AUTOCLAIM_MIN_IDLE_ENV, configured, DEFAULT_AUTOCLAIM_MIN_IDLE_MS);
+        return DEFAULT_AUTOCLAIM_MIN_IDLE_MS;
+    }
+
+    static long streamMaxLen(String configured) {
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_STREAM_MAXLEN;
+        }
+        try {
+            long maxlen = Long.parseLong(configured.trim());
+            if (maxlen > 0) {
+                return maxlen;
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to the warning below
+        }
+        LoggerFactory.getLogger(LettuceRedisStreamOperations.class)
+            .warn("{}={} is not a positive integer; using default {}", STREAM_MAXLEN_ENV, configured, DEFAULT_STREAM_MAXLEN);
+        return DEFAULT_STREAM_MAXLEN;
     }
 
     @Override
@@ -40,7 +108,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
 
     @Override
     public String publish(String stream, String envelopeJson) {
-        return connection.sync().xadd(stream, XAddArgs.Builder.maxlen(100_000).approximateTrimming(), Map.of("envelope", envelopeJson));
+        return connection.sync().xadd(stream, cappedStreamArgs(), Map.of("envelope", envelopeJson));
     }
 
     @Override
@@ -56,7 +124,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
             futures = messages.stream()
                 .map(message -> async.xadd(
                     message.stream(),
-                    XAddArgs.Builder.maxlen(100_000).approximateTrimming(),
+                    cappedStreamArgs(),
                     Map.of("envelope", message.envelopeJson())
                 ))
                 .toList();
@@ -91,7 +159,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     @Override
     public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
         return connection.sync()
-            .xautoclaim(stream, XAutoClaimArgs.Builder.xautoclaim(Consumer.from(group, consumerName), Duration.ofSeconds(60), "0-0").count(100))
+            .xautoclaim(stream, XAutoClaimArgs.Builder.xautoclaim(Consumer.from(group, consumerName), Duration.ofMillis(AUTOCLAIM_MIN_IDLE_MS), "0-0").count(100))
             .getMessages()
             .stream()
             .map(LettuceRedisStreamOperations::toEntry)
@@ -141,7 +209,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {
         connection.sync().xadd(
             RedisStreamNames.dlqFor(stream),
-            XAddArgs.Builder.maxlen(100_000).approximateTrimming(),
+            cappedStreamArgs(),
             Map.of(
                 "envelope", envelopeJson,
                 "consumerGroup", metadata.consumerGroup(),

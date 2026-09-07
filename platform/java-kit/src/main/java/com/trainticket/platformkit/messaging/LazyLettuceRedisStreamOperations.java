@@ -25,6 +25,16 @@ final class LazyLettuceRedisStreamOperations implements RedisStreamOperations, A
     }
 
     @Override
+    public void publishBatch(List<StreamMessage> messages) {
+        operations().publishBatch(messages);
+    }
+
+    @Override
+    public void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {
+        operations().pruneDeadConsumers(stream, group, selfName, maxIdleMillis);
+    }
+
+    @Override
     public List<StreamEntry> readGroup(String stream, String group, String consumerName) {
         return operations().readGroup(stream, group, consumerName);
     }
