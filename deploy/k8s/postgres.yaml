@@ -176,15 +176,24 @@ spec:
           # leaving ~350Mi for up to 500 backends at 4Mi work_mem each. With 180
           # live connections that is arithmetically unsurvivable.
           #
-          # 2Gi limit with shared_buffers at 25% of it (the standard ratio), and
-          # max_connections cut to a number the memory can actually back: 38
-          # services x ~5 pooled connections + headroom for migrations and ops.
+          # 2Gi limit with shared_buffers at 25% of it (the standard ratio).
+          #
+          # max_connections stays at 500. It was briefly cut to 250 on the
+          # reasoning that 38 services x ~5 pooled connections plus headroom
+          # would fit -- but 250 was sized against a 180-connection observation
+          # taken while the loadgen was still warming up. A rolling restart runs
+          # old and new pods concurrently, so every service's pool is
+          # transiently doubled, and the namespace blew straight past 250:
+          # Postgres started refusing with "sorry, too many clients already",
+          # which broke transactions mid-flight and stopped identity-verification
+          # publishing its outbox events at all. The memory to back 500 is now
+          # actually there (2Gi, up from 512Mi), which was the real problem.
           args:
             - postgres
             - -c
             - shared_buffers=512MB
             - -c
-            - max_connections=250
+            - max_connections=500
             - -c
             - work_mem=4MB
             - -c
