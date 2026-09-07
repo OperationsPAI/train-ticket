@@ -10,12 +10,18 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use opentelemetry::Context as OTelContext;
+use opentelemetry::global as otel_global;
+use opentelemetry::trace::{
+    FutureExt, SpanKind, TraceContextExt, Tracer, TracerProvider as _,
+};
 use rust_kit::{http as kit_http, idempotency as kit_idempotency};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use shared_kernel::{
-    OpenTelemetryObserver, RequestContext, RuntimeConfig, apply_runtime, router_with_config,
+    OpenTelemetryObserver, RequestContext, RuntimeConfig, apply_runtime, extract_trace_context,
+    router_with_config,
 };
 
 pub mod adapters;
@@ -2286,11 +2292,29 @@ async fn allocate_seat_for_issue(
     });
     let base = std::env::var("SEAT_ASSIGNMENT_BASE_URL")
         .unwrap_or_else(|_| "http://seat-assignment:8080".into());
-    let response = reqwest::Client::new()
-        .post(format!("{base}/api/v1/internal/seat-allocations"))
+    let url = format!("{base}/api/v1/internal/seat-allocations");
+    // A CLIENT span for the outbound hop, parented to whatever context the
+    // handler established. Its context -- not the ambient one -- is what gets
+    // injected, so the traceparent names this span and seat-assignment's server
+    // span becomes its child.
+    //
+    // Threaded explicitly rather than read from Context::current() at the
+    // injection point: shared_kernel's runtime middleware starts the server span
+    // but does not attach it to the ambient context, so `Context::current()`
+    // inside a handler yields an invalid span context unless the handler wraps
+    // its body (see `issue_entitlement`, which does exactly that). Building the
+    // child from `OTelContext::current()` here keeps both cases correct: with
+    // the wrapping it chains to the server span, and without it the call still
+    // gets a valid traceparent of its own.
+    let client_context = seat_assignment_client_context(&url);
+    let request = reqwest::Client::new()
+        .post(&url)
         .header("Idempotency-Key", key)
         .header("X-Correlation-Id", correlation_id)
-        .json(&body)
+        .json(&body);
+    // inject_trace_context_from, not a hand-written header: propagation lives in
+    // the platform kit so every Rust call site gets it by construction.
+    let response = rust_kit::outbound::inject_trace_context_from(request, &client_context)
         .send()
         .await
         .map_err(|e| {
@@ -2319,6 +2343,33 @@ async fn allocate_seat_for_issue(
         .await
         .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?;
     Ok(Some(allocation.seat_ref))
+}
+
+/// Build the CLIENT-span context for the outbound seat-assignment call.
+///
+/// Returns a context holding a fresh CLIENT span whose parent is the ambient
+/// context when the handler established one. The span is owned by the returned
+/// context and so ends when that context is dropped, which covers the error
+/// paths too.
+///
+/// Returns the bare current context when tracing is disabled, so nothing is
+/// created and nothing is injected.
+fn seat_assignment_client_context(url: &str) -> OTelContext {
+    if !rust_kit::otel::tracing_enabled() {
+        return OTelContext::current();
+    }
+    let parent = OTelContext::current();
+    let tracer = otel_global::tracer_provider().tracer("entitlement-ticketing");
+    let span = tracer
+        .span_builder("POST /api/v1/internal/seat-allocations")
+        .with_kind(SpanKind::Client)
+        .with_attributes(vec![
+            opentelemetry::KeyValue::new("http.request.method", "POST"),
+            opentelemetry::KeyValue::new("url.full", url.to_string()),
+            opentelemetry::KeyValue::new("server.address", "seat-assignment"),
+        ])
+        .start_with_context(&tracer, &parent);
+    parent.with_span(span)
 }
 
 impl VoidReasonDto {
@@ -2420,11 +2471,22 @@ where
         Ok(body) => body,
         Err(rejection) => return validation_error(correlation_id, rejection.body_text()),
     };
-    match state
-        .service
-        .issue(request, key, correlation_id.clone())
-        .await
-    {
+    // The runtime middleware starts a server span but does not attach it to the
+    // ambient opentelemetry Context (shared_kernel::Observer::start returns the
+    // span without making it current). This service issues an outbound HTTP call
+    // to seat-assignment while handling this request, and that call's
+    // traceparent must chain to the caller's trace, so the handler establishes
+    // the context itself from the inbound headers.
+    //
+    // Without this wrapping the outbound CLIENT span would be a new trace root
+    // and the purchase journey would still break into disconnected traces at
+    // this hop.
+    let issue = state.service.issue(request, key, correlation_id.clone());
+    let result = match extract_trace_context(&headers) {
+        Some(parent) => issue.with_context(parent).await,
+        None => issue.await,
+    };
+    match result {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
         Err(error) => api_error_response(error, correlation_id),
     }

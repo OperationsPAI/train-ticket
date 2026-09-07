@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -105,6 +106,27 @@ func otelTracingEnabled() bool {
 }
 
 var env = os.Getenv
+
+// traceContextPropagator is the W3C TraceContext propagator used on the HTTP
+// server path. It is used directly rather than via otel.GetTextMapPropagator so
+// extraction works without any service-level global propagator registration,
+// matching the messaging envelope idiom in platform/go-kit.
+var traceContextPropagator = propagation.TraceContext{}
+
+// ExtractTraceContext returns ctx carrying the W3C trace context (traceparent
+// plus tracestate) advertised by the request headers, so a span started from the
+// returned context becomes a child of the caller's span.
+//
+// A request with no traceparent, or with a malformed one, yields ctx unchanged:
+// the propagator only attaches a remote span context when the header parses into
+// a valid one, so the server span simply starts a new trace instead of failing
+// the request.
+func ExtractTraceContext(ctx context.Context, header http.Header) context.Context {
+	if len(header) == 0 {
+		return ctx
+	}
+	return traceContextPropagator.Extract(ctx, propagation.HeaderCarrier(header))
+}
 
 func (observer otelObserver) Start(ctx context.Context, operation string) (context.Context, Span) {
 	attrs := []attribute.KeyValue{
@@ -239,6 +261,8 @@ func RequestContextMiddleware(generator IDGenerator) gin.HandlerFunc {
 }
 
 // TracingMiddleware wraps every request in the configured observer span.
+// Inbound W3C trace context is extracted from the request headers before the
+// span starts, so the server span joins the caller's trace.
 func TracingMiddleware(observer Observer) gin.HandlerFunc {
 	if observer == nil {
 		observer = NoopObserver()
@@ -248,7 +272,8 @@ func TracingMiddleware(observer Observer) gin.HandlerFunc {
 		if operation == "" {
 			operation = ctx.Request.URL.Path
 		}
-		requestContext, span := observer.Start(ctx.Request.Context(), operation)
+		parentContext := ExtractTraceContext(ctx.Request.Context(), ctx.Request.Header)
+		requestContext, span := observer.Start(parentContext, operation)
 		ctx.Request = ctx.Request.WithContext(requestContext)
 		ctx.Next()
 		status := ctx.Writer.Status()

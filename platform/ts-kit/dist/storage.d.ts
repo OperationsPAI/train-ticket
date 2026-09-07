@@ -46,6 +46,10 @@ export type OutboxRelayOptions = Readonly<{
     batchSize?: number;
     streamMaxLen?: number;
     onFailure?: (error: unknown) => void;
+    /** Name used for the liveness component; defaults to "outbox-relay". */
+    name?: string;
+    /** Set false to opt out of liveness registration (tests). */
+    trackLiveness?: boolean;
 }>;
 export declare class OutboxRelay {
     private readonly pool;
@@ -53,11 +57,21 @@ export declare class OutboxRelay {
     private readonly options;
     private stopped;
     private loop?;
+    private liveness?;
     constructor(pool: Pool, redis: Redis, options?: OutboxRelayOptions);
     start(): void;
     stop(): Promise<void>;
+    private supervise;
+    /**
+     * A caller-supplied failure reporter must never be able to kill the relay.
+     * Pre-fix, `run()` called `options.onFailure` directly from its catch block,
+     * so a throwing reporter propagated out of `run()` and permanently ended
+     * publication with a single swallowed rejection.
+     */
+    private reportFailure;
     runOnce(): Promise<number>;
     private run;
+    private cleanup;
 }
 export type ProcessedEventInput = Readonly<{
     eventId: string;

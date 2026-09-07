@@ -372,6 +372,7 @@ dependencies = [
  "chrono",
  "log",
  "opentelemetry",
+ "opentelemetry_sdk",
  "redis",
  "reqwest 0.12.28",
  "rust-kit",
@@ -1221,6 +1222,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.4",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1710,6 +1712,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "redis",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -1923,6 +1926,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "opentelemetry",
+ "opentelemetry_sdk",
  "serde",
  "serde_json",
 ]

@@ -1,4 +1,4 @@
-import { isPrefixedUuidV7, type EventPublisher } from "@trainticket/ts-kit";
+import { isPrefixedUuidV7, tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import { publishAll, waitlistExpired, waitlistFulfilled, waitlistMatchStarted } from "./publisher.js";
 
@@ -64,7 +64,7 @@ export class HttpFarePricingClient implements FarePricingClient {
   ) {}
 
   async quote(entry: WaitlistEntry): Promise<{ fareQuoteId: string }> {
-    const response = await fetch(`${trimRight(this.baseUrl)}/api/v1/fare-quotes`, {
+    const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/fare-quotes`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.fareQuoteIdempotencyKey },
       body: JSON.stringify({
@@ -89,7 +89,7 @@ export class HttpOfferManagementClient implements OfferManagementClient {
   ) {}
 
   async createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number }> {
-    const response = await fetch(`${trimRight(this.baseUrl)}/api/v1/offers`, {
+    const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/offers`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.offerIdempotencyKey },
       body: JSON.stringify({
@@ -114,7 +114,7 @@ export class HttpCapacityAvailabilityClient implements CapacityAvailabilityClien
   constructor(private readonly baseUrl = process.env.CAPACITY_AVAILABILITY_URL ?? process.env.CAPACITY_AVAILABILITY_BASE_URL ?? "http://capacity-availability") {}
 
   async hold(entry: WaitlistEntry, _fareQuoteId: string): Promise<{ capacityHoldId: string }> {
-    const response = await fetch(`${trimRight(this.baseUrl)}/api/v1/capacity-holds`, {
+    const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/capacity-holds`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.capacityHoldIdempotencyKey },
       body: JSON.stringify({
@@ -133,7 +133,7 @@ export class HttpCapacityAvailabilityClient implements CapacityAvailabilityClien
   }
 
   async releaseHold(entry: WaitlistEntry, capacityHoldId: string): Promise<void> {
-    await fetch(`${trimRight(this.baseUrl)}/api/v1/capacity-holds/${encodeURIComponent(capacityHoldId)}/release`, {
+    await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/capacity-holds/${encodeURIComponent(capacityHoldId)}/release`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.capacityReleaseIdempotencyKey },
     });

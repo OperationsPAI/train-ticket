@@ -16,6 +16,10 @@ opentelemetry = "0.32.0"
 opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "tls-roots"] }
 opentelemetry_sdk = "0.32.0"
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"], optional = true }
+# Optional so the kit does not force an HTTP client on services that make no
+# outbound calls. Enabled via the `reqwest-client` feature by the services that
+# do; the version matches what those services already depend on.
+reqwest = { version = "0.12", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -27,6 +31,8 @@ uuid = { version = "1.0", features = ["v4", "v7", "fast-rng"] }
 [features]
 default = []
 redis-impl = ["redis"]
+# Implements the outbound propagation trait for reqwest::RequestBuilder.
+reqwest-client = ["reqwest"]
 
 [dev-dependencies]
 opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }

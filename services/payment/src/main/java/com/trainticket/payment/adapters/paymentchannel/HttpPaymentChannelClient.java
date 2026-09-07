@@ -6,33 +6,42 @@ import com.trainticket.payment.domain.ChannelRouter;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
 
 @Component
 public final class HttpPaymentChannelClient implements PaymentChannelClient {
-    private final HttpClient client;
+    private final RestClient restClient;
     private final ObjectMapper mapper;
-    private final String baseUrl;
 
     @org.springframework.beans.factory.annotation.Autowired
 
-    public HttpPaymentChannelClient(ObjectMapper mapper) {
-        this(HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(3)).build(), mapper, System.getenv().getOrDefault("PAYMENT_CHANNEL_URL", "http://payment-channel:8080"));
+    public HttpPaymentChannelClient(ObjectMapper mapper, RestClient.Builder restClientBuilder) {
+        this(mapper, restClientBuilder, System.getenv().getOrDefault("PAYMENT_CHANNEL_URL", "http://payment-channel:8080"));
     }
 
-    HttpPaymentChannelClient(HttpClient client, ObjectMapper mapper, String baseUrl) {
-        this.client = Objects.requireNonNull(client, "client is required");
+    HttpPaymentChannelClient(ObjectMapper mapper, RestClient.Builder restClientBuilder, String baseUrl) {
         this.mapper = Objects.requireNonNull(mapper, "mapper is required");
-        this.baseUrl = Objects.requireNonNull(baseUrl, "baseUrl is required").replaceAll("/+$", "");
+        Objects.requireNonNull(restClientBuilder, "restClientBuilder is required");
+        // Plain HTTP/1.1 factory, matching the version this client previously
+        // pinned on java.net.http.HttpClient.
+        //
+        // The builder must come from the container: java-kit installs the
+        // trace-propagation interceptor on RestClient.Builder beans only, so a
+        // hand-built client would silently drop the outbound W3C traceparent and
+        // payment-channel would open a new trace.
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofSeconds(3));
+        requestFactory.setReadTimeout(Duration.ofSeconds(8));
+        String normalizedBaseUrl = Objects.requireNonNull(baseUrl, "baseUrl is required").replaceAll("/+$", "");
+        this.restClient = restClientBuilder.requestFactory(requestFactory).baseUrl(normalizedBaseUrl).build();
     }
 
     @Override
@@ -79,23 +88,23 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
 
     private JsonNode post(String path, String idempotencyKey, String correlationId, Object body) {
         try {
-            String json = mapper.writeValueAsString(body);
-            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .version(HttpClient.Version.HTTP_1_1)
-                .timeout(Duration.ofSeconds(8))
-                .header("Content-Type", "application/json")
+            // The interceptor java-kit installed on the injected builder adds the
+            // outbound traceparent; the correlation and idempotency headers are
+            // set here exactly as before.
+            String responseBody = restClient.post()
+                .uri(path)
+                .contentType(MediaType.APPLICATION_JSON)
                 .header("Idempotency-Key", stripCommandPrefix(idempotencyKey))
                 .header("X-Correlation-Id", correlationId)
-                .POST(HttpRequest.BodyPublishers.ofString(json))
-                .build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 400) {
-                throw new IllegalStateException("payment-channel returned HTTP " + response.statusCode());
-            }
-            return mapper.readTree(response.body());
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("payment-channel request interrupted", exception);
+                .body(body)
+                .exchange((request, response) -> {
+                    int statusCode = response.getStatusCode().value();
+                    if (statusCode >= 400) {
+                        throw new IllegalStateException("payment-channel returned HTTP " + statusCode);
+                    }
+                    return new String(response.getBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                }, false);
+            return mapper.readTree(responseBody);
         } catch (Exception exception) {
             throw new IllegalStateException("payment-channel request failed", exception);
         }

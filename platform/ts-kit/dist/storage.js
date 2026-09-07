@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { registerLivenessComponent } from "./liveness.js";
 import { streamForProducer } from "./messaging.js";
 export class OptimisticConcurrencyConflict extends Error {
     constructor(message = "Snapshot was modified by another writer") {
@@ -23,8 +24,8 @@ export function createPostgresPool(config = databaseUrl()) {
     const pool = new pg.Pool({
         ...base,
         max: maxPool > 0 ? maxPool : base.max ?? 10,
-        idleTimeoutMillis: base.idleTimeoutMillis ?? 300_000,
-        connectionTimeoutMillis: base.connectionTimeoutMillis ?? 5_000,
+        idleTimeoutMillis: base.idleTimeoutMillis ?? 30_000,
+        connectionTimeoutMillis: base.connectionTimeoutMillis ?? 10_000,
     });
     let backgroundErrorCount = 0;
     pool.on("error", (err) => {
@@ -78,12 +79,14 @@ export async function withTransaction(pool, operation) {
 }
 export async function checkPostgresReadiness(pool, timeoutMs = 200) {
     let client;
+    const connectPromise = pool.connect();
     try {
-        client = await withTimeout(pool.connect(), timeoutMs);
+        client = await withTimeout(connectPromise, timeoutMs);
         await withTimeout(client.query("SELECT 1"), timeoutMs);
         return true;
     }
     catch {
+        connectPromise.then((c) => c.release()).catch(() => { });
         return false;
     }
     finally {
@@ -196,6 +199,7 @@ export class OutboxRelay {
     options;
     stopped = true;
     loop;
+    liveness;
     constructor(pool, redis, options = {}) {
         this.pool = pool;
         this.redis = redis;
@@ -206,15 +210,62 @@ export class OutboxRelay {
             return;
         }
         this.stopped = false;
-        this.loop = this.run().catch((error) => {
-            if (!this.stopped) {
-                this.options.onFailure?.(error);
-            }
-        });
+        if (this.options.trackLiveness !== false) {
+            this.liveness ??= registerLivenessComponent(this.options.name ?? "outbox-relay");
+        }
+        // The loop must never end while the relay is running. Previously a single
+        // rejection out of run() ended publication for the lifetime of the
+        // process, with one log line and no restart -- the service looked healthy
+        // and shipped no events. Supervise and restart instead.
+        this.loop = this.supervise();
     }
     async stop() {
         this.stopped = true;
+        this.liveness?.dispose();
+        this.liveness = undefined;
         await this.loop;
+    }
+    async supervise() {
+        let restarts = 0;
+        while (!this.stopped) {
+            try {
+                await this.run();
+                return;
+            }
+            catch (error) {
+                if (this.stopped) {
+                    return;
+                }
+                restarts += 1;
+                this.liveness?.markUnhealthy(`outbox relay loop crashed: ${sanitizedRelayError(error).message}`);
+                this.reportFailure(error);
+                console.warn({
+                    name: this.options.name ?? "outbox-relay",
+                    restarts,
+                    error: sanitizedRelayError(error),
+                    message: "outbox relay loop crashed; restarting after backoff",
+                });
+                await sleep(Math.min(500 * 2 ** Math.min(restarts - 1, 6), 30_000));
+            }
+        }
+    }
+    /**
+     * A caller-supplied failure reporter must never be able to kill the relay.
+     * Pre-fix, `run()` called `options.onFailure` directly from its catch block,
+     * so a throwing reporter propagated out of `run()` and permanently ended
+     * publication with a single swallowed rejection.
+     */
+    reportFailure(error) {
+        try {
+            this.options.onFailure?.(error);
+        }
+        catch (reportingError) {
+            console.error({
+                name: this.options.name ?? "outbox-relay",
+                message: "outbox relay failure reporter threw; continuing",
+                error: sanitizedRelayError(reportingError),
+            });
+        }
     }
     async runOnce() {
         const result = await this.pool.query(`SELECT seq, stream, envelope
@@ -244,14 +295,31 @@ export class OutboxRelay {
     }
     async run() {
         const interval = this.options.pollIntervalMs ?? 250;
+        let pollCount = 0;
         while (!this.stopped) {
             try {
                 await this.runOnce();
+                this.liveness?.markHealthy();
+                pollCount++;
+                if (pollCount % 20 === 0) {
+                    await this.cleanup();
+                }
             }
             catch (error) {
-                this.options.onFailure?.(error);
+                this.liveness?.markUnhealthy(`outbox relay failing: ${sanitizedRelayError(error).message}`);
+                this.reportFailure(error);
             }
             await sleepUntil(() => this.stopped, interval);
+        }
+    }
+    async cleanup() {
+        try {
+            await this.pool.query(`DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'`);
+            await this.pool.query(`DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'`);
+            await this.pool.query(`DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'`);
+        }
+        catch {
+            // best-effort cleanup
         }
     }
 }
@@ -322,6 +390,12 @@ function sanitizedPostgresPoolError(error) {
         message: error.message || "PostgreSQL pool connection error",
         code: typeof errorWithCode.code === "string" ? errorWithCode.code : undefined,
     };
+}
+function sanitizedRelayError(error) {
+    if (error instanceof Error) {
+        return { name: error.name || "Error", message: error.message || "Outbox relay failed" };
+    }
+    return { name: typeof error, message: String(error || "Outbox relay failed") };
 }
 function assertSqlIdentifier(identifier, label) {
     if (!/^[a-z][a-z0-9_]*$/u.test(identifier)) {
