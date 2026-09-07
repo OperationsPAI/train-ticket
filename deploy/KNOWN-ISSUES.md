@@ -8,29 +8,28 @@ details belong in git history or the deployment README, not here.
 
 ## Active issues
 
-### Postgres databases are not created on an existing cluster
+### (RESOLVED) Postgres databases are not created on an existing cluster
 
-The `postgres-initdb` ConfigMap in `deploy/k8s/postgres.yaml` is mounted at
-`/docker-entrypoint-initdb.d`, which the postgres image runs **only when PGDATA
-is empty**. This deployment mounts the `postgres-data` PVC, so on any cluster
-where postgres has already initialised, adding a database to that ConfigMap has
-no effect and the owning service will crash-loop on connect.
+The `postgres-initdb` ConfigMap is only executed when PGDATA is empty, so on a
+cluster with an existing PVC, databases added to it later were never created
+and the owning service crash-looped on connect. This required a manual
+`CREATE DATABASE` per service and is what hid the missing `group_booking`.
 
-Operator action after adding a service (or when adopting a cluster created
-before the five databases `corporate_travel`, `group_booking`,
-`loyalty_membership`, `marketing_campaign`, `travel_insurance` were added):
+Now handled by the `db-bootstrap` Job (`deploy/k8s/db-bootstrap.yaml`), which
+runs on every `kubectl apply -k deploy/k8s` against a running Postgres,
+derives the required databases from the `@postgres:5432/<db>` DSNs in
+`deploy/k8s/services.yaml`, creates any that are missing, and fails loudly if
+it cannot. No manual step remains. See `deploy/README.md`.
 
-```sh
-kubectl exec -n train-ticket deploy/postgres -- \
-  psql -U trainticket -d postgres -c 'CREATE DATABASE <db_name>'
-```
-
-Verify with:
+Diagnose with:
 
 ```sh
-kubectl exec -n train-ticket deploy/postgres -- \
-  psql -U trainticket -d postgres -tAc 'select datname from pg_database order by 1'
+kubectl -n train-ticket logs job/db-bootstrap
 ```
+
+Still true, and the reason the Job exists rather than a fixed initdb list:
+editing `postgres-initdb` alone has no effect on an initialised cluster. That
+ConfigMap is now belt-and-braces for genuinely fresh volumes only.
 
 ### Redis is transport-only and has a hard memory ceiling
 
@@ -72,18 +71,15 @@ referenced by `skaffold.yaml` (`opspai/trip-planning`). Building via that path
 produces an image name no manifest consumes. Prefer `deploy/build-images.sh`
 until the duplicate is deleted and skaffold is repointed.
 
-### `deploy/build-images.sh` image names must track the manifest
+### (RESOLVED) `deploy/build-images.sh` image names must track the manifest
 
-The script's `services=()` array doubles as the image-name list: it builds
-`train-ticket/<entry>:local`. When adding or renaming a service, the entry must
-match the image name in `deploy/k8s/services.yaml`, not the source directory
-name — these have diverged before (see trip-planning above), and the failure
-mode is a silent `ErrImagePull`/`ImagePullBackOff` on a clean build+deploy.
+The script used to carry a hand-maintained `services=()` array that had to be
+kept in sync with the manifests by hand. It drifted — four deployed services
+(`group-booking`, `invoicing`, `loyalty-membership`, `travel-insurance`) were
+missing from it — and the failure mode was a silent
+`ErrImagePull`/`ImagePullBackOff` on an otherwise clean build+deploy.
 
-Cross-check the two sets after any change:
-
-```sh
-grep -oP 'train-ticket/\K[a-z-]+(?=:local)' deploy/k8s/services.yaml | sort -u
-```
-
-compared against the `services=()` entries; they must be identical (38 each).
+The list is now derived at run time from the `train-ticket/<name>:` image
+references in `deploy/k8s/*.yaml`, so it cannot diverge from what the cluster
+pulls. The script also fails up front, before building anything, if a manifest
+references an image with no `deploy/docker/<name>/Dockerfile`.

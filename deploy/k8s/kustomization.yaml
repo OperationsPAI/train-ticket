@@ -9,9 +9,22 @@ resources:
   - jaeger.yaml
   - services.yaml
   - loadgen.yaml
+  - db-bootstrap.yaml
 
 configMapGenerator:
   - name: loadgen-config
     namespace: train-ticket
     files:
       - config.yaml=loadgen-config.yaml
+  # The bootstrap Job reads services.yaml itself to derive the database list,
+  # so the manifest that configures the services IS the source of truth for
+  # which databases must exist. Mounting it through a generated ConfigMap is
+  # what removes the second, drift-prone copy of that list.
+  - name: db-bootstrap-scripts
+    namespace: train-ticket
+    files:
+      - db-bootstrap.sh
+  - name: db-bootstrap-manifests
+    namespace: train-ticket
+    files:
+      - services.yaml

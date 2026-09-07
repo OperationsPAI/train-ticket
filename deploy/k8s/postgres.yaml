@@ -23,12 +23,17 @@ data:
   # NOTE: /docker-entrypoint-initdb.d scripts are executed by the postgres image
   # ONLY when PGDATA is empty (a FRESH data directory). This Deployment mounts a
   # PersistentVolumeClaim (postgres-data), so on any cluster where postgres has
-  # already initialised, editing this ConfigMap has NO effect -- the new
-  # databases must be created manually, e.g.:
-  #   kubectl exec -n train-ticket deploy/postgres -- \
-  #   psql -U trainticket -d postgres -c 'CREATE DATABASE group_booking'
-  # Keep this list in sync with the postgres:5432/<db> names in
-  # deploy/k8s/services.yaml (38 services -> 38 databases).
+  # already initialised, editing this ConfigMap has NO effect.
+  #
+  # Because of that, this list is NO LONGER AUTHORITATIVE and does not need to
+  # be kept in sync by hand. The db-bootstrap Job (deploy/k8s/db-bootstrap.yaml)
+  # is what actually guarantees the databases exist: it runs on every apply
+  # against a running postgres and derives the list from the
+  # @postgres:5432/<db> DSNs in deploy/k8s/services.yaml. Keeping a second copy
+  # of the list in sync by hand is precisely the bug that lost group_booking.
+  #
+  # This script is retained only as a fast path for a genuinely fresh volume,
+  # where it saves the Job a little work. If it is stale, the Job corrects it.
   01-create-service-databases.sql: |
     SELECT 'CREATE DATABASE account'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'account')\gexec
