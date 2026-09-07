@@ -384,12 +384,7 @@ pub async fn relay_once(
             .get_multiplexed_async_connection()
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
-        redis::cmd("XADD")
-            .arg(&stream)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(crate::messaging::RETENTION_MAXLEN)
-            .arg("*")
+        crate::messaging::capped_xadd(&stream)
             .arg("envelope")
             .arg(&raw_envelope)
             .query_async::<_, String>(&mut connection)

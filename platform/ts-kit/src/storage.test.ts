@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
 
+import { configuredStreamMaxLen } from "./messaging.js";
 import { createPostgresPool, OptimisticConcurrencyConflict, OutboxRelay, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
 
 type QueryCall = Readonly<{ sql: string; params: unknown[] }>;
@@ -217,5 +218,18 @@ describe("OutboxRelay", () => {
     assert.ok(update);
     assert.match(update.sql, /WHERE seq IN \(\$1, \$2\)/u);
     assert.deepEqual(update.params, ["1", "2"]);
+  });
+});
+
+describe("OutboxRelay stream cap", () => {
+  it("defaults its XADD cap to the configured EVENT_STREAM_MAXLEN", async () => {
+    const pool = new FakeOutboxPool();
+    const redis = new FakePipelineRedis();
+    const relay = new OutboxRelay(pool as never, redis as never, { batchSize: 100 });
+
+    await relay.runOnce();
+
+    // No streamMaxLen override: the relay must fall back to the kit-wide cap, not 100k.
+    assert.deepEqual(redis.pipelineInstance.xadds[0].slice(0, 5), ["events:order", "MAXLEN", "~", String(configuredStreamMaxLen()), "*"]);
   });
 });

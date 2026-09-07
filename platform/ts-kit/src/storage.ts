@@ -7,7 +7,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResult } from "pg";
 
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
 import { registerLivenessComponent, type Clock, type LivenessComponent } from "./liveness.js";
-import { type EventEnvelope, redisRetryStrategy, streamForProducer } from "./messaging.js";
+import { configuredStreamMaxLen, type EventEnvelope, redisRetryStrategy, streamForProducer } from "./messaging.js";
 
 export type Database = Pool | PoolClient;
 
@@ -624,7 +624,7 @@ export class OutboxRelay {
         row.stream,
         "MAXLEN",
         "~",
-        String(this.options.streamMaxLen ?? 100_000),
+        String(this.options.streamMaxLen ?? configuredStreamMaxLen()),
         "*",
         "envelope",
         JSON.stringify(row.envelope),
