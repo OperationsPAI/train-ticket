@@ -20,6 +20,15 @@ metadata:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/part-of: train-ticket
 data:
+  # NOTE: /docker-entrypoint-initdb.d scripts are executed by the postgres image
+  # ONLY when PGDATA is empty (a FRESH data directory). This Deployment mounts a
+  # PersistentVolumeClaim (postgres-data), so on any cluster where postgres has
+  # already initialised, editing this ConfigMap has NO effect -- the new
+  # databases must be created manually, e.g.:
+  #   kubectl exec -n train-ticket deploy/postgres -- \
+  #   psql -U trainticket -d postgres -c 'CREATE DATABASE group_booking'
+  # Keep this list in sync with the postgres:5432/<db> names in
+  # deploy/k8s/services.yaml (38 services -> 38 databases).
   01-create-service-databases.sql: |
     SELECT 'CREATE DATABASE account'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'account')\gexec
@@ -31,6 +40,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'booking_orchestration')\gexec
     SELECT 'CREATE DATABASE capacity_availability'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'capacity_availability')\gexec
+    SELECT 'CREATE DATABASE corporate_travel'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'corporate_travel')\gexec
     SELECT 'CREATE DATABASE customer_service'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'customer_service')\gexec
     SELECT 'CREATE DATABASE entitlement_ticketing'
@@ -41,6 +52,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'finance_settlement')\gexec
     SELECT 'CREATE DATABASE fulfillment'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fulfillment')\gexec
+    SELECT 'CREATE DATABASE group_booking'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'group_booking')\gexec
     SELECT 'CREATE DATABASE journey_order'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'journey_order')\gexec
     SELECT 'CREATE DATABASE invoicing'
@@ -49,6 +62,10 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'identity_verification')\gexec
     SELECT 'CREATE DATABASE legacy_acl'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'legacy_acl')\gexec
+    SELECT 'CREATE DATABASE loyalty_membership'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'loyalty_membership')\gexec
+    SELECT 'CREATE DATABASE marketing_campaign'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'marketing_campaign')\gexec
     SELECT 'CREATE DATABASE notification'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'notification')\gexec
     SELECT 'CREATE DATABASE offer_management'
@@ -73,6 +90,8 @@ data:
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'service_plan')\gexec
     SELECT 'CREATE DATABASE supplier_catalog'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'supplier_catalog')\gexec
+    SELECT 'CREATE DATABASE travel_insurance'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'travel_insurance')\gexec
     SELECT 'CREATE DATABASE traveler_profile'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'traveler_profile')\gexec
     SELECT 'CREATE DATABASE trip_planning'
@@ -145,6 +164,28 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+          # Postgres is the system of record for all 38 services, so an OOMKill
+          # here is materially worse than the Redis one (Redis is transport-only
+          # and recovers from the outbox). It was OOMKilled twice on the stock
+          # settings: shared_buffers defaulted to 160Mi inside a 512Mi limit,
+          # leaving ~350Mi for up to 500 backends at 4Mi work_mem each. With 180
+          # live connections that is arithmetically unsurvivable.
+          #
+          # 2Gi limit with shared_buffers at 25% of it (the standard ratio), and
+          # max_connections cut to a number the memory can actually back: 38
+          # services x ~5 pooled connections + headroom for migrations and ops.
+          args:
+            - postgres
+            - -c
+            - shared_buffers=512MB
+            - -c
+            - max_connections=250
+            - -c
+            - work_mem=4MB
+            - -c
+            - maintenance_work_mem=128MB
+            - -c
+            - effective_cache_size=1GB
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
@@ -154,10 +195,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 500m
               memory: 512Mi
+            limits:
+              cpu: 1
+              memory: 2Gi
           readinessProbe:
             exec:
               command:
