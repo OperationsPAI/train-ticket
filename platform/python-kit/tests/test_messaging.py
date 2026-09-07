@@ -2,8 +2,9 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from train_ticket_platform import messaging
 from train_ticket_platform.events import EventEnvelope
-from train_ticket_platform.messaging import FatalHandlerError, HandlerResult, InMemoryEventSubscriber, RedisEventSubscriber, TransientHandlerError, dlq_for_stream
+from train_ticket_platform.messaging import FatalHandlerError, HandlerResult, InMemoryEventSubscriber, RedisEventPublisher, RedisEventSubscriber, TransientHandlerError, dlq_for_stream
 from train_ticket_platform.observability import init_opentelemetry
 
 
@@ -250,3 +251,118 @@ def test_malformed_traceparent_is_ignored_for_consumer_parent(monkeypatch) -> No
     consumer = next(span for span in exporter.get_finished_spans() if span.name == "in-memory process SomethingHappened")
     assert not consumer.parent or not consumer.parent.is_valid
     provider.shutdown()
+
+class CapturingRedis:
+    """Records the exact kwargs each xadd receives, so assertions check the real
+    command shape rather than trusting the code path."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict, dict]] = []
+        self.acks: list[tuple[str, str, str]] = []
+        self.delivery_count = 1
+
+    def xpending_range(self, stream: str, group: str, min: str, max: str, count: int):
+        return [{"times_delivered": self.delivery_count}]
+
+    def xadd(self, stream, fields, **kwargs):
+        self.calls.append((stream, fields, kwargs))
+
+    def xack(self, stream: str, group: str, msg_id: str) -> None:
+        self.acks.append((stream, group, msg_id))
+
+
+def test_publish_xadd_carries_approximate_maxlen_at_configured_cap() -> None:
+    publisher = object.__new__(RedisEventPublisher)
+    publisher._client = CapturingRedis()
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={"x": 1})
+
+    publisher.publish(envelope)
+
+    stream, _, kwargs = publisher._client.calls[0]
+    assert stream == "events:tester"
+    assert kwargs["maxlen"] == messaging.MAXLEN
+    assert kwargs["approximate"] is True
+
+
+def test_dlq_xadd_carries_approximate_maxlen_at_configured_cap() -> None:
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._client = CapturingRedis()
+    subscriber._dedup = set()
+    subscriber._dedup_lock = None
+    envelope = EventEnvelope(eventType="SomethingHappened", producer="tester", payload={"x": 1})
+    fields = {"envelope": json.dumps(envelope.to_json_dict())}
+
+    def handler(_: EventEnvelope) -> None:
+        raise FatalHandlerError("poison message")
+
+    subscriber._process_message("events:tester", "tester", "tester-consumer", "1-0", fields, handler)
+
+    stream, _, kwargs = subscriber._client.calls[0]
+    assert stream == dlq_for_stream("events:tester")
+    assert kwargs["maxlen"] == messaging.MAXLEN
+    assert kwargs["approximate"] is True
+
+
+def test_outbox_relay_xadd_carries_approximate_maxlen_at_configured_cap() -> None:
+    from train_ticket_platform.storage import OutboxRelay
+
+    class Cursor:
+        def fetchall(self):
+            return [(1, "events:fare-pricing", {"eventId": "evt-1"})]
+
+    class Conn:
+        def __init__(self) -> None:
+            self.commands = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def execute(self, sql, params=()):
+            self.commands.append((sql, params))
+            if sql.startswith("SELECT seq"):
+                return Cursor()
+            return None
+
+        def commit(self) -> None:
+            pass
+
+    class Pool:
+        def __init__(self, conn) -> None:
+            self.conn = conn
+
+        def connection(self):
+            return self.conn
+
+    redis_fake = CapturingRedis()
+    OutboxRelay(Pool(Conn()), redis_client=redis_fake).relay_once()
+
+    stream, _, kwargs = redis_fake.calls[0]
+    assert stream == "events:fare-pricing"
+    assert kwargs["maxlen"] == messaging.MAXLEN
+    assert kwargs["approximate"] is True
+
+
+def test_default_stream_maxlen_matches_java_kit() -> None:
+    assert messaging.DEFAULT_STREAM_MAXLEN == 10000
+    assert messaging.STREAM_MAXLEN_ENV == "EVENT_STREAM_MAXLEN"
+
+
+def test_stream_maxlen_honours_env_override() -> None:
+    assert messaging.stream_maxlen("2500") == 2500
+    assert messaging.stream_maxlen(" 750 ") == 750
+
+
+def test_stream_maxlen_falls_back_to_default_when_unset_or_invalid(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    default = messaging.DEFAULT_STREAM_MAXLEN
+
+    assert messaging.stream_maxlen(None) == default
+    assert messaging.stream_maxlen("  ") == default
+    assert messaging.stream_maxlen("not-a-number") == default
+    assert messaging.stream_maxlen("0") == default
+    assert messaging.stream_maxlen("-5") == default
+
+    assert "is not a positive integer" in caplog.text

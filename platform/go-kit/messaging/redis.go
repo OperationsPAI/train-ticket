@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,10 +20,35 @@ const (
 	EnvelopeField       = "envelope"
 	StreamPrefix        = "events:"
 	DeadLetterSuffix    = ":dlq"
-	MaxLen               = 100000
-	MaxDeliveryAttempts  = int64(5)
-	DeadConsumerMaxIdle  = 5 * time.Minute
+	MaxDeliveryAttempts = int64(5)
+	DeadConsumerMaxIdle = 5 * time.Minute
+
+	// StreamMaxLenEnv overrides the per-stream entry cap.
+	StreamMaxLenEnv = "EVENT_STREAM_MAXLEN"
+	// DefaultStreamMaxLen caps entries kept per stream. Redis streams are never read
+	// destructively, so without a cap every published event stays resident forever and
+	// eventually exhausts the Redis memory limit.
+	DefaultStreamMaxLen = int64(10000)
 )
+
+// MaxLen is the per-stream entry cap applied to every XADD, always with Approx (MAXLEN ~)
+// so trimming stays O(1) instead of walking the stream to an exact length.
+var MaxLen = StreamMaxLen(os.Getenv(StreamMaxLenEnv))
+
+// StreamMaxLen resolves the configured cap, falling back to the default when the value is
+// blank, non-numeric or non-positive. Falling back beats trimming to zero: a misconfigured
+// cap that silently discarded every event would be the worst outcome.
+func StreamMaxLen(configured string) int64 {
+	trimmed := strings.TrimSpace(configured)
+	if trimmed == "" {
+		return DefaultStreamMaxLen
+	}
+	if maxLen, err := strconv.ParseInt(trimmed, 10, 64); err == nil && maxLen > 0 {
+		return maxLen
+	}
+	log.Printf("WARN %s=%s is not a positive integer; using default %d", StreamMaxLenEnv, configured, DefaultStreamMaxLen)
+	return DefaultStreamMaxLen
+}
 
 type RedisConfig struct {
 	URL             string

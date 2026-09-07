@@ -27,8 +27,50 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const RETENTION_MAXLEN: usize = 100_000;
+pub const STREAM_MAXLEN_ENV: &str = "EVENT_STREAM_MAXLEN";
+pub const DEFAULT_STREAM_MAXLEN: usize = 10_000;
 pub const MAX_DELIVERY_ATTEMPTS: u64 = 5;
+
+/// Cap on entries kept per stream. Redis streams are never read destructively, so without
+/// a cap every published event stays resident forever and eventually exhausts the Redis
+/// memory limit. Always applied as `MAXLEN ~ n` so XADD stays O(1).
+pub static RETENTION_MAXLEN: std::sync::LazyLock<usize> =
+    std::sync::LazyLock::new(|| stream_maxlen(std::env::var(STREAM_MAXLEN_ENV).ok().as_deref()));
+
+/// Resolves the configured stream cap, falling back to the default when the value is blank,
+/// non-numeric or non-positive. Falling back beats trimming to zero: a misconfigured cap
+/// that silently discarded every event would be the worst outcome here.
+pub fn stream_maxlen(configured: Option<&str>) -> usize {
+    let Some(raw) = configured else {
+        return DEFAULT_STREAM_MAXLEN;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_STREAM_MAXLEN;
+    }
+    if let Ok(maxlen) = trimmed.parse::<usize>()
+        && maxlen > 0
+    {
+        return maxlen;
+    }
+    log::warn!(
+        "{STREAM_MAXLEN_ENV}={raw} is not a positive integer; using default {DEFAULT_STREAM_MAXLEN}"
+    );
+    DEFAULT_STREAM_MAXLEN
+}
+
+/// Builds `XADD <stream> MAXLEN ~ <cap> *` — the shared prefix of every stream write, so
+/// the cap cannot be forgotten at one call site.
+#[cfg(feature = "redis-impl")]
+pub fn capped_xadd(stream: &str) -> redis::Cmd {
+    let mut cmd = redis::cmd("XADD");
+    cmd.arg(stream)
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(*RETENTION_MAXLEN)
+        .arg("*");
+    cmd
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -787,12 +829,7 @@ pub mod redis_runtime {
         for attempt in 0..3 {
             let result: RedisResult<String> = async {
                 let mut connection = client.get_multiplexed_async_connection().await?;
-                redis::cmd("XADD")
-                    .arg(&stream)
-                    .arg("MAXLEN")
-                    .arg("~")
-                    .arg(RETENTION_MAXLEN)
-                    .arg("*")
+                capped_xadd(&stream)
                     .arg("envelope")
                     .arg(&raw_envelope)
                     .query_async(&mut connection)
@@ -928,12 +965,7 @@ pub mod redis_runtime {
             raw_envelope: &str,
             fields: Vec<(&'static str, String)>,
         ) -> Result<(), SubscribeFailed> {
-            let _: String = redis::cmd("XADD")
-                .arg(dlq)
-                .arg("MAXLEN")
-                .arg("~")
-                .arg(RETENTION_MAXLEN)
-                .arg("*")
+            let _: String = capped_xadd(dlq)
                 .arg("envelope")
                 .arg(raw_envelope)
                 .arg(fields)
@@ -1438,6 +1470,36 @@ pub mod redis_runtime {
     mod tests {
         use super::*;
         #[test]
+        fn capped_xadd_carries_approximate_maxlen_at_configured_cap() {
+            // Read the real command arguments rather than trusting the code path.
+            let cmd = capped_xadd("events:payment");
+            let args: Vec<String> = cmd
+                .args_iter()
+                .map(|arg| match arg {
+                    redis::Arg::Simple(bytes) => String::from_utf8_lossy(bytes).to_string(),
+                    redis::Arg::Cursor => "CURSOR".to_string(),
+                })
+                .collect();
+
+            assert_eq!(args[0], "XADD");
+            assert_eq!(args[1], "events:payment");
+            let maxlen_at = args
+                .iter()
+                .position(|a| a == "MAXLEN")
+                .unwrap_or_else(|| panic!("XADD did not carry MAXLEN: {args:?}"));
+            assert_eq!(
+                args[maxlen_at + 1],
+                "~",
+                "trimming must stay approximate: {args:?}"
+            );
+            assert_eq!(
+                args[maxlen_at + 2],
+                RETENTION_MAXLEN.to_string(),
+                "XADD must trim at the configured cap: {args:?}"
+            );
+            assert_eq!(args[maxlen_at + 3], "*");
+        }
+        #[test]
         fn xpending_delivery_count_controls_dlq_threshold() {
             let value = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
                 redis::Value::Data(b"1700000000000-0".to_vec()),
@@ -1575,9 +1637,7 @@ pub mod redis_runtime {
                     vec!["events:payment".to_string()],
                     "journey-order".to_string(),
                     "consumer-1".to_string(),
-                    Box::new(|_| {
-                        Box::pin(async { Err(HandlerError::Fatal("poison root cause".into())) })
-                    }),
+                    &|_| Box::pin(async { Err(HandlerError::Fatal("poison root cause".into())) }),
                     true,
                 )
                 .await
@@ -1644,9 +1704,12 @@ pub mod redis_runtime {
                 span.status,
                 opentelemetry::trace::Status::Error { .. }
             ));
+            // logtest captures into a process-global queue, so skip unrelated WARN
+            // records (e.g. config fallback warnings from other tests) and match the
+            // DLQ record this test actually asserts on.
             let log = loop {
                 let log = logger.pop().expect("expected WARN DLQ log");
-                if log.level() == log::Level::Warn {
+                if log.level() == log::Level::Warn && log.args().contains("moving message to DLQ") {
                     break log;
                 }
             };
@@ -1692,7 +1755,7 @@ pub mod redis_runtime {
                     vec!["events:payment".to_string()],
                     "journey-order".to_string(),
                     "consumer-1".to_string(),
-                    Box::new(|_| Box::pin(async { Ok(()) })),
+                    &|_| Box::pin(async { Ok(()) }),
                     true,
                 )
                 .await
@@ -1748,7 +1811,7 @@ pub mod redis_runtime {
                     vec!["events:payment".to_string()],
                     "journey-order".to_string(),
                     "consumer-1".to_string(),
-                    Box::new(|_| Box::pin(async { Ok(()) })),
+                    &|_| Box::pin(async { Ok(()) }),
                     true,
                 )
                 .await
@@ -1808,6 +1871,28 @@ pub mod redis_runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stream_maxlen_default_matches_java_kit() {
+        assert_eq!(DEFAULT_STREAM_MAXLEN, 10_000);
+        assert_eq!(STREAM_MAXLEN_ENV, "EVENT_STREAM_MAXLEN");
+    }
+
+    #[test]
+    fn stream_maxlen_honours_configured_override() {
+        assert_eq!(stream_maxlen(Some("2500")), 2_500);
+        assert_eq!(stream_maxlen(Some(" 750 ")), 750);
+    }
+
+    #[test]
+    fn stream_maxlen_falls_back_to_default_when_unset_or_invalid() {
+        // Falling back beats trimming to zero: a cap of 0 would discard every event.
+        assert_eq!(stream_maxlen(None), DEFAULT_STREAM_MAXLEN);
+        assert_eq!(stream_maxlen(Some("")), DEFAULT_STREAM_MAXLEN);
+        assert_eq!(stream_maxlen(Some("   ")), DEFAULT_STREAM_MAXLEN);
+        assert_eq!(stream_maxlen(Some("not-a-number")), DEFAULT_STREAM_MAXLEN);
+        assert_eq!(stream_maxlen(Some("0")), DEFAULT_STREAM_MAXLEN);
+        assert_eq!(stream_maxlen(Some("-5")), DEFAULT_STREAM_MAXLEN);
+    }
     #[test]
     fn envelope_has_canonical_contract_fields() {
         let envelope = EventEnvelope::canonical(
