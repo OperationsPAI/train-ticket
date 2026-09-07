@@ -765,6 +765,14 @@ spec:
               value: none
             - name: OTEL_LOGS_EXPORTER
               value: none
+            # journey-order consumes 11 streams. Its handler was `synchronized`
+            # until the lock was removed (it had outlived the in-memory dedup
+            # set it once guarded); correctness now rests on snapshot OCC plus
+            # the processed_events primary key, both safe under concurrency.
+            # Without this the pool falls back to DEFAULT_CONSUMER_THREADS=1
+            # and the unlocked handler gains nothing.
+            - name: CONSUMER_THREADS
+              value: "4"
           resources:
             requests:
               cpu: 50m
@@ -3107,6 +3115,19 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 6
+          # Liveness MUST stay on /healthz (liveness of the process). /readyz is
+          # bound to postgres_ready_handler (services/invoicing/src/lib.rs:98),
+          # a dependency check -- using it here turns a slow Postgres into a
+          # kubelet restart loop. Startup tolerance is expressed by the
+          # startupProbe below, which holds liveness off for up to 60s.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /healthz
@@ -3347,6 +3368,16 @@ spec:
               value: redis://redis.train-ticket.svc.cluster.local:6379
             - name: DATABASE_URL
               value: postgresql://trainticket:trainticket-dev@postgres:5432/travel_insurance
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: travel-insurance
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           resources:
             requests:
               cpu: 50m
@@ -3356,13 +3387,13 @@ spec:
               memory: 256Mi
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: /health
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10

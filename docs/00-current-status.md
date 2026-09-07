@@ -24,10 +24,8 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 
 38 deployed business services + Redis Streams + PostgreSQL, all under
 `deploy/k8s/`, each with a Dockerfile at `deploy/docker/<service>/Dockerfile`.
-`deploy/build-images.sh` currently builds 34 of them; four deployed services —
-group-booking, invoicing, loyalty-membership, and travel-insurance — have
-Dockerfiles under `deploy/docker/` but are not yet in the script's `services`
-array, so their images are built separately (a known build-script gap).
+`deploy/build-images.sh` builds all 38; its image set is verified identical to
+the `train-ticket/*` images referenced by `deploy/k8s/services.yaml`.
 `service-catalog.json` currently catalogs 33 of these contexts; the deployed set
 also includes corporate-travel, group-booking, loyalty-membership,
 marketing-campaign, and travel-insurance:
@@ -61,7 +59,10 @@ closed loop through disruption-recovery (SYSTEM `MISSED_CONNECTION` reports,
 suite 01-19 (latest run: 436/0, all DLQ zero). Wave 20 cleared the remaining functional debts: fulfillment publishes
 SegmentArrived/Delayed/Cancelled (transfer-management consumes them
 event-driven, HTTP reports remain as the ops fallback), transfer evaluation
-reads place-network topology (degraded-not-blocking semantics), and the
+reads place-network topology (degraded-not-blocking when place-network is
+unavailable, times out, or returns 5xx; a client-supplied node ref that
+place-network does not know is still rejected with `VALIDATION_FAILED` at
+connection registration), and the
 TransferRiskPolicy aggregate replaces the builtin-v1 fallback. No deferred
 functional scope remains; latest restart certification: 470/0.
 
@@ -139,7 +140,7 @@ captures every PostgreSQL aggregate snapshot row count, deletes every pod in
 the namespace, verifies the row counts survive unchanged, and then re-runs the
 full 01–11 suite against the restarted cluster.
 
-`deploy/loadgen/` contains the resident load generator. It can stay deployed in
+`deploy/loadgen-go/` contains the resident load generator. It can stay deployed in
 the integration namespace for continuous traffic and is paused by the restart
 certification script before the snapshot comparison.
 
