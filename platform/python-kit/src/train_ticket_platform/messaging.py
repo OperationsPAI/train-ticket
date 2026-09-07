@@ -16,7 +16,8 @@ from .events import EventEnvelope
 from .observability import otel_tracing_enabled
 
 
-MAXLEN = 100000
+STREAM_MAXLEN_ENV = "EVENT_STREAM_MAXLEN"
+DEFAULT_STREAM_MAXLEN = 10000
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = (0.1, 0.3, 0.9)
 MAX_DELIVERY_ATTEMPTS = 5
@@ -26,6 +27,36 @@ DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
 POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "100"))
 POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "100"))
 LOGGER = logging.getLogger(__name__)
+
+
+def stream_maxlen(configured: str | None) -> int:
+    """Resolve the per-stream entry cap, falling back to the default when misconfigured.
+
+    A blank, non-numeric or non-positive value falls back to the default rather than
+    raising or trimming to zero: silently discarding every published event would be
+    far worse than ignoring the misconfiguration.
+    """
+    if configured is None or not configured.strip():
+        return DEFAULT_STREAM_MAXLEN
+    try:
+        maxlen = int(configured.strip())
+        if maxlen > 0:
+            return maxlen
+    except ValueError:
+        pass
+    LOGGER.warning(
+        "%s=%s is not a positive integer; using default %s",
+        STREAM_MAXLEN_ENV,
+        configured,
+        DEFAULT_STREAM_MAXLEN,
+    )
+    return DEFAULT_STREAM_MAXLEN
+
+
+# Cap on entries kept per stream. Redis streams are never read destructively, so without
+# a cap every published event stays resident forever and eventually exhausts the Redis
+# memory limit. Applied as ``MAXLEN ~ n`` so XADD stays O(1).
+MAXLEN = stream_maxlen(os.environ.get(STREAM_MAXLEN_ENV))
 
 
 class PublishFailed(RuntimeError):
