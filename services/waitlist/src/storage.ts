@@ -1,7 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Redis } from "ioredis";
-import { MigrationRunner, OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, createPostgresPool, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
+import { MigrationRunner, OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, checkPostgresReadiness, connectRedisWithRetry, createPostgresPool, createRedisClient, redisClientLiveness, streamForProducer, withTransaction, type EventEnvelope } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import type { WaitlistRepository } from "./promotion.js";
@@ -131,9 +130,10 @@ export async function startWaitlistStorage(redisUrl = process.env.REDIS_URL ?? "
   const pool = createPostgresPool();
   const migrations = new MigrationRunner(pool, migrationsDirectory());
   try { await migrations.apply(); } catch (error) { console.error(sanitizedErrorForLog(error)); }
-  const redis = new Redis(redisUrl, { lazyConnect: true });
-  await redis.connect();
-  const relay = new OutboxRelay(pool, redis, { pollIntervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "50", 10), onFailure: (error) => console.error(sanitizedErrorForLog(error)) });
+  // createRedisClient attaches an "error" listener and an infinite capped backoff retry strategy, and registers a liveness component; `new Redis(url)` got none of that (2026-09-06 outage).
+  const redis = createRedisClient(redisUrl, {}, "waitlist-outbox");
+  await connectRedisWithRetry(redis, "waitlist-outbox");
+  const relay = new OutboxRelay(pool, redis, { pollIntervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "50", 10), name: "waitlist-outbox-relay", onFailure: (error) => console.error(sanitizedErrorForLog(error)) });
   relay.start();
   return {
     ready: () => migrations.isReady ? checkPostgresReadiness(pool) : Promise.resolve(false),
@@ -143,7 +143,7 @@ export async function startWaitlistStorage(redisUrl = process.env.REDIS_URL ?? "
       if (!await new ProcessedEventRepository(client).record(eventId, stream)) return undefined;
       return operation(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)));
     }),
-    stop: async () => { await relay.stop(); await Promise.allSettled([redis.quit(), pool.end()]); },
+    stop: async () => { await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
 }
 

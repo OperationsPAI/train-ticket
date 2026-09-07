@@ -1,7 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Redis } from "ioredis";
 import {
   MigrationRunner,
   OutboxAppender,
@@ -9,7 +8,10 @@ import {
   PostgresIdempotencyStore,
   ProcessedEventsGuard,
   checkPostgresReadiness,
+  connectRedisWithRetry,
   createPostgresPool,
+  createRedisClient,
+  redisClientLiveness,
   streamForProducer,
   withTransaction,
   type EventEnvelope,
@@ -42,10 +44,14 @@ export async function startOfferStorage(redisUrl = process.env.REDIS_URL ?? "red
     console.error(sanitizedErrorForLog(error));
   }
 
-  const redis = new Redis(redisUrl, { lazyConnect: true });
-  await redis.connect();
+  // createRedisClient attaches an "error" listener and an infinite capped
+  // backoff retry strategy, and registers a liveness component; `new Redis`
+  // got none of that (2026-09-06 outage).
+  const redis = createRedisClient(redisUrl, {}, "offer-management-outbox");
+  await connectRedisWithRetry(redis, "offer-management-outbox");
   const relay = new OutboxRelay(pool, redis, {
     pollIntervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "50", 10),
+    name: "offer-management-outbox-relay",
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
@@ -57,6 +63,7 @@ export async function startOfferStorage(redisUrl = process.env.REDIS_URL ?? "red
     handleUpstreamEvent: createUpstreamEventHandler(pool),
     stop: async () => {
       await relay.stop();
+      redisClientLiveness(redis)?.dispose();
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };

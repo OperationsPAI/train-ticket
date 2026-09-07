@@ -186,7 +186,21 @@ export type RedemptionResult = Readonly<{ pointsDeducted: number; discountAmount
 export type ExpiredBatch = Readonly<{ batchId: PointsLotId; points: number; earnedAt: Date; expiresAt: Date }>;
 export type ExpiringBatch = Readonly<{ batchId: PointsLotId; pointsAmount: number; expiryDate: Date }>;
 export type PointsEarningRule = Readonly<{ seatClassMultiplier: number; bonusConditions: readonly Readonly<{ name: string; multiplier: number }>[]; tierMultiplier: number }>;
-export type PointsCalculationInput = Readonly<{ fare: Money; seatClass: SeatClass; travelDate: Date; memberTier: TierName; routeCode?: string; routeName?: string; isHoliday?: boolean; memberBirthDate?: Date }>;
+/**
+ * `travelDate` is optional, and its absence is meaningful: it means "the travel
+ * date is not known", NOT "use some other date".
+ *
+ * The weekend, holiday and birthday-month bonuses in `bonusMultipliers` are
+ * defined by the loyalty contract against the date the member TRAVELS (see
+ * docs/10-domain-enrichment/loyalty-membership-enrichment.md R1, "Weekend
+ * travel", "Holiday travel"). Substituting any other timestamp -- the purchase
+ * time, the capture time, or the current clock -- silently prices a journey off
+ * the wrong calendar day and awards bonuses nobody earned. When the date is
+ * unknown we therefore award the base rate and skip the date-derived bonuses
+ * rather than guess. An explicit upstream `isHoliday` assertion is still
+ * honoured, because that is a stated fact rather than something derived here.
+ */
+export type PointsCalculationInput = Readonly<{ fare: Money; seatClass: SeatClass; travelDate?: Date; memberTier: TierName; routeCode?: string; routeName?: string; isHoliday?: boolean; memberBirthDate?: Date }>;
 export type TierPolicy = Readonly<{ tierName: TierName; minQualifyingPoints: number; minTrips: number; benefits: readonly string[] }>;
 export type RedemptionPolicySnapshot = Readonly<{ pointsToCurrencyRate: number; minRedemption: number; maxFarePercentage: number }>;
 
@@ -326,7 +340,13 @@ export class Member {
 
   accrueFromConfirmedOrder(command: AccruePointsCommand, now = new Date()): { member: Member; events: LoyaltyDomainEvent[] } {
     this.assertActive();
-    const points = PointsCalculator.calculate({ fare: command.ticketPrice, seatClass: command.seatClass ?? "SECOND_CLASS", travelDate: command.travelDate ?? command.confirmedAt, memberTier: this.snapshot.tier, routeCode: command.routeCode, routeName: command.routeName, isHoliday: command.isHoliday, memberBirthDate: command.memberBirthDate });
+    // travelDate is NOT defaulted to confirmedAt. confirmedAt is when the
+    // member PAID, which is a different calendar day from when they travel, so
+    // falling back to it awarded weekend/holiday bonuses based on the purchase
+    // day: the live ledger shows the same e2e fare earning 161 points for a
+    // Sunday purchase and 107 for a Monday purchase of the same future trip.
+    // When the upstream event carries no travel date we award the base rate.
+    const points = PointsCalculator.calculate({ fare: command.ticketPrice, seatClass: command.seatClass ?? "SECOND_CLASS", travelDate: command.travelDate, memberTier: this.snapshot.tier, routeCode: command.routeCode, routeName: command.routeName, isHoliday: command.isHoliday, memberBirthDate: command.memberBirthDate });
     if (points === 0) throw new DomainError("NO_POINTS_TO_ACCRUE", "Ticket price is too small to accrue points");
     const ledger = PointsLedger.fromSnapshots(this.snapshot.ledger, this.snapshot.lots);
     const sourceFactRef = freeze({ stream: command.sourceStream ?? "events:payment", eventType: command.sourceEventType ?? "PAYMENT_CAPTURED", eventId: required(command.sourceEventId, "sourceEventId"), aggregateId: required(command.orderId, "orderId"), occurredAt: command.confirmedAt });
@@ -448,7 +468,20 @@ export class Member {
   private assertActive(): void { if (this.snapshot.status !== "ACTIVE") throw new DomainError("MEMBERSHIP_NOT_ACTIVE", "Only active memberships can accrue or redeem points"); }
 }
 
-export function pointsForTicketPrice(price: Money): number { return PointsCalculator.calculate({ fare: price, seatClass: "SECOND_CLASS", travelDate: new Date("2026-07-10T00:00:00.000Z"), memberTier: "SILVER" }); }
+/**
+ * Base-rate helper: 1 CNY = 1 point, second class, SILVER, no bonuses.
+ *
+ * This deliberately supplies no travel date. It previously hardcoded
+ * `2026-07-10` -- a Friday, and not a public holiday -- which made the bonus
+ * product exactly 1.0 and so happened to yield the intended base rate. That was
+ * a fragile way to say "no bonuses": the value was inert only by coincidence of
+ * which weekday that date falls on, and any edit to it would have silently
+ * rescaled every result. Omitting the date states the intent directly.
+ *
+ * Prefer `PointsCalculator.calculate` for real accruals; this exists for callers
+ * that only want the unmultiplied base rate.
+ */
+export function pointsForTicketPrice(price: Money): number { return PointsCalculator.calculate({ fare: price, seatClass: "SECOND_CLASS", memberTier: "SILVER" }); }
 export function calculatePoints(input: PointsCalculationInput): Readonly<{ points: number; rule: PointsEarningRule }> {
   if (input.fare.currency !== "CNY") throw new DomainError("UNSUPPORTED_CURRENCY", "Loyalty accrual currently supports CNY only");
   assertWholeNonNegative(input.fare.minorUnits, "minorUnits");
@@ -461,11 +494,16 @@ function seatClassMultiplier(seatClass: SeatClass): number { if (seatClass === "
 function tierMultiplier(tier: TierName): number { return { SILVER: 1, GOLD: 1.2, PLATINUM: 1.5, DIAMOND: 2 }[tier]; }
 function bonusMultipliers(input: Omit<PointsCalculationInput, "fare">): readonly Readonly<{ name: string; multiplier: number }>[] {
   const conditions: Readonly<{ name: string; multiplier: number }>[] = [];
-  const weekday = input.travelDate.getUTCDay();
-  if (weekday === 0 || weekday === 6) conditions.push(freeze({ name: "WEEKEND_TRAVEL", multiplier: 1.5 }));
-  if (input.isHoliday === true || isPublicHoliday(input.travelDate)) conditions.push(freeze({ name: "HOLIDAY_TRAVEL", multiplier: 2 }));
+  const travelDate = input.travelDate;
+  // No travel date => no date-derived bonus. Guessing a date here is what made
+  // every accrual price as a Friday in July regardless of when travel happened.
+  if (travelDate) {
+    const weekday = travelDate.getUTCDay();
+    if (weekday === 0 || weekday === 6) conditions.push(freeze({ name: "WEEKEND_TRAVEL", multiplier: 1.5 }));
+  }
+  if (input.isHoliday === true || (travelDate !== undefined && isPublicHoliday(travelDate))) conditions.push(freeze({ name: "HOLIDAY_TRAVEL", multiplier: 2 }));
   if (isBonusRoute(input.routeCode, input.routeName)) conditions.push(freeze({ name: "BONUS_ROUTE", multiplier: 1.2 }));
-  if (input.memberBirthDate && input.memberBirthDate.getUTCMonth() === input.travelDate.getUTCMonth()) conditions.push(freeze({ name: "BIRTHDAY_MONTH", multiplier: 2 }));
+  if (input.memberBirthDate && travelDate !== undefined && input.memberBirthDate.getUTCMonth() === travelDate.getUTCMonth()) conditions.push(freeze({ name: "BIRTHDAY_MONTH", multiplier: 2 }));
   return conditions;
 }
 function isPublicHoliday(date: Date): boolean { return ["01-01", "05-01", "10-01", "10-02", "10-03"].includes(`${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`); }

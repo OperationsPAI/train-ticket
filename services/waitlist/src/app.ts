@@ -1,9 +1,10 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
+import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, livenessProbe, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
 import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest } from "./application.js";
 import type { CapacityAvailabilityClient, FarePricingClient, JourneyOrderClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
+import type { EventConsumptionState } from "./subscriber-retry.js";
 
 type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
@@ -21,6 +22,11 @@ export type AppDependencies = Readonly<{
   now?: () => Date;
   storage?: AppStorage;
   applicationService?: WaitlistApplicationService;
+  /**
+   * Reports whether the stream consumer is live or still retrying subscribe.
+   * Surfaced on `/readyz` for observability; see `readyBody`.
+   */
+  eventConsumption?: () => EventConsumptionState;
 }>;
 
 const defaultRepository = new InMemoryWaitlistRepository();
@@ -55,11 +61,11 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
   });
 
   app.get("/health", async () => ({ status: health(), service: serviceProfile }));
-  app.get("/healthz", async () => ({ status: health(), service: serviceProfile }));
-  app.get("/live", async () => ({ status: health(), probe: "live" }));
-  app.get("/livez", async () => ({ status: health(), probe: "live" }));
-  app.get("/ready", async (_request, reply) => readyBody(reply, dependencies.storage));
-  app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
+  app.get("/healthz", async (_request, reply) => healthzBody(reply));
+  app.get("/live", async (_request, reply) => liveBody(reply));
+  app.get("/livez", async (_request, reply) => liveBody(reply));
+  app.get("/ready", async (_request, reply) => readyBody(reply, dependencies.storage, dependencies.eventConsumption));
+  app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage, dependencies.eventConsumption));
   app.get("/metadata", async () => metadata());
 
   stateChanging(app, idempotencyStore, "POST", "/api/v1/waitlist-requests", async (request, ctx) => ({
@@ -127,10 +133,99 @@ function inMemoryCommandRunner(dependencies: AppDependencies): AppStorage["runCo
   return (operation) => operation(dependencies.repository ?? defaultRepository, dependencies.publisher ?? defaultPublisher);
 }
 
-async function readyBody(reply: FastifyReply, storage?: AppStorage): Promise<{ status: "ok" | "not_ready"; probe: "ready" }> {
+/**
+ * Readiness.
+ *
+ * DECISION: while the subscriber is retrying subscribe, `/readyz` stays 200 and
+ * reports `eventConsumption: "retrying"` in its body. It does NOT go 503.
+ * Same conclusion as loyalty-membership, and for the same reasons, plus one
+ * that is specific to waitlist:
+ *
+ *  - `deploy/k8s/services.yaml` gives waitlist `replicas: 1` behind a ClusterIP
+ *    Service. 503 here removes the only endpoint, so the synchronous
+ *    join/cancel/accept/queue-info API -- which does not touch the consumer at
+ *    all -- would start refusing connections during a Redis outage. That turns
+ *    a partial outage into a total one, the very shape of the 2026-09-06
+ *    incident.
+ *  - `deploy/e2e/14-waitlist.sh` calls `http://waitlist:8080/api/v1/...` by
+ *    Service DNS, and `deploy/e2e/12-restart.sh` gates on `kubectl rollout
+ *    status` for every deployment. A never-Ready pod never becomes Available,
+ *    so failing readiness during a subscribe retry would hang the e2e rollout
+ *    gate instead of reporting one degraded consumer.
+ *  - Readiness has no grace period and no self-healing: it withdraws endpoints
+ *    and waits. The background retry already restores consumption without a
+ *    restart, so surrendering HTTP availability buys nothing.
+ *  - Nothing polls this endpoint but the kubelet -- no ingress, no gateway, and
+ *    no service calls waitlist over HTTP (waitlist is a caller of fare-pricing,
+ *    capacity-availability, journey-order and offer-management, not a callee).
+ *    A 503 would therefore signal nothing to anyone; it would only delete the
+ *    endpoint.
+ *
+ * "Consumption is permanently dead" is liveness' question, and that path is
+ * already correct: after a successful subscribe ts-kit registers
+ * `redis-consumer.waitlist`, so a later wedge fails `/healthz` once the grace
+ * period elapses. During the retry window the never-healthy guard keeps
+ * liveness green deliberately, so the state is reported in the readiness body
+ * rather than encoded as an endpoint withdrawal.
+ *
+ * Postgres readiness keeps its existing 503: that genuinely does break the
+ * HTTP API, so withdrawing the endpoint is right there.
+ */
+async function readyBody(reply: FastifyReply, storage?: AppStorage, eventConsumption?: () => EventConsumptionState): Promise<{ status: "ok" | "not_ready"; probe: "ready"; eventConsumption?: EventConsumptionState }> {
   const ready = storage ? await storage.ready() : true;
   if (!ready) reply.status(503);
-  return { status: ready ? "ok" : "not_ready", probe: "ready" };
+  const consumption = eventConsumption?.();
+  const body = { status: ready ? "ok" as const : "not_ready" as const, probe: "ready" as const };
+  return consumption ? { ...body, eventConsumption: consumption } : body;
+}
+
+export type LiveStatus = Readonly<{ status: "ok" | "unhealthy"; probe: "live" }>;
+
+/**
+ * Liveness.
+ *
+ * A liveness probe that can never fail is what turned a 10-second Redis
+ * restart into a 20-hour outage: readiness pulled the pod out of the Service
+ * while liveness kept saying 200, so kubelet never restarted the wedged
+ * process.
+ *
+ * This is deliberately NOT a dependency check. `livenessProbe()` reports dead
+ * only once a registered component (Redis connection, stream consumer loop,
+ * outbox relay) has been *continuously* unhealthy past its grace period
+ * (REDIS_LIVENESS_GRACE_MS, default 5 minutes). A transient Redis blip
+ * reconnects in seconds and never trips it; a permanently wedged process
+ * gets restarted.
+ */
+function liveBody(reply: FastifyReply): LiveStatus {
+  return reportUnlive(reply) ? { status: "unhealthy", probe: "live" } : { status: health(), probe: "live" };
+}
+
+/**
+ * `/healthz` answers the service-profile body here rather than the probe body,
+ * and existing clients depend on that shape, so only the status code changes
+ * when liveness fails.
+ */
+function healthzBody(reply: FastifyReply): LiveStatus | { status: "ok"; service: typeof serviceProfile } {
+  return reportUnlive(reply) ? { status: "unhealthy", probe: "live" } : { status: health(), service: serviceProfile };
+}
+
+function reportUnlive(reply: FastifyReply): boolean {
+  const probe = livenessProbe();
+  if (probe.live) {
+    return false;
+  }
+  console.error({
+    service: serviceProfile.serviceId,
+    message: "liveness probe failing; process is wedged and only a restart can recover it",
+    failed: probe.failed.map((component) => ({
+      component: component.name,
+      reason: component.reason,
+      unhealthyForMs: component.unhealthyForMs,
+      gracePeriodMs: component.gracePeriodMs,
+    })),
+  });
+  reply.status(503);
+  return true;
 }
 
 function stateChanging(app: FastifyInstance, store: IdempotencyStore, method: "POST" | "DELETE", path: string, operation: (request: FastifyRequest, context: RequestContext) => Promise<{ statusCode: number; body: unknown }>): void {

@@ -20,6 +20,7 @@ import {
   errorMessage,
   handleIdempotency,
   headerValue,
+  livenessProbe,
   requestFingerprint,
   requestContext as kitRequestContext,
   sendError,
@@ -35,7 +36,7 @@ export type HealthStatus = Readonly<{
 }>;
 
 export type ProbeStatus = Readonly<{
-  status: "ok" | "not_ready";
+  status: "ok" | "not_ready" | "unhealthy";
   probe: "live" | "ready";
 }>;
 
@@ -194,10 +195,10 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
 
   // Health / metadata
   app.get("/health", async () => healthBody());
-  app.get("/healthz", async () => healthBody());
+  app.get("/healthz", async (_request, reply) => healthzBody(reply));
   app.get("/metadata", async () => metadata());
-  app.get("/live", async () => probeBody("live"));
-  app.get("/livez", async () => probeBody("live"));
+  app.get("/live", async (_request, reply) => liveBody(reply));
+  app.get("/livez", async (_request, reply) => liveBody(reply));
   app.get("/ready", async (_request, reply) => readyBody(reply, dependencies.storage));
   app.get("/readyz", async (_request, reply) => readyBody(reply, dependencies.storage));
 
@@ -326,6 +327,56 @@ function healthBody(): HealthStatus {
 
 function probeBody(probe: ProbeStatus["probe"]): ProbeStatus {
   return { status: health(), probe };
+}
+
+/**
+ * Liveness.
+ *
+ * A liveness probe that can never fail is what turned a 10-second Redis
+ * restart into a 20-hour outage: readiness pulled the pod out of the Service
+ * while liveness kept saying 200, so kubelet never restarted the wedged
+ * process.
+ *
+ * This is deliberately NOT a dependency check. `livenessProbe()` reports dead
+ * only once a registered component (Redis connection, stream consumer loop,
+ * outbox relay) has been *continuously* unhealthy past its grace period
+ * (REDIS_LIVENESS_GRACE_MS, default 5 minutes). A transient Redis blip
+ * reconnects in seconds and never trips it; a permanently wedged process
+ * gets restarted.
+ */
+function liveBody(reply: { status: (statusCode: number) => unknown }): ProbeStatus {
+  if (reportUnlive(reply)) {
+    return { status: "unhealthy", probe: "live" };
+  }
+  return probeBody("live");
+}
+
+/**
+ * `/healthz` answers the service-profile body here rather than the probe body,
+ * and existing clients depend on that shape, so only the status code changes
+ * when liveness fails.
+ */
+function healthzBody(reply: { status: (statusCode: number) => unknown }): HealthStatus | ProbeStatus {
+  return reportUnlive(reply) ? { status: "unhealthy", probe: "live" } : healthBody();
+}
+
+function reportUnlive(reply: { status: (statusCode: number) => unknown }): boolean {
+  const probe = livenessProbe();
+  if (probe.live) {
+    return false;
+  }
+  console.error({
+    service: serviceProfile.serviceId,
+    message: "liveness probe failing; process is wedged and only a restart can recover it",
+    failed: probe.failed.map((component) => ({
+      component: component.name,
+      reason: component.reason,
+      unhealthyForMs: component.unhealthyForMs,
+      gracePeriodMs: component.gracePeriodMs,
+    })),
+  });
+  reply.status(503);
+  return true;
 }
 
 async function readyBody(reply: { status: (statusCode: number) => unknown }, storage: AppStorage | undefined): Promise<ProbeStatus> {
