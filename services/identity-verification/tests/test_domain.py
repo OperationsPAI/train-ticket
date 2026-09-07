@@ -2,6 +2,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from identity_verification.domain import CredentialRecord, DomainError, VerificationCase, SimOutcome, EligibilityCertificate
 
+# Fixtures below that are passed explicitly as `at` into pure domain
+# constructors stay pinned on purpose -- the domain receives its clock as an
+# argument, so a literal there is deterministic, not a time bomb. Only values
+# that the *service* compares against the real `now_utc()` (blacklist
+# effectiveFrom, passport expiryDate) must be relative; those use NOW.
+NOW = datetime.now(UTC).replace(microsecond=0)
+
 
 def test_verification_state_transitions_pass_and_manual_override():
     now = datetime(2026, 1, 1, tzinfo=UTC)
@@ -54,7 +61,10 @@ def test_real_name_duplicate_blacklist_expiry_and_cache():
     from identity_verification.application.service import IdentityVerificationService, InMemoryStore
     from identity_verification.domain import ActiveTicket, BlacklistEntry, BlacklistType
 
-    at = datetime(2026, 1, 1, tzinfo=UTC)
+    # Blacklist entries are matched with `active_at(now_utc())`, so their
+    # effectiveFrom must be in the past relative to the *run*, not to a fixed
+    # calendar day. NOW-1d is already-effective on every possible run date.
+    blacklisted_from = NOW - timedelta(days=1)
     store = InMemoryStore()
     service = IdentityVerificationService(store)
     doc = "11010519491231002X"
@@ -77,13 +87,13 @@ def test_real_name_duplicate_blacklist_expiry_and_cache():
     assert duplicate["duplicateTicketCheck"] == "FAIL"
 
     security_doc = "110105194912310038"
-    store.add_blacklist_entry(BlacklistEntry(security_doc, BlacklistType.SECURITY_BAN, "security", at))
+    store.add_blacklist_entry(BlacklistEntry(security_doc, BlacklistType.SECURITY_BAN, "security", blacklisted_from))
     security = service.verify_identity({**request, "documentNumber": security_doc, "travelerId": "tvl-ban", "segmentRef": "seg-ban"}, "corr-real", "cmd-real-4")
     assert security["status"] == "BLACKLISTED"
     assert security["restrictions"] == ["TRAVEL_BAN"]
 
     credit_doc = "110105194912310046"
-    store.add_blacklist_entry(BlacklistEntry(credit_doc, BlacklistType.CREDIT_DEFAULT, "credit", at))
+    store.add_blacklist_entry(BlacklistEntry(credit_doc, BlacklistType.CREDIT_DEFAULT, "credit", blacklisted_from))
     first_class = service.verify_identity({**request, "documentNumber": credit_doc, "travelerId": "tvl-credit", "segmentRef": "seg-credit", "seatClass": "FIRST_CLASS"}, "corr-real", "cmd-real-5")
     assert first_class["status"] == "BLACKLISTED"
     assert first_class["reason"] == "CREDIT_DEFAULT_RESTRICTED_CLASS"
@@ -92,9 +102,19 @@ def test_real_name_duplicate_blacklist_expiry_and_cache():
     second_class = service.verify_identity({**request, "documentNumber": credit_doc, "travelerId": "tvl-credit", "segmentRef": "seg-credit-2", "seatClass": "SECOND_CLASS"}, "corr-real", "cmd-real-6")
     assert second_class["status"] == "VERIFIED"
 
-    expired = service.verify_identity({"travelerId": "tvl-passport", "documentType": "PASSPORT", "documentNumber": "E12345678", "holderName": "LI SI", "expiryDate": "2020-01-01T00:00:00Z"}, "corr-real", "cmd-real-7")
+    # Passport expiry is compared against now_utc(). A literal past year (e.g.
+    # "2020-01-01") would keep passing forever without proving the comparison
+    # is a real boundary, so drive both sides of it relative to NOW.
+    expired = service.verify_identity({"travelerId": "tvl-passport", "documentType": "PASSPORT", "documentNumber": "E12345678", "holderName": "LI SI", "expiryDate": (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}, "corr-real", "cmd-real-7")
     assert expired["status"] == "EXPIRED"
     assert expired["reason"] == "EXPIRED_DOCUMENT"
+
+    # Counterpart: a passport expiring after NOW must NOT be rejected. Without
+    # this, the assertion above would still hold if every document were treated
+    # as expired.
+    valid_passport = service.verify_identity({"travelerId": "tvl-passport-ok", "documentType": "PASSPORT", "documentNumber": "E87654321", "holderName": "LI SI", "expiryDate": (NOW + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")}, "corr-real", "cmd-real-8")
+    assert valid_passport["status"] == "VERIFIED"
+    assert valid_passport.get("reason") in (None, "")
 
 
 def test_journey_order_and_risk_events_maintain_registries():

@@ -15,22 +15,34 @@ fi
 
 mkdir -p "${HOME}/.m2" "${HOME}/.cache" "${HOME}/.npm"
 
+# ── pnpm: redirect the content-addressable store into the persisted .cache
+# volume so package tarballs survive container rebuilds.
+pnpm config set store-dir "${HOME}/.cache/pnpm-store"
+
+# ── uv: Python virtual-env cache lives inside the persisted .cache volume.
+# UV_DEFAULT_INDEX (upstream PyPI) and UV_LINK_MODE are already set via
+# Dockerfile ENV; the uv data directory below keeps downloaded Python
+# toolchains persistent.
+mkdir -p "${HOME}/.local/share/uv"
+
 echo "Train Ticket greenfield dev container is ready."
-echo "Java: $(java -version 2>&1 | head -n 1)"
-echo "Maven: $(mvn -version 2>/dev/null | head -n 1)"
-echo "Go: $(go version 2>/dev/null)"
-echo "Node: $(node --version)"
-echo "TypeScript: $(tsc --version 2>/dev/null)"
-echo "Python: $(python3 --version)"
-echo "Rust: $(rustc --version 2>/dev/null)"
-echo "Cargo: $(cargo --version 2>/dev/null)"
-echo "Helm: $(helm version --short 2>/dev/null)"
-echo "Skaffold: $(skaffold version 2>/dev/null)"
-echo "kubectl: $(kubectl version --client=true --output=yaml 2>/dev/null | awk '/gitVersion:/ {print $2; exit}')"
+echo "Java:      $(java -version 2>&1 | head -n 1)"
+echo "Maven:     $(mvn -version 2>/dev/null | head -n 1)"
+echo "Go:        $(go version 2>/dev/null)"
+echo "Node:      $(node --version)"
+echo "pnpm:      $(pnpm --version 2>/dev/null)"
+echo "TypeScript:$(tsc --version 2>/dev/null)"
+echo "Python:    $(python3 --version)"
+echo "uv:        $(uv --version 2>/dev/null)"
+echo "Rust:      $(rustc --version 2>/dev/null)"
+echo "Cargo:     $(cargo --version 2>/dev/null)"
+echo "Helm:      $(helm version --short 2>/dev/null)"
+echo "Skaffold:  $(skaffold version 2>/dev/null)"
+echo "kubectl:   $(kubectl version --client=true --output=yaml 2>/dev/null | awk '/gitVersion:/ {print $2; exit}')"
 
 if [ -S /var/run/docker.sock ]; then
   if docker version --format '{{.Client.Version}} -> {{.Server.Version}}' >/tmp/train-ticket-docker-version 2>/dev/null; then
-    echo "Docker: $(cat /tmp/train-ticket-docker-version)"
+    echo "Docker:    $(cat /tmp/train-ticket-docker-version)"
   else
     echo "Docker socket is mounted, but the current shell may need to be reloaded before docker is usable."
   fi
