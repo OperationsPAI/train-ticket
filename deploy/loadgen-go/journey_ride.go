@@ -53,6 +53,7 @@ func JourneyRide(ctx context.Context, p *Providers) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		MaybeReadProbe(ctx, p, ProbeRefs{RideRequest: rideID, RideRider: entry.AccountID})
 		return "user_cancelled", nil
 	}
 
@@ -75,5 +76,6 @@ func JourneyRide(ctx context.Context, p *Providers) (string, error) {
 	if outcomeStr == "" {
 		outcomeStr = "completed"
 	}
+	MaybeReadProbe(ctx, p, ProbeRefs{RideRequest: rideID, RideRider: entry.AccountID})
 	return outcomeStr, nil
 }

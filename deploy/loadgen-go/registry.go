@@ -25,6 +25,27 @@ type Purchase struct {
 	PostSalesCase    string `json:"post_sales_case"`
 	FulfillmentRecord string `json:"fulfillment_record"`
 	JourneyDate      string `json:"journey_date"`
+
+	// Refs to entities created by the optional purchase-journey branches.
+	// These exist so the long-tail read probes can GET *real*, previously
+	// created ids -- probing a synthetic id would only ever exercise the
+	// 404 path, not the cache-cold read path these probes are for. They are
+	// persisted with the rest of the purchase so probes still find real
+	// entities after a loadgen restart.
+	AncillaryCatalog   string `json:"ancillary_catalog,omitempty"`
+	AncillaryOffer     string `json:"ancillary_offer,omitempty"`
+	AncillaryOrderItem string `json:"ancillary_order_item,omitempty"`
+	InvoiceTitle       string `json:"invoice_title,omitempty"`
+	InvoiceRequest     string `json:"invoice_request,omitempty"`
+	Invoice            string `json:"invoice,omitempty"`
+	Benefit            string `json:"benefit,omitempty"`
+	WalletAccount      string `json:"wallet_account,omitempty"`
+
+	// Search-derived refs, retained for the place-network / service-plan
+	// probes that the previous implementation drove off the same journey.
+	Service     string `json:"service,omitempty"`
+	OriginPlace string `json:"origin_place,omitempty"`
+	OriginNode  string `json:"origin_node,omitempty"`
 }
 
 // WaitlistRef tracks a waitlist request.
@@ -67,6 +88,14 @@ type Registry struct {
 	Places       map[string]string     `json:"places"`
 	OpsEntities  map[string][]string   `json:"ops_entities"`
 	InvoiceTitles map[string]string    `json:"invoice_titles"`
+
+	// transferStationNode caches the place-network transport node seeded for the
+	// transfer journey. transfer-management resolves fromNodeRef/toNodeRef
+	// against place-network and 422s on an unknown node, so this must be a real
+	// nodeId. Runtime-only and deliberately NOT persisted: a node id that
+	// outlived a place-network reset would 404 and wedge the journey forever.
+	transferStationMu   sync.Mutex
+	transferStationNode string
 
 	// Staff work queues (runtime only, not persisted)
 	QReservation chan *WorkItem
@@ -310,6 +339,26 @@ func (r *Registry) GetRoutes() []*RouteEntry {
 	out := make([]*RouteEntry, len(r.Routes))
 	copy(out, r.Routes)
 	return out
+}
+
+// CachedInvoiceTitle returns the invoice title id previously created for an
+// account, if any. The caller re-validates it against invoicing before use --
+// a title that was deactivated (or lost to a service reset) must not be reused,
+// because request_invoice 412s on a non-ACTIVE title.
+func (r *Registry) CachedInvoiceTitle(accountID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.InvoiceTitles[accountID]
+}
+
+// RememberInvoiceTitle caches an account's invoice title id.
+func (r *Registry) RememberInvoiceTitle(accountID, titleID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.InvoiceTitles == nil {
+		r.InvoiceTitles = make(map[string]string)
+	}
+	r.InvoiceTitles[accountID] = titleID
 }
 
 func (r *Registry) PickPurchaseForRead(rng *rand.Rand) *Purchase {

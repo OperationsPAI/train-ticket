@@ -15,9 +15,18 @@ type ApiClient struct {
 	template string
 	client   *http.Client
 	stats    *Stats
+	// rec is nil when per-request recording is disabled; every Recorder
+	// method is nil-safe, so there is no branch on the request path.
+	rec *Recorder
 }
 
 func NewApiClient(cfg *Config, stats *Stats) *ApiClient {
+	return NewApiClientWithRecorder(cfg, stats, nil)
+}
+
+// NewApiClientWithRecorder builds a client that also writes one per-request
+// outcome record (issue #420). Pass nil to disable recording.
+func NewApiClientWithRecorder(cfg *Config, stats *Stats, rec *Recorder) *ApiClient {
 	timeout := time.Duration(cfg.Target.RequestTimeoutSeconds * float64(time.Second))
 	return &ApiClient{
 		template: cfg.Target.BaseURLTemplate,
@@ -30,6 +39,7 @@ func NewApiClient(cfg *Config, stats *Stats) *ApiClient {
 			},
 		},
 		stats: stats,
+		rec:   rec,
 	}
 }
 
@@ -74,17 +84,58 @@ func (a *ApiClient) Request(ctx context.Context, method, service, path string,
 		req.Header.Set("Idempotency-Key", UUID7())
 	}
 
+	// W3C trace context. The loadgen originates the trace, so it mints the
+	// traceparent itself rather than waiting for an instrumented client to do
+	// it; the trace id it puts on the wire is the one it records, which is
+	// what makes a recorded row joinable to the server spans in Jaeger.
+	// A caller that supplied its own traceparent header wins.
+	var tc traceContext
+	if existing := req.Header.Get("traceparent"); existing != "" {
+		tc = parseTraceparent(existing)
+	} else {
+		tc = newTraceContext(a.rec.TraceSampled())
+		req.Header.Set("traceparent", tc.Header)
+	}
+
 	t0 := time.Now()
 	resp, err := a.client.Do(req)
 	elapsed := time.Since(t0).Seconds() * 1000
 
 	if err != nil {
 		a.stats.RecordError(fmt.Sprintf("%s:transport", service))
+		// status 0 + non-empty error is the "never got a status" marker.
+		a.rec.Record(ReqRecord{
+			StartUnixNano: t0.UnixNano(),
+			Chain:         ChainFromContext(ctx),
+			Step:          step,
+			Service:       service,
+			Method:        method,
+			Path:          path,
+			Status:        0,
+			LatencyMs:     elapsed,
+			TransportErr:  classifyTransportError(err),
+			TraceID:       tc.TraceID,
+			SpanID:        tc.SpanID,
+			Sampled:       tc.Sampled,
+		})
 		return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("transport: %v", err)}
 	}
 	defer resp.Body.Close()
 
 	a.stats.RecordHTTP(service, resp.StatusCode, elapsed)
+	a.rec.Record(ReqRecord{
+		StartUnixNano: t0.UnixNano(),
+		Chain:         ChainFromContext(ctx),
+		Step:          step,
+		Service:       service,
+		Method:        method,
+		Path:          path,
+		Status:        resp.StatusCode,
+		LatencyMs:     elapsed,
+		TraceID:       tc.TraceID,
+		SpanID:        tc.SpanID,
+		Sampled:       tc.Sampled,
+	})
 
 	var data map[string]interface{}
 	respBody, _ := io.ReadAll(resp.Body)
@@ -126,7 +177,7 @@ func (a *ApiClient) FormatURL(service, path string) string {
 }
 
 // serviceURL uses fmt-style %s replacement for the template.
-// The Python code uses {service} template — we use %s in Go.
+// Config uses a {service} placeholder; Go's fmt needs %s.
 func init() {
 	// Ensure the template uses %s for service substitution.
 	// Config loader will handle converting {service} to %s.

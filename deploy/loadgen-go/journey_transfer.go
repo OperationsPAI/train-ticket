@@ -6,10 +6,69 @@ import (
 	"time"
 )
 
+// transferStationNode returns a real place-network transport node usable as a
+// transfer connection endpoint, seeding it once per process on first use.
+//
+// transfer-management's register_connection resolves fromNodeRef/toNodeRef via
+// place-network GET /api/v1/transport-nodes/{id} and turns a 404 into a 422, so
+// the refs must be genuine nodeIds. It also cross-checks the owning place's
+// placeType against the declared node type (STATION -> placeType STATION), so
+// the node must hang off a STATION place -- the CITY places seeded by Bootstrap
+// for route inventory are not usable here. This mirrors deploy/e2e/19-transfer.sh.
+func transferStationNode(ctx context.Context, p *Providers) (string, error) {
+	p.Reg.transferStationMu.Lock()
+	defer p.Reg.transferStationMu.Unlock()
+
+	if p.Reg.transferStationNode != "" {
+		return p.Reg.transferStationNode, nil
+	}
+
+	suffix := UUID7()
+	// place-network codes are short; keep it unique but bounded.
+	code := "TML" + suffix[len(suffix)-9:]
+	_, place, err := p.API.Request(ctx, "POST", "place-network", "/api/v1/places",
+		map[string]interface{}{
+			"placeType":     "STATION",
+			"canonicalName": "Loadgen Transfer " + suffix[len(suffix)-12:] + " station",
+			"code":          code,
+			"timezone":      "UTC",
+		}, nil, []int{200, 201}, "transfer-seed-place")
+	if err != nil {
+		return "", err
+	}
+	placeID := getString(place, "placeId")
+
+	_, node, err := p.API.Request(ctx, "POST", "place-network", "/api/v1/transport-nodes",
+		map[string]interface{}{
+			"placeId":      placeID,
+			"displayName":  "Loadgen Transfer node",
+			"servingModes": []string{"RAIL"},
+		}, nil, []int{200, 201}, "transfer-seed-node")
+	if err != nil {
+		return "", err
+	}
+	nodeID := getString(node, "nodeId")
+	if nodeID == "" {
+		nodeID = getString(node, "transportNodeId")
+	}
+	if nodeID == "" {
+		return "", &StepError{Step: "transfer-seed-node", Detail: "place-network returned no nodeId"}
+	}
+
+	p.Reg.transferStationNode = nodeID
+	return nodeID, nil
+}
+
 // JourneyTransfer performs a transfer management drill.
 func JourneyTransfer(ctx context.Context, p *Providers) (string, error) {
 	suffix := UUID7()
 	now := time.Now().UTC()
+
+	// Resolve a real place-network node for the connection endpoints.
+	stationNode, err := transferStationNode(ctx, p)
+	if err != nil {
+		return "", err
+	}
 
 	// Create MCT rule
 	_, rule, err := p.API.Request(ctx, "POST", "transfer-management", "/api/v1/mct-rules",
@@ -67,8 +126,8 @@ func JourneyTransfer(ctx context.Context, p *Providers) (string, error) {
 			"previousSegmentRef": "seg-lg-prev-" + suffix,
 			"nextSegmentRef":     "seg-lg-next-" + suffix,
 			"travelerRefs":       []string{"trav-lg-" + suffix},
-			"fromNodeRef":        "sta-lg-a",
-			"toNodeRef":          "sta-lg-a",
+			"fromNodeRef":        stationNode,
+			"toNodeRef":          stationNode,
 			"fromNodeType":       "STATION",
 			"toNodeType":         "STATION",
 			"transferCategory":   "SAME_STATION",
@@ -88,6 +147,12 @@ func JourneyTransfer(ctx context.Context, p *Providers) (string, error) {
 	if outcome == "" {
 		outcome = "planned"
 	}
+
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		TransferPlan:       planID,
+		TransferConnection: getString(conn, "connectionId"),
+		TransferJourney:    orderID,
+	})
 
 	// Optionally simulate delay
 	if p.Rng.Float64() < p.CtxFloat("p_transfer_delay", 0.35) {

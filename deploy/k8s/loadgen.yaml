@@ -1,7 +1,9 @@
-# Load generator — managed by deploy/k8s kustomize.
+# Load generator (Go — built from deploy/loadgen-go).
 #   start/update: kubectl -n train-ticket apply -k deploy/k8s
-#   tune:         edit deploy/loadgen/config.yaml, then apply -k; the ConfigMap hash triggers a rollout
+#   tune:         edit deploy/k8s/loadgen-config.yaml, then apply -k; the
+#                 ConfigMap hash triggers a rollout
 #   pause:        kubectl -n train-ticket scale deploy/loadgen --replicas=0
+#   build:        deploy/build-images.sh (builds train-ticket/loadgen:local)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,20 +30,62 @@ spec:
           image: train-ticket/loadgen:local
           imagePullPolicy: IfNotPresent
           env:
+            # Path of the ConfigMap-mounted config. Also baked into the image,
+            # set here so the wiring is visible in the manifest.
             - name: LOADGEN_CONFIG
               value: /etc/loadgen/config.yaml
+            # Keep the Go runtime's CPU accounting aligned with the cgroup CPU
+            # limit below. Without this, GOMAXPROCS defaults to the node's core
+            # count (32 here), so the scheduler oversubscribes threads against
+            # a 6-core quota and burns time on context switching under load.
+            - name: GOMAXPROCS
+              value: "6"
           volumeMounts:
             - name: config
               mountPath: /etc/loadgen
               readOnly: true
+            # /data holds everything that must outlive a container: the entity
+            # registry (run.state_file) and the per-request record file
+            # (recording.path, issue #420). Both paths come from the ConfigMap,
+            # not from the image, so they can be moved without a rebuild.
+            #   kubectl -n train-ticket exec deploy/loadgen -- \
+            #     wc -l /data/requests.jsonl
             - name: state
               mountPath: /data
+          # Sizing note (revisited for the Go implementation — these are NOT
+          # the Python numbers). The Python loadgen ran 8 OS processes under a
+          # 1-CPU limit, i.e. it was CPU-throttled by design and each process
+          # kept a private copy of the entity registry inside 512Mi.
+          #
+          # The Go loadgen is ONE process: 200 customer goroutines + 40 staff
+          # + 3 scalper + ops/scheduler, sharing one HTTP connection pool and
+          # one in-memory registry. Goroutine stacks are a rounding error
+          # (~2MB for 250); memory is dominated by the registry, which grows
+          # with accounts/travelers/orders discovered over a long run.
+          #
+          # Requests are set to real reserved capacity rather than the old
+          # 100m token: this pod is the traffic source, and if it is starved
+          # the whole system-under-test looks artificially healthy.
+          # Limits are deliberately generous because CPU throttling on a load
+          # generator is a measurement-validity bug, not just slowness — a
+          # throttled loadgen under-drives the cluster and the resulting
+          # latency numbers are not attributable to the services. The node has
+          # ~29 spare cores, so headroom is cheap here.
           resources:
-            requests: { cpu: 100m, memory: 128Mi }
-            limits: { cpu: "1", memory: 512Mi }
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "6", memory: 2Gi }
       volumes:
         - name: config
           configMap:
             name: loadgen-config
         - name: state
-          emptyDir: {}   # registry survives container restarts, not pod deletion
+          # Holds the registry (run.state_file) and the per-request record
+          # file (recording.path). Both survive container restarts, not pod
+          # deletion — copy the record file out before deleting the pod:
+          #   kubectl -n train-ticket cp <pod>:/data/requests.jsonl ./requests.jsonl
+          # sizeLimit is a guard, not a reservation: the recorder rotates at
+          # recording.max_file_megabytes (512Mi, so <=1Gi across the file and
+          # its .1 predecessor), and this keeps a misconfigured cap from
+          # turning into node disk pressure.
+          emptyDir:
+            sizeLimit: 2Gi

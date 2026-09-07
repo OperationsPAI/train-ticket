@@ -110,12 +110,17 @@ services:
 ```yaml
 # deploy/k8s/loadgen-config.yaml
 run:
-  workers: 200                              # 每进程并发协程
+  mode: closed-loop                         # 或 open-loop（按 target_rps 定速）
+  workers: 200                              # 并发虚拟用户（goroutine）
   think_time_seconds: { min: 0, max: 0.05 } # 压测时减小
-
-# 环境变量
-LOADGEN_PROCESSES=8    # 每 pod 进程数（多进程提升单 pod 吞吐）
+staff:
+  workers: 40                               # 队列消费侧，需随 workers 同步放大
 ```
+
+Loadgen 是单进程 Go 程序（`deploy/loadgen-go`），并发来自 goroutine，
+没有多进程 fan-out。提高单 pod 吞吐请调 `run.workers`（以及相应的
+`staff.workers`），不要再设 `LOADGEN_PROCESSES`——该变量属于已删除的
+Python 实现，现在不起任何作用。
 
 ### 阶梯压测
 
@@ -144,7 +149,7 @@ done
 | PG 表膨胀 | outbox/processed_events 不清理 | → relay 自动清理 (每 20 次 poll) |
 | PG 单实例争用 | 38 库共享 1 PG | → 4 PG 分片 |
 | Redis OOM | maxmemory 512MB + noeviction | → 4GB maxmemory |
-| Loadgen 单进程 | Python asyncio 单核 ~10 RPS | → LOADGEN_PROCESSES=8 多进程 |
+| Loadgen 单进程 | 旧 Python asyncio 单核 ~10 RPS | → 改写为 Go，单进程 goroutine 并发（`run.workers`） |
 
 ---
 
@@ -182,7 +187,7 @@ python3 deploy/stress/oracle-new-services.py
 | `CONSUMER_BLOCK_MS` | 100 | XREADGROUP 阻塞超时 (ms) |
 | `CONSUMER_BATCH_COUNT` | 100 | XREADGROUP 每次读取条数 |
 | `OUTBOX_POLL_INTERVAL_MS` | 50 | Outbox relay 轮询间隔 |
-| `LOADGEN_PROCESSES` | 1 | Loadgen 多进程数 |
+| `GOMAXPROCS` | CPU limit | Loadgen Go 运行时并行度（与 cgroup CPU limit 对齐） |
 | `PLATFORM_JAVA_KIT_REDIS_ENABLED` | false | Java 服务启用 Redis event subscriber |
 
 ### post-sales 特殊配置

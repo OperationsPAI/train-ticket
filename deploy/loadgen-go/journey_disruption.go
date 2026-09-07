@@ -97,7 +97,10 @@ func JourneyDisruption(ctx context.Context, p *Providers) (string, error) {
 	}
 
 	p.Stats.RecordJourney("disruption:option:" + lower(choice))
-	_ = incidentID
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		DisruptionIncident: incidentID,
+		DisruptionCase:     caseID,
+	})
 	p.Reg.ReleasePurchase(purchase, "confirmed")
 	return lower(getString(caseMap, "status")), nil
 }

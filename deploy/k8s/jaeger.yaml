@@ -1,3 +1,36 @@
+# Trace store: Jaeger all-in-one backed by Badger on a PersistentVolumeClaim.
+#
+# Badger (an embedded LSM key/value store shipped inside the jaeger all-in-one
+# image) replaces the previous in-memory store. Rationale and the capacity
+# arithmetic behind the PVC size and the TTL live in docs/07-observability/README.md.
+#
+# Retention window: 12h  (--badger.span-store-ttl below)
+# PVC size:         10Gi (sized from 12h x 105 spans/s x 1.6 KiB/span, see docs)
+#
+# Two invariants this manifest must preserve:
+#   1. replicas stays 1 and strategy stays Recreate. Badger takes an exclusive
+#      LOCK on its directory; a RollingUpdate would start a second pod against
+#      the same ReadWriteOnce volume and it would crash-loop until the old pod
+#      terminated.
+#   2. The memory limit stays well above 576Mi. Badger allocates a 256MiB block
+#      cache plus up to 5 x 64MiB memtables before storing a single span, so the
+#      previous 256Mi limit could not hold the store at all.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jaeger-badger
+  namespace: train-ticket
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,6 +41,9 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 spec:
   replicas: 1
+  strategy:
+    # Required: Badger holds an exclusive directory lock, and the PVC is RWO.
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: jaeger
@@ -17,32 +53,66 @@ spec:
         app.kubernetes.io/name: jaeger
         app.kubernetes.io/part-of: train-ticket
     spec:
+      securityContext:
+        # The jaeger image runs as uid 10001 / gid 0. fsGroup makes the mounted
+        # volume group-writable for that process on clusters whose provisioner
+        # does not already create the directory world-writable. OnRootMismatch
+        # keeps startup fast once the store has grown.
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: jaeger
           image: jaegertracing/all-in-one:1.57
           imagePullPolicy: IfNotPresent
           args:
-            - --memory.max-traces=20000
+            - --badger.ephemeral=false
+            - --badger.directory-key=/badger/keys
+            - --badger.directory-value=/badger/values
+            # Retention window. Spans older than this are dropped by Badger's
+            # maintenance thread. This, not the PVC size, is the binding limit
+            # at the rates a local cluster can generate.
+            - --badger.span-store-ttl=12h
+            - --badger.maintenance-interval=5m
           env:
+            - name: SPAN_STORAGE_TYPE
+              value: badger
             - name: COLLECTOR_OTLP_ENABLED
               value: "true"
+            # Make the Go runtime collect before the cgroup limit is reached
+            # instead of being OOM-killed by the kubelet.
+            - name: GOMEMLIMIT
+              value: 1750MiB
           ports:
             - name: jaeger-otlp
               containerPort: 4317
             - name: ui
               containerPort: 16686
+          volumeMounts:
+            - name: badger
+              mountPath: /badger
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 100m
+              memory: 512Mi
             limits:
-              cpu: 250m
-              memory: 256Mi
-          readinessProbe:
+              # Measured: 770Mi steady after ingesting 200k spans, 1.76Gi peak
+              # during a burst ingest. See docs/07-observability/README.md.
+              cpu: "1"
+              memory: 2Gi
+          startupProbe:
+            # Badger replays its write-ahead log on start; on a full store that
+            # can outlast a short liveness delay. Gate liveness behind this.
             httpGet:
               path: /
               port: ui
             initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 6
@@ -50,10 +120,13 @@ spec:
             httpGet:
               path: /
               port: ui
-            initialDelaySeconds: 10
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
+      volumes:
+        - name: badger
+          persistentVolumeClaim:
+            claimName: jaeger-badger
 ---
 apiVersion: v1
 kind: Service

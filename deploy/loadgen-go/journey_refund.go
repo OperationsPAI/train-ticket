@@ -28,6 +28,11 @@ func JourneyRefund(ctx context.Context, p *Providers) (string, error) {
 	}
 
 	p.Reg.ReleasePurchase(purchase, "refunded")
+	MaybeReadProbe(ctx, p, ProbeRefs{
+		PostSalesCase: caseID,
+		Order:         purchase.Order,
+		Account:       purchase.Account,
+	})
 	return "refunded", nil
 }
 

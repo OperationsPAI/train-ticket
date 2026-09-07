@@ -7,6 +7,7 @@
 - **Redis**: Single instance, 6GB maxmemory, allkeys-lru
 - **Python services**: 4 Uvicorn workers per pod
 - **Loadgen**: Python asyncio, 6 workers/pod, 4 staff workers/pod
+  (historical: this run predates the Go rewrite in `deploy/loadgen-go`)
 
 ## Benchmark Results
 

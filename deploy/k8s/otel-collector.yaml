@@ -24,6 +24,9 @@ data:
     processors:
       memory_limiter:
         check_interval: 5s
+        # Kept in sync with platform/observability/otel-collector.yaml. Must stay
+        # above the sending_queue below: a limiter smaller than the queue makes
+        # the collector refuse spans it could buffer.
         limit_mib: 768
       batch:
         timeout: 2s
@@ -36,6 +39,19 @@ data:
         endpoint: jaeger:4317
         tls:
           insecure: true
+        # The trace store is now a stateful, restartable component: it holds an
+        # exclusive lock on its Badger volume, so a restart takes it offline for
+        # a few seconds. Retry plus a bounded queue means spans emitted during
+        # that window are redelivered instead of dropped on the floor.
+        retry_on_failure:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 30s
+          max_elapsed_time: 5m
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 4000
 
     extensions:
       health_check:
