@@ -10,17 +10,20 @@ OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 # manifests must agree; overriding it means editing the manifests too.
 IMAGE_TAG ?= local
 KIND_CLUSTER ?= train-ticket
-# The e2e scripts hardcode this context name (deploy/e2e/lib.sh), so deploy
-# uses the same one to guarantee they act on the cluster we just deployed to.
-KCTX ?= kind-arl-test
+# Default to the currently selected kubectl context rather than a hardcoded
+# name. It used to default to kind-arl-test, which does not exist here (the
+# real one is kind-train-ticket), so every deploy step would have failed on
+# any cluster but that one. Override KCTX to target a specific context.
+KCTX ?= $(shell kubectl config current-context 2>/dev/null)
 NAMESPACE ?= train-ticket
 K8S_DIR ?= deploy/k8s
 ROLLOUT_TIMEOUT ?= 300s
-KUBECTL := kubectl --context $(KCTX)
+# An empty context means "whatever kubeconfig selects"; --context "" is an error.
+KUBECTL := kubectl $(if $(KCTX),--context $(KCTX),)
 KUBENS := $(KUBECTL) -n $(NAMESPACE)
 
 .PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
-.PHONY: deploy deploy-fast deploy-images deploy-apply deploy-wait deploy-db-bootstrap deploy-seed deploy-check e2e smoke
+.PHONY: deploy deploy-fast deploy-images deploy-apply deploy-wait deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke
 
 check: skeleton-check contract-lint
 
@@ -135,6 +138,26 @@ deploy-db-bootstrap: deploy-wait
 	$(KUBENS) wait --for=condition=complete job/db-bootstrap --timeout=$(ROLLOUT_TIMEOUT) \
 	  || ( echo "db-bootstrap FAILED -- logs follow:" >&2; $(KUBENS) logs job/db-bootstrap --tail=100 >&2; exit 1 )
 	$(KUBENS) logs job/db-bootstrap --tail=5
+
+deploy-roll: deploy-db-bootstrap
+ifdef DEPLOY_SKIP_IMAGES
+	@echo "== deploy: skipping rollout (images were not rebuilt)"
+else
+	@echo "== deploy: rolling business services onto the freshly built images"
+	@# The manifests pin :local, so a rebuild leaves the pod spec byte-identical
+	@# and `apply -k` reports "unchanged" -- the running pods keep the OLD image
+	@# forever. repair-unready.sh does not cover this either: it only restarts
+	@# deployments that are already unready, and after a successful rebuild they
+	@# are all healthy. Without this step `make deploy` builds 39 images and
+	@# deploys none of them, which is exactly what happened on the first real
+	@# run of this pipeline. Infrastructure is excluded: postgres and redis use
+	@# upstream images that a rebuild never touches, and bouncing postgres here
+	@# would undo the bootstrap that just ran.
+	$(KUBENS) rollout restart $$($(KUBENS) get deploy -o name \
+	  | grep -vE 'postgres|redis|jaeger|mailpit|otel-collector')
+endif
+
+deploy-services: deploy-roll
 	@echo "== deploy: waiting for services (repairing any that lost the database race)"
 	@# Failure mode #4: a service whose startup migration ran before its
 	@# database existed stays permanently unready and needs a restart. This
@@ -144,7 +167,7 @@ deploy-db-bootstrap: deploy-wait
 	@# slow; on an already-healthy cluster this loop restarts nothing.
 	KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) deploy/repair-unready.sh
 
-deploy-seed: deploy-db-bootstrap
+deploy-seed: deploy-services
 	@echo "== deploy: seeding reference data"
 	KCTX=$(KCTX) deploy/seed.sh
 

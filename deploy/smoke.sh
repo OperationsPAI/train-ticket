@@ -29,10 +29,16 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${MANIFEST:-${ROOT_DIR}/deploy/k8s/services.yaml}"
 NS="${NAMESPACE:-train-ticket}"
-KCTX="${KCTX:-kind-arl-test}"
+KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 TIMEOUT="${SMOKE_TIMEOUT:-180}"
 
-k() { kubectl --context "$KCTX" -n "$NS" "$@"; }
+k() {
+  if [ -n "$KCTX" ]; then
+    kubectl --context "$KCTX" -n "$NS" "$@"
+  else
+    kubectl -n "$NS" "$@"
+  fi
+}
 
 FAILURES=0
 pass() { printf '  ok    %s\n' "$1"; }

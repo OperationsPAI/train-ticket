@@ -20,7 +20,8 @@
 set -uo pipefail
 
 NS="${NAMESPACE:-train-ticket}"
-KCTX="${KCTX:-kind-arl-test}"
+# Default to the selected context, not a hardcoded cluster name.
+KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 # Infrastructure is excluded: restarting postgres would defeat the bootstrap
 # that just ran, and these are waited on separately before this point.
@@ -29,7 +30,13 @@ INFRA_SKIP="${INFRA_SKIP:-postgres redis}"
 # restart; needing three means something is actually broken, not racing.
 MAX_ROUNDS="${MAX_ROUNDS:-2}"
 
-k() { kubectl --context "$KCTX" -n "$NS" "$@"; }
+k() {
+  if [ -n "$KCTX" ]; then
+    kubectl --context "$KCTX" -n "$NS" "$@"
+  else
+    kubectl -n "$NS" "$@"
+  fi
+}
 
 is_infra() {
   local name=$1 skip
