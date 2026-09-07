@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, livenessProbe, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext } from "@trainticket/ts-kit";
+import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, livenessProbe, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext, type SchemaDetail } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
 import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest } from "./application.js";
 import type { CapacityAvailabilityClient, FarePricingClient, JourneyOrderClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
@@ -8,6 +8,8 @@ import type { EventConsumptionState } from "./subscriber-retry.js";
 
 type AppStorage = Readonly<{
   ready: () => boolean | Promise<boolean>;
+  /** Optional migration retry state; reported on `/readyz` while migrations are still being applied. */
+  schema?: () => SchemaDetail;
   runCommand: <T>(operation: (repository: WaitlistRepository, publisher: EventPublisher) => Promise<T>) => Promise<T>;
 }>;
 
@@ -170,13 +172,27 @@ function inMemoryCommandRunner(dependencies: AppDependencies): AppStorage["runCo
  *
  * Postgres readiness keeps its existing 503: that genuinely does break the
  * HTTP API, so withdrawing the endpoint is right there.
+ *
+ * DATABASE MIGRATIONS are the deliberate mirror image of the subscriber case
+ * above, and the contrast is the reason both decisions are right. A retrying
+ * SUBSCRIBER leaves the HTTP API fully working, so 503 would only destroy
+ * working capacity. Retrying MIGRATIONS mean the tables the HTTP API reads and
+ * writes do not exist yet, so every request would 500 with `relation "..." does
+ * not exist`; serving reads against a missing schema is worse than serving them
+ * with a dead consumer, and an honest 503 beats a 500 a caller may treat as
+ * terminal. So migrations keep the 503 -- and now report `schema` in the body
+ * so the state is diagnosable -- while the retry makes that 503 temporary
+ * rather than the permanent wedge it used to be. See `superviseMigrations` in
+ * ts-kit for the full reasoning, including why liveness stays green throughout.
  */
-async function readyBody(reply: FastifyReply, storage?: AppStorage, eventConsumption?: () => EventConsumptionState): Promise<{ status: "ok" | "not_ready"; probe: "ready"; eventConsumption?: EventConsumptionState }> {
+async function readyBody(reply: FastifyReply, storage?: AppStorage, eventConsumption?: () => EventConsumptionState): Promise<{ status: "ok" | "not_ready"; probe: "ready"; eventConsumption?: EventConsumptionState; schema?: SchemaDetail }> {
   const ready = storage ? await storage.ready() : true;
   if (!ready) reply.status(503);
   const consumption = eventConsumption?.();
+  const schema = ready ? undefined : storage?.schema?.();
   const body = { status: ready ? "ok" as const : "not_ready" as const, probe: "ready" as const };
-  return consumption ? { ...body, eventConsumption: consumption } : body;
+  const withConsumption = consumption ? { ...body, eventConsumption: consumption } : body;
+  return schema && schema.schema !== "applied" ? { ...withConsumption, schema } : withConsumption;
 }
 
 export type LiveStatus = Readonly<{ status: "ok" | "unhealthy"; probe: "live" }>;
