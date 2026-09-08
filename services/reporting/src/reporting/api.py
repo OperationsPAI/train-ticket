@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 import os
@@ -11,6 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from train_ticket_platform.observability import init_opentelemetry
+from train_ticket_platform.trace_logging import install_trace_logging, trace_logging_log_format
 from .application.service import ReportingApplicationService, RebuildRun, rfc3339_utc
 from .domain import AnomalyDetected, ContextCountReport, DashboardReadModel, MetricCategory, MetricDefinition, MetricSnapshot, Money, ReportingError, RevenueReport, RouteMetrics
 from train_ticket_platform.idempotency import configure_idempotency_middleware
@@ -508,4 +511,17 @@ def create_app(
 
 
 def create_production_app() -> FastAPI:
+    # reporting configured no logging at all, so Python fell back to
+    # logging.lastResort: WARNING and above reached stderr, but with no handler
+    # attached `logger.exception` printed only its message and DISCARDED the
+    # traceback. That is why 131 occurrences of "'str' object cannot be
+    # interpreted as an integer" could be seen without ever locating the line
+    # that raised it -- adding an exception log changed nothing, because the
+    # stack had nowhere to go.
+    #
+    # install_trace_logging() must precede basicConfig: the format names
+    # trace_id/span_id, and a record created before the factory exists has
+    # neither attribute and makes the handler raise instead of logging.
+    install_trace_logging()
+    logging.basicConfig(level=logging.INFO, format=trace_logging_log_format("service=reporting"))
     return create_app(enable_messaging=True)

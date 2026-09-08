@@ -195,10 +195,28 @@ def _payload_value(payload: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _parse_occurred_at(value: str) -> datetime:
+def _parse_occurred_at(value: Any) -> datetime:
+    """Coerce an envelope's occurredAt to an aware UTC datetime.
+
+    The annotation used to say `str` and the body assumed it. It is not always a
+    string: python-kit's EventEnvelope carries occurredAt as a datetime once it
+    has been deserialised, and `datetime.replace("Z", "+00:00")` then binds those
+    two strings to the `year` and `month` keyword parameters and raises
+    `TypeError: 'str' object cannot be interpreted as an integer`.
+
+    `except ValueError` did not catch a TypeError, so this propagated out of
+    handle_event and every consumed event on every subscribed stream returned
+    TRANSIENT_ERROR. The effect was 13,511 pending messages, dash-revenue frozen
+    in `building` with lastBuiltAt 2026-07-05, and reporting_revenue_by_route
+    empty -- reporting had been consuming and discarding everything for months.
+    """
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
+    if value is None:
+        return utc_now()
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-    except ValueError:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+    except (TypeError, ValueError):
         return utc_now()
 
 
@@ -415,7 +433,20 @@ class ReportingApplicationService:
                 self._publish_detected_anomalies(envelope)
                 self._rebuild_stale_dashboards(envelope)
         except Exception as exc:  # pragma: no cover - defensive boundary for broker callback
-            return HandlerResult.transient_error(str(exc))
+            # Log with the traceback. Returning only str(exc) meant every event on
+            # every subscribed stream failed with the bare text "'str' object
+            # cannot be interpreted as an integer" and no indication of where --
+            # 13,511 pending messages, a dashboard stuck in `building` since
+            # 2026-07-05, and reporting_revenue_by_route empty, all attributable to
+            # a message with no stack behind it.
+            logger.exception(
+                "reporting handler FAILED event=%s eventId=%s producer=%s -- returning "
+                "TRANSIENT_ERROR, so this message stays pending and will be redelivered",
+                envelope.eventType,
+                envelope.eventId,
+                getattr(envelope, "producer", "?"),
+            )
+            return HandlerResult.transient_error(f"{type(exc).__name__}: {exc}")
         return HandlerResult.success()
 
     def _publish_detected_anomalies(self, envelope: EventEnvelope) -> None:
@@ -471,7 +502,14 @@ class ReportingApplicationService:
         """
         now = utc_now()
         for dashboard_id, dashboard in list(self.repository.dashboards.items()):
-            if dashboard.status is not ReadModelStatus.STALE:
+            # BUILDING as well as STALE. A dashboard that has never completed a
+            # build starts BUILDING, and this loop only ever considered STALE, so
+            # `dash-revenue` sat in BUILDING with lastBuiltAt 2026-07-05 and
+            # reporting_revenue_by_route empty while reporting consumed events for
+            # months. Nothing moves a dashboard from BUILDING to STALE either --
+            # STALE is what a READY dashboard becomes when a new fact arrives -- so
+            # the initial state was a dead end.
+            if dashboard.status not in (ReadModelStatus.STALE, ReadModelStatus.BUILDING):
                 continue
             event_count = self._next_rebuild_event_count(dashboard, len(self.repository.consumed_events.records))
             digest = "sha256-" + hashlib.sha256(
