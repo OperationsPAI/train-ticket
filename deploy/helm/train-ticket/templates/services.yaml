@@ -82,7 +82,7 @@ spec:
           resources:
             {{- toYaml ($svc.resources | default $defaults.resources | default dict) | nindent 12 }}
           {{- /*
-          Probe paths mirror deploy/k8s/services.yaml and are NOT interchangeable
+          Probe paths are /healthz and /readyz and are NOT interchangeable
           with /health and /ready.
 
           Liveness must hit /healthz: in the TypeScript services /health always

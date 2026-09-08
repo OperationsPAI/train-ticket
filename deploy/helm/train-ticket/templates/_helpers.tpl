@@ -32,10 +32,11 @@ Infra image path: registry/repo:tag
 Common labels.
 
 Not currently used: the templates inline the two labels they actually need
-(app.kubernetes.io/name and /part-of), because those two are what
-deploy/k8s/*.yaml sets and what every selector in both paths matches on. Kept
-because adding managed-by/chart labels to a Deployment is a
-spec.selector-adjacent change that must be made deliberately, in one place.
+(app.kubernetes.io/name and /part-of), because those two are what every
+selector in this chart -- and every `kubectl get -l` in the deploy scripts and
+e2e suite -- matches on. Kept because adding managed-by/chart labels to a
+Deployment is a spec.selector-adjacent change that must be made deliberately,
+in one place.
 
 Call with a dict carrying both the root context and the name:
   {{- include "train-ticket.labels" (dict "root" $ "name" $name) }}

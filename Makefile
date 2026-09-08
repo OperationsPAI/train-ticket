@@ -6,8 +6,12 @@ OTEL_COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib:latest
 OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 
 # --- Deployment -------------------------------------------------------------
-# The manifests reference train-ticket/<service>:local, so IMAGE_TAG and the
-# manifests must agree; overriding it means editing the manifests too.
+# The tag the images are BUILT with. It is passed to helm as global.imageTag
+# (see deploy-apply) rather than only being consumed by the build, because
+# otherwise the two halves disagree silently: `make IMAGE_TAG=foo deploy` would
+# build train-ticket/*:foo and then install a release still pinned to :local,
+# which is an ImagePullBackOff with no other symptom. Overriding it now changes
+# both sides at once.
 IMAGE_TAG ?= local
 KIND_CLUSTER ?= train-ticket
 # Default to the currently selected kubectl context rather than a hardcoded
@@ -16,14 +20,22 @@ KIND_CLUSTER ?= train-ticket
 # any cluster but that one. Override KCTX to target a specific context.
 KCTX ?= $(shell kubectl config current-context 2>/dev/null)
 NAMESPACE ?= train-ticket
-K8S_DIR ?= deploy/k8s
+# --- Helm (the single deployment path; kustomize was retired) ---------------
+HELM_RELEASE ?= train-ticket
+HELM_CHART ?= deploy/helm/train-ticket
+# values-kind.yaml carries the local-cluster bits: locally built
+# train-ticket/*:local images that exist only on the node (so
+# imagePullPolicy must stay IfNotPresent), and kind's single `standard`
+# StorageClass. Override HELM_VALUES for a real cluster (values-prod.yaml).
+HELM_VALUES ?= deploy/helm/values-kind.yaml
+HELM_TIMEOUT ?= 15m
 ROLLOUT_TIMEOUT ?= 300s
 # An empty context means "whatever kubeconfig selects"; --context "" is an error.
 KUBECTL := kubectl $(if $(KCTX),--context $(KCTX),)
 KUBENS := $(KUBECTL) -n $(NAMESPACE)
 
 .PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
-.PHONY: deploy deploy-fast deploy-images deploy-apply deploy-wait deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke
+.PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke
 
 check: skeleton-check contract-lint
 
@@ -116,28 +128,41 @@ else
 endif
 
 deploy-apply: deploy-images
-	@echo "== deploy: applying manifests"
-	@# A completed Job's pod template is immutable, so re-applying a changed
-	@# one is rejected by the API server. Deleting first is what makes the
-	@# bootstrap actually re-run on every deploy instead of being skipped as
-	@# "unchanged" -- the whole point of the Job.
-	-$(KUBENS) delete job db-bootstrap --ignore-not-found --wait=true
-	$(KUBECTL) apply -k $(K8S_DIR)
+	@echo "== deploy: installing/upgrading the Helm release"
+	@# helm upgrade --install is idempotent and does the work that took four
+	@# separate kustomize stages: it applies, rolls Deployments whose spec or
+	@# config hash changed, runs the db-bootstrap hook, and --wait blocks until
+	@# every Deployment is Available.
+	@#
+	@# Deliberately NOT --force. --force replaces resources instead of patching
+	@# them, which (a) does not help here anyway -- the manifests pin :local, so
+	@# after `kind load` swaps the image behind that tag the rendered spec is
+	@# byte-identical, and replacing an identical Deployment spec produces no new
+	@# ReplicaSet, so the pods keep the OLD image -- and (b) extends replace
+	@# semantics to Services and PVCs, which is a much bigger hammer than the
+	@# problem needs. deploy-roll handles the stale-image case explicitly.
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+	  -f $(HELM_VALUES) \
+	  --set global.imageTag=$(IMAGE_TAG) \
+	  --namespace $(NAMESPACE) --create-namespace \
+	  $(if $(KCTX),--kube-context $(KCTX),) \
+	  --wait --timeout $(HELM_TIMEOUT)
 
-deploy-wait: deploy-apply
-	@echo "== deploy: waiting for infrastructure"
-	@# Postgres and Redis first: a service that loses the race to its database
-	@# stays permanently unready, which is failure mode #4 in the runbook.
-	$(KUBENS) rollout status deployment/postgres --timeout=$(ROLLOUT_TIMEOUT)
-	$(KUBENS) rollout status deployment/redis --timeout=$(ROLLOUT_TIMEOUT)
-
-deploy-db-bootstrap: deploy-wait
-	@echo "== deploy: bootstrapping databases"
-	@# Runs before the services are waited on, so databases exist before the
-	@# services' startup migrations need them.
-	$(KUBENS) wait --for=condition=complete job/db-bootstrap --timeout=$(ROLLOUT_TIMEOUT) \
-	  || ( echo "db-bootstrap FAILED -- logs follow:" >&2; $(KUBENS) logs job/db-bootstrap --tail=100 >&2; exit 1 )
-	$(KUBENS) logs job/db-bootstrap --tail=5
+deploy-db-bootstrap: deploy-apply
+	@echo "== deploy: verifying databases"
+	@# The chart creates them: templates/db-bootstrap.yaml is a per-shard
+	@# pre-upgrade/post-install hook, so helm has already run it (and failed the
+	@# release if it errored) by the time deploy-apply returns.
+	@#
+	@# This verifies independently anyway, because the failure it guards against
+	@# is silent: a missing database produces no signal until some service's
+	@# first query, and a service whose readiness probe does not touch Postgres
+	@# reports healthy the whole time. That is exactly how group_booking stayed
+	@# missing for an unknown length of time. It also catches the case the hook
+	@# structurally cannot: a templating bug that renders a DSN pointing at a
+	@# database no shard's `databases` list contains, since the check reads the
+	@# rendered DSNs rather than the values the hook was generated from.
+	KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) deploy/verify-databases.sh
 
 deploy-roll: deploy-db-bootstrap
 ifdef DEPLOY_SKIP_IMAGES
@@ -145,16 +170,18 @@ ifdef DEPLOY_SKIP_IMAGES
 else
 	@echo "== deploy: rolling business services onto the freshly built images"
 	@# The manifests pin :local, so a rebuild leaves the pod spec byte-identical
-	@# and `apply -k` reports "unchanged" -- the running pods keep the OLD image
-	@# forever. repair-unready.sh does not cover this either: it only restarts
-	@# deployments that are already unready, and after a successful rebuild they
-	@# are all healthy. Without this step `make deploy` builds 39 images and
-	@# deploys none of them, which is exactly what happened on the first real
-	@# run of this pipeline. Infrastructure is excluded: postgres and redis use
+	@# and helm reports the release unchanged -- the running pods keep the OLD
+	@# image forever. repair-unready.sh does not cover this either: it only
+	@# restarts deployments that are already unready, and after a successful
+	@# rebuild they are all healthy. Without this step `make deploy` builds 39
+	@# images and deploys none of them, which is exactly what happened on the
+	@# first real run of this pipeline. Infrastructure is excluded: it runs
 	@# upstream images that a rebuild never touches, and bouncing postgres here
-	@# would undo the bootstrap that just ran.
+	@# would restart the shard the bootstrap hook just seeded.
 	$(KUBENS) rollout restart $$($(KUBENS) get deploy -o name \
 	  | grep -vE 'postgres|redis|jaeger|mailpit|otel-collector')
+	$(KUBENS) rollout status --timeout=$(ROLLOUT_TIMEOUT) $$($(KUBENS) get deploy -o name \
+	  | grep -vE 'postgres|redis|jaeger|mailpit|otel-collector') || true
 endif
 
 deploy-services: deploy-roll
