@@ -175,12 +175,28 @@ check_code 200 "evaluate refund"
 # (PostSalesMapper), while refundAssessment hangs off decision on the GET.
 req GET post-sales "/api/v1/post-sales-cases/$CASE_RULE"
 check_code 200 "fetch evaluated case"
-PENALTY_BASE=$(jget "['decision']['refundAssessment']['penaltyAmount']['minorUnits']")
 TIER_APPLIED=$(jget "['decision']['refundAssessment']['tierApplied']")
 REFUND_RULE=$(jget "['decision']['refundableAmount']['minorUnits']")
+# The penalty BASE is BASE_FARE.originalAmount in refundAssessment.components,
+# what the managed refund_fee moves (12000 - 3000 = 9000). It is NOT
+# penaltyAmount: that is the fee the tier charges on top (5% of the base for
+# TIER_GT_15_DAYS), and reading it here reported 500 and looked like the rule had
+# not applied at all. The variable was named PENALTY_BASE while holding the
+# penalty amount, which is how the two got confused.
+#
+# Located by componentType rather than by array index -- the order of
+# `components` is not part of the contract.
+PENALTY_BASE=$(echo "$RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for c in d['decision']['refundAssessment'].get('components') or []:
+    if c.get('componentType') == 'BASE_FARE':
+        print(c['originalAmount']['minorUnits'])
+        break
+" 2>/dev/null)
 [ "$PENALTY_BASE" = "9000" ] \
   && ok "managed refund_fee applied: penalty base = 90.00 CNY (120.00 - 30.00)" \
-  || bad "managed refund_fee not applied (penalty base $PENALTY_BASE, expected 9000; tier=$TIER_APPLIED)"
+  || bad "managed refund_fee not applied (BASE_FARE originalAmount $PENALTY_BASE, expected 9000; tier=$TIER_APPLIED)"
 # A voluntary ADULT refund must land on a penalty-charging tier, never on one of
 # the two zero-penalty overrides -- if it ever does, the classification broke.
 case "$TIER_APPLIED" in
