@@ -152,10 +152,10 @@
     },
     {
       "id": "trip-planning",
-      "path": "services/trip-planning",
+      "path": "services/trip-planning-rs",
       "domain": "Trip Planning",
-      "language": "python",
-      "runtime": "python",
+      "language": "rust",
+      "runtime": "rust",
       "phase": "phase-1-search-foundation",
       "status": "integration-ready",
       "priority": "P0",
@@ -172,7 +172,7 @@
         "SearchResult ranking explanations",
         "Non-authoritative PriceHint and AvailabilityHint snapshots"
       ],
-      "rationale": "Python is a better fit for search heuristics, deterministic ranking, and auditable explanation logic."
+      "rationale": "Search is the most CPU-bound path in the system, so it was rewritten from Python to Rust for throughput. The retired Python implementation is gone; see deploy/KNOWN-ISSUES.md for the one capability that did not carry over (minimum connection times)."
     },
     {
       "id": "offer-management",
