@@ -182,9 +182,28 @@ base is `BASE_FARE.originalAmount`, and it is exposed by the API under
 layer uses; the mapper renames it. Located by `componentType` rather than array
 index, since the ordering is not contractual.
 
-Verified: `managed refund_fee applied: penalty base = 90.00 CNY (120.00 -
-30.00)` now passes, 29/31 in 07-fare-rules. The two remaining failures there are
-`no saga for managed-rule order` — P1.
+Verified: reading the right field made the assertion meaningful, and it then
+exposed a SECOND defect underneath -- `BASE_FARE originalAmount 10000, expected
+9000`. The field is now correct; the value is not, and that one is in the service.
+
+**journey-order hardcodes the fare.** `OrderManagementService.createOrder` builds
+its order items with `Money.of("CNY", "100.00")` (line ~130) and never reads the
+offer's actual total. 07-fare-rules publishes a rule set with base_fare 12000 and
+asserts the offer total IS 12000 -- that passes -- but the order it then creates
+carries 100.00 regardless. That is why every `post_sales_policy_contexts` row on
+the cluster holds 100.00 or 200.00 and none holds 120.00.
+
+The existing comment at line 112 admits the shape of it ("journey-order does not
+yet resolve the real offer itinerary"), and the fare is the same gap: the service
+receives only `offerId`/`offerVersion` and does not call offer-management for the
+priced total. Fixing it means adding that lookup, which is a real cross-service
+change rather than a test adjustment, so it is recorded here rather than
+attempted alongside the rest.
+
+Consequence worth stating: an order's monetary summary does not reflect what the
+customer was quoted. Every refund is therefore priced off 100.00 no matter what
+the fare rules say -- the penalty percentages are applied correctly to the wrong
+base.
 
 ## P5 — post-sales case applied but order not adjusted
 
