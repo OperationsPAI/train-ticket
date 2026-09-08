@@ -183,20 +183,44 @@ assumed.
 
 ## P7 — seat release leaves the seat STANDING
 
-**Status:** OPEN
+**Status:** FIXED — 20-seat now 20/20
 
-`20-seat`: `release status STANDING`. seat-assignment is a Go service with a
-small backlog, so this is probably its own logic rather than throughput.
+Three defects stacked, and the outer two hid the inner one. seat-assignment
+matches a CapacityReleased to its allocations on
+`(capacityHoldId, capacityUnitRef, fromSeq, toSeq)`; a non-match returns an empty
+list and `transitionAllocationsByCapacityRecovery` treats that as nothing-to-do,
+with no log.
+
+1. capacity-availability returned `capacityUnitRef` under the name `classRef`.
+   The value was a seat number like "09D"; a class ref is "standard", and is
+   empty on these holds.
+2. Neither the POST nor the GET exposed `interval`, so a caller could not record
+   an allocation the release would find. The GET does now; the POST keeps its
+   four documented fields.
+3. 20-seat invented both values (`"cap-standard"`, interval 1..3) even against a
+   real hold that had granted "05B" over 0..1.
+
+The API contract documented the GET as "Full hold details" with no field list;
+it now has one.
 
 ## P8 — disruption manual-review path broken
 
-**Status:** OPEN
+**Status:** RESOLVED by the P1 fix — 17-disruption now 0 failures
 
-Six assertions in `17-disruption`, all in the manual-review branch: `select
-manual`, `not manual review`, `manual close got N`, `resolve manual`, `close
-manual recovered`, `manual close status`. This whole branch passed in an earlier
-run (17-disruption was 0 failures in e2e4), so it is worth checking what changed
-rather than treating it as long-standing.
+Six assertions in `17-disruption`, all in the manual-review branch. All six were
+one cascade: `select_option_type` used `next()` with no default, so when the
+MANUAL option was absent it raised StopIteration, printed a traceback into the
+run, left `OPT` empty, and POSTed an empty optionId — reported as `select manual
+[got 422]`, with the following four assertions failing behind it.
+
+The absent option was downstream of P1: the case had not progressed far enough
+for options to be generated, because journey-order had not consumed the events
+that drive it. With P1 fixed the script passes 85/85.
+
+The selector was still changed to report what it found (`recovery case X offers
+no MANUAL option (AVAILABLE:REFUND,WAIT)`) instead of failing as a 422 four
+steps later. A cascade of five failures that all trace to one missing value is
+exactly the shape that made this list look longer than it was.
 
 ## P9 — customer-service and notification timeline facts missing
 

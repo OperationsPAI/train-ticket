@@ -140,7 +140,26 @@ PYJSON
 
 select_option_type() { local case=$1 typ=$2 actor=${3:-USER}
   req GET disruption-recovery "/api/v1/recovery-cases/$case"; check_code 200 "get case for $typ option"
-  OPT=$(echo "$RESP" | TYP="$typ" python3 -c 'import json,os,sys; d=json.load(sys.stdin); print(next(o["optionId"] for o in d["optionSet"]["options"] if o["optionType"]==os.environ["TYP"]))')
+  # `next()` with no default raises StopIteration when the option is absent, which
+  # printed a Python traceback into the middle of the run and left OPT empty --
+  # the POST below then sent an empty optionId and got a 422, so the real problem
+  # (the option was never generated) was reported as a selection failure and the
+  # four assertions after it failed as a cascade.
+  OPT=$(echo "$RESP" | TYP="$typ" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+opts = d.get("optionSet", {}).get("options") or []
+match = next((o["optionId"] for o in opts if o["optionType"] == os.environ["TYP"]), "")
+if not match:
+    print("AVAILABLE:" + ",".join(sorted(o.get("optionType", "?") for o in opts)), file=sys.stderr)
+print(match)
+' 2>/tmp/optdiag.$$)
+  if [ -z "$OPT" ]; then
+    bad "recovery case $case offers no $typ option ($(cat /tmp/optdiag.$$ 2>/dev/null))"
+    rm -f /tmp/optdiag.$$
+    return 1
+  fi
+  rm -f /tmp/optdiag.$$
   req POST disruption-recovery "/api/v1/recovery-cases/$case/select-option" "{\"optionId\":\"$OPT\",\"selectedBy\":{\"actorType\":\"$actor\",\"actorId\":\"actor-$(uuid7)\"}}"
 }
 
