@@ -1,6 +1,7 @@
 import { Redis, type RedisOptions } from "ioredis";
 
 import { activeTraceContext, endSpan, endSpanWithError, markSpanError, remoteTraceContext, startConsumerSpan } from "./observability.js";
+import { runWithTraceLoggingContext, runWithTraceLoggingContextForBatch } from "./trace-logging.js";
 import { registerLivenessComponent, type LivenessComponent } from "./liveness.js";
 import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 
@@ -997,7 +998,10 @@ async function handleBatchWithConsumerSpans(handler: EventBatchHandler, envelope
     parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
   }));
   try {
-    const result = await handler(envelopes);
+    // Scoped so every line the batch handler logs carries the trace, matching
+    // the single-event path. ts-kit never makes the consumer span current, so
+    // without this bind a handler's log lines have no id to find.
+    const result = await runWithTraceLoggingContextForBatch(spans, () => handler(envelopes));
     const results = Array.isArray(result) ? result : envelopes.map(() => result);
     for (const [index, span] of spans.entries()) {
       const rawResult = results[index];
@@ -1026,7 +1030,12 @@ async function handleWithConsumerSpan(handler: EventHandler, envelope: EventEnve
     parentContext: remoteTraceContext(envelope.traceparent, envelope.tracestate),
   });
   try {
-    const result = await handler(envelope) as EventHandlerResult | StringHandlerResult | undefined;
+    // Bound around the handler, not around the whole function, so trace_id and
+    // span_id are on every line the handler produces -- including lines from
+    // code that knows nothing about tracing. Event handlers are where
+    // correlation matters most: the trace began in an HTTP request in another
+    // service, and this is the only place it can be rejoined.
+    const result = await runWithTraceLoggingContext(span, () => handler(envelope)) as EventHandlerResult | StringHandlerResult | undefined;
     const normalized = result === undefined ? "ack" : normalizeHandlerResult(result);
     if (normalized !== "ack") {
       markSpanError(span, String(failureReasonFromHandlerResult(result)));
