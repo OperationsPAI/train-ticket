@@ -6,6 +6,15 @@ export type InitOpenTelemetryOptions = Readonly<{
     spanExporter?: SpanExporter;
 }>;
 export declare function otelTracingEnabled(): boolean;
+/**
+ * Start the SDK and put trace_id/span_id on every log line.
+ *
+ * The console wrapper goes in here because every service already calls this
+ * once at boot, so the ids reach every line without a single service edit --
+ * the same move java-kit makes by supplying a log pattern instead of rewriting
+ * log statements. It stays inside the tracing-enabled branch: with tracing off
+ * there are no ids to add and logs stay byte-identical to before.
+ */
 export declare function initOpenTelemetry(options?: InitOpenTelemetryOptions): NodeSDK | undefined;
 export declare function getOpenTelemetryTracer(serviceName?: string): Tracer | undefined;
 export declare function activeTraceContext(): Readonly<{
