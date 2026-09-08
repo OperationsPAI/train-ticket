@@ -23,6 +23,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +32,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional
 public class PostSalesApplicationService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(PostSalesApplicationService.class);
+
     private final PostSalesRepository repository;
     private final EventPublisher eventPublisher;
     private final AdjustmentQuotePort adjustmentQuotePort;
@@ -232,18 +236,54 @@ public class PostSalesApplicationService {
             policyContext.travelerType(postSalesCase.scope().travelerRefs()),
             policyContext.groupSize()
         );
+        // The whole pricing decision on one line, keyed by case and order. Every
+        // input that can change the outcome is here, so a wrong refund can be
+        // diagnosed from logs alone instead of by reconstructing state from the
+        // snapshot tables afterwards. INFO because a refund quote is a
+        // business-significant decision, not debug detail.
+        LOGGER.info("post-sales refund priced case={} order={} tier={} classification={} "
+                + "penaltyBase={} penalty={} refundable={} departureTime={} requestTime={} "
+                + "travelerType={} groupSize={}",
+            postSalesCase.caseId(), postSalesCase.journeyOrderId(),
+            assessment.tierApplied(), assessment.classification(),
+            penaltyBase, assessment.penaltyAmount(), assessment.refundableAmount(),
+            policyContext.departureTime(), now,
+            policyContext.travelerType(postSalesCase.scope().travelerRefs()),
+            policyContext.groupSize());
         AmountDecisionSnapshot amount = AmountDecisionSnapshot.refund(assessment.penaltyAmount(), assessment.refundableAmount(), assessment.explanation(), assessment.componentDecisions());
         return PostSalesDecision.refund(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, assessment, now, now.plusSeconds(900));
     }
 
     private PostSalesPolicyContext policyContextFor(PostSalesCase postSalesCase, Instant now, Money fallbackAmount) {
-        return policyContextStore.findByOrderId(postSalesCase.journeyOrderId())
-            .orElseGet(() -> PostSalesPolicyContext.fallback(
-                postSalesCase.journeyOrderId(),
-                now,
-                postSalesCase.scope().travelerRefs().size(),
-                fallbackAmount
-            ));
+        Optional<PostSalesPolicyContext> stored = policyContextStore.findByOrderId(postSalesCase.journeyOrderId());
+        if (stored.isPresent()) {
+            PostSalesPolicyContext context = stored.get();
+            LOGGER.debug("post-sales policy context HIT case={} order={} departureTime={} originalFare={} groupSize={}",
+                postSalesCase.caseId(), postSalesCase.journeyOrderId(),
+                context.departureTime(), context.originalFareOr(fallbackAmount), context.groupSize());
+            return context;
+        }
+        // WARN, not debug: this is the single most consequential silent branch in
+        // the service. The fallback sets departureTime to the REQUEST time, so
+        // RefundPolicyEngine reads beforeDeparture == 0 and returns
+        // AFTER_DEPARTURE_NON_REFUNDABLE -- a 100% penalty and a zero refund, for
+        // a journey that may be a month away. Downstream, payment's
+        // handlePostSalesApproved returns early on the zero amount, so no
+        // RefundRequested is ever published and the customer is simply not
+        // refunded. Every step of that is currently invisible; this line is what
+        // makes it attributable to a missing policy context rather than to a
+        // pricing rule.
+        LOGGER.warn("post-sales policy context MISS case={} order={} -- falling back to "
+                + "departureTime=now, which forces AFTER_DEPARTURE_NON_REFUNDABLE (100% penalty, "
+                + "zero refund). The context is written from JourneyOrderCreated/Confirmed; a miss "
+                + "means that event carried no segments[].departureTime, or was never consumed.",
+            postSalesCase.caseId(), postSalesCase.journeyOrderId());
+        return PostSalesPolicyContext.fallback(
+            postSalesCase.journeyOrderId(),
+            now,
+            postSalesCase.scope().travelerRefs().size(),
+            fallbackAmount
+        );
     }
 
     public void recordPolicyContext(PostSalesPolicyContext context) {
