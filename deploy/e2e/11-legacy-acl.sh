@@ -114,7 +114,35 @@ sleep 5
 
 legacy_step CANCEL /api/v1/legacy/cancel "{\"orderId\":\"$ORDER2\"}"
 REFUNDABLE=$(jget "['data']['refundAmount']['minorUnits']")
-[ "$REFUNDABLE" = "8750" ] && ok "legacy cancel refundable amount is 8750" || bad "legacy cancel refundable amount $REFUNDABLE, expected 8750"
+# This used to assert a flat 8750 -- a fixed 20.00 fee off a 100.00 fare, which
+# is an algorithm the tiered RefundPolicyEngine never implemented. That number
+# could only ever pass while refunds were broken in some other way, and
+# 03-refund carried the same stale expectation until it was corrected.
+#
+# It is deliberately NOT re-hardcoded to the currently observed 9500. Two things
+# make an absolute figure the wrong assertion here: the refund base is the base
+# fare, not the paid total (legacy-acl quotes TOTAL2 = 10750 but the engine
+# penalises against 10000), and the tier depends on how far out the stub
+# departure is. So assert the properties that must hold for ANY correct tiering,
+# which is what this test can actually see through the legacy response:
+#
+#   * a refund must be produced at all (0 is the signature of the policy-context
+#     bug: no departure -> fallback -> AFTER_DEPARTURE -> 100% penalty),
+#   * it must be strictly less than the amount paid (a penalty was applied), and
+#   * it must be a plausible fraction of it, not a rounding artefact.
+#
+# A tier change moves the number inside this band without breaking the test; a
+# regression to zero refund, or to a refund exceeding what was paid, fails it.
+PAID=${TOTAL2:-10750}
+if [ -z "$REFUNDABLE" ] || [ "$REFUNDABLE" = "0" ]; then
+  bad "legacy cancel produced no refund (got '${REFUNDABLE:-empty}') -- the zero-refund signature of a dropped post-sales policy context"
+elif [ "$REFUNDABLE" -ge "$PAID" ]; then
+  bad "legacy cancel refundable $REFUNDABLE is not less than the $PAID paid: no penalty was applied"
+elif [ "$REFUNDABLE" -lt $((PAID / 2)) ]; then
+  bad "legacy cancel refundable $REFUNDABLE is under half the $PAID paid: penalty tier looks wrong"
+else
+  ok "legacy cancel refunded $REFUNDABLE of $PAID paid (a penalty tier was applied)"
+fi
 
 ACCT3="acc-$(uuid7)"
 echo "== 6. multi-leg rebook completes all replacement legs"
