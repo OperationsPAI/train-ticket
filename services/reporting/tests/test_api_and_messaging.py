@@ -298,7 +298,10 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(stream, "events:reporting")
         self.assertEqual(set(fields), {"envelope"})
         self.assertEqual(json.loads(fields["envelope"]), envelope.as_dict())
-        self.assertEqual(maxlen, 100_000)
+        # 10_000, matching python-kit's EVENT_STREAM_MAXLEN default. The cap was
+        # lowered from 100_000 across all five kits after Redis was OOMKilled three
+        # times; this assertion was missed in that pass and had been failing since.
+        self.assertEqual(maxlen, 10_000)
         self.assertTrue(approximate)
 
     def test_application_publisher_omits_absent_optional_causation_id(self) -> None:
