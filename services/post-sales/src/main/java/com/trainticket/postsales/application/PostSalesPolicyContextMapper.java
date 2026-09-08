@@ -86,6 +86,28 @@ final class PostSalesPolicyContextMapper {
         return travelerTypes;
     }
 
+    /**
+     * The fare and waterfall components from a payload that carries a monetary
+     * summary but not the segments needed for a full context.
+     *
+     * JourneyOrderConfirmed and JourneyOrderPostSalesAdjusted are exactly that:
+     * they update what is refundable without restating the itinerary. Returns
+     * empty when the payload has no usable amount.
+     */
+    static Optional<FareUpdate> fareUpdateFromEventPayload(Map<?, ?> payload) {
+        String currency = currency(payload);
+        RefundWaterfallComponents components = refundComponents(payload, currency);
+        Money fare = components.baseFare().isZero() ? totalMoney(payload, currency) : components.baseFare();
+        if (fare.isZero()) {
+            return Optional.empty();
+        }
+        return Optional.of(new FareUpdate(fare, components));
+    }
+
+    /** A fare and its component breakdown, without any itinerary detail. */
+    record FareUpdate(Money originalFare, RefundWaterfallComponents components) {
+    }
+
     private static RefundWaterfallComponents refundComponents(Map<?, ?> payload, String currency) {
         List<Map<?, ?>> items = mapList(payload.get("orderItems"));
         if (items.isEmpty()) {
