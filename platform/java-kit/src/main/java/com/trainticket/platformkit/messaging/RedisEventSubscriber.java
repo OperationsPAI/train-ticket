@@ -12,7 +12,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -50,8 +52,20 @@ public class RedisEventSubscriber implements EventSubscriber {
     private static final String CONSUMER_THREADS_ENV = "CONSUMER_THREADS";
     private static final int MAX_REDELIVERY_ATTEMPTS = maxRedeliveryAttemptsFromEnvironment();
     /**
-     * Hard bound on the in-flight tracking set. Reaching it means the handler pool is saturated;
-     * further claims are skipped and stay pending in Redis so they are redelivered later.
+     * Backstop on the in-flight tracking set.
+     *
+     * The handler queue is bounded (see the constructor) and will normally reject
+     * first, so this should not be reached in steady state. It stays as a guard
+     * against the set growing through some path that does not go through
+     * submitHandle, and because an unbounded tracking set is a memory leak by
+     * construction.
+     *
+     * It used to be the ONLY bound, at 10,000 against a handler pool of 1-8
+     * threads. That gap let the executor's unbounded queue accumulate a shadow
+     * backlog: messages held an in-flight slot while queued, Redis' pending timer
+     * expired, XAUTOCLAIM redelivered them, and the redelivery was dropped
+     * because the slot was still held -- so pending grew without bound while the
+     * consumer appeared to be reading at full rate.
      */
     private static final int MAX_IN_FLIGHT = 10_000;
 
@@ -130,7 +144,30 @@ public class RedisEventSubscriber implements EventSubscriber {
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents is required");
         this.eventConsumerTracer = Objects.requireNonNull(eventConsumerTracer, "eventConsumerTracer is required");
         this.pollExecutor = Executors.newSingleThreadExecutor(namedThreadFactory("redis-subscriber-poll"));
-        this.handlerExecutor = Executors.newFixedThreadPool(consumerThreads, namedThreadFactory("redis-subscriber-handler"));
+        // BOUNDED queue, not Executors.newFixedThreadPool's unbounded one.
+        //
+        // With an unbounded queue the poll loop could submit without limit, so the
+        // only thing capping in-flight work was MAX_IN_FLIGHT at 10,000 -- against
+        // a handler pool of 1-8 threads. Messages sat in the queue holding an
+        // in-flight slot while Redis' pending timer ran, XAUTOCLAIM redelivered
+        // them, and the redelivered copies were then dropped by claimInFlight
+        // because the slot was still held. journey-order logged 1,948
+        // "in-flight bound reached" lines in a 2,000-line sample, with delivery
+        // counts of 10-11 on its oldest pending entries and a backlog of 72,281
+        // that grew steadily while the consumer looked busy.
+        //
+        // The queue is sized off the thread count so the two cannot drift: enough
+        // depth to keep the handlers fed across a poll, not enough to accumulate a
+        // shadow backlog invisible to Redis. submitHandle already handles
+        // RejectedExecutionException by releasing the in-flight slot -- that catch
+        // was unreachable until now, which is a hint the bounded queue was the
+        // original intent.
+        this.handlerExecutor = new ThreadPoolExecutor(
+            consumerThreads, consumerThreads,
+            0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(Math.max(consumerThreads * 4, 16)),
+            namedThreadFactory("redis-subscriber-handler"),
+            new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Override
@@ -198,8 +235,18 @@ public class RedisEventSubscriber implements EventSubscriber {
             handlerExecutor.submit(() -> handle(stream, group, consumerName, message, handler));
         } catch (RejectedExecutionException exception) {
             releaseInFlight(stream, message.id());
+            // A full queue is BACKPRESSURE, not an error: the handlers are busy, so
+            // leave the message pending and let Redis redeliver it when they are
+            // not. Rethrowing while running would kill the poll loop, which is the
+            // opposite of what a saturated consumer needs -- and it is reachable
+            // now that the queue is bounded, where before it never was.
+            //
+            // Logged at DEBUG because under sustained load this is the steady
+            // state, not an incident; the in-flight bound warning covers the case
+            // where the shortfall is large enough to matter.
             if (running.get()) {
-                throw exception;
+                LOGGER.debug("stream={} messageId={} handler queue full; leaving message pending for redelivery",
+                    stream, message.id());
             }
         } catch (RuntimeException exception) {
             releaseInFlight(stream, message.id());
