@@ -304,6 +304,33 @@ public class PostSalesApplicationService {
         );
     }
 
+    /**
+     * Updates an existing context's fare from an event that carries a monetary
+     * summary but no itinerary.
+     *
+     * A no-op when no context exists: without a departure time there is nothing
+     * to attach a fare to, and only JourneyOrderCreated establishes that. Doing
+     * nothing is correct here -- the alternative, rebuilding from a payload with
+     * no segments, is what made JourneyOrderConfirmed and
+     * JourneyOrderPostSalesAdjusted log a warning on every single order claiming
+     * refunds would quote zero, when JourneyOrderCreated had already stored a
+     * usable context.
+     */
+    public void refreshPolicyContextFare(String journeyOrderId, Map<?, ?> payload) {
+        Optional<PostSalesPolicyContext> existing = policyContextStore.findByOrderId(journeyOrderId);
+        if (existing.isEmpty()) {
+            LOGGER.debug("no policy context yet for order {}; nothing to refresh", journeyOrderId);
+            return;
+        }
+        PostSalesPolicyContextMapper.fareUpdateFromEventPayload(payload).ifPresentOrElse(
+            update -> {
+                policyContextStore.save(existing.get().withFare(update.originalFare(), update.components()));
+                LOGGER.debug("refreshed policy context fare for order {} to {}",
+                    journeyOrderId, update.originalFare());
+            },
+            () -> LOGGER.debug("event for order {} carried no usable amount; fare left unchanged", journeyOrderId));
+    }
+
     public void recordPolicyContext(PostSalesPolicyContext context) {
         policyContextStore.save(context);
     }
