@@ -15,7 +15,7 @@ use axum::{
 use opentelemetry::{
     Context as OtelContext, KeyValue, global,
     propagation::{Extractor, TextMapPropagator},
-    trace::{Span as OTelSpanTrait, TraceContextExt, Tracer},
+    trace::{FutureExt, Span as OTelSpanTrait, TraceContextExt, Tracer},
 };
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use serde::Serialize;
@@ -106,6 +106,22 @@ pub trait Observer: Send + Sync + 'static {
 
 pub trait Span: Send + Sync + 'static {
     fn end(&mut self, status: StatusCode);
+
+    /// The OpenTelemetry context carrying this span, when the implementation
+    /// traces at all.
+    ///
+    /// The runtime middleware attaches this around the handler so that
+    /// `Context::current()` is valid for the duration of the request. Without it
+    /// the server span exists but is invisible to everything downstream: log
+    /// lines get no trace id, and `rust_kit::outbound` finds no context to
+    /// propagate, which is why handlers previously had to re-extract the trace
+    /// context from the inbound headers by hand.
+    ///
+    /// Defaulted to `None` so non-tracing observers -- the no-op one, and any a
+    /// service defines -- are unaffected.
+    fn otel_context(&self) -> Option<OtelContext> {
+        None
+    }
 }
 
 /// Reads W3C trace context headers for the OpenTelemetry propagator.
@@ -170,7 +186,9 @@ pub struct OpenTelemetryObserver {
 }
 
 struct OpenTelemetrySpan {
-    span: opentelemetry::global::BoxedSpan,
+    /// The span is held inside a context rather than bare so the middleware can
+    /// attach it. `SpanRef` exposes everything ending the span needs.
+    context: OtelContext,
 }
 
 impl OpenTelemetryObserver {
@@ -228,28 +246,34 @@ impl Observer for OpenTelemetryObserver {
             Some(parent) => builder.start_with_context(&tracer, parent),
             None => builder.start(&tracer),
         };
-        Box::new(OpenTelemetrySpan { span })
+        Box::new(OpenTelemetrySpan {
+            context: OtelContext::current().with_span(span),
+        })
     }
 }
 
 impl Span for OpenTelemetrySpan {
+    fn otel_context(&self) -> Option<OtelContext> {
+        Some(self.context.clone())
+    }
+
     fn end(&mut self, status: StatusCode) {
-        self.span.set_attribute(KeyValue::new(
+        let span = self.context.span();
+        span.set_attribute(KeyValue::new(
             "http.response.status_code",
             i64::from(status.as_u16()),
         ));
-        self.span.set_attribute(KeyValue::new(
+        span.set_attribute(KeyValue::new(
             "http.status_code",
             i64::from(status.as_u16()),
         ));
         if status.is_server_error() {
-            self.span
-                .set_status(opentelemetry::trace::Status::error(format!(
-                    "http status {}",
-                    status.as_u16()
-                )));
+            span.set_status(opentelemetry::trace::Status::error(format!(
+                "http status {}",
+                status.as_u16()
+            )));
         }
-        self.span.end();
+        span.end();
     }
 }
 
@@ -342,7 +366,15 @@ async fn runtime_middleware(
     );
 
     request.extensions_mut().insert(context);
-    let mut response = next.run(request).await;
+    // Attaching the server span makes `Context::current()` valid for the whole
+    // handler, which is what lets a log line carry the request's trace_id and
+    // span_id. Starting the span without attaching it -- what this did before --
+    // produced a span Jaeger could show and log lines that could not be joined
+    // to it.
+    let mut response = match span.otel_context() {
+        Some(trace_context) => next.run(request).with_context(trace_context).await,
+        None => next.run(request).await,
+    };
     insert_header(response.headers_mut(), REQUEST_ID_HEADER, &request_id);
     insert_header(
         response.headers_mut(),
@@ -955,6 +987,73 @@ mod trace_context_tests {
                 TraceId::from_hex(TRACE_ID).unwrap()
             );
         }
+    }
+
+    /// The point of attaching the server span: a handler -- and so anything it
+    /// logs -- can see the request's trace and span ids. Before this the span
+    /// was started but never attached, so `Context::current()` was invalid
+    /// inside every handler and no log line could be joined to its trace.
+    #[test]
+    fn a_handler_sees_the_server_span_ids() {
+        let _serial = test_serial();
+        let tracing = TestTracing::install();
+
+        let seen: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
+        let seen_in_handler = Arc::clone(&seen);
+        let app = apply_runtime(
+            Router::new().route(
+                "/observed",
+                get(move || {
+                    let seen = Arc::clone(&seen_in_handler);
+                    async move {
+                        let span_context = OtelContext::current().span().span_context().clone();
+                        if span_context.is_valid() {
+                            *seen.lock().unwrap() = Some((
+                                span_context.trace_id().to_string(),
+                                span_context.span_id().to_string(),
+                            ));
+                        }
+                        "ok"
+                    }
+                }),
+            ),
+            RuntimeConfig::new(profile())
+                .with_observer(Arc::new(OpenTelemetryObserver::new("shared-kernel-test"))),
+        );
+
+        block_on(async {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/observed")
+                        .header("traceparent", format!("00-{TRACE_ID}-{SPAN_ID}-01"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("request succeeds");
+            assert_eq!(response.status(), StatusCode::OK);
+        });
+
+        let span = tracing.take_server_span();
+        let (trace_id, span_id) = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("handler must see a valid span context");
+        assert_eq!(
+            trace_id, TRACE_ID,
+            "the handler must see the caller's trace id"
+        );
+        // The handler's span id must be the server span's own, not the caller's:
+        // a log line naming the caller's span points an operator at the wrong
+        // service.
+        assert_eq!(
+            span_id,
+            span.span_context.span_id().to_string(),
+            "the handler must see this server span's id"
+        );
+        assert_ne!(span_id, SPAN_ID);
     }
 
     #[test]

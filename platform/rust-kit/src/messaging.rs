@@ -595,6 +595,7 @@ pub fn stream_for_producer(producer: &str) -> String {
 #[cfg(feature = "redis-impl")]
 pub mod redis_runtime {
     use super::*;
+    use opentelemetry::trace::FutureExt;
     use redis::RedisResult;
     use std::collections::VecDeque;
     use tokio::sync::mpsc;
@@ -1057,6 +1058,8 @@ pub mod redis_runtime {
                             &message.raw_envelope,
                             "MaxDeliveryAttempts",
                             message.delivery_count,
+                            // Recovery runs before any consumer span exists.
+                            "",
                         )
                         .await?;
                     } else {
@@ -1087,6 +1090,9 @@ pub mod redis_runtime {
                         &message.raw_envelope,
                         &error.to_string(),
                         message.delivery_count,
+                        // A malformed envelope is rejected before the consumer
+                        // span is started, so there is no valid span to name.
+                        "",
                     )
                     .await;
                 }
@@ -1099,25 +1105,44 @@ pub mod redis_runtime {
                 .span_builder(envelope.event_type.clone())
                 .with_kind(opentelemetry::trace::SpanKind::Consumer)
                 .with_attributes(messaging_span_attributes(&message.stream, group, &envelope));
-            let mut span = if let Some(parent_context) = remote_parent_context(&envelope) {
+            let span = if let Some(parent_context) = remote_parent_context(&envelope) {
                 span_builder.start_with_context(&tracer, &parent_context)
             } else {
                 span_builder.start(&tracer)
             };
-            match handler(envelope.clone()).await {
+            // The span is attached to the context, not merely started. Starting it
+            // alone leaves `Context::current()` invalid inside the handler, so
+            // every line a handler logs would have no trace id -- and the event
+            // path is exactly where correlation matters most, because an event's
+            // trace begins in an HTTP request in another service. This is the
+            // Rust counterpart of java-kit's `span.makeCurrent()` in
+            // EventConsumerTracer.SpanScope.
+            let span_context = OTelContext::current().with_span(span);
+            // Rendered while the ids are in hand: the kit's own warn/DLQ lines
+            // below run after the handler future has been polled, and an attached
+            // ContextGuard is not Send, so it cannot be held across the awaits
+            // that follow.
+            let trace_fields = crate::trace_logging::fields_from(&span_context);
+            let outcome = handler(envelope.clone())
+                .with_context(span_context.clone())
+                .await;
+            match outcome {
                 Ok(()) => {
-                    span.end();
+                    span_context.span().end();
                     self.state.mark_consumed(&envelope.event_id);
                     ops.ack(&message.stream, group, &message.id).await
                 }
                 Err(HandlerError::Transient(reason)) => {
-                    span.set_status(opentelemetry::trace::Status::error(reason.clone()));
-                    span.end();
+                    span_context
+                        .span()
+                        .set_status(opentelemetry::trace::Status::error(reason.clone()));
+                    span_context.span().end();
                     // Formerly a silent swallow (same class of bug java-kit had):
                     // without this line a retried-to-death message reaches the
                     // DLQ with no trace of what actually failed.
                     log::warn!(
-                        "service={} stream={} eventId={} deliveries={} handler transient failure; message stays pending for retry: {}",
+                        "{}service={} stream={} eventId={} deliveries={} handler transient failure; message stays pending for retry: {}",
+                        trace_fields,
                         group,
                         message.stream,
                         envelope.event_id,
@@ -1127,8 +1152,10 @@ pub mod redis_runtime {
                     Ok(())
                 }
                 Err(HandlerError::Fatal(reason)) => {
-                    span.set_status(opentelemetry::trace::Status::error(reason.clone()));
-                    span.end();
+                    span_context
+                        .span()
+                        .set_status(opentelemetry::trace::Status::error(reason.clone()));
+                    span_context.span().end();
                     self.state.mark_consumed(&envelope.event_id);
                     move_to_dlq(
                         ops,
@@ -1139,6 +1166,7 @@ pub mod redis_runtime {
                         &message.raw_envelope,
                         &reason,
                         message.delivery_count,
+                        &trace_fields,
                     )
                     .await
                 }
@@ -1407,11 +1435,17 @@ pub mod redis_runtime {
         raw_envelope: &str,
         reason: &str,
         attempts: u64,
+        // Pre-rendered by the caller: the recovery path reaches here with no
+        // consumer span at all, and the fatal path holds one whose ids cannot be
+        // read from the ambient context because a ContextGuard is not Send.
+        // Empty means "no valid span", and nothing is printed.
+        trace_fields: &str,
     ) -> Result<(), SubscribeFailed> {
         let dlq = format!("{stream}:dlq");
         let failure_reason = truncate_failure_reason(reason);
         log::warn!(
-            "service={} stream={} eventId={} failureReason={} moving message to DLQ",
+            "{}service={} stream={} eventId={} failureReason={} moving message to DLQ",
+            trace_fields,
             group,
             stream,
             event_id_for_log(raw_envelope),
@@ -1716,6 +1750,23 @@ pub mod redis_runtime {
             assert!(log.args().contains("events:payment"));
             assert!(log.args().contains(&envelope.event_id));
             assert!(log.args().contains("poison root cause"));
+            // The DLQ line is what an operator reads first when an event dies, so
+            // it must name the very span Jaeger shows -- asserted against the
+            // exported span rather than a literal, so a line carrying some other
+            // span's ids cannot pass.
+            let line = log.args().to_string();
+            assert!(
+                line.contains(&format!("trace_id={}", span.span_context.trace_id())),
+                "DLQ line must carry the consumer span's trace id: {line}"
+            );
+            assert!(
+                line.contains(&format!("span_id={}", span.span_context.span_id())),
+                "DLQ line must carry the consumer span's span id: {line}"
+            );
+            assert!(
+                !line.contains("00000000000000000000000000000000"),
+                "an all-zero trace id must never be printed: {line}"
+            );
         }
 
         #[tokio::test]
@@ -1825,6 +1876,90 @@ pub mod redis_runtime {
                 .expect("messaging span");
             assert_eq!(span.parent_span_id, opentelemetry::trace::SpanId::INVALID);
             assert!(!span.parent_span_is_remote);
+        }
+
+        /// The consumer span must be *attached*, not merely started. Before this,
+        /// `process_message` started a span and left `Context::current()` invalid,
+        /// so every line an event handler logged had no trace id -- the exact
+        /// lines needed to explain a failed event, whose trace began in an HTTP
+        /// request in another service.
+        #[tokio::test]
+        async fn a_handler_sees_the_consumer_span_ids_while_it_runs() {
+            let _serial = crate::otel::test_serial();
+            let exporter = opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build();
+            let otel_guard = crate::otel::init_with_exporter("rust-kit-test", exporter);
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let mut envelope = EventEnvelope::canonical(
+                "HandlerContextEvent",
+                correlation_id(),
+                Some(command_id()),
+                "payment",
+                serde_json::json!({"id": "1"}),
+            );
+            envelope.traceparent =
+                Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string());
+            let mut ops = FakeStreamOps {
+                read_messages: vec![StreamMessage {
+                    stream: "events:payment".to_string(),
+                    id: "1-0".to_string(),
+                    raw_envelope: serde_json::to_string(&envelope).unwrap(),
+                    delivery_count: 1,
+                }],
+                ..Default::default()
+            };
+
+            let seen = Arc::new(Mutex::new(None));
+            let seen_in_handler = Arc::clone(&seen);
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:payment".to_string()],
+                    "journey-order".to_string(),
+                    "consumer-1".to_string(),
+                    &move |_| {
+                        let seen = Arc::clone(&seen_in_handler);
+                        Box::pin(async move {
+                            // Exactly what a service's env_logger format closure
+                            // calls on every line the handler emits.
+                            *seen.lock().expect("seen lock poisoned") =
+                                Some(crate::trace_logging::log_fields());
+                            Ok(())
+                        })
+                    },
+                    true,
+                )
+                .await
+                .unwrap();
+
+            let fields = seen
+                .lock()
+                .expect("seen lock poisoned")
+                .clone()
+                .expect("handler ran");
+            assert!(
+                fields.contains("trace_id=4bf92f3577b34da6a3ce929d0e0e4736"),
+                "handler must log the caller's trace id, got {fields:?}"
+            );
+            // The span id must be this consumer span's own, not the producer's:
+            // reporting the parent's id would point an operator at the wrong span.
+            assert!(
+                fields.contains("span_id="),
+                "handler must log a span id, got {fields:?}"
+            );
+            assert!(
+                !fields.contains("span_id=00f067aa0ba902b7"),
+                "span_id must be the consumer span, not the remote parent: {fields:?}"
+            );
+            assert!(
+                !fields.contains("00000000000000000000000000000000"),
+                "an all-zero id must never be rendered: {fields:?}"
+            );
+
+            otel_guard.force_flush().expect("flush messaging span");
         }
 
         #[tokio::test]
