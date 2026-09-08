@@ -22,10 +22,13 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 
 ## What runs today
 
-38 deployed business services + Redis Streams + PostgreSQL, all under
-`deploy/k8s/`, each with a Dockerfile at `deploy/docker/<service>/Dockerfile`.
-`deploy/build-images.sh` builds all 38; its image set is verified identical to
-the `train-ticket/*` images referenced by `deploy/k8s/services.yaml`.
+38 deployed business services + Redis Streams + PostgreSQL, all deployed by the
+Helm chart at `deploy/helm/train-ticket` (Helm is the only deployment path; the
+kustomize overlay that used to sit alongside it has been retired and deleted),
+each with a Dockerfile at `deploy/docker/<service>/Dockerfile`. `deploy/build-images.sh`
+builds all 38 plus the loadgen; its image set is derived at run time from the
+`train-ticket/*` images in the rendered release
+(`deploy/render-manifests.sh`), so it cannot drift from what the cluster pulls.
 `service-catalog.json` currently catalogs 33 of these contexts; the deployed set
 also includes corporate-travel, group-booking, loyalty-membership,
 marketing-campaign, and travel-insurance:

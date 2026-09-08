@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -11,11 +12,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// deployedConfigPath is the ConfigMap source that deploy/k8s/kustomization.yaml
-// mounts into the loadgen pod at /etc/loadgen/config.yaml. It is the only
-// config that runs in the cluster, so it is the schema contract for this
-// module.
-const deployedConfigPath = "../k8s/loadgen-config.yaml"
+// deployedConfigPath is the ConfigMap source that is mounted into the loadgen
+// pod at /etc/loadgen/config.yaml. It is the only config that runs in the
+// cluster, so it is the schema contract for this module.
+//
+// The `os.Stat` skip guards on each test below exist so this suite can run in a
+// checkout without the deployment tree. That makes a WRONG path far worse than a
+// missing file: every test would Skip and the whole schema contract would go
+// unenforced while the suite still reported green. requireDeployedConfig turns
+// that specific outcome into a failure -- a Skip is only legitimate when the
+// deploy directory genuinely is not there.
+const deployedConfigPath = "../helm/train-ticket/loadgen-config.yaml"
+
+// requireDeployedConfig loads the deployed config, or skips only if the whole
+// deployment tree is absent. If the tree exists but this particular file does
+// not, the constant above is stale and that is a failure, not a skip.
+func requireDeployedConfig(t *testing.T) *Config {
+	t.Helper()
+	if _, err := os.Stat(deployedConfigPath); os.IsNotExist(err) {
+		if _, dirErr := os.Stat("../helm/train-ticket"); os.IsNotExist(dirErr) {
+			t.Skipf("%s not present (no deployment tree in this checkout)", deployedConfigPath)
+		}
+		t.Fatalf("%s is missing but ../helm/train-ticket exists: deployedConfigPath is stale, "+
+			"so every test in this file would have silently skipped", deployedConfigPath)
+	}
+	cfg, err := LoadConfig(deployedConfigPath)
+	if err != nil {
+		t.Fatalf("deployed ConfigMap does not parse: %v", err)
+	}
+	return cfg
+}
 
 // TestDeployedConfigParses guards the highest-risk failure mode of the
 // migration to this implementation: the deployed ConfigMap silently failing
@@ -23,13 +49,7 @@ const deployedConfigPath = "../k8s/loadgen-config.yaml"
 // mistyped key does NOT error -- it lands as a zero value and the knob goes
 // quietly dead. These assertions pin the values that must survive decoding.
 func TestDeployedConfigParses(t *testing.T) {
-	if _, err := os.Stat(deployedConfigPath); os.IsNotExist(err) {
-		t.Skipf("%s not present", deployedConfigPath)
-	}
-	cfg, err := LoadConfig(deployedConfigPath)
-	if err != nil {
-		t.Fatalf("deployed ConfigMap does not parse: %v", err)
-	}
+	cfg := requireDeployedConfig(t)
 
 	// run.* -- the concurrency contract
 	if cfg.Run.Mode != "closed-loop" && cfg.Run.Mode != "open-loop" {
@@ -173,13 +193,7 @@ func TestDeployedConfigParses(t *testing.T) {
 // dropped in the migration would otherwise burn its share of the mix on the
 // "unknown_journey" no-op instead of generating load.
 func TestDeployedJourneyMixIsDispatchable(t *testing.T) {
-	if _, err := os.Stat(deployedConfigPath); os.IsNotExist(err) {
-		t.Skipf("%s not present", deployedConfigPath)
-	}
-	cfg, err := LoadConfig(deployedConfigPath)
-	if err != nil {
-		t.Fatalf("deployed ConfigMap does not parse: %v", err)
-	}
+	cfg := requireDeployedConfig(t)
 	if len(cfg.Journey) == 0 {
 		t.Fatal("journey_mix is empty")
 	}
@@ -211,13 +225,7 @@ func TestDeployedJourneyMixIsDispatchable(t *testing.T) {
 // writable layer and silently dies with the container -- the generator keeps
 // running and nothing looks wrong until you go looking for the file.
 func TestDeployedRecordingLandsOnThePersistentVolume(t *testing.T) {
-	if _, err := os.Stat(deployedConfigPath); os.IsNotExist(err) {
-		t.Skipf("%s not present", deployedConfigPath)
-	}
-	cfg, err := LoadConfig(deployedConfigPath)
-	if err != nil {
-		t.Fatalf("deployed ConfigMap does not parse: %v", err)
-	}
+	cfg := requireDeployedConfig(t)
 	if !cfg.Recording.Enabled {
 		t.Skip("recording disabled in the deployed config")
 	}
@@ -242,12 +250,33 @@ func TestDeployedRecordingLandsOnThePersistentVolume(t *testing.T) {
 	}
 
 	// Cross-check the path against the Deployment's volumeMounts.
-	const deploymentPath = "../k8s/loadgen.yaml"
-	data, err := os.ReadFile(deploymentPath)
-	if err != nil {
-		t.Skipf("%s not readable: %v", deploymentPath, err)
+	//
+	// This renders the chart rather than reading a file. The Deployment is a Go
+	// template now -- `{{ include ... }}` and `{{- if }}` are not valid YAML, so
+	// there is nothing to Unmarshal. Rendering is also the stronger check: it
+	// validates the mount the release actually ships, not a source file that
+	// might template into something else.
+	//
+	// Skipped, not failed, when helm is absent: this is a unit-test package and
+	// helm is not one of its dependencies. Every assertion above still runs.
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH: cannot render the chart to cross-check volumeMounts")
 	}
-	var dep struct {
+	const chartDir = "../helm/train-ticket"
+	render := exec.Command("helm", "template", "loadgen-crosscheck", chartDir,
+		"-f", "../helm/values-kind.yaml", "--namespace", "train-ticket")
+	var stderr bytes.Buffer
+	render.Stderr = &stderr
+	data, err := render.Output()
+	if err != nil {
+		t.Fatalf("helm template %s failed: %v\n%s", chartDir, err, stderr.String())
+	}
+
+	type renderedWorkload struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
 		Spec struct {
 			Template struct {
 				Spec struct {
@@ -262,11 +291,27 @@ func TestDeployedRecordingLandsOnThePersistentVolume(t *testing.T) {
 			} `yaml:"template"`
 		} `yaml:"spec"`
 	}
-	if err := yaml.Unmarshal(data, &dep); err != nil {
-		t.Fatalf("%s does not parse: %v", deploymentPath, err)
+
+	var dep *renderedWorkload
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var doc renderedWorkload
+		if err := dec.Decode(&doc); err != nil {
+			break // io.EOF, or a document this struct does not model
+		}
+		if doc.Kind == "Deployment" && doc.Metadata.Name == "loadgen" {
+			found := doc
+			dep = &found
+			break
+		}
+	}
+	if dep == nil {
+		t.Fatalf("the rendered chart contains no Deployment/loadgen. If the loadgen was "+
+			"disabled or renamed this cross-check needs updating -- it must not be left "+
+			"silently skipping (chart: %s)", chartDir)
 	}
 	if len(dep.Spec.Template.Spec.Containers) == 0 {
-		t.Fatalf("%s declares no containers", deploymentPath)
+		t.Fatal("the rendered Deployment/loadgen declares no containers")
 	}
 
 	var covering string
@@ -282,9 +327,9 @@ func TestDeployedRecordingLandsOnThePersistentVolume(t *testing.T) {
 		covering = m.MountPath
 	}
 	if covering == "" {
-		t.Errorf("recording.path %q is not under any writable volumeMount in %s: "+
-			"the record file would be written to the container's writable layer and "+
-			"lost on restart", cfg.Recording.Path, deploymentPath)
+		t.Errorf("recording.path %q is not under any writable volumeMount in the rendered "+
+			"Deployment/loadgen: the record file would be written to the container's "+
+			"writable layer and lost on restart", cfg.Recording.Path)
 	}
 
 	// The registry and the record file share the volume; they must not be the

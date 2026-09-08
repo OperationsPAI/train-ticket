@@ -12,7 +12,37 @@ cd "$(dirname "$0")" && . ./lib.sh
 PGUSER=trainticket
 SUITE="01-seed.sh 02-purchase.sh 03-refund.sh 04-change.sh 05-fulfillment.sh 06-risk.sh 07-fare-rules.sh 08-notify-support.sh 09-manual-action.sh 10-account-gate.sh 11-legacy-acl.sh 14-waitlist.sh 15-wallet.sh 16-dispatch.sh 17-disruption.sh 18-ancillary.sh 19-transfer.sh 20-seat.sh 21-identity.sh 22-paychan.sh 23-invoicing.sh"
 
-pg_pod() { k get pods -l app.kubernetes.io/name=postgres --no-headers -o custom-columns=:metadata.name 2>/dev/null | head -1; }
+# The Postgres pod is labelled per shard under Helm (app.kubernetes.io/name=
+# postgres-core), not `postgres` -- the bare name is now an ExternalName Service
+# alias with no pods at all. Selecting on the component label instead means this
+# keeps working when a shard is renamed or added, since there is no stable
+# /name value across shards to match on.
+#
+# The bootstrap Job's pods do not currently carry this label, so the filter
+# below is belt-and-braces: if they ever do, matching one would point every
+# query at a pod that has already exited.
+#
+# This must never silently return empty: PGPOD feeds service_dbs(), so an empty
+# pod name makes every psql call fail, service_dbs() returns nothing, and
+# snapshot_counts() writes an EMPTY file -- which then compares equal to the
+# post-restart empty file and certifies persistence while having verified
+# nothing. Hence require_pg_pod's hard failure rather than a fallback.
+pg_pod() {
+  k get pods -l app.kubernetes.io/component=database --no-headers \
+    -o custom-columns=:metadata.name 2>/dev/null | grep -v -- '-bootstrap-' | head -1
+}
+
+# Resolve PGPOD or abort. Never let an unresolved pod fall through to a
+# vacuously-equal snapshot comparison.
+require_pg_pod() {
+  PGPOD=$(pg_pod)
+  if [ -z "$PGPOD" ]; then
+    bad "could not find a Postgres pod (label app.kubernetes.io/component=database)"
+    echo "    without it every snapshot query returns nothing and this test would" >&2
+    echo "    certify persistence having verified nothing. Aborting." >&2
+    exit 1
+  fi
+}
 pg() { local db=$1 sql=$2; k exec "$PGPOD" -- psql -U "$PGUSER" -d "$db" -Atc "$sql" 2>/dev/null; }
 
 service_dbs() {
@@ -49,7 +79,7 @@ wait_outbox_drained() {
 echo "== 12-restart: whole-cluster restart certification"
 
 # --- 1. pause traffic ---------------------------------------------------
-PGPOD=$(pg_pod)
+require_pg_pod
 LG_REPLICAS=$(k get deploy loadgen -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
 if [ -n "$LG_REPLICAS" ] && [ "$LG_REPLICAS" != "0" ]; then
   k scale deploy loadgen --replicas=0 >/dev/null
@@ -68,6 +98,14 @@ wait_outbox_drained
 sleep 10   # let consumers finish in-flight deliveries before the wipe
 snapshot_counts /tmp/12-restart-pre.txt
 PRE_TOTAL=$(awk -F= '{s+=$2} END {print s+0}' /tmp/12-restart-pre.txt)
+# An empty pre-snapshot makes the diff in step 4 pass against an equally empty
+# post-snapshot, certifying persistence without having read a single row. The
+# seeded cluster has dozens of snapshot tables, so zero means the queries failed,
+# not that there is nothing to check.
+if [ ! -s /tmp/12-restart-pre.txt ]; then
+  bad "pre-restart snapshot is empty -- the queries failed; refusing to certify vacuously"
+  exit 1
+fi
 ok "pre-restart snapshot: $(wc -l < /tmp/12-restart-pre.txt) tables, $PRE_TOTAL rows"
 
 # --- 3. kill everything ---------------------------------------------------
@@ -84,7 +122,7 @@ for d in $DEPLOYS; do
 done
 
 # --- 4. prove state survived ----------------------------------------------
-PGPOD=$(pg_pod)
+require_pg_pod
 snapshot_counts /tmp/12-restart-post.txt
 if diff -u /tmp/12-restart-pre.txt /tmp/12-restart-post.txt > /tmp/12-restart-diff.txt; then
   ok "all $(wc -l < /tmp/12-restart-pre.txt) snapshot tables identical across restart"

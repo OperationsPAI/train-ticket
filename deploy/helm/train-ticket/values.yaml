@@ -21,8 +21,9 @@ postgres:
   # used by every service that does not set its own `pgInstance`. Must be a key
   # of `postgres.instances` below; the template fails the render if it is not.
   defaultInstance: core
-  # Postgres shards. The default profile is a single shard holding all 38
-  # databases, matching deploy/k8s/postgres.yaml (one `postgres` Deployment).
+  # Postgres shards. The default profile is a single shard (`core`) holding all
+  # 38 databases, which is what a local kind node wants: one Deployment, one
+  # PVC, one connection ceiling to reason about.
   # values-prod.yaml splits these across 6 shards.
   #
   # The union of all shards' `databases` MUST cover every `services.<name>.db`
@@ -97,20 +98,16 @@ redis:
     repository: redis
     tag: "7-alpine"
   # maxmemory must stay BELOW resources.limits.memory so Redis enforces its own
-  # bound rather than being OOMKilled by the cgroup; 768mb against a 1Gi limit
-  # is the ~75% ratio deploy/k8s/redis.yaml settled on after the 2026-09-06
-  # OOMKill. Policy stays noeviction: on an event bus, refusing writes beats
-  # silently dropping undelivered events. Change the two together.
-  # maxmemory must stay BELOW resources.limits.memory so Redis enforces its own
   # bound rather than being OOMKilled by the cgroup -- the ~75% ratio below
   # covers allocator fragmentation and client output buffers, which maxmemory
   # (a logical-dataset bound) does not account for. Policy stays noeviction: on
   # an event bus, refusing writes beats silently dropping undelivered events.
   # Change the two together.
   #
-  # Redis was OOMKilled three times at a 256Mi limit with maxmemory unset. The
-  # limit is now generous on purpose: the node has ~62Gi and this is the event
-  # bus for 38 services, so headroom is far cheaper than another bus outage.
+  # Redis was OOMKilled three times at a 256Mi limit with maxmemory unset, the
+  # last of them the 2026-09-06 bus outage. The limit is now generous on
+  # purpose: the node has ~62Gi and this is the event bus for 38 services, so
+  # headroom is far cheaper than another bus outage.
   maxmemory: 3gb
   maxmemoryPolicy: noeviction
   resources:
@@ -207,8 +204,9 @@ defaults:
   # the first, which is how the loadgen config drifted. Set one only when an
   # environment genuinely needs a different value.
   env: {}
-  # Applied when a service sets no `resources` of its own. Matches the
-  # per-service block in deploy/k8s/services.yaml.
+  # Applied when a service sets no `resources` of its own. The floor a plain
+  # HTTP-plus-Postgres service needs; anything CPU- or memory-hungry declares
+  # its own block under `services.<name>.resources` below.
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: 500m, memory: 512Mi }
@@ -241,8 +239,8 @@ services:
     db: trip_planning
     env:
       MIGRATIONS_DIR: /app/migrations
-    # trip-planning is CPU-bound on search; deploy/k8s/services.yaml gives it a
-    # 2-core ceiling on a smaller memory footprint.
+    # trip-planning is CPU-bound on search, so it gets a 2-core ceiling on a
+    # smaller memory footprint than the shared default.
     resources:
       requests: { cpu: 50m, memory: 64Mi }
       limits: { cpu: '2', memory: 256Mi }

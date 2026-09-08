@@ -1,8 +1,9 @@
 # Load generator configuration -- LOCAL DEVELOPMENT SAMPLE.
 #
-# The config that actually runs in the cluster is deploy/k8s/loadgen-config.yaml
-# (mounted via the hashed `loadgen-config` ConfigMap). Keep the two in sync
-# when adding a key. This file is not baked into the image.
+# The config that actually runs in the cluster is
+# deploy/helm/train-ticket/loadgen-config.yaml (mounted via the `loadgen-config`
+# ConfigMap the chart renders from it). Keep the two in sync when adding a key.
+# This file is not baked into the image.
 # Every probability / weight is a tunable hyperparameter.
 
 target:
@@ -139,7 +140,8 @@ waitlist:
 # Per-request outcome records (issue #420) — one JSON Lines row per client
 # HTTP request, in addition to (never instead of) the aggregate snapshot.
 # Local sample writes under /tmp; the deployed config points at the /data
-# volume. See deploy/k8s/loadgen-config.yaml for the full commentary.
+# volume. See deploy/helm/train-ticket/loadgen-config.yaml for the full
+# commentary.
 recording:
   enabled: true
   path: "/tmp/loadgen-requests.jsonl"

@@ -25,7 +25,12 @@ KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 # Infrastructure is excluded: restarting postgres would defeat the bootstrap
 # that just ran, and these are waited on separately before this point.
-INFRA_SKIP="${INFRA_SKIP:-postgres redis}"
+#
+# Matched as a PREFIX, not for equality. Under Helm the Postgres Deployment is
+# named per shard (postgres-core, and one per additional shard), so an exact
+# comparison against "postgres" stopped matching anything -- the skip list
+# silently became empty and this script would have restarted the database.
+INFRA_SKIP="${INFRA_SKIP:-postgres redis jaeger mailpit otel-collector}"
 # How many restart rounds to attempt before giving up. A service can need one
 # restart; needing three means something is actually broken, not racing.
 MAX_ROUNDS="${MAX_ROUNDS:-2}"
@@ -40,7 +45,9 @@ k() {
 
 is_infra() {
   local name=$1 skip
-  for skip in $INFRA_SKIP; do [ "$name" = "$skip" ] && return 0; done
+  for skip in $INFRA_SKIP; do
+    case "$name" in "$skip"|"$skip"-*) return 0 ;; esac
+  done
   return 1
 }
 

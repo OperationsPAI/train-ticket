@@ -143,12 +143,12 @@ function inMemoryCommandRunner(dependencies: AppDependencies): AppStorage["runCo
  * Same conclusion as loyalty-membership, and for the same reasons, plus one
  * that is specific to waitlist:
  *
- *  - `deploy/k8s/services.yaml` gives waitlist `replicas: 1` behind a ClusterIP
- *    Service. 503 here removes the only endpoint, so the synchronous
- *    join/cancel/accept/queue-info API -- which does not touch the consumer at
- *    all -- would start refusing connections during a Redis outage. That turns
- *    a partial outage into a total one, the very shape of the 2026-09-06
- *    incident.
+ *  - The Helm chart (`deploy/helm/train-ticket/values.yaml`) gives waitlist
+ *    `replicas: 1` behind a ClusterIP Service. 503 here removes the only
+ *    endpoint, so the synchronous join/cancel/accept/queue-info API -- which
+ *    does not touch the consumer at all -- would start refusing connections
+ *    during a Redis outage. That turns a partial outage into a total one, the
+ *    very shape of the 2026-09-06 incident.
  *  - `deploy/e2e/14-waitlist.sh` calls `http://waitlist:8080/api/v1/...` by
  *    Service DNS, and `deploy/e2e/12-restart.sh` gates on `kubectl rollout
  *    status` for every deployment. A never-Ready pod never becomes Available,

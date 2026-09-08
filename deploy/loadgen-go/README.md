@@ -65,12 +65,13 @@ code.)
 ### Run locally
 
 ```bash
-LOADGEN_CONFIG=../k8s/loadgen-config.yaml go run .
+LOADGEN_CONFIG=../helm/train-ticket/loadgen-config.yaml go run .
 ```
 
 `LOADGEN_CONFIG` defaults to `./config.yaml` if unset. Note that
 `deploy/loadgen-go/config.yaml` is a **local development sample**; the config
-that actually runs in the cluster is `deploy/k8s/loadgen-config.yaml`.
+that actually runs in the cluster is
+`deploy/helm/train-ticket/loadgen-config.yaml`.
 
 ### Docker / Kubernetes
 
@@ -79,26 +80,42 @@ context, consistent with every other service) by `deploy/build-images.sh`:
 
 ```bash
 deploy/build-images.sh          # builds + kind-loads train-ticket/loadgen:local
-kubectl -n train-ticket apply -k deploy/k8s
+helm upgrade --install train-ticket deploy/helm/train-ticket \
+  -f deploy/helm/values-kind.yaml --namespace train-ticket --wait
 ```
 
-The Deployment lives in `deploy/k8s/loadgen.yaml`. Configuration is supplied
-by the hashed `loadgen-config` ConfigMap generated from
-`deploy/k8s/loadgen-config.yaml`, so editing that file and re-applying rolls
-the pod automatically. No config is baked into the image.
+Or `make deploy` for the whole pipeline, `make deploy-fast` to skip the rebuild.
+
+The Deployment lives in `deploy/helm/train-ticket/templates/loadgen.yaml`.
+Configuration is supplied by the `loadgen-config` ConfigMap, which the chart
+renders from `deploy/helm/train-ticket/loadgen-config.yaml` and also hashes into
+the pod's `checksum/config` annotation — so editing that file and re-running
+`helm upgrade` changes the pod template and rolls the pod automatically. (Helm
+needs that annotation explicitly; kustomize used to get the same effect for free
+from its ConfigMap name hash.) No config is baked into the image.
+
+Sizing knobs that are *not* in the config file live in values under `loadgen`:
+`replicas`, `gomaxprocs`, `resources` and `stateSizeLimit` (the `/data` emptyDir
+cap). Customer concurrency is `run.workers` in the config file, not a value —
+the template has no way to inject it into the mounted file.
 
 ## Configuration
 
 Schema reference: `config.go`. Decoding is **non-strict** — an unrecognized or
 misspelled key is silently ignored rather than rejected, so it lands as a zero
 value and the knob goes quietly dead. `deployed_config_test.go` guards against
-this for the deployed ConfigMap: it strict-decodes the file, asserts the
-load-bearing fields survive decoding, and fails if a `behavior.*` /
-`defaults.*` key exists that no Go code reads.
+this for the deployed ConfigMap: it strict-decodes
+`deploy/helm/train-ticket/loadgen-config.yaml`, asserts the load-bearing fields
+survive decoding, and fails if a `behavior.*` / `long_tail.*` / `defaults.*` key
+exists that no Go code reads.
 
-Three `behavior.*` keys and the `long_tail` / `wallet_promotion` sections are
-currently parsed but **not consumed** — see the `GAP` comments in
-`deploy/k8s/loadgen-config.yaml` for exactly which, and what each did before.
+That guard now passes with a single documented exception:
+`defaults.insurance_premium_minor`. It is inert in both this implementation and
+the Python one it replaced — travel-insurance's `POST /api/v1/policies` takes no
+premium field — so it is allowlisted in the test rather than deleted, as
+config-level documentation of intent. The `long_tail` and `wallet_promotion`
+sections *are* consumed (`providers.go` gates the read probes on
+`long_tail.enabled`, and `journey_wallet.go` reads both `wallet_promotion` knobs).
 
 ## Journeys
 
@@ -146,7 +163,7 @@ Periodic JSON snapshots are printed to stdout every `stats_interval_seconds`:
 In addition to (never instead of) the aggregate snapshot above, the generator
 writes **one JSON Lines row per client HTTP request** to `recording.path`.
 Configured under `recording:` in the ConfigMap; see the annotated block in
-`deploy/k8s/loadgen-config.yaml`.
+`deploy/helm/train-ticket/loadgen-config.yaml`.
 
 The snapshot keeps only a rolling 5000-sample latency buffer per service, so a
 spike that has scrolled out of the buffer is unrecoverable and any quantile
@@ -228,7 +245,8 @@ line and at shutdown.
 The file is opened `O_APPEND` (never truncated), flushed every
 `recording.flush_interval_seconds`, and rotated to `<path>.1` at
 `recording.max_file_megabytes`. In the cluster it lives on the `/data`
-emptyDir declared in `deploy/k8s/loadgen.yaml`, so it survives container
+emptyDir declared in `deploy/helm/train-ticket/templates/loadgen.yaml` (capped by
+`loadgen.stateSizeLimit`), so it survives container
 restarts but not pod deletion — copy it out first:
 
 ```bash

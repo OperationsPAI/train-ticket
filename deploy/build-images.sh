@@ -6,26 +6,29 @@ KIND_CLUSTER="${KIND_CLUSTER:-kind}"
 LOAD_INTO_KIND="${LOAD_INTO_KIND:-1}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The image list is DERIVED from the deploy/k8s manifests rather than written
+# The image list is DERIVED from the rendered Helm release rather than written
 # out here. It used to be a hand-maintained `services=(...)` array that had to
 # be kept in sync with the manifests by hand, and it drifted: four deployed
 # services (group-booking, invoicing, loyalty-membership, travel-insurance)
 # were missing from it, and the failure mode is a silent ImagePullBackOff on
-# an otherwise clean build+deploy. The manifest is what the cluster actually
-# pulls, so it is the only list that can be authoritative.
+# an otherwise clean build+deploy. What the cluster actually pulls is the only
+# list that can be authoritative.
 #
-# Note this correctly picks up 'trip-planning-rs' (the Rust crate the manifest
-# requires) and skips the byte-identical leftover deploy/docker/trip-planning,
-# because the manifest names the former -- exactly the drift that motivated
-# deriving the list.
+# Rendering rather than grepping the chart templates is not incidental: a
+# template contains `{{ include "train-ticket.image" ... }}`, so a grep over the
+# template sources matches nothing and the guard below would be all that stands
+# between that and a build of zero images.
 mapfile -t services < <(
-  grep -ohE 'image:[[:space:]]*train-ticket/[A-Za-z0-9._-]+:' "${ROOT_DIR}"/deploy/k8s/*.yaml \
+  IMAGE_TAG="$TAG" "${ROOT_DIR}/deploy/render-manifests.sh" \
+    | grep -ohE 'image:[[:space:]]*train-ticket/[A-Za-z0-9._-]+:' \
     | sed -E 's|.*train-ticket/([A-Za-z0-9._-]+):.*|\1|' \
     | LC_ALL=C sort -u
 )
 
 if [[ "${#services[@]}" -eq 0 ]]; then
-  echo "ERROR: derived 0 images from ${ROOT_DIR}/deploy/k8s/*.yaml" >&2
+  echo "ERROR: derived 0 images from the rendered Helm release." >&2
+  echo "       Check that deploy/render-manifests.sh succeeds:" >&2
+  echo "         deploy/render-manifests.sh | head" >&2
   exit 1
 fi
 
@@ -36,7 +39,7 @@ for service in "${services[@]}"; do
   [[ -f "${ROOT_DIR}/deploy/docker/${service}/Dockerfile" ]] || missing+=("${service}")
 done
 if [[ "${#missing[@]}" -gt 0 ]]; then
-  echo "ERROR: the deploy/k8s manifests reference images with no Dockerfile:" >&2
+  echo "ERROR: the Helm chart references images with no Dockerfile:" >&2
   for service in "${missing[@]}"; do
     printf '  - %s (expected deploy/docker/%s/Dockerfile)\n' "$service" "$service" >&2
   done
@@ -61,7 +64,7 @@ if [[ "${LOAD_INTO_KIND}" == "1" ]]; then
   fi
 fi
 
-echo "==> Building ${#services[@]} images derived from deploy/k8s/*.yaml"
+echo "==> Building ${#services[@]} images derived from the rendered Helm release"
 
 for service in "${services[@]}"; do
   image="train-ticket/${service}:${TAG}"
@@ -76,6 +79,6 @@ done
 
 cat <<MSG
 Built ${#services[@]} service images with tag '${TAG}'.
-Kubernetes manifests reference train-ticket/<service>:local by default.
-If you built a different tag, update deploy/k8s image tags before applying.
+The chart references train-ticket/<service>:local via global.imageTag.
+If you built a different tag, set global.imageTag to match before installing.
 MSG

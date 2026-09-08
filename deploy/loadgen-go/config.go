@@ -6,7 +6,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config mirrors the YAML structure of deploy/k8s/loadgen-config.yaml.
+// Config mirrors the YAML structure of
+// deploy/helm/train-ticket/loadgen-config.yaml.
 // NOTE: decoding is non-strict -- unknown keys are ignored, so a renamed or
 // misspelled key silently becomes a zero value. deployed_config_test.go
 // guards the deployed ConfigMap against that.
@@ -34,7 +35,8 @@ type RecordingConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Path of the JSON Lines record file. Deliberately configuration and not
 	// a constant: in the cluster this must land under the /data volume from
-	// deploy/k8s/loadgen.yaml so the file outlives the run.
+	// deploy/helm/train-ticket/templates/loadgen.yaml so the file outlives the
+	// run.
 	Path string `yaml:"path"`
 	// BufferRecords is the depth of the hand-off channel between request
 	// goroutines and the writer goroutine. Sized for a burst, not a backlog:

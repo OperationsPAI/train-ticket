@@ -35,8 +35,9 @@ RUN mkdir /data && chown app:app /data
 USER app
 
 # The real config is supplied by the `loadgen-config` ConfigMap mounted at
-# /etc/loadgen (see deploy/k8s/loadgen.yaml + kustomization.yaml). No config is
-# baked into the image: a stale copy that silently shadows the ConfigMap is
-# worse than an explicit startup failure.
+# /etc/loadgen (see deploy/helm/train-ticket/templates/loadgen.yaml, which
+# renders that ConfigMap from deploy/helm/train-ticket/loadgen-config.yaml). No
+# config is baked into the image: a stale copy that silently shadows the
+# ConfigMap is worse than an explicit startup failure.
 ENV LOADGEN_CONFIG=/etc/loadgen/config.yaml
 ENTRYPOINT ["/usr/local/bin/loadgen"]
