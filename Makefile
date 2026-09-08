@@ -208,8 +208,56 @@ smoke:
 
 # The full e2e suite. Separate from deploy on purpose: these are the tests,
 # not the deployment. Run after `make deploy`.
+#
+# LOADGEN IS PAUSED FOR THE DURATION
+# The suite asserts on specific orders it just created, and several of its
+# assertions are timing-bounded (poll for a saga, wait for an event to appear on
+# a stream). A loadgen running 16 scalper workers and a full customer mix
+# saturates those same paths, so assertions fail for want of scheduling rather
+# than for want of correctness -- "no saga found for order" was the most common
+# symptom, on a cluster where sagas were being created at 1300 per five minutes.
+# Only 12-restart and seed.sh paused it before, which meant 21 of the 23 scripts
+# ran under full load. Pausing here covers the whole suite in one place.
+#
+# INT/TERM as well as EXIT, because a bare EXIT trap does not fire when make is
+# signalled, and leaving loadgen at 0 replicas is invisible: it is not an error
+# state, there is no pod to look unhealthy, and the next run reads 0 as "already
+# paused" and does not restore it either.
+#
+# FAILURES ARE COUNTED, NOT INFERRED FROM EXIT CODES
+# The scripts report a failed assertion with `bad` and still exit 0, so the
+# previous `set -e` loop reported every one of 23 scripts as passing while the
+# log held 109 failed assertions. This greps the assertion marker instead, which
+# is what actually determines whether the suite passed.
 e2e:
-	@set -e; for script in deploy/e2e/[0-9]*.sh; do \
+	@set -u; \
+	lg=$$($(KUBENS) get deploy loadgen -o jsonpath='{.spec.replicas}' 2>/dev/null || echo ''); \
+	resume() { \
+	  if [ -n "$$lg" ] && [ "$$lg" != "0" ]; then \
+	    $(KUBENS) scale deploy loadgen --replicas="$$lg" >/dev/null 2>&1 \
+	      && echo "e2e: loadgen resumed (replicas=$$lg)" \
+	      || echo "e2e: WARNING could not resume loadgen -- scale it back by hand" >&2; \
+	  fi; \
+	}; \
+	trap resume EXIT INT TERM; \
+	if [ -n "$$lg" ] && [ "$$lg" != "0" ]; then \
+	  $(KUBENS) scale deploy loadgen --replicas=0 >/dev/null 2>&1 || true; \
+	  $(KUBENS) wait --for=delete pod -l app.kubernetes.io/name=loadgen --timeout=90s >/dev/null 2>&1 || true; \
+	  echo "e2e: loadgen paused (was replicas=$$lg)"; \
+	fi; \
+	log=$$(mktemp); failed=''; \
+	for script in deploy/e2e/[0-9]*.sh; do \
 	  echo "== $$script"; \
-	  "$$script"; \
-	done
+	  : > "$$log"; \
+	  "$$script" 2>&1 | tee "$$log"; \
+	  n=$$(grep -c '✗' "$$log" || true); \
+	  if [ "$$n" -gt 0 ]; then \
+	    echo "   -> $$n failed assertion(s) in $$script"; \
+	    failed="$$failed $$(basename $$script):$$n"; \
+	  fi; \
+	done; \
+	rm -f "$$log"; \
+	if [ -n "$$failed" ]; then \
+	  echo; echo "e2e FAILED --$$failed" >&2; exit 1; \
+	fi; \
+	echo; echo "e2e: all scripts passed with zero failed assertions."
