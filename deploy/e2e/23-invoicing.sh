@@ -110,7 +110,7 @@ check_code 201 "request rejected seed invoice"
 req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$MAIN_ORDER\",\"caseType\":\"REFUND\",\"scope\":{\"orderItemRefs\":[\"$MAIN_SB\"],\"segmentRefs\":[\"$MAIN_SEG\"],\"travelerRefs\":[\"$MAIN_TVL\"],\"entitlementRefs\":[\"$MAIN_ENT\"]},\"reasonCode\":\"CUSTOMER_REQUEST\",\"actorRef\":\"$MAIN_ACCT\"}"
 check_code 201 "open real refund case"
 CASE=$(jget "['caseId']")
-req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'; check_code 200 "evaluate refund"
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'; check_code 200 "evaluate refund"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'; check_code 200 "approve refund"
 sleep 10
 [ "$(stream_has RefundWithoutRedFlushObserved "$CASE")" = yes ] && ok "RefundWithoutRedFlushObserved event" || bad "missing refund violation observation"

@@ -216,7 +216,7 @@ select_option_type "$CASE" REFUND USER; check_code 200 "select refund"
 ST=$(jget "['status']"); [ "$ST" = EXECUTING_RECOVERY ] && ok "refund executing" || bad "refund status $ST"
 PSC=$(jget "['execution']['externalRef']")
 [ -n "$PSC" ] && ok "post-sales case ref stored" || bad "missing post-sales ref"
-req POST post-sales "/api/v1/post-sales-cases/$PSC/evaluate" '{}'; check_code 200 "evaluate disruption refund"
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$PSC/evaluate" '{}'; check_code 200 "evaluate disruption refund"
 req POST post-sales "/api/v1/post-sales-cases/$PSC/approve" '{}'; check_code 200 "approve disruption refund"
 FINAL=$(poll_case_status "$CASE" RECOVERED 12 5)
 [ "$FINAL" = RECOVERED ] && ok "refund converged recovered" || bad "refund did not converge recovered ($FINAL)"

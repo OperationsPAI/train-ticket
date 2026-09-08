@@ -232,7 +232,7 @@ WLR_F=$(jget "['waitlistRequestId']")
 req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$ORIG_ORDER\",\"caseType\":\"REFUND\",\"scope\":{\"orderItemRefs\":[\"$ORIG_SB\"],\"segmentRefs\":[\"$SEG_F\"],\"travelerRefs\":[\"$TVL_B\"],\"entitlementRefs\":[\"$ORIG_ENT\"]},\"reasonCode\":\"CUSTOMER_REQUEST\",\"actorRef\":\"$ACCT_B\"}"
 check_code 201 "open refund to release capacity"
 CASE_F=$(jget "['caseId']")
-req POST post-sales "/api/v1/post-sales-cases/$CASE_F/evaluate" '{}'; check_code 200 "evaluate refund"
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE_F/evaluate" '{}'; check_code 200 "evaluate refund"
 req POST post-sales "/api/v1/post-sales-cases/$CASE_F/approve" '{}'; check_code 200 "approve refund"
 # The fulfillment chain runs quote->offer->order->payment on the customer's
 # behalf; entitlement issuance stays a staff action (loadgen's staff pool is

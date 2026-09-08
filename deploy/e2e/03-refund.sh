@@ -13,7 +13,7 @@ CASE=$(jget "['caseId']")
 echo "  CASE=$CASE status=$(jget "['status']")"
 
 echo "== 2. evaluate"
-req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
 check_code 200 "evaluate case"
 REFUNDABLE=$(jget "['refundableAmount']['minorUnits']")
 echo "  eligible=$(jget "['eligible']") refundable=$(jget "['refundableAmount']")"

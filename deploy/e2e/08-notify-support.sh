@@ -90,7 +90,7 @@ if [ -z "${CASE:-}" ]; then
 else
   echo "== 3. reuse refund case $CASE"
 fi
-req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
 check_code 200 "evaluate post-sales case"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
 check_code 200 "approve post-sales case"

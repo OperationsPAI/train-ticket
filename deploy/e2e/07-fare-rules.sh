@@ -153,7 +153,7 @@ echo "== 4. refund uses managed refund fee"
 req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$ORDER_RULE\",\"caseType\":\"REFUND\",\"scope\":{\"orderItemRefs\":[\"$SB_RULE\"],\"segmentRefs\":[\"$SEG_RULE\"],\"travelerRefs\":[\"$TVL_RULE\"],\"entitlementRefs\":[\"$ENT_RULE\"]},\"reasonCode\":\"CUSTOMER_REQUEST\",\"actorRef\":\"$ACCT_RULE\"}"
 check_code 201 "open post-sales case"
 CASE_RULE=$(jget "['caseId']")
-req POST post-sales "/api/v1/post-sales-cases/$CASE_RULE/evaluate" '{}'
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE_RULE/evaluate" '{}'
 check_code 200 "evaluate refund"
 
 # What this step is actually for: proving the managed refund_fee rule (3000)

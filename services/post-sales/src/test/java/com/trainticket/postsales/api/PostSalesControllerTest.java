@@ -47,6 +47,9 @@ class PostSalesControllerTest {
     private PostSalesRepository repository;
 
     @Autowired
+    private com.trainticket.postsales.application.PostSalesPolicyContextStore policyContextStore;
+
+    @Autowired
     void setApplicationContext(WebApplicationContext context) {
         this.mockMvc = MockMvcBuilders.webAppContextSetup(context)
             .addFilters(
@@ -69,6 +72,26 @@ class PostSalesControllerTest {
             .andExpect(jsonPath("$.status", equalTo("OPENED")))
             .andReturn().getResponse().getContentAsString().split("\"caseId\":\"")[1].split("\"")[0];
 
+        // Seed the policy context this order's refund needs. Evaluate now REFUSES
+        // to price a refund without one (409 POLICY_CONTEXT_NOT_READY) instead of
+        // falling back to departureTime=now, which forces
+        // AFTER_DEPARTURE_NON_REFUNDABLE and a zero refund.
+        //
+        // This test previously asserted `refundableAmount.minorUnits == 0` as the
+        // happy path, which is exactly that wrong answer -- it had encoded the bug
+        // as the expectation. A 30-day-out departure lands in TIER_GT_15_DAYS,
+        // a 5% penalty, so 100.00 refunds 95.00.
+        policyContextStore.save(new com.trainticket.postsales.application.PostSalesPolicyContext(
+            "ord-test-1",
+            java.time.Instant.now().plus(java.time.Duration.ofDays(30)),
+            java.util.Map.of(),
+            1,
+            0,
+            com.trainticket.postsales.domain.Money.of("100.00", "CNY"),
+            com.trainticket.postsales.application.PostSalesPolicyContext.RefundWaterfallComponents.empty(
+                java.util.Currency.getInstance("CNY"))
+        ));
+
         mockMvc.perform(post("/api/v1/post-sales-cases/{caseId}/evaluate", caseId)
                 .header("Idempotency-Key", EVALUATE_KEY)
                 .header("X-Correlation-Id", "corr-test-1"))
@@ -76,7 +99,7 @@ class PostSalesControllerTest {
             .andExpect(jsonPath("$.caseId", equalTo(caseId)))
             .andExpect(jsonPath("$.eligible", equalTo(true)))
             .andExpect(jsonPath("$.refundableAmount.currency", equalTo("CNY")))
-            .andExpect(jsonPath("$.refundableAmount.minorUnits", equalTo(0)));
+            .andExpect(jsonPath("$.refundableAmount.minorUnits", equalTo(9500)));
 
         mockMvc.perform(post("/api/v1/post-sales-cases/{caseId}/approve", caseId)
                 .header("Idempotency-Key", APPROVE_KEY)
