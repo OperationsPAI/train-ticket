@@ -2,7 +2,7 @@
 {{- /*
 Trace store: Jaeger all-in-one backed by Badger on a PersistentVolumeClaim.
 
-Ported from deploy/k8s/jaeger.yaml (the kind overlay) and
+Ported from the retired kustomize overlay's jaeger.yaml (the kind overlay) and
 platform/observability/docker-compose.yaml. Rationale and the capacity
 arithmetic behind the PVC size and the TTL live in
 docs/07-observability/README.md.
@@ -159,8 +159,8 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 data:
   # Mirrors platform/observability/otel-collector.yaml, the canonical collector
-  # config for local compose and kind (see deploy/k8s/otel-collector.yaml).
-  # Keep synchronized; the tunable numbers come from .Values.otelCollector.
+  # config for local compose and kind. Keep the two synchronized; the tunable
+  # numbers here come from .Values.otelCollector.
   otel-collector.yaml: |
     receivers:
       otlp:

@@ -1,6 +1,7 @@
 # Canonical collector config for local compose and the kind deployment.
-# Keep deploy/k8s/otel-collector.yaml ConfigMap data synchronized with this file
-# until the k8s overlay can consume this file directly as its single source.
+# Keep the otel-collector-config ConfigMap data in
+# deploy/helm/train-ticket/templates/observability.yaml synchronized with this
+# file until the chart can consume this file directly as its single source.
 receivers:
   otlp:
     protocols:
@@ -12,8 +13,9 @@ receivers:
 processors:
   memory_limiter:
     check_interval: 5s
-    # Kept in sync with deploy/k8s/otel-collector.yaml, whose Deployment sets a
-    # 1Gi container limit. Must stay above the sending_queue below: a limiter
+    # Kept in sync with otelCollector.memoryLimitMiB in
+    # deploy/helm/train-ticket/values.yaml, whose Deployment sets a 1Gi
+    # container limit. Must stay above the sending_queue below: a limiter
     # smaller than the queue makes the collector refuse spans it could buffer.
     limit_mib: 768
   batch:
