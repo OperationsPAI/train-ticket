@@ -69,6 +69,14 @@ public class RedisEventSubscriber implements EventSubscriber {
      */
     private static final int MAX_IN_FLIGHT = 10_000;
 
+    /**
+     * Handlers slower than this are logged individually. Set well above a healthy
+     * event (single-digit ms) and below the point where throughput collapses, so a
+     * quiet log means the consumer is keeping up.
+     */
+    private static final long SLOW_HANDLER_THRESHOLD_MS =
+        Long.parseLong(System.getenv().getOrDefault("SLOW_HANDLER_THRESHOLD_MS", "250"));
+
     private final RedisStreamOperations streams;
     private final ObjectMapper objectMapper;
     private final ExecutorService pollExecutor;
@@ -317,9 +325,21 @@ public class RedisEventSubscriber implements EventSubscriber {
             return;
         }
         HandlerResult result;
+        long handlerStartNanos = System.nanoTime();
         try (EventConsumerTracer.SpanScope span = eventConsumerTracer.start(stream, group, envelope)) {
             try {
                 result = handler.handle(envelope);
+                // Attribute latency to the handler rather than to the subscriber.
+                // Without this the only visible figure was end-to-end throughput,
+                // and diagnosing journey-order's 148 ms per event meant guessing at
+                // the storage layer -- two hypotheses (processed_events bloat, an
+                // unindexed listOrders scan) were measured and disproved before
+                // anyone could see where the time actually went.
+                long handlerMillis = (System.nanoTime() - handlerStartNanos) / 1_000_000L;
+                if (handlerMillis >= SLOW_HANDLER_THRESHOLD_MS) {
+                    LOGGER.warn("service={} stream={} eventType={} eventId={} handler took {}ms",
+                        group, stream, envelope.eventType(), envelope.eventId(), handlerMillis);
+                }
             } catch (RuntimeException exception) {
                 span.recordException(exception);
                 failed(stream, group, consumerName, message.id(), json, envelope, exception, null);
