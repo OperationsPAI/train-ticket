@@ -411,16 +411,22 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 	}
 	s.burstPause(ctx)
 
-	// Offer (retry on 422)
+	// Offer (retry on 422 -- see Providers.Offer: the 422 is the expected answer
+	// while offer-management has not yet consumed the FareQuoted event)
 	var offer map[string]interface{}
 	for attempt := 0; attempt < 10; attempt++ {
-		_, offer, err = s.api.Request(ctx, "POST", "offer-management", "/api/v1/offers",
+		// The final attempt counts: a 422 there is a genuine failure to create.
+		var expected []int
+		if attempt < 9 {
+			expected = []int{422}
+		}
+		_, offer, err = s.api.PollRequest(ctx, "POST", "offer-management", "/api/v1/offers",
 			map[string]interface{}{
 				"accountId":    acct.AccountID,
 				"channelId":    channel,
 				"itineraryRef": itineraryRef,
 				"travelerRefs": []string{tvl},
-			}, headers, []int{200, 201}, "scalper-offer")
+			}, headers, []int{200, 201}, "scalper-offer", expected)
 		if err == nil {
 			break
 		}
@@ -556,9 +562,11 @@ func (s *ScalperSim) discoverBookingSaga(ctx context.Context, orderID string) (s
 	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
 
 	for i := 0; i < attempts; i++ {
-		_, data, err := s.api.Request(ctx, "GET", "booking-orchestration",
+		// See doReservation: a 404 is the expected "not created yet" answer while
+		// polling, so it must not land in the error tally.
+		_, data, err := s.api.PollRequest(ctx, "GET", "booking-orchestration",
 			"/api/v1/internal/booking-sagas/by-order/"+url.PathEscape(orderID),
-			nil, s.nextHeaders(), []int{200}, "scalper-saga-lookup")
+			nil, s.nextHeaders(), []int{200}, "scalper-saga-lookup", []int{404})
 		if err == nil {
 			saga := getString(data, "sagaId")
 			if saga == "" {

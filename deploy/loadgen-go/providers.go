@@ -394,15 +394,28 @@ func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel s
 }
 
 // Offer creates an offer with retry on 422.
+//
+// The 422 is expected, not a fault: offer-management rejects an itinerary whose
+// FareQuoted it has not consumed yet, so the first attempts race the event bus
+// and the retry loop below exists precisely to absorb that. PollRequest keeps
+// those attempts out of the error tally -- counted as errors they were the
+// second-largest entry in the stats (213 against 378 successes) on a run where
+// every purchase journey completed.
 func (p *Providers) Offer(ctx context.Context, accountID, channel, itinerary string, travelers []string) (map[string]interface{}, error) {
 	for attempt := 0; attempt < 8; attempt++ {
-		_, o, err := p.API.Request(ctx, "POST", "offer-management", "/api/v1/offers",
+		// The LAST attempt is not an expected-status poll: if it still 422s the
+		// offer genuinely could not be created and that must show up as an error.
+		var expected []int
+		if attempt < 7 {
+			expected = []int{422}
+		}
+		_, o, err := p.API.PollRequest(ctx, "POST", "offer-management", "/api/v1/offers",
 			map[string]interface{}{
 				"accountId":    accountID,
 				"channelId":    channel,
 				"itineraryRef": itinerary,
 				"travelerRefs": travelers,
-			}, nil, []int{200, 201}, "offer")
+			}, nil, []int{200, 201}, "offer", expected)
 		if err == nil {
 			return o, nil
 		}

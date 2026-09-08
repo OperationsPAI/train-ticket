@@ -104,9 +104,12 @@ func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
 	interval := time.Duration(s.cfg.Polling.IntervalSeconds * float64(time.Second))
 
 	for i := 0; i < attempts; i++ {
-		_, data, err := s.api.Request(ctx, "GET", "booking-orchestration",
+		// PollRequest: a 404 here means "the saga has not been created yet",
+		// which is the expected answer for the first few attempts of an
+		// asynchronous flow. Counting those as errors buried the real ones.
+		_, data, err := s.api.PollRequest(ctx, "GET", "booking-orchestration",
 			"/api/v1/internal/booking-sagas/by-order/"+url.PathEscape(item.Order),
-			nil, nil, []int{200}, "staff-saga-lookup")
+			nil, nil, []int{200}, "staff-saga-lookup", []int{404})
 		if err == nil {
 			saga = getString(data, "sagaId")
 			if saga == "" {
