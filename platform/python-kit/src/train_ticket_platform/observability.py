@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from .trace_logging import install_trace_logging
+
 _INITIALIZED = False
 
 
@@ -27,6 +29,13 @@ def init_opentelemetry(
     global _INITIALIZED
     if not otel_tracing_enabled() and span_exporter is None:
         return None
+
+    # Installed here because every service already calls this once at startup,
+    # so trace_id/span_id reach every log record without a per-service edit --
+    # the same move java-kit makes by supplying a log pattern rather than
+    # rewriting log statements. Inside the enabled branch: with tracing off
+    # there are no ids and records are unchanged.
+    install_trace_logging()
 
     from opentelemetry import trace
     from opentelemetry.sdk.resources import Resource

@@ -5,6 +5,7 @@ from .http import ApiError, canonical_error_body, error_response, register_excep
 from .idempotency import BoundedInMemoryIdempotencyStore, IdempotencyMiddleware, IdempotencyRecord, configure_idempotency_middleware, require_uuid7_idempotency_key
 from .observability import init_opentelemetry, instrument_fastapi_app, otel_tracing_enabled
 from .outbound import inject_trace_context, trace_context_headers, traced_httpx_client, traced_urllib_request
+from .trace_logging import SPAN_ID_FIELD, TRACE_ID_FIELD, current_trace_logging_ids, install_trace_logging, trace_logging_log_format
 from .messaging import (
     FatalHandlerError,
     HandlerResult,
@@ -30,14 +31,18 @@ __all__ = [
     "IdempotencyMiddleware",
     "IdempotencyRecord",
     "init_opentelemetry",
+    "install_trace_logging",
     "instrument_fastapi_app",
     "inject_trace_context",
     "PublishFailed",
     "RedisEventPublisher",
     "RedisEventSubscriber",
     "SubscribeFailed",
+    "TRACE_ID_FIELD",
+    "SPAN_ID_FIELD",
     "TransientHandlerError",
     "canonical_error_body",
+    "current_trace_logging_ids",
     "configure_idempotency_middleware",
     "envelope_factory",
     "error_response",
@@ -47,6 +52,7 @@ __all__ = [
     "register_exception_handlers",
     "require_uuid7_idempotency_key",
     "trace_context_headers",
+    "trace_logging_log_format",
     "traced_httpx_client",
     "traced_urllib_request",
 ]
