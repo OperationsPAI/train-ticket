@@ -306,7 +306,28 @@ pub struct GetHoldResponseJson {
     pub held_until: String,
     pub requested_at: String,
     pub traveler_ref: Option<String>,
-    pub class_ref: String,
+    /// The unit held -- a seat number such as "09D".
+    ///
+    /// This was previously serialised as `classRef`, which is a different
+    /// concept (a fare/seat class like "standard", and empty on these holds), so
+    /// anything reading `classRef` off this endpoint got a seat number.
+    pub capacity_unit_ref: String,
+    /// Station interval the hold covers.
+    ///
+    /// Exposed because seat-assignment cannot otherwise match a CapacityReleased
+    /// event back to its allocation: FindSeatAllocationsByCapacityRecovery keys
+    /// on (capacityHoldId, capacityUnitRef, fromSeq, toSeq) and all four must
+    /// agree. Without these a caller has no way to record an allocation the
+    /// eventual release can find, and the release matches nothing -- silently,
+    /// because that lookup returning empty is not an error.
+    pub interval: StationIntervalJson,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StationIntervalJson {
+    pub from_seq: u32,
+    pub to_seq: u32,
 }
 
 async fn get_hold(
@@ -325,7 +346,11 @@ async fn get_hold(
         held_until: result.held_until,
         requested_at: result.requested_at,
         traveler_ref: result.traveler_ref,
-        class_ref: result.class_ref,
+        capacity_unit_ref: result.capacity_unit_ref,
+        interval: StationIntervalJson {
+            from_seq: result.from_seq,
+            to_seq: result.to_seq,
+        },
     }))
 }
 
@@ -445,7 +470,11 @@ async fn get_hold_pg(
         held_until: result.held_until,
         requested_at: result.requested_at,
         traveler_ref: result.traveler_ref,
-        class_ref: result.class_ref,
+        capacity_unit_ref: result.capacity_unit_ref,
+        interval: StationIntervalJson {
+            from_seq: result.from_seq,
+            to_seq: result.to_seq,
+        },
     }))
 }
 
