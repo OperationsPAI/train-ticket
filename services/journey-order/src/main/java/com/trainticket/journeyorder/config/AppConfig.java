@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
+import com.trainticket.journeyorder.adapters.messaging.RedisJourneyOrderSubscriptions;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
 import com.trainticket.platformkit.messaging.RedisEventPublisher;
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
@@ -83,7 +84,29 @@ public class AppConfig {
             com.trainticket.journeyorder.adapters.messaging.RedisJourneyOrderSubscriptions.streams(),
             com.trainticket.journeyorder.adapters.messaging.RedisJourneyOrderSubscriptions.group(),
             "journey-order-" + UUID.randomUUID(),
-            eventHandler::handle
+            // Filter by event type BEFORE entering the handler.
+            //
+            // OrderManagementService.handle is @Transactional, so Spring opens a
+            // database transaction on entry and the method's own early returns
+            // cannot avoid it. It then reads processed_events and writes it back on
+            // the way out. That fixed cost applied to every event on all 11
+            // subscribed streams, including the eleven types the switch explicitly
+            // ignores and everything caught by its `default`.
+            //
+            // Measured, not assumed: with handler timing instrumented, event types
+            // whose entire body is `new Success()` -- OfferQuoted,
+            // TravelerProfileUpdated and the rest -- took a p50 of 49 ms each. That
+            // is the transaction and the dedup round-trip, nothing else. journey-order
+            // was running a p50 of 714 ms per event overall against a backlog that
+            // grew continuously, so removing this floor from the majority of its
+            // traffic is the single largest lever available.
+            //
+            // Skipping is safe for exactly the reason it was safe in post-sales: an
+            // event that reaches no handler has no side effect, so there is nothing
+            // for processed_events to deduplicate on a redelivery.
+            envelope -> RedisJourneyOrderSubscriptions.isActionable(envelope.eventType())
+                ? eventHandler.handle(envelope)
+                : new EventSubscriber.Success()
         );
     }
 
