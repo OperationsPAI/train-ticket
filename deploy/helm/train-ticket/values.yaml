@@ -217,7 +217,21 @@ defaults:
   # here would create a second place to keep in sync that silently overrides
   # the first, which is how the loadgen config drifted. Set one only when an
   # environment genuinely needs a different value.
-  env: {}
+  #
+  # MaxRAMPercentage is the exception, and it belongs here rather than
+  # per-service because the JVM's own container default is actively wrong: it
+  # takes 25% of the cgroup limit as max heap, so a 1Gi limit yields a 256MB
+  # heap and the other 768Mi is never used. post-sales died of
+  # `java.lang.OutOfMemoryError: Java heap space` inside a CapacityReleased
+  # handler at exactly that ratio, while its container sat well under its own
+  # memory limit -- killed by a heap it had no reason to be confined to.
+  #
+  # 70% leaves room for metaspace, thread stacks (4 consumer threads plus
+  # Tomcat) and direct buffers, all of which live outside the heap and still
+  # count against the cgroup. Harmless for the non-JVM services, which ignore
+  # JAVA_TOOL_OPTIONS.
+  env:
+    JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0"
   # Applied when a service sets no `resources` of its own. The floor a plain
   # HTTP-plus-Postgres service needs; anything CPU- or memory-hungry declares
   # its own block under `services.<name>.resources` below.
@@ -272,7 +286,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   journey-order:
     db: journey_order
     env:
@@ -289,7 +303,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   booking-orchestration:
     db: booking_orchestration
     env:
@@ -301,7 +315,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   identity-verification:
     db: identity_verification
   payment:
@@ -333,7 +347,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   notification:
     db: notification
     env:
@@ -349,7 +363,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   traveler-profile:
     db: traveler_profile
   risk-compliance:
@@ -373,7 +387,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   finance-settlement:
     db: finance_settlement
     env:
@@ -385,7 +399,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   reporting:
     db: reporting
     env:
@@ -405,7 +419,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '3', memory: 1Gi }
+      limits: { cpu: '1500m', memory: 3Gi }
   supplier-catalog:
     db: supplier_catalog
   legacy-acl:
@@ -455,7 +469,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   marketing-campaign:
     db: marketing_campaign
   group-booking:
