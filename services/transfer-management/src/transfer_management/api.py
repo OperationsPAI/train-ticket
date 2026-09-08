@@ -151,7 +151,7 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     pool = DatabasePool(config)
     app.state.database_pool = pool
     app.state.readiness = readiness
-    migrations_dir = Path(os.environ.get("MIGRATIONS_DIR") or Path(__file__).resolve().parents[3] / "migrations")
+    migrations_dir = Path(os.environ.get("MIGRATIONS_DIR") or Path(__file__).resolve().parents[2] / "migrations")
     run_migrations(pool, migrations_dir, readiness)
     store = PostgresTransferManagementStore(pool)
     relay = OutboxRelay(pool)
