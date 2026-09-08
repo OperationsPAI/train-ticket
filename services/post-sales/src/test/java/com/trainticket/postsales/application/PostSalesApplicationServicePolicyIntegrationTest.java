@@ -1,6 +1,7 @@
 package com.trainticket.postsales.application;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.postsales.domain.Money;
 import com.trainticket.postsales.domain.PostSalesCase;
@@ -28,6 +29,45 @@ class PostSalesApplicationServicePolicyIntegrationTest {
 
         assertEquals("TIER_2_TO_7_DAYS", evaluated.decision().refundAssessment().tierApplied());
         assertEquals(2_000, evaluated.decision().refundAssessment().penaltyAmount().toMinorUnits());
+    }
+
+    @Test
+    void refreshingTheFareKeepsTheStoredDepartureTime() {
+        // JourneyOrderConfirmed and JourneyOrderPostSalesAdjusted carry
+        // [orderId, accountId, monetarySummary] and NO segments. They used to be
+        // handed to the full context mapper, which returned empty for want of a
+        // departure time and logged a warning on every order claiming refunds
+        // would quote zero -- while JourneyOrderCreated had already stored a
+        // perfectly usable context. What they must do instead is update the fare
+        // and leave the departure time intact.
+        InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
+        PostSalesApplicationService service = service(contextStore, quote("adjq-refresh", 10_000, "CNY", 0, "CNY"));
+        Instant departure = NOW.plusSeconds(3 * 86_400);
+        service.recordPolicyContext(PostSalesPolicyContext.fallback("ord-refresh-1", departure, 1, Money.of("100.00", "CNY")));
+
+        service.refreshPolicyContextFare("ord-refresh-1", java.util.Map.of(
+            "orderId", "ord-refresh-1",
+            "monetarySummary", java.util.Map.of(
+                "total", java.util.Map.of("currency", "CNY", "minorUnits", 12_000))));
+
+        PostSalesPolicyContext updated = contextStore.findByOrderId("ord-refresh-1").orElseThrow();
+        assertEquals(departure, updated.departureTime(), "the departure time must survive a fare refresh");
+        assertEquals(12_000, updated.originalFare().toMinorUnits(), "the fare must be updated");
+    }
+
+    @Test
+    void refreshingTheFareOfAnUnknownOrderIsANoOp() {
+        // No context yet means no departure time to attach a fare to. Doing
+        // nothing is correct; the alternative is inventing one.
+        InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
+        PostSalesApplicationService service = service(contextStore, quote("adjq-none", 10_000, "CNY", 0, "CNY"));
+
+        service.refreshPolicyContextFare("ord-unknown", java.util.Map.of(
+            "orderId", "ord-unknown",
+            "monetarySummary", java.util.Map.of(
+                "total", java.util.Map.of("currency", "CNY", "minorUnits", 9_000))));
+
+        assertTrue(contextStore.findByOrderId("ord-unknown").isEmpty());
     }
 
     @Test

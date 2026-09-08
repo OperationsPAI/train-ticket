@@ -17,9 +17,31 @@ req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}
 check_code 200 "evaluate case"
 REFUNDABLE=$(jget "['refundableAmount']['minorUnits']")
 echo "  eligible=$(jget "['eligible']") refundable=$(jget "['refundableAmount']")"
-# Order fare 100.00; segment departs ~30 days out -> RefundPolicyEngine
-# TIER_GT_15_DAYS applies a 5% penalty (500) -> refundable 95.00 CNY.
-[ "$REFUNDABLE" = "9500" ] && ok "refundable = 95.00 CNY (real adjustment quote)" || bad "refundable amount wrong ($REFUNDABLE, expected 9500)"
+# DERIVED from the order's own fare, not hardcoded.
+#
+# This asserted a flat 9500 with the comment "Order fare 100.00", which was true
+# only while journey-order priced every order at a literal 100.00 regardless of
+# the offer. Orders now carry the offer's real total, so the same 5% penalty on a
+# 107.50 fare refunds 10212 -- the assertion was measuring the placeholder.
+#
+# The segment departs ~30 days out, so RefundPolicyEngine applies
+# TIER_GT_15_DAYS: a 5% penalty on the order's payable total.
+req GET journey-order "/api/v1/journey-orders/$ORDER"
+check_code 200 "fetch order for its fare"
+# payableTotal is a Money object on the HTTP resource, not a bare number -- the
+# internal DTO flattens it to minor units but the API does not.
+ORDER_TOTAL=$(jget "['monetarySummary']['payableTotal']['minorUnits']")
+case "$ORDER_TOTAL" in
+  ''|*[!0-9]*) ORDER_TOTAL="" ;;
+esac
+if [ -z "$ORDER_TOTAL" ]; then
+  bad "could not read the order's payable total; cannot derive the expected refund"
+else
+  EXPECTED_REFUND=$(python3 -c "t=$ORDER_TOTAL; print(t - round(t*5/100))")
+  [ "$REFUNDABLE" = "$EXPECTED_REFUND" ] \
+    && ok "refundable = $REFUNDABLE (5% TIER_GT_15_DAYS off the order's $ORDER_TOTAL)" \
+    || bad "refundable amount wrong ($REFUNDABLE, expected $EXPECTED_REFUND = 95% of $ORDER_TOTAL)"
+fi
 
 echo "== 3. approve"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" '{}'
@@ -79,8 +101,12 @@ FIN_OK=$(stream_mentions events:finance-settlement RevenueRecognized "$ORDER")
 [ "$FIN_OK" = "yes" ] && ok "RevenueRecognized for our order" || bad "no RevenueRecognized mentioning order"
 RECON_OK=$(stream_mentions events:finance-settlement ReconciliationCompleted "$ORDER")
 [ "$RECON_OK" = "yes" ] && ok "ReconciliationCompleted for our order" || bad "no ReconciliationCompleted mentioning order"
-REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognitionReversed '"minorUnits": 9500')
-[ "$REDUCTION_OK" = "yes" ] && ok "refund revenue reversal published" || bad "no 95.00 revenue reversal"
+# Same derivation as the evaluate assertion above: the reversal must match the
+# refunded amount, which follows the order's real fare rather than a placeholder.
+REDUCTION_OK=$(stream_mentions events:finance-settlement RevenueRecognitionReversed "\"minorUnits\": ${EXPECTED_REFUND:-9500}")
+[ "$REDUCTION_OK" = "yes" ] \
+  && ok "refund revenue reversal published for ${EXPECTED_REFUND:-9500}" \
+  || bad "no revenue reversal for ${EXPECTED_REFUND:-9500}"
 invoice_event_count() {
   k exec "$(redis_pod)" -- redis-cli XREVRANGE events:finance-settlement + - COUNT 100 > /tmp/invoice-events.txt 2>/dev/null
   ORDER_REF="$ORDER" python3 - << 'PYEX'
