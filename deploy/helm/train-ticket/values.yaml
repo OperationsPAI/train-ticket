@@ -292,6 +292,11 @@ services:
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
       IDENTITY_VERIFICATION_PREORDER_ENABLED: "true"
+      # Order items are priced from the offer's total rather than a literal
+      # 100.00. post-sales derives the refund penalty base from the order fare, so
+      # the placeholder mispriced every refund -- correct tier percentages applied
+      # to the wrong number.
+      OFFER_MANAGEMENT_URL: http://offer-management:8080
       # journey-order consumes 11 streams and its handler is no longer
       # `synchronized`; without this the platform subscriber falls back to
       # DEFAULT_CONSUMER_THREADS=1 and the unlocked handler gains nothing.
