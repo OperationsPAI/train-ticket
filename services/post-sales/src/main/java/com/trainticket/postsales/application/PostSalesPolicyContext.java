@@ -78,6 +78,26 @@ public record PostSalesPolicyContext(
         );
     }
 
+    /**
+     * Same context with a new fare and component breakdown.
+     *
+     * Used by events that update what is refundable without restating the
+     * itinerary -- JourneyOrderConfirmed and JourneyOrderPostSalesAdjusted carry
+     * a monetary summary but no segments, so they cannot rebuild a context and
+     * must not be allowed to discard the departure time in one.
+     */
+    public PostSalesPolicyContext withFare(Money newFare, RefundWaterfallComponents newComponents) {
+        return new PostSalesPolicyContext(
+            journeyOrderId,
+            departureTime,
+            travelerTypesByRef,
+            groupSize,
+            appliedChangeCount,
+            newFare,
+            newComponents
+        );
+    }
+
     public PostSalesPolicyContext withAncillaryComponent(Money ancillaryAmount, boolean ancillaryUsed) {
         if (ancillaryAmount == null) {
             return this;

@@ -86,10 +86,22 @@ public class PostSalesEventHandler {
             if (!consumedEventLog.recordIfFirstSeen(envelope.eventId())) {
                 return EventSubscriber.HandlerResult.SUCCESS;
             }
-            if ("JourneyOrderCreated".equals(envelope.eventType()) || "JourneyOrderConfirmed".equals(envelope.eventType())) {
+            if ("JourneyOrderCreated".equals(envelope.eventType())) {
+                // The only one of the three that carries segments[].departureTime,
+                // which a policy context cannot be built without.
                 recordPolicyContextOrWarn(envelope);
-            } else if ("JourneyOrderPostSalesAdjusted".equals(envelope.eventType())) {
-                recordPolicyContextOrWarn(envelope);
+            } else if ("JourneyOrderConfirmed".equals(envelope.eventType())
+                    || "JourneyOrderPostSalesAdjusted".equals(envelope.eventType())) {
+                // These carry only [orderId, accountId, monetarySummary, ...] -- no
+                // segments. Passing them to recordPolicyContextOrWarn made the
+                // mapper return empty every time and logged a warning claiming
+                // refunds for the order would quote zero, which was misleading:
+                // JourneyOrderCreated had already stored a perfectly good context.
+                //
+                // What they DO carry is an updated monetary summary, which matters
+                // after an adjustment changes what is refundable. So refresh the
+                // fare on the existing context and leave everything else alone.
+                refreshPolicyContextFare(envelope);
             } else if ("CapacityReleased".equals(envelope.eventType())) {
                 String segmentBookingRef = segmentBookingRef(envelope.payload());
                 if (segmentBookingRef != null) {
@@ -154,6 +166,28 @@ public class PostSalesEventHandler {
                  "JourneyOrderPostSalesAdjusted", "CapacityReleased" -> true;
             default -> externalEventPolicy.handles(eventType);
         };
+    }
+
+    /**
+     * Updates an existing policy context's fare from an event that carries a
+     * monetary summary but no segments.
+     *
+     * Does nothing when there is no context yet: without a departure time there is
+     * nothing to attach the fare to, and JourneyOrderCreated is what establishes
+     * that. Silent in that case on purpose -- the previous code warned here, which
+     * read as "refunds will be zero" even when a context already existed.
+     */
+    private void refreshPolicyContextFare(EventEnvelope envelope) {
+        if (!(envelope.payload() instanceof Map<?, ?> payload)) {
+            return;
+        }
+        Object orderId = payload.get("orderId");
+        if (!(orderId instanceof String id) || id.isBlank()) {
+            LOGGER.warn("post-sales cannot refresh a policy context from event={} eventId={}: no orderId",
+                envelope.eventType(), envelope.eventId());
+            return;
+        }
+        applicationService.refreshPolicyContextFare(id, payload);
     }
 
     private static Optional<PostSalesPolicyContext> policyContext(Object payload) {
