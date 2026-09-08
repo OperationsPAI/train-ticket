@@ -65,7 +65,11 @@ public final class OtelHttpServerFilter extends OncePerRequestFilter implements 
             .setAttribute(LEGACY_HTTP_METHOD, request.getMethod())
             .setAttribute(URL_PATH, request.getRequestURI())
             .startSpan();
-        try (Scope ignored = span.makeCurrent()) {
+        try (Scope ignored = span.makeCurrent();
+             TraceLoggingContext.Handle mdc = TraceLoggingContext.current()) {
+            // The MDC bind is inside the span scope so trace_id/span_id are on
+            // every log line the request produces, including those from code that
+            // knows nothing about tracing.
             filterChain.doFilter(request, response);
         } catch (Throwable exception) {
             span.recordException(exception);
