@@ -55,11 +55,27 @@ check_code 200 "publish SeatMap"
 seat_req POST "/api/v1/seat-maps/$SMAP/seat-units/$SU/mark-unavailable" "{\"expectedSeatMapVersion\":2,\"unavailableReason\":\"MAINTENANCE\",\"operatorRef\":\"op-e2e\"}"
 [ "$LAST_CODE" = 422 ] && ok "published SeatMap immutable" || bad "published SeatMap mutation got $LAST_CODE"
 
-alloc_body() { python3 - "$SS" "$DATE" "$1" "$2" "$3" "$4" <<'PY'
+# alloc_body SB TVL HOLD PREF [UNIT_REF FROM_SEQ TO_SEQ]
+#
+# The last three are optional and default to the synthetic values the earlier
+# assertions use, where the hold is fabricated and nothing downstream has to
+# match it.
+#
+# They MUST be passed for anything that then exercises capacity recovery.
+# seat-assignment finds affected allocations with
+#   WHERE capacityHoldId = ? AND capacityUnitRef = ? AND fromSeq = ? AND toSeq = ?
+# (FindSeatAllocationsByCapacityRecovery), so all four have to agree with the
+# CapacityReleased event capacity-availability publishes. This test previously
+# sent capacityUnitRef="cap-standard" and interval 1..3 even against a real
+# hold, while capacity-availability had allocated e.g. unit "05B" over 0..1 --
+# so the release matched no allocation, transitionAllocationsByCapacityRecovery
+# returned without doing anything, and the seat stayed STANDING. Nothing logged
+# it: that function's guard clause returns nil on a non-match.
+alloc_body() { python3 - "$SS" "$DATE" "$1" "$2" "$3" "$4" "${5:-cap-standard}" "${6:-1}" "${7:-3}" <<'PY'
 import json, sys
-ss,date,sb,tvl,hold,pref = sys.argv[1:]
+ss,date,sb,tvl,hold,pref,unit,from_seq,to_seq = sys.argv[1:]
 # Hold until shortly before the 09:00 departure, as the original fixture did.
-p={"segmentBookingId":sb,"journeyOrderId":"ord-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000001","travelerRef":tvl,"segmentRef":"seg-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000002","scheduledServiceRef":ss,"serviceDate":date,"capacityHoldId":hold,"capacityUnitRef":"cap-standard","interval":{"fromSeq":1,"toSeq":3},"classRef":"standard","issuePurpose":"INITIAL","expiresAt":date+"T08:00:00Z"}
+p={"segmentBookingId":sb,"journeyOrderId":"ord-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000001","travelerRef":tvl,"segmentRef":"seg-"+__import__('uuid').uuid4().hex[:8]+"-0000-7000-8000-000000000002","scheduledServiceRef":ss,"serviceDate":date,"capacityHoldId":hold,"capacityUnitRef":unit,"interval":{"fromSeq":int(from_seq),"toSeq":int(to_seq)},"classRef":"standard","issuePurpose":"INITIAL","expiresAt":date+"T08:00:00Z"}
 if pref != '-': p['seatPreferences']=json.loads(pref)
 print(json.dumps(p))
 PY
@@ -81,7 +97,20 @@ SB_REL="sb-$(uuid7)"
 req POST capacity-availability /api/v1/capacity-holds "{\"segmentRef\":\"$SEEDED_SEG\",\"travelerRef\":\"tvl-$(uuid7)\",\"classRef\":\"standard\",\"quantity\":1,\"segmentBookingId\":\"$SB_REL\"}"
 check_code 201 "real capacity hold"
 REAL_HOLD=$(jget "['holdId']")
-B4=$(alloc_body "$SB_REL" "tvl-$(uuid7)" "$REAL_HOLD" "$PREF_ST"); seat_req POST /api/v1/internal/seat-allocations "$B4"; check_code 201 "allocation on real hold"
+# Take the unit and interval capacity-availability actually granted, rather than
+# the synthetic defaults -- the release below has to match on all four fields.
+#
+# From the GET, not the POST: the create response is documented as returning only
+# holdId/segmentRef/status/heldUntil, and it does.
+req GET capacity-availability "/api/v1/capacity-holds/$REAL_HOLD"
+check_code 200 "fetch hold detail"
+REAL_UNIT=$(jget "['capacityUnitRef']")
+REAL_FROM=$(jget "['interval']['fromSeq']")
+REAL_TO=$(jget "['interval']['toSeq']")
+if [ -z "$REAL_UNIT" ] || [ -z "$REAL_FROM" ] || [ -z "$REAL_TO" ]; then
+  bad "capacity hold response did not expose capacityUnitRef/interval (unit='$REAL_UNIT' interval=$REAL_FROM..$REAL_TO); the release match below cannot work"
+fi
+B4=$(alloc_body "$SB_REL" "tvl-$(uuid7)" "$REAL_HOLD" "$PREF_ST" "$REAL_UNIT" "$REAL_FROM" "$REAL_TO"); seat_req POST /api/v1/internal/seat-allocations "$B4"; check_code 201 "allocation on real hold"
 A4=$(jget "['seatRef']['seatAllocationId']")
 req POST capacity-availability "/api/v1/capacity-holds/$REAL_HOLD/release" "{\"releaseReason\":\"REFUND\"}"
 check_code 200 "real capacity release"
