@@ -60,6 +60,29 @@ public class PostSalesEventHandler {
 
     private EventSubscriber.HandlerResult handleInCurrentThread(EventEnvelope envelope, boolean transactional) {
         try {
+            // Reject uninteresting event types BEFORE touching the database.
+            //
+            // recordIfFirstSeen writes to processed_events, so the original order
+            // charged a DB round-trip to every event on every subscribed stream --
+            // including the ones this service does nothing with. That is the
+            // overwhelming majority: post-sales subscribes to all of
+            // events:capacity-availability for CapacityReleased alone, and a
+            // 300-event sample of that stream contained zero of them. On the live
+            // cluster it was 7325 of 12606 pending messages.
+            //
+            // The cost was not academic. Four consumer threads each doing a write
+            // per ignored event starved the HTTP thread badly enough that /readyz
+            // could not answer within a 10s probe timeout, and post-sales was
+            // killed and restarted repeatedly -- which grew the backlog further.
+            //
+            // Dedup is not weakened by this: an event that reaches no handler has
+            // no side effect to deduplicate. The log is there to make replaying one
+            // idempotent, and skipping it for a no-op is exactly equivalent.
+            if (!isInteresting(envelope.eventType())) {
+                LOGGER.debug("ack-skip post-sales event={} eventId={} producer={} reason=UNKNOWN_EVENT_TYPE",
+                    envelope.eventType(), envelope.eventId(), envelope.producer());
+                return EventSubscriber.HandlerResult.SUCCESS;
+            }
             if (!consumedEventLog.recordIfFirstSeen(envelope.eventId())) {
                 return EventSubscriber.HandlerResult.SUCCESS;
             }
@@ -113,6 +136,24 @@ public class PostSalesEventHandler {
                 envelope.eventType(), envelope.eventId(), envelope.producer(), transactional, exception);
             return EventSubscriber.HandlerResult.TRANSIENT_FAILURE;
         }
+    }
+
+    /**
+     * The event types the dispatch below actually acts on.
+     *
+     * MUST stay in step with that dispatch. Listing a type here that no branch
+     * handles costs a wasted database write; OMITTING one that a branch handles
+     * silently drops the event, which is far worse -- so the set is derived from
+     * externalEventPolicy where it can be, and the literals are the exact strings
+     * the if-chain compares against. There is a test that walks the dispatch's
+     * own conditions against this predicate.
+     */
+    private boolean isInteresting(String eventType) {
+        return switch (eventType) {
+            case "JourneyOrderCreated", "JourneyOrderConfirmed",
+                 "JourneyOrderPostSalesAdjusted", "CapacityReleased" -> true;
+            default -> externalEventPolicy.handles(eventType);
+        };
     }
 
     private static Optional<PostSalesPolicyContext> policyContext(Object payload) {
