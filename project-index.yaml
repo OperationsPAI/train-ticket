@@ -175,19 +175,18 @@ requirements:
     priority: P0
     status: implemented
     code:
-      - path: services/trip-planning/src/trip_planning/domain.py
+      - path: services/trip-planning-rs/src/domain.rs
         description: "Trip intent, itinerary candidate, ranking, and hint domain primitives."
-      - path: services/trip-planning/src/trip_planning/application.py
-        description: "Search application function and FastAPI-safe adapter path."
-      - path: services/trip-planning/src/trip_planning/__init__.py
-        description: "Public package exports and service profile ownership for the Trip Planning foundation."
+      - path: services/trip-planning-rs/src/application.rs
+        description: "Search application function and HTTP-safe adapter path."
+      - path: services/trip-planning-rs/src/lib.rs
+        description: "Public crate exports and service profile ownership for the Trip Planning foundation."
     tests:
-      - path: services/trip-planning/tests/test_search_foundation.py
-        description: "Unit tests for intent validation, deterministic ranking, exclusion explanations, and non-authoritative hints."
-      - path: services/trip-planning/tests/test_skeleton.py
-        description: "Service skeleton health/profile tests retained for FastAPI registration."
+      - path: services/trip-planning-rs/src/domain.rs
+        description: "Inline #[cfg(test)] unit tests for intent validation, deterministic ranking, exclusion explanations, and non-authoritative hints."
+      - path: services/trip-planning-rs/tests/api_test.rs
+        description: "Integration tests for the HTTP surface, including health/profile registration."
     docs:
-      - path: services/trip-planning/README.md
       - path: docs/00-current-status.md
       - path: docs/02-domains/trip-planning.md
       - path: docs/03-ddd-final/phase-1-contract.md
@@ -874,7 +873,7 @@ requirements:
   - {id: REQ-028, title: "Shared contract conformance baseline", status: implemented, ref: docs/08-contracts/shared-primitives.md}
   - {id: REQ-029, title: "Cross-context event contract specification", status: implemented, ref: docs/08-contracts/events}
   - {id: REQ-031, title: "Messaging contract specification", status: implemented, ref: docs/08-contracts/messaging.md}
-  - {id: REQ-032, title: "Trip Planning HTTP API and event bus adapter", status: implemented, ref: services/trip-planning}
+  - {id: REQ-032, title: "Trip Planning HTTP API and event bus adapter", status: implemented, ref: services/trip-planning-rs}
   - {id: REQ-033, title: "Offer Management HTTP API and event bus adapter", status: implemented, ref: services/offer-management}
   - {id: REQ-034, title: "Journey Order HTTP API and event bus adapter", status: implemented, ref: services/journey-order}
   - {id: REQ-035, title: "Booking Orchestration HTTP API and event bus adapter", status: implemented, ref: services/booking-orchestration}
