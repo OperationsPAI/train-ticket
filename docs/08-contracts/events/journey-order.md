@@ -22,6 +22,7 @@ Last updated: 2026-07-04
 | `monetarySummary` | `MonetarySummary` | yes | Price breakdown at creation. |
 | `travelerRefs` | `TravelerRef[]` | yes | Traveler references (structured form, see shared-primitives.md section 2a). |
 | `segmentRefs` | string[] | yes | Segment references. |
+| `segments` | `SegmentOrderSnapshot[]` | yes | Per-segment detail, including `departureTime`. Post-Sales builds its refund policy context from this: without a resolvable departure it falls back to `departureTime = now`, which `RefundPolicyEngine` reads as `AFTER_DEPARTURE_NON_REFUNDABLE` and quotes a zero refund. `segmentRefs` alone is not sufficient for that reason. |
 | `createdAt` | RFC3339 UTC | yes | Order creation time. |
 | `sourceIp` | string | no | First hop from `X-Forwarded-For`/real client IP when available, for downstream risk velocity analysis. |
 

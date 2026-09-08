@@ -21,7 +21,7 @@ was wrong, not the system.
 
 ## P1 — journey-order consumption deficit (root cause for several clusters)
 
-**Status:** DIAGNOSED
+**Status:** PARTLY FIXED — one of two causes closed
 
 `journey-order` holds **72,281 pending messages** across its 11 streams, and the
 backlog is *growing*: 59,377 → 61,469 → 63,325 over two minutes, about +33/s.
@@ -54,6 +54,59 @@ and `events:identity-verification` about 50-60%. Worth fixing, not sufficient.
 Affected assertions: `new journey order rejected while frozen`, `frozen
 rejection code`, `order not confirmed (CREATED)`, `no saga found for order`,
 `saga not completed (...)`, `saga steps not all SUCCEEDED (...)`.
+
+### Cause 1 (FIXED): the handler queue was unbounded
+
+`RedisEventSubscriber` used `Executors.newFixedThreadPool`, whose queue is
+unbounded, so the poll loop submitted without limit and the only cap was
+`MAX_IN_FLIGHT` at 10,000 against 1-8 handler threads. Messages held an
+in-flight slot while queued; Redis' pending timer expired; XAUTOCLAIM
+redelivered them; `claimInFlight` dropped each redelivery because the slot was
+still held. That is why entries-read advanced at 24/s against a 23/s production
+rate while pending still grew at +18.6/s — numbers that cannot both be true
+unless something reads and discards.
+
+Fixed with an `ArrayBlockingQueue` sized off the thread count, and a full queue
+treated as backpressure. "in-flight bound reached" went from 1,948 occurrences
+in a 2,000-line sample to **0**, and the backlog fell from 76,000 to ~31,000.
+`RedisEventSubscriberBackpressureTest` pins it; restoring the unbounded queue
+makes it fail.
+
+### Cause 2 (OPEN): 148 ms per event
+
+Even with the queue fixed, journey-order processes ~27 events/s across 4
+threads — **148 ms each** — against a production rate that keeps pending growing
+at about +22/s. Two hypotheses were tested and **both were wrong**, which is
+worth recording so they are not retried:
+
+- **`processed_events` bloat was not the cause.** The table had reached
+  1,092,388 rows / 205 MB with 1,085,529 rows past their 5-minute retention and
+  the oldest 21 hours old, because `OutboxRelay.cleanup()` issued one unbounded
+  `DELETE` inside `catch (RuntimeException ignored) {}` — a Seq Scan trying to
+  delete a million rows in one transaction, failing, and saying nothing. That is
+  a real defect and is fixed (batched deletes, failures logged). But draining the
+  table to 8,222 rows and VACUUMing moved per-event cost only from 151 ms to
+  148 ms.
+
+- **`listOrders` is not on the hot path.** `journey_order_snapshots` shows
+  243,202 sequential scans having read 2.03 **billion** rows, and the cause is
+  real: `listOrders` is called with no filter by the loadgen's
+  `tail-list-orders` probe, and `WHERE (? = false OR ...)` plus
+  `ORDER BY (data->>'createdAt')::timestamptz` plans a Parallel Seq Scan + Sort
+  at cost 13,609. But that is an HTTP query path, not the event handler, so it
+  explains database load rather than handler latency.
+
+  Worth recording for whoever fixes it: indexing the **text** form of
+  `createdAt` drops the plan to an Index Scan at cost 16.9, an 800x improvement
+  — but it is **not safe**. The values carry two different fractional precisions
+  (59,420 at 9 digits, 56 at 6), so text and timestamp ordering disagree on 12
+  rows: comparing `...935231Z` against `...192239945Z`, the `Z` sorts above a
+  digit. A `::timestamptz` expression index is rejected as not IMMUTABLE, so the
+  real fix is a stored timestamp column, not an index expression.
+
+So the remaining 148 ms is still unexplained. The next step is to measure inside
+the handler rather than guessing at the storage layer again.
+
 
 ## P2 — reporting read model never catches up
 
