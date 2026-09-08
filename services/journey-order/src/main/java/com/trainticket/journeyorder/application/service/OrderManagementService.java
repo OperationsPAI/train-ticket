@@ -983,8 +983,36 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return new EventSubscriber.Success();
     }
 
+    /**
+     * The order is not in a state this event can be applied to.
+     *
+     * Whether that is permanent depends entirely on WHICH state, and this used to
+     * discard the event either way. A terminal order will never accept it, so
+     * acking is right. An order still in transition -- PENDING_CONFIRMATION is the
+     * common one -- has simply not caught up yet, and the event is legitimate work
+     * that arrived early; dropping it loses the adjustment for good.
+     *
+     * That distinction is why `PostSalesApplied` was ack-skipped 89 times in a
+     * 2000-line sample with `currentStatus=PENDING_CONFIRMATION`, and why the
+     * refund flow reported `order not adjusted (CREATED)`: post-sales had applied
+     * the case, published the fact, and journey-order threw it away because the
+     * order had not been confirmed yet.
+     *
+     * A transient result leaves the message pending, so Redis redelivers it after
+     * the order has moved on. MAX_DELIVERY_ATTEMPTS still bounds the retries, so an
+     * event that genuinely never becomes applicable ends up in the DLQ rather than
+     * looping forever -- which is the correct place for it to be visible.
+     */
     private static EventSubscriber.HandlerResult ackSkipStateRace(EventEnvelope envelope, JourneyOrder order) {
-        LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} currentStatus={} reason=STATE_RACE_OR_RULE_NOOP",
+        if (!isTerminal(order)) {
+            LOGGER.info("retry journey-order event={} eventId={} orderId={} currentStatus={} "
+                    + "reason=ORDER_NOT_YET_IN_APPLICABLE_STATE -- leaving pending for redelivery",
+                envelope.eventType(), envelope.eventId(), order.orderId(), order.state());
+            return new EventSubscriber.TransientError(
+                "order " + order.orderId() + " is " + order.state() + ", not yet applicable for "
+                    + envelope.eventType());
+        }
+        LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} currentStatus={} reason=ORDER_TERMINAL",
             envelope.eventType(), envelope.eventId(), order.orderId(), order.state());
         return new EventSubscriber.Success();
     }
