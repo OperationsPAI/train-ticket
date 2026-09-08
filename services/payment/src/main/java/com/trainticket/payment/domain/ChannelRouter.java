@@ -6,12 +6,26 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.random.RandomGenerator;
 
 public final class ChannelRouter {
+    // Only channels that payment-channel can actually settle belong here.
+    //
+    // This list used to carry APPLE_PAY (weight 5) and BALANCE (weight 5) as
+    // well. Neither has a SIM counterpart: payment-channel's contract
+    // (docs/08-contracts/api/payment-channel.md, docs/02-domains/payment-channel.md)
+    // defines exactly three channels -- ALIPAY_SIM, WECHAT_SIM, UNIONPAY_SIM --
+    // and rejects anything else with 400 VALIDATION_FAILED "unsupported channel".
+    // channelFacingId had no mapping for those two and fell through to
+    // `default -> value`, so payment sent the literal "APPLE_PAY", the channel
+    // handoff failed, capture returned 500, and the booking saga died with
+    // "payment failed". At a combined weight of 10 out of 100 that was roughly
+    // one payment in ten, which is why it read as flaky rather than broken.
+    //
+    // Adding the two to payment-channel instead would be the wrong fix: it would
+    // claim support for channels the domain contract does not define. Routing to a
+    // channel this platform cannot settle is the actual defect.
     private static final List<PaymentChannel> DEFAULT_CHANNELS = List.of(
-        new PaymentChannel("ALIPAY", "ALIPAY", 500_000, 30, true, 40),
-        new PaymentChannel("WECHAT_PAY", "WECHAT_PAY", 200_000, 30, true, 35),
-        new PaymentChannel("UNIONPAY", "UNIONPAY", 1_000_000, 60, true, 15),
-        new PaymentChannel("APPLE_PAY", "APPLE_PAY", 100_000, 30, true, 5),
-        new PaymentChannel("BALANCE", "BALANCE", 50_000, 5, true, 5)
+        new PaymentChannel("ALIPAY", "ALIPAY", 500_000, 30, true, 45),
+        new PaymentChannel("WECHAT_PAY", "WECHAT_PAY", 200_000, 30, true, 40),
+        new PaymentChannel("UNIONPAY", "UNIONPAY", 1_000_000, 60, true, 15)
     );
 
     private final List<PaymentChannel> channels;
@@ -133,13 +147,31 @@ public final class ChannelRouter {
      * payment-channel handoff contract. Channels without a provider mapping
      * pass through unchanged.
      */
+    /**
+     * Maps a platform channel id to the channel-facing id payment-channel expects.
+     *
+     * Fails loudly on an unmapped channel rather than passing the value through.
+     * The previous `default -> value` turned a configuration mistake into a 400
+     * from payment-channel, surfaced as a 500 from capture and a dead booking saga
+     * with terminalReason "payment failed" -- three hops from the cause, and the
+     * response body naming the real reason ("unsupported channel") was discarded
+     * by the client. A ChannelRouter constructed with a channel that has no SIM
+     * counterpart is a deployment error; it should be impossible to route to it,
+     * not merely expensive to diagnose afterwards.
+     */
     public static String channelFacingId(String channelId) {
         String value = Objects.requireNonNull(channelId, "channelId is required").trim();
         return switch (value) {
             case "ALIPAY" -> "ALIPAY_SIM";
             case "WECHAT_PAY" -> "WECHAT_SIM";
             case "UNIONPAY" -> "UNIONPAY_SIM";
-            default -> value;
+            // Already channel-facing: the refund path reads the channel back off a
+            // stored ChannelRef, which holds the SIM id.
+            case "ALIPAY_SIM", "WECHAT_SIM", "UNIONPAY_SIM" -> value;
+            default -> throw new DomainRuleViolation(
+                "channel '" + value + "' has no payment-channel counterpart; payment-channel "
+                    + "accepts only ALIPAY_SIM, WECHAT_SIM and UNIONPAY_SIM. Routing to it "
+                    + "would fail the channel handoff and kill the booking saga.");
         };
     }
 }
