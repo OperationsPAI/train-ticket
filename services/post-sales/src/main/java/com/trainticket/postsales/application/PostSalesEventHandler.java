@@ -64,9 +64,9 @@ public class PostSalesEventHandler {
                 return EventSubscriber.HandlerResult.SUCCESS;
             }
             if ("JourneyOrderCreated".equals(envelope.eventType()) || "JourneyOrderConfirmed".equals(envelope.eventType())) {
-                policyContext(envelope.payload()).ifPresent(applicationService::recordPolicyContext);
+                recordPolicyContextOrWarn(envelope);
             } else if ("JourneyOrderPostSalesAdjusted".equals(envelope.eventType())) {
-                policyContext(envelope.payload()).ifPresent(applicationService::recordPolicyContext);
+                recordPolicyContextOrWarn(envelope);
             } else if ("CapacityReleased".equals(envelope.eventType())) {
                 String segmentBookingRef = segmentBookingRef(envelope.payload());
                 if (segmentBookingRef != null) {
@@ -75,7 +75,19 @@ public class PostSalesEventHandler {
             } else if (externalEventPolicy.handles(envelope.eventType())) {
                 externalEventPolicy.handle(envelope);
             } else {
-                LOGGER.warn("ack-skip post-sales event={} eventId={} producer={} reason=UNKNOWN_EVENT_TYPE",
+                // DEBUG, not WARN. post-sales subscribes to whole streams but only
+                // acts on a few event types from each, so every CapacityHeld,
+                // DriverAssigned, RideStarted and so on lands here in normal
+                // operation -- it is not an anomaly, it is the subscription model.
+                //
+                // At WARN this was 30% of the service's log output (605 lines in a
+                // 2000-line sample) and it actively caused an outage: raising
+                // CONSUMER_THREADS to 4 multiplied the volume by four, and the
+                // logging plus the backlog work saturated the 500m CPU limit until
+                // the HTTP thread could not answer /healthz, so the startup probe
+                // failed and kubelet restarted the pod in a loop. A log line for a
+                // non-event should never be able to do that.
+                LOGGER.debug("ack-skip post-sales event={} eventId={} producer={} reason=UNKNOWN_EVENT_TYPE",
                     envelope.eventType(), envelope.eventId(), envelope.producer());
             }
             return EventSubscriber.HandlerResult.SUCCESS;
@@ -83,6 +95,22 @@ public class PostSalesEventHandler {
             if (!transactional) {
                 consumedEventLog.discard(envelope.eventId());
             }
+            // The exception used to be swallowed entirely: TRANSIENT_FAILURE was
+            // returned with no log line, so the message stayed pending and was
+            // redelivered forever with nothing anywhere saying why. The live
+            // cluster had 3522 pending messages on events:journey-order under this
+            // consumer group, which is how JourneyOrderCreated never reached
+            // recordPolicyContext for thousands of orders -- and the downstream
+            // effect (every refund for those orders quoting zero) looked like a
+            // pricing bug rather than a stuck consumer.
+            //
+            // Logged at ERROR with the exception: a handler that cannot make
+            // progress is not a routine condition, and the stack trace is the only
+            // thing that distinguishes a poison message from a dependency outage.
+            LOGGER.error("post-sales handler FAILED event={} eventId={} producer={} transactional={} "
+                    + "-- returning TRANSIENT_FAILURE, so this message stays pending and will be "
+                    + "redelivered. If this repeats for the same eventId the consumer is stuck.",
+                envelope.eventType(), envelope.eventId(), envelope.producer(), transactional, exception);
             return EventSubscriber.HandlerResult.TRANSIENT_FAILURE;
         }
     }
@@ -92,6 +120,36 @@ public class PostSalesEventHandler {
             return Optional.empty();
         }
         return PostSalesPolicyContextMapper.fromEventPayload(map);
+    }
+
+    /**
+     * Records the policy context, or says why it could not.
+     *
+     * The `ifPresent` this replaces was the first link in a five-step silent
+     * chain: mapper returns empty -> nothing stored -> the refund path finds no
+     * context -> it falls back to departureTime=now -> AFTER_DEPARTURE, 100%
+     * penalty, zero refund -> payment skips the zero-amount refund without
+     * logging. Nobody was refunded and no component reported a problem.
+     *
+     * The mapper returns empty when the event carries no resolvable departure
+     * (no segments[].departureTime and no top-level departureTime/departureAt) or
+     * no order id, so name both possibilities here -- that is the actionable part.
+     */
+    private void recordPolicyContextOrWarn(EventEnvelope envelope) {
+        Optional<PostSalesPolicyContext> context = policyContext(envelope.payload());
+        if (context.isPresent()) {
+            PostSalesPolicyContext ctx = context.get();
+            LOGGER.debug("post-sales policy context stored from event={} eventId={} order={} departureTime={} originalFare={}",
+                envelope.eventType(), envelope.eventId(), ctx.journeyOrderId(), ctx.departureTime(), ctx.originalFare());
+            applicationService.recordPolicyContext(ctx);
+            return;
+        }
+        LOGGER.warn("post-sales could NOT build a policy context from event={} eventId={} producer={} "
+                + "-- the payload has no resolvable departure time (segments[].departureTime / "
+                + "departureTime / departureAt) or no order id. Refunds for this order will fall back "
+                + "to departureTime=now and quote a ZERO refund. payloadKeys={}",
+            envelope.eventType(), envelope.eventId(), envelope.producer(),
+            envelope.payload() instanceof Map<?, ?> m ? m.keySet() : "<not-a-map>");
     }
 
     private static String segmentBookingRef(Object payload) {

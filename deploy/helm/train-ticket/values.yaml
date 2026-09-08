@@ -250,6 +250,15 @@ services:
     db: offer_management
     env:
       PG_MAX_POOL_SIZE: "15"
+      CONSUMER_THREADS: "4"   # 5 streams
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   journey-order:
     db: journey_order
     env:
@@ -259,10 +268,26 @@ services:
       # `synchronized`; without this the platform subscriber falls back to
       # DEFAULT_CONSUMER_THREADS=1 and the unlocked handler gains nothing.
       CONSUMER_THREADS: "4"
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   booking-orchestration:
     db: booking_orchestration
     env:
       CONSUMER_THREADS: "4"
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   identity-verification:
     db: identity_verification
   payment:
@@ -277,10 +302,40 @@ services:
     db: fulfillment
   post-sales:
     db: post_sales
+    env:
+      # 5 streams (journey-order, capacity-availability, dispatch,
+      # ancillary-service, disruption-recovery) on one thread could not keep up:
+      # the live cluster held 3522 pending messages on events:journey-order under
+      # this consumer group. The visible effect was NOT a stuck consumer -- the
+      # backlog drained at ~2/s -- but a timing failure downstream: a refund
+      # request arriving before its order's JourneyOrderCreated had been processed
+      # found no policy context, fell back to departureTime=now, and quoted a zero
+      # refund. See the MISS/HIT logging in PostSalesApplicationService.
+      CONSUMER_THREADS: "4"
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   notification:
     db: notification
     env:
       SMTP_URL: smtp://mailpit:1025
+      # 11 streams. Also had ~1000 pending messages against one thread, which is
+      # why e2e assertions on NotificationScheduled/NotificationDelivered timed
+      # out intermittently.
+      CONSUMER_THREADS: "4"
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   traveler-profile:
     db: traveler_profile
   risk-compliance:
@@ -295,10 +350,48 @@ services:
     db: admin_audit
   customer-service:
     db: customer_service
+    env:
+      CONSUMER_THREADS: "4"   # 5 streams
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   finance-settlement:
     db: finance_settlement
+    env:
+      CONSUMER_THREADS: "4"   # 7 streams
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   reporting:
     db: reporting
+    env:
+      # reporting consumes 37 streams -- every fact-producing service in the
+      # system -- against DEFAULT_CONSUMER_THREADS=1. That is the widest fan-in
+      # here by a factor of three, and it is why e2e assertions on the reporting
+      # read model ("reporting stream empty", "dashboard fact count did not
+      # change", "dash-revenue status unexpected (building)") failed repeatedly:
+      # the dashboard was still rebuilding from a backlog when the assertion ran.
+      # 8 rather than 4 for the same reason the number is not simply "more":
+      # threads are per-subscriber, and this one has 37 streams to interleave.
+      CONSUMER_THREADS: "8"
+    # 8 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '3', memory: 1Gi }
   supplier-catalog:
     db: supplier_catalog
   legacy-acl:
@@ -329,6 +422,18 @@ services:
     db: payment_channel
   invoicing:
     db: invoicing
+    env:
+      # 5 streams, and the only group still showing a non-zero lag (2152) rather
+      # than merely pending -- it was not keeping up with delivery at all.
+      CONSUMER_THREADS: "4"
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
+    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
+    # threads saturated half a core working through the backlog, the HTTP thread
+    # could not answer /healthz within the probe timeout, and kubelet restarted
+    # the pod every 64 seconds. Threads and CPU must be raised together.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   marketing-campaign:
     db: marketing_campaign
   group-booking:
