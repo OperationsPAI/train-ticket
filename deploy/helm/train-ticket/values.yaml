@@ -134,13 +134,27 @@ jaeger:
   fsGroup: 10001
   # GOMEMLIMIT: keep at ~85% of resources.limits.memory so the Go runtime
   # collects before the kubelet OOM-kills the container.
-  gomemlimit: 1750MiB
+  gomemlimit: 3400MiB
   # limits.memory MUST stay well above 576Mi: Badger allocates a 256MiB block
   # cache plus up to 5 x 64MiB memtables before storing a single span. Measured
   # 770Mi steady after 200k spans, 1.76Gi peak during burst ingest.
+  #
+  # Raised from 2Gi after OOMKills on a long-running cluster. The cause is NOT
+  # ingest rate -- that was measured at 78 spans/s, BELOW the 105 the capacity
+  # arithmetic in docs/07-observability/README.md assumes. It is Badger's LSM
+  # compaction: the logs showed repeated concurrent level 5->6 compactions taking
+  # 6-9 seconds each, and a compaction reads whole SST tables into memory. That
+  # cost scales with how much data has ACCUMULATED, not with how fast it arrives,
+  # so a cluster left running well past the point where the 12h TTL reaches
+  # steady state needs materially more headroom than one that has just started.
+  #
+  # A restart makes this worse rather than better: the pending compaction work
+  # survives on disk and is re-attempted on the next start, so an
+  # under-provisioned Jaeger OOM-loops instead of recovering. That is what the
+  # 4-restart streak was.
   resources:
     requests: { cpu: 100m, memory: 512Mi }
-    limits: { cpu: '1', memory: 2Gi }
+    limits: { cpu: '2', memory: 4Gi }
 
 otelCollector:
   enabled: true

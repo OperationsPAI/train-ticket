@@ -11,6 +11,23 @@ distinguish "explicitly disabled" from "not set" for a boolean.
 */}}
 {{- $startup := ternary $probes.startup ($defaultProbes.startup | default false) (hasKey $probes "startup") }}
 {{- $startupThreshold := $probes.startupFailureThreshold | default $defaultProbes.startupFailureThreshold | default 12 }}
+{{- /*
+Per-probe timeout, 10s by default rather than the 3s that was hardcoded here.
+
+3s is too tight for a service that also runs event-consumer threads. post-sales
+was SIGKILLed repeatedly (exit 137, "Liveness probe failed: context deadline
+exceeded") while its consumers worked through a 12k-message backlog: the process
+was alive and making progress, but its HTTP thread could not be scheduled inside
+3s. Each restart made the backlog worse, which made the next timeout more
+likely -- a restart loop driven entirely by CPU contention, not by anything being
+wrong with the process.
+
+Liveness exists to catch a WEDGED process, and a wedged process stays wedged:
+failureThreshold x periodSeconds (3 x 20s here) still has to elapse before a
+restart. Raising the per-probe timeout therefore costs almost nothing in
+detection latency, and stops contention from being misread as death.
+*/}}
+{{- $probeTimeout := $probes.timeoutSeconds | default $defaultProbes.timeoutSeconds | default 10 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -122,7 +139,7 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
-            timeoutSeconds: 3
+            timeoutSeconds: {{ $probeTimeout }}
             failureThreshold: {{ $startupThreshold }}
           {{- end }}
           livenessProbe:
@@ -131,15 +148,30 @@ spec:
               port: http
             initialDelaySeconds: 20
             periodSeconds: 20
-            timeoutSeconds: 3
-            failureThreshold: 3
+            timeoutSeconds: {{ $probeTimeout }}
+            {{- /*
+            6 x 20s = 2 minutes before a restart, up from 3 x 20s.
+
+            The startupProbe only covers the window until the process first
+            answers /healthz. An event consumer is not done at that point: it then
+            has to work through whatever accumulated while it was down, and under
+            that load the HTTP thread can miss probes for longer than a minute.
+            post-sales was restarted mid-catch-up, which handed its entire pending
+            set back to XAUTOCLAIM and undid the progress -- each restart made the
+            next one more likely.
+
+            Nothing is lost by waiting: liveness catches a WEDGED process, and a
+            wedged process is still wedged two minutes later. What this prevents is
+            a busy process being mistaken for a dead one.
+            */}}
+            failureThreshold: {{ $probes.livenessFailureThreshold | default $defaultProbes.livenessFailureThreshold | default 6 }}
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
-            timeoutSeconds: 3
+            timeoutSeconds: {{ $probeTimeout }}
             failureThreshold: 6
 ---
 apiVersion: v1
