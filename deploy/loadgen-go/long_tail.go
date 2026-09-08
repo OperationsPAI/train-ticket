@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"time"
 )
@@ -77,16 +78,64 @@ func assertGet(ctx context.Context, p *Providers, service, path, idField, expect
 }
 
 // assertListContains verifies a list projection has caught up with an entity
-// the journey just created.
+// the journey just created. Scans one already-fetched page only; use
+// assertListContainsPaged when the collection can exceed a page.
 func assertListContains(p *Providers, page map[string]interface{}, idField, expected, step string) bool {
 	if page == nil {
 		return false
 	}
+	if pageContains(page, idField, expected) {
+		return true
+	}
+	p.Stats.RecordError("long_tail:" + step + ":missing_item")
+	return false
+}
+
+func pageContains(page map[string]interface{}, idField, expected string) bool {
 	items, _ := page["items"].([]interface{})
 	for _, raw := range items {
 		item, _ := raw.(map[string]interface{})
 		if item != nil && getString(item, idField) == expected {
 			return true
+		}
+	}
+	return false
+}
+
+// assertListContainsPaged walks the list until it finds the entity or runs out
+// of pages, and only then reports it missing.
+//
+// WHY PAGING IS REQUIRED HERE
+// The scheduled-services probe asked for limit=100&offset=0 and asserted the
+// entity was on that first page. The seeded cluster holds 539 scheduled
+// services, so a hit was down to roughly a 1-in-5 chance and the probe reported
+// `missing_item` steadily on a healthy system -- an invented failure, and one
+// that made the genuine signal (a projection that really has not caught up)
+// indistinguishable from noise. Retrying the same first page, as the caller did,
+// cannot fix that: the entity is not late, it is on page four.
+//
+// `total` bounds the walk. It is re-read every page so a list that is growing
+// underneath us (the loadgen never stops creating) still terminates.
+func assertListContainsPaged(ctx context.Context, p *Providers, service, basePath, idField, expected, step string) bool {
+	const pageSize = 100
+	const maxPages = 25 // 2500 entities; a bound, not an expectation
+
+	for pageNum := 0; pageNum < maxPages; pageNum++ {
+		offset := pageNum * pageSize
+		path := fmt.Sprintf("%s?limit=%d&offset=%d", basePath, pageSize, offset)
+		page := assertGet(ctx, p, service, path, "", "", step)
+		if page == nil {
+			break
+		}
+		if pageContains(page, idField, expected) {
+			return true
+		}
+		items, _ := page["items"].([]interface{})
+		if len(items) < pageSize {
+			break // last page
+		}
+		if total, ok := page["total"].(float64); ok && float64(offset+pageSize) >= total {
+			break
 		}
 	}
 	p.Stats.RecordError("long_tail:" + step + ":missing_item")
@@ -194,19 +243,21 @@ func MaybeReadProbe(ctx context.Context, p *Providers, refs ProbeRefs) {
 	}
 
 	if refs.Service != "" {
-		page := assertGet(ctx, p, "service-plan",
-			"/api/v1/scheduled-services?limit=100&offset=0", "", "", "tail-list-scheduled-services")
-		if !assertListContains(p, page, "scheduledServiceRef", refs.Service, "tail-list-scheduled-services") {
+		if !assertListContainsPaged(ctx, p, "service-plan",
+			"/api/v1/scheduled-services", "scheduledServiceRef", refs.Service,
+			"tail-list-scheduled-services") {
 			// One retry: a service observed via a fresh itinerary may not be
-			// visible to the list projection for a beat.
+			// visible to the list projection for a beat. Now that the walk covers
+			// every page, reaching this retry means the projection genuinely
+			// lagged rather than the entity simply being past page one.
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(2 * time.Second):
 			}
-			page = assertGet(ctx, p, "service-plan",
-				"/api/v1/scheduled-services?limit=100&offset=0", "", "", "tail-list-scheduled-services")
-			assertListContains(p, page, "scheduledServiceRef", refs.Service, "tail-list-scheduled-services")
+			assertListContainsPaged(ctx, p, "service-plan",
+				"/api/v1/scheduled-services", "scheduledServiceRef", refs.Service,
+				"tail-list-scheduled-services")
 		}
 		assertGet(ctx, p, "service-plan",
 			"/api/v1/scheduled-services/"+url.PathEscape(refs.Service),

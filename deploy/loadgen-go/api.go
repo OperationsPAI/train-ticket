@@ -54,8 +54,32 @@ func (e *StepError) Error() string {
 }
 
 // Request makes an HTTP request and returns the status code and decoded JSON body.
+// Any status outside `ok` is counted as an error in the stats.
 func (a *ApiClient) Request(ctx context.Context, method, service, path string,
 	body interface{}, headers map[string]string, ok []int, step string) (int, map[string]interface{}, error) {
+	return a.request(ctx, method, service, path, body, headers, ok, step, nil)
+}
+
+// PollRequest is Request for a status that is polled until it appears. Statuses
+// listed in `expected` still return a StepError -- the caller's loop needs that
+// to decide whether to retry -- but they are NOT counted as errors in the stats.
+//
+// WHY THIS EXISTS
+// A poll for "has the saga been created yet" legitimately answers 404 several
+// times before it answers 200. Request counts every one of those as an error, so
+// the stats showed 1159 `booking-orchestration:404` against 583 successes on a
+// perfectly healthy cluster -- while every reservation the poll was waiting for
+// went on to succeed. That is worse than merely noisy: it makes the error tally
+// useless for deciding whether the system is actually failing, which is the one
+// question it exists to answer. An expected-status poll is a normal part of an
+// asynchronous flow, not a fault.
+func (a *ApiClient) PollRequest(ctx context.Context, method, service, path string,
+	body interface{}, headers map[string]string, ok []int, step string, expected []int) (int, map[string]interface{}, error) {
+	return a.request(ctx, method, service, path, body, headers, ok, step, expected)
+}
+
+func (a *ApiClient) request(ctx context.Context, method, service, path string,
+	body interface{}, headers map[string]string, ok []int, step string, expected []int) (int, map[string]interface{}, error) {
 
 	url := fmt.Sprintf(a.template, service) + path
 
@@ -155,7 +179,18 @@ func (a *ApiClient) Request(ctx context.Context, method, service, path string,
 			}
 		}
 		if !found {
-			a.stats.RecordError(fmt.Sprintf("%s:%d", service, resp.StatusCode))
+			// An expected poll status is still an error to the CALLER (its retry
+			// loop needs to know the thing is not there yet) but not to the stats.
+			isExpected := false
+			for _, c := range expected {
+				if resp.StatusCode == c {
+					isExpected = true
+					break
+				}
+			}
+			if !isExpected {
+				a.stats.RecordError(fmt.Sprintf("%s:%d", service, resp.StatusCode))
+			}
 			detail := fmt.Sprintf("%s %s%s -> %d", method, service, path, resp.StatusCode)
 			if len(respBody) > 0 {
 				snippet := string(respBody)
