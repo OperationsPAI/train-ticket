@@ -666,7 +666,9 @@ impl CapacityService {
                     held_until: unix_millis_to_rfc3339(hold.expires_at),
                     requested_at: unix_millis_to_rfc3339(hold.requested_at),
                     traveler_ref: hold.scope.references.traveler_ref.clone(),
-                    class_ref: hold.scope.capacity_unit_ref.to_string(),
+                    capacity_unit_ref: hold.scope.capacity_unit_ref.to_string(),
+                    from_seq: hold.scope.station_interval.from_seq(),
+                    to_seq: hold.scope.station_interval.to_seq(),
                 });
             }
         }
@@ -946,7 +948,21 @@ pub struct GetHoldResponse {
     pub held_until: String,
     pub requested_at: String,
     pub traveler_ref: Option<String>,
-    pub class_ref: String,
+    /// The unit actually held, e.g. a seat number like "09D".
+    ///
+    /// This was previously returned as `class_ref`, which is a different concept
+    /// (a fare/seat class such as "standard") and is stored empty on these holds.
+    /// Callers reading `classRef` off this endpoint were getting a seat number.
+    pub capacity_unit_ref: String,
+    /// Station interval the hold covers.
+    ///
+    /// Exposed because seat-assignment cannot match a CapacityReleased event to
+    /// its allocation without it: FindSeatAllocationsByCapacityRecovery keys on
+    /// (capacityHoldId, capacityUnitRef, fromSeq, toSeq) and all four must agree.
+    /// Without these fields a caller has no way to record an allocation the
+    /// eventual release can find, and the release silently matches nothing.
+    pub from_seq: u32,
+    pub to_seq: u32,
 }
 
 // ---------------------------------------------------------------------------

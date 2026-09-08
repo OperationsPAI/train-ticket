@@ -488,7 +488,9 @@ impl PostgresCapacityService {
             held_until: unix_millis_to_rfc3339(hold.expires_at),
             requested_at: unix_millis_to_rfc3339(hold.requested_at),
             traveler_ref: hold.scope.references.traveler_ref.clone(),
-            class_ref: hold.scope.capacity_unit_ref.to_string(),
+            capacity_unit_ref: hold.scope.capacity_unit_ref.to_string(),
+            from_seq: hold.scope.station_interval.from_seq(),
+            to_seq: hold.scope.station_interval.to_seq(),
         })
     }
 
