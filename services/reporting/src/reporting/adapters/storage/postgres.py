@@ -324,7 +324,22 @@ class PostgresReportingApplicationService:
                             new_version = self._dashboards.save(conn, stale.dashboard_id, _dashboard_to_json(stale), version)
                             self._maybe_rebuild(conn, stale, new_version, envelope)
         except Exception as exc:
-            return HandlerResult.transient_error(str(exc))
+            # Log with the traceback. This is the handler production actually uses
+            # -- the in-memory ReportingApplicationService has its own, and probing
+            # THAT one succeeded, which is why the failure looked unreproducible.
+            #
+            # Without a stack the only evidence was the bare text "'str' object
+            # cannot be interpreted as an integer", repeated for every event on
+            # every subscribed stream: 13,511 pending messages, dash-revenue stuck
+            # in `building` since 2026-07-05, reporting_revenue_by_route empty.
+            logger.exception(
+                "reporting handler FAILED event=%s eventId=%s producer=%s -- returning "
+                "TRANSIENT_ERROR, so this message stays pending and will be redelivered",
+                envelope.eventType,
+                envelope.eventId,
+                getattr(envelope, "producer", "?"),
+            )
+            return HandlerResult.transient_error(f"{type(exc).__name__}: {exc}")
         return HandlerResult.success()
 
     def _save_metric_event(self, conn: Any, event: OperationalEvent) -> None:

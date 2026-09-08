@@ -513,3 +513,40 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ParseOccurredAtTest(unittest.TestCase):
+    """`occurredAt` reaches reporting as either a string or a datetime.
+
+    python-kit's EventEnvelope carries it as a datetime once deserialised, and
+    _parse_occurred_at assumed a string: `datetime.replace("Z", "+00:00")` binds
+    those to the `year` and `month` keyword parameters and raises
+    `TypeError: 'str' object cannot be interpreted as an integer`. The function's
+    own `except ValueError` did not catch a TypeError, so it escaped handle_event
+    and every consumed event on every stream returned TRANSIENT_ERROR -- 13,511
+    pending messages, a dashboard stuck in `building` since 2026-07-05, and an
+    empty revenue view, all from one wrong annotation.
+    """
+
+    def test_accepts_an_aware_datetime(self) -> None:
+        from reporting.application.service import _parse_occurred_at
+        at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+        self.assertEqual(_parse_occurred_at(at), at)
+
+    def test_assumes_utc_for_a_naive_datetime(self) -> None:
+        from reporting.application.service import _parse_occurred_at
+        result = _parse_occurred_at(datetime(2026, 9, 8, 12, 0))
+        self.assertEqual(result, datetime(2026, 9, 8, 12, 0, tzinfo=UTC))
+
+    def test_accepts_a_z_suffixed_string(self) -> None:
+        from reporting.application.service import _parse_occurred_at
+        self.assertEqual(
+            _parse_occurred_at("2026-09-08T12:00:00.000Z"),
+            datetime(2026, 9, 8, 12, 0, tzinfo=UTC),
+        )
+
+    def test_falls_back_for_garbage_rather_than_raising(self) -> None:
+        from reporting.application.service import _parse_occurred_at
+        # Must not raise: an unparseable timestamp should not stall a stream.
+        self.assertIsNotNone(_parse_occurred_at("not-a-timestamp"))
+        self.assertIsNotNone(_parse_occurred_at(None))
+        self.assertIsNotNone(_parse_occurred_at(12345))
