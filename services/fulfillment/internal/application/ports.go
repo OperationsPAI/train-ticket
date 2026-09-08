@@ -14,6 +14,7 @@ import (
 
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
+	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
@@ -375,7 +376,11 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvel
 	}
 	if err := s.applySubscribedEvent(ctx, envelope); err != nil {
 		if errors.Is(err, ErrAckSkip) {
-			log.Printf("WARN service=%s eventId=%s producer=%s eventType=%s ack-skip subscribed event: %v", ProducerName, envelope.EventID, envelope.Producer, envelope.EventType, err)
+			// ctx carries the consumer span here, so this line can be joined to
+			// the trace that produced the event. An ack-skip is a silent early
+			// return -- the class of thing that made the zero-refund chain take
+			// five `kubectl logs` invocations to find.
+			log.Printf("WARN %sservice=%s eventId=%s producer=%s eventType=%s ack-skip subscribed event: %v", goruntime.TraceLogFields(ctx), ProducerName, envelope.EventID, envelope.Producer, envelope.EventType, err)
 			return nil
 		}
 		if errors.Is(err, ErrDomainRuleViolation) || errors.Is(err, ErrNotFound) {

@@ -255,13 +255,20 @@ pub fn init_logging() {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     builder
         .target(env_logger::Target::Stdout)
+        // trace_id/span_id are injected here rather than at each `log::` call
+        // site: the formatter is the one place every line passes through, and it
+        // is the `log` crate's equivalent of a logging pattern. `log_fields()`
+        // renders nothing at all when no span is active, so startup and shutdown
+        // lines are unchanged, and it never renders an all-zero id -- that would
+        // look real and join every unrelated line together.
         .format(|buf, record| {
             writeln!(
                 buf,
-                "{} {} {} - {}",
+                "{} {} {} {}- {}",
                 rust_kit::messaging::now_rfc3339_utc(),
                 record.level(),
                 record.target(),
+                rust_kit::trace_logging::log_fields(),
                 record.args()
             )
         });
