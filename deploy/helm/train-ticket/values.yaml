@@ -440,6 +440,14 @@ services:
       # 5 streams, and the only group still showing a non-zero lag (2152) rather
       # than merely pending -- it was not keeping up with delivery at all.
       CONSUMER_THREADS: "4"
+      # The pool must cover the consumer threads plus the HTTP handlers plus the
+      # outbox relay, all of which contend at startup. rust-kit defaults to 10
+      # with a 5s acquire_timeout, and 4 consumer threads did not fit: invoicing
+      # panicked during startup with SubscribeFailed("pool timed out while waiting
+      # for an open connection"). Postgres itself was nowhere near its ceiling
+      # (101 of 500 connections), so this is per-service pool sizing, not a
+      # server limit.
+      PG_MAX_POOL_SIZE: "25"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread

@@ -180,7 +180,6 @@ pub(crate) fn mask_email(value: &str) -> Option<String> {
     Some(format!("{first}***@{domain}"))
 }
 
-
 /// Wire correlation ids are `corr-<uuid-v7>`; the HTTP middleware hands us the
 /// raw header value (or a bare uuid), and rust-kit's envelope builder PANICS on
 /// unprefixed ids. Canonicalize before any envelope is built.
