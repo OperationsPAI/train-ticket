@@ -108,6 +108,32 @@ Closing this means adding an `MctRulePublished`/`MctRuleRetired` arm to
 `PlanIndex::apply_event` in `services/trip-planning-rs/src/plan_index.rs` and a
 feasibility check where candidates are assembled.
 
+### payment-channel keeps a whole day's reconciliation lines in one jsonb row
+
+`channel_statement_snapshots` stores a daily statement per channel as a single
+row whose `data->'lines'` array holds every reconciliation line for that day.
+The loadgen appends one line per channel order, so the row grows for as long as
+the deployment runs.
+
+Measured on the live cluster: **18 rows occupying 119 MB**, the largest a single
+**14 MB row with 71,633 lines**. Freezing a statement or opening a discrepancy
+loads one of these, which OOMKilled the pod at the default 512Mi limit and took
+out 22-paychan's three statement assertions -- as connection failures (`got
+000`), with nothing in the failure text mentioning memory.
+
+The limit is now 2Gi, which stopped the OOMKills -- the pod runs with zero
+restarts and no errors. It is headroom, not a fix, and the remaining symptom
+makes that concrete: generating a statement still times out (`statement
+generated [got 000]`) because writing tens of thousands of lines into one row
+takes longer than the client will wait. Freezing and discrepancy operations now
+return 400/404 against the statement that was never created, instead of failing
+as connection errors.
+
+The real change is to store lines as rows in their own table and aggregate on
+read, the same shape as the invoicing issue below. Until then the memory ceiling
+has to grow with deployment lifetime, which is not a property anyone will
+remember to maintain.
+
 ### invoicing serialises all writes through one 3.8 MB jsonb row
 
 `services/invoicing` keeps its entire aggregate, projection and idempotency
