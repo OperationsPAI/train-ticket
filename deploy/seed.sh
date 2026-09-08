@@ -76,7 +76,11 @@ k() {
 #
 # deploy/e2e/12-restart.sh already establishes this pattern; this reuses it. The
 # trap restores the original replica count on any exit path, including failure,
-# so a failed seed never leaves the cluster without load.
+# so a failed seed never leaves the cluster without load. INT and TERM are
+# trapped too: a bare EXIT trap does not fire when the shell is signalled, and
+# a killed seed would then leave loadgen at 0 permanently. That state is
+# invisible -- replicas=0 is not an error, there is no pod to look unhealthy,
+# and the next run reads 0 as "already paused" and does not restore it either.
 LG_REPLICAS="$(k get deploy loadgen -o jsonpath='{.spec.replicas}' 2>/dev/null || echo '')"
 resume_loadgen() {
   if [ -n "$LG_REPLICAS" ] && [ "$LG_REPLICAS" != "0" ]; then
@@ -85,7 +89,7 @@ resume_loadgen() {
       || echo "seed: WARNING could not resume loadgen -- scale it back manually" >&2
   fi
 }
-trap resume_loadgen EXIT
+trap resume_loadgen EXIT INT TERM
 if [ -n "$LG_REPLICAS" ] && [ "$LG_REPLICAS" != "0" ]; then
   k scale deploy loadgen --replicas=0 >/dev/null 2>&1 || true
   k wait --for=delete pod -l app.kubernetes.io/name=loadgen --timeout=90s >/dev/null 2>&1 || true

@@ -91,7 +91,14 @@ resume_loadgen() {
     k scale deploy loadgen --replicas="$LG_REPLICAS" >/dev/null 2>&1 || true
   fi
 }
-trap resume_loadgen EXIT
+# INT and TERM as well as EXIT. A bare `trap ... EXIT` does not fire when the
+# shell is killed by a signal, and this script is long enough that being
+# interrupted or hitting an outer timeout is routine -- which leaves loadgen
+# scaled to 0 permanently. Nothing notices: a Deployment with replicas=0 is not
+# an error state, there is no pod to look unhealthy, and the next run reads 0 as
+# "loadgen was already off" and does not restore it either. That is exactly how
+# this cluster ended up with no load generator running at all.
+trap resume_loadgen EXIT INT TERM
 
 # --- 2. quiesce and snapshot --------------------------------------------
 wait_outbox_drained
