@@ -71,6 +71,22 @@ spec:
               value: none
             - name: OTEL_LOGS_EXPORTER
               value: none
+            {{- /*
+            Log/trace correlation. platform/java-kit's TraceLoggingContext binds
+            trace_id and span_id into the SLF4J MDC, but nothing prints MDC entries
+            by default, so without this the ids exist and are invisible.
+
+            Set as an environment variable rather than from inside the kit: an
+            EnvironmentPostProcessor was tried first and does not work. Boot
+            resolves its own default for this key at a higher precedence than
+            either a last-placed property source or `defaultProperties`, so the
+            pattern was silently ignored -- verified three times by running the
+            built image and finding no trace field. An env var wins outright.
+
+            Harmless for the non-Java services, which ignore it.
+            */}}
+            - name: LOGGING_PATTERN_CORRELATION
+              value: "[trace=%X{trace_id:-} span=%X{span_id:-}] "
             {{- range $k, $v := $defaults.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
