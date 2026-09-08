@@ -117,9 +117,14 @@ class MessagingPortsTest {
     void subscriberHandlerDeduplicatesDuplicateEventId() {
         RecordingConsumedEventLog log = new RecordingConsumedEventLog();
         PostSalesEventHandler handler = new PostSalesEventHandler(log, new NoOpPostSalesApplicationService());
+        // JourneyOrderCreated, not JourneyOrderCancelled: the handler now rejects
+        // uninteresting types BEFORE writing to the dedup log, so an event type it
+        // does not act on records nothing and this test would assert 0 == 1 while
+        // testing nothing about deduplication. Cancelled was never handled here --
+        // the original assertion only passed because the write came first.
         EventEnvelope envelope = new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d001",
-            "JourneyOrderCancelled",
+            "JourneyOrderCreated",
             Instant.parse("2026-07-05T10:30:00Z"),
             "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d002",
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d003",
@@ -285,7 +290,16 @@ class MessagingPortsTest {
         );
 
         assertDoesNotThrow(() -> assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope)));
-        assertEquals(1, log.recorded.size());
+        // Nothing recorded: an unknown type is now rejected before the dedup write.
+        // That write was charged to every event on every subscribed stream, and
+        // post-sales subscribes to all of events:capacity-availability for one
+        // event type it sees almost never -- 7325 of 12606 pending messages on the
+        // live cluster. Four consumer threads each doing a needless write starved
+        // the HTTP thread until /readyz failed and the pod was restarted.
+        //
+        // Dedup is not weakened: an event that reaches no handler has no side
+        // effect to deduplicate.
+        assertEquals(0, log.recorded.size());
     }
 
     @Test
