@@ -100,13 +100,41 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
                 .exchange((request, response) -> {
                     int statusCode = response.getStatusCode().value();
                     if (statusCode >= 400) {
-                        throw new IllegalStateException("payment-channel returned HTTP " + statusCode);
+                        // Include the path and the response body, not just the
+                        // status. payment-channel answers a rejection with
+                        // {"code":"VALIDATION_FAILED","details":{...}} naming the
+                        // offending field, and discarding it left "payment-channel
+                        // returned HTTP 400" as the only evidence of a saga-killing
+                        // failure -- unactionable, and indistinguishable between a
+                        // malformed request here and a rule rejection there.
+                        throw new IllegalStateException(
+                            "payment-channel POST " + path + " returned HTTP " + statusCode
+                                + ": " + readBodySafely(response));
                     }
                     return new String(response.getBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
                 }, false);
             return mapper.readTree(responseBody);
         } catch (Exception exception) {
-            throw new IllegalStateException("payment-channel request failed", exception);
+            throw new IllegalStateException(
+                "payment-channel request failed: POST " + path, exception);
+        }
+    }
+
+    /**
+     * Best-effort read of an error response body for the exception message.
+     * Truncated because this ends up in a log line, and never allowed to throw:
+     * losing the status code because the body could not be read would be worse
+     * than losing the body.
+     */
+    private static String readBodySafely(org.springframework.http.client.ClientHttpResponse response) {
+        try {
+            String body = new String(response.getBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            if (body.isBlank()) {
+                return "<empty body>";
+            }
+            return body.length() > 512 ? body.substring(0, 512) + "...<truncated>" : body;
+        } catch (Exception ignored) {
+            return "<body unreadable>";
         }
     }
 
