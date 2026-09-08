@@ -448,6 +448,20 @@ services:
     db: seat_assignment
   payment-channel:
     db: payment_channel
+    # A daily channel statement is one jsonb row holding every reconciliation
+    # line for that channel and date, and the loadgen appends one per channel
+    # order. On this cluster channel_statement_snapshots held 18 rows in 119 MB
+    # -- the largest a single 14 MB row with 71,633 lines -- and loading one to
+    # freeze it or to open a discrepancy OOMKilled the pod at the default 512Mi.
+    # That took out 22-paychan's three statement assertions with connection
+    # failures rather than anything that named memory.
+    #
+    # This is headroom, not a fix: the row grows without bound over the life of
+    # the deployment, so the statement model needs splitting into line rows. See
+    # deploy/KNOWN-ISSUES.md.
+    resources:
+      requests: { cpu: 50m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 2Gi }
   invoicing:
     db: invoicing
     env:
