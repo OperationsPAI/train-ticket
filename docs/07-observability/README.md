@@ -58,19 +58,34 @@ image runs as uid 10001).
 
 ## kind Cluster Deployment
 
-The kind overlay in `deploy/k8s/` includes an `otel-collector` Deployment,
-ClusterIP Service, and ConfigMap in the `train-ticket` namespace. The ConfigMap
-is copied from `platform/observability/otel-collector.yaml`, which remains the
-canonical collector configuration for both compose and kind. The kind manifest
-pins a collector-contrib image tag so cluster rollouts are reproducible; update
-that tag deliberately when advancing the local baseline.
+The Helm chart's `deploy/helm/train-ticket/templates/observability.yaml` defines
+an `otel-collector` Deployment, ClusterIP Service, and ConfigMap in the
+`train-ticket` namespace, alongside the Jaeger trace store. The ConfigMap data is
+copied from `platform/observability/otel-collector.yaml`, which remains the
+canonical collector configuration for both compose and kind; the tunable numbers
+in the copy are substituted from `.Values.otelCollector`
+(`otelCollector.memoryLimitMiB`, `otelCollector.sendingQueue.*`), so those are
+the knobs to turn rather than the template body. `otelCollector.image.tag` pins a
+collector-contrib image tag so cluster rollouts are reproducible; update that tag
+deliberately when advancing the local baseline.
+
+The chart also hashes `.Values.otelCollector` into the pod's `checksum/config`
+annotation, so changing a collector tunable actually rolls the Deployment.
+Without that, a `helm upgrade` would leave the running collector on the old
+config until someone restarted it by hand — kustomize used to get this for free
+from its ConfigMap name hash.
 
 Apply the stack from the repository root:
 
 ```bash
-kubectl apply -k deploy/k8s
+helm upgrade --install train-ticket deploy/helm/train-ticket \
+  -f deploy/helm/values-kind.yaml \
+  --namespace train-ticket --create-namespace --wait
 kubectl -n train-ticket rollout status deploy/otel-collector
 ```
+
+`make deploy` (or `make deploy-fast`, which skips the image rebuild) runs that
+install as one step of the full pipeline; see `deploy/README.md`.
 
 The collector listens on the same ports as the local baseline:
 
@@ -141,15 +156,18 @@ Traces are **durable**. The store is Jaeger's embedded
 [Badger](https://github.com/dgraph-io/badger) backend writing to a
 PersistentVolumeClaim in kind (`jaeger-badger`, 10Gi) and to a named Docker
 volume in compose (`train-ticket-jaeger-badger`). Both are configured in
-`deploy/k8s/jaeger.yaml` and `platform/observability/docker-compose.yaml`, and
-both are on by default: `kubectl apply -k deploy/k8s` and `make observability-up`
-each stand up a persistent store with no extra flags.
+`deploy/helm/train-ticket/templates/observability.yaml` and
+`platform/observability/docker-compose.yaml`, and both are on by default: a
+`helm upgrade --install` of the chart (or `make deploy`) and `make
+observability-up` each stand up a persistent store with no extra flags.
 
 ### Retention window: 12 hours
 
-Set explicitly via `--badger.span-store-ttl=12h`. Badger's maintenance thread
-(`--badger.maintenance-interval=5m`) drops spans older than the window; a query
-for an expired trace id returns HTTP 404 `trace not found`.
+Set explicitly via `--badger.span-store-ttl=12h`, rendered from
+`jaeger.retention.spanStoreTtl` in `deploy/helm/train-ticket/values.yaml`.
+Badger's maintenance thread (`--badger.maintenance-interval=5m`, from
+`jaeger.retention.maintenanceInterval`) drops spans older than the window; a
+query for an expired trace id returns HTTP 404 `trace not found`.
 
 The window comes straight from the issue requirement of "one full stress
 scenario plus a comparable window before it". The longest run recorded in
@@ -159,9 +177,12 @@ That also means a run started any time yesterday evening is still readable the
 next morning, and both halves of an A/B comparison survive together.
 
 In compose the window is overridable with `JAEGER_SPAN_STORE_TTL` (see
-`platform/observability/env.example`); in kind, edit the arg in
-`deploy/k8s/jaeger.yaml`. Raising it without also growing the volume moves the
-binding constraint from the TTL to the disk — see the table below.
+`platform/observability/env.example`); in the cluster, set
+`jaeger.retention.spanStoreTtl` in the values file (`deploy/helm/values-kind.yaml`
+or `values-prod.yaml`) rather than editing the template. Raising it without also
+growing `jaeger.storage.size` moves the binding constraint from the TTL to the
+disk — see the table below. The two are values in the same block precisely so
+they are changed together.
 
 ### Why Badger, and not ClickHouse or Elasticsearch
 
@@ -184,11 +205,14 @@ for a single-node kind development cluster:
   so the Deployment must stay `replicas: 1` with `strategy: Recreate` (Badger
   holds an exclusive `LOCK` file on its directory, and the PVC is
   ReadWriteOnce). A `RollingUpdate` would crash-loop the new pod until the old
-  one exited. If this stack is ever pointed at a multi-node cluster that needs
-  concurrent readers/writers or retention in weeks rather than hours, revisit
-  this decision — that is what ClickHouse/Elasticsearch are for.
-- The PVC follows the idiom already in the repo: `storageClassName: standard`,
-  `ReadWriteOnce`, as in `deploy/k8s/postgres.yaml`.
+  one exited. Neither is exposed as a chart value, on purpose. If this stack is
+  ever pointed at a multi-node cluster that needs concurrent readers/writers or
+  retention in weeks rather than hours, revisit this decision — that is what
+  ClickHouse/Elasticsearch are for.
+- The PVC follows the idiom already in the chart: `ReadWriteOnce` with the
+  storage class taken from a value (`jaeger.storage.storageClass`, `standard` on
+  kind), exactly as the Postgres shards' PVCs do in
+  `deploy/helm/train-ticket/templates/postgres.yaml`.
 
 ### Capacity arithmetic
 
@@ -245,7 +269,8 @@ documented rates, the 12h window needs proportionally more disk:
 
 At 10Gi and 220 RPS the **disk**, not the TTL, becomes the binding limit at
 ~2.8h. Either grow the volume or shorten the TTL; do not leave the two
-inconsistent.
+inconsistent. Both are values in the same block:
+`jaeger.storage.size` and `jaeger.retention.spanStoreTtl`.
 
 > **kind caveat.** The `standard` StorageClass in kind is
 > `rancher.io/local-path`, which is hostPath-backed and does **not** enforce the
@@ -259,7 +284,9 @@ inconsistent.
 
 The pod's memory limit was raised from **256Mi to 2Gi** (request 512Mi), and
 `GOMEMLIMIT=1750MiB` makes the Go runtime collect before the kubelet OOM-kills
-the container.
+the container. Both are values — `jaeger.resources` and `jaeger.gomemlimit` —
+and `gomemlimit` should stay at ~85% of `resources.limits.memory` if either
+moves.
 
 256Mi was not survivable, and not merely tight: Badger's logged startup
 configuration allocates a **256 MiB block cache** plus up to **5 x 64 MiB
@@ -337,13 +364,15 @@ minimum:
    `prometheus` / `otlphttp` exporter on the `metrics` pipeline), and a log store
    plus exporter (e.g. Loki via `loki` exporter) on the `logs` pipeline — in both
    `platform/observability/otel-collector.yaml` and the mirrored ConfigMap in
-   `deploy/k8s/otel-collector.yaml`.
+   `deploy/helm/train-ticket/templates/observability.yaml`.
 2. Their own PVCs and retention windows, sized the same way as above.
 3. Flipping `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` from `none` to `otlp`
-   on the service Deployments in `deploy/k8s/services.yaml`, plus the equivalent
-   change to the documented service contract below, and SDK-side metric/log
-   provider wiring in each language runtime baseline (the runtime adapters
-   currently install trace APIs only).
+   on the service Deployments — they are set in the shared env block of
+   `deploy/helm/train-ticket/templates/services.yaml`, so this is one edit for
+   all 38 rather than one per service — plus the equivalent change to the
+   documented service contract below, and SDK-side metric/log provider wiring in
+   each language runtime baseline (the runtime adapters currently install trace
+   APIs only).
 
 Until then, treat `docs/09-performance/` reports as the record for metrics.
 
@@ -363,8 +392,9 @@ OTEL_METRICS_EXPORTER=none
 OTEL_LOGS_EXPORTER=none
 ```
 
-Inside the kind cluster, all 23 business services receive the same standard
-OpenTelemetry variables from `deploy/k8s/services.yaml`:
+Inside the kind cluster, all 38 business services receive the same standard
+OpenTelemetry variables, set once in the shared env block of
+`deploy/helm/train-ticket/templates/services.yaml`:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
@@ -427,6 +457,7 @@ legacy `http.method` / `http.status_code` aliases during the baseline).
 - The trace-store Deployment must stay `replicas: 1` with `strategy: Recreate`,
   and its memory limit must stay well above 576Mi. Badger holds an exclusive
   directory lock and preallocates that much buffer before storing any span.
-- The retention window (`--badger.span-store-ttl`) and the volume size must be
+- The retention window (`jaeger.retention.spanStoreTtl`, rendered as
+  `--badger.span-store-ttl`) and the volume size (`jaeger.storage.size`) must be
   changed together, using the arithmetic in
   [Capacity arithmetic](#capacity-arithmetic).

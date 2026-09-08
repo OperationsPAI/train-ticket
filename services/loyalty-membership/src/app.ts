@@ -315,13 +315,13 @@ function healthBody(): HealthStatus {
  * this deployment means specifically "can this pod serve HTTP requests", and
  * flipping it here would make things worse, not better:
  *
- *  - `deploy/k8s/services.yaml` gives loyalty-membership `replicas: 1` behind a
- *    ClusterIP Service. Failing readiness removes the ONLY endpoint, so the
- *    synchronous HTTP API (enroll, redeem, member reads) that still works
- *    perfectly starts returning connection errors. A Redis outage would then
- *    take down the HTTP API too -- widening a partial outage into a total one,
- *    which is the same failure mode as the 2026-09-06 incident rather than a
- *    fix for it.
+ *  - The Helm chart (`deploy/helm/train-ticket/values.yaml`) gives
+ *    loyalty-membership `replicas: 1` behind a ClusterIP Service. Failing
+ *    readiness removes the ONLY endpoint, so the synchronous HTTP API (enroll,
+ *    redeem, member reads) that still works perfectly starts returning
+ *    connection errors. A Redis outage would then take down the HTTP API too --
+ *    widening a partial outage into a total one, which is the same failure mode
+ *    as the 2026-09-06 incident rather than a fix for it.
  *  - Readiness is the one probe that is NOT self-healing. It has no grace
  *    period and no restart: it just removes endpoints and waits. Since the
  *    background retry already recovers consumption without a pod restart,

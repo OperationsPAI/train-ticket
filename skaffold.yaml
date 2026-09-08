@@ -169,6 +169,20 @@ build:
       docker:
         dockerfile: deploy/docker/wallet-promotion/Dockerfile
 
-# Deploy: use k8s-prod manifests (images rewritten to mirror registry)
-# Usage: skaffold build --tag latest   (build + push to docker.io)
-#        kubectl apply -f deploy/k8s-prod/ -n train-ticket-prod  (deploy via mirror)
+# Deploy: this file only BUILDS and pushes images; it has no deploy stage.
+# Installing is Helm's job -- see docs/deployment.md:
+#
+#   skaffold build --tag latest        (build + push to the registry)
+#   helm upgrade --install train-ticket deploy/helm/train-ticket \
+#     -f deploy/helm/values-prod.yaml -n train-ticket-prod
+#
+# The mirror registry is a chart value (global.imageRegistry), not a manifest
+# rewrite: there is no separate set of prod manifests to apply.
+#
+# NOTE: the artifact list above is exactly the chart's rendered image set (39
+# images, `opspai/<name>` here vs `train-ticket/<name>` under values-kind.yaml),
+# so nothing here builds an image no deployment consumes. The one leftover is on
+# the other side: deploy/docker/trip-planning-rs/Dockerfile is byte-identical to
+# deploy/docker/trip-planning/Dockerfile (both compile the Rust crate
+# services/trip-planning-rs) and is now referenced by neither the chart nor this
+# file. See deploy/KNOWN-ISSUES.md.

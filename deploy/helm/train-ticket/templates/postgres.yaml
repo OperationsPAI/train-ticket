@@ -72,6 +72,15 @@ spec:
       labels:
         app.kubernetes.io/name: postgres-{{ $name }}
         app.kubernetes.io/part-of: train-ticket
+        # Also on the POD, not just the Deployment. Scripts that need "the
+        # database pod, whatever the shard is called" select on this: shard names
+        # are per-instance (postgres-core, ...) so there is no stable
+        # /name value to match, and the bare `postgres` Service is an
+        # ExternalName alias with no pods behind it at all.
+        #
+        # Safe to add: it is not part of spec.selector, so it does not touch the
+        # immutable selector field.
+        app.kubernetes.io/component: database
     spec:
       containers:
         - name: postgres

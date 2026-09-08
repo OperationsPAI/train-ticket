@@ -21,13 +21,12 @@
 # Checks 1 and 2 are structural and fast. Check 3 is the one that proves the
 # stack, not just its parts.
 #
-# All lists are derived from deploy/k8s/services.yaml. Nothing here hardcodes
+# All lists are derived from the rendered Helm release. Nothing here hardcodes
 # a count or a name.
 
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANIFEST="${MANIFEST:-${ROOT_DIR}/deploy/k8s/services.yaml}"
 NS="${NAMESPACE:-train-ticket}"
 KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 TIMEOUT="${SMOKE_TIMEOUT:-180}"
@@ -47,26 +46,45 @@ section() { printf '\n== %s\n' "$1"; }
 
 command -v kubectl >/dev/null || { echo "smoke: kubectl not found" >&2; exit 2; }
 k get ns "$NS" >/dev/null 2>&1 || { echo "smoke: namespace ${NS} not found in context ${KCTX}" >&2; exit 2; }
-[ -r "$MANIFEST" ] || { echo "smoke: cannot read ${MANIFEST}" >&2; exit 2; }
 
 # --------------------------------------------------------------------------
-# Expected sets, derived from the manifest.
+# Expected sets, derived from the rendered release.
+#
+# Rendered rather than read from values: this must assert against the exact
+# bytes helm installs, so a templating bug that ships a Service the values did
+# not describe -- or drops one they did -- is caught rather than agreed with.
 # --------------------------------------------------------------------------
+RENDERED=$("${ROOT_DIR}/deploy/render-manifests.sh" 2>/dev/null) || {
+  echo "smoke: could not render the Helm release; cannot derive what to check" >&2
+  exit 2
+}
+
 mapfile -t EXPECTED_SERVICES < <(
-  python3 - "$MANIFEST" <<'PY'
+  printf '%s' "$RENDERED" | python3 -c "
 import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-for name in sorted({d["metadata"]["name"] for d in docs if d.get("kind") == "Service"}):
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+names = set()
+for d in docs:
+    if d.get('kind') != 'Service':
+        continue
+    # ExternalName Services are DNS aliases with no selector, so the API server
+    # never creates an Endpoints object for them and the readiness check below
+    # would report every one of them as broken. The chart has one: the bare
+    # \`postgres\` alias pointing at the default shard. Skipping it loses no
+    # coverage -- the shard it aliases is checked on its own.
+    if d.get('spec', {}).get('type') == 'ExternalName':
+        continue
+    names.add(d['metadata']['name'])
+for name in sorted(names):
     print(name)
-PY
+"
 )
-mapfile -t EXPECTED_DBS < <(grep -oE '@postgres:[0-9]+/[A-Za-z0-9_]+' "$MANIFEST" | cut -d/ -f2 | sort -u)
 
-if [ "${#EXPECTED_SERVICES[@]}" -eq 0 ] || [ "${#EXPECTED_DBS[@]}" -eq 0 ]; then
-  echo "smoke: derived an empty expectation from ${MANIFEST}; refusing to pass vacuously" >&2
+if [ "${#EXPECTED_SERVICES[@]}" -eq 0 ]; then
+  echo "smoke: derived an empty expectation from the rendered release; refusing to pass vacuously" >&2
   exit 2
 fi
-echo "smoke: expecting ${#EXPECTED_SERVICES[@]} services and ${#EXPECTED_DBS[@]} databases (derived from $(basename "$MANIFEST"))"
+echo "smoke: expecting ${#EXPECTED_SERVICES[@]} services (derived from the rendered Helm release)"
 
 # --------------------------------------------------------------------------
 # 1. Readiness, measured at Endpoints rather than pod phase.
@@ -112,25 +130,22 @@ fi
 
 # --------------------------------------------------------------------------
 # 2. Every required database exists.
-#    Independent of the bootstrap Job on purpose: this asserts the outcome, so
-#    it still catches a bootstrap that was skipped, silently no-opped, or ran
-#    against a stale manifest.
+#    Delegated to deploy/verify-databases.sh rather than reimplemented: that
+#    script already derives the expectation per shard from the rendered DSNs, so
+#    a second weaker copy here (which assumed a single `postgres` host) would
+#    silently stop checking anything the moment a shard was added.
+#
+#    Independent of the bootstrap hook on purpose: this asserts the outcome, so
+#    it still catches a hook that was skipped or silently no-opped.
 # --------------------------------------------------------------------------
 section "databases present"
-if ! actual_dbs=$(k exec deploy/postgres -- psql -U trainticket -d postgres -tAc \
-    'SELECT datname FROM pg_database' 2>/dev/null | tr -d '\r' | sort); then
-  fail "could not query postgres for its database list"
+if KCTX="$KCTX" NAMESPACE="$NS" "${ROOT_DIR}/deploy/verify-databases.sh" >/tmp/smoke-dbs.$$ 2>&1; then
+  pass "$(grep -o 'OK -- .*' /tmp/smoke-dbs.$$ || echo 'all required databases exist')"
 else
-  missing=$(comm -23 <(printf '%s\n' "${EXPECTED_DBS[@]}") <(printf '%s\n' "$actual_dbs"))
-  if [ -z "$missing" ]; then
-    pass "all ${#EXPECTED_DBS[@]} required databases exist"
-  else
-    while IFS= read -r db; do
-      [ -n "$db" ] && fail "database '${db}' is missing (owning service will fail on connect)"
-    done <<<"$missing"
-    echo "  hint: kubectl -n ${NS} logs job/db-bootstrap" >&2
-  fi
+  fail "required databases are missing"
+  sed 's/^/    /' /tmp/smoke-dbs.$$ >&2
 fi
+rm -f /tmp/smoke-dbs.$$
 
 # --------------------------------------------------------------------------
 # 3. A real end-to-end write.
@@ -150,6 +165,21 @@ CODE_SUFFIX=$(od -An -N2 -tu2 </dev/urandom | tr -d ' ')
 SMOKE_BODY=$(printf '{"canonicalName":"Smoke %s","placeType":"CITY","code":"S%02d","timezone":"Asia/Shanghai"}' \
   "$CODE_SUFFIX" "$((CODE_SUFFIX % 100))")
 
+# Idempotency-Key must be a UUID v7 -- the services reject anything else with
+# 400 VALIDATION_FAILED. This step used to send "smoke-<n>-<epoch>", so the
+# end-to-end write never actually ran: it failed validation before reaching a
+# handler, meaning the one check here that proves the stack (rather than its
+# parts) had never passed. Same generator as deploy/e2e/lib.sh's uuid7.
+IDEM_KEY=$(python3 - <<'PY'
+import time, random
+ms = int(time.time() * 1000)
+rest = (7 << 76) | (random.getrandbits(12) << 64) | (2 << 62) | random.getrandbits(62)
+b = ms.to_bytes(6, 'big') + rest.to_bytes(10, 'big')
+h = b.hex()
+print(f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}")
+PY
+)
+
 if ! k run "$SMOKE_POD" --image=curlimages/curl:8.10.1 --restart=Never --command -- sleep 120 >/dev/null 2>&1; then
   fail "could not start smoke pod"
 elif ! k wait --for=condition=Ready "pod/$SMOKE_POD" --timeout=90s >/dev/null 2>&1; then
@@ -158,7 +188,7 @@ else
   out=$(k exec -i "$SMOKE_POD" -- curl -sS -m 30 -w $'\n%{http_code}' \
     -X POST "http://place-network:8080/api/v1/places" \
     -H 'Content-Type: application/json' \
-    -H "Idempotency-Key: smoke-${CODE_SUFFIX}-$(date +%s)" \
+    -H "Idempotency-Key: ${IDEM_KEY}" \
     -d "$SMOKE_BODY" 2>/dev/null)
   code=$(printf '%s' "$out" | tail -1)
   bodyout=$(printf '%s' "$out" | sed '$d')
@@ -180,10 +210,31 @@ else
       # Durability: the row must actually be in Postgres, not just in memory.
       # This is precisely the assertion that a schema-less or unreachable
       # database defeats, and it is why the smoke step is not just an HTTP 200.
-      rows=$(k exec deploy/postgres -- psql -U trainticket -d place_network -tAc \
-        "SELECT count(*) FROM place_snapshots WHERE id = '${place_id}'" 2>/dev/null | tr -d ' \r')
-      [ "${rows:-0}" = "1" ] && pass "place ${place_id} is persisted in postgres (place_network.place_snapshots)" \
-        || fail "place ${place_id} is NOT in postgres (found '${rows:-0}' rows) -- service is not durably writing"
+      #
+      # The shard is read from place-network's own DATABASE_URL rather than
+      # assumed to be `postgres`: the bare name is now an ExternalName alias
+      # (no pods, so `exec deploy/postgres` cannot work), and once shards are
+      # split this service may not live on the default one.
+      pg_host=$(printf '%s' "$RENDERED" | python3 -c "
+import sys, yaml, re
+for d in yaml.safe_load_all(sys.stdin):
+    if not d or d.get('kind') != 'Deployment' or d['metadata']['name'] != 'place-network':
+        continue
+    for c in d['spec']['template']['spec']['containers']:
+        for e in c.get('env') or []:
+            if e.get('name') == 'DATABASE_URL':
+                m = re.search(r'@([^:/]+):', e.get('value', ''))
+                if m:
+                    print(m.group(1))
+" 2>/dev/null)
+      if [ -z "$pg_host" ]; then
+        fail "could not determine place-network's postgres shard from the rendered release"
+      else
+        rows=$(k exec "deploy/${pg_host}" -- psql -U trainticket -d place_network -tAc \
+          "SELECT count(*) FROM place_snapshots WHERE id = '${place_id}'" 2>/dev/null | tr -d ' \r')
+        [ "${rows:-0}" = "1" ] && pass "place ${place_id} is persisted in postgres (${pg_host}/place_network.place_snapshots)" \
+          || fail "place ${place_id} is NOT in postgres (found '${rows:-0}' rows) -- service is not durably writing"
+      fi
     fi
   else
     fail "place-network write returned ${code}, expected 201: $(printf '%s' "$bodyout" | head -c 200)"
@@ -193,7 +244,7 @@ fi
 # --------------------------------------------------------------------------
 section "result"
 if [ "$FAILURES" -eq 0 ]; then
-  echo "SMOKE PASSED: ${#EXPECTED_SERVICES[@]} services ready, ${#EXPECTED_DBS[@]} databases present, end-to-end write durable."
+  echo "SMOKE PASSED: ${#EXPECTED_SERVICES[@]} services ready, all required databases present, end-to-end write durable."
   exit 0
 fi
 echo "SMOKE FAILED: ${FAILURES} check(s) failed." >&2

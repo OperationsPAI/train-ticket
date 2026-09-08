@@ -4,7 +4,7 @@ Last updated: 2026-07-08
 
 ## Scope and extraction method
 
-Audited the 23 deployment services listed in `deploy/k8s/services.yaml` against `docs/08-contracts/api/<service>.md`. Runtime/health endpoints (`/health`, `/healthz`, `/live`, `/livez`, `/ready`, `/readyz`, `/metadata`) are intentionally excluded because `api/README.md` defines them globally.
+Audited the 23 deployment services that existed at the time of this audit (2026-07-08) against `docs/08-contracts/api/<service>.md`. The service list is now `services` in `deploy/helm/train-ticket/values.yaml` — the Helm chart replaced the kustomize services manifest this audit read, and the deployed set has since grown to 38, so the counts below are historical. Runtime/health endpoints (`/health`, `/healthz`, `/live`, `/livez`, `/ready`, `/readyz`, `/metadata`) are intentionally excluded because `api/README.md` defines them globally.
 
 Implementation routes were extracted from service source registrations: Spring `@RequestMapping`/`@*Mapping`, FastAPI `@app`/`@router` decorators (including `APIRouter(prefix=...)`), Fastify `app.get/post/patch/...`, Gin groups and `router.GET/POST/...`, and Axum `Router::route` with chained method routers. Path parameters are normalized to `{camelCaseName}` and query templates in docs are compared by path plus method.
 

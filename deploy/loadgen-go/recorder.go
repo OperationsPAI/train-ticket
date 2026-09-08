@@ -117,8 +117,9 @@ func NewRecorder(cfg *Config) (*Recorder, error) {
 	}
 
 	// The path is configuration, never a constant: in the cluster it points
-	// under the /data volume declared in deploy/k8s/loadgen.yaml, and locally
-	// it points wherever the developer asked.
+	// under the /data volume declared in
+	// deploy/helm/train-ticket/templates/loadgen.yaml, and locally it points
+	// wherever the developer asked.
 	if dir := filepath.Dir(rc.Path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("recording: create %s: %w", dir, err)

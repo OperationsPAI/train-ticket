@@ -20,7 +20,8 @@ services:
   # One-shot: a fresh named volume is created root:root 0755, but the jaeger
   # image runs as uid 10001 / gid 0 and needs to create its Badger directories.
   # This is the compose equivalent of the pod securityContext.fsGroup used in
-  # deploy/k8s/jaeger.yaml. It reuses the jaeger image so no extra image is pulled.
+  # deploy/helm/train-ticket/templates/observability.yaml (jaeger.fsGroup). It
+  # reuses the jaeger image so no extra image is pulled.
   jaeger-init:
     image: ${JAEGER_IMAGE:-jaegertracing/all-in-one:1.57}
     user: "0:0"
@@ -31,9 +32,11 @@ services:
       - jaeger-badger:/badger
     restart: "no"
 
-  # Durable trace store. Mirrors deploy/k8s/jaeger.yaml: Badger on a persistent
-  # volume with an explicit 12h retention window. See docs/07-observability/README.md
-  # for the capacity arithmetic behind JAEGER_SPAN_STORE_TTL.
+  # Durable trace store. Mirrors the Jaeger Deployment in
+  # deploy/helm/train-ticket/templates/observability.yaml: Badger on a
+  # persistent volume with an explicit 12h retention window. See
+  # docs/07-observability/README.md for the capacity arithmetic behind
+  # JAEGER_SPAN_STORE_TTL.
   jaeger:
     image: ${JAEGER_IMAGE:-jaegertracing/all-in-one:1.57}
     command:

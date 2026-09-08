@@ -1,0 +1,110 @@
+{{/*
+Per-shard database bootstrap.
+
+WHY THIS EXISTS AT ALL
+----------------------
+The initdb ConfigMap in postgres.yaml only runs when PGDATA is empty. On any
+cluster whose volume has already initialised, adding a name to
+postgres.instances.<shard>.databases has NO effect: the service starts, connects
+to the server, and fails on its first query. `group_booking` was missing that
+way for an unknown length of time while its pod reported healthy, because its
+readiness probe never touched Postgres. This Job closes that gap by running
+against a LIVE server on every release, deriving the list from the same values
+the DSNs are rendered from.
+
+WHY THE HOOK IS pre-upgrade,post-install AND NOT post-install,post-upgrade
+-------------------------------------------------------------------------
+Helm's documented order is: resources -> (--wait blocks until ready) ->
+post-install/post-upgrade hooks. A post-upgrade hook is therefore useless for
+this job: the upgrade that ADDS a database also rolls the service that needs it,
+that pod can never become Available, --wait blocks for the full timeout, and the
+hook that would have created the database never runs. Deadlock.
+
+  * pre-upgrade  -- Postgres is already running from the previous release, so
+                    the databases are created before anything rolls onto them.
+  * post-install -- on a fresh install there is no server to connect to before
+                    the resources exist, and an empty PGDATA means initdb has
+                    already created everything. The hook is a no-op safety net
+                    for the case where the volume survived a `helm uninstall`.
+
+before-hook-creation deletes the previous Job first, so a changed database list
+does not hit the "Job spec is immutable" error a plain in-release Job would.
+*/}}
+{{- if .Values.postgres.enabled }}
+{{- range $name, $pg := .Values.postgres.instances }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-{{ $name }}-bootstrap
+  labels:
+    app.kubernetes.io/name: postgres-{{ $name }}-bootstrap
+    app.kubernetes.io/part-of: train-ticket
+    app.kubernetes.io/component: database
+  annotations:
+    "helm.sh/hook": pre-upgrade,post-install
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  # Bounded so a shard that never comes back fails the release instead of
+  # hanging --wait until the Makefile's timeout.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-{{ $name }}-bootstrap
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" $.Values.postgres.image.repository "tag" $.Values.postgres.image.tag) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          env:
+            - name: PGHOST
+              value: postgres-{{ $name }}
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-{{ $name }}-credentials
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-{{ $name }}-credentials
+                  key: POSTGRES_PASSWORD
+            - name: PGDATABASE
+              value: postgres
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              # On pre-upgrade the shard may be mid-restart; on post-install it
+              # is up but the Service endpoint can lag by a second or two.
+              for i in $(seq 1 60); do
+                pg_isready -q && break
+                echo "waiting for $PGHOST ($i/60)"
+                sleep 2
+              done
+              pg_isready || { echo "FATAL: $PGHOST never became ready"; exit 1; }
+
+              created=0
+              existing=0
+              {{- range $pg.databases }}
+              if psql -tAc "SELECT 1 FROM pg_database WHERE datname = '{{ . }}'" | grep -q 1; then
+                existing=$((existing + 1))
+              else
+                echo "CREATE DATABASE {{ . }}"
+                psql -v ON_ERROR_STOP=1 -c 'CREATE DATABASE {{ . }}'
+                created=$((created + 1))
+              fi
+              psql -v ON_ERROR_STOP=1 \
+                -c 'GRANT ALL PRIVILEGES ON DATABASE {{ . }} TO "'"$PGUSER"'"' >/dev/null
+              {{- end }}
+              echo "bootstrap {{ $name }}: $created created, $existing already present"
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+{{- end }}
+{{- end }}
