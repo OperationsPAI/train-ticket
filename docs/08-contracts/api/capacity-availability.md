@@ -115,7 +115,29 @@ Places a hold on capacity for a segment.
 
 **GET** `/api/v1/capacity-holds/{holdId}`
 
-**Response (200):** Full hold details.
+**Response (200):**
+
+| Field | Type | Description |
+|---|---|---|
+| `holdId` | string | Hold identifier. |
+| `segmentRef` | string | Service segment. |
+| `status` | enum | `REQUESTED`, `HELD`, `CONFIRMED`, `RELEASED`, `EXPIRED`, `FAILED`. |
+| `heldUntil` | timestamp | Hold expiry time. |
+| `requestedAt` | timestamp | When the hold was requested. |
+| `travelerRef` | string? | Traveler reference, when the hold carries one. |
+| `capacityUnitRef` | string | The unit held, e.g. a seat number like `09D`. |
+| `interval` | `StationInterval` | `{fromSeq, toSeq}` the hold covers. |
+
+`capacityUnitRef` and `interval` are required by any caller that has to correlate
+a later `CapacityReleased`/`CapacityHoldExpired` event back to whatever it
+recorded against the hold. seat-assignment matches on
+`(capacityHoldId, capacityUnitRef, fromSeq, toSeq)` and a mismatch in any of the
+four silently matches nothing.
+
+Note this endpoint previously serialised `capacityUnitRef` under the name
+`classRef`. That was wrong -- a class reference is a fare/seat class such as
+`standard`, and it is empty on these holds -- so callers reading `classRef` were
+handed a seat number. `classRef` is no longer returned.
 
 **Error codes:** `NOT_FOUND`
 
