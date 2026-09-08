@@ -7,15 +7,29 @@ import { Resource } from "@opentelemetry/resources";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { installTraceLoggingConsole } from "./trace-logging.js";
 let sdk;
 export function otelTracingEnabled() {
     const exporter = process.env.OTEL_TRACES_EXPORTER?.trim().toLowerCase();
     return Boolean(exporter && exporter !== "none");
 }
+/**
+ * Start the SDK and put trace_id/span_id on every log line.
+ *
+ * The console wrapper goes in here because every service already calls this
+ * once at boot, so the ids reach every line without a single service edit --
+ * the same move java-kit makes by supplying a log pattern instead of rewriting
+ * log statements. It stays inside the tracing-enabled branch: with tracing off
+ * there are no ids to add and logs stay byte-identical to before.
+ */
 export function initOpenTelemetry(options = {}) {
     if (!otelTracingEnabled() && !options.spanExporter) {
         return undefined;
     }
+    // Before the already-started short circuit: the console wrapper captures the
+    // console functions as they are at install time, so a second init call must
+    // still be able to re-establish it rather than assuming the first one holds.
+    installTraceLoggingConsole();
     if (sdk) {
         return sdk;
     }
