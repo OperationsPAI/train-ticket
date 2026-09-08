@@ -123,18 +123,43 @@ structural in the dashboard rebuild.
 
 ## P3 — waitlist never fulfils or expires
 
-**Status:** OPEN
+**Status:** DIAGNOSED — a genuine gap, not timing
 
 Five assertions, all in one flow: `no journey-order reference appeared on the
 waitlist request`, `waitlist did not fulfill (QUEUED)`, `fulfilled waitlist
 response missing journey-order reference`, `missing WaitlistFulfilled event`,
 plus `waitlist not expired (QUEUED)` and `missing WaitlistExpired event`.
 
-The request stays `QUEUED`, which means neither the fulfilment path nor the
-expiry path advances it. `deploy/e2e/12-restart.sh` sees the same, so it is not
-specific to a fresh cluster. Check whether the promotion is driven by an event
-journey-order must publish (which would make it downstream of P1) or by a
-waitlist-internal timer.
+The request stays `QUEUED` because the only event that can advance it is never
+published. The chain, all verified:
+
+1. `services/waitlist/src/subscriber.ts` advances a request on
+   **`WaitlistCapacityFreed`** only. It deliberately ignores `CapacityReleased`
+   -- that fact carries no `segmentRef`/`departureDate`, so `tryParseCapacityFreed`
+   returns undefined and the handler acks without doing anything. The comment
+   there says so explicitly.
+2. capacity-availability emits `WaitlistCapacityFreed` (domain.rs:950, :984) only
+   when `self.waitlist_state.is_active()` and capacity actually increased.
+3. `waitlist_state` becomes Active only in one place (domain.rs:813): when a hold
+   request finds `occupied >= effective_capacity` and therefore FAILS.
+
+So the waitlist has to be activated by a hold that was rejected for being full,
+before any release can free it. On the live cluster **`WaitlistActivated` appears
+0 times in the last 500 capacity events** -- the state machine never enters
+Active, so nothing can ever leave QUEUED.
+
+waitlist itself is healthy: 1 pending message, no errors. This is not throughput
+and not a test window (the assertion polls 24 x 5s = 120s).
+
+Two candidate resolutions, not yet chosen:
+- the test does not fill capacity before queueing, so activation never triggers
+  -- making it a test-setup gap; or
+- releasing capacity on a segment that has queued requests should free them
+  regardless of whether a prior hold was rejected, making the `is_active()` guard
+  too narrow.
+
+Deciding needs the intended semantics from the capacity/waitlist contracts, which
+is why this is left diagnosed rather than guessed at.
 
 ## P4 — managed refund fee uses the wrong penalty base
 
