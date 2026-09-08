@@ -3,6 +3,7 @@ package com.trainticket.postsales.api;
 import com.trainticket.platformkit.http.ApiError;
 import com.trainticket.platformkit.http.CorrelationIds;
 import com.trainticket.postsales.application.OrderNotRefundableException;
+import com.trainticket.postsales.application.PolicyContextUnavailableException;
 import com.trainticket.postsales.application.PostSalesConcurrencyException;
 import com.trainticket.postsales.application.RefundAlreadyInProgressException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -27,6 +28,19 @@ public class PostSalesExceptionHandler {
     @ExceptionHandler(PostSalesConcurrencyException.class)
     public ResponseEntity<ApiError> handleConcurrency(PostSalesConcurrencyException exception, HttpServletRequest request) {
         return error(HttpStatus.CONFLICT, "REFUND_ALREADY_IN_PROGRESS", exception.getMessage(), request, Map.of());
+    }
+
+    /**
+     * 409 rather than 500: the caller can and should retry. The context is
+     * projected from a journey-order event, so a refund request can outrun it by a
+     * second or two, and refusing is the only alternative to pricing the refund
+     * from a fallback that forces a 100% penalty.
+     */
+    @ExceptionHandler(PolicyContextUnavailableException.class)
+    public ResponseEntity<ApiError> handlePolicyContextUnavailable(
+            PolicyContextUnavailableException exception, HttpServletRequest request) {
+        return error(HttpStatus.CONFLICT, "POLICY_CONTEXT_NOT_READY", exception.getMessage(), request,
+            Map.of("journeyOrderId", exception.journeyOrderId()));
     }
 
     @ExceptionHandler(OrderNotRefundableException.class)

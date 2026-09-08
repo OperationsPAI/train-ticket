@@ -198,7 +198,12 @@ public class PostSalesApplicationService {
             return new PostSalesDecision(postSalesCase.caseId(), 1, kind, true, "ELIGIBLE", ruleSnapshot, amount, null, null, null, now, now.plusSeconds(900));
         }
 
-        PostSalesPolicyContext policyContext = policyContextFor(postSalesCase, now, refundable);
+        // REFUND is the one decision kind where a fallback context produces a WRONG
+        // answer rather than a harmless one: departureTime=now forces
+        // AFTER_DEPARTURE_NON_REFUNDABLE, a 100% penalty and a zero refund, which
+        // payment then skips without publishing anything. CHANGE tolerates it.
+        PostSalesPolicyContext policyContext =
+            policyContextFor(postSalesCase, now, refundable, kind == DecisionKind.REFUND);
         if (kind == DecisionKind.CHANGE) {
             Money originalFare = policyContext.originalFareOr(amountDue.isZero() ? refundable : amountDue);
             ChangeAssessment assessment = changePolicyEngine.evaluateQuotedChange(
@@ -254,7 +259,8 @@ public class PostSalesApplicationService {
         return PostSalesDecision.refund(postSalesCase.caseId(), true, "ELIGIBLE", ruleSnapshot, amount, assessment, now, now.plusSeconds(900));
     }
 
-    private PostSalesPolicyContext policyContextFor(PostSalesCase postSalesCase, Instant now, Money fallbackAmount) {
+    private PostSalesPolicyContext policyContextFor(
+            PostSalesCase postSalesCase, Instant now, Money fallbackAmount, boolean requireContext) {
         Optional<PostSalesPolicyContext> stored = policyContextStore.findByOrderId(postSalesCase.journeyOrderId());
         if (stored.isPresent()) {
             PostSalesPolicyContext context = stored.get();
@@ -273,10 +279,22 @@ public class PostSalesApplicationService {
         // refunded. Every step of that is currently invisible; this line is what
         // makes it attributable to a missing policy context rather than to a
         // pricing rule.
+        if (requireContext) {
+            // Refuse rather than price it wrong. See PolicyContextUnavailableException:
+            // the context arrives from journey-order over a stream, so a refund request
+            // can outrun it, and on the live cluster every order that missed had its
+            // context within seconds. A retryable 409 is recoverable; a zero refund the
+            // caller cannot distinguish from a correct one is not.
+            LOGGER.warn("post-sales policy context MISS case={} order={} -- refusing to price a "
+                    + "refund without it. The context is written from "
+                    + "JourneyOrderCreated/Confirmed; if this persists for one order, that event "
+                    + "carried no segments[].departureTime or was never consumed.",
+                postSalesCase.caseId(), postSalesCase.journeyOrderId());
+            throw new PolicyContextUnavailableException(postSalesCase.journeyOrderId());
+        }
         LOGGER.warn("post-sales policy context MISS case={} order={} -- falling back to "
-                + "departureTime=now, which forces AFTER_DEPARTURE_NON_REFUNDABLE (100% penalty, "
-                + "zero refund). The context is written from JourneyOrderCreated/Confirmed; a miss "
-                + "means that event carried no segments[].departureTime, or was never consumed.",
+                + "departureTime=now. Harmless for this decision kind, but it would force "
+                + "AFTER_DEPARTURE_NON_REFUNDABLE on a refund.",
             postSalesCase.caseId(), postSalesCase.journeyOrderId());
         return PostSalesPolicyContext.fallback(
             postSalesCase.journeyOrderId(),
