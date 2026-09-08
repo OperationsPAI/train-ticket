@@ -149,7 +149,7 @@ check_code 200 "channel order readable"
 req POST post-sales /api/v1/post-sales-cases "{\"journeyOrderId\":\"$ORDER\",\"caseType\":\"REFUND\",\"scope\":{\"orderItemRefs\":[\"$SB\"],\"segmentRefs\":[\"$SEEDED_SEG\"],\"travelerRefs\":[\"$TVL\"],\"entitlementRefs\":[\"$ENT\"]},\"reasonCode\":\"CUSTOMER_REQUEST\",\"actorRef\":\"$ACCT\"}"
 check_code 201 "refund case opened"
 CASE=$(jget "['caseId']")
-req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
 check_code 200 "refund evaluated"
 req POST post-sales "/api/v1/post-sales-cases/$CASE/approve" "{\"approvedBy\":{\"actorType\":\"OPERATIONS\",\"actorId\":\"ops-e2e\"}}"
 check_code 200 "refund approved"

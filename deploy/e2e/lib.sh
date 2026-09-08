@@ -119,6 +119,32 @@ req() {
   RESP=$(echo "$out" | sed '$d')
 }
 
+# req_retry_conflict METHOD SERVICE PATH [BODY] -- like req, but retries on 409.
+#
+# post-sales prices a refund from a policy context it projects off a
+# journey-order event, so a refund evaluated straight after purchase can outrun
+# that projection and gets 409 POLICY_CONTEXT_NOT_READY. It used to fall back to
+# departureTime=now, which forces AFTER_DEPARTURE_NON_REFUNDABLE and quotes a
+# ZERO refund -- a wrong answer indistinguishable from a correct one. Refusing
+# with a retryable status is the better trade, and it makes the wait the caller's
+# job.
+#
+# Bounded at ~10s total: on the live cluster every missing context arrived within
+# seconds, so anything longer is a real fault and should fail rather than hang.
+req_retry_conflict() {
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    req "$@"
+    [ "$LAST_CODE" != "409" ] && return 0
+    case "$RESP" in
+      *POLICY_CONTEXT_NOT_READY*) ;;
+      *) return 0 ;;   # a different 409 (e.g. REFUND_ALREADY_IN_PROGRESS) is not retryable
+    esac
+    sleep 2
+  done
+  return 0
+}
+
 # jget FIELD_EXPR -> extract from $RESP, e.g. jget "['placeId']"
 jget() { echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d$1)" 2>/dev/null; }
 

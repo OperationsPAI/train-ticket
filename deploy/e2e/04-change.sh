@@ -17,7 +17,7 @@ CASE=$(jget "['caseId']")
 echo "  CASE=$CASE"
 
 echo "== 2. evaluate (fare adjustment quote path)"
-req POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
+req_retry_conflict POST post-sales "/api/v1/post-sales-cases/$CASE/evaluate" '{}'
 check_code 200 "evaluate CHANGE"
 AMOUNT_DUE=$(jget "['amountDue']['minorUnits']")
 echo "  eligible=$(jget "['eligible']") amountDue=$(jget "['amountDue']")"
