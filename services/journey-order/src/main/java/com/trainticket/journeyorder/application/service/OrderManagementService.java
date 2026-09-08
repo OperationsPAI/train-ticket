@@ -11,6 +11,7 @@ import com.trainticket.journeyorder.application.port.out.EventPublisher;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
 import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
+import com.trainticket.journeyorder.application.port.out.OfferPricePort;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
@@ -52,13 +53,23 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final EventPublisher eventPublisher;
     private final Clock clock;
     private final IdentityVerificationPort identityVerification;
+    private final OfferPricePort offerPrice;
 
     @Autowired
-    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository, IdentityVerificationPort identityVerification) {
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
+            IdentityVerificationPort identityVerification, OfferPricePort offerPrice) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.stateRepository = stateRepository;
         this.identityVerification = identityVerification;
+        this.offerPrice = offerPrice;
+    }
+
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository, IdentityVerificationPort identityVerification) {
+        // No offer lookup: the existing unit tests construct the service directly
+        // and assert on the placeholder fare. They keep the old behaviour rather
+        // than each needing a stub, and the production path always has the port.
+        this(eventPublisher, clock, stateRepository, identityVerification, (offerId, offerVersion) -> java.util.Optional.empty());
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository) {
@@ -119,15 +130,41 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 now.plusSeconds(30L * 86400L), now.plusSeconds(30L * 86400L + 25200L), ""))
             .toList();
 
-        // Create minimal order items for the aggregate
+        // Per-traveler fare items, priced from the OFFER rather than a literal.
+        //
+        // This used to be Money.of("CNY", "100.00") regardless of what the customer
+        // was quoted, which is worse than a display bug: post-sales derives the
+        // refund penalty base from the order's fare, so every refund was priced
+        // against 100.00 with the correct tier percentage applied to the wrong
+        // number. On the live cluster every post_sales_policy_contexts row held
+        // 100.00 or 200.00 and none held anything else, whatever fare rules were
+        // published.
+        //
+        // The offer total is split across travelers, with the remainder going to
+        // the first item so the items sum EXACTLY to the total. Dividing and
+        // rounding each share independently loses or invents minor units, and this
+        // sum is what the payable total is derived from.
         List<OrderItem> orderItems = new ArrayList<>();
+        Money perTraveler = fallbackFare();
+        long remainderMinorUnits = 0;
+        Money offerTotal = offerPrice.totalFor(request.offerId(), request.offerVersion()).orElse(null);
+        if (offerTotal != null && !travelers.isEmpty()) {
+            long totalMinor = offerTotal.toMinorUnits();
+            long share = totalMinor / travelers.size();
+            remainderMinorUnits = totalMinor - share * travelers.size();
+            perTraveler = Money.fromMinorUnits(share, offerTotal.currency().getCurrencyCode());
+        }
         for (int i = 0; i < travelers.size(); i++) {
             String itemId = "fare-" + request.offerId() + "-" + i;
             String travelerId = request.travelerRefs().get(i);
             String segmentRef = request.segmentRefs().get(0);
+            Money itemFare = i == 0 && remainderMinorUnits > 0
+                ? Money.fromMinorUnits(perTraveler.toMinorUnits() + remainderMinorUnits,
+                    perTraveler.currency().getCurrencyCode())
+                : perTraveler;
             orderItems.add(new OrderItem(
                 itemId, com.trainticket.journeyorder.domain.OrderItemType.SEGMENT_FARE,
-                "fare", Money.of("CNY", "100.00"), "segment-1",
+                "fare", itemFare, "segment-1",
                 List.of(new com.trainticket.journeyorder.domain.OrderLineBinding(itemId, travelerId, segmentRef, ""))
             ));
         }
@@ -303,6 +340,18 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             payload.put("eligibilityRef", eligibility);
         }
         return payload;
+    }
+
+    /**
+     * Fare used when the offer's price cannot be read.
+     *
+     * Order creation must not fail because offer-management is unavailable, so
+     * there has to be some value. It is a placeholder and the adapter logs a
+     * warning when it is reached -- an order carrying this figure will misprice
+     * any refund against it, which is the defect this whole path exists to fix.
+     */
+    private static Money fallbackFare() {
+        return Money.of("CNY", "100.00");
     }
 
     private static Map<String, Object> monetaryPayload(MonetarySummary summary) {
