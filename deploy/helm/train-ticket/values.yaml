@@ -451,9 +451,24 @@ services:
   invoicing:
     db: invoicing
     env:
-      # 5 streams, and the only group still showing a non-zero lag (2152) rather
-      # than merely pending -- it was not keeping up with delivery at all.
-      CONSUMER_THREADS: "4"
+      # NOT raised above 1, unlike the other multi-stream consumers, and it was a
+      # mistake to try. invoicing keeps its entire aggregate, projection and
+      # idempotency state in ONE jsonb row (`invoicing_state`, id = 1) and takes
+      # `SELECT ... FOR UPDATE` on it for every command and every consumed event.
+      # See the design note at services/invoicing/src/adapters/storage.rs:5 --
+      # the row lock is deliberate, it is what makes "no update can be lost" true.
+      #
+      # So writers are serialized by construction and extra consumer threads
+      # cannot overlap; they only queue behind the same lock. That row had grown
+      # to 3.78 MB, every event rewrote all of it, and the UPDATE was logging
+      # `slow statement ... elapsed=1.02s`. With 4 threads contending, invoicing
+      # fell far enough behind that booking sagas timed out at their INVOICING
+      # step -- the fix made the symptom worse.
+      #
+      # Raising throughput here means splitting that row into the ten real tables
+      # the schema already has (all currently empty), which is a storage redesign,
+      # not a tuning knob.
+      CONSUMER_THREADS: "1"
       # The pool must cover the consumer threads plus the HTTP handlers plus the
       # outbox relay, all of which contend at startup. rust-kit defaults to 10
       # with a 5s acquire_timeout, and 4 consumer threads did not fit: invoicing

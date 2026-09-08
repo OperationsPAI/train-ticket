@@ -108,6 +108,36 @@ Closing this means adding an `MctRulePublished`/`MctRuleRetired` arm to
 `PlanIndex::apply_event` in `services/trip-planning-rs/src/plan_index.rs` and a
 feasibility check where candidates are assembled.
 
+### invoicing serialises all writes through one 3.8 MB jsonb row
+
+`services/invoicing` keeps its entire aggregate, projection and idempotency
+state in a single row: `invoicing_state` where `id = 1`. Every command and every
+consumed event takes `SELECT ... FOR UPDATE` on that row, hydrates the domain
+engine from the blob, applies the change, and writes the whole blob back. The
+design note at `services/invoicing/src/adapters/storage.rs:5` is explicit that
+this is deliberate -- the row lock is what makes "no update can be lost" true
+without optimistic concurrency.
+
+The cost is that writes are serialised by construction and the per-event work
+grows with total accumulated state. On the live cluster that row had reached
+**3.78 MB** and the update was logging `slow statement ... elapsed=1.02s` on
+every event. Because it is a rewrite of everything, this gets monotonically
+worse over the life of the deployment.
+
+Two consequences worth knowing before touching it:
+
+  * **Extra consumer threads do not help and actively hurt.** Setting
+    `CONSUMER_THREADS=4` (as the other multi-stream consumers use) only queues
+    more workers behind the same row lock. invoicing fell far enough behind that
+    booking sagas began timing out at their `INVOICING` step. It is pinned back
+    to `1` in `deploy/helm/train-ticket/values.yaml` with a comment saying why.
+  * **The schema for a real fix already exists.** invoicing has ten ordinary
+    tables -- `e_invoices`, `e_invoice_requests`, `red_flushes`,
+    `invoice_titles`, `amount_basis_projection`, `invoice_eligibility_projection`
+    and the platform tables -- and **all of them are empty**. Splitting the blob
+    into them, with per-aggregate optimistic concurrency instead of a global
+    lock, is the fix. That is a storage redesign, not a tuning change.
+
 ### (RESOLVED) `deploy/build-images.sh` image names must track the deployment
 
 The script used to carry a hand-maintained `services=()` array that had to be
