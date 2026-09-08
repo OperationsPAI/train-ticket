@@ -73,7 +73,13 @@ class OrderManagementServiceTest {
         service.createOrder(request, "idem-contract-created", "corr-1");
 
         Map<String, Object> payload = (Map<String, Object>) published().getFirst().payload();
-        assertEquals(java.util.Set.of("orderId", "accountId", "offerId", "monetarySummary", "travelerRefs", "segmentRefs", "createdAt"), payload.keySet());
+        // `segments` carries each segment's departureTime, which post-sales needs to
+        // build a refund policy context; without it every refund quotes zero. See
+        // docs/08-contracts/events/journey-order.md. This assertion is deliberately
+        // an exact set match rather than a containsAll -- it is what caught the
+        // field being added to the event without the contract being updated.
+        assertEquals(java.util.Set.of("orderId", "accountId", "offerId", "monetarySummary",
+            "travelerRefs", "segmentRefs", "segments", "createdAt"), payload.keySet());
         assertTrue(String.valueOf(payload.get("orderId")).startsWith("ord-"));
         assertEquals("account-1", payload.get("accountId"));
         assertEquals("offer-1", payload.get("offerId"));
