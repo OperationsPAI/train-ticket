@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/trainticket/greenfield/platform/go-kit/messaging"
+	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 )
 
 type OutboxAppender struct {
@@ -112,10 +114,61 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 	return err
 }
 
+// cleanupBatchSize is the rows per retention DELETE. Small enough to finish
+// quickly even when the retention column is unindexed.
+const cleanupBatchSize = 5000
+
+// cleanupMaxBatches bounds one sweep pass per table; the next pass resumes.
+const cleanupMaxBatches = 20
+
+// cleanup is the retention sweep for the three platform tables.
+//
+// Deletes in BATCHES, and reports what it did. The previous version issued one
+// unbounded DELETE per table and discarded the error return entirely, and on a
+// long-running cluster that combination silently stopped working: journey-order's
+// processed_events had reached 1,092,388 rows and 205 MB, with 1,085,529 of them
+// past the 5-minute retention and the oldest 21 hours old. processed_at was
+// unindexed, so the statement planned a Seq Scan over the whole table and tried
+// to delete a million rows in one transaction; whatever went wrong was thrown
+// away with the error.
+//
+// The cost of that lands on the hot path: every consumed event checks
+// processed_events for deduplication, so a table that grows without bound makes
+// every event handler in the service slower.
 func (r *OutboxRelay) cleanup(ctx context.Context) {
-	r.db.Exec(ctx, `DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'`)
-	r.db.Exec(ctx, `DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'`)
-	r.db.Exec(ctx, `DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'`)
+	r.sweep(ctx, "outbox", `DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox `+
+		`WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' LIMIT $1)`)
+	r.sweep(ctx, "processed_events", `DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events `+
+		`WHERE processed_at < now() - interval '5 minutes' LIMIT $1)`)
+	r.sweep(ctx, "idempotency_records", `DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records `+
+		`WHERE created_at < now() - interval '10 minutes' LIMIT $1)`)
+}
+
+// sweep runs one batched retention sweep. Uses `ctid IN (SELECT ... LIMIT n)`
+// because a plain `DELETE ... LIMIT` is not valid in Postgres, and the subquery
+// keeps the row set bounded whether or not the retention column is indexed.
+func (r *OutboxRelay) sweep(ctx context.Context, table string, batchedDelete string) {
+	var removed int64
+	for batch := 0; batch < cleanupMaxBatches; batch++ {
+		tag, err := r.db.Exec(ctx, batchedDelete, cleanupBatchSize)
+		if err != nil {
+			// Logged, not discarded. The silent version of this is why nobody
+			// noticed the sweep had stopped for 21 hours.
+			log.Printf("WARN %sretention sweep for %s failed after removing %d rows: %T: %v",
+				goruntime.TraceLogFields(ctx), table, removed, err, err)
+			return
+		}
+		affected := tag.RowsAffected()
+		removed += affected
+		if affected < cleanupBatchSize {
+			return
+		}
+	}
+	// Still behind after a full budget: the table is growing faster than the
+	// sweep drains it, which is how the million-row backlog accumulated.
+	log.Printf("WARN %sretention sweep for %s removed %d rows and hit its batch budget; "+
+		"the table is still above retention. If this repeats, the retention column likely needs an index.",
+		goruntime.TraceLogFields(ctx), table, removed)
 }
 
 type ProcessedEvents struct {
