@@ -89,6 +89,24 @@ final class InboundEventPayload {
         return optionalTextValue("orderId");
     }
 
+    /**
+     * The post-sales decisionKind ("REFUND", "CHANGE", "COMPENSATION"), or null.
+     *
+     * Used only to classify a zero approved amount when logging: zero is routine
+     * for CHANGE and a dropped refund for REFUND, and those two need to look
+     * different in the log. Never used to decide behaviour, so a null is fine.
+     */
+    String optionalDecisionKindFromApprovedActions() {
+        Object actions = payload.get("approvedActions");
+        if (actions instanceof Map<?, ?> approvedActions) {
+            Object kind = approvedActions.get("decisionKind");
+            if (kind instanceof String text && !text.isBlank()) {
+                return text;
+            }
+        }
+        return optionalTextValue("decisionKind");
+    }
+
     String optionalTextValue(String field) {
         Object value = payload.get(field);
         return value instanceof String text && !text.isBlank() ? text : null;
