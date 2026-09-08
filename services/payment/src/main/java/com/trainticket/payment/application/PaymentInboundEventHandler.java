@@ -151,17 +151,46 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         if (intentId == null) {
             String orderRef = payload.orderRefFromApprovedActions();
             intentId = orderRef == null ? null : paymentCommands.findIntentIdByBusinessRef(orderRef).orElse(null);
+            if (intentId == null && orderRef != null) {
+                LOGGER.warn("payment ignoring PostSalesApproved case={} eventId={}: no payment intent "
+                        + "is registered for order {}", caseId, envelope.eventId(), orderRef);
+                return;
+            }
         }
         if (intentId == null) {
             // Approval does not reference any payment this context knows about.
+            // DEBUG, not WARN: a COMPENSATION or entitlement-only approval
+            // legitimately names no payment, so this is a normal no-op rather than
+            // a dropped refund.
+            LOGGER.debug("payment ignoring PostSalesApproved case={} eventId={}: the approval "
+                    + "references no payment intent or order", caseId, envelope.eventId());
             return;
         }
         Money amount = payload.moneyFromApprovedActions();
         if (amount == null || amount.isZero()) {
             // CHANGE decisions routinely approve with a zero refund amount:
             // nothing to refund, so this event is a no-op for payment.
+            //
+            // But a REFUND decision arriving with zero is the visible end of the
+            // post-sales policy-context failure (missing context -> departureTime
+            // defaults to now -> AFTER_DEPARTURE_NON_REFUNDABLE -> 100% penalty).
+            // Distinguishing the two here is what turns "the customer was never
+            // refunded and nothing logged it" into one greppable line.
+            String decisionKind = payload.optionalDecisionKindFromApprovedActions();
+            if ("REFUND".equals(decisionKind)) {
+                LOGGER.warn("payment received a REFUND approval with a ZERO amount: case={} order-intent={} "
+                        + "eventId={} amount={} -- no RefundRequested will be published, so nothing is "
+                        + "refunded. A zero on a REFUND decision normally means post-sales priced it with "
+                        + "a fallback policy context (check for 'policy context MISS' in post-sales).",
+                    caseId, intentId, envelope.eventId(), amount);
+            } else {
+                LOGGER.debug("payment no-op for PostSalesApproved case={} eventId={} decisionKind={}: "
+                        + "approved refund amount is zero", caseId, envelope.eventId(), decisionKind);
+            }
             return;
         }
+        LOGGER.info("payment requesting refund from PostSalesApproved case={} intent={} amount={} reason={}",
+            caseId, intentId, amount, reason);
         requestRefund(intentId, amount, reason == null ? "post-sales-approved" : reason, caseId, caseId, envelope.correlationId());
     }
 
