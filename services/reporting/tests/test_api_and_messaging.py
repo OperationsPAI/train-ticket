@@ -489,7 +489,7 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(acks, ["1-0", "1-1"])
 
 class PostgresProjectionTest(unittest.TestCase):
-    def test_postgres_projection_persists_metric_events_and_publishes_urgent_action(self) -> None:
+    def _projection_service(self) -> tuple[object, object]:
         from reporting.adapters.storage.postgres import PostgresReportingApplicationService
 
         class FakeCursor:
@@ -580,6 +580,10 @@ class PostgresProjectionTest(unittest.TestCase):
 
         pool = FakePool()
         service = PostgresReportingApplicationService(pool)
+        return pool, service
+
+    def test_postgres_projection_persists_metric_events_and_publishes_urgent_action(self) -> None:
+        pool, service = self._projection_service()
         skipped = service.handle_event(EventEnvelope(
             eventId="evt-pg-seat-skip",
             eventType="SeatAllocated",
@@ -607,6 +611,11 @@ class PostgresProjectionTest(unittest.TestCase):
         self.assertEqual(event_types.count("PaymentFailed"), 2)
         self.assertIn("reporting_revenue_by_route", pool.conn.refreshed)
         self.assertIn("reporting_revenue_breakdowns", pool.conn.refreshed)
+        # Only payment captures feed the revenue views, so the two PaymentFailed
+        # events must not trigger a refresh: each one takes an ACCESS EXCLUSIVE
+        # lock that serialises every other reader of the table.
+        self.assertEqual(pool.conn.refreshed.count("reporting_revenue_by_route"), 8)
+        self.assertEqual(pool.conn.refreshed.count("reporting_revenue_breakdowns"), 8)
         self.assertIn("AnomalyDetected", outbox_types)
         self.assertIn("UrgentNotificationRequested", outbox_types)
 
