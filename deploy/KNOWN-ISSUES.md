@@ -164,6 +164,65 @@ Two consequences worth knowing before touching it:
     into them, with per-aggregate optimistic concurrency instead of a global
     lock, is the fix. That is a storage redesign, not a tuning change.
 
+### Jaeger's Badger store outgrows its PVC because nothing samples traces
+
+Every service exports 100% of its spans -- there is no sampler configured
+anywhere in the chart or the collector -- and the observed ingest rate is several
+times the 105 spans/s the capacity table in
+`docs/07-observability/README.md` sizes the 10Gi PVC and the 12h TTL against.
+
+On kind the PVC request is not a bound: the `standard` StorageClass is
+`rancher.io/local-path`, which is hostPath-backed and does not enforce
+`storage.size`. So the TTL is the only thing holding the store down, and at this
+rate it does not hold -- the store reached **24.4 GB against a 10Gi request**.
+
+The failure mode is not a disk-full error. Badger's LSM compaction reads whole
+SST tables into memory, and that cost scales with accumulated data rather than
+ingest rate, so the pod OOMKills during compaction. Because the pending
+compaction work survives on disk, each restart re-attempts it and the pod
+OOM-loops instead of recovering. Raising `jaeger.resources.limits.memory` moves
+the deadline out; it does not remove it, and the limit is already at 4Gi.
+
+Two things make this stick around once it starts:
+
+  * **It does not self-heal.** `deploy/repair-unready.sh` lists `jaeger` in
+    `INFRA_SKIP`, deliberately -- the script must not restart infrastructure --
+    so an OOM-looping Jaeger is never picked up by a repair round.
+  * **Clearing it requires dropping the store.** The recovery is to scale the
+    deployment to 0, delete the `jaeger-badger` PVC, and scale back up; Badger
+    holds an exclusive directory lock on an RWO volume, so the pod has to be
+    gone first. Traces are not recoverable, which is why this is acceptable here
+    and would not be in an environment where they matter.
+
+The fix is head sampling at the SDK or collector, sized so the steady-state
+store fits the TTL. Until then, expect to clear the volume on any long-running
+cluster.
+
+### (RESOLVED) A readiness-probe timeout could kill any Node service
+
+`checkPostgresReadiness` in `platform/ts-kit/src/storage.ts` raced its own
+timeout. On timeout it returned the connection to the pool with `SELECT 1` still
+in flight -- nothing cancels an abandoned query -- so the next borrower read the
+probe's response as its own. pg's double-release guard then threw from inside a
+`pg` callback, which rethrows on `process.nextTick()`, where no caller can catch
+it. The process exited 1.
+
+The signature in the logs is a `DeprecationWarning` about calling `client.query()`
+while the client is already executing a query, immediately followed by
+`Error: Release called on client which has already been released to the pool.`
+
+Both the timeout and the crash need load to reach: the probe has 200ms and the
+pool has to hand the poisoned connection to a real query before the probe's
+response arrives. It surfaced on offer-management only after payment's consumer
+backlog was cleared and traffic returned to normal levels, so treat this as
+latent-on-idle rather than new.
+
+The fix passes an error to `release()`, which destroys the connection instead of
+pooling it -- the only safe disposal for a connection with unread results -- and
+splits the connect timeout from the query timeout so exactly one release happens
+on every path. All seven Node services build the kit from source in their
+Dockerfile, so a kit change reaches them only through an image rebuild.
+
 ### (RESOLVED) `deploy/build-images.sh` image names must track the deployment
 
 The script used to carry a hand-maintained `services=()` array that had to be
