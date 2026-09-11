@@ -526,6 +526,7 @@ class PostgresProjectionTest(unittest.TestCase):
                 self.processed: set[str] = set()
                 self.refreshed: list[str] = []
                 self.metric_event_windows: list[object] = []
+                self.dashboard_loads: list[str] = []
                 self.dashboards: dict[str, tuple[int, dict[str, object]]] = {}
 
             def __enter__(self) -> "FakeConnection":
@@ -584,6 +585,7 @@ class PostgresProjectionTest(unittest.TestCase):
                     self.outbox.append((str(params[1]), _payload_dict(params[2])))
                     return FakeCursor()
                 if normalized.startswith("SELECT id, version, data FROM dashboard_read_model_snapshots"):
+                    self.dashboard_loads.append(normalized)
                     return FakeCursor(rows=[(key, version, data) for key, (version, data) in self.dashboards.items()])
                 raise AssertionError(f"unexpected SQL: {normalized}")
 
@@ -712,6 +714,31 @@ class PostgresProjectionTest(unittest.TestCase):
         for window in pool.conn.metric_event_windows:
             self.assertIsNotNone(window, "the write path must bound the load by occurred_at")
             self.assertGreater(window, datetime.now(UTC) - timedelta(days=2))
+
+    def test_postgres_projection_locks_the_dashboard_rows_it_is_about_to_rebuild(self) -> None:
+        # Five worker processes consume in parallel and rebuild the same handful of
+        # dashboards. Without the lock they read one version, race to write it, and
+        # all but one raise OptimisticConcurrencyError -- which redelivers the event
+        # and repeats the entire handler, aggregator load included. The expensive
+        # work is already done by the time the rows are read, so the lock spans only
+        # the rebuild and the outbox insert.
+        pool, service = self._projection_service()
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        service.handle_event(EventEnvelope(
+            eventId="evt-pg-lock",
+            eventType="BoardingVerified",
+            occurredAt=occurred_at,
+            correlationId="corr-lock",
+            producer="fulfillment",
+            schemaVersion=1,
+            payload={"entitlementId": "ent-1"},
+            causationId="evt-source",
+        ))
+
+        self.assertTrue(pool.conn.dashboard_loads)
+        for load in pool.conn.dashboard_loads:
+            self.assertIn("FOR UPDATE", load, "the write path must lock the rows it rebuilds")
 
     def test_read_endpoints_still_aggregate_over_all_of_history(self) -> None:
         # The window belongs to the write path only. Revenue and route reports are
