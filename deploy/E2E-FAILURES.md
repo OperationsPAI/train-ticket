@@ -110,7 +110,7 @@ the handler rather than guessing at the storage layer again.
 
 ## P2 — reporting read model never catches up
 
-**Status:** OPEN
+**Status:** FIXED — three defects in the write path, all measured
 
 `reporting` consumes 37 streams — the widest fan-in in the system — and holds
 6,080 pending. Assertions on its read model fail: `reporting stream empty`,
@@ -118,8 +118,41 @@ the handler rather than guessing at the storage layer again.
 not change`, `reporting waitlist rollup missing`. It was raised to 8 consumer
 threads; that evidently did not close the gap.
 
-Need to determine whether this is the same deficit as P1 (rate) or something
-structural in the dashboard rebuild.
+It was not the P1 rate deficit. Three separate defects in `handle_event`, found
+by following a suite stall rather than the pending count:
+
+**1. The materialized views were refreshed on every event.** `handle_event`
+called `_refresh_revenue_views` unconditionally, inside its transaction. Each
+`REFRESH` takes an ACCESS EXCLUSIVE lock, so concurrent handlers serialised;
+`pg_stat_activity` showed three competing `REFRESH reporting_revenue_by_route`
+blocking other queries for 68s, and `GET /api/v1/metrics/operational` returned
+nothing in 60s — which is what stalled `12-restart.sh` for 20 minutes at
+`14-waitlist.sh`. The refresh itself costs 6.3s for `by_route` alone. At the time
+of measurement **zero of 26,848 stored rows** had an event type any of the three
+views aggregate, so every one of those refreshes was pure waste. Now guarded on
+the payment-capture types the views actually filter on.
+
+**2. Rebuilding the aggregator was quadratic.** `MetricAggregator.record`
+scanned every event already recorded to reject a duplicate id, and
+`_load_aggregator` rebuilds from the whole table on every event. Measured
+21.8s per rebuild at 27k rows (0.12s at 2k, 1.91s at 8k — the shape is
+unambiguous), on eight consumer threads, which starved the uvicorn workers of
+the GIL. Indexing the ids took it to 0.16s. `test_recording_stays_linear_in_the_number_of_events`
+pins it; restoring the scan makes it fail.
+
+**3. The aggregator assumed USD.** It holds one currency and rejects any event
+that disagrees. `_load_aggregator` used the dataclass default, so every
+`RevenueRecognized` raised `metric aggregator currency mismatch: CNY != USD`,
+returned TRANSIENT_ERROR and was redelivered forever — 311 occurrences in one
+pod's log. This was invisible until the payment fix let captures through at all,
+which is the same pattern as the other defects this session surfaced.
+
+Verified after all three: `/api/v1/metrics/operational` answers 200 in ~1.9s
+where it previously timed out at 60s; reporting reads **619 events/s** against a
+228/s production rate, and its total lag went from **+85/s growing to −69/s
+draining**; zero currency-mismatch errors. The residual failures are 23
+`OptimisticConcurrencyError: concurrent update detected for dash-revenue`, which
+is the OCC retry working as designed on a row eight threads contend for.
 
 ## P3 — waitlist never fulfils or expires
 
