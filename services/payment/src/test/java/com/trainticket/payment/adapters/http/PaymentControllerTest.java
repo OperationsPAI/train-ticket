@@ -9,6 +9,7 @@ import com.trainticket.platformkit.http.ApiError;
 import com.trainticket.platformkit.http.PlatformKitExceptionHandler;
 import com.trainticket.payment.application.EventPublisher;
 import com.trainticket.payment.application.PaymentCommandService;
+import com.trainticket.payment.infrastructure.persistence.InMemoryLatePaymentCaseRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryPaymentIntentRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryRefundRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryReservationPaymentRequestRepository;
@@ -128,7 +129,8 @@ class PaymentControllerTest {
             publisher,
             new InMemoryPaymentIntentRepository(),
             new InMemoryRefundRepository(),
-            new InMemoryReservationPaymentRequestRepository()
+            new InMemoryReservationPaymentRequestRepository(),
+            new InMemoryLatePaymentCaseRepository()
         );
     }
 

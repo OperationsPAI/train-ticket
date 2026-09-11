@@ -9,6 +9,7 @@ import com.trainticket.payment.domain.PaymentChannel;
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
 import com.trainticket.payment.domain.RefundStatus;
+import com.trainticket.payment.infrastructure.persistence.InMemoryLatePaymentCaseRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryPaymentIntentRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryRefundRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryReservationPaymentRequestRepository;
@@ -34,6 +35,7 @@ class PaymentCommandServiceTest {
             intents,
             refunds,
             new InMemoryReservationPaymentRequestRepository(),
+            new InMemoryLatePaymentCaseRepository(),
             new NoopPaymentChannelClient(),
             router
         );
