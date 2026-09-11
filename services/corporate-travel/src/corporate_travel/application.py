@@ -561,8 +561,21 @@ class CorporateTravelService:
                 booking_ref = str(envelope.payload.get("bookingRef") or envelope.payload.get("orderId") or "")
                 self.release_budget_reservations(booking_ref=booking_ref, correlation_id=envelope.correlationId, causation_id=envelope.eventId)
                 return
+            # `agreementId` is not part of the PaymentCaptured or
+            # JourneyOrderConfirmed contract -- a retail purchase has no
+            # corporate agreement, and most traffic is retail. An event without
+            # one is not this context's business and carries nothing to bill, so
+            # it is skipped rather than treated as malformed.
+            # `agreementId` is not part of the PaymentCaptured or
+            # JourneyOrderConfirmed contract -- a retail purchase has no
+            # corporate agreement, and most traffic is retail. An event without
+            # one is not this context's business and carries nothing to bill, so
+            # it is skipped rather than treated as malformed.
+            agreement_id = str(envelope.payload.get("agreementId") or "")
+            if not agreement_id:
+                return
             line = line_from_event(envelope)
-            agreement = self.repository.get_agreement(str(envelope.payload["agreementId"]))
+            agreement = self.repository.get_agreement(agreement_id)
             booking_ref = str(envelope.payload.get("bookingRef") or envelope.payload.get("orderId") or "")
             if envelope.eventType == "PaymentCaptured" and booking_ref:
                 self.commit_budget_reservations(booking_ref=booking_ref, correlation_id=envelope.correlationId, causation_id=envelope.eventId)
