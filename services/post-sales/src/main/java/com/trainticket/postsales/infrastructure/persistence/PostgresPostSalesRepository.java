@@ -63,8 +63,20 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
             """, rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(), journeyOrderId);
     }
 
-    @Override public List<PostSalesCase> findAll() {
-        return jdbc.query("SELECT version, data::text AS data FROM post_sales_case_snapshots", (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")));
+    @Override public List<PostSalesCase> findByOrderItemRef(String orderItemRef) {
+        // Matched with @> so idx_post_sales_case_snapshots_scope_order_items applies.
+        // The caller used to filter the whole table in Java: at 202,372 cases that
+        // deserialized 514 MB of jsonb per CapacityReleased and exhausted the heap.
+        try {
+            String scope = objectMapper.writeValueAsString(List.of(orderItemRef));
+            return jdbc.query(
+                "SELECT version, data::text AS data FROM post_sales_case_snapshots WHERE data->'scope'->'orderItemRefs' @> ?::jsonb",
+                (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")),
+                scope
+            );
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalStateException("order item ref could not be encoded as JSON", exception);
+        }
     }
 
 
