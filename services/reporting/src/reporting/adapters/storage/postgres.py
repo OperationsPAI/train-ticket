@@ -325,7 +325,7 @@ class PostgresReportingApplicationService:
                         changed = self._save_anomaly(conn, anomaly)
                         if changed and any(item.rule_id == anomaly.rule_id for item in newly_detected):
                             self._append_anomaly_actions(conn, anomaly, envelope)
-                    dashboards = self._all_dashboards(conn)
+                    dashboards = self._all_dashboards(conn, for_update=True)
                     for dashboard, version in dashboards:
                         if dashboard_consumes_event(dashboard, envelope.eventType):
                             # mark_stale() is not persisted on its own. _maybe_rebuild
@@ -419,8 +419,15 @@ class PostgresReportingApplicationService:
             aggregator.record(_event_from_row(row))
         return aggregator
 
-    def _all_dashboards(self, conn: Any) -> list[tuple[DashboardReadModel, int]]:
-        return [(_dashboard_from_json(row[2]), int(row[1])) for row in conn.execute("SELECT id, version, data FROM dashboard_read_model_snapshots").fetchall()]
+    def _all_dashboards(self, conn: Any, *, for_update: bool = False) -> list[tuple[DashboardReadModel, int]]:
+        # FOR UPDATE on the write path: every consumer rebuilds the same handful of
+        # dashboard rows, so without the lock they read the same version, race to
+        # write it, and all but one fail with OptimisticConcurrencyError -- which
+        # redelivers the event and repeats the whole handler, the aggregator load
+        # included. The expensive work is already done by the time this is called,
+        # so the lock is held only for the rebuild and the outbox insert.
+        lock = " ORDER BY id FOR UPDATE" if for_update else ""
+        return [(_dashboard_from_json(row[2]), int(row[1])) for row in conn.execute(f"SELECT id, version, data FROM dashboard_read_model_snapshots{lock}").fetchall()]
 
     def _processed_count(self, conn: Any) -> int:
         return int(conn.execute("SELECT count(*) FROM processed_events").fetchone()[0])
