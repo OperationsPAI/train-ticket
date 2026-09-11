@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.payment.domain.Money;
+import com.trainticket.payment.infrastructure.persistence.InMemoryLatePaymentCaseRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryPaymentIntentRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryRefundRepository;
 import com.trainticket.payment.infrastructure.persistence.InMemoryReservationPaymentRequestRepository;
@@ -156,7 +157,8 @@ class PaymentMessagingApplicationTest {
             publisher,
             new InMemoryPaymentIntentRepository(),
             new InMemoryRefundRepository(),
-            new InMemoryReservationPaymentRequestRepository()
+            new InMemoryReservationPaymentRequestRepository(),
+            new InMemoryLatePaymentCaseRepository()
         );
     }
 

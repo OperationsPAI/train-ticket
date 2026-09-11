@@ -11,6 +11,8 @@ import com.trainticket.payment.application.EventEnvelopeMapper;
 import com.trainticket.payment.application.ReservationPaymentRequest;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.ChannelRef;
+import com.trainticket.payment.domain.LatePaymentCase;
+import com.trainticket.payment.domain.LatePaymentCaseStatus;
 import com.trainticket.payment.domain.PaymentEvent;
 import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.PaymentAuthorized;
@@ -167,8 +169,43 @@ final class JacksonPaymentJson {
         );
     }
 
-    static String reservationJson(ReservationPaymentRequest request, ObjectMapper objectMapper) {
+    static LatePaymentCaseSnapshot latePaymentCaseSnapshot(LatePaymentCase lateCase, ObjectMapper objectMapper) {
         ObjectNode root = objectMapper.createObjectNode();
+        root.put("latePaymentCaseId", lateCase.latePaymentCaseId());
+        root.put("paymentIntentId", lateCase.paymentIntentId());
+        root.set("capturedAmount", money(lateCase.capturedAmount(), objectMapper));
+        root.put("channel", lateCase.channel());
+        root.put("channelTransactionId", lateCase.channelTransactionId());
+        root.put("reason", lateCase.reason());
+        root.put("detectedAt", lateCase.detectedAt().toString());
+        root.put("status", lateCase.status().name());
+        if (lateCase.resolutionNote() == null) {
+            root.putNull("resolutionNote");
+        } else {
+            root.put("resolutionNote", lateCase.resolutionNote());
+        }
+        // Deliberately NOT persisting domainEvents. The case's only event is
+        // published by the transaction that opens it, via the outbox in the same
+        // commit; re-emitting it on every rehydrate would republish settled facts.
+        return new LatePaymentCaseSnapshot(root);
+    }
+
+    static LatePaymentCase toLatePaymentCase(LatePaymentCaseSnapshot snapshot) {
+        ObjectNode root = snapshot.data();
+        return LatePaymentCase.rehydrate(
+            text(root, "latePaymentCaseId"),
+            text(root, "paymentIntentId"),
+            money(root.path("capturedAmount")),
+            text(root, "channel"),
+            text(root, "channelTransactionId"),
+            text(root, "reason"),
+            Instant.parse(text(root, "detectedAt")),
+            LatePaymentCaseStatus.valueOf(text(root, "status")),
+            root.path("resolutionNote").isNull() ? null : root.path("resolutionNote").asText(null)
+        );
+    }
+
+    static String reservationJson(ReservationPaymentRequest request, ObjectMapper objectMapper) {        ObjectNode root = objectMapper.createObjectNode();
         root.put("eventId", request.eventId());
         root.put("segmentBookingId", request.segmentBookingId());
         root.put("journeyOrderId", request.journeyOrderId());
@@ -254,6 +291,13 @@ final class JacksonPaymentJson {
         @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
         static RefundSnapshot of(ObjectNode data) {
             return new RefundSnapshot(data);
+        }
+    }
+
+    record LatePaymentCaseSnapshot(@JsonValue ObjectNode data) {
+        @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+        static LatePaymentCaseSnapshot of(ObjectNode data) {
+            return new LatePaymentCaseSnapshot(data);
         }
     }
 
