@@ -469,7 +469,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             }
             EventSubscriber.HandlerResult result = switch (envelope.eventType()) {
                 case "PaymentCaptured" -> handlePaymentCaptured(envelope);
-                case "PaymentExpired" -> handlePaymentExpired(envelope);
+                case "PaymentTimedOut", "PaymentExpired" -> handlePaymentExpired(envelope);
                 case "PostSalesApplied" -> handlePostSalesApplied(envelope);
                 case "RiskAssessmentResult" -> handleRiskAssessmentResult(envelope);
                 case "RiskBlockApplied" -> handleRiskBlockApplied(envelope);

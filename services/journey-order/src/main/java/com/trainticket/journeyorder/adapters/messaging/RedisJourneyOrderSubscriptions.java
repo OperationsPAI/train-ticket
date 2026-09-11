@@ -51,6 +51,12 @@ public final class RedisJourneyOrderSubscriptions {
 
     private static final java.util.Set<String> ACTIONABLE = java.util.Set.of(
         "PaymentCaptured",
+        // Intent expiry reaches the order as PaymentTimedOut, not
+        // PaymentIntentExpired: only PaymentTimedOut carries the order
+        // reference this handler resolves the aggregate by. PaymentExpired is
+        // the name in the older docs and in notification's templates; it is
+        // accepted too so the two spellings cannot diverge into a silent drop.
+        "PaymentTimedOut",
         "PaymentExpired",
         "PostSalesApplied",
         "RiskAssessmentResult",
