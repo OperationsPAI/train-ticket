@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 from reporting.application.service import ReportingApplicationService
-from reporting.ids import uuid7
+from train_ticket_platform.messaging import default_consumer_name
 
 from .publisher import RedisEventPublisher
 from .stream_config import CONSUMER_GROUP, reporting_subscription_streams
@@ -21,7 +21,7 @@ class MessagingRuntime:
         self.service = service
 
     def start(self) -> None:
-        consumer_name = f"reporting-{os.getenv('HOSTNAME') or uuid7()}"
+        consumer_name = default_consumer_name(CONSUMER_GROUP)
         # subscribe() runs the consume loop; it must not block FastAPI
         # lifespan startup, so it runs on a daemon thread.
         self._thread = threading.Thread(
