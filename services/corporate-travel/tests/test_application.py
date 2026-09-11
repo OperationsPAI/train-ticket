@@ -35,6 +35,39 @@ def agreement_payload() -> dict[str, object]:
     }
 
 
+def test_payment_captured_without_an_agreement_is_skipped_not_dead_lettered() -> None:
+    """`agreementId` is not in the PaymentCaptured contract.
+
+    Most captures are retail purchases with no corporate agreement. Requiring the field made
+    every one of them raise KeyError, which the kit retried to its delivery limit and then
+    dead-lettered -- a payment the corporate context has no business in at all.
+    """
+    publisher = InMemoryEventPublisher()
+    service = CorporateTravelService(publisher=publisher)
+
+    service.handle_event(
+        EventEnvelope(
+            eventId="evt-retail-capture",
+            eventType="PaymentCaptured",
+            occurredAt="2026-01-10T00:05:00Z",
+            correlationId="corr-test",
+            causationId="cmd-test",
+            producer="payment",
+            schemaVersion=1,
+            payload={
+                "paymentIntentId": "pi-retail",
+                "businessRef": "ord-retail",
+                "capturedAmount": {"currency": "CNY", "minorUnits": 10750},
+                "channel": "ALIPAY",
+                "channelTransactionId": "ctx-retail",
+            },
+        )
+    )
+
+    service.flush_outbox()
+    assert publisher.envelopes == []
+
+
 def test_service_creates_active_agreement_and_publishes_activation() -> None:
     publisher = InMemoryEventPublisher()
     service = CorporateTravelService(publisher=publisher)
