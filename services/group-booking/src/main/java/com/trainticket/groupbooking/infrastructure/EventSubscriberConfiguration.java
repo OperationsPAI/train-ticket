@@ -2,7 +2,7 @@ package com.trainticket.groupbooking.infrastructure;
 
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
 import java.util.List;
-import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,11 +18,15 @@ public class EventSubscriberConfiguration {
     @Bean
     public SmartInitializingSingleton groupBookingSubscriptionStartup(
             RedisEventSubscriber subscriber,
-            CapacityHoldEventHandler handler) {
+            CapacityHoldEventHandler handler,
+            // Stable per-pod consumer name, not a per-boot UUID: a restarted
+            // process must reclaim its own pending entries rather than orphan
+            // them in a consumer name that will never appear again.
+            @Value("${HOSTNAME:local}") String instanceId) {
         return () -> subscriber.subscribe(
             STREAMS,
             GROUP,
-            GROUP + "-" + UUID.randomUUID(),
+            GROUP + "-" + instanceId,
             handler::handle
         );
     }
