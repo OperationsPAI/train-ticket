@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -409,6 +410,38 @@ class DashboardReadModelRequiredFieldsTest(unittest.TestCase):
 
 
 class RealTimeMetricsEnrichmentTest(unittest.TestCase):
+    def test_recording_the_same_event_id_twice_keeps_one_copy(self) -> None:
+        aggregator = MetricAggregator(currency="USD")
+        event = OperationalEvent(event_id="order-1", event_type="JourneyOrderCreated", occurred_at=NOW, route_id="G123")
+        aggregator.record(event)
+        aggregator.record(event)
+
+        self.assertEqual([item.event_id for item in aggregator.events], ["order-1"])
+
+    def test_recording_stays_linear_in_the_number_of_events(self) -> None:
+        # The postgres projection rebuilds an aggregator from every stored metric
+        # event on each event it handles, so a per-record scan of what is already
+        # recorded is quadratic: at 27k rows it took 22 seconds per rebuild, times
+        # every consumer thread, and starved the HTTP workers of the GIL until the
+        # metrics endpoints stopped responding at all.
+        def elapsed(count: int) -> float:
+            aggregator = MetricAggregator(currency="USD")
+            events = [
+                OperationalEvent(event_id=f"order-{index}", event_type="JourneyOrderCreated", occurred_at=NOW)
+                for index in range(count)
+            ]
+            start = time.perf_counter()
+            for event in events:
+                aggregator.record(event)
+            return time.perf_counter() - start
+
+        small = elapsed(1_000)
+        large = elapsed(16_000)
+
+        # Linear would be 16x. Quadratic would be 256x. The bound is loose enough
+        # to absorb a slow or noisy machine and still fail the scan.
+        self.assertLess(large, max(small, 1e-4) * 48)
+
     def test_ten_orders_are_reflected_in_orders_per_second(self) -> None:
         aggregator = MetricAggregator(currency="USD")
         for index in range(10):
