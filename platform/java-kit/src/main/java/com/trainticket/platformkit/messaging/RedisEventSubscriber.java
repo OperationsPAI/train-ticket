@@ -48,6 +48,12 @@ public class RedisEventSubscriber implements EventSubscriber {
     private static final int LAST_FAILURE_CACHE_SIZE = 1_024;
     private static final int DEAD_LETTERED_CACHE_SIZE = 4_096;
     private static final long DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000L;
+    /**
+     * How often the poll loop sweeps for dead consumers. Well below
+     * {@link #DEAD_CONSUMER_IDLE_MS} so a corpse is reclaimed promptly once it qualifies, and far
+     * above the poll cadence so the sweep's {@code XINFO CONSUMERS} per stream stays negligible.
+     */
+    private static final long PRUNE_INTERVAL_MS = 60 * 1_000L;
     private static final int DEFAULT_CONSUMER_THREADS = 1;
     private static final String CONSUMER_THREADS_ENV = "CONSUMER_THREADS";
     private static final int MAX_REDELIVERY_ATTEMPTS = maxRedeliveryAttemptsFromEnvironment();
@@ -85,6 +91,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
     private final EventConsumerTracer eventConsumerTracer;
+    private final long pruneIntervalMillis;
     /** Genuine handler failures per message, bounded LRU so a long-lived consumer cannot leak. */
     private final Map<MessageKey, FailureRecord> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -143,9 +150,28 @@ public class RedisEventSubscriber implements EventSubscriber {
         EventConsumerTracer eventConsumerTracer,
         int consumerThreads
     ) {
+        this(streams, objectMapper, closeable, consumedEvents, eventConsumerTracer, consumerThreads, PRUNE_INTERVAL_MS);
+    }
+
+    RedisEventSubscriber(
+        RedisStreamOperations streams,
+        ObjectMapper objectMapper,
+        AutoCloseable closeable,
+        ConsumedEventStore consumedEvents,
+        EventConsumerTracer eventConsumerTracer,
+        int consumerThreads,
+        // Injectable only so a test can observe the sweep RECURRING without
+        // sleeping a whole production interval. Production always gets
+        // PRUNE_INTERVAL_MS via the delegating constructor above.
+        long pruneIntervalMillis
+    ) {
         if (consumerThreads < 1) {
             throw new IllegalArgumentException("consumerThreads must be positive");
         }
+        if (pruneIntervalMillis < 0) {
+            throw new IllegalArgumentException("pruneIntervalMillis must not be negative");
+        }
+        this.pruneIntervalMillis = pruneIntervalMillis;
         this.streams = Objects.requireNonNull(streams, "streams are required");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
         this.closeable = closeable;
@@ -200,18 +226,17 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
         long backoffSeconds = INITIAL_BACKOFF_SECONDS;
-        for (String stream : streamNames) {
-            try {
-                streams.createGroup(stream, group);
-                streams.pruneDeadConsumers(stream, group, consumerName, DEAD_CONSUMER_IDLE_MS);
-            } catch (RuntimeException ignored) {
-                // best-effort startup cleanup
-            }
-        }
+        // 0 so the first iteration prunes immediately: this subsumes the startup
+        // sweep this loop used to do once, before entering the while.
+        long nextPruneAtMillis = 0L;
         while (running.get()) {
+            boolean pruneDue = System.currentTimeMillis() >= nextPruneAtMillis;
             for (String stream : streamNames) {
                 try {
                     streams.createGroup(stream, group);
+                    if (pruneDue) {
+                        pruneDeadConsumersQuietly(stream, group, consumerName);
+                    }
                     recover(stream, group, consumerName, handler);
                     for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
                         submitHandle(stream, group, consumerName, message, handler);
@@ -226,6 +251,29 @@ public class RedisEventSubscriber implements EventSubscriber {
                     backoffSeconds = Math.min(backoffSeconds * 2, MAX_BACKOFF_SECONDS);
                 }
             }
+            if (pruneDue) {
+                nextPruneAtMillis = System.currentTimeMillis() + pruneIntervalMillis;
+            }
+        }
+    }
+
+    /**
+     * Retires consumers in this group that have been idle past {@link #DEAD_CONSUMER_IDLE_MS},
+     * handing their pending entries back to the group so {@code XAUTOCLAIM} can reclaim them.
+     *
+     * This MUST run periodically, not once at startup. A consumer that just died is by definition
+     * not yet idle, so a startup-only sweep can never see it — it only ever sees corpses left by
+     * some earlier boot. Sweeping inside the poll loop reclaims the corpse once it qualifies rather
+     * than at whatever restart happens to follow it.
+     *
+     * Best-effort and deliberately isolated from the caller's try block: a failed sweep is a missed
+     * cleanup opportunity, not a reason to abandon a poll iteration that would otherwise deliver.
+     */
+    private void pruneDeadConsumersQuietly(String stream, String group, String consumerName) {
+        try {
+            streams.pruneDeadConsumers(stream, group, consumerName, DEAD_CONSUMER_IDLE_MS);
+        } catch (RuntimeException exception) {
+            LOGGER.debug("service={} stream={} dead-consumer sweep failed; retrying next interval", group, stream, exception);
         }
     }
 
