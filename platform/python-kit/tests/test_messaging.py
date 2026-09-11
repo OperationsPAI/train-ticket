@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from datetime import UTC, datetime
 
 from train_ticket_platform import messaging
@@ -366,3 +367,60 @@ def test_stream_maxlen_falls_back_to_default_when_unset_or_invalid(caplog) -> No
     assert messaging.stream_maxlen("-5") == default
 
     assert "is not a positive integer" in caplog.text
+
+
+class PruneTrackingRedis:
+    """Drives subscribe() through a bounded number of poll iterations."""
+
+    def __init__(self, subscriber: RedisEventSubscriber, iterations: int) -> None:
+        self._subscriber = subscriber
+        self._remaining = iterations
+        self.xinfo_calls = 0
+        self.deleted: list[str] = []
+
+    def xgroup_create(self, stream, group, id, mkstream):
+        return None
+
+    def xinfo_consumers(self, stream: str, group: str):
+        self.xinfo_calls += 1
+        return [{"name": "reporting-old-pod", "idle": messaging.DEAD_CONSUMER_IDLE_MS + 1, "pending": 42}]
+
+    def execute_command(self, *args):
+        if args[0] == "XGROUP" and args[1] == "DELCONSUMER":
+            self.deleted.append(args[4])
+
+    def xautoclaim(self, *args, **kwargs):
+        return ["0-0", []]
+
+    def xreadgroup(self, *args, **kwargs):
+        self._remaining -= 1
+        if self._remaining <= 0:
+            self._subscriber._stop_requested.set()
+        return []
+
+
+def test_dead_consumers_are_swept_periodically_not_only_at_startup() -> None:
+    # A consumer that just crashed is by definition not yet idle, so a
+    # startup-only sweep can never reclaim the pending entries of the process
+    # this one replaced -- the one case that matters. The orphan then holds its
+    # PEL forever.
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._stop_requested = threading.Event()
+    subscriber._dedup = set()
+    subscriber._dedup_lock = threading.Lock()
+    subscriber._response_error_type = Exception
+    redis = PruneTrackingRedis(subscriber, iterations=3)
+    subscriber._client = redis
+
+    interval = messaging.PRUNE_INTERVAL_MS / 1000
+    clock = iter([n * interval for n in range(20)])
+    real_monotonic = messaging.time.monotonic
+    messaging.time.monotonic = lambda: next(clock)
+    try:
+        subscriber.subscribe(("events:payment",), "reporting", "reporting-this-pod", lambda _: None)
+    finally:
+        messaging.time.monotonic = real_monotonic
+
+    # once before the loop, then once per elapsed interval inside it
+    assert redis.xinfo_calls > 1
+    assert redis.deleted == ["reporting-old-pod"] * redis.xinfo_calls
