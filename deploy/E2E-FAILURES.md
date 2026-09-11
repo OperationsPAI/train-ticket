@@ -205,6 +205,29 @@ customer was quoted. Every refund is therefore priced off 100.00 no matter what
 the fare rules say -- the penalty percentages are applied correctly to the wrong
 base.
 
+### Third layer: the managed refund_fee is still not deducted
+
+**Status:** OPEN — service defect, diagnosed
+
+With the fare lookup in place the base is now the real offer total: the assertion
+reads `BASE_FARE originalAmount 12000` where it read 10000 before. So the order
+carries what the customer was quoted, and the first two layers are closed.
+
+The remaining 3000 is the managed `refund_fee`. fare-pricing does compute it --
+`assess_refund` in `services/fare-pricing/src/fare_pricing/domain.py` returns
+`refundableAmount = total - non_refundable - fee`, i.e. 9000 for this rule set --
+and post-sales does fetch it. `PostSalesApplicationService.decisionFor` then
+discards it: `penaltyBase` is `policyContext.originalFareOr(...)`, which uses the
+quote's `refundableAmount` only as the fallback when no policy context exists.
+Now that P5 guarantees a context for every refund, that fallback is never taken,
+so the fee never reaches the waterfall.
+
+This is not the fare bug again and predates this session's work (the expression is
+from `df5fb9c8`). It is a semantics question the contracts have to answer: whether
+the penalty base is the order fare or fare-pricing's fee-adjusted refundable. The
+two sources disagree by exactly the managed fee, and only one of them can be
+authoritative -- which is why this is recorded rather than picked.
+
 ## P5 — post-sales case applied but order not adjusted
 
 **Status:** OPEN
