@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from typing import Sequence
 
@@ -17,6 +17,15 @@ from reporting.adapters.messaging.publisher import RedisEventPublisher
 from reporting.adapters.messaging.stream_config import SUBSCRIBED_CONTEXTS, reporting_subscription_streams
 from reporting.adapters.messaging.subscriber import RedisEventSubscriber
 from reporting.domain import ReadModelStatus, ReportingError
+
+
+def _payload_dict(payload: object) -> dict[str, object]:
+    """Unwrap whatever the storage layer passes as a jsonb parameter."""
+    if hasattr(payload, "obj"):
+        payload = payload.obj
+    if not isinstance(payload, dict):
+        payload = json.loads(payload)
+    return dict(payload)
 
 
 class FakePublisher(EventPublisher):
@@ -516,6 +525,8 @@ class PostgresProjectionTest(unittest.TestCase):
                 self.outbox: list[tuple[str, dict[str, object]]] = []
                 self.processed: set[str] = set()
                 self.refreshed: list[str] = []
+                self.metric_event_windows: list[object] = []
+                self.dashboards: dict[str, tuple[int, dict[str, object]]] = {}
 
             def __enter__(self) -> "FakeConnection":
                 return self
@@ -528,10 +539,27 @@ class PostgresProjectionTest(unittest.TestCase):
 
             def execute(self, query: str, params: tuple[object, ...] = ()) -> FakeCursor:
                 normalized = " ".join(query.split())
+                if normalized.startswith("SELECT version, data FROM dashboard_read_model_snapshots"):
+                    return FakeCursor(self.dashboards.get(str(params[0])))
                 if normalized.startswith("SELECT version, data FROM"):
                     return FakeCursor()
-                if normalized.startswith("INSERT INTO metric_definition_snapshots") or normalized.startswith("INSERT INTO dashboard_read_model_snapshots"):
+                if normalized.startswith("INSERT INTO dashboard_read_model_snapshots"):
+                    dashboard_id = str(params[0])
+                    if dashboard_id in self.dashboards:
+                        return FakeCursor()
+                    self.dashboards[dashboard_id] = (1, _payload_dict(params[1]))
                     return FakeCursor((1,))
+                if normalized.startswith("UPDATE dashboard_read_model_snapshots"):
+                    dashboard_id = str(params[1])
+                    version, _ = self.dashboards[dashboard_id]
+                    if version != params[2]:
+                        return FakeCursor()
+                    self.dashboards[dashboard_id] = (version + 1, _payload_dict(params[0]))
+                    return FakeCursor((version + 1,))
+                if normalized.startswith("INSERT INTO metric_definition_snapshots"):
+                    return FakeCursor((1,))
+                if normalized.startswith("SELECT count(*) FROM processed_events"):
+                    return FakeCursor((len(self.processed),))
                 if normalized.startswith("INSERT INTO reporting_rebuild_runs"):
                     return FakeCursor()
                 if normalized.startswith("INSERT INTO processed_events"):
@@ -546,21 +574,17 @@ class PostgresProjectionTest(unittest.TestCase):
                     self.refreshed.append(normalized.removeprefix("REFRESH MATERIALIZED VIEW "))
                     return FakeCursor()
                 if normalized.startswith("SELECT event_id, event_type, occurred_at"):
+                    self.metric_event_windows.append(params[0] if params else None)
                     return FakeCursor(rows=[self._metric_row(params) for params in self.metric_events])
                 if normalized.startswith("UPDATE reporting_anomalies SET resolved_at"):
                     return FakeCursor()
                 if normalized.startswith("INSERT INTO reporting_anomalies"):
                     return FakeCursor((params[0],))
                 if normalized.startswith("INSERT INTO outbox"):
-                    payload = params[2]
-                    if hasattr(payload, "obj"):
-                        payload = payload.obj
-                    elif not isinstance(payload, dict):
-                        payload = json.loads(payload)
-                    self.outbox.append((str(params[1]), payload))
+                    self.outbox.append((str(params[1]), _payload_dict(params[2])))
                     return FakeCursor()
                 if normalized.startswith("SELECT id, version, data FROM dashboard_read_model_snapshots"):
-                    return FakeCursor(rows=[])
+                    return FakeCursor(rows=[(key, version, data) for key, (version, data) in self.dashboards.items()])
                 raise AssertionError(f"unexpected SQL: {normalized}")
 
             @staticmethod
@@ -639,6 +663,40 @@ class PostgresProjectionTest(unittest.TestCase):
             self.assertEqual(result.status.value, "SUCCESS")
 
         self.assertEqual([event[7] for event in pool.conn.metric_events], ["CNY", "CNY", "CNY"])
+
+    def test_postgres_projection_bounds_the_aggregator_load_to_the_detection_window(self) -> None:
+        # The projection rebuilds the aggregator on every consumed event. Loading
+        # the whole table made that 1.7s of a 2.0s handle_event on the cluster --
+        # about half an event per second against a production rate two orders of
+        # magnitude higher, so the backlog could never drain. No anomaly rule
+        # looks back further than the previous day's same hour.
+        pool, service = self._projection_service()
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        service.handle_event(EventEnvelope(
+            eventId="evt-pg-window",
+            eventType="PaymentCaptured",
+            occurredAt=occurred_at,
+            correlationId="corr-window",
+            producer="payment",
+            schemaVersion=1,
+            payload={"amount": "10.00", "currency": "CNY"},
+            causationId="evt-source",
+        ))
+
+        self.assertTrue(pool.conn.metric_event_windows)
+        for window in pool.conn.metric_event_windows:
+            self.assertIsNotNone(window, "the write path must bound the load by occurred_at")
+            self.assertGreater(window, datetime.now(UTC) - timedelta(days=2))
+
+    def test_read_endpoints_still_aggregate_over_all_of_history(self) -> None:
+        # The window belongs to the write path only. Revenue and route reports are
+        # reported over everything stored, so bounding them would silently drop
+        # history from the numbers the API returns.
+        pool, service = self._projection_service()
+        service.route_metrics()
+        service.operational_metrics()
+
+        self.assertEqual(pool.conn.metric_event_windows, [None, None])
 
 
 if __name__ == "__main__":
