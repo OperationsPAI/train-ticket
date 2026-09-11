@@ -62,7 +62,14 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
                 currency(amountDue)
             ));
         } catch (RuntimeException ex) {
-            log.warn("adjustment quote unavailable for case idempotency key {}: {}", request.idempotencyKey(), ex.getMessage());
+            // With the exception, not just its message. An empty quote means the
+            // refund is priced without fare-pricing's managed refund_fee, so the
+            // penalty base is the raw order fare -- 07-fare-rules exists to prove
+            // that rule is applied and cannot, and getMessage() alone did not say
+            // why (an HttpMessageConversionException, for instance, has a message
+            // that names a type and nothing about the request).
+            log.warn("adjustment quote unavailable for case idempotency key {}; the refund will be "
+                    + "priced without fare-pricing's managed rules", request.idempotencyKey(), ex);
             return Optional.empty();
         }
     }
