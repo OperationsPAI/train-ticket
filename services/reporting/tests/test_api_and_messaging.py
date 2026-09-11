@@ -619,6 +619,27 @@ class PostgresProjectionTest(unittest.TestCase):
         self.assertIn("AnomalyDetected", outbox_types)
         self.assertIn("UrgentNotificationRequested", outbox_types)
 
+    def test_postgres_projection_handles_a_non_usd_currency(self) -> None:
+        # The aggregator holds one currency and rejects events in any other, so a
+        # rebuild that assumes its own USD default rejects every CNY revenue event
+        # and the message is redelivered forever.
+        pool, service = self._projection_service()
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        for index in range(3):
+            result = service.handle_event(EventEnvelope(
+                eventId=f"evt-pg-cny-{index}",
+                eventType="PaymentCaptured",
+                occurredAt=occurred_at,
+                correlationId="corr-cny",
+                producer="payment",
+                schemaVersion=1,
+                payload={"amount": "107.50", "currency": "CNY"},
+                causationId="evt-source",
+            ))
+            self.assertEqual(result.status.value, "SUCCESS")
+
+        self.assertEqual([event[7] for event in pool.conn.metric_events], ["CNY", "CNY", "CNY"])
+
 
 if __name__ == "__main__":
     unittest.main()

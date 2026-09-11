@@ -392,7 +392,12 @@ class PostgresReportingApplicationService:
             ORDER BY occurred_at, event_id
             """
         ).fetchall()
-        aggregator = MetricAggregator()
+        # The aggregator holds a single currency and rejects any event that
+        # disagrees, so it has to be told which one the stored events are in
+        # rather than assuming its own default. The system quotes in CNY, and
+        # every RevenueRecognized event failed and was redelivered forever.
+        currency = next((str(row[7]) for row in rows if row[7]), None)
+        aggregator = MetricAggregator() if currency is None else MetricAggregator(currency=currency)
         for row in rows:
             aggregator.record(_event_from_row(row))
         return aggregator
