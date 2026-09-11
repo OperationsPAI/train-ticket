@@ -212,6 +212,58 @@ class OrderManagementServiceTest {
         assertEquals(1, published.stream().filter(event -> event.eventType().equals("JourneyOrderCancelled")).count());
     }
 
+    /**
+     * The event type payment actually publishes for an expired intent is
+     * {@code PaymentTimedOut} -- it is the one of the two expiry events that carries the order
+     * reference. Matching only the {@code PaymentExpired} spelling leaves a PENDING_PAYMENT order
+     * stuck with no error, no DLQ entry and no log, because an unmatched type falls through the
+     * switch's {@code default} to Success.
+     */
+    @Test
+    void paymentTimedOutIsTheTypePaymentPublishesAndMustCancelTheOrder() {
+        InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
+        OrderManagementService expiryService = new OrderManagementService(
+            envelope -> published.add(envelope),
+            FIXED_CLOCK,
+            repository
+        );
+        JourneyOrderResult created = expiryService.createOrder(
+            new JourneyOrderRequest("account-timedout", "offer-timedout", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-payment-timedout",
+            "corr-1"
+        );
+        OrderManagementService.StoredOrder stored = repository.findOrder(created.orderId()).orElseThrow();
+        stored.order().markBookingAndCapacityAccepted(
+            Instant.parse("2026-07-05T10:01:00Z"), "cmd-test", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cd03");
+        stored.order().markPendingPayment(
+            "initial-ticket-purchase", Instant.parse("2026-07-05T10:01:00Z"), "cmd-test",
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cd03");
+        repository.saveOrder(stored.order(), stored.idempotencyKey());
+        published.clear();
+
+        // The payload EventEnvelopeMapper builds for PaymentTimedOut.
+        EventSubscriber.HandlerResult result = expiryService.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cd02",
+            "PaymentTimedOut",
+            Instant.parse("2026-07-05T10:02:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0cd03",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0cd01",
+            "payment",
+            1,
+            Map.of(
+                "paymentIntentId", "pi-timedout",
+                "intentId", "pi-timedout",
+                "businessRef", created.orderId(),
+                "orderId", created.orderId(),
+                "reason", "TIMEOUT"
+            )
+        ));
+
+        assertEquals(new EventSubscriber.Success(), result);
+        assertEquals("CANCELLED", expiryService.getOrder(created.orderId()).orElseThrow().status());
+        assertEquals(1, published.stream().filter(event -> event.eventType().equals("JourneyOrderCancelled")).count());
+    }
+
     @Test
     void entitlementIssuedOnCancelledOrderAckSkipsWithoutStateChange() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
