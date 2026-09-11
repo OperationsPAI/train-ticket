@@ -377,6 +377,7 @@ class PruneTrackingRedis:
         self._remaining = iterations
         self.xinfo_calls = 0
         self.deleted: list[str] = []
+        self.autoclaimed: list[tuple] = []
 
     def xgroup_create(self, stream, group, id, mkstream):
         return None
@@ -390,9 +391,13 @@ class PruneTrackingRedis:
             self.deleted.append(args[4])
 
     def xautoclaim(self, *args, **kwargs):
+        self.autoclaimed.append(args)
         return ["0-0", []]
 
-    def xreadgroup(self, *args, **kwargs):
+    def xreadgroup(self, group, consumer, streams_dict, **kwargs):
+        for v in streams_dict.values():
+            if v == "0":
+                return []
         self._remaining -= 1
         if self._remaining <= 0:
             self._subscriber._stop_requested.set()
@@ -424,6 +429,7 @@ def test_dead_consumers_are_swept_periodically_not_only_at_startup() -> None:
     # once before the loop, then once per elapsed interval inside it
     assert redis.xinfo_calls > 1
     assert redis.deleted == ["reporting-old-pod"] * redis.xinfo_calls
+    assert len(redis.autoclaimed) == redis.xinfo_calls, "prune must claim entries before deleting the consumer"
 
 
 def test_consumer_name_is_unique_per_process_not_per_pod() -> None:

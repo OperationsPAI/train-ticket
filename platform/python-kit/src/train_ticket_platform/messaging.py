@@ -21,8 +21,6 @@ DEFAULT_STREAM_MAXLEN = 10000
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = (0.1, 0.3, 0.9)
 MAX_DELIVERY_ATTEMPTS = 5
-CLAIM_MIN_IDLE_MS = 60000
-CLAIM_COUNT = 100
 DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
 # How often the poll loop sweeps for dead consumers. Well below
 # DEAD_CONSUMER_IDLE_MS so a corpse is reclaimed promptly once it qualifies, and
@@ -200,7 +198,7 @@ class RedisEventSubscriber(EventSubscriber):
         except Exception as exc:
             raise SubscribeFailed("subscriber could not start Redis Streams consumer group") from exc
         self._prune_dead_consumers(streams_tuple, group, consumer_name)
-        next_recovery_at = 0.0
+        recovering = True
         next_prune_at = time.monotonic() + (PRUNE_INTERVAL_MS / 1000)
         self._stop_requested.clear()
         while not self._stop_requested.is_set():
@@ -209,9 +207,8 @@ class RedisEventSubscriber(EventSubscriber):
                 if now >= next_prune_at:
                     self._prune_dead_consumers(streams_tuple, group, consumer_name)
                     next_prune_at = now + (PRUNE_INTERVAL_MS / 1000)
-                if now >= next_recovery_at:
-                    self._recover_pending(streams_tuple, group, consumer_name, handler)
-                    next_recovery_at = now + (CLAIM_MIN_IDLE_MS / 1000)
+                if recovering:
+                    recovering = self._recover_own_pending(streams_tuple, group, consumer_name, handler)
                 results = self._client.xreadgroup(
                     group,
                     consumer_name,
@@ -284,8 +281,9 @@ class RedisEventSubscriber(EventSubscriber):
                 raise
 
     def _prune_dead_consumers(self, streams: Sequence[str], group: str, self_name: str) -> None:
-        """Remove consumers idle > 5 min so their PEL entries are released instead of
-        being auto-claimed in bulk to surviving consumers on scale-down."""
+        """Claim entries from consumers idle > 5 min into this consumer, then
+        delete the dead consumer.  The claimed entries land in our PEL and are
+        picked up by ``_recover_own_pending`` on the next loop iteration."""
         for stream in streams:
             try:
                 consumers = self._client.xinfo_consumers(stream, group)
@@ -298,29 +296,34 @@ class RedisEventSubscriber(EventSubscriber):
                     idle = int(consumer.get("idle", consumer.get(b"idle", 0)))
                     if idle > DEAD_CONSUMER_IDLE_MS:
                         pending = int(consumer.get("pending", consumer.get(b"pending", 0)))
+                        if pending > 0:
+                            self._client.xautoclaim(stream, group, self_name, 0, "0", count=pending + 100)
                         self._client.execute_command("XGROUP", "DELCONSUMER", stream, group, name)
                         LOGGER.info(
-                            "pruned dead consumer %s from %s/%s (idle=%dms, pending=%d)",
-                            name, stream, group, idle, pending,
+                            "pruned dead consumer %s from %s/%s (idle=%dms, pending=%d, claimed to %s)",
+                            name, stream, group, idle, pending, self_name,
                         )
             except Exception:
-                pass  # best-effort cleanup; stream or group may not exist yet
+                pass
 
-    def _recover_pending(self, streams: Sequence[str], group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
+    def _recover_own_pending(self, streams: Sequence[str], group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> bool:
+        """Re-deliver entries sitting in THIS consumer's PEL from a prior incarnation.
+
+        Returns True while there are still entries to process, False when done.
+        Processes at most one stream per call so the main '>' read can interleave.
+        """
         for stream in streams:
-            claimed = self._client.xautoclaim(stream, group, consumer_name, CLAIM_MIN_IDLE_MS, "0", count=CLAIM_COUNT)
-            messages = claimed[1] if claimed and len(claimed) > 1 else []
-            for msg_id, msg_data in messages:
-                msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
-                self._process_entry(
-                    stream,
-                    group,
-                    msg_id_str,
-                    msg_data,
-                    handler,
-                    self._delivery_count(stream, group, msg_id_str),
-                    consumer_name,
-                )
+            results = self._client.xreadgroup(
+                group, consumer_name, {stream: "0"}, count=POLL_COUNT,
+            )
+            for stream_name, messages in results or []:
+                if messages:
+                    s = stream_name.decode("utf-8") if isinstance(stream_name, bytes) else str(stream_name)
+                    for msg_id, msg_data in messages:
+                        msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
+                        self._process_entry(s, group, msg_id_str, msg_data, handler, self._delivery_count(s, group, msg_id_str), consumer_name)
+                    return True
+        return False
 
     def _process_results(self, results: Any, group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         for stream_name, messages in results or []:
