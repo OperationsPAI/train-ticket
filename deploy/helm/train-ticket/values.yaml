@@ -139,19 +139,19 @@ jaeger:
   # cache plus up to 5 x 64MiB memtables before storing a single span. Measured
   # 770Mi steady after 200k spans, 1.76Gi peak during burst ingest.
   #
-  # Raised from 2Gi after OOMKills on a long-running cluster. The cause is NOT
-  # ingest rate -- that was measured at 78 spans/s, BELOW the 105 the capacity
-  # arithmetic in docs/07-observability/README.md assumes. It is Badger's LSM
-  # compaction: the logs showed repeated concurrent level 5->6 compactions taking
-  # 6-9 seconds each, and a compaction reads whole SST tables into memory. That
-  # cost scales with how much data has ACCUMULATED, not with how fast it arrives,
-  # so a cluster left running well past the point where the 12h TTL reaches
-  # steady state needs materially more headroom than one that has just started.
+  # Raised from 2Gi after OOMKills on a long-running cluster. The mechanism is
+  # Badger's LSM compaction, not a per-span cost: a compaction reads whole SST
+  # tables into memory, so the cost scales with how much data has ACCUMULATED,
+  # not with how fast it arrives. A cluster left running past the point where
+  # the 12h TTL reaches steady state needs materially more headroom than one
+  # that has just started, and a restart re-attempts the pending compaction
+  # work rather than clearing it.
   #
-  # A restart makes this worse rather than better: the pending compaction work
-  # survives on disk and is re-attempted on the next start, so an
-  # under-provisioned Jaeger OOM-loops instead of recovering. That is what the
-  # 4-restart streak was.
+  # Memory is not the binding constraint here, so do not expect a further raise
+  # to help. No sampler is configured (100% head sampling) and ingest runs well
+  # above the 105 spans/s the arithmetic above assumes, while kind's local-path
+  # provisioner does not enforce storage.size -- so the TTL is the only bound on
+  # the volume and it does not hold at this rate. See deploy/KNOWN-ISSUES.md.
   resources:
     requests: { cpu: 100m, memory: 512Mi }
     limits: { cpu: '2', memory: 4Gi }
@@ -235,6 +235,15 @@ defaults:
   # Applied when a service sets no `resources` of its own. The floor a plain
   # HTTP-plus-Postgres service needs; anything CPU- or memory-hungry declares
   # its own block under `services.<name>.resources` below.
+  #
+  # 512Mi is not enough for a JVM event consumer, independently of CPU: at the
+  # MaxRAMPercentage=70 above it leaves only ~154Mi for metaspace, thread stacks
+  # and direct buffers, under what Boot 4 uses off-heap, so the cgroup kills the
+  # container while the heap still looks healthy. A JVM service that consumes
+  # streams should declare its own memory tier.
+  #
+  # A service's `resources` REPLACES this block wholesale (services.yaml uses
+  # `default`, not `merge`), so an override must restate all four values.
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: 500m, memory: 512Mi }
@@ -325,6 +334,15 @@ services:
     db: identity_verification
   payment:
     db: payment
+    env:
+      CONSUMER_THREADS: "4"   # 4 streams
+    # JVM event consumer on 4 streams. 512Mi is not enough at
+    # MaxRAMPercentage=70 -- see the note on defaults.resources. The CPU limit
+    # goes with CONSUMER_THREADS above: 4 threads do not fit in 500m, and
+    # starving them makes the HTTP thread miss its probe timeout.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '1', memory: 2Gi }
   provider-integration:
     db: provider_integration
   entitlement-ticketing:
@@ -350,9 +368,23 @@ services:
     # threads saturated half a core working through the backlog, the HTTP thread
     # could not answer /healthz within the probe timeout, and kubelet restarted
     # the pod every 64 seconds. Threads and CPU must be raised together.
+    #
+    # 2 cores rather than 1: this is the busiest Java consumer -- 5 streams, and
+    # every refund it prices makes a synchronous call to fare-pricing while
+    # holding its thread. At 1 core the cgroup throttled a fifth of its periods,
+    # for longer in aggregate than the 10s liveness timeout, so /healthz (a
+    # constant map, no work of its own) still missed the probe and the pod took
+    # a SIGTERM mid-suite. The request stays low; this is a burst ceiling.
+    #
+    # 3Gi for the same reason. At 2Gi it settled at 1.76G -- flat, not growing,
+    # so not a leak -- which is what MaxRAMPercentage=70 permits it to reach, and
+    # that left under 400Mi for a GC burst on top of metaspace, code cache and
+    # Lettuce's direct buffers. The cgroup killed it (exit 137) rather than the
+    # heap failing, and the probe timeouts in the minutes before were GC pressure,
+    # not the earlier CPU starvation.
     resources:
-      requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: '2', memory: 3Gi }
   notification:
     db: notification
     env:
@@ -371,6 +403,10 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   traveler-profile:
     db: traveler_profile
+    # JVM event consumer -- see the note on defaults.resources.
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 2Gi }
   risk-compliance:
     db: risk_compliance
   corporate-travel:
@@ -381,6 +417,10 @@ services:
     db: loyalty_membership
   admin-audit:
     db: admin_audit
+    # JVM event consumer, low traffic -- see the note on defaults.resources.
+    resources:
+      requests: { cpu: 50m, memory: 192Mi }
+      limits: { cpu: 500m, memory: 1Gi }
   customer-service:
     db: customer_service
     env:
@@ -438,6 +478,10 @@ services:
       JOURNEY_ORDER_BASE_URL: http://journey-order:8080
   wallet-promotion:
     db: wallet_promotion
+    # JVM event consumer, low traffic -- see the note on defaults.resources.
+    resources:
+      requests: { cpu: 50m, memory: 192Mi }
+      limits: { cpu: 500m, memory: 1Gi }
   disruption-recovery:
     db: disruption_recovery
     env:
@@ -506,13 +550,27 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   marketing-campaign:
     db: marketing_campaign
+    # JVM event consumer, low traffic -- see the note on defaults.resources.
+    resources:
+      requests: { cpu: 50m, memory: 192Mi }
+      limits: { cpu: 500m, memory: 1Gi }
   group-booking:
     db: group_booking
+    # JVM event consumer, low traffic -- see the note on defaults.resources.
+    resources:
+      requests: { cpu: 50m, memory: 192Mi }
+      limits: { cpu: 500m, memory: 1Gi }
   travel-insurance:
     db: travel_insurance
+    # Go, not JVM, so MaxRAMPercentage in defaults.env does nothing here.
+    # Untuned the Go runtime sizes the heap against total machine memory and
+    # ignores the cgroup limit, so GOMEMLIMIT must be set with the limit, at
+    # ~85% of it. Change the two together.
+    env:
+      GOMEMLIMIT: "435MiB"
     resources:
       requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: 250m, memory: 256Mi }
+      limits: { cpu: 250m, memory: 512Mi }
 
 # -- Per-service overrides ---------------------------------------------------
 # Example:
