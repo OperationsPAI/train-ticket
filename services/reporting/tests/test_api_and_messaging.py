@@ -664,6 +664,31 @@ class PostgresProjectionTest(unittest.TestCase):
 
         self.assertEqual([event[7] for event in pool.conn.metric_events], ["CNY", "CNY", "CNY"])
 
+    def test_postgres_projection_bumps_the_dashboard_version_once_per_event(self) -> None:
+        # Every consumer writing this row contends on its version, and a lost
+        # update fails the whole handler with OptimisticConcurrencyError. Writing
+        # STALE and then READY doubles the contention for a state no reader can
+        # see, because the rebuild happens in the same transaction.
+        pool, service = self._projection_service()
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        before = pool.conn.dashboards["dash-revenue"][0]
+
+        for index in range(5):
+            result = service.handle_event(EventEnvelope(
+                eventId=f"evt-pg-version-{index}",
+                eventType="BoardingVerified",
+                occurredAt=occurred_at,
+                correlationId="corr-version",
+                producer="fulfillment",
+                schemaVersion=1,
+                payload={"entitlementId": "ent-1"},
+                causationId="evt-source",
+            ))
+            self.assertEqual(result.status.value, "SUCCESS")
+
+        self.assertEqual(pool.conn.dashboards["dash-revenue"][0] - before, 5)
+        self.assertEqual(pool.conn.dashboards["dash-revenue"][1]["status"], "ready")
+
     def test_postgres_projection_bounds_the_aggregator_load_to_the_detection_window(self) -> None:
         # The projection rebuilds the aggregator on every consumed event. Loading
         # the whole table made that 1.7s of a 2.0s handle_event on the cluster --
