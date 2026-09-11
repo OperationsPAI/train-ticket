@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
+import type { Pool } from "pg";
 
 import { configuredStreamMaxLen } from "./messaging.js";
-import { createPostgresPool, OptimisticConcurrencyConflict, OutboxRelay, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
+import { checkPostgresReadiness, createPostgresPool, OptimisticConcurrencyConflict, OutboxRelay, PostgresIdempotencyStore, SnapshotRepository } from "./storage.js";
 
 type QueryCall = Readonly<{ sql: string; params: unknown[] }>;
 
@@ -154,6 +155,63 @@ describe("createPostgresPool", () => {
       idleCount: 0,
       waitingCount: 0,
     });
+  });
+});
+
+describe("checkPostgresReadiness", () => {
+  it("releases the client exactly once and destroys it when the probe query times out", async () => {
+    // `SELECT 1` stays in flight after the timeout -- nothing cancels it. Releasing
+    // such a connection back to the pool gives the next borrower this probe's
+    // response, and pg's own double-release guard then throws from a callback no
+    // caller can catch. Passing an error to release destroys it instead.
+    const releases: unknown[] = [];
+    const client = {
+      query: () => new Promise<never>(() => {}),
+      release: (err?: unknown) => {
+        releases.push(err);
+      },
+    };
+    const pool = { connect: async () => client } as unknown as Pool;
+
+    assert.equal(await checkPostgresReadiness(pool, 5), false);
+
+    assert.equal(releases.length, 1);
+    assert.ok(releases[0] instanceof Error, "a timed-out connection must be destroyed, not pooled");
+  });
+
+  it("releases the client back to the pool on success", async () => {
+    const releases: unknown[] = [];
+    const client = {
+      query: async () => ({ rows: [{ "?column?": 1 }] }),
+      release: (err?: unknown) => {
+        releases.push(err);
+      },
+    };
+    const pool = { connect: async () => client } as unknown as Pool;
+
+    assert.equal(await checkPostgresReadiness(pool, 200), true);
+
+    assert.deepEqual(releases, [undefined]);
+  });
+
+  it("disposes of a connection the pool hands over after the connect timeout", async () => {
+    // Nothing awaits the connect once it has timed out, so the client arriving
+    // late is only reachable through that promise. Dropping it leaks a pool slot.
+    const releases: unknown[] = [];
+    let handOver: (client: unknown) => void = () => {};
+    const pool = {
+      connect: () => new Promise((resolve) => {
+        handOver = resolve;
+      }),
+    } as unknown as Pool;
+
+    assert.equal(await checkPostgresReadiness(pool, 5), false);
+
+    handOver({ release: (err?: unknown) => releases.push(err) });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(releases.length, 1);
+    assert.ok(releases[0] instanceof Error);
   });
 });
 
