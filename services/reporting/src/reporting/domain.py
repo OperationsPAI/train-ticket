@@ -723,12 +723,20 @@ class MetricAggregator:
 
     currency: str = "USD"
     events: list[OperationalEvent] = field(default_factory=list)
+    # Index of the event ids in `events`, so recording is O(1) rather than a scan
+    # of everything recorded so far. `events` stays a list because its order is
+    # part of the projection and several readers iterate it directly.
+    _event_ids: set[str] = field(default_factory=set, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._event_ids = {event.event_id for event in self.events}
 
     def record(self, event: OperationalEvent) -> None:
         if event.amount is not None and event.amount.currency != self.currency:
             raise ReportingError(f"metric aggregator currency mismatch: {event.amount.currency} != {self.currency}")
-        if any(existing.event_id == event.event_id for existing in self.events):
+        if event.event_id in self._event_ids:
             return
+        self._event_ids.add(event.event_id)
         self.events.append(event)
 
     def snapshot(self, at: datetime | None = None) -> MetricSnapshot:
