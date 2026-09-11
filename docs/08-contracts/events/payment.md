@@ -103,7 +103,7 @@ projection; it is not a docs-only increment.
 | Field | Description |
 |---|---|
 | **Producer** | payment |
-| **Consumers** | journey-order |
+| **Consumers** | none |
 | **Trigger** | Payment intent TTL elapsed without capture. |
 
 **Payload:**
@@ -111,6 +111,30 @@ projection; it is not a docs-only increment.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `paymentIntentId` | `PaymentIntentId` | yes | Payment intent ID. |
+
+### PaymentTimedOut
+
+Published together with `PaymentIntentExpired` on the same expiry. This is the
+order-facing one of the pair: it carries the business reference, so it is what a
+consumer that has to resolve the originating order subscribes to.
+`PaymentIntentExpired` is intent-scoped and carries no order reference.
+
+| Field | Description |
+|---|---|
+| **Producer** | payment |
+| **Consumers** | journey-order, booking-orchestration |
+| **Trigger** | Payment intent TTL elapsed without capture. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `paymentIntentId` | `PaymentIntentId` | yes | Payment intent ID. |
+| `intentId` | `PaymentIntentId` | yes | Alias of `paymentIntentId`. |
+| `businessRef` | string | yes | Originating business reference (the journey order ID). |
+| `orderId` | string | yes | Alias of `businessRef`. |
+| `expiresAt` | timestamp | yes | The deadline that elapsed. |
+| `reason` | string | yes | Expiry reason (`TIMEOUT`). |
 
 ### RefundSettled
 
@@ -145,3 +169,21 @@ projection; it is not a docs-only increment.
 | `paymentIntentId` | `PaymentIntentId` | yes | Original payment intent. |
 | `reason` | string | yes | Failure reason. |
 | `channelRef` | object | no | Payment Channel refund reference when failure happened after channel handoff. |
+
+### LatePaymentDetected
+
+| Field | Description |
+|---|---|
+| **Producer** | payment |
+| **Consumers** | none |
+| **Trigger** | Channel-confirmed capture arrived against a CANCELLED or EXPIRED payment intent. |
+
+**Payload:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `latePaymentCaseId` | string | yes | Late payment case ID (`lpc-` + 32 hex chars), folded from `paymentIntentId`, `channel`, and `channelTransactionId` so repeated reports of one late collection resolve to a single case. |
+| `paymentIntentId` | `PaymentIntentId` | yes | Payment intent ID. The intent stays terminal; a late capture never revives it. |
+| `capturedAmount` | `Money` | yes | Amount collected by the channel. |
+| `channel` | string | yes | Payment channel. |
+| `channelTransactionId` | string | yes | Channel transaction reference. |

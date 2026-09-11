@@ -34,11 +34,24 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         } catch (AckSkipEventException exception) {
             LOGGER.warn("eventType={} eventId={} ack-skipped: {}", envelope.eventType(), envelope.eventId(), exception.getMessage());
             return HandlerResult.SUCCESS;
-        } catch (DomainRuleViolation | IllegalArgumentException exception) {
-            // The nested command transaction may already be rollback-only, so a
-            // clean commit of SUCCESS is impossible here anyway; classify FATAL
-            // and roll everything back together.
-            LOGGER.warn("eventType={} eventId={} rejected as non-processable", envelope.eventType(), envelope.eventId(), exception);
+        } catch (DomainRuleViolation exception) {
+            // A DomainRuleViolation means THIS CONTEXT's state cannot accept the
+            // event, not that the event violated its own contract. Under the
+            // taxonomy in docs/00-current-status.md, FATAL is reserved for the
+            // latter; a conformant event meeting unknown or advanced local state
+            // is ack-skipped with a WARN.
+            //
+            // The transaction is still rolled back: the nested command
+            // transaction may already be rollback-only, so nothing can be
+            // committed on this path regardless of classification.
+            LOGGER.warn("eventType={} eventId={} rejected by local state; ack-skipped without applying",
+                envelope.eventType(), envelope.eventId(), exception);
+            rollbackCurrentTransactionIfActive();
+            return HandlerResult.SUCCESS;
+        } catch (IllegalArgumentException exception) {
+            // A malformed or unparseable payload IS a contract violation: no
+            // amount of retrying or waiting will make it processable.
+            LOGGER.warn("eventType={} eventId={} violates its own contract; dead-lettering", envelope.eventType(), envelope.eventId(), exception);
             rollbackCurrentTransactionIfActive();
             return HandlerResult.FATAL_FAILURE;
         } catch (RuntimeException exception) {

@@ -272,6 +272,15 @@ public final class PaymentIntent {
             "capture arrived after " + status.name().toLowerCase(), occurredAt, sourceCommandId, causationId, correlationId);
     }
 
+    /**
+     * Whether a channel-confirmed capture for this intent must be recorded as a late payment case
+     * rather than applied. Exactly the precondition {@link #recordLateCapture} enforces, exposed so
+     * the application layer can route to it instead of discovering it as a thrown rule violation.
+     */
+    public boolean isLateCaptureCandidate() {
+        return status == PaymentIntentStatus.CANCELLED || status == PaymentIntentStatus.EXPIRED;
+    }
+
     public void fail(String reasonCode, boolean retryable, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
         if (status == PaymentIntentStatus.CAPTURED) {
             throw new DomainRuleViolation("captured payment intent cannot fail");
