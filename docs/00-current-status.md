@@ -59,7 +59,8 @@ Connection / ConnectionContract aggregates, system-reported segment status
 driving the nine-state connection machine, and a protected missed-connection
 closed loop through disruption-recovery (SYSTEM `MISSED_CONNECTION` reports,
 `RecoveryCompleted` convergence). Restart certification spans 29 services and
-suite 01-19 (latest run: 436/0, all DLQ zero). Wave 20 cleared the remaining functional debts: fulfillment publishes
+suite 01-19 (latest run: 436/0, all DLQ zero at the time of that run -- see
+the DLQ note under Wave 13). Wave 20 cleared the remaining functional debts: fulfillment publishes
 SegmentArrived/Delayed/Cancelled (transfer-management consumes them
 event-driven, HTTP reports remain as the ops fallback), transfer evaluation
 reads place-network topology (degraded-not-blocking when place-network is
@@ -67,7 +68,8 @@ unavailable, times out, or returns 5xx; a client-supplied node ref that
 place-network does not know is still rejected with `VALIDATION_FAILED` at
 connection registration), and the
 TransferRiskPolicy aggregate replaces the builtin-v1 fallback. No deferred
-functional scope remains; latest restart certification: 470/0.
+functional scope remains; latest restart certification: 470/0 (the accompanying
+all-DLQ-zero claim no longer holds -- see the DLQ note under Wave 13).
 
 Wave 17 activated **disruption-recovery** (ops-reported incidents,
 RecoveryCase state machine, REFUND executed through post-sales with event
@@ -175,8 +177,15 @@ outbound HTTP; env-driven and zero-overhead when OTEL_* is absent). The DLQ
 second-order fixes (late provider confirmations now compensate via
 SegmentBookingCancelled consumed by provider-integration; finance-settlement
 refund-lag reconciliation) and the cross-kit silent-swallow audit landed in
-the same wave. DLQ streams are trimmed to zero — the monitoring baseline is
-zero-growth-from-zero.
+the same wave.
+
+> **Superseded on a long-running cluster.** "DLQ streams are trimmed to zero"
+> described the state at the end of Wave 13 and is not the steady state. All
+> eleven DLQ streams are non-empty on the live integration cluster (~23k entries),
+> and `events:payment-channel:dlq` sits at its `MAXLEN 10000` cap, so it is
+> silently discarding its oldest entries — any count read off it is a lower
+> bound. The zero-growth-from-zero baseline cannot be used as a monitoring
+> signal until the growth sources are closed; see "Operational findings" below.
 
 Wave 14 completed distributed tracing end-to-end: optional W3C
 traceparent/tracestate on the wire envelope (messaging.md ruling), injected
@@ -195,6 +204,59 @@ Nothing queued. ADR-0002 activation and the subsequent consumer-activation /
 waitlist-conformance batch are complete. Known accepted gaps after Phase 2:
 payment remains a simulated provider boundary; legacy-acl rebook books the
 first leg only (caller follows up) — both by explicit ruling.
+
+## Operational findings
+
+Observations from the live integration cluster that the wave notes above do not
+reflect. These are properties of a long-running deployment, not of the last
+certification run.
+
+**DLQ growth has sources that are still open.** All eleven DLQ streams are
+non-empty. The largest contributor was payment's classification of
+`ChannelOrderSucceeded` against an already-expired intent: the intent window is
+30s, the timeout sweeper runs every second, and a callback delayed behind any
+real consumer backlog therefore arrives against an EXPIRED intent. That path now
+opens a `LatePaymentCase` and the inbound handler acks, per the taxonomy ruling
+above — FATAL is for events violating their own contract, and a channel-confirmed
+collection does not. The remaining streams have not been attributed.
+
+**Consumer backlog can be permanent, not just delayed.** `reporting` subscribes
+to every context stream, and on several of them its group lag approaches the
+whole stream length. The streams are trimmed with `MAXLEN ~`, so the oldest part
+of that backlog is deleted from under the consumer rather than waiting for it.
+Lag alone does not distinguish "behind" from "data gone".
+
+**`failureReason` is not spelled consistently across kits.** DLQ entries carry
+both `MaxDeliveries` and `MaxDeliveryAttempts` depending on which language kit
+wrote them. Any alert or dashboard matching a single literal will silently miss
+whichever half it did not pick.
+
+**Event-type names drifted between producer and consumer, and nothing caught
+it.** journey-order's handler switch matched `PaymentExpired`, a name no producer
+publishes — payment emits `PaymentIntentExpired` (intent-scoped) and
+`PaymentTimedOut` (order-scoped) on the same expiry. An unmatched type falls
+through the switch's `default` to Success, so the order stayed in PENDING_PAYMENT
+with no error, no DLQ entry and no log. The switch now matches `PaymentTimedOut`,
+which is the one of the pair carrying the order reference.
+
+There is no mechanical check for this class of bug: `contract_lint.py` walks
+`services/` only, so the event-contract docs under `docs/08-contracts/events/`
+are not validated against the code at all, and journey-order's
+`RedisJourneyOrderSubscriptionsActionableTest` cross-checks its own two lists
+against each other — both sides agreed on a name no producer used. Producer and
+consumer names are only related by convention.
+
+**`events:payment-channel:dlq` is capped at `MAXLEN 10000`.** It has been at the
+cap, which means it drops its oldest entries as new ones arrive. Its length is a
+lower bound on what was dead-lettered, not a count.
+
+**Clearing one bottleneck exposes bugs that idle traffic hid.** Two defects only
+became reachable once payment stopped lagging: corporate-travel dead-lettered
+every retail `PaymentCaptured` (it required an `agreementId` the contract does not
+carry), and a readiness-probe race in the shared Node kit crashed
+offer-management outright. Both had been latent for as long as the throughput
+defect masked them, so a quiet DLQ during a degraded period is not evidence of
+correctness.
 
 ## Historical note
 
