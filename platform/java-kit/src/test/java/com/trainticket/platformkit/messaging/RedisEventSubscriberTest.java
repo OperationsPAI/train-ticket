@@ -564,7 +564,94 @@ class RedisEventSubscriberTest {
         @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {}
     }
 
-    private static final class FakeRedisStreams implements RedisStreamOperations {
+    /**
+     * The sweep for dead consumers must RECUR, not run once at startup.
+     *
+     * A consumer that just crashed is by definition not yet idle, so a startup-only sweep can never
+     * reclaim the corpse of the process that preceded it -- the one case that matters. Asserting
+     * more than one sweep is what distinguishes periodic from once-at-startup.
+     */
+    @Test
+    void sweepsForDeadConsumersRepeatedlyRatherThanOnlyAtStartup() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        CountDownLatch prunedRepeatedly = new CountDownLatch(3);
+        List<String> prunedSelfNames = Collections.synchronizedList(new ArrayList<>());
+        RecordingPruneStreams streams = new RecordingPruneStreams(prunedRepeatedly, prunedSelfNames);
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams, objectMapper, null, new InMemoryConsumedEventStore(),
+            RedisEventSubscriber.defaultEventConsumerTracer(), 1, 0L);
+
+        subscriber.subscribe(List.of("events:payment"), "payment", "payment-pod-1", envelope -> HandlerResult.SUCCESS);
+
+        try {
+            assertThat(prunedRepeatedly.await(5, TimeUnit.SECONDS))
+                .as("prune must run on every interval, not once before the poll loop")
+                .isTrue();
+        } finally {
+            subscriber.close();
+        }
+        // Its own name is passed as selfName so the sweep can never evict the live consumer.
+        assertThat(prunedSelfNames).isNotEmpty().allMatch("payment-pod-1"::equals);
+    }
+
+    /**
+     * A failing sweep must not abandon an otherwise productive poll iteration: the sweep is
+     * maintenance, message delivery is the job.
+     */
+    @Test
+    void keepsDeliveringWhenTheDeadConsumerSweepFails() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        FakeRedisStreams streams = new FakeRedisStreams(List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
+        )) {
+            @Override
+            public void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {
+                throw new IllegalStateException("XINFO CONSUMERS unavailable");
+            }
+        };
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+        CountDownLatch handled = new CountDownLatch(1);
+
+        subscriber.subscribe(List.of("events:payment"), "payment", "payment-pod-1", envelope -> {
+            handled.countDown();
+            return HandlerResult.SUCCESS;
+        });
+
+        try {
+            assertThat(handled.await(5, TimeUnit.SECONDS))
+                .as("a failed prune must not stop the poll loop from delivering")
+                .isTrue();
+        } finally {
+            subscriber.close();
+        }
+    }
+
+    private static class RecordingPruneStreams implements RedisStreamOperations {
+        private final CountDownLatch pruneCalls;
+        private final List<String> prunedSelfNames;
+
+        private RecordingPruneStreams(CountDownLatch pruneCalls, List<String> prunedSelfNames) {
+            this.pruneCalls = pruneCalls;
+            this.prunedSelfNames = prunedSelfNames;
+        }
+
+        @Override
+        public void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {
+            prunedSelfNames.add(selfName);
+            pruneCalls.countDown();
+        }
+
+        @Override public void createGroup(String stream, String group) { }
+        @Override public String publish(String stream, String envelopeJson) { return "1-0"; }
+        @Override public List<StreamEntry> readGroup(String stream, String group, String consumerName) { return List.of(); }
+        @Override public List<StreamEntry> autoClaim(String stream, String group, String consumerName) { return List.of(); }
+        @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
+        @Override public void ack(String stream, String group, String messageId) { }
+        @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) { }
+    }
+
+    private static class FakeRedisStreams implements RedisStreamOperations {
         private final List<StreamEntry> firstBatch;
         private final List<String> acked = Collections.synchronizedList(new ArrayList<>());
         private boolean delivered;
