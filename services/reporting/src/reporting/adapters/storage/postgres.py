@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -52,6 +52,13 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 _PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured", "RevenueRecognized", "PaymentSucceeded")
+
+# How far back the anomaly rules can see. REVENUE_DROP compares the last hour
+# against the same hour yesterday, which is the longest window any rule reads;
+# the rest look back an hour or less. Loading more than this cannot change a
+# verdict, so the write path stops at the boundary and the read endpoints, which
+# report over all of history, keep loading everything.
+_DETECTION_WINDOW = timedelta(days=1, hours=1)
 
 
 def _json_payload(value: Mapping[str, Any]) -> Any:
@@ -310,7 +317,7 @@ class PostgresReportingApplicationService:
                     self._save_metric_event(conn, normalized)
                     if normalized.event_type in _PAYMENT_CAPTURED_EVENT_TYPES:
                         self._refresh_revenue_views(conn)
-                    aggregator = self._load_aggregator(conn)
+                    aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
                     newly_detected = self._detector.evaluate(aggregator)
                     active = self._detector.list_active()
                     self._resolve_inactive_anomalies(conn, [anomaly.rule_id for anomaly in active])
@@ -382,15 +389,22 @@ class PostgresReportingApplicationService:
         ):
             conn.execute(f"REFRESH MATERIALIZED VIEW {view_name}")
 
-    def _load_aggregator(self, conn: Any) -> MetricAggregator:
+    def _load_aggregator(self, conn: Any, *, since: datetime | None = None) -> MetricAggregator:
+        # The window is spliced into the WHERE clause rather than passed as a
+        # parameter that may be NULL: `WHERE %s IS NULL OR occurred_at >= %s`
+        # cannot use idx_reporting_metric_events_occurred and plans a Seq Scan.
+        where = "" if since is None else "WHERE occurred_at >= %s"
+        params = () if since is None else (since,)
         rows = conn.execute(
-            """
+            f"""
             SELECT event_id, event_type, occurred_at, route_id, service_date, seat_class,
                    amount, currency, channel, passenger_type, capacity, confirmed,
                    booking_latency_ms, flags
             FROM reporting_metric_events
+            {where}
             ORDER BY occurred_at, event_id
-            """
+            """,
+            params,
         ).fetchall()
         # The aggregator holds a single currency and rejects any event that
         # disagrees, so it has to be told which one the stored events are in
