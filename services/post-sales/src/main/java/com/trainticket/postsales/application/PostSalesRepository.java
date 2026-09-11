@@ -8,5 +8,7 @@ public interface PostSalesRepository {
     Optional<PostSalesCase> findById(String caseId);
     Optional<PostSalesCase> findByIdempotencyKey(String idempotencyKey);
     Optional<PostSalesCase> findActiveRefundCaseForOrder(String journeyOrderId);
-    java.util.List<PostSalesCase> findAll();
+
+    /** Cases whose scope covers the given order item, which is how a capacity release finds its case. */
+    java.util.List<PostSalesCase> findByOrderItemRef(String orderItemRef);
 }
