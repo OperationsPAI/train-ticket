@@ -328,9 +328,12 @@ class PostgresReportingApplicationService:
                     dashboards = self._all_dashboards(conn)
                     for dashboard, version in dashboards:
                         if dashboard_consumes_event(dashboard, envelope.eventType):
-                            stale = dashboard.mark_stale()
-                            new_version = self._dashboards.save(conn, stale.dashboard_id, _dashboard_to_json(stale), version)
-                            self._maybe_rebuild(conn, stale, new_version, envelope)
+                            # mark_stale() is not persisted on its own. _maybe_rebuild
+                            # takes the same row straight back to READY inside this
+                            # transaction, so writing STALE first only doubles the
+                            # version bumps every consumer contends on -- no reader
+                            # can observe the intermediate state.
+                            self._maybe_rebuild(conn, dashboard.mark_stale(), version, envelope)
         except Exception as exc:
             # Log with the traceback. This is the handler production actually uses
             # -- the in-memory ReportingApplicationService has its own, and probing
