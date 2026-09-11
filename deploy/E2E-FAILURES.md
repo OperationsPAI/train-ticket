@@ -110,7 +110,7 @@ the handler rather than guessing at the storage layer again.
 
 ## P2 — reporting read model never catches up
 
-**Status:** FIXED — three defects in the write path, all measured
+**Status:** FIXED — six defects in the write path, all measured
 
 `reporting` consumes 37 streams — the widest fan-in in the system — and holds
 6,080 pending. Assertions on its read model fail: `reporting stream empty`,
@@ -147,12 +147,57 @@ returned TRANSIENT_ERROR and was redelivered forever — 311 occurrences in one
 pod's log. This was invisible until the payment fix let captures through at all,
 which is the same pattern as the other defects this session surfaced.
 
-Verified after all three: `/api/v1/metrics/operational` answers 200 in ~1.9s
-where it previously timed out at 60s; reporting reads **619 events/s** against a
-228/s production rate, and its total lag went from **+85/s growing to −69/s
-draining**; zero currency-mismatch errors. The residual failures are 23
-`OptimisticConcurrencyError: concurrent update detected for dash-revenue`, which
-is the OCC retry working as designed on a row eight threads contend for.
+Verified after the first three: `/api/v1/metrics/operational` answers 200 in
+~1.9s where it previously timed out at 60s; reporting reads **619 events/s**
+against a 228/s production rate, and its total lag went from **+85/s growing to
+−69/s draining**; zero currency-mismatch errors.
+
+It then stalled again, at **0.0 events/s against 77.8/s production**, with every
+stream's `pending` pinned at exactly 100 — `POLL_COUNT`, i.e. one batch read and
+never finished. Several streams reached `lag 10000`, equal to `MAXLEN`: that
+backlog was trimmed from underneath the group and is permanently lost, not
+delayed. Three further defects, found by profiling inside the pod rather than
+reading the pending counts:
+
+**4. The aggregator was rebuilt from the whole table on every event.** Indexing
+the event ids (defect 2) fixed the quadratic term but not the linear one:
+`_load_aggregator` still `SELECT`s every row of `reporting_metric_events` and
+replays it. Profiled at **1745 ms of a 1976 ms `handle_event`** — 88% — which
+caps a process at half an event per second against a production rate two orders
+of magnitude higher, so the backlog could never drain. `pg_stat_activity` showed
+only three active queries, so the bottleneck was in-process Python, not the
+database. The write path is now bounded to the longest window any anomaly rule
+reads (the previous day's same hour); the read endpoints report over all of
+history and are unchanged. 37,860 rows / 1483 ms → 12,087 rows / 535 ms.
+
+The window has to be spliced into the SQL, not passed as a nullable parameter:
+`WHERE %s IS NULL OR occurred_at >= %s` cannot use the index and plans a Seq
+Scan at cost 3101. Conditional splicing gives an Index Scan Backward at 1644.
+
+**5. The dashboard row was written twice per event.** `mark_stale()` was
+persisted and then `_maybe_rebuild` took the same row back to READY inside the
+same transaction, so no reader could ever observe the STALE state — the first
+write only doubled the version bumps concurrent consumers contend on.
+`dash-revenue` was at version 24,621 climbing ~2/s. This, not the retry logic,
+is what produced the residual `OptimisticConcurrencyError: concurrent update
+detected for dash-revenue` — 48 in a 4000-line sample. The earlier note here
+calling those "the OCC retry working as designed" was wrong: they are the
+symptom of handlers slow enough to collide, and the collisions stop once the
+handler does one write and takes 0.5s instead of 2s.
+
+**6. Four uvicorn workers shared one Redis consumer name.** The consumer name
+came from `HOSTNAME`, which is the pod, while the Dockerfile runs
+`--workers 4`. `XINFO CONSUMERS` reported one consumer per stream where `/proc`
+showed four worker processes, so XREADGROUP handed the same entries to all of
+them: **10,505 "duplicate event already processed" warnings across only 3,535
+distinct event ids**, each redundant copy paying the full aggregator rebuild
+before dedup rejected it. Fixed in the Python kit by appending the pid, which
+the other seven uvicorn services share.
+
+Its safety depends on the Python kit's dead-consumer sweep, which had the same
+startup-only defect the Java kit's did (fixed in `c9996efe`) — a per-process
+name is only sound if a replaced process's pending entries are actually
+reclaimed. That sweep now runs inside the poll loop, throttled to once a minute.
 
 ## P3 — waitlist never fulfils or expires
 
