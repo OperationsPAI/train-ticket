@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -52,6 +54,9 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 _PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured", "RevenueRecognized", "PaymentSucceeded")
+_REVENUE_REFRESH_INTERVAL = 30.0
+_ANOMALY_EVAL_INTERVAL = 30.0
+_ANOMALY_EVAL_BATCH = 100
 
 # How far back the anomaly rules can see. REVENUE_DROP compares the last hour
 # against the same hour yesterday, which is the longest window any rule reads;
@@ -262,6 +267,10 @@ class PostgresReportingApplicationService:
         self._metrics = SnapshotRepository("metric_definition_snapshots")
         self._dashboards = SnapshotRepository("dashboard_read_model_snapshots")
         self._detector = AnomalyDetector()
+        self._revenue_refresh_lock = threading.Lock()
+        self._last_revenue_refresh: float = 0.0
+        self._last_anomaly_eval: float = 0.0
+        self._events_since_anomaly_eval: int = 0
         self._seed_defaults()
 
     def _seed_defaults(self) -> None:
@@ -308,6 +317,7 @@ class PostgresReportingApplicationService:
         from train_ticket_platform.messaging import HandlerResult
         if not reporting_applies_event_type(envelope.eventType):
             return HandlerResult.success()
+        needs_revenue_refresh = False
         try:
             with self._pool.connection() as conn:
                 with conn.transaction():
@@ -316,24 +326,26 @@ class PostgresReportingApplicationService:
                     normalized = operational_event_from_envelope(envelope)
                     self._save_metric_event(conn, normalized)
                     if normalized.event_type in _PAYMENT_CAPTURED_EVENT_TYPES:
-                        self._refresh_revenue_views(conn)
-                    aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
-                    newly_detected = self._detector.evaluate(aggregator)
-                    active = self._detector.list_active()
-                    self._resolve_inactive_anomalies(conn, [anomaly.rule_id for anomaly in active])
-                    for anomaly in active:
-                        changed = self._save_anomaly(conn, anomaly)
-                        if changed and any(item.rule_id == anomaly.rule_id for item in newly_detected):
-                            self._append_anomaly_actions(conn, anomaly, envelope)
+                        needs_revenue_refresh = True
+                    self._events_since_anomaly_eval += 1
+                    now = time.monotonic()
+                    if now - self._last_anomaly_eval >= _ANOMALY_EVAL_INTERVAL or self._events_since_anomaly_eval >= _ANOMALY_EVAL_BATCH:
+                        aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
+                        newly_detected = self._detector.evaluate(aggregator)
+                        active = self._detector.list_active()
+                        self._resolve_inactive_anomalies(conn, [anomaly.rule_id for anomaly in active])
+                        for anomaly in active:
+                            changed = self._save_anomaly(conn, anomaly)
+                            if changed and any(item.rule_id == anomaly.rule_id for item in newly_detected):
+                                self._append_anomaly_actions(conn, anomaly, envelope)
+                        self._last_anomaly_eval = time.monotonic()
+                        self._events_since_anomaly_eval = 0
                     dashboards = self._all_dashboards(conn, for_update=True)
                     for dashboard, version in dashboards:
                         if dashboard_consumes_event(dashboard, envelope.eventType):
-                            # mark_stale() is not persisted on its own. _maybe_rebuild
-                            # takes the same row straight back to READY inside this
-                            # transaction, so writing STALE first only doubles the
-                            # version bumps every consumer contends on -- no reader
-                            # can observe the intermediate state.
                             self._maybe_rebuild(conn, dashboard.mark_stale(), version, envelope)
+            if needs_revenue_refresh:
+                self._throttled_revenue_refresh()
         except Exception as exc:
             # Log with the traceback. This is the handler production actually uses
             # -- the in-memory ReportingApplicationService has its own, and probing
@@ -381,9 +393,6 @@ class PostgresReportingApplicationService:
             ),
         )
 
-    # The revenue views filter on the payment-capture types in
-    # 001_reporting_storage.sql, so no other event type can change what a refresh
-    # produces.
     def _refresh_revenue_views(self, conn: Any) -> None:
         for view_name in (
             "reporting_revenue_by_route",
@@ -391,6 +400,21 @@ class PostgresReportingApplicationService:
             "reporting_revenue_breakdowns",
         ):
             conn.execute(f"REFRESH MATERIALIZED VIEW {view_name}")
+
+    def _throttled_revenue_refresh(self) -> None:
+        now = time.monotonic()
+        if now - self._last_revenue_refresh < _REVENUE_REFRESH_INTERVAL:
+            return
+        if not self._revenue_refresh_lock.acquire(blocking=False):
+            return
+        try:
+            if now - self._last_revenue_refresh < _REVENUE_REFRESH_INTERVAL:
+                return
+            with self._pool.connection() as conn:
+                self._refresh_revenue_views(conn)
+            self._last_revenue_refresh = time.monotonic()
+        finally:
+            self._revenue_refresh_lock.release()
 
     def _load_aggregator(self, conn: Any, *, since: datetime | None = None) -> MetricAggregator:
         # The window is spliced into the WHERE clause rather than passed as a
