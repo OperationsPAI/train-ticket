@@ -308,7 +308,8 @@ class PostgresReportingApplicationService:
                         return HandlerResult.success()
                     normalized = operational_event_from_envelope(envelope)
                     self._save_metric_event(conn, normalized)
-                    self._refresh_revenue_views(conn)
+                    if normalized.event_type in _PAYMENT_CAPTURED_EVENT_TYPES:
+                        self._refresh_revenue_views(conn)
                     aggregator = self._load_aggregator(conn)
                     newly_detected = self._detector.evaluate(aggregator)
                     active = self._detector.list_active()
@@ -370,6 +371,9 @@ class PostgresReportingApplicationService:
             ),
         )
 
+    # The revenue views filter on the payment-capture types in
+    # 001_reporting_storage.sql, so no other event type can change what a refresh
+    # produces.
     def _refresh_revenue_views(self, conn: Any) -> None:
         for view_name in (
             "reporting_revenue_by_route",
