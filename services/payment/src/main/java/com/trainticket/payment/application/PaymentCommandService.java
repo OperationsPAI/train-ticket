@@ -5,6 +5,7 @@ import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.ChannelRouter;
 import com.trainticket.payment.domain.PaymentChannel;
 import com.trainticket.payment.domain.DomainRuleViolation;
+import com.trainticket.payment.domain.LatePaymentCase;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentEvent;
 import com.trainticket.payment.domain.PaymentIntent;
@@ -17,6 +18,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import com.trainticket.payment.domain.ports.PaymentIntentRepository;
+import com.trainticket.payment.domain.ports.LatePaymentCaseRepository;
 import com.trainticket.payment.domain.ports.RefundRepository;
 import com.trainticket.payment.domain.ports.ReservationPaymentRequestRepository;
 import java.util.Objects;
@@ -35,6 +37,7 @@ public class PaymentCommandService {
     private final PaymentIntentRepository paymentIntentRepository;
     private final RefundRepository refundRepository;
     private final ReservationPaymentRequestRepository reservationPaymentRequestRepository;
+    private final LatePaymentCaseRepository latePaymentCaseRepository;
     private final PaymentChannelClient paymentChannelClient;
     private final ChannelRouter channelRouter;
 
@@ -45,9 +48,10 @@ public class PaymentCommandService {
         PaymentIntentRepository paymentIntentRepository,
         RefundRepository refundRepository,
         ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        LatePaymentCaseRepository latePaymentCaseRepository,
         PaymentChannelClient paymentChannelClient
     ) {
-        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, paymentChannelClient, ChannelRouter.defaults());
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, paymentChannelClient, ChannelRouter.defaults());
     }
 
     public PaymentCommandService(
@@ -56,6 +60,7 @@ public class PaymentCommandService {
         PaymentIntentRepository paymentIntentRepository,
         RefundRepository refundRepository,
         ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        LatePaymentCaseRepository latePaymentCaseRepository,
         PaymentChannelClient paymentChannelClient,
         ChannelRouter channelRouter
     ) {
@@ -64,6 +69,7 @@ public class PaymentCommandService {
         this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
         this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
         this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
+        this.latePaymentCaseRepository = Objects.requireNonNull(latePaymentCaseRepository, "latePaymentCaseRepository is required");
         this.paymentChannelClient = Objects.requireNonNull(paymentChannelClient, "paymentChannelClient is required");
         this.channelRouter = Objects.requireNonNull(channelRouter, "channelRouter is required");
     }
@@ -73,9 +79,10 @@ public class PaymentCommandService {
         EventPublisher eventPublisher,
         PaymentIntentRepository paymentIntentRepository,
         RefundRepository refundRepository,
-        ReservationPaymentRequestRepository reservationPaymentRequestRepository
+        ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        LatePaymentCaseRepository latePaymentCaseRepository
     ) {
-        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, new NoopPaymentChannelClient());
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, new NoopPaymentChannelClient());
     }
 
     @Transactional
@@ -243,12 +250,44 @@ public class PaymentCommandService {
         if (intent.status().name().equals("CAPTURED")) {
             return intent;
         }
+        // A channel-confirmed collection against a CANCELLED or EXPIRED intent
+        // is not an error and must not be discarded: the money moved. The intent
+        // stays terminal (a late capture never revives an order or issues a
+        // ticket -- docs/02-domains/payment.md 6.3) and the discrepancy is
+        // recorded as a LatePaymentCase for finance/CS to resolve.
+        if (intent.isLateCaptureCandidate()) {
+            recordLateCapture(intent, amount, channel, channelTransactionId, channelOrderId, causationId, correlationId);
+            return intent;
+        }
         int before = intent.domainEvents().size();
         intent.recordChannelHandoff(new ChannelRef(channel, channelOrderId, null, channelTransactionId, null, null, null));
         intent.capture(amount, channel, channelTransactionId, Instant.now(clock), commandId(channelOrderId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
+    }
+
+    private void recordLateCapture(
+        PaymentIntent intent,
+        Money amount,
+        String channel,
+        String channelTransactionId,
+        String channelOrderId,
+        String causationId,
+        String correlationId
+    ) {
+        LatePaymentCase lateCase = intent.recordLateCapture(
+            amount, channel, channelTransactionId, Instant.now(clock), commandId(channelOrderId), causationId, correlationId);
+        // The case id is folded from (intent, channel, channelTransactionId), so
+        // a second report of the same collection -- ChannelOrderSucceeded and
+        // then the reconciliation-driven ChannelOrderRecoveryDetected, which
+        // carry different event ids and so survive consumer-side dedup --
+        // resolves to the existing case instead of opening a duplicate.
+        if (latePaymentCaseRepository.findById(lateCase.latePaymentCaseId()).isPresent()) {
+            return;
+        }
+        latePaymentCaseRepository.save(lateCase);
+        publish(lateCase.domainEvents());
     }
 
     @Transactional
