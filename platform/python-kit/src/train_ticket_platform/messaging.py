@@ -125,9 +125,20 @@ def dlq_for_stream(stream: str) -> str:
 
 
 def default_consumer_name(group: str) -> str:
+    """Name a consumer uniquely per process, not per pod.
+
+    The uvicorn services run several worker processes, each of which starts its
+    own subscriber thread. Naming them after HOSTNAME alone gives every worker in
+    a pod the same Redis consumer, so XREADGROUP hands the same entries to all of
+    them and every copy but the first is discarded by the dedup check after
+    paying the full cost of the handler.
+
+    The pid makes a restarted process a new consumer, whose predecessor's PEL is
+    released by the poll loop's periodic dead-consumer sweep.
+    """
     instance = os.getenv("HOSTNAME") or socket.gethostname() or "local"
     safe_instance = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in instance)
-    return f"{group}-{safe_instance}"
+    return f"{group}-{safe_instance}-{os.getpid()}"
 
 
 class RedisEventPublisher(EventPublisher):

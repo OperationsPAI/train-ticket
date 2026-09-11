@@ -424,3 +424,19 @@ def test_dead_consumers_are_swept_periodically_not_only_at_startup() -> None:
     # once before the loop, then once per elapsed interval inside it
     assert redis.xinfo_calls > 1
     assert redis.deleted == ["reporting-old-pod"] * redis.xinfo_calls
+
+
+def test_consumer_name_is_unique_per_process_not_per_pod() -> None:
+    # The uvicorn services run WEB_CONCURRENCY worker processes, each starting
+    # its own subscriber thread. A name derived from HOSTNAME alone makes every
+    # worker in a pod the same Redis consumer, so XREADGROUP hands the same
+    # entries to all of them: measured on the cluster as 10,505 "duplicate event
+    # already processed" warnings across only 3,535 distinct event ids, each
+    # redundant copy paying the full handler cost before dedup rejects it.
+    import os as _os
+
+    name = messaging.default_consumer_name("reporting")
+
+    assert name.startswith("reporting-")
+    assert name.endswith(f"-{_os.getpid()}")
+    assert messaging.default_consumer_name("reporting") == name
