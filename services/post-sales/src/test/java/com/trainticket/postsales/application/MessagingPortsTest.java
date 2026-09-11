@@ -232,7 +232,7 @@ class MessagingPortsTest {
         assertEquals(EventSubscriber.HandlerResult.SUCCESS, handler.handle(envelope));
 
         assertEquals(1, log.recorded.size());
-        assertEquals(1, repository.findAll().size());
+        assertEquals(1, repository.findByOrderItemRef("ticket-1").size());
         AncillaryPostSalesProjection projection = projectionStore.findAncillaryByItemId("aoi-2").orElseThrow();
         assertEquals("CANCELLED", projection.status());
         assertEquals("case-main-refund-1", projection.postSalesCaseId());

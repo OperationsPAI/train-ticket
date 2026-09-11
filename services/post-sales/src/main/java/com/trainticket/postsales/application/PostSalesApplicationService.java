@@ -427,10 +427,7 @@ public class PostSalesApplicationService {
      * segment booking and mark it applied.
      */
     public void applyForSegmentBooking(String segmentBookingRef, String causationId, String correlationId) {
-        for (PostSalesCase postSalesCase : repository.findAll()) {
-            if (!postSalesCase.scope().orderItemRefs().contains(segmentBookingRef)) {
-                continue;
-            }
+        for (PostSalesCase postSalesCase : repository.findByOrderItemRef(segmentBookingRef)) {
             java.time.Instant now = java.time.Instant.now(clock);
             if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.APPROVED) {
                 postSalesCase.startExecution(now, "cmd-capacity-released", causationId, correlationId);
