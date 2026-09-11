@@ -152,6 +152,12 @@ jaeger:
   storage:
     size: 50Gi
     storageClass: ebs-ssd
+  # Must be overridden alongside limits.memory, at the ~85% ratio the chart
+  # documents -- otherwise it inherits the chart's 3400MiB, which is above the
+  # 2Gi limit below and the runtime never collects before the kubelet kills it.
+  gomemlimit: 1740MiB
+  # NOTE: lower than the chart default (4Gi) while prod retains 50Gi of spans.
+  # Badger compaction memory scales with retained data; revisit with sampling.
   resources:
     requests:
       cpu: '500m'
