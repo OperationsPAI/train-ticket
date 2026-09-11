@@ -52,8 +52,10 @@ public class InMemoryPostSalesRepository implements PostSalesRepository {
     }
 
     @Override
-    public java.util.List<PostSalesCase> findAll() {
-        return java.util.List.copyOf(byId.values());
+    public java.util.List<PostSalesCase> findByOrderItemRef(String orderItemRef) {
+        return byId.values().stream()
+            .filter(postSalesCase -> postSalesCase.scope().orderItemRefs().contains(orderItemRef))
+            .toList();
     }
 
     private static boolean isRefundConflictCase(PostSalesCase postSalesCase) {
