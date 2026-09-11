@@ -24,6 +24,11 @@ MAX_DELIVERY_ATTEMPTS = 5
 CLAIM_MIN_IDLE_MS = 60000
 CLAIM_COUNT = 100
 DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
+# How often the poll loop sweeps for dead consumers. Well below
+# DEAD_CONSUMER_IDLE_MS so a corpse is reclaimed promptly once it qualifies, and
+# far above the poll cadence so the sweep's XINFO CONSUMERS per stream stays
+# negligible.
+PRUNE_INTERVAL_MS = 60 * 1000
 POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "100"))
 POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "100"))
 LOGGER = logging.getLogger(__name__)
@@ -185,10 +190,14 @@ class RedisEventSubscriber(EventSubscriber):
             raise SubscribeFailed("subscriber could not start Redis Streams consumer group") from exc
         self._prune_dead_consumers(streams_tuple, group, consumer_name)
         next_recovery_at = 0.0
+        next_prune_at = time.monotonic() + (PRUNE_INTERVAL_MS / 1000)
         self._stop_requested.clear()
         while not self._stop_requested.is_set():
             try:
                 now = time.monotonic()
+                if now >= next_prune_at:
+                    self._prune_dead_consumers(streams_tuple, group, consumer_name)
+                    next_prune_at = now + (PRUNE_INTERVAL_MS / 1000)
                 if now >= next_recovery_at:
                     self._recover_pending(streams_tuple, group, consumer_name, handler)
                     next_recovery_at = now + (CLAIM_MIN_IDLE_MS / 1000)
