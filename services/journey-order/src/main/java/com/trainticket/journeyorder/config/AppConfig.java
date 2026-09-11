@@ -10,8 +10,8 @@ import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandle
 import com.trainticket.platformkit.messaging.RedisEventPublisher;
 import com.trainticket.platformkit.messaging.RedisEventSubscriber;
 import java.time.Clock;
-import java.util.UUID;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -79,11 +79,15 @@ public class AppConfig {
     @Bean
     public SmartInitializingSingleton journeyOrderSubscriptionStartup(
             EventSubscriber eventSubscriber,
-            JourneyOrderEventHandler eventHandler) {
+            JourneyOrderEventHandler eventHandler,
+            // Stable per-pod consumer name, not a per-boot UUID: a restarted
+            // process must reclaim its own pending entries rather than orphan
+            // them in a consumer name that will never appear again.
+            @Value("${HOSTNAME:local}") String instanceId) {
         return () -> eventSubscriber.subscribe(
             com.trainticket.journeyorder.adapters.messaging.RedisJourneyOrderSubscriptions.streams(),
             com.trainticket.journeyorder.adapters.messaging.RedisJourneyOrderSubscriptions.group(),
-            "journey-order-" + UUID.randomUUID(),
+            "journey-order-" + instanceId,
             // Filter by event type BEFORE entering the handler.
             //
             // OrderManagementService.handle is @Transactional, so Spring opens a

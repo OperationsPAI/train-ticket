@@ -4,7 +4,7 @@ import com.trainticket.adminaudit.application.AdminAuditInboundEventHandler;
 import com.trainticket.adminaudit.application.ports.EventSubscriber;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -20,17 +20,24 @@ public class AdminAuditSubscriptionRunner implements CommandLineRunner {
     private final ConsumedEventLog consumedEventLog;
     private final AdminAuditInboundEventHandler handler;
     private final Optional<PlatformTransactionManager> transactionManager;
+    private final String consumerName;
 
     public AdminAuditSubscriptionRunner(
         EventSubscriber subscriber,
         ConsumedEventLog consumedEventLog,
         AdminAuditInboundEventHandler handler,
-        Optional<PlatformTransactionManager> transactionManager
+        Optional<PlatformTransactionManager> transactionManager,
+        // Stable per-pod consumer name, not a per-boot UUID: a restarted process
+        // must reclaim its own pending entries instead of orphaning them in a
+        // consumer that no longer exists. See RedisEventSubscriber's
+        // pruneDeadConsumersQuietly for what orphaned PELs cost.
+        @Value("${HOSTNAME:local}") String instanceId
     ) {
         this.subscriber = subscriber;
         this.consumedEventLog = consumedEventLog;
         this.handler = handler;
         this.transactionManager = transactionManager;
+        this.consumerName = CONSUMER_GROUP + "-" + instanceId;
     }
 
     @Override
@@ -38,7 +45,7 @@ public class AdminAuditSubscriptionRunner implements CommandLineRunner {
         subscriber.subscribe(
             SUBSCRIBED_STREAMS,
             CONSUMER_GROUP,
-            CONSUMER_GROUP + "-" + UUID.randomUUID(),
+            consumerName,
             new DeduplicatingEventHandler(consumedEventLog, handler, transactionManager.orElse(null))
         );
     }
