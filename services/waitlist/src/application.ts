@@ -130,10 +130,13 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return [...this.entries.values()].some((entry) => isActiveStatus(entry.status) && entry.travelerRefs[0] === travelerRef && entry.intentFingerprint === intentFingerprint);
   }
 
+  // Mirrors PostgresWaitlistRepository: queue identity keys on segmentRef alone,
+  // because the entry's departureDate is deadline-derived when the create request
+  // omits it and the CapacityReleased trigger carries no departureDate at all.
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
-    const matching = [...this.entries.values()].filter((entry) => entry.status !== "CLOSED" && entry.segmentRef === segmentRef && entry.departureDate === departureDate && (!seatClass || entry.seatClass === seatClass));
+    const matching = [...this.entries.values()].filter((entry) => entry.status !== "CLOSED" && entry.segmentRef === segmentRef && (!seatClass || entry.seatClass === seatClass));
     const classForQueue = (seatClass ?? matching[0]?.seatClass ?? "SECOND") as FareClass;
-    return new WaitlistQueue(segmentRef, departureDate, classForQueue, matching.filter((entry) => entry.seatClass === classForQueue));
+    return new WaitlistQueue(segmentRef, matching[0]?.departureDate ?? departureDate, classForQueue, matching.filter((entry) => entry.seatClass === classForQueue));
   }
 
   private snapshot(entry: WaitlistEntry): WaitlistEntrySnapshot {
