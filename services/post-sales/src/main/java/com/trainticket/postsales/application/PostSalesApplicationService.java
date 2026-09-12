@@ -94,7 +94,15 @@ public class PostSalesApplicationService {
         if (isTerminalNonRefundable(postSalesCase)) {
             throw new OrderNotRefundableException();
         }
-        if (postSalesCase.status().name().equals("APPROVED")) {
+        // Approval is convergent: a case already executing or applied is done, and a case
+        // left in APPROVED by an earlier call still needs to be pushed into EXECUTING.
+        // Previously APPROVED returned immediately without starting execution, so the
+        // case never emitted PostSalesExecutionStarted and the choreography stalled.
+        if (postSalesCase.status() == PostSalesCaseStatus.EXECUTING || postSalesCase.status() == PostSalesCaseStatus.APPLIED) {
+            return postSalesCase;
+        }
+        if (postSalesCase.status() == PostSalesCaseStatus.APPROVED) {
+            startApprovedExecution(postSalesCase, sourceCommandId, correlationId);
             return postSalesCase;
         }
         if (postSalesCase.decision() == null) {
@@ -107,9 +115,14 @@ public class PostSalesApplicationService {
                 .map(PostSalesPolicyContext::incrementAppliedChangeCount)
                 .ifPresent(policyContextStore::save);
         }
+        startApprovedExecution(postSalesCase, sourceCommandId, correlationId);
+        return postSalesCase;
+    }
+
+    private void startApprovedExecution(PostSalesCase postSalesCase, String sourceCommandId, String correlationId) {
+        postSalesCase.startExecution(clock.instant(), sourceCommandId, sourceCommandId, correlationId);
         repository.save(postSalesCase);
         publishNewEvents(postSalesCase);
-        return postSalesCase;
     }
 
     public PostSalesCase get(String caseId) {
