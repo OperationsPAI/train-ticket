@@ -429,10 +429,12 @@ class PostgresReportingApplicationService:
                    booking_latency_ms, flags
             FROM reporting_metric_events
             {where}
-            ORDER BY occurred_at, event_id
+            ORDER BY occurred_at DESC, event_id
+            LIMIT 10000
             """,
             params,
         ).fetchall()
+        rows.reverse()
         # The aggregator holds a single currency and rejects any event that
         # disagrees, so it has to be told which one the stored events are in
         # rather than assuming its own default. The system quotes in CNY, and
