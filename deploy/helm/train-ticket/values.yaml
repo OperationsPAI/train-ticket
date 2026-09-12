@@ -245,8 +245,8 @@ defaults:
   # A service's `resources` REPLACES this block wholesale (services.yaml uses
   # `default`, not `merge`), so an override must restate all four values.
   resources:
-    requests: { cpu: 50m, memory: 128Mi }
-    limits: { cpu: 500m, memory: 512Mi }
+    requests: { cpu: 50m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 2Gi }
   probes:
     # A startupProbe on /healthz holds liveness off during a slow start, so
     # liveness can stay on /healthz (process liveness) instead of being pointed
@@ -457,6 +457,7 @@ services:
       # 8 rather than 4 for the same reason the number is not simply "more":
       # threads are per-subscriber, and this one has 37 streams to interleave.
       CONSUMER_THREADS: "8"
+      WEB_CONCURRENCY: "2"
     # 8 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
@@ -464,7 +465,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1500m', memory: 3Gi }
+      limits: { cpu: '1500m', memory: 4Gi }
   supplier-catalog:
     db: supplier_catalog
   legacy-acl:
