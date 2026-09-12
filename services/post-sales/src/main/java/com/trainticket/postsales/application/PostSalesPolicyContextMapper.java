@@ -3,12 +3,16 @@ package com.trainticket.postsales.application;
 import com.trainticket.postsales.application.PostSalesPolicyContext.RefundWaterfallComponents;
 import com.trainticket.postsales.domain.Money;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 final class PostSalesPolicyContextMapper {
     private static final String DEFAULT_CURRENCY = "CNY";
@@ -51,6 +55,8 @@ final class PostSalesPolicyContextMapper {
         ));
     }
 
+    private static final Pattern SEGMENT_REF_DATE = Pattern.compile("(\\d{4})-(\\d{2})-(\\d{2})");
+
     private static Optional<Instant> earliestDeparture(Map<?, ?> payload, List<Map<?, ?>> segments) {
         List<Instant> candidates = new ArrayList<>();
         for (String field : List.of("departureTime", "departureAt")) {
@@ -61,7 +67,36 @@ final class PostSalesPolicyContextMapper {
                 text(segment, field).map(Instant::parse).ifPresent(candidates::add);
             }
         }
+        // A JourneyOrderCreated/Confirmed payload may carry only segmentRefs — canonical
+        // slugs such as seg-web-2026-08-01-<hash> — with no explicit departure time. The
+        // policy context would then be dropped entirely and every refund quote returns
+        // zero. The service date is embedded in the slug, so derive start-of-day UTC from
+        // it as a last-resort departure.
+        if (candidates.isEmpty()) {
+            for (String segmentRef : textList(payload.get("segmentRefs"))) {
+                departureFromSegmentRef(segmentRef).ifPresent(candidates::add);
+            }
+        }
         return PostSalesPolicyContext.earliest(candidates);
+    }
+
+    private static Optional<Instant> departureFromSegmentRef(String segmentRef) {
+        if (segmentRef == null) {
+            return Optional.empty();
+        }
+        Matcher matcher = SEGMENT_REF_DATE.matcher(segmentRef);
+        if (!matcher.find()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(LocalDate.of(
+                Integer.parseInt(matcher.group(1)),
+                Integer.parseInt(matcher.group(2)),
+                Integer.parseInt(matcher.group(3))
+            ).atStartOfDay(ZoneOffset.UTC).toInstant());
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
     }
 
     private static Map<String, String> travelerTypes(Object travelerRefsValue) {
