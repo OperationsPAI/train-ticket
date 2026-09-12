@@ -77,20 +77,33 @@ export async function withTransaction(pool, operation) {
         client.release();
     }
 }
+// A probe timeout leaves `SELECT 1` in flight -- nothing cancels it. Returning
+// that connection to the pool hands the next borrower this probe's response as
+// its own, and the double release that follows throws from inside a pg callback
+// where no caller can catch it, taking the process down. Passing an error to
+// release destroys the connection instead of pooling it, which is the only safe
+// disposal for a connection with unread results.
+const ABANDONED = new Error("readiness probe abandoned this connection");
 export async function checkPostgresReadiness(pool, timeoutMs = 200) {
-    let client;
     const connectPromise = pool.connect();
+    let client;
     try {
         client = await withTimeout(connectPromise, timeoutMs);
+    }
+    catch {
+        // The connect itself timed out, so there is no client to release here; the
+        // pool may still hand one out later, and that one has to be disposed of too.
+        connectPromise.then((late) => late.release(ABANDONED)).catch(() => { });
+        return false;
+    }
+    try {
         await withTimeout(client.query("SELECT 1"), timeoutMs);
+        client.release();
         return true;
     }
     catch {
-        connectPromise.then((c) => c.release()).catch(() => { });
+        client.release(ABANDONED);
         return false;
-    }
-    finally {
-        client?.release();
     }
 }
 export class MigrationRunner {

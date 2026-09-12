@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.trainticket.postsales.domain.Money;
 import com.trainticket.postsales.domain.PostSalesCase;
+import com.trainticket.postsales.domain.PostSalesCaseStatus;
 import com.trainticket.postsales.domain.PostSalesCaseType;
 import com.trainticket.postsales.domain.PostSalesScope;
 import java.time.Clock;
@@ -133,6 +134,37 @@ class PostSalesApplicationServicePolicyIntegrationTest {
         assertEquals(1_500, evaluated.decision().amountSnapshot().extraChargeAmount().toMinorUnits());
         assertEquals(1_500, evaluated.decision().changeAssessment().changeFee().toMinorUnits());
         assertEquals(0, evaluated.decision().changeAssessment().fareDifference().toMinorUnits());
+    }
+
+    @Test
+    void approveStartsExecutionSoTheCaseCanConvergeToApplied() {
+        InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
+        PostSalesApplicationService service = service(contextStore, quote("adjq-apply", 8_750, "CNY", 0, "CNY"));
+        service.recordPolicyContext(PostSalesPolicyContext.fallback("ord-apply", NOW.plusSeconds(3 * 86_400), 1, Money.of("107.50", "CNY")));
+        PostSalesCase postSalesCase = service.open(command("ord-apply", PostSalesCaseType.REFUND, "idem-apply"));
+        service.evaluate("psc-" + postSalesCase.caseId(), "cmd-evaluate", "corr-policy");
+
+        PostSalesCase approved = service.approve("psc-" + postSalesCase.caseId(), "cmd-approve", "corr-policy");
+
+        assertEquals(PostSalesCaseStatus.EXECUTING, approved.status());
+
+        service.applyForSegmentBooking("oi-1", "evt-capacity", "corr-policy");
+
+        assertEquals(PostSalesCaseStatus.APPLIED, service.get("psc-" + postSalesCase.caseId()).status());
+    }
+
+    @Test
+    void approveIsIdempotentOnceTheCaseIsExecuting() {
+        InMemoryPostSalesPolicyContextStore contextStore = new InMemoryPostSalesPolicyContextStore();
+        PostSalesApplicationService service = service(contextStore, quote("adjq-idem", 8_750, "CNY", 0, "CNY"));
+        service.recordPolicyContext(PostSalesPolicyContext.fallback("ord-idem", NOW.plusSeconds(3 * 86_400), 1, Money.of("107.50", "CNY")));
+        PostSalesCase postSalesCase = service.open(command("ord-idem", PostSalesCaseType.REFUND, "idem-idem"));
+        service.evaluate("psc-" + postSalesCase.caseId(), "cmd-evaluate", "corr-policy");
+        service.approve("psc-" + postSalesCase.caseId(), "cmd-approve", "corr-policy");
+
+        PostSalesCase again = service.approve("psc-" + postSalesCase.caseId(), "cmd-approve-2", "corr-policy");
+
+        assertEquals(PostSalesCaseStatus.EXECUTING, again.status());
     }
 
     private static PostSalesApplicationService service(
