@@ -1,0 +1,111 @@
+# Values for the ACR-hosted deployment on the `admin:school` cluster.
+#
+# Layered ON TOP of values-prod.yaml, which supplies the 6-shard PG layout and
+# the per-service sizing. Pass both, in this order:
+#
+#   -f deploy/helm/values-prod.yaml -f deploy/helm/values-acr.yaml
+#
+# (HELM_VALUES accepts a whitespace-separated list for exactly this reason; see
+# deploy/render-manifests.sh.) Only what the target environment FORCES to
+# differ lives here -- anything else belongs in values-prod.yaml.
+#
+# The five deltas, and why each is not optional:
+#
+#  1. IMAGES. `admin:school` has no docker.io proxy and no registry of its own
+#     that this host can reach: the cluster's own pull registry is 10.10.10.240
+#     on an internal subnet (10.10.10.0/24) that is unroutable from here -- the
+#     only address that answers is the API server. So images go to a public
+#     registry this host CAN push to, which is ACR. They all land in ONE
+#     repository (`lincyaw/trainticket`), distinguished by the tag
+#     `<service>-<build>`; see `train-ticket.image`. One repository is one
+#     public/private toggle, and one ACR repository quota, for 39 images.
+#
+#  2. INFRA IMAGES ARE MIRRORED INTO THE SAME REPOSITORY. values-prod.yaml
+#     points imageRegistry at pair-cn-guangzhou.cr.volces.com, a docker.io
+#     *pull-through mirror*: `.../library/postgres:16-alpine` resolves there
+#     because the mirror proxies docker.io. ACR proxies nothing, so inheriting
+#     that registry verbatim would render
+#     `registry.cn-shenzhen.aliyuncs.com/library/postgres:16-alpine` -- a
+#     namespace that does not exist.
+#
+#     The tempting fix, `infraRegistry: ""` to send them to docker.io, DOES NOT
+#     WORK HERE and was measured failing: the nodes time out against
+#     `auth.docker.io` ("failed to fetch anonymous token ... i/o timeout"), so
+#     `curlimages/curl:8.10.1`, `jaegertracing/all-in-one:1.57` and
+#     `axllent/mailpit:v1.22.3` all ImagePullBackOff. `postgres:16-alpine` and
+#     `redis:7-alpine` DO come up, but only because their layers are already
+#     cached on the nodes -- a property of the nodes' history, not of the
+#     network, and not something a deploy can lean on. A fresh node would fail.
+#
+#     So infraRegistry is deliberately NOT set: it inherits imageRegistry, and
+#     because imageRepo is set, `train-ticket.infraImage` mirrors the six
+#     upstream images into the same repository as the services, tagged
+#     `<basename>-<tag>` (`postgres-16-alpine`, `all-in-one-1.57`,
+#     `busybox-1.37`, `redis-7-alpine`, `opentelemetry-collector-contrib-0.103.1`,
+#     `mailpit-v1.22.3`). The whole release then depends on exactly one
+#     registry, one that is verified reachable from the nodes.
+#
+#  3. STORAGE. `ebs-ssd` (values-prod.yaml) is a Volces VKE StorageClass and
+#     does not exist here; the cluster offers `openebs-hostpath` and
+#     `juicefs-sc`. JuiceFS is the choice because it is a shared filesystem:
+#     openebs-hostpath is node-local, so a Postgres pod rescheduled onto a
+#     different node would come up on an empty volume. The cost, and it is a
+#     real one, is that Postgres then runs its WAL and fsync path over a
+#     network filesystem -- acceptable for this environment, not for production.
+#     Note `Retain`: `helm uninstall` leaves the PVs behind, so a redeploy
+#     reattaches existing data rather than starting clean.
+#
+#  4. LOADGEN IS CUT FROM 30 REPLICAS TO 3. values-prod.yaml's 30 is sized for
+#     a 20-node VKE cluster running a deliberate stress campaign. Dropped onto
+#     a shared cluster as the first bring-up it would drive sustained load at
+#     the whole stack -- including 6 Postgres shards on JuiceFS, which is the
+#     one component whose behaviour under it is least known -- before anyone
+#     has confirmed the stack serves a single request. Raise it deliberately
+#     once the smoke checks pass.
+#
+#  5. MAILPIT GETS MORE MEMORY. The chart default is 256Mi, and mailpit sits at
+#     208Mi while doing nothing at all -- empty mailbox, no senders -- and was
+#     OOMKilled (exit 137) within 90 seconds of first start. See the note on the
+#     override below.
+
+global:
+  imageRegistry: registry.cn-shenzhen.aliyuncs.com
+  imageOrg: lincyaw
+  imageRepo: trainticket
+  # Overridden by the Makefile's `--set global.imageTag`, which is what keeps
+  # the pushed tags and the deployed tags in step (see IMAGE_TAG). The value
+  # here is the fallback for a bare `helm upgrade` that passes no --set.
+  imageTag: "20260913"
+  # Immutable-per-build tags: `<service>-<date>` is a new string every build,
+  # so there is no cached layer to fall back to and the kubelet must resolve it
+  # against the registry. IfNotPresent would silently reuse a stale image for
+  # any tag that happened to repeat.
+  imagePullPolicy: Always
+
+postgres:
+  storage:
+    storageClass: juicefs-sc
+
+jaeger:
+  storage:
+    storageClass: juicefs-sc
+
+loadgen:
+  replicas: 3
+
+mailpit:
+  # The chart default (256Mi) is not survivable here. Measured on this cluster:
+  # mailpit sits at 208Mi doing NOTHING -- empty mailbox, no senders -- and was
+  # OOMKilled (exit 137) within 90 seconds of first start, twice, while its logs
+  # showed nothing but a clean startup. Go sizes its heap against the machine it
+  # runs on, and a limit picked for a kind node is not a limit that transfers to
+  # a 128-core node. This is the same lesson values-kind.yaml records for Redis
+  # (x3 at 256Mi), Postgres (x2 at 512Mi) and Jaeger (x13 at 256Mi): headroom is
+  # cheaper than another OOMKill.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi

@@ -13,6 +13,13 @@ OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 # which is an ImagePullBackOff with no other symptom. Overriding it now changes
 # both sides at once.
 IMAGE_TAG ?= local
+# The tag the images were BUILT with locally. Normally the same as IMAGE_TAG --
+# build-images.sh tags with one name and the chart deploys with it. They are
+# separable because they are genuinely different things: pushing an existing
+# build (say :local, built before the registry layout changed) under a fresh
+# deployed tag is `make push-images LOCAL_TAG=local IMAGE_TAG=20260913`, and it
+# avoids rebuilding 39 images to rename them.
+LOCAL_TAG ?= $(IMAGE_TAG)
 KIND_CLUSTER ?= train-ticket
 # Default to the currently selected kubectl context rather than a hardcoded
 # name. It used to default to kind-arl-test, which does not exist here (the
@@ -35,7 +42,7 @@ KUBECTL := kubectl $(if $(KCTX),--context $(KCTX),)
 KUBENS := $(KUBECTL) -n $(NAMESPACE)
 
 .PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
-.PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke
+.PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke push-images deploy-acr deploy-acr-apply
 
 check: skeleton-check contract-lint
 
@@ -202,9 +209,73 @@ deploy-check: deploy-seed
 	@echo "== deploy: smoke verification"
 	KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) deploy/smoke.sh
 
+# --- Real cluster, via a registry -------------------------------------------
+# The counterpart to `make deploy`, which is kind-only: it ends in `kind load`
+# and never touches a registry, so it cannot deploy anywhere but a kind cluster
+# on this host. This path pushes to a registry instead, and is what a remote
+# cluster needs.
+#
+# The values files are the profile, not flags: values-acr.yaml carries the
+# registry, the single-repository image layout, the StorageClass and the
+# loadgen sizing, and every derived list (verify-databases, seed, smoke) renders
+# through the same HELM_VALUES, so the deployed and verified definitions cannot
+# drift.
+#
+# Pushing is a separate target rather than a prerequisite, deliberately: the
+# images are 9 GB and are unchanged by a manifest or values edit, which is the
+# same reasoning that gave `deploy` a `deploy-fast` escape hatch.
+HELM_VALUES_ACR ?= deploy/helm/values-prod.yaml deploy/helm/values-acr.yaml
+# The probe pod's image. Upstream is curlimages/curl:8.10.1, which a cluster
+# without a route to auth.docker.io cannot pull; it is mirrored into the same
+# repository as the services by push-images.sh's infra handling.
+SMOKE_IMAGE ?= registry.cn-shenzhen.aliyuncs.com/lincyaw/trainticket:curl-8.10.1
+
+deploy-acr-apply:
+	@echo "== deploy-acr: installing/upgrading the Helm release"
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+	  $(foreach f,$(HELM_VALUES_ACR),-f $(f)) \
+	  --namespace $(NAMESPACE) --create-namespace \
+	  $(if $(KCTX),--kube-context $(KCTX),) \
+	  --set global.imageTag=$(IMAGE_TAG) \
+	  --wait --timeout $(HELM_TIMEOUT)
+
+deploy-acr: deploy-acr-apply
+	@echo "== deploy-acr: verifying databases"
+	HELM_VALUES="$(HELM_VALUES_ACR)" KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) deploy/verify-databases.sh
+	@echo "== deploy-acr: waiting for services (repairing any that lost the database race)"
+	HELM_VALUES="$(HELM_VALUES_ACR)" KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) deploy/repair-unready.sh
+	@echo "== deploy-acr: seeding reference data"
+	HELM_VALUES="$(HELM_VALUES_ACR)" KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) deploy/seed.sh
+	@echo "== deploy-acr: smoke verification"
+	HELM_VALUES="$(HELM_VALUES_ACR)" KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) SMOKE_IMAGE=$(SMOKE_IMAGE) deploy/smoke.sh
+	@echo
+	@echo "=============================================================="
+	@echo "deploy-acr: COMPLETE -- stack is up, seeded and smoke-verified."
+	@echo "=============================================================="
+
 # Smoke verification on demand, against an already-deployed stack.
 smoke:
 	KCTX=$(KCTX) NAMESPACE=$(NAMESPACE) deploy/smoke.sh
+
+# Push the built service images to the registry the release names.
+#
+# The real-cluster counterpart to deploy-images: on kind the images reach the
+# node through `kind load`, which needs no registry, so `make deploy` has no
+# push in it. A real cluster has no such shortcut and this is the step that puts
+# them in a registry both this host and the cluster can reach.
+#
+# HELM_VALUES decides WHERE they go -- the chart renders the full reference, so
+# the registry, the organization and the repository layout are all chart
+# configuration, not flags here. A real-cluster deploy therefore names its
+# values files on both this target and the helm call:
+#
+#   make push-images HELM_VALUES="deploy/helm/values-prod.yaml deploy/helm/values-acr.yaml" \
+#     LOCAL_TAG=local IMAGE_TAG=20260913 NAMESPACE=train-ticket-prod
+#
+# DRY_RUN=1 resolves the whole list and prints the mapping without pushing.
+push-images:
+	LOCAL_TAG=$(LOCAL_TAG) IMAGE_TAG=$(IMAGE_TAG) NAMESPACE=$(NAMESPACE) \
+	  DRY_RUN=$(DRY_RUN) HELM_VALUES="$(HELM_VALUES)" deploy/push-images.sh
 
 # The full e2e suite. Separate from deploy on purpose: these are the tests,
 # not the deployment. Run after `make deploy`.
