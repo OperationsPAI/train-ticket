@@ -685,8 +685,8 @@
       "id": "seat-assignment",
       "path": "services/seat-assignment",
       "domain": "Seat Assignment",
-      "language": "rust",
-      "runtime": "rust",
+      "language": "golang",
+      "runtime": "go",
       "phase": "activation-wave-A1",
       "status": "integration-ready",
       "priority": "P1",
@@ -704,7 +704,7 @@
         "AdjacencyGroup",
         "BerthPreference"
       ],
-      "rationale": "Rust fits overlap, immutability, idempotency, and allocation-state invariants."
+      "rationale": "Go fits seat-map allocation and the hold lifecycle, and keeps the service easy to operate."
     },
     {
       "id": "invoicing",
