@@ -46,6 +46,50 @@ make deploy-fast   # 同上，但跳过 39 个镜像的重建（chart-only 变�
 
 详见 `deploy/README.md`。
 
+### 2b. 部署到真集群（经镜像仓库）
+
+`make deploy` 只服务 kind：它最后一步是 `kind load docker-image`，镜像从不经过仓库，
+所以它部署不了这台机器以外的任何集群。真集群走另一条路径，多一个**推镜像**的步骤：
+
+```bash
+# 1. 推镜像（9 GB，改清单/values 时不必重推）
+make push-images LOCAL_TAG=local IMAGE_TAG=20260913 \
+  HELM_VALUES="deploy/helm/values-prod.yaml deploy/helm/values-acr.yaml"
+
+# 2. 部署 + 校验 + 灌种子 + 冒烟
+make deploy-acr KCTX=<context> NAMESPACE=train-ticket-prod IMAGE_TAG=20260913
+```
+
+`values-acr.yaml` 是环境档案，叠在 `values-prod.yaml` 上，承载四处**目标环境强制**
+的差异（文件里逐条写了原因）：
+
+1. **镜像走单个仓库**。`global.imageRepo=trainticket` 把 45 个镜像全部收进一个仓库，
+   用 tag 区分（`journey-order-20260913`、`postgres-16-alpine`）。39 个服务各占一个
+   仓库的话，公开/私有开关和仓库配额都要按 39 份来配。
+2. **infra 镜像一并镜像进去**。不能沿用 `imageRegistry`——`pair-cn-*` 是 docker.io 的
+   加速镜像所以 `library/postgres` 能透传，普通仓库不能。把 infra 打回 docker.io 也不行：
+   该集群到 `auth.docker.io` 超时，`curlimages/curl`、`jaegertracing/all-in-one`、
+   `axllent/mailpit` 全部 ImagePullBackOff（`postgres`/`redis` 能起来只是节点上有缓存）。
+   所以 release 只依赖一个可达的仓库。
+3. **StorageClass 换 `juicefs-sc`**。`ebs-ssd` 是 Volces VKE 的，这里不存在。
+4. **loadgen 从 30 副本降到 3**。30 是给 20 节点压测集群的，首次起来就压满整栈不是
+   验证顺序该有的样子。
+
+改动落在 chart 和脚本里：`_helpers.tpl` 的 `train-ticket.image` / `train-ticket.infraImage`、
+`deploy/push-images.sh`（新增）、`deploy/helm/values-acr.yaml`（新增），以及
+`render-manifests.sh` / `verify-databases.sh` 支持多 `-f` 分层。
+
+**已知限制**：`deploy/seed.sh`、`deploy/smoke.sh` 和整个 `deploy/e2e/` 套件都通过
+`kubectl exec` 把 curl 打进一个 pod 来做 HTTP 调用。如果 kubeconfig 指向的是
+**路径式反代端点**（如 `https://<ip>:8443/school`）且该代理不转发 `Upgrade`，
+exec 和 port-forward 都会以 `Upgrade request required` 失败，而 `get` / `logs`
+正常——在这种情况下部署和建库能做，种子数据和冒烟做不了，需要一个到 API server
+直连的 kubeconfig。区分方法：
+
+```bash
+kubectl -n train-ticket-prod exec deploy/redis -- redis-cli ping   # 通即可
+```
+
 ### 3. 自定义部署
 
 ```bash
