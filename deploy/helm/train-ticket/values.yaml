@@ -1,8 +1,17 @@
 global:
   imageRegistry: ""  # e.g. "pair-cn-guangzhou.cr.volces.com" for mirror
   imageOrg: "opspai"
+  # Single repository for every service image, with the service name folded
+  # into the tag (`<repo>:<service>-<tag>`) instead of one repository per
+  # service. Empty keeps the per-service layout. See `train-ticket.image`.
+  imageRepo: ""
   imageTag: "latest"
   imagePullPolicy: IfNotPresent
+  # Registry for the upstream infra images (postgres, redis, busybox, jaeger,
+  # otel, mailpit). Defaults to `imageRegistry`, which is only correct when
+  # that registry is a docker.io pull-through mirror. Set it to "" on a plain
+  # registry so those images come from docker.io. See `train-ticket.infraImage`.
+  # infraRegistry: ""
 
 # -- Infrastructure ----------------------------------------------------------
 
