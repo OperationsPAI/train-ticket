@@ -69,9 +69,15 @@ helm upgrade --install train-ticket deploy/helm/train-ticket \
 | `NAMESPACE` | `train-ticket` | Target namespace (the release namespace). |
 | `HELM_RELEASE` | `train-ticket` | Release name. |
 | `HELM_CHART` | `deploy/helm/train-ticket` | Chart directory. |
-| `HELM_VALUES` | `deploy/helm/values-kind.yaml` | Values file. Point at `values-prod.yaml` for a real cluster. |
+| `HELM_VALUES` | `deploy/helm/values-kind.yaml` | Values file(s), whitespace-separated and layered in helm's own `-f` order. |
+| `LOCAL_TAG` | `$(IMAGE_TAG)` | Tag the images were *built* with. Differs from `IMAGE_TAG` only when pushing an existing build under a new deployed tag. |
 | `HELM_TIMEOUT` | `15m` | `helm --timeout`. |
 | `ROLLOUT_TIMEOUT` | `300s` | Per-wait timeout for the kubectl rollout steps. |
+
+Everything here assumes a kind cluster on this host, because that is what the
+`kind load` step can feed. For a real cluster — where images have to reach a
+registry instead — see `docs/deployment.md` section 2b and the `push-images` /
+`deploy-acr` targets.
 
 ### Skipping the image build
 
