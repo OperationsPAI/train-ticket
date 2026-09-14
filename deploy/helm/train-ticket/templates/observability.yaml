@@ -184,6 +184,16 @@ data:
     exporters:
       debug:
         verbosity: basic
+      {{- /*
+      Guarded by jaeger.enabled because it names a Service that will not exist
+      when the trace store is disabled. An OTLP exporter pointed at a missing
+      endpoint does not fail fast: it retries for max_elapsed_time, holds spans
+      in an in-memory queue while it does, and logs every attempt -- so leaving
+      this in would replace a broken trace store with a collector that is
+      permanently failing to export and cannot be told apart from a real
+      outage.
+      */}}
+      {{- if .Values.jaeger.enabled }}
       otlp/jaeger:
         endpoint: jaeger:4317
         tls:
@@ -203,6 +213,7 @@ data:
           enabled: true
           num_consumers: {{ .Values.otelCollector.sendingQueue.numConsumers }}
           queue_size: {{ .Values.otelCollector.sendingQueue.queueSize }}
+      {{- end }}
 
     extensions:
       health_check:
@@ -226,7 +237,9 @@ data:
             - batch
           exporters:
             - debug
+            {{- if .Values.jaeger.enabled }}
             - otlp/jaeger
+            {{- end }}
         metrics:
           receivers:
             - otlp
