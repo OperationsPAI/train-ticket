@@ -1,0 +1,515 @@
+{{- /*
+The Prometheus tier: kube-state-metrics, node-exporter, and a Prometheus that
+scrapes them plus the kubelet and cAdvisor.
+
+Prometheus is not the system of record here -- ClickHouse is. It exists because
+two classes of metric have no OTel receiver:
+
+  kube_*       Workload state as Prometheus metrics (kube-state-metrics). Some
+               overlaps the k8s_cluster receiver; kube-state-metrics carries
+               more label detail and is what most existing dashboards and alert
+               rules are written against.
+  container_*  cAdvisor's per-container counters, which upstream OTel still has
+               no receiver for. This is the only path to them.
+
+So Prometheus does the scraping and relabelling it is good at, keeps a short
+local window for ad-hoc PromQL, and the cluster collector federates its
+aggregate into ClickHouse for durable storage
+(templates/otel-cluster.yaml).
+*/}}
+{{- if .Values.kubeStateMetrics.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: train-ticket
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-kube-state-metrics
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: train-ticket
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+      - nodes
+      - pods
+      - services
+      - serviceaccounts
+      - resourcequotas
+      - replicationcontrollers
+      - limitranges
+      - persistentvolumeclaims
+      - persistentvolumes
+      - namespaces
+      - endpoints
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources: [statefulsets, daemonsets, deployments, replicasets]
+    verbs: ["list", "watch"]
+  - apiGroups: ["batch"]
+    resources: [cronjobs, jobs]
+    verbs: ["list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: [horizontalpodautoscalers]
+    verbs: ["list", "watch"]
+  - apiGroups: ["policy"]
+    resources: [poddisruptionbudgets]
+    verbs: ["list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: [storageclasses, volumeattachments]
+    verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [networkpolicies, ingresses]
+    verbs: ["list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: [certificatesigningrequests]
+    verbs: ["list", "watch"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: [validatingwebhookconfigurations, mutatingwebhookconfigurations]
+    verbs: ["list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: [leases]
+    verbs: ["list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: [clusterrolebindings, clusterroles, rolebindings, roles]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-kube-state-metrics
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: train-ticket
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-kube-state-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kube-state-metrics
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      serviceAccountName: kube-state-metrics
+      containers:
+        - name: kube-state-metrics
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.kubeStateMetrics.image.repository "tag" .Values.kubeStateMetrics.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+            - name: telemetry
+              containerPort: 8081
+          {{- with .Values.kubeStateMetrics.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: telemetry
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: http-metrics
+    - name: telemetry
+      port: 8081
+      targetPort: telemetry
+  selector:
+    app.kubernetes.io/name: kube-state-metrics
+{{- end }}
+{{- if .Values.nodeExporter.enabled }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  labels:
+    app.kubernetes.io/name: node-exporter
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: node-exporter
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      # The one component here that does want the host's namespaces: it reports
+      # on the node's kernel, not on a container's view of it. hostPID is what
+      # makes the process collectors see the node's processes.
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node-exporter
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.nodeExporter.image.repository "tag" .Values.nodeExporter.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --web.listen-address=:{{ .Values.nodeExporter.port }}
+            # Same reasoning as the hostmetrics filesystem scraper: without
+            # these, every container overlay shows up as a filesystem.
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+|var/lib/containerd/.+)($|/)
+            - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.nodeExporter.port }}
+              hostPort: {{ .Values.nodeExporter.port }}
+          {{- with .Values.nodeExporter.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+              mountPropagation: HostToContainer
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /
+{{- end }}
+{{- if .Values.prometheus.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.prometheus.storage.storageClass }}
+  storageClassName: {{ .Values.prometheus.storage.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.prometheus.storage.size }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: train-ticket
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.prometheus.scrapeInterval }}
+      external_labels:
+        cluster: {{ .Values.prometheus.clusterLabel | quote }}
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # cAdvisor, via the kubelet's read-only API on the node. This is the job
+      # the whole Prometheus tier exists for: container_cpu_*, container_memory_*
+      # and container_network_* have no OTel receiver.
+      #
+      # Needs nodes/proxy in the collector-adjacent RBAC (this pod's own
+      # ServiceAccount, below) and insecure_skip_verify because the kubelet's
+      # serving certificate is self-signed rather than issued by the cluster CA.
+      - job_name: kubelet-cadvisor
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        honor_labels: true
+        honor_timestamps: true
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          # The node role gives an address of <node>:10250 and the node's own
+          # labels; the apiserver proxy path is how a pod reaches it without
+          # trusting the kubelet's certificate chain.
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - source_labels: [__meta_kubernetes_node_name]
+            action: replace
+            target_label: node
+        metric_relabel_configs:
+          # cAdvisor emits a series per cgroup, most of which are not pods. An
+          # empty pod label means a system slice.
+          - source_labels: [pod]
+            action: drop
+            regex: ^$
+          # High-cardinality series with no diagnostic value at this scrape
+          # interval; they roughly double the sample count on their own.
+          - source_labels: [__name__]
+            action: drop
+            regex: container_(cpu_(load_average_10s|system_seconds_total|user_seconds_total)|fs_(io_current|reads_merged_total|sector_reads_total|sector_writes_total|writes_merged_total)|memory_(mapped_file|swap)|file_descriptors|tasks_state|threads_max|spec_.*)
+
+      - job_name: kubelet
+        scheme: https
+        metrics_path: /metrics
+        honor_labels: true
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - source_labels: [__meta_kubernetes_node_name]
+            action: replace
+            target_label: node
+
+      - job_name: kubernetes-apiservers
+        scheme: https
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+
+      {{- if .Values.kubeStateMetrics.enabled }}
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ['kube-state-metrics:8080']
+      {{- end }}
+
+      {{- if .Values.nodeExporter.enabled }}
+      # Discovered rather than hardcoded, so this keeps working as nodes are
+      # added or replaced. The DaemonSet is hostNetwork, so the node address and
+      # the exporter's port are what to scrape.
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+)(?::\d+)?
+            replacement: $1:{{ .Values.nodeExporter.port }}
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - source_labels: [__meta_kubernetes_node_name]
+            action: replace
+            target_label: node
+      {{- end }}
+
+      # Opt-in scraping for application pods, same annotation contract as the
+      # cluster collector's own prometheus receiver.
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_phase]
+            action: drop
+            regex: Pending|Succeeded|Failed|Completed
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  strategy:
+    # The TSDB takes an exclusive lock on its directory and the PVC is
+    # ReadWriteOnce, so a RollingUpdate would start a second pod that
+    # crash-loops until the first exits.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ printf "%s%s%s" (.Values.prometheus | toYaml) (.Values.kubeStateMetrics | toYaml) (.Values.nodeExporter | toYaml) | sha256sum }}
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      serviceAccountName: otel-collector
+      securityContext:
+        # The image runs as uid/gid 65534 (nobody).
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: prometheus
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.prometheus.image.repository "tag" .Values.prometheus.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # Short by design. Prometheus is the scrape tier and an ad-hoc PromQL
+            # window; ClickHouse holds the durable copy (clickhouse.ttl), so
+            # retaining the same data twice for the same span buys nothing.
+            - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          {{- with .Values.prometheus.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            # WAL replay on start scales with what is retained and can outlast a
+            # short liveness delay.
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: prometheus-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: prometheus
+{{- end }}

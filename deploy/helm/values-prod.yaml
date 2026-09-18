@@ -130,41 +130,48 @@ redis:
     limits:
       cpu: '4'
       memory: 8Gi
-# Durable trace store sizing for production. The chart default (10Gi / 12h) is
-# derived for a single kind node sustaining 35 edge RPS = 105 spans/s. Prod runs
-# the rates measured on the 20-node Volces VKE cluster, so the same 12h window
+# Durable telemetry store sizing for production. The chart default (50Gi / 72h)
+# is derived for a single kind node sustaining 35 edge RPS = 105 spans/s. Prod
+# runs the rates measured on the 20-node Volces VKE cluster, so the same window
 # needs proportionally more disk. From the scaling table in
 # docs/07-observability/README.md:
 #
-#   220 edge RPS -> 660 spans/s -> 3.63 GiB/h -> 43.5 GiB per 12h window
+#   220 edge RPS -> 660 spans/s -> 3.63 GiB/h uncompressed
 #
-# 50Gi is the table's provisioning figure for that row (~15% headroom over
-# 43.5 GiB). The retention window stays 12h: it is a requirement ("one full
-# stress scenario plus a comparable window before it"), not a capacity knob, and
-# at 50Gi the TTL remains the binding limit rather than the disk. Do not raise
-# one without the other.
+# ClickHouse compresses columnar telemetry roughly 10:1, and this store now
+# holds logs and metrics as well as traces, so the two roughly cancel: 200Gi is
+# the provisioning figure for a 72h window at that rate.
 #
-# Memory is left at the chart default 2Gi limit / 1750MiB GOMEMLIMIT: the 1.76Gi
-# peak was measured during burst ingest and is a per-span-batch cost that does
-# not scale with total store size. CPU is raised because at 660 spans/s the
-# write path and Badger compaction are no longer idle.
-jaeger:
+# The storage class matters more than the size here. Do NOT let this land on
+# JuiceFS: the previous trace store died because it replayed a write-ahead log
+# on startup over a network filesystem (see the jaeger note in values-acr.yaml),
+# and ClickHouse has the same startup shape.
+clickhouse:
+  storage:
+    size: 200Gi
+    storageClass: ebs-ssd
+  resources:
+    requests:
+      cpu: '2'
+      memory: 4Gi
+    limits:
+      cpu: '8'
+      memory: 16Gi
+
+# Prometheus is the scrape tier only -- ClickHouse holds the durable copy -- so
+# this volume sizes the 6h local window, not the retention period.
+prometheus:
   storage:
     size: 50Gi
     storageClass: ebs-ssd
-  # Must be overridden alongside limits.memory, at the ~85% ratio the chart
-  # documents -- otherwise it inherits the chart's 3400MiB, which is above the
-  # 2Gi limit below and the runtime never collects before the kubelet kills it.
-  gomemlimit: 1740MiB
-  # NOTE: lower than the chart default (4Gi) while prod retains 50Gi of spans.
-  # Badger compaction memory scales with retained data; revisit with sampling.
   resources:
     requests:
-      cpu: '500m'
-      memory: 1Gi
-    limits:
-      cpu: '2'
+      cpu: '1'
       memory: 2Gi
+    limits:
+      cpu: '4'
+      memory: 8Gi
+
 # Collector queue raised with the span rate: 4000 batches covers ~6s of a
 # restart at the kind rate but under a second at 660 spans/s, which is shorter
 # than a pod replacement. memoryLimitMiB must stay above the queue and below
@@ -181,6 +188,28 @@ otelCollector:
     limits:
       cpu: '2'
       memory: 4Gi
+  # The per-node collector scales with pods per node and log volume, not with
+  # cluster size, so this is a per-node figure on a 20-node cluster.
+  agent:
+    gomemlimit: 3400MiB
+    resources:
+      requests:
+        cpu: '250m'
+        memory: 512Mi
+      limits:
+        cpu: '2'
+        memory: 4Gi
+  # The cluster collector watches every workload in the cluster and federates
+  # Prometheus, so unlike the agent it does scale with cluster size.
+  cluster:
+    gomemlimit: 3400MiB
+    resources:
+      requests:
+        cpu: '500m'
+        memory: 1Gi
+      limits:
+        cpu: '2'
+        memory: 4Gi
 loadgen:
   enabled: true
   replicas: 30

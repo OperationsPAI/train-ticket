@@ -17,6 +17,24 @@ is not.
 fixed · `FIXED` fixed and verified on the cluster · `TEST-DEFECT` the assertion
 was wrong, not the system.
 
+**Baseline run, 2026-09-17, single-node kind, resident loadgen at 1 replica**
+(recorded after the observability stack moved from Jaeger/Badger to
+OTel → ClickHouse, to separate that change from the pre-existing failures):
+
+```
+e2e FAILED -- 02-purchase.sh:5 03-refund.sh:4 04-change.sh:3 05-fulfillment.sh:6
+              06-risk.sh:1 07-fare-rules.sh:1 12-restart.sh:13 14-waitlist.sh:4
+```
+
+37 raw failures across 8 of 23 scripts; `13-observability` passes 6/6. Every
+cluster here is P1, P3, P4-third-layer, P6 or P10 below — none is telemetry.
+
+The P1 attribution is testable rather than assumed: scaling `loadgen` to 0 and
+letting the streams drain takes `02-purchase` from 5 failures to 2, and moves the
+saga from stuck at `CREATED` to progressing to `INVOICING`. The remaining two are
+the assertion window, not the system. So the number to compare against is only
+meaningful at the same loadgen replica count.
+
 ---
 
 ## P1 — journey-order consumption deficit (root cause for several clusters)
@@ -305,6 +323,37 @@ from `df5fb9c8`). It is a semantics question the contracts have to answer: wheth
 the penalty base is the order fare or fare-pricing's fee-adjusted refundable. The
 two sources disagree by exactly the managed fee, and only one of them can be
 authoritative -- which is why this is recorded rather than picked.
+
+### A fourth layer, under load: the quote never arrives at all
+
+**Status:** CLOSED
+
+The layer above assumes post-sales receives a quote and discards the fee. Under the
+shaped open-loop profile it often received nothing, and the reason was not visible
+from the assertion: `FarePricingAdjustmentQuoteClient` catches every
+`RuntimeException`, logs a warning, and returns `Optional.empty()`, which the caller
+reads as "no managed rules apply" rather than as a failed call. The refund is then
+priced off the raw order fare — the same wrong number as the layer above, arrived at
+a different way, and reported as success.
+
+Measured: 12 occurrences in 8 minutes, each an `RestClientException` on `content type
+[application/octet-stream]` — Spring's default when a response carries no
+`Content-Type`, i.e. no response body at all. fare-pricing answers every path with
+`application/json`, so this was the 10s read timeout on the client firing. Its p99 at
+the time was 6961 ms on a burst minute carrying 9676 requests against 1696 the minute
+before, while its CPU limit utilization was only 0.71: not CPU, but its Postgres pool
+at the kit's default of 10 connections per uvicorn worker with a 40-thread executor in
+front of it.
+
+`PG_MAX_POOL_SIZE: "25"` on fare-pricing and identity-verification (16480 spans and a
+3068 ms p99 in the same burst) took both to a p99 under 350 ms and the warning count
+to zero.
+
+This is worth recording beyond the fix: it is a `masks` mechanism in the sense the
+fault-injection work uses, and the most instructive one in the repository. A capacity
+problem in one service became a silently wrong money amount in another, with a success
+response at the client and nothing in post-sales' own telemetry to say a call had
+failed.
 
 ## P5 — post-sales case applied but order not adjusted
 

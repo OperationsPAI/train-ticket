@@ -1,0 +1,123 @@
+{{- if .Values.otelCollector.enabled }}
+{{- /*
+One ServiceAccount for all three collectors, with the union of what their
+receivers and processors need. Splitting it per collector was considered and
+rejected: the rules are read-only, and a single ClusterRole is one place to look
+when an attribute comes back empty.
+
+Why each rule exists -- these are not optional, and the failure mode of a
+missing one is silence rather than an error:
+
+  pods, namespaces, replicasets   k8sattributes. It resolves a pod to its owning
+                                  Deployment by walking Pod -> ReplicaSet ->
+                                  Deployment ownerReferences, so it needs the
+                                  intermediate ReplicaSet too. Without these,
+                                  k8s.namespace.name and service.name are absent
+                                  from every signal and queries that filter on
+                                  them return nothing while the tables fill up.
+  replicasets in BOTH apps and    Not redundant. k8sattributes resolves the
+  extensions                      owner reference through whichever API group
+                                  the cluster serves.
+  nodes/stats                     kubeletstats, which reads the kubelet's
+                                  /stats/summary.
+  nodes/metrics                   The Prometheus kubelet and cAdvisor scrapes.
+                                  The kubelet authorizes /metrics and
+                                  /metrics/cadvisor against this subresource
+                                  specifically -- nodes/proxy is NOT enough, and
+                                  the symptom of leaving it out is a 403 on
+                                  those two targets while every other target
+                                  stays green, so Prometheus looks healthy and
+                                  container_* metrics are simply absent.
+  nodes/proxy                     Reaching the kubelet through the API server
+                                  proxy rather than a pod IP.
+  the k8s_cluster set             The cluster-state receiver, which watches every
+                                  workload kind it reports on.
+  events + events.k8s.io events   k8sobjects, which watches the events stream and
+                                  turns it into log records.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: train-ticket
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: train-ticket
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/status
+      - nodes
+      - nodes/spec
+      - nodes/stats
+      - nodes/metrics
+      - nodes/proxy
+      - namespaces
+      - namespaces/status
+      - services
+      - endpoints
+      - events
+      - replicationcontrollers
+      - replicationcontrollers/status
+      - resourcequotas
+      - persistentvolumes
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - daemonsets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources:
+      - deployments
+      - replicasets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources:
+      - events
+    verbs: ["get", "list", "watch"]
+  # The Prometheus receiver's kubernetes_sd_configs and the cAdvisor scrape hit
+  # these non-resource endpoints directly.
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  # Namespaced, because a ClusterRole(Binding) is cluster-scoped: two releases of
+  # this chart in different namespaces would otherwise fight over one object and
+  # the second install would bind the first's ServiceAccount.
+  name: {{ .Release.Namespace }}-otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: train-ticket
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: {{ .Release.Namespace }}
+{{- end }}

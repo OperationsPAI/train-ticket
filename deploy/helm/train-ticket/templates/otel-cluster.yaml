@@ -1,0 +1,128 @@
+{{- if and .Values.otelCollector.enabled .Values.otelCollector.cluster.enabled }}
+{{- /*
+Cluster-scoped collector. Single replica, because every receiver here reports on
+the cluster rather than on a node -- N replicas would write N identical copies.
+
+  k8s_cluster  Workload state: Deployment/DaemonSet/StatefulSet replica counts,
+               pod phase, container restarts, resource requests and limits.
+  k8sobjects   The Kubernetes event stream, as log records. This is what makes
+               "which pod was OOMKilled at 14:32" a query rather than a
+               `kubectl get events` that has already aged out.
+  prometheus   Federation from the in-cluster Prometheus (templates/prometheus.yaml)
+               plus annotation-driven scraping of anything else.
+
+WHY FEDERATION AND NOT REMOTE-WRITE. The obvious wiring -- Prometheus
+remote-writes into the collector -- is not available: this collector version
+ships the prometheusremotewrite EXPORTER but no such receiver, so nothing can
+receive a remote-write stream. The alternatives were to make the collector
+re-scrape all of Prometheus's targets itself (duplicating every scrape, and
+reimplementing the relabelling that turns cAdvisor's cgroup paths into pod
+names) or to pull Prometheus's own aggregate through /federate. Federation wins:
+one scrape, the relabelling already applied, and Prometheus stays the place
+scrape configs are edited.
+
+The consequence to know: /federate returns what its match[] selectors ask for,
+so a metric that is not matched by one of the selectors below is in Prometheus
+but never reaches ClickHouse.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-cluster-config
+  labels:
+    app.kubernetes.io/name: otel-cluster
+    app.kubernetes.io/part-of: train-ticket
+data:
+  otel-cluster.yaml: |
+    {{- include "train-ticket.clusterConfig" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-cluster
+  labels:
+    app.kubernetes.io/name: otel-cluster
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  # Must stay 1: see the header. Not exposed as a value.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-cluster
+  template:
+    metadata:
+      annotations:
+        # Hashes the rendered config itself, so ANY change that reaches the
+        # collector -- a value or the template body -- rolls the pod.
+        checksum/config: {{ include "train-ticket.clusterConfig" . | sha256sum }}
+      labels:
+        app.kubernetes.io/name: otel-cluster
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: otel-cluster
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.otelCollector.image.repository "tag" .Values.otelCollector.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args:
+            - --config=/etc/otelcol-contrib/otel-cluster.yaml
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: GOMEMLIMIT
+              value: {{ .Values.otelCollector.cluster.gomemlimit | quote }}
+          ports:
+            - name: health
+              containerPort: 13133
+            - name: metrics
+              containerPort: 8888
+          {{- with .Values.otelCollector.cluster.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otel-cluster-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-cluster
+  labels:
+    app.kubernetes.io/name: otel-cluster
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: 13133
+      targetPort: health
+    - name: metrics
+      port: 8888
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: otel-cluster
+{{- end }}

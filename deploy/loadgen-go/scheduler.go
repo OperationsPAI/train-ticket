@@ -63,47 +63,66 @@ func (s *Scheduler) RunClosedLoop(wg *sync.WaitGroup, journeyRunner func(ctx con
 	}
 }
 
-// RunOpenLoop injects requests at a fixed rate regardless of response time.
+// RunOpenLoop injects requests at a rate independent of response time, shaped by
+// the arrival process in arrival.go: exponential inter-arrival gaps (Poisson),
+// an optional diurnal cycle, and optional random bursts.
+//
+// Open-loop is what makes those shapes meaningful. A closed-loop pool cannot
+// have an arrival "shape" at all -- its rate is a consequence of how fast the
+// cluster answers, so the generator slows down exactly when the system is
+// struggling, which is the opposite of what real users do.
+//
+// One goroutine per arrival, deliberately: a journey must not delay the next
+// arrival, or the offered load would silently become closed-loop again under
+// latency. The cost is unbounded concurrency if the cluster stalls, which is the
+// honest behaviour here -- it shows up as growing in-flight count rather than as
+// a quietly reduced request rate.
 func (s *Scheduler) RunOpenLoop(wg *sync.WaitGroup, journeyRunner func(ctx context.Context, p *Providers)) {
 	targetRPS := s.cfg.Run.TargetRPS
 	if targetRPS <= 0 {
 		targetRPS = 100
 	}
-	rampDuration := time.Duration(s.cfg.Run.RampDurationSeconds * float64(time.Second))
-	if rampDuration <= 0 {
-		rampDuration = 30 * time.Second
+
+	arrivalCfg := s.cfg.Run.Arrival
+	// ramp_duration_seconds predates arrival.ramp_seconds and still works; the
+	// nested key wins when both are set.
+	if arrivalCfg.RampSeconds <= 0 {
+		arrivalCfg.RampSeconds = s.cfg.Run.RampDurationSeconds
+	}
+	if arrivalCfg.RampSeconds <= 0 {
+		arrivalCfg.RampSeconds = 30
 	}
 
-	startTime := time.Now()
-	interval := time.Second / time.Duration(targetRPS)
+	usePoisson := arrivalCfg.PoissonEnabled()
+	arrival := NewArrivalProcess(arrivalCfg, targetRPS, s.rng, time.Now())
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
 		for {
+			var wait time.Duration
+			now := time.Now()
+			if usePoisson {
+				wait = arrival.NextInterval(now)
+			} else {
+				// Fixed-interval fallback. Still honours the rate envelope, so
+				// the diurnal cycle and bursts work -- only the micro-structure
+				// is a metronome.
+				wait = time.Duration(float64(time.Second) / arrival.RateAt(now))
+			}
+
 			select {
 			case <-s.stop.Done():
 				return
-			case <-ticker.C:
-				// Ramp: linearly increase rate from 0 to target over ramp duration
-				elapsed := time.Since(startTime)
-				if elapsed < rampDuration {
-					rampFraction := float64(elapsed) / float64(rampDuration)
-					if s.rng.Float64() > rampFraction {
-						continue
-					}
-				}
-
-				seed := s.rng.Int63()
-				go func(sd int64) {
-					rng := rand.New(rand.NewSource(sd))
-					prov := NewProviders(s.cfg, s.api, s.reg, s.stats, rng)
-					journeyRunner(s.stop, prov)
-				}(seed)
+			case <-time.After(wait):
 			}
+
+			seed := s.rng.Int63()
+			go func(sd int64) {
+				rng := rand.New(rand.NewSource(sd))
+				prov := NewProviders(s.cfg, s.api, s.reg, s.stats, rng)
+				journeyRunner(s.stop, prov)
+			}(seed)
 		}
 	}()
 }
