@@ -116,7 +116,21 @@ train-ticket.gatewayConfig.
 receivers:
   filelog:
     include:
+      {{- if .Values.otelCollector.agent.filelog.ownNamespaceOnly }}
+      # This release's own pods only. The kubelet lays the directory out as
+      # `<namespace>_<pod>_<uid>`, so the namespace is a path segment and
+      # scoping is an include pattern rather than a filter after the fact.
+      #
+      # Off by default, because a single release wants the whole node: its
+      # own namespace plus whatever else runs there is the operator's view.
+      # On for a release that shares the node with another one -- measured
+      # with two releases up, each agent tailed both and each store held the
+      # other's records (363751 of 1581766 rows in five minutes), which is
+      # twice the work for records nothing queries.
+      - /var/log/pods/{{ .Release.Namespace }}_*/*/*.log
+      {{- else }}
       - /var/log/pods/*/*/*.log
+      {{- end }}
     exclude:
       # Its own logs, and the other collectors': the collector logs every
       # export it performs, so ingesting that produces a feedback loop that
