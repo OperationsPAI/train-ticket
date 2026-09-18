@@ -2,7 +2,7 @@ name: train-ticket-observability
 
 services:
   otel-collector:
-    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:latest}
+    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.112.0}
     command:
       - --config=/etc/otelcol-contrib/config.yaml
     volumes:
@@ -13,51 +13,47 @@ services:
       - "${OTEL_HEALTH_PORT:-13133}:13133"
       - "${OTEL_ZPAGES_PORT:-55679}:55679"
     depends_on:
-      jaeger:
-        condition: service_started
+      clickhouse:
+        # Not service_started: the exporter creates its schema on first write,
+        # and a collector that comes up before the server accepts connections
+        # spends its retry budget before doing anything useful.
+        condition: service_healthy
     restart: unless-stopped
 
-  # One-shot: a fresh named volume is created root:root 0755, but the jaeger
-  # image runs as uid 10001 / gid 0 and needs to create its Badger directories.
-  # This is the compose equivalent of the pod securityContext.fsGroup used in
-  # deploy/helm/train-ticket/templates/observability.yaml (jaeger.fsGroup). It
-  # reuses the jaeger image so no extra image is pulled.
-  jaeger-init:
-    image: ${JAEGER_IMAGE:-jaegertracing/all-in-one:1.57}
-    user: "0:0"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - mkdir -p /badger/keys /badger/values && chown -R 10001:0 /badger && chmod -R g+rwX /badger
-    volumes:
-      - jaeger-badger:/badger
-    restart: "no"
-
-  # Durable trace store. Mirrors the Jaeger Deployment in
-  # deploy/helm/train-ticket/templates/observability.yaml: Badger on a
-  # persistent volume with an explicit 12h retention window. See
-  # docs/07-observability/README.md for the capacity arithmetic behind
-  # JAEGER_SPAN_STORE_TTL.
-  jaeger:
-    image: ${JAEGER_IMAGE:-jaegertracing/all-in-one:1.57}
-    command:
-      - --badger.ephemeral=false
-      - --badger.directory-key=/badger/keys
-      - --badger.directory-value=/badger/values
-      - --badger.span-store-ttl=${JAEGER_SPAN_STORE_TTL:-12h}
-      - --badger.maintenance-interval=5m
+  # Durable store for traces, logs and metrics. Mirrors the StatefulSet in
+  # deploy/helm/train-ticket/templates/clickhouse.yaml -- including TZ=UTC,
+  # without which the server reinterprets UTC query literals as local time and
+  # silently returns no rows for a window that does contain data.
+  #
+  # Only the OTLP pipeline exists here; the pod-log and kubelet receivers that
+  # the kind deployment runs (otel-agent, otel-cluster) have no meaning outside
+  # a cluster.
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:24.8-alpine}
     environment:
-      SPAN_STORAGE_TYPE: badger
-      COLLECTOR_OTLP_ENABLED: "true"
-      GOMEMLIMIT: 1750MiB
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-trainticket-otel}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-otel}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      TZ: UTC
     volumes:
-      - jaeger-badger:/badger
+      - clickhouse-data:/var/lib/clickhouse
     ports:
-      - "${JAEGER_UI_PORT:-16686}:16686"
-    depends_on:
-      jaeger-init:
-        condition: service_completed_successfully
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    # ClickHouse wants far more open files than the Docker default 1024.
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
     restart: unless-stopped
 
 volumes:
-  jaeger-badger:
-    name: ${JAEGER_BADGER_VOLUME:-train-ticket-jaeger-badger}
+  clickhouse-data:
+    name: ${CLICKHOUSE_VOLUME:-train-ticket-clickhouse-data}
