@@ -11,29 +11,33 @@
 # recovers it -- an operator has to notice and run `kubectl rollout restart`
 # by hand. That manual step is what this removes.
 #
-# Only the actually-unready deployments are restarted, for two reasons: a
-# blanket `rollout restart -l app.kubernetes.io/part-of=train-ticket` would
-# bounce postgres and redis (they carry the same label), and it would make an
+# Only the actually-unready deployments are restarted, and only the ones this
+# repository builds. A blanket `rollout restart -l
+# app.kubernetes.io/part-of=train-ticket` would bounce the databases and the
+# telemetry store, which carry the same label, and it would make an
 # already-healthy re-deploy slow. On a healthy cluster this script restarts
 # nothing and returns in seconds -- that is the idempotency story.
 
 set -uo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="${NAMESPACE:-train-ticket}"
 # Default to the selected context, not a hardcoded cluster name.
 KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
-# Infrastructure is excluded: restarting postgres would defeat the bootstrap
-# that just ran, and these are waited on separately before this point.
+# Which workloads this may restart, DERIVED: a directory in deploy/docker with a
+# Dockerfile in it is a thing this repository builds, and nothing else is.
 #
-# Matched as a PREFIX, not for equality. Under Helm the Postgres Deployment is
-# named per shard (postgres-core, and one per additional shard), so an exact
-# comparison against "postgres" stopped matching anything -- the skip list
-# silently became empty and this script would have restarted the database.
-INFRA_SKIP="${INFRA_SKIP:-postgres redis jaeger mailpit otel-collector}"
+# It used to be a list of infrastructure names to skip, and a skip list drifts in
+# the direction that hurts: `jaeger` stayed in it after the template was deleted,
+# while `clickhouse`, `prometheus`, `otel-cluster` and `kube-state-metrics` were
+# never added -- so an unready telemetry store would have been restarted, cutting
+# the window it was recording. Naming what may be touched cannot fail that way,
+# because a new infrastructure component is absent from the list by default.
+BUILT_DIR="${ROOT_DIR}/deploy/docker"
+MAX_ROUNDS="${MAX_ROUNDS:-2}"
 # How many restart rounds to attempt before giving up. A service can need one
 # restart; needing three means something is actually broken, not racing.
-MAX_ROUNDS="${MAX_ROUNDS:-2}"
 
 k() {
   if [ -n "$KCTX" ]; then
@@ -43,12 +47,8 @@ k() {
   fi
 }
 
-is_infra() {
-  local name=$1 skip
-  for skip in $INFRA_SKIP; do
-    case "$name" in "$skip"|"$skip"-*) return 0 ;; esac
-  done
-  return 1
+is_ours() {
+  [ -f "${BUILT_DIR}/$1/Dockerfile" ]
 }
 
 # Deployments whose ready replica count is below their desired count.
@@ -70,8 +70,8 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   targets=()
   for dep in "${pending[@]}"; do
     [ -n "$dep" ] || continue
-    if is_infra "$dep"; then
-      echo "repair: ${dep} is not ready but is infrastructure; not restarting it here"
+    if ! is_ours "$dep"; then
+      echo "repair: ${dep} is not ready but is not built here; not restarting it"
       continue
     fi
     targets+=("$dep")
