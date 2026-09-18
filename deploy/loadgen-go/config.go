@@ -95,6 +95,63 @@ type RunConfig struct {
 	StateFile           string       `yaml:"state_file"`
 	TargetRPS           float64      `yaml:"target_rps"`
 	RampDurationSeconds float64      `yaml:"ramp_duration_seconds"`
+	Arrival             ArrivalConfig `yaml:"arrival"`
+}
+
+// ArrivalConfig shapes open-loop arrivals. Ignored in closed-loop mode, where
+// the rate is whatever the worker pool and the server's response time produce.
+// See arrival.go for why each shape exists and what it exercises.
+type ArrivalConfig struct {
+	// Poisson draws inter-arrival gaps from an exponential distribution instead
+	// of emitting at fixed intervals. This is the one that changes the character
+	// of the load rather than just its envelope: it takes the per-second
+	// coefficient of variation from ~0.13 (metronome) to ~1.0 (independent
+	// arrivals), which is what makes queues form at all.
+	//
+	// Pointer so that an explicit `false` is distinguishable from an absent key.
+	// Absent defaults to TRUE: a fixed-interval generator is never the more
+	// realistic choice, so the default should not be the one that silently
+	// produces a flat line.
+	Poisson *bool `yaml:"poisson"`
+
+	// RampSeconds linearly scales the rate from 0 to full over this window, so a
+	// restarted pod does not hit a cold cluster at full rate.
+	RampSeconds float64 `yaml:"ramp_seconds"`
+
+	Diurnal DiurnalConfig `yaml:"diurnal"`
+	Burst   BurstConfig   `yaml:"burst"`
+}
+
+// DiurnalConfig is the slow peak/trough cycle. The period is compressed
+// configuration rather than a wall-clock day so the shape is visible within a
+// single observation window -- see arrival.go.
+type DiurnalConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	PeriodSeconds    float64 `yaml:"period_seconds"`
+	PeakMultiplier   float64 `yaml:"peak_multiplier"`
+	TroughMultiplier float64 `yaml:"trough_multiplier"`
+	// PhaseOffset in [0,1) shifts where in the cycle the run starts. Lets two
+	// loadgen replicas be deliberately out of phase instead of all peaking
+	// together.
+	PhaseOffset float64 `yaml:"phase_offset"`
+}
+
+// BurstConfig is the short spike: a ticket release, a push notification, a
+// scalper script waking up. Gaps between bursts are themselves exponential, so
+// the spikes are not predictable.
+type BurstConfig struct {
+	Enabled         bool         `yaml:"enabled"`
+	MeanGapSeconds  float64      `yaml:"mean_gap_seconds"`
+	DurationSeconds RangeSeconds `yaml:"duration_seconds"`
+	Multiplier      RangeSeconds `yaml:"multiplier"`
+}
+
+// PoissonEnabled resolves arrival.poisson, defaulting to true when absent.
+func (ac ArrivalConfig) PoissonEnabled() bool {
+	if ac.Poisson == nil {
+		return true
+	}
+	return *ac.Poisson
 }
 
 type RangeSeconds struct {

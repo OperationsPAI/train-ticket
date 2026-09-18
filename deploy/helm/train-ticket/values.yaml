@@ -97,9 +97,20 @@ postgres:
       maxConnections: 500
       sharedBuffers: 1GB
       workMem: 8MB
+      # This is the one scope where a ceiling contaminates every measurement: it
+      # is the shared store, so a limit here couples services that share nothing
+      # else. Measured under the shaped profile: p50 4.596 cores, p95 7.811 and
+      # peak 8.003 against the previous 8-core limit, with a peak working set of
+      # 7482 MiB against 8Gi -- 91% of the cgroup bound. Persistent load, not a
+      # burst, so both ceilings were being reached rather than approached.
+      #
+      # shared_buffers deliberately stays at 1GB. It is not sized as a fraction
+      # of this limit: the working set that fills the ceiling is connection-local
+      # (500 clients x 8MB work_mem), and raising the shared cache would take
+      # memory from exactly the thing that needed it.
       resources:
-        requests: { cpu: 250m, memory: 1Gi }
-        limits: { cpu: '4', memory: 4Gi }
+        requests: { cpu: 500m, memory: 2Gi }
+        limits: { cpu: '12', memory: 12Gi }
 
 redis:
   enabled: true
@@ -123,67 +134,173 @@ redis:
     requests: { cpu: 250m, memory: 1Gi }
     limits: { cpu: '2', memory: 4Gi }
 
-# Durable trace store: Jaeger all-in-one on Badger. Retention and volume size
-# MUST be changed together -- see the capacity arithmetic and scaling table in
-# docs/07-observability/README.md. Defaults are the kind-cluster figures:
-# 12h x 105 spans/s x 1.6 KiB/span = 6.9 GiB, provisioned at 10Gi (~45% headroom).
-jaeger:
+# Durable telemetry store for all three signals. See templates/clickhouse.yaml
+# for why this is a StatefulSet with a real volume, and
+# docs/07-observability/README.md for the retention and capacity arithmetic.
+clickhouse:
   enabled: true
   image:
-    repository: jaegertracing/all-in-one
-    tag: "1.57"
+    repository: clickhouse/clickhouse-server
+    tag: "24.8-alpine"
+  # NOT `default`. Every query and every exporter names this database
+  # explicitly, so the two must agree -- a mismatch produces "table does not
+  # exist" against a store that is filling up normally.
+  database: otel
+  auth:
+    username: default
+    password: trainticket-otel
+  # Applied by the exporter as a TTL clause when it creates the tables. Only
+  # takes effect at CREATE time: changing this does not retro-fit a TTL onto
+  # tables that already exist.
+  #
+  # 72h rather than the 12h the Badger store used. ClickHouse compresses
+  # columnar telemetry roughly 10:1, so a longer window costs less disk than the
+  # shorter one did, and a window that spans more than one working day is what
+  # makes "compare this to yesterday" possible.
+  ttl: 72h
+  # The image runs as uid/gid 101.
+  fsGroup: 101
   storage:
-    size: 10Gi
+    size: 50Gi
     storageClass: ""  # empty = default StorageClass ("standard" on kind)
-  retention:
-    spanStoreTtl: 12h        # --badger.span-store-ttl
-    maintenanceInterval: 5m  # --badger.maintenance-interval
-  # The jaeger image runs as uid 10001 / gid 0; fsGroup makes the mounted volume
-  # group-writable for it.
-  fsGroup: 10001
-  # GOMEMLIMIT: keep at ~85% of resources.limits.memory so the Go runtime
-  # collects before the kubelet OOM-kills the container.
-  gomemlimit: 3400MiB
-  # limits.memory MUST stay well above 576Mi: Badger allocates a 256MiB block
-  # cache plus up to 5 x 64MiB memtables before storing a single span. Measured
-  # 770Mi steady after 200k spans, 1.76Gi peak during burst ingest.
-  #
-  # Raised from 2Gi after OOMKills on a long-running cluster. The mechanism is
-  # Badger's LSM compaction, not a per-span cost: a compaction reads whole SST
-  # tables into memory, so the cost scales with how much data has ACCUMULATED,
-  # not with how fast it arrives. A cluster left running past the point where
-  # the 12h TTL reaches steady state needs materially more headroom than one
-  # that has just started, and a restart re-attempts the pending compaction
-  # work rather than clearing it.
-  #
-  # Memory is not the binding constraint here, so do not expect a further raise
-  # to help. No sampler is configured (100% head sampling) and ingest runs well
-  # above the 105 spans/s the arithmetic above assumes, while kind's local-path
-  # provisioner does not enforce storage.size -- so the TTL is the only bound on
-  # the volume and it does not hold at this rate. See deploy/KNOWN-ISSUES.md.
   resources:
-    requests: { cpu: 100m, memory: 512Mi }
-    limits: { cpu: '2', memory: 4Gi }
+    requests: { cpu: 250m, memory: 1Gi }
+    limits: { cpu: '4', memory: 8Gi }
+
+# Jaeger is retired: the trace store is ClickHouse now, and this key exists only
+# so a values file that still sets it renders. There is no Jaeger template.
+jaeger:
+  enabled: false
 
 otelCollector:
   enabled: true
   image:
     repository: otel/opentelemetry-collector-contrib
-    tag: "0.103.1"
-  # memory_limiter.limit_mib. Must stay ABOVE sendingQueue (a limiter smaller
-  # than the queue makes the collector refuse spans it could buffer) and BELOW
-  # resources.limits.memory.
+    # 0.112.0, not 0.103.1: the clickhouse exporter's config schema settled
+    # after 0.103 (ttl replaced ttl_days) and the k8sobjects receiver this stack
+    # needs for the event stream is not in the older image.
+    tag: "0.112.0"
+  # memory_limiter.limit_mib on the OTLP gateway. Must stay ABOVE sendingQueue
+  # (a limiter smaller than the queue makes the collector refuse spans it could
+  # buffer) and BELOW resources.limits.memory.
   memoryLimitMiB: 768
-  # Bounded in-memory queue on the Jaeger exporter, paired with retry_on_failure.
-  # The trace store holds an exclusive lock on its Badger volume, so replacing
-  # its pod takes it offline for a few seconds; without this, spans emitted in
-  # that window are dropped instead of redelivered.
+  # Bounded in-memory queue on the ClickHouse exporter, paired with
+  # retry_on_failure. ClickHouse holds an exclusive lock on its volume, so
+  # replacing its pod takes it offline for a few seconds; without this, signals
+  # emitted in that window are dropped instead of redelivered. Shared by all
+  # three collectors.
   sendingQueue:
     numConsumers: 4
     queueSize: 4000
   resources:
     requests: { cpu: 50m, memory: 256Mi }
-    limits: { cpu: 500m, memory: 1Gi }
+    limits: { cpu: '1', memory: 1Gi }
+
+  # Per-node collector: pod logs, kubelet stats, host metrics.
+  # See templates/otel-agent.yaml.
+  agent:
+    enabled: true
+    # memory_limiter here is percentage-based, so the runtime must be told the
+    # container limit or it sizes itself against the node. Keep at ~85% of
+    # resources.limits.memory.
+    gomemlimit: 1740MiB
+    filelog:
+      # Namespaces whose pod logs are not collected. kube-system is control-plane
+      # chatter at a volume that dwarfs the application logs; local-path-storage
+      # is kind's provisioner. The collectors' own pods are excluded by name in
+      # the template -- ingesting them is a feedback loop, since the collector
+      # logs every export it performs.
+      excludeNamespaces:
+        - kube-system
+        - local-path-storage
+    kubeletstats:
+      collectionInterval: 15s
+    hostmetrics:
+      collectionInterval: 30s
+    resources:
+      # Higher than the gateway's: filelog holds a reader per tailed file, and
+      # this node runs ~45 pods.
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '1', memory: 2Gi }
+
+  # Cluster-scoped collector: k8s object state, k8s events, Prometheus
+  # federation. See templates/otel-cluster.yaml.
+  cluster:
+    enabled: true
+    gomemlimit: 1740MiB
+    k8sCluster:
+      collectionInterval: 30s
+    federate:
+      scrapeInterval: 30s
+      # What /federate returns, and therefore what reaches ClickHouse. A metric
+      # matched by none of these selectors stays in Prometheus only.
+      #
+      # Deliberately selective rather than '{__name__=~".+"}': federating
+      # everything at 30s would write every cAdvisor and kube-state series into
+      # ClickHouse, which is a large multiple of the application telemetry and
+      # mostly duplicates what kubeletstats and k8s_cluster already provide with
+      # proper resource attributes.
+      match:
+        - '{__name__=~"kube_pod_status_.*|kube_pod_container_status_.*"}'
+        - '{__name__=~"kube_deployment_status_.*|kube_deployment_spec_replicas"}'
+        - '{__name__=~"kube_statefulset_status_.*|kube_daemonset_status_.*"}'
+        - '{__name__=~"kube_node_status_.*|kube_node_spec_.*"}'
+        - '{__name__=~"container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_memory_rss"}'
+        - '{__name__=~"container_network_(receive|transmit)_(bytes|packets|errs|packets_dropped)_total"}'
+        - '{__name__=~"container_fs_(reads|writes)_bytes_total|container_fs_usage_bytes"}'
+        - '{__name__=~"node_cpu_seconds_total|node_load1|node_load5|node_load15"}'
+        - '{__name__=~"node_memory_Mem(Total|Available|Free)_bytes|node_memory_Cached_bytes"}'
+        - '{__name__=~"node_filesystem_(size|avail|free)_bytes"}'
+        - '{__name__=~"node_disk_(read|written)_bytes_total|node_disk_io_time_seconds_total"}'
+        - '{__name__=~"node_network_(receive|transmit)_bytes_total"}'
+        - '{__name__=~"apiserver_request_total|apiserver_request_duration_seconds_bucket"}'
+        - '{__name__=~"kubelet_running_(pods|containers)|kubelet_pod_start_duration_seconds_bucket"}'
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: '1', memory: 2Gi }
+
+# -- Prometheus tier ---------------------------------------------------------
+#
+# Scrapes what has no OTel receiver (cAdvisor's container_*, kube-state's
+# kube_*), keeps a short local window for ad-hoc PromQL, and is federated into
+# ClickHouse by the cluster collector. See templates/prometheus.yaml.
+
+prometheus:
+  enabled: true
+  image:
+    repository: prom/prometheus
+    tag: "v2.55.1"
+  scrapeInterval: 30s
+  # Short on purpose: ClickHouse holds the durable copy (clickhouse.ttl above),
+  # so a long window here would retain the same samples twice.
+  retention: 6h
+  clusterLabel: train-ticket-kind
+  storage:
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }
+    limits: { cpu: '2', memory: 4Gi }
+
+kubeStateMetrics:
+  enabled: true
+  image:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: "v2.13.0"
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+nodeExporter:
+  enabled: true
+  image:
+    repository: quay.io/prometheus/node-exporter
+    tag: "v1.8.2"
+  # hostPort, so it must not collide with anything else on the node.
+  port: 9100
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 250m, memory: 256Mi }
 
 mailpit:
   enabled: true
@@ -253,9 +370,28 @@ defaults:
   #
   # A service's `resources` REPLACES this block wholesale (services.yaml uses
   # `default`, not `merge`), so an override must restate all four values.
+  #
+  # The CPU ceiling is 2 cores rather than 500m because 500m was BINDING under
+  # the shaped open-loop profile, not a safety margin. Measured on this cluster
+  # at target_rps 20 with the diurnal peak at 4x: fare-pricing, identity-
+  # verification and travel-insurance all sat at 100% of their limit, and the
+  # client-side error rate was 13.5% -- almost all of it the loadgen's own 10s
+  # timeout expiring, with identity-verification's client p50 pinned at exactly
+  # 10000ms.
+  #
+  # That is a throttled baseline, and it makes the fault-injection work this
+  # cluster exists for impossible rather than merely noisy. Every measure is
+  # differential against a fault-free window, so a perturbation that is already
+  # present in the baseline is invisible by construction -- and a saturated
+  # service has no headroom left to express one. The node has 32 cores at 18%
+  # requested, so the limit was costing accuracy and buying nothing.
+  #
+  # Requests stay small on purpose. They are what the scheduler packs against,
+  # and 45 pods x 250m would reserve a third of the node for services that are
+  # idle most of the time. Limits are the ceiling; requests are the floor.
   resources:
-    requests: { cpu: 50m, memory: 256Mi }
-    limits: { cpu: 500m, memory: 2Gi }
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: '2', memory: 2Gi }
   probes:
     # A startupProbe on /healthz holds liveness off during a slow start, so
     # liveness can stay on /healthz (process liveness) instead of being pointed
@@ -281,6 +417,11 @@ services:
     db: fare_pricing
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
+    # Same shape as identity-verification: p50 0.457 of a core, p95 1.915 and
+    # peak 2.0 against the shared 2-core default, so the bursts are clipped.
+    resources:
+      requests: { cpu: 250m, memory: 1Gi }
+      limits: { cpu: '4', memory: 4Gi }
   trip-planning:
     db: trip_planning
     env:
@@ -295,16 +436,31 @@ services:
   offer-management:
     db: offer_management
     env:
-      PG_MAX_POOL_SIZE: "15"
+      # 15 was the constraint that produced the baseline's error rate, and it is
+      # not a Postgres constraint: measured `waitingCount` on the pg.Pool reached
+      # 645 requests queued for 15 slots, which put the service's p99 at 9.6s and
+      # the loadgen recorded a 10s client timeout as a transport failure. At the
+      # same moment postgres-core held 293 of its 500 connections with 245 idle
+      # and 26 active, so the store had nothing to do with it -- the queue was
+      # entirely in front of this pool. It is the busiest node on the purchase
+      # funnel, so the pool is sized for the concurrency it actually sees.
+      PG_MAX_POOL_SIZE: "60"
       CONSUMER_THREADS: "4"   # 5 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
     # could not answer /healthz within the probe timeout, and kubelet restarted
     # the pod every 64 seconds. Threads and CPU must be raised together.
+    #
+    # 4 CPU because one core was not a ceiling it touched but the level it ran
+    # at: measured under the shaped profile, p50 utilization was 0.973 of a 1
+    # CPU limit and the peak 1.002, so it was throttled continuously rather than
+    # at a spike. It is the busiest node on the purchase funnel -- 108k server
+    # spans in fifteen minutes -- and 4 threads working a 5-stream backlog
+    # alongside that HTTP load do not fit in one core.
     resources:
-      requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: '4', memory: 2Gi }
   journey-order:
     db: journey_order
     env:
@@ -319,14 +475,33 @@ services:
       # `synchronized`; without this the platform subscriber falls back to
       # DEFAULT_CONSUMER_THREADS=1 and the unlocked handler gains nothing.
       CONSUMER_THREADS: "4"
+      # Java, so the pool is Hikari, which reads HIKARI_MAX_POOL_SIZE and NOT
+      # PG_MAX_POOL_SIZE -- the two names are a real latent mismatch in this
+      # repository, and a value set under the wrong one is silently ignored.
+      #
+      # Nothing set it, so this ran on Hikari's default of 10 while 4 consumer
+      # threads, the Tomcat handlers and the outbox relay all contended for it.
+      # Measured: `total=10, active=10, idle=0, waiting=68`, which is pool
+      # exhaustion, not slowness -- 68 threads queued for 10 connections, each
+      # giving up after the 5s acquisition timeout. Postgres was nowhere near its
+      # own ceiling (241 of 500 connections), so this was per-service sizing.
+      #
+      # 40 covers the 4 consumers plus Tomcat's handlers with margin. Raising it
+      # further is bounded by postgres.maxConnections across ALL services, not by
+      # anything visible here.
+      HIKARI_MAX_POOL_SIZE: "40"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
     # could not answer /healthz within the probe timeout, and kubelet restarted
     # the pod every 64 seconds. Threads and CPU must be raised together.
+    #
+    # Now 3 cores rather than 1: with the pool no longer the bottleneck, the
+    # threads can actually use CPU, and a 1-core ceiling would simply move the
+    # queue from Hikari to the scheduler.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      limits: { cpu: '3', memory: 2Gi }
   booking-orchestration:
     db: booking_orchestration
     env:
@@ -341,6 +516,15 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   identity-verification:
     db: identity_verification
+    # Spiky rather than persistently hot: measured p50 utilization 0.285 of a
+    # core against the shared 2-core default, with p95 and peak both at 2.0. So
+    # the ceiling clips its bursts, and a clipped burst is a latency tail every
+    # caller on the purchase funnel waits through. Raised here rather than in
+    # `defaults.resources` because 21 services inherit that block and the other
+    # 19 are nowhere near it.
+    resources:
+      requests: { cpu: 250m, memory: 1Gi }
+      limits: { cpu: '4', memory: 4Gi }
   payment:
     db: payment
     env:
@@ -439,9 +623,12 @@ services:
     # threads saturated half a core working through the backlog, the HTTP thread
     # could not answer /healthz within the probe timeout, and kubelet restarted
     # the pod every 64 seconds. Threads and CPU must be raised together.
+    #
+    # 1 core was itself binding: measured at 99.9% of the limit with a client p99
+    # of 808ms on timeline projections that do no real work.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      limits: { cpu: '2', memory: 2Gi }
   finance-settlement:
     db: finance_settlement
     env:
@@ -576,11 +763,17 @@ services:
     # Untuned the Go runtime sizes the heap against total machine memory and
     # ignores the cgroup limit, so GOMEMLIMIT must be set with the limit, at
     # ~85% of it. Change the two together.
+    #
+    # CPU raised off 250m for the same reason as defaults.resources: measured at
+    # 100% of its limit under the shaped profile, with a client p99 of 2.6s on a
+    # service whose own work is trivial. Memory stays at 512Mi -- peak working
+    # set is well under it, so only the CPU ceiling was binding, and GOMEMLIMIT
+    # therefore does not move.
     env:
       GOMEMLIMIT: "435MiB"
     resources:
       requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: 250m, memory: 512Mi }
+      limits: { cpu: '1', memory: 512Mi }
 
 # -- Per-service overrides ---------------------------------------------------
 # Example:

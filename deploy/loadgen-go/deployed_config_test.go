@@ -425,3 +425,79 @@ func TestDeployedConfigHasNoUnknownKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestDeployedConfigArrivalShaping guards the settings that make the generated
+// load non-flat. Every one of these is a silent failure if it decodes to its
+// zero value: the run keeps working and quietly produces the flat,
+// saturation-style load this profile was changed to stop producing. Measured
+// symptom of that regression: per-minute request count stable to within +-2%,
+// per-second CV ~0.13.
+func TestDeployedConfigArrivalShaping(t *testing.T) {
+	cfg := requireDeployedConfig(t)
+
+	// Arrival shaping only applies in open-loop. In closed-loop the rate is a
+	// consequence of cluster response time and the whole arrival block is dead
+	// configuration.
+	if cfg.Run.Mode != "open-loop" {
+		t.Errorf("run.mode = %q: arrival shaping is ignored outside open-loop", cfg.Run.Mode)
+	}
+	if cfg.Run.TargetRPS <= 0 {
+		t.Error("run.target_rps did not decode: open-loop would fall back to its built-in 100/s")
+	}
+	if !cfg.Run.Arrival.PoissonEnabled() {
+		t.Error("arrival.poisson is off: inter-arrival gaps become a fixed-interval metronome")
+	}
+
+	d := cfg.Run.Arrival.Diurnal
+	if !d.Enabled {
+		t.Error("arrival.diurnal.enabled is false: no peak/trough cycle")
+	}
+	if d.PeriodSeconds <= 0 {
+		t.Error("arrival.diurnal.period_seconds did not decode: the cycle is skipped entirely")
+	}
+	// A peak/trough ratio near 1 is a cycle that exists on paper and is flat in
+	// practice, which is the exact failure mode being guarded.
+	if d.PeakMultiplier/d.TroughMultiplier < 3 {
+		t.Errorf("diurnal peak/trough = %.2f/%.2f: too flat to exercise scaling or cache warmth",
+			d.PeakMultiplier, d.TroughMultiplier)
+	}
+
+	b := cfg.Run.Arrival.Burst
+	if !b.Enabled {
+		t.Error("arrival.burst.enabled is false: no spikes, so backpressure is never exercised")
+	}
+	if b.MeanGapSeconds <= 0 {
+		t.Error("arrival.burst.mean_gap_seconds did not decode: bursts would never schedule")
+	}
+	if b.DurationSeconds.Max <= 0 || b.Multiplier.Max <= 0 {
+		t.Error("arrival.burst duration/multiplier did not decode: bursts would be no-ops")
+	}
+	if b.Multiplier.Min < 1 {
+		t.Errorf("burst multiplier min = %.2f: a burst below 1x is a dip, not a spike", b.Multiplier.Min)
+	}
+
+	// Personas drive the request MIX. Independent of arrival shaping, but the
+	// other half of "realistic": without them every virtual customer is
+	// statistically identical.
+	if len(cfg.Personas) == 0 {
+		t.Error("personas is empty: one implicit customer type, so no mix heterogeneity")
+	}
+	var sumWeight float64
+	for name, p := range cfg.Personas {
+		if p.Weight <= 0 {
+			t.Errorf("persona %q has weight %v: it would never be selected", name, p.Weight)
+		}
+		if len(p.JourneyWeights) == 0 {
+			t.Errorf("persona %q has no journey_weights: it cannot differ from the global mix", name)
+		}
+		sumWeight += p.Weight
+	}
+	if sumWeight <= 0 {
+		t.Error("persona weights sum to 0: selection would divide by zero or never fire")
+	}
+
+	// Zero think time is the saturation setting; it flattens session structure.
+	if cfg.Run.ThinkTime.Max <= 0 {
+		t.Error("run.think_time_seconds.max is 0: virtual customers act as infinitely fast robots")
+	}
+}

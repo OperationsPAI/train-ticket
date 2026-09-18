@@ -1,155 +1,27 @@
-{{- if .Values.jaeger.enabled }}
-{{- /*
-Trace store: Jaeger all-in-one backed by Badger on a PersistentVolumeClaim.
-
-Ported from the retired kustomize overlay's jaeger.yaml (the kind overlay) and
-platform/observability/docker-compose.yaml. Rationale and the capacity
-arithmetic behind the PVC size and the TTL live in
-docs/07-observability/README.md.
-
-Two invariants this template must preserve (docs/07-observability/README.md
-"Rules"):
-  1. replicas stays 1 and strategy stays Recreate. Badger takes an exclusive
-     LOCK on its directory; a RollingUpdate would start a second pod against
-     the same ReadWriteOnce volume and it would crash-loop until the old pod
-     terminated. Neither is exposed as a value, on purpose.
-  2. jaeger.resources.limits.memory stays well above 576Mi. Badger allocates a
-     256MiB block cache plus up to 5 x 64MiB memtables before storing a single
-     span, so the previous 256Mi limit could not hold the store at all.
-Sizing and retention are tunable per environment (jaeger.storage.size /
-jaeger.retention.spanStoreTtl); they must be changed together.
-*/}}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: jaeger-badger
-  labels:
-    app.kubernetes.io/name: jaeger
-    app.kubernetes.io/part-of: train-ticket
-spec:
-  accessModes:
-    - ReadWriteOnce
-  {{- if .Values.jaeger.storage.storageClass }}
-  storageClassName: {{ .Values.jaeger.storage.storageClass }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.jaeger.storage.size }}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: jaeger
-  labels:
-    app.kubernetes.io/name: jaeger
-    app.kubernetes.io/part-of: train-ticket
-spec:
-  replicas: 1
-  strategy:
-    # Required: Badger holds an exclusive directory lock, and the PVC is RWO.
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: jaeger
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: jaeger
-        app.kubernetes.io/part-of: train-ticket
-    spec:
-      securityContext:
-        # The jaeger image runs as uid 10001 / gid 0. fsGroup makes the mounted
-        # volume group-writable for that process on clusters whose provisioner
-        # does not already create the directory world-writable. OnRootMismatch
-        # keeps startup fast once the store has grown.
-        fsGroup: {{ .Values.jaeger.fsGroup }}
-        fsGroupChangePolicy: OnRootMismatch
-      containers:
-        - name: jaeger
-          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.jaeger.image.repository "tag" .Values.jaeger.image.tag) }}
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          args:
-            - --badger.ephemeral=false
-            - --badger.directory-key=/badger/keys
-            - --badger.directory-value=/badger/values
-            # Retention window. Spans older than this are dropped by Badger's
-            # maintenance thread. Raising it without growing jaeger.storage.size
-            # moves the binding limit from the TTL to the disk -- see the
-            # scaling table in docs/07-observability/README.md.
-            - --badger.span-store-ttl={{ .Values.jaeger.retention.spanStoreTtl }}
-            - --badger.maintenance-interval={{ .Values.jaeger.retention.maintenanceInterval }}
-          env:
-            - name: SPAN_STORAGE_TYPE
-              value: badger
-            - name: COLLECTOR_OTLP_ENABLED
-              value: "true"
-            # Make the Go runtime collect before the cgroup limit is reached
-            # instead of being OOM-killed by the kubelet. Keep at ~85% of
-            # jaeger.resources.limits.memory.
-            - name: GOMEMLIMIT
-              value: {{ .Values.jaeger.gomemlimit | quote }}
-          ports:
-            - name: jaeger-otlp
-              containerPort: 4317
-            - name: ui
-              containerPort: 16686
-          volumeMounts:
-            - name: badger
-              mountPath: /badger
-          {{- with .Values.jaeger.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          startupProbe:
-            # Badger replays its write-ahead log on start; on a full store that
-            # can outlast a short liveness delay. Gate liveness behind this.
-            httpGet:
-              path: /
-              port: ui
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 3
-            failureThreshold: 36
-          readinessProbe:
-            httpGet:
-              path: /
-              port: ui
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 6
-          livenessProbe:
-            httpGet:
-              path: /
-              port: ui
-            periodSeconds: 20
-            timeoutSeconds: 3
-            failureThreshold: 3
-      volumes:
-        - name: badger
-          persistentVolumeClaim:
-            claimName: jaeger-badger
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: jaeger
-  labels:
-    app.kubernetes.io/name: jaeger
-    app.kubernetes.io/part-of: train-ticket
-spec:
-  type: ClusterIP
-  ports:
-    - name: jaeger-otlp
-      port: 4317
-      targetPort: jaeger-otlp
-    - name: ui
-      port: 16686
-      targetPort: ui
-  selector:
-    app.kubernetes.io/name: jaeger
-{{- end }}
 {{- if .Values.otelCollector.enabled }}
----
+{{- /*
+Telemetry ingest. Three collectors, one durable store (templates/clickhouse.yaml).
+
+  otel-collector  Deployment  OTLP gateway. Every instrumented service sends
+                              here (OTEL_EXPORTER_OTLP_ENDPOINT in
+                              templates/services.yaml). Name and port 4317 are
+                              part of the service contract -- see
+                              docs/07-observability/README.md.
+  otel-agent      DaemonSet   Per-node signals that can only be read locally:
+                              pod logs off the node filesystem, kubelet stats,
+                              host metrics.
+  otel-cluster    Deployment  Cluster-scoped signals that must be collected
+                              exactly once: k8s object state, k8s events, and
+                              the Prometheus federation pull.
+
+The split is by what a receiver can physically see, not by preference. filelog
+must run on every node because /var/log/pods is node-local; k8s_cluster must run
+once because N replicas would emit N copies of the same cluster state.
+
+This replaces a Jaeger/Badger trace store that retained traces only, and sent
+metrics and logs to `debug` (the collector's stdout, which is not queryable).
+The rationale for the swap is in docs/07-observability/README.md.
+*/}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -162,100 +34,7 @@ data:
   # config for local compose and kind. Keep the two synchronized; the tunable
   # numbers here come from .Values.otelCollector.
   otel-collector.yaml: |
-    receivers:
-      otlp:
-        protocols:
-          grpc:
-            endpoint: 0.0.0.0:4317
-          http:
-            endpoint: 0.0.0.0:4318
-
-    processors:
-      memory_limiter:
-        check_interval: 5s
-        # Must stay above the sending_queue below: a limiter smaller than the
-        # queue makes the collector refuse spans it could buffer. Keep below
-        # otelCollector.resources.limits.memory.
-        limit_mib: {{ .Values.otelCollector.memoryLimitMiB }}
-      batch:
-        timeout: 2s
-        send_batch_size: 1024
-
-    exporters:
-      debug:
-        verbosity: basic
-      {{- /*
-      Guarded by jaeger.enabled because it names a Service that will not exist
-      when the trace store is disabled. An OTLP exporter pointed at a missing
-      endpoint does not fail fast: it retries for max_elapsed_time, holds spans
-      in an in-memory queue while it does, and logs every attempt -- so leaving
-      this in would replace a broken trace store with a collector that is
-      permanently failing to export and cannot be told apart from a real
-      outage.
-      */}}
-      {{- if .Values.jaeger.enabled }}
-      otlp/jaeger:
-        endpoint: jaeger:4317
-        tls:
-          insecure: true
-        # The trace store is a stateful, restartable component: it holds an
-        # exclusive lock on its Badger volume, so a restart takes it offline
-        # for a few seconds. Retry plus a bounded queue means spans emitted
-        # during that window are redelivered instead of dropped on the floor.
-        # The queue is in memory, so this covers a store restart, not a
-        # *collector* restart.
-        retry_on_failure:
-          enabled: true
-          initial_interval: 1s
-          max_interval: 30s
-          max_elapsed_time: 5m
-        sending_queue:
-          enabled: true
-          num_consumers: {{ .Values.otelCollector.sendingQueue.numConsumers }}
-          queue_size: {{ .Values.otelCollector.sendingQueue.queueSize }}
-      {{- end }}
-
-    extensions:
-      health_check:
-        endpoint: 0.0.0.0:13133
-      zpages:
-        endpoint: 0.0.0.0:55679
-
-    service:
-      telemetry:
-        logs:
-          level: info
-      extensions:
-        - health_check
-        - zpages
-      pipelines:
-        traces:
-          receivers:
-            - otlp
-          processors:
-            - memory_limiter
-            - batch
-          exporters:
-            - debug
-            {{- if .Values.jaeger.enabled }}
-            - otlp/jaeger
-            {{- end }}
-        metrics:
-          receivers:
-            - otlp
-          processors:
-            - memory_limiter
-            - batch
-          exporters:
-            - debug
-        logs:
-          receivers:
-            - otlp
-          processors:
-            - memory_limiter
-            - batch
-          exporters:
-            - debug
+    {{- include "train-ticket.gatewayConfig" . | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -273,15 +52,14 @@ spec:
     metadata:
       annotations:
         # kustomize gets this for free from configMapGenerator's name hash.
-        # Without it, `helm upgrade` after changing a collector tunable leaves
-        # the running collector on the old config until someone restarts it by
-        # hand. Hashes the values that feed the ConfigMap above (hashing the
-        # rendered template itself would recurse through this annotation).
-        checksum/config: {{ .Values.otelCollector | toYaml | sha256sum }}
+        # Hashes the rendered config itself, so ANY change that reaches the
+        # collector -- a value or the template body -- rolls the pod.
+        checksum/config: {{ include "train-ticket.gatewayConfig" . | sha256sum }}
       labels:
         app.kubernetes.io/name: otel-collector
         app.kubernetes.io/part-of: train-ticket
     spec:
+      serviceAccountName: otel-collector
       containers:
         - name: otel-collector
           image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.otelCollector.image.repository "tag" .Values.otelCollector.image.tag) }}

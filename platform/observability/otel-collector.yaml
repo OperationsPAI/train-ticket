@@ -1,7 +1,13 @@
-# Canonical collector config for local compose and the kind deployment.
-# Keep the otel-collector-config ConfigMap data in
+# Canonical OTLP-gateway collector config for local compose and the kind
+# deployment. Keep the otel-collector-config ConfigMap data in
 # deploy/helm/train-ticket/templates/observability.yaml synchronized with this
 # file until the chart can consume this file directly as its single source.
+#
+# This is the GATEWAY only -- the receivers that read node-local or
+# cluster-scoped state (filelog, kubeletstats, hostmetrics, k8s_cluster,
+# k8sobjects, prometheus) live in the otel-agent and otel-cluster collectors,
+# which have no meaning outside a cluster and so have no compose equivalent.
+# See deploy/helm/train-ticket/templates/otel-agent.yaml and otel-cluster.yaml.
 receivers:
   otlp:
     protocols:
@@ -23,21 +29,41 @@ processors:
     send_batch_size: 1024
 
 exporters:
-  debug:
-    verbosity: basic
-  otlp/jaeger:
-    endpoint: jaeger:4317
-    tls:
-      insecure: true
-    # The trace store is now a stateful, restartable component: it holds an
-    # exclusive lock on its Badger volume, so a restart takes it offline for a
-    # few seconds. Retry plus a bounded queue means spans emitted during that
-    # window are redelivered instead of dropped on the floor.
+  # Durable store for all three signals. In the cluster this is the ClickHouse
+  # StatefulSet; under compose it is the `clickhouse` service in
+  # docker-compose.yaml.
+  #
+  # Note the k8sattributes processor the in-cluster config runs is absent here:
+  # there is no Kubernetes API to enrich against, so signals carry only what the
+  # SDK set. The database, tables and TTL are otherwise identical, so a query
+  # written against one works against the other.
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s&compress=lz4&username=${env:CLICKHOUSE_USER}&password=${env:CLICKHOUSE_PASSWORD}
+    # NOT `default`: every query names this database explicitly.
+    database: otel
+    # The exporter issues CREATE TABLE IF NOT EXISTS for each signal on startup,
+    # plus the otel_traces_trace_id_ts materialized view. Nothing else creates
+    # telemetry tables.
+    create_schema: true
+    # Applied as a TTL clause at CREATE time only -- changing this does not
+    # retro-fit a TTL onto tables that already exist.
+    ttl: 72h
+    logs_table_name: otel_logs
+    traces_table_name: otel_traces
+    # A prefix: the exporter derives otel_metrics_gauge, _sum, _histogram,
+    # _exponential_histogram and _summary from it.
+    metrics_table_name: otel_metrics
+    timeout: 10s
+    # The store is a stateful, restartable component holding an exclusive lock on
+    # its volume, so a restart takes it offline for a few seconds. Retry plus a
+    # bounded queue means signals emitted in that window are redelivered rather
+    # than dropped. The queue is in memory, so this covers a STORE restart, not a
+    # collector restart.
     retry_on_failure:
       enabled: true
-      initial_interval: 1s
+      initial_interval: 5s
       max_interval: 30s
-      max_elapsed_time: 5m
+      max_elapsed_time: 300s
     sending_queue:
       enabled: true
       num_consumers: 4
@@ -53,6 +79,18 @@ service:
   telemetry:
     logs:
       level: info
+    metrics:
+      # Must be set explicitly. This collector version defaults the telemetry
+      # endpoint to localhost:8888, which is only reachable from inside the
+      # container -- so the collector's own metrics (otelcol_receiver_*,
+      # otelcol_exporter_*) cannot be scraped, and those counters are the way to
+      # tell "no traffic" apart from "signals are being dropped".
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
   extensions:
     - health_check
     - zpages
@@ -64,8 +102,7 @@ service:
         - memory_limiter
         - batch
       exporters:
-        - debug
-        - otlp/jaeger
+        - clickhouse
     metrics:
       receivers:
         - otlp
@@ -73,7 +110,7 @@ service:
         - memory_limiter
         - batch
       exporters:
-        - debug
+        - clickhouse
     logs:
       receivers:
         - otlp
@@ -81,4 +118,4 @@ service:
         - memory_limiter
         - batch
       exporters:
-        - debug
+        - clickhouse

@@ -17,6 +17,24 @@ is not.
 fixed · `FIXED` fixed and verified on the cluster · `TEST-DEFECT` the assertion
 was wrong, not the system.
 
+**Baseline run, 2026-09-17, single-node kind, resident loadgen at 1 replica**
+(recorded after the observability stack moved from Jaeger/Badger to
+OTel → ClickHouse, to separate that change from the pre-existing failures):
+
+```
+e2e FAILED -- 02-purchase.sh:5 03-refund.sh:4 04-change.sh:3 05-fulfillment.sh:6
+              06-risk.sh:1 07-fare-rules.sh:1 12-restart.sh:13 14-waitlist.sh:4
+```
+
+37 raw failures across 8 of 23 scripts; `13-observability` passes 6/6. Every
+cluster here is P1, P3, P4-third-layer, P6 or P10 below — none is telemetry.
+
+The P1 attribution is testable rather than assumed: scaling `loadgen` to 0 and
+letting the streams drain takes `02-purchase` from 5 failures to 2, and moves the
+saga from stuck at `CREATED` to progressing to `INVOICING`. The remaining two are
+the assertion window, not the system. So the number to compare against is only
+meaningful at the same loadgen replica count.
+
 ---
 
 ## P1 — journey-order consumption deficit (root cause for several clusters)
