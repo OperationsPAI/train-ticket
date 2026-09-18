@@ -254,21 +254,97 @@ certification script pauses this deployment before comparing snapshot row counts
 and resumes it afterward.
 
 Note that `deploy/loadgen-go/config.yaml` is a *local development sample*, not
-what runs in the cluster; the two diverge deliberately (the deployed profile runs
-with zero think time).
+what runs in the cluster; the two diverge deliberately.
+
+### Traffic shape
+
+The deployed profile runs **open-loop** with a shaped arrival process, because a
+flat request rate cannot exercise the failures that matter. Measured on the
+previous closed-loop/zero-think-time profile: per-minute request count stable to
+within ±2%, per-second coefficient of variation 0.13 — a metronome. Queues form
+from *variance*, not from mean load (Kingman's formula: waiting time scales with
+the sum of the squared CVs of arrival and service), so a flat generator at 80%
+utilization produces almost no queueing and leaves backpressure, retry storms,
+connection-pool exhaustion and consumer lag untested by construction.
+Autoscaling, rate limiters, circuit breakers and cache warmth are all *responses
+to change*, and a flat signal never changes.
+
+Four independent knobs in `run.arrival` and `personas`, each switchable alone so
+a run can isolate one. Rationale for each is in `deploy/loadgen-go/arrival.go`:
+
+| Knob | Shape | What it exercises |
+| --- | --- | --- |
+| `arrival.poisson` | exponential inter-arrival gaps | the micro-structure. Takes per-second CV from ~0.13 to ~1.0 — the one that makes queues form at all |
+| `arrival.diurnal` | raised cosine, peak 4x / trough 0.5x | autoscaling, cache warmth, capacity planning against a peak rather than a mean |
+| `arrival.burst` | random spikes, 3–8x for 20–90s | backpressure and rate limits; moves queue depth faster than any autoscaler reacts |
+| `personas` | mixture of 3 customer types | request *mix*: session length, abandon rate, conversion. Independent of the three above |
+
+The rate composes multiplicatively, and only the last line is the arrival
+process itself:
+
+```
+rate(t) = target_rps * diurnal(t) * burst(t)
+gap     ~ Exponential(rate(t))
+```
+
+Note `personas` changes *who* requests while `arrival` changes *when* — enabling
+personas alone does not fix a flat rate.
+
+**Measuring the shape — read this before concluding it does not work.** Most
+spans in this system are *not* edge arrivals: the event-driven services fan one
+HTTP request out into many internal consumer spans, and `reporting` alone roots
+thousands per minute while draining its stream backlog. Counting all spans
+therefore shows ~870/s at CV 0.36 and makes the shaping look much weaker than it
+is. Filter to root server spans to see the actual arrival process:
+
+```sql
+WITH per_sec AS (
+  SELECT toStartOfSecond(Timestamp) AS s, count() AS n
+  FROM otel.otel_traces
+  WHERE Timestamp >= now() - INTERVAL 5 MINUTE
+    AND SpanKind = 'Server' AND ParentSpanId = ''
+  GROUP BY s
+)
+SELECT round(avg(n),1) AS mean_rps, round(stddevPop(n)/avg(n),3) AS cv,
+       min(n) AS pmin, max(n) AS pmax
+FROM per_sec;
+```
+
+On the current profile that reports mean ~30/s, **CV 0.68**, range 1–110 — versus
+CV 0.13 before. Per 15s buckets the diurnal decline and individual bursts are
+both visible directly.
+
+`arrival_test.go` pins the statistical properties (exponential draw with CV≈1,
+peak/trough spread, bursts that fire *and* release), and
+`deployed_config_test.go` guards the deployed ConfigMap — every one of these
+settings is a silent failure if it decodes to its zero value, since the run keeps
+working and quietly goes flat again.
+
+To get the old saturation behaviour back for a throughput test, set
+`run.mode: closed-loop` and zero the think times; the arrival block is then
+ignored, since a closed-loop pool's rate is a consequence of cluster response
+time rather than something the generator chooses.
 
 ## What is still manual
 
 - **Creating the kind cluster.** `make deploy` requires one to already exist;
   it will not create or delete clusters.
 - **Pulling third-party images.** `postgres:16-alpine`, `redis:7-alpine`,
-  `jaegertracing/all-in-one`, `otel/opentelemetry-collector-contrib`,
-  `axllent/mailpit` and `curlimages/curl` are pulled by the node on demand. On
-  an air-gapped or rate-limited machine, preload them:
+  `clickhouse/clickhouse-server:24.8-alpine`,
+  `otel/opentelemetry-collector-contrib`, `prom/prometheus`,
+  `kube-state-metrics`, `node-exporter`, `axllent/mailpit` and `curlimages/curl`
+  are pulled by the node on demand. On an air-gapped or rate-limited machine,
+  preload them:
 
   ```bash
   docker pull postgres:16-alpine
   kind load docker-image postgres:16-alpine --name train-ticket
+  ```
+
+  The authoritative list is the rendered release, not this paragraph:
+
+  ```bash
+  deploy/render-manifests.sh | grep -oE 'image: [^ ]+' | sort -u
   ```
 
 - **Schema migrations.** Each service runs its own migrations at startup. The

@@ -7,22 +7,48 @@ depend on external infrastructure.
 
 ## Collection Topology
 
-`platform/observability/otel-collector.yaml` defines the local collector:
+Every signal — traces, logs and metrics — is collected by OpenTelemetry
+Collectors and stored in ClickHouse. There are three collectors in the cluster,
+split by what a receiver can physically see rather than by preference:
 
-- OTLP gRPC receiver on `4317`.
-- OTLP HTTP receiver on `4318`.
-- health extension on `13133`.
-- zPages extension on `55679`.
-- debug exporters for traces, metrics, and logs.
-- Jaeger OTLP exporter for traces, targeting `jaeger:4317`, with retry and a
-  bounded sending queue so a trace-store restart does not drop spans.
+| Collector | Workload | Receivers | What it is the only source of |
+| --- | --- | --- | --- |
+| `otel-collector` | Deployment | `otlp` (4317 gRPC, 4318 HTTP) | Application traces. Every service points `OTEL_EXPORTER_OTLP_ENDPOINT` here. |
+| `otel-agent` | DaemonSet | `filelog`, `kubeletstats`, `hostmetrics` | Application logs, per-pod/node resource usage. |
+| `otel-cluster` | Deployment (1 replica) | `k8s_cluster`, `k8sobjects`, `prometheus` | Workload state, Kubernetes events, federated Prometheus metrics. |
 
-The debug exporters are retained for local smoke checks and low-level signal
-flow visibility. Traces are also exported to Jaeger, which persists them to disk
-with an explicit retention window — see
-[Trace Retention and Storage](#trace-retention-and-storage). Production
-deployment can replace or extend the exporters while preserving the same
-service-side OTLP contract.
+`filelog` must run per-node because `/var/log/pods` is node-local; `k8s_cluster`
+must run exactly once because N replicas would emit N copies of the same cluster
+state. That is the whole reason for the split.
+
+`platform/observability/otel-collector.yaml` defines the OTLP gateway, and is
+the canonical config that the `otel-collector-config` ConfigMap in
+`deploy/helm/train-ticket/templates/observability.yaml` mirrors. It carries:
+
+- OTLP gRPC receiver on `4317`, OTLP HTTP on `4318`.
+- health extension on `13133`, zPages on `55679`.
+- a `clickhouse` exporter on the traces, metrics and logs pipelines, with retry
+  and a bounded sending queue so a store restart does not drop signals.
+
+The agent and cluster collectors have no compose equivalent — their receivers
+read node-local and cluster-scoped state that does not exist outside a cluster.
+
+### Where logs come from, and why not the SDK
+
+The services set `OTEL_LOGS_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`, and
+the language kits install trace providers only. Logs are therefore collected by
+tailing the files the kubelet already writes, not over OTLP. This is deliberate:
+it makes every service's stdout queryable — including init containers, which
+have no SDK at all — without touching 38 services or the kit wiring.
+
+The cost is that a log record's structure is whatever the service printed. The
+services log plain text, and trace correlation rides in a bracketed prefix —
+`[trace=<id> span=<id>]`, rendered from the MDC by
+`LOGGING_PATTERN_CORRELATION` in `templates/services.yaml`. The agent's filelog
+operators parse the ids out of that prefix into `TraceId`/`SpanId`, which is what
+makes the log-to-span join work. Records without the prefix — the Python
+services, init containers, Spring's startup banner — are kept with an empty
+`TraceId` rather than dropped.
 
 ## Local Runtime
 
@@ -51,29 +77,46 @@ make observability-down
 ```
 
 The compose file lives at `platform/observability/docker-compose.yaml` and starts
-the OpenTelemetry Collector, Jaeger with its persistent Badger store, and a
-one-shot `jaeger-init` service that prepares the volume's ownership (the compose
-equivalent of the pod `securityContext.fsGroup` used in kind, since the jaeger
-image runs as uid 10001).
+the OpenTelemetry Collector and ClickHouse. Only the OTLP pipeline exists there;
+the pod-log and Kubernetes receivers that the cluster runs have no meaning under
+compose.
 
 ## kind Cluster Deployment
 
-The Helm chart's `deploy/helm/train-ticket/templates/observability.yaml` defines
-an `otel-collector` Deployment, ClusterIP Service, and ConfigMap in the
-`train-ticket` namespace, alongside the Jaeger trace store. The ConfigMap data is
-copied from `platform/observability/otel-collector.yaml`, which remains the
-canonical collector configuration for both compose and kind; the tunable numbers
-in the copy are substituted from `.Values.otelCollector`
+The Helm chart renders the whole stack into the `train-ticket` namespace:
+
+| Template | Renders |
+| --- | --- |
+| `templates/observability.yaml` | The `otel-collector` OTLP gateway (Deployment, Service, ConfigMap) and Mailpit. |
+| `templates/otel-agent.yaml` | The `otel-agent` DaemonSet and its config. |
+| `templates/otel-cluster.yaml` | The `otel-cluster` Deployment and its config. |
+| `templates/otel-rbac.yaml` | One ServiceAccount, ClusterRole and binding shared by all three collectors. |
+| `templates/clickhouse.yaml` | The ClickHouse StatefulSet, Service and volume. |
+| `templates/prometheus.yaml` | Prometheus, kube-state-metrics and node-exporter. |
+
+The gateway's ConfigMap data is copied from
+`platform/observability/otel-collector.yaml`, which remains the canonical
+collector configuration for both compose and kind. The tunable numbers in the
+copy are substituted from `.Values.otelCollector`
 (`otelCollector.memoryLimitMiB`, `otelCollector.sendingQueue.*`), so those are
 the knobs to turn rather than the template body. `otelCollector.image.tag` pins a
 collector-contrib image tag so cluster rollouts are reproducible; update that tag
 deliberately when advancing the local baseline.
 
-The chart also hashes `.Values.otelCollector` into the pod's `checksum/config`
-annotation, so changing a collector tunable actually rolls the Deployment.
-Without that, a `helm upgrade` would leave the running collector on the old
-config until someone restarted it by hand — kustomize used to get this for free
-from its ConfigMap name hash.
+Three blocks are shared between the collectors through named templates in
+`templates/_helpers.tpl` — the `clickhouse` exporter, the `k8sattributes`
+processor, and the `service.namespace` backfill. They are defined once because a
+divergence between the three would be invisible: each collector would keep
+working and write somewhere slightly different, surfacing only as a query
+returning fewer rows than expected.
+
+Each collector hashes its **rendered config** into the pod's `checksum/config`
+annotation, so any change that reaches the collector — a value or the template
+body — rolls the workload. Without that, a `helm upgrade` would leave the running
+collector on the old config until someone restarted it by hand; kustomize used to
+get this for free from its ConfigMap name hash. Hashing `.Values` instead is not
+enough, and was the actual bug: it misses an edit to the config body, so the
+ConfigMap updates while the pod keeps running the old bytes.
 
 Apply the stack from the repository root:
 
@@ -87,7 +130,7 @@ kubectl -n train-ticket rollout status deploy/otel-collector
 `make deploy` (or `make deploy-fast`, which skips the image rebuild) runs that
 install as one step of the full pipeline; see `deploy/README.md`.
 
-The collector listens on the same ports as the local baseline:
+The gateway listens on the same ports as the local baseline:
 
 - OTLP gRPC: `otel-collector:4317` inside the cluster.
 - OTLP HTTP: `otel-collector:4318` inside the cluster.
@@ -101,130 +144,207 @@ kubectl -n train-ticket port-forward svc/otel-collector 13133:13133
 curl -fsS http://127.0.0.1:13133/
 ```
 
-To confirm spans arrive after a service SDK/exporter is wired in by a later
-REQ-096/097/098 task, watch the debug exporter output:
+`deploy/e2e/13-observability.sh` asserts this end to end: health, zPages, and
+that `otelcol_receiver_accepted_spans` grows after real traffic.
+
+### RBAC is load-bearing
+
+The collectors need pod, namespace and replicaset read access for the
+`k8sattributes` processor, `nodes/stats` for `kubeletstats`, and **`nodes/metrics`
+for the Prometheus kubelet and cAdvisor scrapes**. That last one is easy to get
+wrong: the kubelet authorizes `/metrics` and `/metrics/cadvisor` against
+`nodes/metrics` specifically, and `nodes/proxy` is not a substitute. Leaving it
+out returns 403 on exactly those two Prometheus targets while every other target
+stays green, so nothing looks broken and `container_*` metrics are simply absent.
+
+The failure mode of a missing `k8sattributes` rule is quieter still: the tables
+fill up normally, but the rows carry no `k8s.namespace.name` or `service.name`,
+so every query that filters on them returns nothing. If a query comes back empty
+against a store that is clearly growing, check this first.
+
+Both classes of failure are worth checking directly rather than inferring:
 
 ```bash
-kubectl -n train-ticket logs deploy/otel-collector -f
+kubectl -n train-ticket exec deploy/prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/targets?state=active' | grep -o '"health":"[a-z]*"' | sort | uniq -c
 ```
 
-Seeing no spans immediately after this infrastructure change is expected: the
-collector and service-side environment contract are present, but service SDK
-exporters are not installed by this task.
+## Querying Telemetry
 
-## Jaeger Trace Querying
-
-Jaeger all-in-one is the trace store for both compose and kind. It accepts
-collector-exported OTLP/gRPC traces on the in-cluster `jaeger:4317` service port
-and serves the Jaeger UI on port `16686`. The service-side contract does not
-change: services still send OTLP to the collector through the standard `OTEL_*`
-environment variables.
-
-Access the UI from a kind cluster with port-forwarding:
+ClickHouse is reachable in-cluster on `clickhouse:9000` (native) and
+`clickhouse:8123` (HTTP). Open a client:
 
 ```bash
-kubectl -n train-ticket port-forward svc/jaeger 16686:16686
+kubectl -n train-ticket exec -it clickhouse-0 -- \
+  clickhouse-client --password trainticket-otel --database otel
 ```
 
-Open <http://127.0.0.1:16686>, select `journey-order` in the Service field, and
-run a search after generating a purchase flow. The same query can be checked via
-the Jaeger API:
+The exporter creates and owns these tables:
+
+| Table | Holds | Time column |
+| --- | --- | --- |
+| `otel_traces` | Spans. Plus the `otel_traces_trace_id_ts` materialized view, which is what makes lookup by trace id fast. | `Timestamp` |
+| `otel_logs` | Pod logs (from `filelog`) and Kubernetes events (from `k8sobjects`). | `Timestamp` |
+| `otel_metrics_gauge`, `_sum`, `_histogram`, `_exponential_histogram`, `_summary` | One table per metric type, all derived from the `metrics_table_name` prefix. | `TimeUnix` |
+
+**Traces and logs filter on `Timestamp`; metrics filter on `TimeUnix`.** Using
+the wrong one is a column-not-found error on metrics, which is at least loud.
+
+A trace by id, and the slowest recent operations per service:
+
+```sql
+SELECT Timestamp, ServiceName, SpanName, Duration / 1e6 AS ms, StatusCode
+FROM otel_traces
+WHERE TraceId = 'a1b2c3...'
+ORDER BY Timestamp;
+
+SELECT ServiceName, SpanName,
+       count() AS n,
+       quantile(0.99)(Duration) / 1e6 AS p99_ms
+FROM otel_traces
+WHERE Timestamp >= now() - INTERVAL 15 MINUTE
+GROUP BY ServiceName, SpanName
+ORDER BY p99_ms DESC
+LIMIT 20;
+```
+
+Logs for one service, and the log lines belonging to a single trace — the join
+that motivates the `LOGGING_PATTERN_CORRELATION` wiring in
+`templates/services.yaml`. Note `SeverityText` is empty: there is no severity
+parser, for the reason given in the filelog operators in
+`templates/_helpers.tpl`. The level is in the body.
+
+```sql
+SELECT Timestamp, SeverityText, Body
+FROM otel_logs
+WHERE ServiceName = 'journey-order'
+  AND Timestamp >= now() - INTERVAL 15 MINUTE
+ORDER BY Timestamp DESC
+LIMIT 100;
+
+SELECT Timestamp, ServiceName, Body
+FROM otel_logs
+WHERE TraceId = 'a1b2c3...'
+ORDER BY Timestamp;
+```
+
+One request across both signals, interleaved — the thing that was not possible
+before all three signals shared a store. Pick any correlated log line and follow
+its trace across every service that touched it:
+
+```sql
+WITH (SELECT TraceId FROM otel_logs
+      WHERE Timestamp >= now() - INTERVAL 15 MINUTE AND TraceId != ''
+      LIMIT 1) AS tid
+SELECT Timestamp, 'span' AS kind, ServiceName, SpanName AS detail
+FROM otel_traces WHERE TraceId = tid
+UNION ALL
+SELECT Timestamp, 'log', ServiceName, substring(Body, 1, 120)
+FROM otel_logs WHERE TraceId = tid
+ORDER BY Timestamp;
+```
+
+Kubernetes events are in `otel_logs` too, tagged so they can be separated from
+application logs:
+
+```sql
+SELECT Timestamp, Body
+FROM otel_logs
+WHERE LogAttributes['event.domain'] = 'k8s'
+  AND Timestamp >= now() - INTERVAL 1 HOUR
+ORDER BY Timestamp DESC;
+```
+
+Metrics, by source. `k8s.pod.*` comes from `kubeletstats`, `k8s.deployment.*`
+from the `k8s_cluster` receiver, and `container_*` / `kube_*` / `node_*` from the
+Prometheus federation:
+
+```sql
+SELECT DISTINCT MetricName FROM otel_metrics_gauge ORDER BY MetricName;
+
+SELECT ResourceAttributes['k8s.pod.name'] AS pod,
+       avg(Value) AS avg_cpu
+FROM otel_metrics_gauge
+WHERE MetricName = 'k8s.pod.cpu.utilization'
+  AND TimeUnix >= now() - INTERVAL 15 MINUTE
+GROUP BY pod
+ORDER BY avg_cpu DESC
+LIMIT 20;
+```
+
+Prometheus itself remains available for ad-hoc PromQL over its shorter local
+window:
 
 ```bash
-curl -fsS 'http://127.0.0.1:16686/api/traces?service=journey-order&limit=5'
+kubectl -n train-ticket port-forward svc/prometheus 9090:9090
 ```
 
-A successful purchase-chain sample returns at least one trace in the `data`
-array.
+## Retention and Storage
 
-Two query shapes are supported and both are exercised by the verification
-procedure below:
-
-```bash
-# by trace id
-curl -fsS "http://127.0.0.1:16686/api/traces/${TRACE_ID}"
-
-# by (service, time range) -- start/end are UNIX microseconds
-NOW=$(date +%s)
-curl -fsS "http://127.0.0.1:16686/api/traces?service=journey-order\
-&start=$(( (NOW-3600) * 1000000 ))&end=$(( NOW * 1000000 ))&limit=20"
-```
-
-## Trace Retention and Storage
-
-Traces are **durable**. The store is Jaeger's embedded
-[Badger](https://github.com/dgraph-io/badger) backend writing to a
-PersistentVolumeClaim in kind (`jaeger-badger`, 10Gi) and to a named Docker
-volume in compose (`train-ticket-jaeger-badger`). Both are configured in
-`deploy/helm/train-ticket/templates/observability.yaml` and
+All three signals are **durable**. The store is ClickHouse, writing to a
+PersistentVolumeClaim in kind (`data-clickhouse-0`, 50Gi) and to a named Docker
+volume in compose (`train-ticket-clickhouse-data`). Both are configured in
+`deploy/helm/train-ticket/templates/clickhouse.yaml` and
 `platform/observability/docker-compose.yaml`, and both are on by default: a
 `helm upgrade --install` of the chart (or `make deploy`) and `make
 observability-up` each stand up a persistent store with no extra flags.
 
-### Retention window: 12 hours
+### Retention window: 72 hours
 
-Set explicitly via `--badger.span-store-ttl=12h`, rendered from
-`jaeger.retention.spanStoreTtl` in `deploy/helm/train-ticket/values.yaml`.
-Badger's maintenance thread (`--badger.maintenance-interval=5m`, from
-`jaeger.retention.maintenanceInterval`) drops spans older than the window; a
-query for an expired trace id returns HTTP 404 `trace not found`.
+`clickhouse.ttl` (default `72h`) is passed to the collector's `clickhouse`
+exporter, which writes it as a `TTL` clause on each table it creates. ClickHouse
+drops expired parts in the background.
 
-The window comes straight from the issue requirement of "one full stress
-scenario plus a comparable window before it". The longest run recorded in
-`docs/09-performance/stress-test-report-2026-07-12.md` is the 6+ hour
-long-running stability soak, so 6h of scenario + 6h of prior context = **12h**.
-That also means a run started any time yesterday evening is still readable the
-next morning, and both halves of an A/B comparison survive together.
+**The TTL is applied at CREATE TABLE time only.** Changing `clickhouse.ttl` on a
+cluster whose tables already exist has no effect on those tables — the exporter
+issues `CREATE TABLE IF NOT EXISTS`, sees them, and moves on. To change
+retention on an existing store, either `ALTER TABLE ... MODIFY TTL` by hand or
+drop the database and let the exporter recreate it. This is the one respect in
+which retention here is less convenient than the `--badger.span-store-ttl` flag
+this replaced, and it is the reason the window is set generously by default.
 
-In compose the window is overridable with `JAEGER_SPAN_STORE_TTL` (see
-`platform/observability/env.example`); in the cluster, set
-`jaeger.retention.spanStoreTtl` in the values file (`deploy/helm/values-kind.yaml`
-or `values-prod.yaml`) rather than editing the template. Raising it without also
-growing `jaeger.storage.size` moves the binding constraint from the TTL to the
-disk — see the table below. The two are values in the same block precisely so
-they are changed together.
+The window is 72h rather than the 12h the previous trace store used. Columnar
+compression pays for it: see the measured figures below.
 
-### Why Badger, and not ClickHouse or Elasticsearch
+### Why ClickHouse
 
-All three are viable with the images already pinned in this repo. Badger wins
-for a single-node kind development cluster:
+The store used to be Jaeger's embedded Badger backend, chosen when only traces
+were retained and the argument for it was "no new component". Three things
+changed that trade:
 
-- **No new component.** Badger ships *inside* `jaegertracing/all-in-one:1.57`.
-  Selecting it is `SPAN_STORAGE_TYPE=badger` plus a volume. ClickHouse or
-  Elasticsearch each add a container, an image pull, a readiness dependency, and
-  schema/index bootstrap to a node already running 38 business services and 6
-  infrastructure pods.
-- **Cheaper.** An Elasticsearch single node wants ≥1GB of JVM heap before it
-  stores anything, plus an `es-index-cleaner` CronJob to implement retention.
-  Badger's retention is one flag.
-- **Native retention.** `--badger.span-store-ttl` is a first-class TTL.
-  Elasticsearch needs the external cleaner job; ClickHouse needs a `TTL` clause
-  in DDL that has to be kept in sync by hand.
-- **Operational simplicity over horizontal scale**, which is the right trade for
-  a local dev cluster. The cost is real and accepted: Badger is single-writer,
-  so the Deployment must stay `replicas: 1` with `strategy: Recreate` (Badger
-  holds an exclusive `LOCK` file on its directory, and the PVC is
-  ReadWriteOnce). A `RollingUpdate` would crash-loop the new pod until the old
-  one exited. Neither is exposed as a chart value, on purpose. If this stack is
-  ever pointed at a multi-node cluster that needs concurrent readers/writers or
-  retention in weeks rather than hours, revisit this decision — that is what
-  ClickHouse/Elasticsearch are for.
-- The PVC follows the idiom already in the chart: `ReadWriteOnce` with the
-  storage class taken from a value (`jaeger.storage.storageClass`, `standard` on
-  kind), exactly as the Postgres shards' PVCs do in
-  `deploy/helm/train-ticket/templates/postgres.yaml`.
+- **Metrics and logs are retained now, not just traces.** Badger held spans
+  through Jaeger's span-store interface; it has nowhere to put a metric point or
+  a log record. Keeping it would have meant adding a metrics store and a log
+  store beside it — three components, three retention windows, three query
+  languages. ClickHouse holds all three in one place with one TTL.
+- **Queries got harder than "fetch this trace id".** The questions worth asking
+  cross signals and aggregate: p99 by operation, error rate by service, the log
+  lines belonging to one trace. That is SQL, and Jaeger's API does not express
+  it.
+- **Compression made the disk argument change sides.** Badger measured 1.53 KiB
+  on disk per span with this repo's real attribute set. ClickHouse's columnar
+  layout on the same telemetry runs roughly an order of magnitude smaller,
+  because span attributes repeat heavily across rows and compress accordingly.
+  Measured on this cluster: 2.1M spans in **265 MiB**, or ~0.13 KiB/span.
+
+The costs are real and accepted. It is a genuinely new component with its own
+image and readiness dependency; the TTL caveat above replaces a first-class
+flag; and the single-writer property is unchanged — `replicas` stays 1 and the
+PVC is ReadWriteOnce, so there is no horizontal scale here without a
+`ClickHouseCluster` and the `cluster_name`/`table_engine` exporter pair that goes
+with it (see `train-ticket.clickhouseExporter` in `templates/_helpers.tpl`).
 
 ### Capacity arithmetic
 
-The sizing is derived from measured values, not estimates. The two per-span
-constants were measured against this repo's actual span shape:
+The span-rate inputs are measured, not estimated. The two per-span constants
+were measured against this repo's actual span shape:
 
 | Measured input | Value | How |
 |---|---|---|
 | Spans per purchase-chain trace | **5.32** mean (max 14) | 200 live `journey-order`-rooted traces read from the running store |
 | Span payload | **1.05 KB** JSON mean | same sample |
-| **On-disk cost per span** | **1.53 KiB** → plan at **1.6 KiB** | loaded 200,000 spans carrying the repo's real attribute set (14 span + 11 resource attributes) into Badger; `du -sk` reported 306,016 KiB allocated after compaction settled |
-| Jaeger+Badger memory | **770 MiB** steady, **1.76 GiB** peak | measured after / during that 200k-span ingest |
+| **On-disk cost per span, ClickHouse** | **~0.13 KiB** | 2.1M spans in 265 MiB on this cluster, `system.parts` after merges settled |
+| On-disk cost per span, Badger (historical) | 1.53 KiB | the store this replaced, same attribute set |
 
 Span rate, from `docs/09-performance/stress-test-report-2026-07-12.md`:
 
@@ -236,152 +356,101 @@ Span rate, from `docs/09-performance/stress-test-report-2026-07-12.md`:
 - The default is sized for **35 RPS**, the lowest full-scenario rate in the
   report and a realistic ceiling for one kind node. The 220 RPS peak was
   measured on a *20-node* Volces VKE cluster; `docs/09-performance/baseline-report.md`,
-  run on a single-node kind cluster, reached ~1 RPS. Sizing the dev default for
-  220 RPS would be sizing for load this node cannot generate.
+  run on a single-node kind cluster, reached ~1 RPS.
 
 ```
   35 RPS x 3 spans/request              =    105 spans/s
- 105 spans/s x 1.6 KiB/span             =    168 KiB/s   = 0.58 GiB/h
-0.58 GiB/h x 12 h retention             =    6.9 GiB
-                             PVC        =     10Gi        (~45% headroom)
+ 105 spans/s x 0.13 KiB/span            =   13.7 KiB/s   = 0.05 GiB/h
+0.05 GiB/h x 72 h retention             =    3.5 GiB      (traces)
 ```
 
-The headroom absorbs Badger's LSM transients: compaction rewrites SST files
-before dropping the originals, and a 32 MiB memtable is preallocated on disk.
+Traces are the smallest of the three signals by disk. Logs dominate: this
+cluster's `notification` service alone produces more log records than any
+service produces spans, and log bodies compress less well than span attributes.
+Metrics sit between the two. The 50Gi default is sized so that the **TTL**, not
+the disk, is the binding limit for all three together at the default rate.
 
-Total span capacity in the window: `105 spans/s x 43,200 s` = **~4.5M spans**,
-against `20,000 traces x 5.32` = ~106,000 spans for the previous in-memory
-store — roughly a **43x** increase, and now durable. For contrast, the old
-20,000-trace cap filled in about **4.6 minutes** at 220 RPS
-(`20000 / (220/3 traces/s)`) and about 28 minutes at 35 RPS, which is what the
-issue meant by "a few minutes".
+### Scaling for higher rates
 
-### Scaling the volume for higher rates
+| Edge RPS | Spans/s | Trace disk rate | 72h traces | Notes |
+|---------:|--------:|----------------:|-----------:|-------|
+| 35 (default) | 105 | 0.05 GiB/h | 3.5 GiB | TTL binds at 50Gi |
+| 103 | 309 | 0.14 GiB/h | 10.4 GiB | TTL binds at 50Gi |
+| 220 (peak) | 660 | 0.31 GiB/h | 22.3 GiB | add headroom for logs; see `values-prod.yaml` (200Gi) |
 
-If you point this stack at a cluster that can actually sustain the higher
-documented rates, the 12h window needs proportionally more disk:
-
-| Edge RPS | Spans/s | Disk rate | 12h window | Volume to provision | 10Gi holds |
-|---------:|--------:|----------:|-----------:|--------------------:|-----------:|
-| 35 (default) | 105 | 0.58 GiB/h | 6.9 GiB | 10Gi | 12h (TTL binds) |
-| 103 | 309 | 1.70 GiB/h | 20.4 GiB | 25Gi | ~5.9h |
-| 220 (peak) | 660 | 3.63 GiB/h | 43.5 GiB | 50Gi | ~2.8h |
-
-At 10Gi and 220 RPS the **disk**, not the TTL, becomes the binding limit at
-~2.8h. Either grow the volume or shorten the TTL; do not leave the two
-inconsistent. Both are values in the same block:
-`jaeger.storage.size` and `jaeger.retention.spanStoreTtl`.
+If the disk rather than the TTL becomes the binding limit, either grow
+`clickhouse.storage.size` or shorten `clickhouse.ttl` — but note the TTL caveat
+above: shortening it only affects tables created afterwards.
 
 > **kind caveat.** The `standard` StorageClass in kind is
 > `rancher.io/local-path`, which is hostPath-backed and does **not** enforce the
-> 10Gi request — it creates a directory under
-> `/var/local-path-provisioner/` on the node. The 10Gi figure documents intent
-> and is enforced on any cluster with a real provisioner; on kind the TTL is the
-> only hard bound, so a badly-raised TTL will consume node disk. Check headroom
-> with `docker exec <kind-node> df -h /`.
+> 50Gi request — it creates a directory under `/var/local-path-provisioner/` on
+> the node. The figure documents intent and is enforced on any cluster with a
+> real provisioner; on kind the TTL is the only hard bound, so a badly-raised
+> TTL will consume node disk. Check headroom with
+> `docker exec <kind-node> df -h /`.
 
-### Memory limit
+Check actual usage rather than assuming:
 
-The pod's memory limit was raised from **256Mi to 2Gi** (request 512Mi), and
-`GOMEMLIMIT=1750MiB` makes the Go runtime collect before the kubelet OOM-kills
-the container. Both are values — `jaeger.resources` and `jaeger.gomemlimit` —
-and `gomemlimit` should stay at ~85% of `resources.limits.memory` if either
-moves.
-
-256Mi was not survivable, and not merely tight: Badger's logged startup
-configuration allocates a **256 MiB block cache** plus up to **5 x 64 MiB
-memtables** — 576 MiB of buffers before a single span is stored. The measured
-figures above (770 MiB steady, 1.76 GiB under burst ingest) set the 2Gi limit.
-This also resolves the eviction-before-the-cap problem the issue describes: the
-old pod could be reclaiming memory long before reaching 20,000 traces.
+```sql
+SELECT table, formatReadableSize(sum(bytes_on_disk)) AS size, sum(rows) AS rows
+FROM system.parts WHERE database = 'otel' AND active
+GROUP BY table ORDER BY sum(bytes_on_disk) DESC;
+```
 
 ### Export reliability across a store restart
 
-Because the store is now a stateful component that goes offline for a few
-seconds when its pod is replaced, the collector's `otlp/jaeger` exporter is
-configured with `retry_on_failure` (1s to 30s backoff, 5m ceiling) and a bounded
-in-memory `sending_queue` (4,000 batches). Spans emitted while the store is
-restarting are redelivered rather than dropped.
+The store is a stateful component that goes offline for a few seconds when its
+pod is replaced, so every collector's `clickhouse` exporter is configured with
+`retry_on_failure` (5s to 30s backoff, 300s ceiling) and a bounded in-memory
+`sending_queue`. Signals emitted while the store is restarting are redelivered
+rather than dropped.
+
+A consequence worth expecting: a row count taken before a store restart and
+again after can come back **higher**, not equal, because the queue drains on
+reconnect. That is the mechanism working.
 
 The queue is in memory, so this covers a store restart, not a *collector*
 restart. Making that lossless too would need the `file_storage` extension and a
-second PVC for the collector; that is deliberately out of scope here.
+PVC per collector; that is deliberately out of scope.
 
 ### Verifying persistence end to end
 
-With the workload stopped:
-
 ```bash
-# 1. note a trace id that exists
-kubectl -n train-ticket port-forward svc/jaeger 16686:16686 &
-TRACE_ID=$(curl -fsS 'http://127.0.0.1:16686/api/traces?service=journey-order&limit=1' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"][0]["traceID"])')
-echo "$TRACE_ID"
+# 1. note a row count with an explicit cutoff, so later writes cannot mask a loss
+CUT=$(kubectl -n train-ticket exec clickhouse-0 -- \
+  clickhouse-client --password trainticket-otel --query "SELECT now()")
+kubectl -n train-ticket exec clickhouse-0 -- clickhouse-client \
+  --password trainticket-otel \
+  --query "SELECT count() FROM otel.otel_traces WHERE Timestamp < '$CUT'"
 
-# 2. destroy the trace store pod
-kubectl -n train-ticket delete pod -l app.kubernetes.io/name=jaeger
-kubectl -n train-ticket rollout status deploy/jaeger
+# 2. destroy the store pod
+kubectl -n train-ticket delete pod clickhouse-0
+kubectl -n train-ticket wait --for=condition=ready pod/clickhouse-0 --timeout=300s
 
-# 3. query that trace back by id -- expect one trace, not HTTP 404
-kubectl -n train-ticket port-forward svc/jaeger 16686:16686 &
-curl -fsS "http://127.0.0.1:16686/api/traces/${TRACE_ID}" \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin)["data"];print("traces:",len(d),"spans:",len(d[0]["spans"]))'
-
-# 4. and by (service, time range)
-NOW=$(date +%s)
-curl -fsS "http://127.0.0.1:16686/api/traces?service=journey-order\
-&start=$(( (NOW-3600) * 1000000 ))&end=$(( NOW * 1000000 ))&limit=20"
+# 3. the same query must return at least the same count
+kubectl -n train-ticket exec clickhouse-0 -- clickhouse-client \
+  --password trainticket-otel \
+  --query "SELECT count() FROM otel.otel_traces WHERE Timestamp < '$CUT'"
 ```
 
-The same check in compose, which does not require a cluster:
+Deleting the volume is the only way to lose telemetry:
 
 ```bash
-make observability-up
-# ... submit a trace to localhost:4318, note its id ...
-docker restart train-ticket-observability-jaeger-1
-curl -fsS "http://127.0.0.1:16686/api/traces/${TRACE_ID}"
+kubectl -n train-ticket delete pvc data-clickhouse-0   # kind
+docker volume rm train-ticket-clickhouse-data          # compose
 ```
-
-Deleting the volume is the only way to lose traces:
-
-```bash
-kubectl -n train-ticket delete pvc jaeger-badger   # kind
-docker volume rm train-ticket-jaeger-badger        # compose
-```
-
-## Metrics and Logs Are Still Not Retained
-
-Traces are durable; **metrics and logs are not**. The collector defines all
-three pipelines, but only `traces` has a real exporter. `metrics` and `logs`
-still export to `debug`, which writes to the collector's own stdout and is not
-queryable, and every instrumented Deployment sets `OTEL_METRICS_EXPORTER=none`
-and `OTEL_LOGS_EXPORTER=none` so those pipelines receive nothing anyway.
-
-Closing that gap is out of scope for the trace-retention work and needs, at
-minimum:
-
-1. A metrics store and a real exporter (e.g. a Prometheus deployment plus
-   `prometheus` / `otlphttp` exporter on the `metrics` pipeline), and a log store
-   plus exporter (e.g. Loki via `loki` exporter) on the `logs` pipeline — in both
-   `platform/observability/otel-collector.yaml` and the mirrored ConfigMap in
-   `deploy/helm/train-ticket/templates/observability.yaml`.
-2. Their own PVCs and retention windows, sized the same way as above.
-3. Flipping `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` from `none` to `otlp`
-   on the service Deployments — they are set in the shared env block of
-   `deploy/helm/train-ticket/templates/services.yaml`, so this is one edit for
-   all 38 rather than one per service — plus the equivalent change to the
-   documented service contract below, and SDK-side metric/log provider wiring in
-   each language runtime baseline (the runtime adapters currently install trace
-   APIs only).
-
-Until then, treat `docs/09-performance/` reports as the record for metrics.
 
 ## Service Contract
 
 Every service should use the same baseline environment shape when real
-OpenTelemetry SDK instrumentation is enabled. The initial rollout enables only
-trace export; metrics and logs stay disabled until a follow-up task installs and
-configures those SDK pipelines.
+OpenTelemetry SDK instrumentation is enabled. Only trace export is enabled: the
+services' metrics and logs reach the store without the SDK — logs by tailing pod
+stdout, metrics from the kubelet and Kubernetes API — so
+`OTEL_METRICS_EXPORTER=none` and `OTEL_LOGS_EXPORTER=none` are the intended
+steady state here, not a gap waiting to be closed. Turning them on would add a
+second path for signals already collected. See
+[Where logs come from](#where-logs-come-from-and-why-not-the-sdk).
 
 ```bash
 OTEL_SERVICE_NAME=<service-id>
@@ -454,10 +523,21 @@ legacy `http.method` / `http.status_code` aliases during the baseline).
   a runtime adapter is installed.
 - Collector exporter changes must keep OTLP HTTP and gRPC receiver ports stable
   unless all service deployment templates are updated in the same change.
-- The trace-store Deployment must stay `replicas: 1` with `strategy: Recreate`,
-  and its memory limit must stay well above 576Mi. Badger holds an exclusive
-  directory lock and preallocates that much buffer before storing any span.
-- The retention window (`jaeger.retention.spanStoreTtl`, rendered as
-  `--badger.span-store-ttl`) and the volume size (`jaeger.storage.size`) must be
-  changed together, using the arithmetic in
-  [Capacity arithmetic](#capacity-arithmetic).
+- The telemetry-store StatefulSet must stay `replicas: 1`. ClickHouse holds an
+  exclusive lock on its data directory and the PVC is ReadWriteOnce; a second
+  replica against the same volume crash-loops. Scaling out needs replication
+  configured on both sides — see `train-ticket.clickhouseExporter` in
+  `templates/_helpers.tpl` for why `cluster_name` and `table_engine` must move
+  together.
+- The `otel-cluster` Deployment must stay `replicas: 1`. Its receivers report on
+  the cluster, not on a node, so N replicas write N copies of the same rows.
+- The retention window (`clickhouse.ttl`) and the volume size
+  (`clickhouse.storage.size`) must be changed together, using the arithmetic in
+  [Capacity arithmetic](#capacity-arithmetic). Remember that the TTL only applies
+  to tables created afterwards.
+- The three collectors' exporter, `k8sattributes` and namespace-backfill config
+  must stay shared through `templates/_helpers.tpl`. Divergence between them is
+  invisible at deploy time and surfaces only as missing rows.
+- A collector's `checksum/config` must hash its rendered config, not `.Values`.
+  Hashing values misses a template-body edit, which updates the ConfigMap without
+  restarting the pod.

@@ -3,6 +3,12 @@ import { type EventEnvelope, type EventHandler } from "../ports/messaging.js";
 
 import { createHash } from "node:crypto";
 
+/** Ancillary disclosures attached to one quote. */
+const ANCILLARY_DISCLOSURES = 10;
+
+/** Rows read to fill them, with room for the sales-window filter to drop some. */
+const ANCILLARY_DISCLOSURE_SCAN = 200;
+
 /** Normative inputHash per events/fare-pricing.md. */
 export function contractInputHash(segmentRefs: readonly string[], channel: string, travelerRefs: readonly string[]): string {
   const material = `${[...segmentRefs].sort().join(",")}|${channel}|${[...travelerRefs].sort().join(",")}`;
@@ -158,7 +164,8 @@ export interface UpstreamStateRepository {
   saveMctRule(rule: StoredMctRule): Promise<void>;
   findPublishedMctRules(): Promise<readonly StoredMctRule[]>;
   saveAncillaryCatalogItem(item: StoredAncillaryCatalogItem): Promise<void>;
-  findPublishedAncillaryCatalogItems(): Promise<readonly StoredAncillaryCatalogItem[]>;
+  findAncillaryCatalogItem(catalogItemId: string): Promise<StoredAncillaryCatalogItem | undefined>;
+  findPublishedAncillaryCatalogItems(limit?: number): Promise<readonly StoredAncillaryCatalogItem[]>;
   saveAncillaryOffer(offer: StoredAncillaryOffer): Promise<void>;
   findAncillaryOffers(travelerRefs: readonly string[]): Promise<readonly StoredAncillaryOffer[]>;
   clear(): void;
@@ -243,8 +250,13 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
     this.ancillaryCatalogItemsById.set(item.catalogItemId, item);
   }
 
-  async findPublishedAncillaryCatalogItems(): Promise<readonly StoredAncillaryCatalogItem[]> {
-    return [...this.ancillaryCatalogItemsById.values()].filter((item) => item.status === "PUBLISHED");
+  async findAncillaryCatalogItem(catalogItemId: string): Promise<StoredAncillaryCatalogItem | undefined> {
+    return this.ancillaryCatalogItemsById.get(catalogItemId);
+  }
+
+  async findPublishedAncillaryCatalogItems(limit?: number): Promise<readonly StoredAncillaryCatalogItem[]> {
+    const published = [...this.ancillaryCatalogItemsById.values()].filter((item) => item.status === "PUBLISHED");
+    return limit === undefined ? published : published.slice(0, limit);
   }
 
   async saveAncillaryOffer(offer: StoredAncillaryOffer): Promise<void> {
@@ -632,7 +644,7 @@ async function storeAncillaryCatalogItem(repository: UpstreamStateRepository, ev
   const serviceType = stringField(payload, "serviceType");
   const status = ancillaryCatalogStatus(stringField(payload, "status"));
   if (!catalogItemId || version === undefined || !serviceType || !status) return;
-  const existing = (await repository.findPublishedAncillaryCatalogItems()).find((item) => item.catalogItemId === catalogItemId);
+  const existing = await repository.findAncillaryCatalogItem(catalogItemId);
   await repository.saveAncillaryCatalogItem({
     catalogItemId,
     version,
@@ -760,8 +772,12 @@ async function buildRiskDisclosures(repository: UpstreamStateRepository, itinera
     });
   }
 
-  const activeCatalogItems = (await repository.findPublishedAncillaryCatalogItems()).filter((item) => catalogItemIsInSalesWindow(item, at));
-  for (const item of activeCatalogItems.slice(0, 10)) {
+  // Capped in SQL rather than fetched whole. The sales-window predicate stays in
+  // memory because it treats an unparseable date as unconstrained, which SQL would
+  // not, so the cap is loose enough to still fill the ten disclosures below.
+  const activeCatalogItems = (await repository.findPublishedAncillaryCatalogItems(ANCILLARY_DISCLOSURE_SCAN))
+    .filter((item) => catalogItemIsInSalesWindow(item, at));
+  for (const item of activeCatalogItems.slice(0, ANCILLARY_DISCLOSURES)) {
     disclosures.push({
       disclosureId: `ancillary-catalog:${item.catalogItemId}:${item.version}`,
       severity: "info",
