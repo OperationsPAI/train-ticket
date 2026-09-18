@@ -1,0 +1,125 @@
+{{- if and .Values.otelCollector.enabled .Values.otelCollector.agent.enabled }}
+{{- /*
+Per-node collector. Runs the receivers that can only read node-local state:
+
+  filelog       Pod stdout/stderr, read off /var/log/pods. This is the ONLY
+                source of application logs. The services set
+                OTEL_LOGS_EXPORTER=none and the language kits install trace
+                providers only, so nothing is emitted over OTLP -- scraping the
+                files the kubelet already writes is what makes logs queryable
+                without touching 38 services or the SDK wiring.
+  kubeletstats  Per-node/pod/container CPU, memory, network and filesystem, from
+                the local kubelet's /stats/summary.
+  hostmetrics   Node-level CPU, load, memory, disk, filesystem and network.
+
+A DaemonSet rather than replicas of the gateway: /var/log/pods holds only the
+pods scheduled to that node, and the kubelet only reports its own.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-agent-config
+  labels:
+    app.kubernetes.io/name: otel-agent
+    app.kubernetes.io/part-of: train-ticket
+data:
+  otel-agent.yaml: |
+    {{- include "train-ticket.agentConfig" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-agent
+  labels:
+    app.kubernetes.io/name: otel-agent
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-agent
+  template:
+    metadata:
+      annotations:
+        # Hashes the rendered config itself, so ANY change that reaches the
+        # collector -- a value or the template body -- rolls the pod.
+        checksum/config: {{ include "train-ticket.agentConfig" . | sha256sum }}
+      labels:
+        app.kubernetes.io/name: otel-agent
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      serviceAccountName: otel-collector
+      # OFF, deliberately. A hostNetwork DaemonSet contends for host ports with
+      # whatever the node already runs and lands in Pending when it loses; the
+      # kubelet and the API server are both reachable over pod networking, so
+      # there is nothing to gain here.
+      hostNetwork: false
+      # Log collection has to keep working on a node that is cordoned or
+      # otherwise tainted -- that is when its logs matter most.
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: otel-agent
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.otelCollector.image.repository "tag" .Values.otelCollector.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args:
+            - --config=/etc/otelcol-contrib/otel-agent.yaml
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # memory_limiter is configured by percentage, which is a percentage
+            # of what the runtime believes it has. Feed it the container limit
+            # so the two agree.
+            - name: GOMEMLIMIT
+              value: {{ .Values.otelCollector.agent.gomemlimit | quote }}
+          ports:
+            - name: health
+              containerPort: 13133
+            - name: metrics
+              containerPort: 8888
+          {{- with .Values.otelCollector.agent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: hostfs
+              mountPath: /hostfs
+              readOnly: true
+              # The node's mount table changes as pods come and go; without
+              # propagation the collector would see only the mounts that existed
+              # when it started.
+              mountPropagation: HostToContainer
+      volumes:
+        - name: config
+          configMap:
+            name: otel-agent-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: hostfs
+          hostPath:
+            path: /
+{{- end }}

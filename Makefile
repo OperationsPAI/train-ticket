@@ -2,7 +2,12 @@ SHELL := /usr/bin/env bash
 
 DEVCONTAINER_IMAGE ?= train-ticket-dev:local
 AGENT_ENV_IMAGE ?= train-ticket-agent-env:local
-OTEL_COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib:latest
+# Must match otelCollector.image.tag in deploy/helm/train-ticket/values.yaml.
+# Pinned rather than :latest so `make observability-validate` checks the config
+# against the version that actually runs -- the clickhouse exporter's schema has
+# changed across releases, so validating against a floating tag can pass for a
+# config the deployed collector rejects.
+OTEL_COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib:0.112.0
 OBSERVABILITY_COMPOSE ?= platform/observability/docker-compose.yaml
 
 # --- Deployment -------------------------------------------------------------

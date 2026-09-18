@@ -91,17 +91,32 @@ postgres:
     storageClass: juicefs-sc
 
 jaeger:
-  # Off. The trace store is the one component here that could not be made to
-  # run on this cluster: Jaeger's all-in-one replays and compacts its Badger
+  # Retired. The trace store was the one component here that could not be made
+  # to run on this cluster: Jaeger's all-in-one replays and compacts its Badger
   # WAL on start, and on a JuiceFS-backed 50Gi store that outlasts the chart's
   # startup window (36 x 5s = 180s) while the 3s liveness timeout is too tight
   # to survive it -- so it was repeatedly SIGKILLed mid-startup (67 restarts),
   # which left more WAL to replay next time. A downward spiral, not a transient.
-  # Nothing on the request path depends on it: services export OTLP to
-  # otel-collector, and the collector's traces pipeline drops the jaeger
-  # exporter when this is false, so there is no exporter left pointed at a
-  # Service that does not exist.
+  #
+  # Traces now go to ClickHouse, so this key is inert -- there is no Jaeger
+  # template left. Kept so the file still documents what happened here, and
+  # because the WAL-replay-on-a-network-filesystem failure applies to ANY
+  # store on this cluster: the ClickHouse volume below wants a storage class
+  # with local-disk semantics for the same reason.
   enabled: false
+
+# Telemetry store. On this cluster the storage class is the thing to get right:
+# the default (JuiceFS) is a network filesystem, and a store that replays a
+# write-ahead log on startup over it is what killed the previous trace store.
+clickhouse:
+  storage:
+    size: 50Gi
+    storageClass: ebs-ssd
+
+prometheus:
+  storage:
+    size: 20Gi
+    storageClass: ebs-ssd
 
 loadgen:
   replicas: 3

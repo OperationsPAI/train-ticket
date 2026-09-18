@@ -12,14 +12,78 @@ target:
   request_timeout_seconds: 10
 
 run:
-  mode: closed-loop           # or open-loop (paced by target_rps)
-  workers: 50                 # concurrent virtual customers (goroutines)
+  # open-loop, not closed-loop. A closed-loop pool cannot have an arrival
+  # "shape": its rate is whatever the cluster's response time allows, so the
+  # generator slows down exactly when the system struggles -- the opposite of
+  # what real users do. Open-loop offers load independently, which is what makes
+  # the arrival shaping below mean anything.
+  mode: open-loop
+  # Still used by the staff/ops/scalper drivers, which remain closed-loop.
+  # No longer the thing that sets customer request rate -- target_rps is.
+  workers: 50
   duration_seconds: 0         # 0 = run until stopped
   seed: null                  # set an int for reproducible randomness
-  think_time_seconds: { min: 0, max: 0 }        # zero think time for stress test
-  session_pause_seconds: { min: 0, max: 0 }     # zero pause between journeys
+  # Non-zero now. Zero think time is a saturation-test setting: it makes every
+  # virtual customer an infinitely fast robot, which flattens the load and
+  # removes the session structure real traffic has. Personas below override this
+  # per customer type; this is the fallback for a run with personas removed.
+  think_time_seconds: { min: 0.5, max: 3 }
+  session_pause_seconds: { min: 1, max: 5 }
   stats_interval_seconds: 30
   state_file: "/data/loadgen-state.json"  # entity registry; "" disables persistence
+
+  # Mean offered rate, in journeys per second, BEFORE the shaping below. Peak
+  # rate is this times arrival.diurnal.peak_multiplier, times a burst
+  # multiplier if one is active -- so provision for the product, not for this
+  # number alone.
+  #
+  # 20/s was chosen to land the peak near the previously measured throughput
+  # (~330 journeys/s across the old flat closed-loop profile was cluster
+  # saturation, not a target). The point of this profile is shape, not volume:
+  # a generator at saturation has no headroom to express a peak.
+  target_rps: 20
+
+  # Arrival shaping. Each shape is independent so a run can isolate one; see
+  # deploy/loadgen-go/arrival.go for what each exercises and why.
+  #
+  #   rate(t) = target_rps * diurnal(t) * burst(t)
+  #   gap     ~ Exponential(rate(t))
+  arrival:
+    # Exponential inter-arrival gaps. This is the shape that changes the
+    # CHARACTER of the load rather than its envelope: it takes the per-second
+    # coefficient of variation from ~0.13 (fixed-interval metronome, measured on
+    # this cluster) to ~1.0. Queues form from variance, not from mean load, so
+    # without this a run at 80% utilization produces almost no queueing and
+    # cannot exercise backpressure, retry storms or consumer lag.
+    poisson: true
+    # Ramp from 0 to full rate, so a restarted pod does not hit a cold cluster
+    # (empty caches, unwarmed pools) at full rate.
+    ramp_seconds: 60
+
+    # Slow peak/trough cycle. The period is deliberately ~30 minutes rather than
+    # a wall-clock day: a real 24h cycle looks flat across any window anyone
+    # actually watches, and the shape exists to be observed. Peak is 8x trough,
+    # which is a realistic weekday spread for a consumer booking system.
+    diurnal:
+      enabled: true
+      period_seconds: 1800
+      peak_multiplier: 4.0
+      trough_multiplier: 0.5
+      # Where in the cycle the run starts; 0 = trough. With >1 loadgen replica,
+      # set this per replica to keep them out of phase instead of all peaking
+      # together.
+      phase_offset: 0.0
+
+    # Short spikes: a ticket release, a push notification, a scalper script
+    # waking up. This is the shape most likely to find a real defect, because it
+    # moves queue depth faster than any autoscaler can react. Gaps between
+    # bursts are themselves exponential -- a predictable spike is one a system
+    # can absorb in ways it cannot absorb a surprising one.
+    burst:
+      enabled: true
+      mean_gap_seconds: 420
+      duration_seconds: { min: 20, max: 90 }
+      multiplier: { min: 3.0, max: 8.0 }
 
 # ---------------------------------------------------------------------------
 # Journey mix — relative weights of what a virtual customer does next.
@@ -234,26 +298,42 @@ recording:
 # differences come purely from probability values.  Omit this section (or
 # leave empty) for backward compat: the global behavior + journey_mix act
 # as a single implicit persona.
+#
+# ENABLED for realism. Without personas every virtual customer is statistically
+# identical, so the request MIX is as flat as the request RATE was: one abandon
+# probability, one think time, one journey distribution. Real populations are
+# mixtures, and the mixture is what produces a realistic spread of session
+# lengths and conversion rates.
+#
+# Note what this does and does not do: personas change WHO is requesting (mix,
+# think time, abandon rate), while run.arrival changes WHEN requests arrive.
+# Enabling personas alone would not have fixed the flat rate -- the two are
+# independent, and both are needed.
 # ---------------------------------------------------------------------------
-# personas:
-#   casual:
-#     weight: 60
-#     journey_weights: {browse: 40, purchase: 30, refund: 8, support: 4, loyalty: 5, insurance: 3}
-#     overrides:
-#       p_new_account: 0.35
-#       p_abandon_after_search: 0.30
-#       think_time: {min: 2, max: 8}
-#   business:
-#     weight: 25
-#     journey_weights: {purchase: 50, change: 15, corporate: 10, loyalty: 10}
-#     overrides:
-#       p_new_account: 0.10
-#       p_abandon_after_search: 0.05
-#       think_time: {min: 0.5, max: 2}
-#   power_user:
-#     weight: 15
-#     journey_weights: {purchase: 40, browse: 20, refund: 10, change: 10, fulfillment: 10, ride: 10}
-#     overrides:
-#       p_new_account: 0.05
-#       p_abandon_after_search: 0.0
-#       think_time: {min: 0.3, max: 1.5}
+personas:
+  # Majority browser: high abandon rate, long think time, rarely buys. This is
+  # what makes the read path dominate the write path, as it does in production.
+  casual:
+    weight: 60
+    journey_weights: {browse: 40, purchase: 30, refund: 8, support: 4, loyalty: 5, insurance: 3}
+    overrides:
+      p_new_account: 0.35
+      p_abandon_after_search: 0.30
+      think_time: {min: 2, max: 8}
+  # Buys with intent: short think time, low abandon, change-heavy.
+  business:
+    weight: 25
+    journey_weights: {purchase: 50, change: 15, corporate: 10, loyalty: 10}
+    overrides:
+      p_new_account: 0.10
+      p_abandon_after_search: 0.05
+      think_time: {min: 0.5, max: 2}
+  # Never abandons and exercises the widest set of journeys, including the
+  # post-purchase paths (fulfillment, ride) the other two rarely reach.
+  power_user:
+    weight: 15
+    journey_weights: {purchase: 40, browse: 20, refund: 10, change: 10, fulfillment: 10, ride: 10}
+    overrides:
+      p_new_account: 0.05
+      p_abandon_after_search: 0.0
+      think_time: {min: 0.3, max: 1.5}

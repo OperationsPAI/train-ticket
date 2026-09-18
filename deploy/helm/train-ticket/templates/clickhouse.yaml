@@ -1,0 +1,142 @@
+{{- if .Values.clickhouse.enabled }}
+{{- /*
+Durable telemetry store. Every signal the collectors ingest -- traces, logs and
+metrics -- is written here by the `clickhouse` exporter, and this is the only
+component in the chart that retains telemetry across a pod restart.
+
+Two deliberate departures from the reference stack this was ported from
+(aegis `docs/deployment/otel-pipeline.yaml`):
+
+  1. A StatefulSet with volumeClaimTemplates, not a volume-less one. The
+     reference deployment stores /var/lib/clickhouse on the container
+     filesystem, so every restart starts from an empty database. Durable
+     storage is the reason this component exists, so the volume is not
+     optional.
+  2. TZ=UTC. The upstream image bakes a non-UTC TZ, clickhouse-connect derives
+     `session_timezone` from the server, and the server then reinterprets
+     UTC-formatted literals in a WHERE clause as local time -- silently
+     returning zero rows for a window that does contain data. Pinning the
+     server to UTC makes the timestamps the collector writes and the timestamps
+     a query filters on the same clock.
+
+Retention is `clickhouse.ttl`, applied by the exporter as a TTL clause on the
+tables it creates (see the exporter block in templates/observability.yaml).
+Unlike the Badger store this replaced, the TTL lives in DDL: it is only applied
+to tables at CREATE time, so changing the value does not rewrite the TTL of
+tables that already exist.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  type: ClusterIP
+  ports:
+    - name: native
+      port: 9000
+      targetPort: native
+    - name: http
+      port: 8123
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: clickhouse
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clickhouse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clickhouse
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      securityContext:
+        # The image runs as uid/gid 101. fsGroup makes the mounted volume
+        # writable for it on provisioners that do not create the directory
+        # world-writable; OnRootMismatch keeps startup fast once the store has
+        # grown past a trivial size.
+        fsGroup: {{ .Values.clickhouse.fsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: clickhouse
+          image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" .Values.clickhouse.image.repository "tag" .Values.clickhouse.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: native
+              containerPort: 9000
+            - name: http
+              containerPort: 8123
+          env:
+            - name: CLICKHOUSE_USER
+              value: {{ .Values.clickhouse.auth.username | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              value: {{ .Values.clickhouse.auth.password | quote }}
+            - name: CLICKHOUSE_DB
+              value: {{ .Values.clickhouse.database | quote }}
+            # The exporter runs with create_schema: true, so its user must be
+            # able to CREATE TABLE and the materialized view that backs
+            # trace-id lookup.
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+            # See the header: a non-UTC server timezone silently drops rows
+            # from UTC-formatted query windows.
+            - name: TZ
+              value: UTC
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+          {{- with .Values.clickhouse.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            # ClickHouse replays and reattaches parts on start; on a store with
+            # hours of telemetry that outlasts a short liveness delay, so gate
+            # liveness behind this rather than racing it.
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.clickhouse.storage.storageClass }}
+        storageClassName: {{ .Values.clickhouse.storage.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.storage.size }}
+{{- end }}
