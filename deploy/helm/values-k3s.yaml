@@ -1,0 +1,79 @@
+# Values for the k3s cluster, two nodes of 72 cores and 251Gi each.
+#
+# Three differences from the kind profile, each forced by the cluster rather
+# than chosen:
+#
+#   1. IMAGES. k3s has no `kind load`, and the nodes accept no key this host
+#      holds, so a side-loaded image cannot reach them. The service images go
+#      through a registry both this host and the cluster can read
+#      (deploy/push-to-registry.sh), and `imagePullPolicy` is therefore Always
+#      rather than IfNotPresent: a moving `:local` tag is only picked up by a
+#      pull, and on a two-node cluster an unpulled node runs the other node's
+#      idea of the image. The third-party images stay on their own registries,
+#      which `infraRegistry: ""` -- explicitly empty, not absent -- preserves.
+#   2. STORAGECLASS is `local-path`, not kind's `standard`. Same provisioner,
+#      different name, and hostPath-backed either way: a PVC request is a
+#      declaration of intent and not a cap, so the ClickHouse TTL is the only
+#      real bound on how much disk telemetry uses.
+#   3. TWO NODES mean a pod and the PVC it wrote are not guaranteed to be on the
+#      same one. local-path binds WaitForFirstConsumer, so a volume follows its
+#      first consumer and the pod is then pinned to that node -- which is what
+#      the stateful components want and what the loadgen must not have, so
+#      nothing here pins anything by hand.
+#
+# Resource limits are the kind profile's, deliberately. They were measured on
+# the shaped open-loop profile and the constraints they encode -- a Postgres
+# pool of 500 connections, a 12-core store, a 60-connection pool at
+# offer-management -- are properties of the workload, not of the host. What the
+# larger host buys is concurrent namespaces, not a fatter single release.
+
+global:
+  imageRegistry: mirrors.tencent.com
+  imageOrg: microservice
+  imageTag: local
+  imagePullPolicy: Always
+  # Explicitly empty: the third-party images are pulled from docker.io, quay.io
+  # and registry.k8s.io as the chart names them. Read with hasKey rather than
+  # `| default`, so an empty string means "leave them alone" instead of falling
+  # back to imageRegistry and rendering a path that does not exist.
+  infraRegistry: ""
+
+postgres:
+  storage:
+    storageClass: local-path
+  instances:
+    core:
+      # 500 connections is the sizing constraint, not an aspiration: a rolling
+      # restart holds old and new pods' pools concurrently, so the steady-state
+      # count roughly doubles for the duration.
+      maxConnections: 500
+      sharedBuffers: 1GB
+      workMem: 8MB
+      # Measured under the shaped profile: p50 4.596 cores, p95 7.811 and peak
+      # 8.003 against an 8-core limit, with a peak working set of 7482 MiB
+      # against 8Gi -- 91% of the cgroup bound. Persistent load rather than a
+      # burst, and the one scope where a ceiling contaminates every measurement
+      # at once, because it is the store every service shares.
+      resources:
+        requests: { cpu: 500m, memory: 2Gi }
+        limits: { cpu: '12', memory: 12Gi }
+
+redis:
+  maxmemory: 3gb
+  maxmemoryPolicy: noeviction
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }
+    limits: { cpu: '2', memory: 4Gi }
+
+jaeger:
+  enabled: false
+  storage:
+    storageClass: local-path
+
+clickhouse:
+  storage:
+    storageClass: local-path
+
+prometheus:
+  storage:
+    storageClass: local-path
