@@ -46,6 +46,12 @@ ROLLOUT_TIMEOUT ?= 300s
 KUBECTL := kubectl $(if $(KCTX),--context $(KCTX),)
 KUBENS := $(KUBECTL) -n $(NAMESPACE)
 
+# The workloads a rebuild changed, as an alternation for grep. A directory in
+# deploy/docker with a Dockerfile in it is a thing this repository builds, and
+# nothing else is -- so this is the same derivation deploy/build-images.sh makes,
+# read from the same place, and it cannot drift from what was actually built.
+ROLLABLE := $(shell ls deploy/docker | tr '\n' '|' | sed 's/|$$//')
+
 .PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
 .PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke push-images deploy-acr deploy-acr-apply
 
@@ -187,13 +193,19 @@ else
 	@# restarts deployments that are already unready, and after a successful
 	@# rebuild they are all healthy. Without this step `make deploy` builds 39
 	@# images and deploys none of them, which is exactly what happened on the
-	@# first real run of this pipeline. Infrastructure is excluded: it runs
-	@# upstream images that a rebuild never touches, and bouncing postgres here
-	@# would restart the shard the bootstrap hook just seeded.
+	@# first real run of this pipeline.
+	@#
+	@# Which to roll is DERIVED: a workload built from a Dockerfile in
+	@# deploy/docker is one a rebuild changed, and everything else runs an
+	@# upstream image a rebuild never touched. It used to be a list of
+	@# infrastructure names to skip, which drifts in the direction that hurts --
+	@# `jaeger` stayed in it after the template was deleted while `clickhouse`,
+	@# `prometheus` and `otel-cluster` were never added, so a roll restarted the
+	@# telemetry store and cut the window it was recording.
 	$(KUBENS) rollout restart $$($(KUBENS) get deploy -o name \
-	  | grep -vE 'postgres|redis|jaeger|mailpit|otel-collector')
+	  | grep -E "/($(ROLLABLE))$$")
 	$(KUBENS) rollout status --timeout=$(ROLLOUT_TIMEOUT) $$($(KUBENS) get deploy -o name \
-	  | grep -vE 'postgres|redis|jaeger|mailpit|otel-collector') || true
+	  | grep -E "/($(ROLLABLE))$$") || true
 endif
 
 deploy-services: deploy-roll
