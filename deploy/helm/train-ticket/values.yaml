@@ -213,6 +213,15 @@ otelCollector:
       excludeNamespaces:
         - kube-system
         - local-path-storage
+      # Collect only this release's own namespace. Off by default: one release
+      # on a node wants the whole node, which is the operator's view of it.
+      #
+      # Turn it on where several releases share a node, as concurrent fault
+      # cases do. Each agent is a DaemonSet, so N releases put N agents on
+      # every node and each one tails every pod: measured with two up, each
+      # store held 363751 of 1581766 log rows from the OTHER namespace over
+      # five minutes, and both agents sat at 100% of their 1-core limit.
+      ownNamespaceOnly: false
     kubeletstats:
       collectionInterval: 15s
     hostmetrics:
