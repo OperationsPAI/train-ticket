@@ -324,6 +324,37 @@ the penalty base is the order fare or fare-pricing's fee-adjusted refundable. Th
 two sources disagree by exactly the managed fee, and only one of them can be
 authoritative -- which is why this is recorded rather than picked.
 
+### A fourth layer, under load: the quote never arrives at all
+
+**Status:** CLOSED
+
+The layer above assumes post-sales receives a quote and discards the fee. Under the
+shaped open-loop profile it often received nothing, and the reason was not visible
+from the assertion: `FarePricingAdjustmentQuoteClient` catches every
+`RuntimeException`, logs a warning, and returns `Optional.empty()`, which the caller
+reads as "no managed rules apply" rather than as a failed call. The refund is then
+priced off the raw order fare — the same wrong number as the layer above, arrived at
+a different way, and reported as success.
+
+Measured: 12 occurrences in 8 minutes, each an `RestClientException` on `content type
+[application/octet-stream]` — Spring's default when a response carries no
+`Content-Type`, i.e. no response body at all. fare-pricing answers every path with
+`application/json`, so this was the 10s read timeout on the client firing. Its p99 at
+the time was 6961 ms on a burst minute carrying 9676 requests against 1696 the minute
+before, while its CPU limit utilization was only 0.71: not CPU, but its Postgres pool
+at the kit's default of 10 connections per uvicorn worker with a 40-thread executor in
+front of it.
+
+`PG_MAX_POOL_SIZE: "25"` on fare-pricing and identity-verification (16480 spans and a
+3068 ms p99 in the same burst) took both to a p99 under 350 ms and the warning count
+to zero.
+
+This is worth recording beyond the fix: it is a `masks` mechanism in the sense the
+fault-injection work uses, and the most instructive one in the repository. A capacity
+problem in one service became a silently wrong money amount in another, with a success
+response at the client and nothing in post-sales' own telemetry to say a call had
+failed.
+
 ## P5 — post-sales case applied but order not adjusted
 
 **Status:** OPEN
