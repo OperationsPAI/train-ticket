@@ -119,8 +119,17 @@ MergeTree, so replicas would silently keep independent data. Both belong
 together, and only on a multi-replica store; this chart runs one ClickHouse pod.
 */}}
 {{- define "train-ticket.clickhouseExporter" -}}
+{{- $host := .Values.clickhouse.host | default "clickhouse" -}}
 clickhouse:
-  endpoint: tcp://clickhouse:9000?dial_timeout=10s&compress=lz4&username={{ .Values.clickhouse.auth.username }}&password={{ .Values.clickhouse.auth.password }}
+  # `clickhouse.host` names where the signals go. Unset it and they go to this
+  # release's own store, which is what a single deployment wants.
+  #
+  # Point it at a store outside the release -- `clickhouse.telemetry.svc` --
+  # when the release is disposable and the data is not. A fault case's
+  # namespace is deleted when the case is over, and an in-namespace store goes
+  # with it: the PVC is in the namespace, so the window that was just measured
+  # is gone before anybody reads it.
+  endpoint: tcp://{{ $host }}:9000?dial_timeout=10s&compress=lz4&username={{ .Values.clickhouse.auth.username }}&password={{ .Values.clickhouse.auth.password }}
   database: {{ .Values.clickhouse.database | quote }}
   # The exporter owns its schema: it issues CREATE TABLE IF NOT EXISTS on
   # startup for each signal it handles, plus the otel_traces_trace_id_ts

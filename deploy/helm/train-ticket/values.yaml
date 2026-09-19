@@ -139,6 +139,16 @@ redis:
 # docs/07-observability/README.md for the retention and capacity arithmetic.
 clickhouse:
   enabled: true
+  # Where the collectors send. Empty means this release's own store, which is
+  # the right answer for a deployment that outlives its data.
+  #
+  # Set it to a store outside the release -- `clickhouse.telemetry.svc.cluster.local`
+  # -- when the release is disposable and the data is not, and set
+  # `enabled: false` alongside so the release does not run a store nothing
+  # writes to. A fault case is exactly that: its namespace is deleted when the
+  # case is over, and the PVC is in the namespace, so an in-namespace store
+  # takes the measured window with it.
+  host: ""
   image:
     repository: clickhouse/clickhouse-server
     tag: "24.8-alpine"
