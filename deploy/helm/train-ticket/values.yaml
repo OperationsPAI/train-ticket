@@ -108,9 +108,19 @@ postgres:
       # of this limit: the working set that fills the ceiling is connection-local
       # (500 clients x 8MB work_mem), and raising the shared cache would take
       # memory from exactly the thing that needed it.
+      #
+      # 32 cores, because 12 was binding for an entire hour: 87-100% of the
+      # limit continuously, never dipping with the envelope's trough, while
+      # 7633 of 485732 client requests failed in transport at exactly the
+      # loadgen's 10s timeout. The peak that sized 12 was 8.003 cores, measured
+      # within one phase of the cycle rather than across it. Lifted, it went
+      # straight to 13.7 -- above the old cap, so it had been clipped all along.
+      #
+      # This is the one pod whose demand is the whole system's demand, and the
+      # one scope where a ceiling contaminates every measurement at once.
       resources:
-        requests: { cpu: 500m, memory: 2Gi }
-        limits: { cpu: '12', memory: 12Gi }
+        requests: { cpu: '1', memory: 4Gi }
+        limits: { cpu: '32', memory: 24Gi }
 
 redis:
   enabled: true
@@ -431,9 +441,14 @@ defaults:
   # Requests stay small on purpose. They are what the scheduler packs against,
   # and 45 pods x 250m would reserve a third of the node for services that are
   # idle most of the time. Limits are the ceiling; requests are the floor.
+  #
+  # 6 rather than 2, for the same reason and one measurement later: over a full
+  # envelope risk-compliance sat at 96.3% of the 2-core default, and it declares
+  # no resources of its own. Every inheriting service gets the headroom, which
+  # costs nothing -- the binding number is the request, and that is unchanged.
   resources:
     requests: { cpu: 100m, memory: 256Mi }
-    limits: { cpu: '2', memory: 2Gi }
+    limits: { cpu: '6', memory: 3Gi }
   probes:
     # A startupProbe on /healthz holds liveness off during a slow start, so
     # liveness can stay on /healthz (process liveness) instead of being pointed
@@ -470,9 +485,12 @@ services:
       PG_MAX_POOL_SIZE: "25"
     # Same shape as identity-verification: p50 0.457 of a core, p95 1.915 and
     # peak 2.0 against the shared 2-core default, so the bursts are clipped.
+    #
+    # 8 rather than 4: peaked at 3.47 of 4 over a full envelope, which is one
+    # envelope away from clipping and therefore one away from meaning nothing.
     resources:
       requests: { cpu: 250m, memory: 1Gi }
-      limits: { cpu: '4', memory: 4Gi }
+      limits: { cpu: '8', memory: 6Gi }
   trip-planning:
     db: trip_planning
     env:
@@ -578,9 +596,14 @@ services:
     # caller on the purchase funnel waits through. Raised here rather than in
     # `defaults.resources` because 21 services inherit that block and the other
     # 19 are nowhere near it.
+    #
+    # 12 rather than 4: measured over a full envelope, this pod sat at 99.7% of
+    # a 4-core limit at every peak, and a peak that equals the limit says
+    # nothing about demand. The ceiling is lifted clear so the next measurement
+    # reports what the service wants.
     resources:
       requests: { cpu: 250m, memory: 1Gi }
-      limits: { cpu: '4', memory: 4Gi }
+      limits: { cpu: '12', memory: 6Gi }
   payment:
     db: payment
     env:
@@ -653,9 +676,12 @@ services:
   traveler-profile:
     db: traveler_profile
     # JVM event consumer -- see the note on defaults.resources.
+    #
+    # 4 cores: measured at 96.3% of a 500m limit over a full envelope, so the
+    # reading was the ceiling rather than the demand.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: 500m, memory: 2Gi }
+      limits: { cpu: '4', memory: 2Gi }
   risk-compliance:
     db: risk_compliance
   corporate-travel:
@@ -825,11 +851,15 @@ services:
     # service whose own work is trivial. Memory stays at 512Mi -- peak working
     # set is well under it, so only the CPU ceiling was binding, and GOMEMLIMIT
     # therefore does not move.
+    #
+    # 4 cores and 2Gi: over a full envelope it peaked at 0.97 of a 1-core
+    # limit, which is the limit and therefore not a measurement. GOMEMLIMIT
+    # moves with the memory ceiling, as the note above requires.
     env:
-      GOMEMLIMIT: "435MiB"
+      GOMEMLIMIT: "1740MiB"
     resources:
       requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: '1', memory: 512Mi }
+      limits: { cpu: '4', memory: 2Gi }
 
 # -- Per-service overrides ---------------------------------------------------
 # Example:

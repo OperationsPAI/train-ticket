@@ -21,28 +21,13 @@
 #      the stateful components want and what the loadgen must not have, so
 #      nothing here pins anything by hand.
 #
-# Resource limits are the kind profile's where the workload decides them and
-# LARGER where the host did. The distinction is what one measurement settled:
-# a Postgres pool of 500 connections and a 60-connection pool at
-# offer-management are properties of the workload; a 12-core cap on the store
-# was what fitted beside 38 services on one 32-core node.
+# NO RESOURCE LIMITS HERE, deliberately. They are all in the chart's own
+# values.yaml, including the ones this host's measurements moved.
 #
-# Measured over a full hour on this cluster -- which is to say across the
-# arrival process's 30-minute envelope, peak 4x trough, rather than within one
-# phase of it -- postgres-core sat at 87-100% of that 12-core limit the WHOLE
-# time, and identity-verification hit 99.7% at every peak. 7633 of 485732
-# client requests then failed in transport, all of them at 10s exactly, which
-# is the loadgen's own request timeout.
-#
-# That is the same failure the 2026-09-17 repair addressed, found again because
-# the earlier measurement never spanned a peak. It is also the one scope where
-# a ceiling contaminates every measurement at once: postgres-core is the store
-# every service shares, so a case measured against it is measured against a
-# saturated store.
-#
-# The nodes have the room: 4-5% of CPU requests allocated on two 72-core
-# machines, limits at 67-70%. So the store gets what it demands and the two
-# services that pinned their own limits get headroom.
+# A limit set here would shadow the chart for every service, and a site's locus
+# points into the chart: a case that lowers `identity-verification.cpu` there
+# would render, deploy, and be silently overridden by this file. The deployed
+# value and the injectable value have to be the same line.
 
 global:
   imageRegistry: mirrors.tencent.com
@@ -58,64 +43,6 @@ global:
 postgres:
   storage:
     storageClass: local-path
-  instances:
-    core:
-      # 500 connections is the sizing constraint, not an aspiration: a rolling
-      # restart holds old and new pods' pools concurrently, so the steady-state
-      # count roughly doubles for the duration.
-      maxConnections: 500
-      sharedBuffers: 1GB
-      workMem: 8MB
-      # 32 cores, because 12 was measured to be binding for an entire hour on
-      # this host: 87-100% of the limit continuously, never dipping with the
-      # envelope's trough. The peak that sized 12 was 8.003 cores, taken
-      # within one phase of the cycle rather than across it.
-      #
-      # The request stays small on purpose. This is the one pod whose demand is
-      # the whole system's demand, so what it needs is the absence of a
-      # ceiling, not a reservation that keeps another release off the node.
-      resources:
-        requests: { cpu: '1', memory: 4Gi }
-        limits: { cpu: '32', memory: 24Gi }
-
-# The services that pinned their own limit over the measured hour. Each peak
-# below is the LIMIT, not the demand: a clipped measurement cannot say what the
-# service wanted, so these are raised to where the next measurement can.
-#
-#   identity-verification  3.99 of 4   99.7% at every envelope peak
-#   risk-compliance        1.93 of 2   inherits defaults, so raised there
-#   travel-insurance       0.97 of 1
-#   traveler-profile       96.3% of 500m
-#   fare-pricing           3.47 of 4   not yet clipped, one envelope away
-#
-# Nothing here is a guess at the right number. They are ceilings lifted clear
-# of the workload so the next full-envelope window reports demand rather than
-# the cap, which is the only reading a case can be calibrated against.
-services:
-  identity-verification:
-    resources:
-      requests: { cpu: 200m, memory: 512Mi }
-      limits: { cpu: '12', memory: 6Gi }
-  fare-pricing:
-    resources:
-      requests: { cpu: 200m, memory: 512Mi }
-      limits: { cpu: '8', memory: 6Gi }
-  travel-insurance:
-    resources:
-      requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '4', memory: 2Gi }
-  traveler-profile:
-    resources:
-      requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '4', memory: 2Gi }
-
-defaults:
-  # risk-compliance sat at 96.3% of the 2-core default and declares no
-  # resources of its own, so the default is where it has to be raised. Every
-  # inheriting service gets the same headroom, which on a 72-core node costs
-  # nothing: the binding number is the request, and that is unchanged.
-  resources:
-    limits: { cpu: '6', memory: 3Gi }
 
 redis:
   maxmemory: 3gb
