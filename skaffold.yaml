@@ -180,7 +180,7 @@ build:
 # rewrite: there is no separate set of prod manifests to apply.
 #
 # NOTE: the artifact list above is exactly the chart's rendered image set (39
-# images, `opspai/<name>` here vs `train-ticket/<name>` under values-kind.yaml),
+# images, `opspai/<name>` here vs `train-ticket/<name>` locally built),
 # so nothing here builds an image no deployment consumes. The one leftover is on
 # the other side: deploy/docker/trip-planning-rs/Dockerfile is byte-identical to
 # deploy/docker/trip-planning/Dockerfile (both compile the Rust crate

@@ -7,8 +7,13 @@ Redis Streams and PostgreSQL in a local kind cluster for 联调.
 
 Helm is the only deployment path. The kustomize overlay that used to live under
 `deploy/` has been retired and deleted; the chart is
-`deploy/helm/train-ticket`, and `deploy/helm/values-kind.yaml` carries the
-local-cluster values.
+`deploy/helm/train-ticket`, and `deploy/helm/values-cluster.yaml` carries what
+the cluster decides -- the registry the images come from, and its StorageClass.
+
+Nothing the WORKLOAD decides is in a profile: resource limits, pool sizes and
+retention are all in the chart's own `values.yaml`. That is not tidiness. A
+fault case edits a line in the chart, so a profile that also set that line
+would silently shadow the change and the case would deploy doing nothing.
 
 ## Prerequisites
 
@@ -33,7 +38,7 @@ change. In order, it:
    references in the *rendered* release (`deploy/render-manifests.sh`), so it
    cannot drift from what the cluster pulls.
 2. **Installs or upgrades the release** — `helm upgrade --install train-ticket
-   deploy/helm/train-ticket -f deploy/helm/values-kind.yaml --namespace
+   deploy/helm/train-ticket -f deploy/helm/values-cluster.yaml --namespace
    train-ticket --create-namespace --wait`. One command replaces what used to be
    a `kubectl apply -k` of the kustomize overlay followed by three separate
    wait/bootstrap stages: helm applies, rolls the Deployments whose spec or
@@ -55,7 +60,7 @@ The equivalent by hand, if you want only the install step:
 
 ```bash
 helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-kind.yaml \
+  -f deploy/helm/values-cluster.yaml \
   --namespace train-ticket --create-namespace --wait
 ```
 
@@ -69,7 +74,7 @@ helm upgrade --install train-ticket deploy/helm/train-ticket \
 | `NAMESPACE` | `train-ticket` | Target namespace (the release namespace). |
 | `HELM_RELEASE` | `train-ticket` | Release name. |
 | `HELM_CHART` | `deploy/helm/train-ticket` | Chart directory. |
-| `HELM_VALUES` | `deploy/helm/values-kind.yaml` | Values file(s), whitespace-separated and layered in helm's own `-f` order. |
+| `HELM_VALUES` | `deploy/helm/values-cluster.yaml` | Values file(s), whitespace-separated and layered in helm's own `-f` order. |
 | `LOCAL_TAG` | `$(IMAGE_TAG)` | Tag the images were *built* with. Differs from `IMAGE_TAG` only when pushing an existing build under a new deployed tag. |
 | `HELM_TIMEOUT` | `15m` | `helm --timeout`. |
 | `ROLLOUT_TIMEOUT` | `300s` | Per-wait timeout for the kubectl rollout steps. |

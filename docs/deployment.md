@@ -23,9 +23,9 @@ DOCKER_BUILDKIT=1 skaffold build --tag latest
 helm upgrade --install train-ticket deploy/helm/train-ticket \
   --namespace train-ticket --create-namespace --wait
 
-# 本地 kind 集群（本地构建的 :local 镜像 + kind 的 standard StorageClass）
+# 开发集群（镜像走 registry + local-path StorageClass）
 helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-kind.yaml \
+  -f deploy/helm/values-cluster.yaml \
   --namespace train-ticket --create-namespace --wait
 
 # 生产环境（6 PG 分片，充足资源，镜像走代理）
@@ -184,7 +184,7 @@ postgres-core  ← 其余 17 个库                                       (轻�
 ExternalName 别名，**没有任何 Pod**——所以 `kubectl exec deploy/postgres` 不再可用，
 要连数据库请用具体分片，例如 `kubectl exec deploy/postgres-core`。
 
-kind 单机 profile（`values-kind.yaml`）只有一个 `core` 分片，38 个库全在里面。
+开发集群 profile（`values-cluster.yaml`）只有一个 `core` 分片，38 个库全在里面。
 
 在 `values-prod.yaml` 中通过 `pgInstance` 字段配置每个服务的 PG 路由：
 

@@ -81,7 +81,7 @@ context, consistent with every other service) by `deploy/build-images.sh`:
 ```bash
 deploy/build-images.sh          # builds + kind-loads train-ticket/loadgen:local
 helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-kind.yaml --namespace train-ticket --wait
+  -f deploy/helm/values-cluster.yaml --namespace train-ticket --wait
 ```
 
 Or `make deploy` for the whole pipeline, `make deploy-fast` to skip the rebuild.

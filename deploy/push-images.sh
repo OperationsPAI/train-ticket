@@ -20,9 +20,10 @@ set -euo pipefail
 # derives its list: a hand-written one drifts, and the failure mode is a silent
 # ImagePullBackOff on an otherwise clean run.
 #
-# The CANONICAL render (values-kind.yaml) is the source of truth for *what
-# images exist*, and it is the right render to ask because that profile names
-# both kinds of image the way they come from upstream:
+# The CANONICAL render is the source of truth for *what images exist*. It is
+# the same chart rendered under the LOCAL naming -- no registry, no shared
+# repository, `imageOrg` as build-images.sh tags them -- so it names both kinds
+# of image the way they come from upstream:
 #
 #   - services, as `train-ticket/<name>:<tag>` -- the naming build-images.sh
 #     keys on. Grepping the target render for the same thing would match nothing
@@ -30,6 +31,11 @@ set -euo pipefail
 #     be the only thing between that and a green run that pushed nothing.
 #   - infra images, as their upstream references (`postgres:16-alpine`,
 #     `jaegertracing/all-in-one:1.57`) -- i.e. every other image in the render.
+#
+# That naming is a convention, not a deployment, so it is three `--set`s rather
+# than a values file. It used to be a second profile that happened to spell it,
+# and joining an inventory to whichever file happens to say `train-ticket/` is
+# how the two drift apart.
 #
 # The TARGET render (HELM_VALUES) is the source of truth for *what each image's
 # full reference is*, which is the whole point: the registry, the repository
@@ -67,15 +73,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 LOCAL_TAG="${LOCAL_TAG:-${IMAGE_TAG:-local}}"
 IMAGE_TAG="${IMAGE_TAG:-$LOCAL_TAG}"
-HELM_VALUES="${HELM_VALUES:-${ROOT_DIR}/deploy/helm/values-kind.yaml}"
-CANONICAL_VALUES="${CANONICAL_VALUES:-${ROOT_DIR}/deploy/helm/values-kind.yaml}"
+HELM_VALUES="${HELM_VALUES:-${ROOT_DIR}/deploy/helm/values-cluster.yaml}"
+# The canonical render names the images the way they exist LOCALLY, which is
+# how build-images.sh tags them. That is a naming convention, not a profile, so
+# it is set here rather than read from a values file -- there used to be a
+# second profile that happened to carry it, and joining an inventory to
+# whichever file happened to spell `train-ticket/` is how the two drift.
+CANONICAL_ORG="${CANONICAL_ORG:-train-ticket}"
 NAMESPACE="${NAMESPACE:-train-ticket}"
 DRY_RUN="${DRY_RUN:-0}"
 
 command -v docker >/dev/null 2>&1 || { echo "push-images: docker is not installed" >&2; exit 2; }
 
 render() {
-  HELM_VALUES="$1" IMAGE_TAG="$IMAGE_TAG" \
+  HELM_VALUES="$HELM_VALUES" IMAGE_TAG="$IMAGE_TAG" HELM_SET="${1:-}" \
     "${ROOT_DIR}/deploy/render-manifests.sh"
 }
 
@@ -84,8 +95,9 @@ CANONICAL_RENDER="$(mktemp)"
 TARGET_RENDER="$(mktemp)"
 trap 'rm -f "$CANONICAL_RENDER" "$TARGET_RENDER"' EXIT
 
-render "$CANONICAL_VALUES" >"$CANONICAL_RENDER"
-render "$HELM_VALUES" >"$TARGET_RENDER"
+render "global.imageRegistry= global.imageOrg=${CANONICAL_ORG} global.imageRepo=" \
+  >"$CANONICAL_RENDER"
+render >"$TARGET_RENDER"
 
 # Every image reference in a rendered manifest, anchored to `image:` lines.
 #
@@ -99,15 +111,16 @@ image_refs() {
 
 mapfile -t services < <(
   image_refs "$CANONICAL_RENDER" \
-    | grep -E '^train-ticket/' \
-    | sed -E 's|^train-ticket/([A-Za-z0-9._-]+):.*|\1|' \
+    | grep -E "^${CANONICAL_ORG}/" \
+    | sed -E "s|^${CANONICAL_ORG}/([A-Za-z0-9._-]+):.*|\1|" \
     | LC_ALL=C sort -u
 )
 
 if [[ "${#services[@]}" -eq 0 ]]; then
   echo "ERROR: derived 0 services from the canonical render." >&2
-  echo "       Check that deploy/render-manifests.sh succeeds with HELM_VALUES=${CANONICAL_VALUES}:" >&2
-  echo "         HELM_VALUES=${CANONICAL_VALUES} deploy/render-manifests.sh | head" >&2
+  echo "       Check that deploy/render-manifests.sh succeeds under the local naming:" >&2
+  echo "         HELM_SET='global.imageRegistry= global.imageOrg=${CANONICAL_ORG} global.imageRepo=' \\" >&2
+  echo "           deploy/render-manifests.sh | head" >&2
   exit 1
 fi
 

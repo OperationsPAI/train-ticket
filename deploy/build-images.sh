@@ -18,10 +18,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # template contains `{{ include "train-ticket.image" ... }}`, so a grep over the
 # template sources matches nothing and the guard below would be all that stands
 # between that and a build of zero images.
+# Rendered under the LOCAL naming, which is how this script tags what it
+# builds: no registry, no shared repository. The deployed profile names them
+# for wherever they are pushed, and a grep for `train-ticket/` against that
+# render matches nothing.
+LOCAL_ORG="${LOCAL_ORG:-train-ticket}"
 mapfile -t services < <(
-  IMAGE_TAG="$TAG" "${ROOT_DIR}/deploy/render-manifests.sh" \
-    | grep -ohE 'image:[[:space:]]*train-ticket/[A-Za-z0-9._-]+:' \
-    | sed -E 's|.*train-ticket/([A-Za-z0-9._-]+):.*|\1|' \
+  IMAGE_TAG="$TAG" \
+  HELM_SET="global.imageRegistry= global.imageOrg=${LOCAL_ORG} global.imageRepo=" \
+    "${ROOT_DIR}/deploy/render-manifests.sh" \
+    | grep -ohE "image:[[:space:]]*${LOCAL_ORG}/[A-Za-z0-9._-]+:" \
+    | sed -E "s|.*${LOCAL_ORG}/([A-Za-z0-9._-]+):.*|\1|" \
     | LC_ALL=C sort -u
 )
 

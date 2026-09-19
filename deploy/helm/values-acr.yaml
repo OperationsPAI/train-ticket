@@ -127,7 +127,7 @@ mailpit:
   # OOMKilled (exit 137) within 90 seconds of first start, twice, while its logs
   # showed nothing but a clean startup. Go sizes its heap against the machine it
   # runs on, and a limit picked for a kind node is not a limit that transfers to
-  # a 128-core node. This is the same lesson values-kind.yaml records for Redis
+  # a 128-core node. This is the same lesson the chart records for Redis
   # (x3 at 256Mi), Postgres (x2 at 512Mi) and Jaeger (x13 at 256Mi): headroom is
   # cheaper than another OOMKill.
   resources:

@@ -28,7 +28,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RELEASE="${HELM_RELEASE:-train-ticket}"
 CHART="${HELM_CHART:-${ROOT_DIR}/deploy/helm/train-ticket}"
-VALUES="${HELM_VALUES:-${ROOT_DIR}/deploy/helm/values-kind.yaml}"
+VALUES="${HELM_VALUES:-${ROOT_DIR}/deploy/helm/values-cluster.yaml}"
 NS="${NAMESPACE:-train-ticket}"
 
 command -v helm >/dev/null 2>&1 || {
@@ -58,5 +58,11 @@ done
 if [ -n "${IMAGE_TAG:-}" ]; then
   set -- "$@" --set "global.imageTag=${IMAGE_TAG}"
 fi
+# HELM_SET is a whitespace-separated list of key=value, for a caller that needs
+# one value changed rather than a whole profile. push-images.sh renders the
+# image inventory under the LOCAL naming that way.
+for pair in ${HELM_SET:-}; do
+  set -- "$@" --set "$pair"
+done
 
 exec helm template "$@"

@@ -1,0 +1,55 @@
+# The cluster profile: two k3s nodes of 72 cores and 251Gi each.
+#
+# The only one. There used to be a second for kind, and the two agreed on
+# everything except four lines while duplicating everything else -- including a
+# Postgres limit that had drifted apart from the chart's and silently shadowed
+# it. One profile cannot disagree with itself.
+#
+# WHAT IS HERE is what the CLUSTER decides, and nothing else:
+#
+#   IMAGES. This cluster has no side-loading path -- the nodes accept no key
+#   this host holds -- so the service images go through a registry both can
+#   read (deploy/push-to-registry.sh). `imagePullPolicy` is Always because a
+#   moving `:local` tag is only picked up by a pull, and on two nodes an
+#   unpulled node runs the other node's idea of the image. The third-party
+#   images stay on their own registries, which `infraRegistry: ""` -- explicitly
+#   empty, not absent -- preserves.
+#
+#   STORAGECLASS. `local-path` is what this cluster's provisioner is called.
+#   It is hostPath-backed, so a PVC request is a declaration of intent and not
+#   a cap: the ClickHouse TTL is the only real bound on how much disk telemetry
+#   uses. It also binds WaitForFirstConsumer, so a volume follows its first
+#   consumer and pins that pod to a node -- what the stateful components want,
+#   and why nothing here pins anything by hand.
+#
+# WHAT IS NOT HERE is everything the WORKLOAD decides: resource limits, pool
+# sizes, Redis memory, retention. Those are in the chart's own values.yaml,
+# including the ones this host's measurements moved.
+#
+# That split is not tidiness. A site's locus points into the chart, so a value
+# set here shadows the line a case would edit: a case lowering
+# `identity-verification.cpu` would render, deploy, and be silently overridden.
+# The deployed value and the injectable value have to be the same line.
+
+global:
+  imageRegistry: mirrors.tencent.com
+  imageOrg: microservice
+  imageTag: local
+  imagePullPolicy: Always
+  infraRegistry: ""
+
+postgres:
+  storage:
+    storageClass: local-path
+
+clickhouse:
+  storage:
+    storageClass: local-path
+
+prometheus:
+  storage:
+    storageClass: local-path
+
+jaeger:
+  storage:
+    storageClass: local-path

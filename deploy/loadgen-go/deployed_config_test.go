@@ -264,7 +264,7 @@ func TestDeployedRecordingLandsOnThePersistentVolume(t *testing.T) {
 	}
 	const chartDir = "../helm/train-ticket"
 	render := exec.Command("helm", "template", "loadgen-crosscheck", chartDir,
-		"-f", "../helm/values-kind.yaml", "--namespace", "train-ticket")
+		"-f", "../helm/values-cluster.yaml", "--namespace", "train-ticket")
 	var stderr bytes.Buffer
 	render.Stderr = &stderr
 	data, err := render.Output()

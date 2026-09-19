@@ -27,7 +27,7 @@ NS="${NAMESPACE:-train-ticket}"
 KCTX="${KCTX:-$(kubectl config current-context 2>/dev/null || echo '')}"
 RELEASE="${HELM_RELEASE:-train-ticket}"
 CHART="${HELM_CHART:-${ROOT_DIR}/deploy/helm/train-ticket}"
-VALUES="${HELM_VALUES:-${ROOT_DIR}/deploy/helm/values-kind.yaml}"
+VALUES="${HELM_VALUES:-${ROOT_DIR}/deploy/helm/values-cluster.yaml}"
 
 k() {
   if [ -n "$KCTX" ]; then

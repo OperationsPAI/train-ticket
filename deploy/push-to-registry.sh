@@ -18,7 +18,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 mapfile -t services < <(
   helm template tt "${ROOT_DIR}/deploy/helm/train-ticket" \
-      -f "${ROOT_DIR}/deploy/helm/values-kind.yaml" \
+      -f "${ROOT_DIR}/deploy/helm/values-cluster.yaml" \
       --set "global.imageRegistry=${REGISTRY}" \
       --set "global.imageOrg=${ORG}" \
       --set global.infraRegistry= \
