@@ -39,7 +39,7 @@ spec:
               echo "infra ready — loadgen will retry service connections internally"
       containers:
         - name: loadgen
-          image: {{ include "train-ticket.image" (dict "global" .Values.global "name" "loadgen") }}
+          image: {{ include "train-ticket.image" (dict "global" .Values.global "name" "loadgen" "image" .Values.loadgen.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           env:
             # Required: the image bakes in no config, so this must point at the
