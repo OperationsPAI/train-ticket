@@ -1,7 +1,18 @@
 {{/*
 Service image path: registry/org/name:tag
 
-Two repository layouts are supported, selected by `global.imageRepo`:
+An `image` passed by the caller wins outright and is used as written. That is
+the entry point a builder needs: `global.imageTag` is one value for all 39
+services, so naming ONE service's image is impossible through it -- raising the
+tag moves every workload. Both workarounds in the repository exist for that
+reason, `make deploy-roll` restarting all 39 after a rebuild and cgfs-runner
+reaching past Helm with `kubectl set image`. A content-addressed build (skaffold
+tags by input digest) writes one of these per service, so only the services
+whose content changed get a new pod spec, and Helm rolls exactly those.
+
+Absent -- which is every path that does not set it -- the composition below is
+unchanged, and two repository layouts are supported, selected by
+`global.imageRepo`:
 
   - unset (default): one repository PER service -- `org/name:tag`.
   - set: one repository for the WHOLE chart, with the service name folded into
@@ -14,6 +25,9 @@ Two repository layouts are supported, selected by `global.imageRepo`:
 as `<service>-<build>`, e.g. `journey-order-20260913`.
 */}}
 {{- define "train-ticket.image" -}}
+{{- if .image -}}
+{{ .image }}
+{{- else -}}
 {{- $registry := .global.imageRegistry -}}
 {{- $org := .global.imageOrg -}}
 {{- $name := .name -}}
@@ -26,6 +40,7 @@ as `<service>-<build>`, e.g. `journey-order-20260913`.
 {{ $registry }}/{{ $org }}/{{ $name }}:{{ $tag }}
 {{- else -}}
 {{ $org }}/{{ $name }}:{{ $tag }}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

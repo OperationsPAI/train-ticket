@@ -3,186 +3,307 @@ kind: Config
 metadata:
   name: train-ticket
 
-# Build: push to docker.io (opspai/<service>)
-# Deploy: images pulled via mirror pair-cn-guangzhou.cr.volces.com
+# Artifact names are BARE -- `account`, not `opspai/account`. The registry comes
+# from `--default-repo`, and how it combines with the artifact name is what
+# decides whether this file can serve both targets:
+#
+#   opspai/account  -d mirrors.tencent.com/microservice
+#     -> mirrors.tencent.com/microservice/opspai_account   (prefix flattened in)
+#   account         -d mirrors.tencent.com/microservice
+#     -> mirrors.tencent.com/microservice/account
+#
+# So a prefix written here is not a default that a flag overrides, it is part of
+# the repository name forever after. Bare names put the whole registry choice on
+# the flag: `-d opspai` for Docker Hub, `-d mirrors.tencent.com/microservice`
+# for the cluster, one artifact list for both.
+#
+# It also makes the setValueTemplates mapping below mechanical. The variable
+# suffix is the artifact name with `/ - . :` replaced by `_`, so `account` is
+# IMAGE_FULLY_QUALIFIED_account; with the prefix every one of the 39 would carry
+# a leading `opspai_`.
+# Keep skaffold's run-id OFF the pod template.
+#
+# By default skaffold stamps `skaffold.dev/run-id: <uuid>` onto every resource it
+# deploys, pod template included, and the uuid is new on every invocation. That
+# makes the pod spec differ every run, so all 46 workloads roll whether or not
+# anything was rebuilt -- which is the exact behaviour the inputDigest tagger
+# below exists to avoid. Measured: two consecutive runs with no source change
+# produced manifests differing in nothing but this label, and every pod
+# restarted.
+#
+# An explicit allow list replaces the default, so the label is written only where
+# named here: the Deployment's own metadata, never `.spec.template`. Skaffold
+# still finds its resources -- status check reads the release it just deployed --
+# and Helm's own `app.kubernetes.io/managed-by: Helm` is what actually tracks
+# ownership.
+#
+# Image rewriting is not listed because this config does not use it: images reach
+# the chart through the deploy stage's setValueTemplates, as helm values, not by
+# patching rendered manifests.
+resourceSelector:
+  allow:
+    - groupKind: Deployment.apps
+      labels: [".metadata.labels"]
+    - groupKind: StatefulSet.apps
+      labels: [".metadata.labels"]
+    - groupKind: DaemonSet.apps
+      labels: [".metadata.labels"]
+
 build:
   platforms: ["linux/amd64"]
+  # Tag by CONTENT, not by commit. The default gitCommit tagger gives all 39
+  # artifacts one tag and appends `-dirty` once however many files changed, so
+  # two different builds of a dirty tree are indistinguishable -- and that is
+  # exactly the failure Makefile:191 describes: "the manifests pin :local, so a
+  # rebuild leaves the pod spec byte-identical and helm reports the release
+  # unchanged -- the running pods keep the OLD image forever". `make deploy-roll`
+  # restarting all 39 deployments is the workaround for it.
+  #
+  # inputDigest hashes each artifact's own inputs, so a changed service gets a
+  # changed tag, a changed pod spec, and a rollout Helm performs by itself,
+  # while the other 38 render byte-identically and are left alone. The rollout
+  # step stops being something anybody has to remember.
+  tagPolicy:
+    inputDigest: {}
   local:
     concurrency: 8
     push: true
     useDockerCLI: true
   artifacts:
-    - image: opspai/account
+    - image: account
       context: .
       docker:
         dockerfile: deploy/docker/account/Dockerfile
-    - image: opspai/admin-audit
+    - image: admin-audit
       context: .
       docker:
         dockerfile: deploy/docker/admin-audit/Dockerfile
-    - image: opspai/ancillary-service
+    - image: ancillary-service
       context: .
       docker:
         dockerfile: deploy/docker/ancillary-service/Dockerfile
-    - image: opspai/booking-orchestration
+    - image: booking-orchestration
       context: .
       docker:
         dockerfile: deploy/docker/booking-orchestration/Dockerfile
-    - image: opspai/capacity-availability
+    - image: capacity-availability
       context: .
       docker:
         dockerfile: deploy/docker/capacity-availability/Dockerfile
-    - image: opspai/corporate-travel
+    - image: corporate-travel
       context: .
       docker:
         dockerfile: deploy/docker/corporate-travel/Dockerfile
-    - image: opspai/customer-service
+    - image: customer-service
       context: .
       docker:
         dockerfile: deploy/docker/customer-service/Dockerfile
-    - image: opspai/dispatch
+    - image: dispatch
       context: .
       docker:
         dockerfile: deploy/docker/dispatch/Dockerfile
-    - image: opspai/disruption-recovery
+    - image: disruption-recovery
       context: .
       docker:
         dockerfile: deploy/docker/disruption-recovery/Dockerfile
-    - image: opspai/entitlement-ticketing
+    - image: entitlement-ticketing
       context: .
       docker:
         dockerfile: deploy/docker/entitlement-ticketing/Dockerfile
-    - image: opspai/fare-pricing
+    - image: fare-pricing
       context: .
       docker:
         dockerfile: deploy/docker/fare-pricing/Dockerfile
-    - image: opspai/finance-settlement
+    - image: finance-settlement
       context: .
       docker:
         dockerfile: deploy/docker/finance-settlement/Dockerfile
-    - image: opspai/fulfillment
+    - image: fulfillment
       context: .
       docker:
         dockerfile: deploy/docker/fulfillment/Dockerfile
-    - image: opspai/group-booking
+    - image: group-booking
       context: .
       docker:
         dockerfile: deploy/docker/group-booking/Dockerfile
-    - image: opspai/identity-verification
+    - image: identity-verification
       context: .
       docker:
         dockerfile: deploy/docker/identity-verification/Dockerfile
-    - image: opspai/invoicing
+    - image: invoicing
       context: .
       docker:
         dockerfile: deploy/docker/invoicing/Dockerfile
-    - image: opspai/journey-order
+    - image: journey-order
       context: .
       docker:
         dockerfile: deploy/docker/journey-order/Dockerfile
-    - image: opspai/legacy-acl
+    - image: legacy-acl
       context: .
       docker:
         dockerfile: deploy/docker/legacy-acl/Dockerfile
-    - image: opspai/loadgen
+    - image: loadgen
       context: .
       docker:
         dockerfile: deploy/docker/loadgen/Dockerfile
-    - image: opspai/loyalty-membership
+    - image: loyalty-membership
       context: .
       docker:
         dockerfile: deploy/docker/loyalty-membership/Dockerfile
-    - image: opspai/marketing-campaign
+    - image: marketing-campaign
       context: .
       docker:
         dockerfile: deploy/docker/marketing-campaign/Dockerfile
-    - image: opspai/notification
+    - image: notification
       context: .
       docker:
         dockerfile: deploy/docker/notification/Dockerfile
-    - image: opspai/offer-management
+    - image: offer-management
       context: .
       docker:
         dockerfile: deploy/docker/offer-management/Dockerfile
-    - image: opspai/payment
+    - image: payment
       context: .
       docker:
         dockerfile: deploy/docker/payment/Dockerfile
-    - image: opspai/payment-channel
+    - image: payment-channel
       context: .
       docker:
         dockerfile: deploy/docker/payment-channel/Dockerfile
-    - image: opspai/place-network
+    - image: place-network
       context: .
       docker:
         dockerfile: deploy/docker/place-network/Dockerfile
-    - image: opspai/post-sales
+    - image: post-sales
       context: .
       docker:
         dockerfile: deploy/docker/post-sales/Dockerfile
-    - image: opspai/provider-integration
+    - image: provider-integration
       context: .
       docker:
         dockerfile: deploy/docker/provider-integration/Dockerfile
-    - image: opspai/reporting
+    - image: reporting
       context: .
       docker:
         dockerfile: deploy/docker/reporting/Dockerfile
-    - image: opspai/risk-compliance
+    - image: risk-compliance
       context: .
       docker:
         dockerfile: deploy/docker/risk-compliance/Dockerfile
-    - image: opspai/seat-assignment
+    - image: seat-assignment
       context: .
       docker:
         dockerfile: deploy/docker/seat-assignment/Dockerfile
-    - image: opspai/service-plan
+    - image: service-plan
       context: .
       docker:
         dockerfile: deploy/docker/service-plan/Dockerfile
-    - image: opspai/supplier-catalog
+    - image: supplier-catalog
       context: .
       docker:
         dockerfile: deploy/docker/supplier-catalog/Dockerfile
-    - image: opspai/transfer-management
+    - image: transfer-management
       context: .
       docker:
         dockerfile: deploy/docker/transfer-management/Dockerfile
-    - image: opspai/travel-insurance
+    - image: travel-insurance
       context: .
       docker:
         dockerfile: deploy/docker/travel-insurance/Dockerfile
-    - image: opspai/traveler-profile
+    - image: traveler-profile
       context: .
       docker:
         dockerfile: deploy/docker/traveler-profile/Dockerfile
-    - image: opspai/trip-planning
+    - image: trip-planning
       context: .
       docker:
         dockerfile: deploy/docker/trip-planning/Dockerfile
-    - image: opspai/waitlist
+    - image: waitlist
       context: .
       docker:
         dockerfile: deploy/docker/waitlist/Dockerfile
-    - image: opspai/wallet-promotion
+    - image: wallet-promotion
       context: .
       docker:
         dockerfile: deploy/docker/wallet-promotion/Dockerfile
 
-# Deploy: this file only BUILDS and pushes images; it has no deploy stage.
-# Installing is Helm's job -- see docs/deployment.md:
-#
-#   skaffold build --tag latest        (build + push to the registry)
-#   helm upgrade --install train-ticket deploy/helm/train-ticket \
-#     -f deploy/helm/values-prod.yaml -n train-ticket-prod
-#
-# The mirror registry is a chart value (global.imageRegistry), not a manifest
-# rewrite: there is no separate set of prod manifests to apply.
+# There is no deploy stage at the top level, so `skaffold build` builds and
+# pushes and installs nothing. Installing is a profile, because the two things
+# this repository deploys are different releases with different value layers and
+# neither is a default worth running by accident.
 #
 # NOTE: the artifact list above is exactly the chart's rendered image set (39
-# images, `opspai/<name>` here vs `train-ticket/<name>` locally built),
-# so nothing here builds an image no deployment consumes. The one leftover is on
-# the other side: deploy/docker/trip-planning-rs/Dockerfile is byte-identical to
+# images: 38 services plus loadgen), so nothing here builds an image no
+# deployment consumes. The one leftover is on the other side:
+# deploy/docker/trip-planning-rs/Dockerfile is byte-identical to
 # deploy/docker/trip-planning/Dockerfile (both compile the Rust crate
-# services/trip-planning-rs) and is now referenced by neither the chart nor this
+# services/trip-planning-rs) and is referenced by neither the chart nor this
 # file. See deploy/KNOWN-ISSUES.md.
+profiles:
+  # The resident deployment: the one release that stays up, and the fault-free
+  # reference every case is read against.
+  #
+  #   skaffold run -p resident -d mirrors.tencent.com/microservice
+  #
+  # builds only what changed, pushes it, upgrades the release and waits. No
+  # rollout restart: the image tag moved, so the pod spec moved.
+  #
+  # The three valuesFiles are the same three, in the same order, that install
+  # this release today. setValueTemplates carries image references and nothing
+  # else -- deploy/helm/values-case.yaml argues that a deployer adding flags on
+  # top of the branch puts half the desired state where a reader of the branch
+  # cannot see it, and that holds for configuration. A content digest of a build
+  # is the one fact a branch structurally cannot contain.
+  - name: resident
+    deploy:
+      helm:
+        releases:
+          - name: train-ticket
+            chartPath: deploy/helm/train-ticket
+            namespace: train-ticket
+            createNamespace: true
+            wait: true
+            valuesFiles:
+              - deploy/helm/values-cluster.yaml
+              - deploy/helm/values-case.yaml
+              - deploy/helm/values-resident.yaml
+            setValueTemplates:
+              services.account.image: "{{.IMAGE_FULLY_QUALIFIED_account}}"
+              services.admin-audit.image: "{{.IMAGE_FULLY_QUALIFIED_admin_audit}}"
+              services.ancillary-service.image: "{{.IMAGE_FULLY_QUALIFIED_ancillary_service}}"
+              services.booking-orchestration.image: "{{.IMAGE_FULLY_QUALIFIED_booking_orchestration}}"
+              services.capacity-availability.image: "{{.IMAGE_FULLY_QUALIFIED_capacity_availability}}"
+              services.corporate-travel.image: "{{.IMAGE_FULLY_QUALIFIED_corporate_travel}}"
+              services.customer-service.image: "{{.IMAGE_FULLY_QUALIFIED_customer_service}}"
+              services.dispatch.image: "{{.IMAGE_FULLY_QUALIFIED_dispatch}}"
+              services.disruption-recovery.image: "{{.IMAGE_FULLY_QUALIFIED_disruption_recovery}}"
+              services.entitlement-ticketing.image: "{{.IMAGE_FULLY_QUALIFIED_entitlement_ticketing}}"
+              services.fare-pricing.image: "{{.IMAGE_FULLY_QUALIFIED_fare_pricing}}"
+              services.finance-settlement.image: "{{.IMAGE_FULLY_QUALIFIED_finance_settlement}}"
+              services.fulfillment.image: "{{.IMAGE_FULLY_QUALIFIED_fulfillment}}"
+              services.group-booking.image: "{{.IMAGE_FULLY_QUALIFIED_group_booking}}"
+              services.identity-verification.image: "{{.IMAGE_FULLY_QUALIFIED_identity_verification}}"
+              services.invoicing.image: "{{.IMAGE_FULLY_QUALIFIED_invoicing}}"
+              services.journey-order.image: "{{.IMAGE_FULLY_QUALIFIED_journey_order}}"
+              services.legacy-acl.image: "{{.IMAGE_FULLY_QUALIFIED_legacy_acl}}"
+              services.loyalty-membership.image: "{{.IMAGE_FULLY_QUALIFIED_loyalty_membership}}"
+              services.marketing-campaign.image: "{{.IMAGE_FULLY_QUALIFIED_marketing_campaign}}"
+              services.notification.image: "{{.IMAGE_FULLY_QUALIFIED_notification}}"
+              services.offer-management.image: "{{.IMAGE_FULLY_QUALIFIED_offer_management}}"
+              services.payment.image: "{{.IMAGE_FULLY_QUALIFIED_payment}}"
+              services.payment-channel.image: "{{.IMAGE_FULLY_QUALIFIED_payment_channel}}"
+              services.place-network.image: "{{.IMAGE_FULLY_QUALIFIED_place_network}}"
+              services.post-sales.image: "{{.IMAGE_FULLY_QUALIFIED_post_sales}}"
+              services.provider-integration.image: "{{.IMAGE_FULLY_QUALIFIED_provider_integration}}"
+              services.reporting.image: "{{.IMAGE_FULLY_QUALIFIED_reporting}}"
+              services.risk-compliance.image: "{{.IMAGE_FULLY_QUALIFIED_risk_compliance}}"
+              services.seat-assignment.image: "{{.IMAGE_FULLY_QUALIFIED_seat_assignment}}"
+              services.service-plan.image: "{{.IMAGE_FULLY_QUALIFIED_service_plan}}"
+              services.supplier-catalog.image: "{{.IMAGE_FULLY_QUALIFIED_supplier_catalog}}"
+              services.transfer-management.image: "{{.IMAGE_FULLY_QUALIFIED_transfer_management}}"
+              services.travel-insurance.image: "{{.IMAGE_FULLY_QUALIFIED_travel_insurance}}"
+              services.traveler-profile.image: "{{.IMAGE_FULLY_QUALIFIED_traveler_profile}}"
+              services.trip-planning.image: "{{.IMAGE_FULLY_QUALIFIED_trip_planning}}"
+              services.waitlist.image: "{{.IMAGE_FULLY_QUALIFIED_waitlist}}"
+              services.wallet-promotion.image: "{{.IMAGE_FULLY_QUALIFIED_wallet_promotion}}"
+              loadgen.image: "{{.IMAGE_FULLY_QUALIFIED_loadgen}}"

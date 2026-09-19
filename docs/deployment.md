@@ -9,8 +9,13 @@ Helm 是唯一的部署路径。原先 `deploy/` 下的 kustomize 覆盖层已�
 
 ```bash
 # 构建所有 39 个服务镜像并推送到 Docker Hub
-DOCKER_BUILDKIT=1 skaffold build --tag latest
+DOCKER_BUILDKIT=1 skaffold build -d opspai --tag latest
 ```
+
+`skaffold.yaml` 里的 artifact 名不带前缀，registry 由 `-d` 给出。
+写在文件里的前缀会被折进仓库名（`opspai/account` 配 `-d mirrors.tencent.com/microservice`
+得到 `mirrors.tencent.com/microservice/opspai_account`），所以前缀放在命令行上，
+同一份 artifact 列表才能同时服务 Docker Hub 和集群 registry。
 
 本地 kind 集群走另一条路：`deploy/build-images.sh` 从**渲染后的 release**
 （`deploy/render-manifests.sh`）里提取 `train-ticket/<name>:` 镜像列表，
@@ -315,7 +320,7 @@ kubectl set env deployment/post-sales \
 
 ```bash
 # 1. 代码变更后构建
-DOCKER_BUILDKIT=1 skaffold build --tag latest
+DOCKER_BUILDKIT=1 skaffold build -d opspai --tag latest
 
 # 2. 部署到生产
 helm upgrade --install train-ticket deploy/helm/train-ticket \
@@ -325,4 +330,34 @@ helm upgrade --install train-ticket deploy/helm/train-ticket \
 # 3. 验证
 python3 deploy/stress/oracle-new-services.py   # 15/15 PASS
 python3 deploy/stress/auditor.py --scenario deploy/stress/scenarios/s1-rush.yaml  # 6/6 PASS
+```
+
+## 常驻部署：一条命令完成构建、推送、升级
+
+```bash
+skaffold run -p resident -d mirrors.tencent.com/microservice
+```
+
+`resident` profile 带部署阶段，装的是 `train-ticket` 命名空间里那一份常驻 release，
+values 层叠顺序与手工安装时相同：`values-cluster.yaml`、`values-case.yaml`、
+`values-resident.yaml`。
+
+它与 `make deploy` 的差别在标签。chart 的 `global.imageTag` 固定为 `local`，
+重新构建之后 pod spec 一个字节都没变，helm 报告 release 未变化，运行中的 pod
+继续使用旧镜像，所以 `make deploy-roll` 必须重启全部 39 个 deployment
+（`Makefile:191` 记录了这一点）。`skaffold.yaml` 使用 `inputDigest` 按内容打标签，
+内容变了标签就变，pod spec 随之改变，helm 只滚动内容确实改变的那些服务，
+其余服务渲染结果完全一致，不会重启。
+
+单个服务的重新部署因此不需要任何 `kubectl` 命令：
+
+```bash
+# 只构建内容变化的服务，推送，升级 release,等待就绪
+skaffold run -p resident -d mirrors.tencent.com/microservice
+```
+
+需要按名字限定构建范围时用 `-b`：
+
+```bash
+skaffold run -p resident -d mirrors.tencent.com/microservice -b identity-verification
 ```

@@ -61,7 +61,7 @@ spec:
       {{- end }}
       containers:
         - name: {{ $name }}
-          image: {{ include "train-ticket.image" (dict "global" $.Values.global "name" $name) }}
+          image: {{ include "train-ticket.image" (dict "global" $.Values.global "name" $name "image" $svc.image) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
           ports:
             - name: http
