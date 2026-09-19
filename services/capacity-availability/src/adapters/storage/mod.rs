@@ -222,24 +222,26 @@ impl PostgresCapacityService {
             error => AppError::DomainRuleViolation(error.to_string()),
         })?;
         let envelopes = domain_events_to_wire(&events, correlation_id)?;
+        let persisted = pool
+            .hold(&HoldId::new(&hold_id).map_err(to_internal)?)
+            .ok_or_else(|| AppError::Internal("hold was not stored in pool".into()))?
+            .clone();
+        self.hold_repo
+            .save(
+                &mut tx,
+                &hold_id,
+                None,
+                &CapacityHoldSnapshot::from_domain(&persisted),
+            )
+            .await
+            .map_err(to_app_storage)?;
+        self.retire_terminal_holds(&mut tx, &mut pool, now).await?;
         self.inventory_repo
             .save(
                 &mut tx,
                 &pool_id,
                 expected_version,
                 &InventoryPoolSnapshot::from_domain(&pool),
-            )
-            .await
-            .map_err(to_app_storage)?;
-        let persisted = pool
-            .hold(&HoldId::new(&hold_id).map_err(to_internal)?)
-            .ok_or_else(|| AppError::Internal("hold was not stored in pool".into()))?;
-        self.hold_repo
-            .save(
-                &mut tx,
-                &hold_id,
-                None,
-                &CapacityHoldSnapshot::from_domain(persisted),
             )
             .await
             .map_err(to_app_storage)?;
@@ -394,8 +396,15 @@ impl PostgresCapacityService {
                     .map_err(to_app_storage)?
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
                 let mut pool = loaded_pool.data.try_into_domain()?;
-                let events = mutate(&mut pool, now_millis())?;
+                let now = now_millis();
+                let events = mutate(&mut pool, now)?;
                 let envelopes = domain_events_to_wire(&events, correlation_id)?;
+                let hold = pool
+                    .hold(&HoldId::new(hold_id).map_err(to_internal)?)
+                    .ok_or_else(|| AppError::NotFound("hold not found".into()))?
+                    .clone();
+                self.upsert_hold_snapshot(&mut tx, hold_id, &hold).await?;
+                self.retire_terminal_holds(&mut tx, &mut pool, now).await?;
                 self.inventory_repo
                     .save(
                         &mut tx,
@@ -405,10 +414,6 @@ impl PostgresCapacityService {
                     )
                     .await
                     .map_err(to_app_storage)?;
-                let hold = pool
-                    .hold(&HoldId::new(hold_id).map_err(to_internal)?)
-                    .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
-                self.upsert_hold_snapshot(&mut tx, hold_id, hold).await?;
                 for envelope in envelopes {
                     OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
                         .await
@@ -456,6 +461,48 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(to_app_storage)?;
+        Ok(())
+    }
+
+    /// 把保留期已满的终态 hold 移出 aggregate。每个 hold 在进入终态的那笔事务
+    /// 里就已经写入 capacity_hold_snapshots，这里只补写缺失的行，确保审计记录
+    /// 在 hold 离开 aggregate 之后依然完整。
+    async fn retire_terminal_holds(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        pool: &mut InventoryPool,
+        now: u64,
+    ) -> Result<(), AppError> {
+        let retired = pool.retire_terminal_holds(now);
+        if retired.is_empty() {
+            return Ok(());
+        }
+        let retired_ids: Vec<String> = retired
+            .iter()
+            .map(|hold| hold.hold_id.to_string())
+            .collect();
+        let sql = format!("SELECT id FROM {HOLD_TABLE} WHERE id = ANY($1)");
+        let rows: Vec<(String,)> = sqlx::query_as(&sql)
+            .bind(&retired_ids)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(to_app_storage)?;
+        let audited: std::collections::HashSet<String> = rows.into_iter().map(|(id,)| id).collect();
+        for hold in retired {
+            let hold_id = hold.hold_id.to_string();
+            if audited.contains(&hold_id) {
+                continue;
+            }
+            self.hold_repo
+                .save(
+                    tx,
+                    &hold_id,
+                    None,
+                    &CapacityHoldSnapshot::from_domain(&hold),
+                )
+                .await
+                .map_err(to_app_storage)?;
+        }
         Ok(())
     }
 
@@ -841,24 +888,28 @@ impl PostgresCapacityService {
         })?;
         let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
+        let persisted = pool
+            .hold(&HoldId::new(&hold_id).map_err(inbound_fatal)?)
+            .ok_or_else(|| InboundEventError::Transient("hold was not stored in pool".into()))?
+            .clone();
+        self.hold_repo
+            .save(
+                &mut tx,
+                &hold_id,
+                None,
+                &CapacityHoldSnapshot::from_domain(&persisted),
+            )
+            .await
+            .map_err(inbound_transient)?;
+        self.retire_terminal_holds(&mut tx, &mut pool, now)
+            .await
+            .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
                 &mut tx,
                 &pool_id,
                 expected_version,
                 &InventoryPoolSnapshot::from_domain(&pool),
-            )
-            .await
-            .map_err(inbound_transient)?;
-        let persisted = pool
-            .hold(&HoldId::new(&hold_id).map_err(inbound_fatal)?)
-            .ok_or_else(|| InboundEventError::Transient("hold was not stored in pool".into()))?;
-        self.hold_repo
-            .save(
-                &mut tx,
-                &hold_id,
-                None,
-                &CapacityHoldSnapshot::from_domain(persisted),
             )
             .await
             .map_err(inbound_transient)?;
@@ -1065,11 +1116,22 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        let now = now_millis();
         let events = pool
-            .confirm_hold(&hold_id_value, now_millis())
+            .confirm_hold(&hold_id_value, now)
             .map_err(map_hold_mutation_error)
             .map_err(inbound_from_app_error)?;
         let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
+            .map_err(inbound_from_app_error)?;
+        let hold = pool
+            .hold(&hold_id_value)
+            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?
+            .clone();
+        self.upsert_hold_snapshot(&mut tx, &hold_id, &hold)
+            .await
+            .map_err(inbound_from_app_error)?;
+        self.retire_terminal_holds(&mut tx, &mut pool, now)
+            .await
             .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
@@ -1080,12 +1142,6 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(inbound_transient)?;
-        let hold = pool
-            .hold(&hold_id_value)
-            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?;
-        self.upsert_hold_snapshot(&mut tx, &hold_id, hold)
-            .await
-            .map_err(inbound_from_app_error)?;
         for envelope in outbound {
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
                 .await
@@ -1307,11 +1363,22 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        let now = now_millis();
         let events = pool
-            .release_hold(&hold_id_value, now_millis(), release_reason)
+            .release_hold(&hold_id_value, now, release_reason)
             .map_err(map_hold_mutation_error)
             .map_err(inbound_from_app_error)?;
         let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
+            .map_err(inbound_from_app_error)?;
+        let hold = pool
+            .hold(&hold_id_value)
+            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?
+            .clone();
+        self.upsert_hold_snapshot(&mut tx, &hold_id, &hold)
+            .await
+            .map_err(inbound_from_app_error)?;
+        self.retire_terminal_holds(&mut tx, &mut pool, now)
+            .await
             .map_err(inbound_from_app_error)?;
         self.inventory_repo
             .save(
@@ -1322,12 +1389,6 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(inbound_transient)?;
-        let hold = pool
-            .hold(&hold_id_value)
-            .ok_or_else(|| InboundEventError::Fatal("hold not found".into()))?;
-        self.upsert_hold_snapshot(&mut tx, &hold_id, hold)
-            .await
-            .map_err(inbound_from_app_error)?;
         for envelope in outbound {
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
                 .await
@@ -1530,6 +1591,10 @@ struct InventoryPoolSnapshot {
     capacity_units: Vec<String>,
     holds: Vec<CapacityHoldSnapshot>,
     overbooking_policy: Option<OverbookingPolicy>,
+    /// 已退出 aggregate 的终态 hold 留下的 idempotency key。hold 本体移到
+    /// capacity_hold_snapshots 保存，这里只保留判重所需的映射。
+    #[serde(default)]
+    retired_idempotency_keys: Vec<RetiredIdempotencyKeySnapshot>,
 }
 
 impl InventoryPoolSnapshot {
@@ -1546,11 +1611,22 @@ impl InventoryPoolSnapshot {
             .map(CapacityHoldSnapshot::from_domain)
             .collect();
         holds.sort_by(|left, right| left.hold_id.cmp(&right.hold_id));
+        let mut retired_idempotency_keys: Vec<_> = pool
+            .retired_idempotency_keys()
+            .into_iter()
+            .map(|(key, hold_id)| RetiredIdempotencyKeySnapshot {
+                idempotency_key: key.to_string(),
+                hold_id: hold_id.to_string(),
+            })
+            .collect();
+        retired_idempotency_keys
+            .sort_by(|left, right| left.idempotency_key.cmp(&right.idempotency_key));
         Self {
             identity: InventoryPoolIdentitySnapshot::from_domain(&pool.identity),
             capacity_units,
             holds,
             overbooking_policy: Some(pool.overbooking_policy()),
+            retired_idempotency_keys,
         }
     }
 
@@ -1571,8 +1647,21 @@ impl InventoryPoolSnapshot {
             pool.restore_hold(hold.try_into_domain()?)
                 .map_err(to_internal)?;
         }
+        for retired in self.retired_idempotency_keys {
+            pool.restore_retired_idempotency_key(
+                IdempotencyKey::new(retired.idempotency_key).map_err(to_internal)?,
+                HoldId::new(retired.hold_id).map_err(to_internal)?,
+            );
+        }
         Ok(pool)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetiredIdempotencyKeySnapshot {
+    idempotency_key: String,
+    hold_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2122,6 +2211,79 @@ mod tests {
             .unwrap();
         assert_eq!(restored.total_units(), pool.total_units());
         assert!(restored.hold(&HoldId::new("hold-1").unwrap()).is_some());
+    }
+
+    #[test]
+    fn pool_snapshot_round_trips_retired_idempotency_keys() {
+        let req = request();
+        let mut pool = new_pool("pool:seg:first", &req).unwrap();
+        let now = now_millis();
+        let interval = StationInterval::new(0, 1).unwrap();
+        let unit = pool.find_available_unit(&interval, now).unwrap();
+        let hold = CapacityHold::request(
+            HoldId::new("hold-retired").unwrap(),
+            HoldScope::new(
+                pool.identity.pool_id.clone(),
+                unit,
+                interval.clone(),
+                ReferenceMetadata::new(
+                    "booking",
+                    "reason",
+                    Some("order"),
+                    Some("seg-booking"),
+                    Some("traveler"),
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new("idem-retired").unwrap(),
+            now,
+            now + 300_000,
+        )
+        .unwrap();
+        pool.request_hold(hold, now).unwrap();
+        pool.release_hold(&HoldId::new("hold-retired").unwrap(), now, "test-release")
+            .unwrap();
+        let retired = pool.retire_terminal_holds(now + TERMINAL_HOLD_RETENTION_MILLIS);
+        assert_eq!(retired.len(), 1);
+
+        let mut restored = InventoryPoolSnapshot::from_domain(&pool)
+            .try_into_domain()
+            .unwrap();
+        assert!(
+            restored
+                .hold(&HoldId::new("hold-retired").unwrap())
+                .is_none()
+        );
+
+        let replacement_unit = restored
+            .find_available_unit(&interval, now + TERMINAL_HOLD_RETENTION_MILLIS)
+            .unwrap();
+        let replay = CapacityHold::request(
+            HoldId::new("hold-replay").unwrap(),
+            HoldScope::new(
+                restored.identity.pool_id.clone(),
+                replacement_unit,
+                interval,
+                ReferenceMetadata::new(
+                    "booking",
+                    "reason",
+                    Some("order"),
+                    Some("seg-booking"),
+                    Some("traveler"),
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new("idem-retired").unwrap(),
+            now + TERMINAL_HOLD_RETENTION_MILLIS,
+            now + TERMINAL_HOLD_RETENTION_MILLIS + 300_000,
+        )
+        .unwrap();
+        assert!(matches!(
+            restored
+                .request_hold(replay, now + TERMINAL_HOLD_RETENTION_MILLIS)
+                .unwrap_err(),
+            DomainError::IdempotencyConflict { .. }
+        ));
     }
 
     #[test]
