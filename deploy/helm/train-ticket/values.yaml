@@ -350,6 +350,18 @@ loadgen:
   # the server side cannot reconstruct -- a request that never got a status
   # leaves no server span at all.
   recordToStdout: false
+  # Compress the arrival envelope, in seconds. Empty keeps what
+  # loadgen-config.yaml says (1800), which is chosen so a person watching the
+  # cluster can see the shape go round.
+  #
+  # A deployment that is MEASURED wants it shorter: a window has to cover a
+  # whole period or it reads one phase of the envelope rather than the change,
+  # and three windows at 30 minutes is two and a half hours per case. The
+  # shape is unchanged either way -- same peak and trough, same Poisson gaps.
+  #
+  # Not below the burst schedule (~7 min mean gap): a period shorter than that
+  # leaves a window with no bursts, and queues form from variance.
+  diurnalPeriodSeconds: ""
   resources:
     requests: { cpu: '1', memory: 512Mi }
     limits: { cpu: '6', memory: 2Gi }
