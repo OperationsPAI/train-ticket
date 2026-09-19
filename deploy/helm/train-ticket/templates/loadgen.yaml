@@ -53,6 +53,19 @@ spec:
             # and burns time on context switching under load.
             - name: GOMAXPROCS
               value: {{ .Values.loadgen.gomaxprocs | quote }}
+            {{- if .Values.loadgen.diurnalPeriodSeconds }}
+            # Compress the arrival envelope. The SHAPE is unchanged -- same
+            # peak and trough multipliers, same Poisson gaps -- it just cycles
+            # faster, because a measurement window has to cover a whole period
+            # and the default 30 minutes is a choice about being watchable
+            # rather than a property of the workload.
+            #
+            # Not below the burst schedule (~7 min mean gap): a period shorter
+            # than that gives a window no bursts at all, and queues form from
+            # variance.
+            - name: LOADGEN_DIURNAL_PERIOD_SECONDS
+              value: {{ .Values.loadgen.diurnalPeriodSeconds | quote }}
+            {{- end }}
             {{- if .Values.loadgen.recordToStdout }}
             # Also write each record to stdout, so the collector's filelog
             # receiver carries it to the same store as the traces it joins to.
