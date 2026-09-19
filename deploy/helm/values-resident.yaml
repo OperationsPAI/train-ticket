@@ -1,0 +1,22 @@
+# The one release that stays up, and the fault-free reading every case is read
+# against.
+#
+# Layered over values-cluster.yaml and values-case.yaml, in that order. It takes
+# the case profile whole -- same central store, same client records, same
+# compressed arrival envelope -- because a reference measured under a different
+# workload is a different system, and the comparison a case rests on is between
+# this namespace and the case's over one wall-clock window.
+#
+# Measured before this file existed: the resident ran the 1800s envelope while
+# every case ran 600s, so over one window the cases saw 1.6x to 3.2x the
+# arrivals at a different phase. Traffic varies on its own and a diagnosis has
+# to cope with that; two deliberately different envelopes are not that.
+#
+# What it puts back is the two node-scoped exporters. They are hostNetwork on a
+# fixed port, so exactly one release per node may run them, and this is the
+# release that is always there. A case turns them off for that reason; this one
+# is where the node's own copy lives.
+nodeExporter:
+  enabled: true
+kubeStateMetrics:
+  enabled: true
