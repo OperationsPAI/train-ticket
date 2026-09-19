@@ -1,0 +1,53 @@
+# A release that exists to be measured and then thrown away.
+#
+# Layered over values-cluster.yaml, and committed rather than passed as flags:
+# under GitOps the branch is the whole of the desired state, so a deployer that
+# adds `--set` on top has put half of it somewhere a reader of the branch
+# cannot see. Everything here is in the tree a case is deployed from, which is
+# also why a case built on an older base deploys that base's answer rather than
+# silently ignoring a flag it does not understand.
+#
+# Five settings, and every one of them is about the release being disposable or
+# sharing a node.
+
+# TELEMETRY OUTLIVES THE RELEASE. A case's namespace is deleted when the case
+# is over and the PVC is in the namespace, so an in-namespace store takes the
+# window that was just measured with it -- before anybody reads it. Signals go
+# to a store outside, and the release runs none of its own.
+clickhouse:
+  enabled: false
+  host: clickhouse.telemetry.svc.cluster.local
+
+loadgen:
+  # Client outcomes are the one signal the server side cannot reconstruct: a
+  # request that never got a status leaves no server span at all. The record
+  # file is an emptyDir, so it goes with the namespace too; this sends each
+  # record to stdout as well, and the collector carries it to the same store as
+  # the traces it joins to.
+  recordToStdout: true
+  # Compress the arrival envelope: same shape, same peak and trough, same
+  # Poisson gaps, cycling in 10 minutes rather than 30. A window has to cover a
+  # period for a pool bound to have time to bite, and three windows at the
+  # watchable period is two and a half hours per case.
+  #
+  # Not below the burst schedule (~7 min mean gap): a period shorter than that
+  # gives a window no bursts at all, and queues form from variance.
+  diurnalPeriodSeconds: 600
+
+otelCollector:
+  agent:
+    filelog:
+      # Each release runs its own agent DaemonSet and the agent reads the whole
+      # node's /var/log/pods. Measured with two releases up: each store held
+      # 363751 of 1581766 rows from the other's namespace over five minutes,
+      # and both agents sat at 100% of their 1-core limit.
+      ownNamespaceOnly: true
+
+# Node-scoped and therefore one per node, not one per release: both are
+# hostNetwork on a fixed port, so a second release CrashLoops on that port.
+# They report on the node rather than on any release, so the resident
+# deployment's copies are the right ones to keep.
+nodeExporter:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
