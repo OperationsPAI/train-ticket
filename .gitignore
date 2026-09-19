@@ -12,3 +12,4 @@ test-output
 coverage
 *.log
 .agentm/
+.scratch/
