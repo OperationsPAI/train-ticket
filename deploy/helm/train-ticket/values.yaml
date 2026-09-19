@@ -97,6 +97,11 @@ postgres:
       maxConnections: 500
       sharedBuffers: 1GB
       workMem: 8MB
+      # /dev/shm 的大小,并行查询的 DSM 段从这里分配。实测常驻约 126 个段,
+      # 其中 69 个 192KiB、46 个 1MiB、2 个 2MiB,合计接近 64MiB,也就是容器
+      # 默认值。1Gi 给出约 16 倍余量,足够覆盖 max_parallel_workers 提高或
+      # 并发查询增长,而它是内存卷,不占用则不消耗内存。
+      shmSize: 1Gi
       # This is the one scope where a ceiling contaminates every measurement: it
       # is the shared store, so a limit here couples services that share nothing
       # else. Measured under the shaped profile: p50 4.596 cores, p95 7.811 and

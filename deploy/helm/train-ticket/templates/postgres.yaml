@@ -121,6 +121,8 @@ spec:
               mountPath: /var/lib/postgresql/data
             - name: initdb
               mountPath: /docker-entrypoint-initdb.d
+            - name: shm
+              mountPath: /dev/shm
           {{- with $pg.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -132,6 +134,14 @@ spec:
         - name: initdb
           configMap:
             name: postgres-{{ $name }}-initdb
+        # 容器默认的 /dev/shm 是 64MiB,而 dynamic_shared_memory_type=posix 时
+        # 每个并行查询的 DSM 段都从这里分配。实测 max_parallel_workers=8 下常驻
+        # 约 126 个段(192KiB 到 2MiB),64MiB 会被占满,之后并行查询直接抛出
+        # DiskFull: could not resize shared memory segment,而不是退回串行计划。
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ $pg.shmSize | default "1Gi" }}
 ---
 apiVersion: v1
 kind: Service
