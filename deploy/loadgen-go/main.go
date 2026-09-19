@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,6 +31,17 @@ func main() {
 	// inside it cannot be overridden by `--set` at install time.
 	if os.Getenv("LOADGEN_RECORD_STDOUT") == "1" {
 		cfg.Recording.Stdout = true
+	}
+	// Same reason: a deployment that is measured in windows needs a period it
+	// can cover, and one that is watched needs a period a person can sit
+	// through. Both read the same file.
+	if raw := os.Getenv("LOADGEN_DIURNAL_PERIOD_SECONDS"); raw != "" {
+		seconds, err := strconv.ParseFloat(raw, 64)
+		if err != nil || seconds <= 0 {
+			fmt.Fprintf(os.Stderr, "LOADGEN_DIURNAL_PERIOD_SECONDS=%q is not a positive number\n", raw)
+			os.Exit(1)
+		}
+		cfg.Run.Arrival.Diurnal.PeriodSeconds = seconds
 	}
 
 	// Convert the config's {service} placeholder to Go's %s
