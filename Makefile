@@ -35,11 +35,12 @@ NAMESPACE ?= train-ticket
 # --- Helm (the single deployment path; kustomize was retired) ---------------
 HELM_RELEASE ?= train-ticket
 HELM_CHART ?= deploy/helm/train-ticket
-# values-kind.yaml carries the local-cluster bits: locally built
-# train-ticket/*:local images that exist only on the node (so
-# imagePullPolicy must stay IfNotPresent), and kind's single `standard`
-# StorageClass. Override HELM_VALUES for a real cluster (values-prod.yaml).
-HELM_VALUES ?= deploy/helm/values-kind.yaml
+# values-cluster.yaml carries what the CLUSTER decides and nothing else: the
+# registry the images come from, and the name of its StorageClass. Everything
+# the workload decides -- resource limits, pool sizes, retention -- is in the
+# chart's own values.yaml, so a profile can never shadow a line a fault case
+# would edit. Override HELM_VALUES for a different cluster (values-prod.yaml).
+HELM_VALUES ?= deploy/helm/values-cluster.yaml
 HELM_TIMEOUT ?= 15m
 ROLLOUT_TIMEOUT ?= 300s
 # An empty context means "whatever kubeconfig selects"; --context "" is an error.
