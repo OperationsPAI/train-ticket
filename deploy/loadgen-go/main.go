@@ -24,6 +24,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The one setting an operator flips per deployment rather than per
+	// profile, so it is an env var and not a key in the file. The Helm chart
+	// ships loadgen-config.yaml verbatim through `.Files.Glob`, so a value
+	// inside it cannot be overridden by `--set` at install time.
+	if os.Getenv("LOADGEN_RECORD_STDOUT") == "1" {
+		cfg.Recording.Stdout = true
+	}
+
 	// Convert the config's {service} placeholder to Go's %s
 	cfg.Target.BaseURLTemplate = ConvertTemplate(cfg.Target.BaseURLTemplate)
 

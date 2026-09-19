@@ -60,6 +60,18 @@ type RecordingConfig struct {
 	// Pointer because 0.0 is a meaningful setting ("never set the sampled
 	// bit") that must be distinguishable from "key absent".
 	TraceSampledRatio *float64 `yaml:"trace_sampled_ratio"`
+	// Stdout writes each record to stdout as well as to the file, so the
+	// collector's filelog receiver picks it up and the records land in the
+	// same store as the traces they join to.
+	//
+	// The file is an emptyDir, so it dies with the pod -- and for a run whose
+	// whole namespace is deleted when it ends, that is before anybody reads
+	// it. Client outcomes are the one signal the server cannot reconstruct:
+	// a request that never got a status leaves no server span at all.
+	//
+	// Off by default. A long-lived deployment has the file, and doubling the
+	// log volume of the busiest pod on the node buys it nothing.
+	Stdout bool `yaml:"stdout"`
 }
 
 // SampledRatio resolves recording.trace_sampled_ratio, defaulting to 1.0

@@ -339,6 +339,17 @@ loadgen:
   # deploy/helm/train-ticket/loadgen-config.yaml, not from here -- the
   # template has no way to inject it into the mounted config file.
   gomaxprocs: 6
+  # Write each per-request record to stdout as well as to the file, so the
+  # collector carries it into the same store as the traces it joins to.
+  #
+  # Off by default: a long-lived deployment has the file under /data, and this
+  # doubles the log volume of the busiest pod on the node.
+  #
+  # On for a release whose namespace is deleted when it ends. The record file
+  # is an emptyDir and goes with it, and client outcomes are the one signal
+  # the server side cannot reconstruct -- a request that never got a status
+  # leaves no server span at all.
+  recordToStdout: false
   resources:
     requests: { cpu: '1', memory: 512Mi }
     limits: { cpu: '6', memory: 2Gi }

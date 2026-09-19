@@ -97,6 +97,7 @@ type Recorder struct {
 	maxBytes     int64
 	flushEvery   time.Duration
 	sampledRatio float64
+	stdout       bool
 
 	written atomic.Int64
 	dropped atomic.Int64
@@ -139,6 +140,7 @@ func NewRecorder(cfg *Config) (*Recorder, error) {
 		maxBytes:     int64(rc.MaxFileMegabytes) * 1024 * 1024,
 		flushEvery:   time.Duration(rc.FlushIntervalSeconds * float64(time.Second)),
 		sampledRatio: rc.SampledRatio(),
+		stdout:       rc.Stdout,
 	}
 	go r.writeLoop(f)
 	return r, nil
@@ -247,6 +249,16 @@ func (r *Recorder) writeLoop(f *os.File) {
 		}
 		if err := enc.Encode(&line); err != nil {
 			return
+		}
+		// Stdout first, and never gated on the file write succeeding: the two
+		// are separate destinations for the same record, and a full disk must
+		// not also cost the copy that reaches the collector.
+		//
+		// Same bytes, so the two cannot disagree. This runs on the writer
+		// goroutine, so it cannot dent the offered load either -- which is the
+		// constraint the whole recorder is built around.
+		if r.stdout {
+			os.Stdout.Write(buf.Bytes())
 		}
 		n, err := bw.Write(buf.Bytes())
 		size += int64(n)
