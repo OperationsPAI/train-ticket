@@ -53,6 +53,14 @@ spec:
             # and burns time on context switching under load.
             - name: GOMAXPROCS
               value: {{ .Values.loadgen.gomaxprocs | quote }}
+            {{- if .Values.loadgen.recordToStdout }}
+            # Also write each record to stdout, so the collector's filelog
+            # receiver carries it to the same store as the traces it joins to.
+            # The record file is on an emptyDir and dies with the pod, which
+            # for a disposable release is before anybody reads it.
+            - name: LOADGEN_RECORD_STDOUT
+              value: "1"
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/loadgen
