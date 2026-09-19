@@ -376,6 +376,20 @@ impl CapacityHold {
         }
     }
 
+    /// 进入终态的时刻；非终态返回 None。Failed 在 request_hold 内同步判定，
+    /// 没有独立的时间字段，判定失败的时刻就是 requested_at。
+    /// Released 与 Expired 若缺少对应时间字段则视为时刻未知，保留在 aggregate 内。
+    fn terminal_at(&self) -> Option<u64> {
+        match self.state {
+            CapacityHoldState::Released => self.released_at,
+            CapacityHoldState::Expired => self.expired_at,
+            CapacityHoldState::Failed => Some(self.requested_at),
+            CapacityHoldState::Requested
+            | CapacityHoldState::Held
+            | CapacityHoldState::Confirmed => None,
+        }
+    }
+
     fn mark_held(&mut self) {
         self.state = CapacityHoldState::Held;
     }
@@ -691,12 +705,20 @@ pub enum InventoryPoolState {
     Cancelled,
 }
 
+/// 终态 hold 退出 aggregate 之前的保留时长。取值同时覆盖 hold 自身的 5 分钟
+/// 有效期和平台 idempotency_records 的 10 分钟保留期，使这两个窗口之内到达的
+/// 迟到请求仍然能够在 aggregate 内读到原 hold 的完整状态。
+pub const TERMINAL_HOLD_RETENTION_MILLIS: u64 = 900_000;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct InventoryPool {
     pub identity: InventoryPoolIdentity,
     pub(crate) capacity_units: HashSet<CapacityUnitRef>,
     holds: HashMap<HoldId, CapacityHold>,
     idempotency_index: HashMap<IdempotencyKey, HoldId>,
+    /// 已退出 aggregate 的终态 hold 留下的 idempotency key。保留这些 key 才能
+    /// 让同一个 key 在 hold 本体移除后仍然无法再次建立 hold。
+    retired_idempotency_keys: HashMap<IdempotencyKey, HoldId>,
     version: u64,
     state: InventoryPoolState,
     overbooking_policy: OverbookingPolicy,
@@ -719,6 +741,7 @@ impl InventoryPool {
             capacity_units: unique,
             holds: HashMap::new(),
             idempotency_index: HashMap::new(),
+            retired_idempotency_keys: HashMap::new(),
             version: 1,
             state: InventoryPoolState::Initialized,
             overbooking_policy: OverbookingPolicy::none(),
@@ -786,12 +809,65 @@ impl InventoryPool {
         Ok(())
     }
 
+    /// 恢复一个已经退出 aggregate 的终态 hold 留下的 idempotency key。
+    pub fn restore_retired_idempotency_key(&mut self, key: IdempotencyKey, hold_id: HoldId) {
+        self.retired_idempotency_keys.insert(key, hold_id);
+    }
+
+    pub fn retired_idempotency_keys(&self) -> Vec<(&IdempotencyKey, &HoldId)> {
+        self.retired_idempotency_keys.iter().collect()
+    }
+
+    /// 把保留期已满的终态 hold 移出 aggregate，只留下它的 idempotency key。
+    /// 终态 hold 对 is_blocking_at 恒为 false，对 held_count 与 confirmed_count
+    /// 均不计数，因此移除它们不改变任何容量计算结果。返回被移除的 hold，
+    /// 供调用方写入审计存储。
+    pub fn retire_terminal_holds(&mut self, now: u64) -> Vec<CapacityHold> {
+        let retirable: Vec<HoldId> = self
+            .holds
+            .values()
+            .filter(|hold| match hold.terminal_at() {
+                Some(terminal_at) => {
+                    now.saturating_sub(terminal_at) >= TERMINAL_HOLD_RETENTION_MILLIS
+                }
+                None => false,
+            })
+            .map(|hold| hold.hold_id.clone())
+            .collect();
+        let mut retired = Vec::with_capacity(retirable.len());
+        for hold_id in retirable {
+            let hold = self
+                .holds
+                .remove(&hold_id)
+                .expect("hold_id was just read from the same map");
+            // 只有本来就在 idempotency_index 里登记过的 hold 才留下判重记录。
+            // 未取得容量的 hold 从未登记过该 key，移除它不得新增判重限制。
+            if self.idempotency_index.get(&hold.idempotency_key) == Some(&hold.hold_id) {
+                self.idempotency_index.remove(&hold.idempotency_key);
+                self.retired_idempotency_keys
+                    .insert(hold.idempotency_key.clone(), hold.hold_id.clone());
+            }
+            retired.push(hold);
+        }
+        if !retired.is_empty() {
+            self.version += 1;
+        }
+        retired
+    }
+
     pub fn request_hold(
         &mut self,
         mut hold: CapacityHold,
         now: u64,
     ) -> DomainResult<Vec<DomainEvent>> {
         self.ensure_unit_known(&hold.scope.capacity_unit_ref)?;
+
+        if let Some(existing_hold_id) = self.retired_idempotency_keys.get(&hold.idempotency_key) {
+            return Err(DomainError::IdempotencyConflict {
+                idempotency_key: hold.idempotency_key.to_string(),
+                existing_hold_id: existing_hold_id.to_string(),
+            });
+        }
 
         if let Some(existing_hold_id) = self.idempotency_index.get(&hold.idempotency_key) {
             let existing = self
@@ -1682,6 +1758,251 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, DomainEvent::WaitlistCapacityFreed(_)))
         );
+    }
+
+    const RETENTION: u64 = TERMINAL_HOLD_RETENTION_MILLIS;
+
+    /// 有效期远超保留期的 hold 请求，便于让终态完全由显式命令决定。
+    fn durable(id: &str, unit_ref: &str, from: u32, to: u32, key: &str, at: u64) -> CapacityHold {
+        request(id, unit_ref, from, to, key, at, RETENTION * 9)
+    }
+
+    /// 建立 fixture 用的 hold，不关心返回的事件。
+    fn place(pool: &mut InventoryPool, hold: CapacityHold, now: u64) {
+        pool.request_hold(hold, now).unwrap();
+    }
+
+    #[test]
+    fn retire_terminal_holds_removes_only_states_past_retention() {
+        let mut pool = large_pool(8, 0.0);
+
+        place(
+            &mut pool,
+            durable("hold-held", "000", 1, 2, "idem-held", 10),
+            10,
+        );
+        place(
+            &mut pool,
+            durable("hold-confirmed", "001", 1, 2, "idem-confirmed", 10),
+            10,
+        );
+        pool.confirm_hold(&hold_id("hold-confirmed"), 20).unwrap();
+        place(
+            &mut pool,
+            durable("hold-released", "002", 1, 2, "idem-released", 10),
+            10,
+        );
+        pool.release_hold(&hold_id("hold-released"), 30, "test-release")
+            .unwrap();
+        place(
+            &mut pool,
+            request("hold-expired", "003", 1, 2, "idem-expired", 10, 40),
+            10,
+        );
+        pool.expire_hold(&hold_id("hold-expired"), 40).unwrap();
+        // 与 hold-held 在同一 unit 和区间上重叠，判定为 Failed。
+        place(
+            &mut pool,
+            request("hold-failed", "000", 1, 2, "idem-failed", 50, 60),
+            50,
+        );
+        // 仍在保留期内的 Released，不得被移除。
+        place(
+            &mut pool,
+            durable("hold-recent", "004", 1, 2, "idem-recent", 60),
+            60,
+        );
+        pool.release_hold(&hold_id("hold-recent"), RETENTION, "test-release")
+            .unwrap();
+
+        let retired = pool.retire_terminal_holds(RETENTION + 50);
+        let mut retired_ids: Vec<String> = retired
+            .iter()
+            .map(|hold| hold.hold_id.to_string())
+            .collect();
+        retired_ids.sort();
+        assert_eq!(
+            retired_ids,
+            vec!["hold-expired", "hold-failed", "hold-released"]
+        );
+
+        let mut remaining: Vec<String> = pool
+            .holds()
+            .into_iter()
+            .map(|hold| hold.hold_id.to_string())
+            .collect();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec!["hold-confirmed", "hold-held", "hold-recent"]
+        );
+    }
+
+    #[test]
+    fn retiring_terminal_holds_leaves_capacity_numbers_unchanged() {
+        let mut pool = large_pool(20, 5.0);
+        for i in 0..12 {
+            let seat = format!("{:03}", i);
+            let id = format!("hold-{i}");
+            let key = format!("idem-{i}");
+            place(&mut pool, durable(&id, &seat, 1, 3, &key, 10), 10);
+        }
+        for i in 0..4 {
+            pool.confirm_hold(&hold_id(&format!("hold-{i}")), 20)
+                .unwrap();
+        }
+        for i in 4..8 {
+            pool.release_hold(&hold_id(&format!("hold-{i}")), 30, "test-release")
+                .unwrap();
+        }
+        // 与已有 hold 重叠，判定为 Failed。
+        place(
+            &mut pool,
+            request("hold-clash", "008", 2, 4, "idem-clash", 40, 5_000),
+            40,
+        );
+
+        let now = RETENTION + 100;
+        let probe = StationInterval::new(1, 3).unwrap();
+        let before_snapshot = pool.snapshot();
+        let before_remaining = pool.remaining_capacity();
+        let before_occupied = pool.occupied_count_at(&probe, now);
+        let before_available = pool.find_available_unit(&probe, now);
+        let before_availability =
+            pool.availability_snapshot("avs-before", probe.clone(), now, now + 10);
+
+        let retired = pool.retire_terminal_holds(now);
+        assert!(!retired.is_empty(), "the fixture must retire something");
+
+        let after_snapshot = pool.snapshot();
+        assert_eq!(after_snapshot.hold_count, before_snapshot.hold_count);
+        assert_eq!(
+            after_snapshot.confirmed_count,
+            before_snapshot.confirmed_count
+        );
+        assert_eq!(
+            after_snapshot.remaining_capacity,
+            before_snapshot.remaining_capacity
+        );
+        assert_eq!(
+            after_snapshot.total_capacity,
+            before_snapshot.total_capacity
+        );
+        assert_eq!(
+            after_snapshot.physical_capacity,
+            before_snapshot.physical_capacity
+        );
+        assert_eq!(pool.remaining_capacity(), before_remaining);
+        assert_eq!(pool.occupied_count_at(&probe, now), before_occupied);
+        assert_eq!(pool.find_available_unit(&probe, now), before_available);
+
+        let after_availability = pool.availability_snapshot("avs-before", probe, now, now + 10);
+        assert_eq!(
+            after_availability.available_units,
+            before_availability.available_units
+        );
+        assert_eq!(after_availability.status, before_availability.status);
+    }
+
+    #[test]
+    fn retired_hold_cannot_be_resubmitted_under_its_idempotency_key() {
+        let mut pool = large_pool(4, 0.0);
+        place(
+            &mut pool,
+            durable("hold-once", "000", 1, 2, "idem-once", 10),
+            10,
+        );
+        pool.release_hold(&hold_id("hold-once"), 20, "test-release")
+            .unwrap();
+
+        let retired = pool.retire_terminal_holds(RETENTION + 20);
+        assert_eq!(retired.len(), 1);
+        assert!(pool.hold(&hold_id("hold-once")).is_none());
+
+        let replay = durable("hold-once", "000", 1, 2, "idem-once", 10);
+        assert!(matches!(
+            pool.request_hold(replay, RETENTION + 30).unwrap_err(),
+            DomainError::IdempotencyConflict { .. }
+        ));
+
+        let fresh = durable("hold-other", "001", 1, 2, "idem-once", RETENTION + 30);
+        assert!(matches!(
+            pool.request_hold(fresh, RETENTION + 30).unwrap_err(),
+            DomainError::IdempotencyConflict { .. }
+        ));
+    }
+
+    #[test]
+    fn retiring_a_failed_hold_does_not_block_its_idempotency_key() {
+        let mut pool = large_pool(2, 0.0);
+        place(
+            &mut pool,
+            durable("hold-blocker", "000", 1, 2, "idem-blocker", 10),
+            10,
+        );
+        // 与 hold-blocker 冲突，进入 Failed，从未登记 idempotency key。
+        place(
+            &mut pool,
+            request("hold-lost", "000", 1, 2, "idem-retry", 20, 30),
+            20,
+        );
+        assert_eq!(
+            pool.hold(&hold_id("hold-lost")).unwrap().state,
+            CapacityHoldState::Failed
+        );
+
+        pool.retire_terminal_holds(RETENTION + 20);
+        assert!(pool.hold(&hold_id("hold-lost")).is_none());
+
+        // 同一个 key 换一个空闲 unit 重试，必须能够成功。
+        let retry = durable("hold-retry", "001", 1, 2, "idem-retry", RETENTION + 20);
+        let events = pool.request_hold(retry, RETENTION + 20).unwrap();
+        assert!(matches!(events.first(), Some(DomainEvent::CapacityHeld(_))));
+    }
+
+    #[test]
+    fn retire_terminal_holds_keeps_recently_terminal_holds_for_replay() {
+        let mut pool = large_pool(2, 0.0);
+        place(
+            &mut pool,
+            durable("hold-fresh", "000", 1, 2, "idem-fresh", 10),
+            10,
+        );
+        pool.release_hold(&hold_id("hold-fresh"), 20, "test-release")
+            .unwrap();
+
+        assert!(pool.retire_terminal_holds(RETENTION + 19).is_empty());
+        assert_eq!(
+            pool.hold(&hold_id("hold-fresh")).unwrap().state,
+            CapacityHoldState::Released
+        );
+
+        // 保留期内，原命令重放仍然由 aggregate 内的 hold 应答。
+        let replay = durable("hold-fresh", "000", 1, 2, "idem-fresh", 10);
+        let events = pool.request_hold(replay, RETENTION + 19).unwrap();
+        match events.first() {
+            Some(DomainEvent::CapacityHeld(event)) => {
+                assert!(event.idempotent_replay);
+                assert_eq!(event.hold_id, hold_id("hold-fresh"));
+            }
+            other => panic!("expected an idempotent replay, got {:?}", other),
+        }
+        assert_eq!(pool.holds().len(), 1);
+    }
+
+    #[test]
+    fn retire_terminal_holds_bumps_version_only_when_it_removes_something() {
+        let mut pool = large_pool(2, 0.0);
+        place(&mut pool, durable("hold-v", "000", 1, 2, "idem-v", 10), 10);
+        pool.release_hold(&hold_id("hold-v"), 20, "test-release")
+            .unwrap();
+
+        let version_before = pool.version();
+        assert!(pool.retire_terminal_holds(100).is_empty());
+        assert_eq!(pool.version(), version_before);
+
+        assert_eq!(pool.retire_terminal_holds(RETENTION + 20).len(), 1);
+        assert_eq!(pool.version(), version_before + 1);
     }
     #[test]
     fn unix_millis_to_rfc3339_round_trip() {
