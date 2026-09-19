@@ -122,7 +122,7 @@ Apply the stack from the repository root:
 
 ```bash
 helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-kind.yaml \
+  -f deploy/helm/values-cluster.yaml \
   --namespace train-ticket --create-namespace --wait
 kubectl -n train-ticket rollout status deploy/otel-collector
 ```
