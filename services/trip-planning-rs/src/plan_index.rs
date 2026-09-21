@@ -1,7 +1,9 @@
 //! In-memory plan segment index for sub-millisecond candidate lookup.
 //!
 //! Populated from the plan_segments DB table on startup and kept warm by
-//! event subscription (ServicePlanPublished, PlaceNetworkUpdated, etc.).
+//! event subscription (ServicePlanChanged, TransportNodeRegistered, etc.).
+//! `apply_event` reports each change so the caller writes it to those tables
+//! as well; the in-memory map alone does not survive a restart.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use std::collections::HashMap;
@@ -24,6 +26,20 @@ pub struct SegmentEntry {
 pub struct NodeMapping {
     pub node_id: String,
     pub place_id: String,
+}
+
+/// What an inbound event changed in the index.
+///
+/// Returned by `apply_event` so the caller can write the same change to
+/// `plan_segments` / `plan_nodes`. Without this the index exists only in
+/// memory: the startup loader reads those tables, so every restart begins
+/// with an empty index and the segments published while the pod was down are
+/// unrecoverable, because the Redis consumer group is created at `$`.
+#[derive(Debug, Clone)]
+pub enum IndexMutation {
+    Segment(SegmentEntry),
+    Node(NodeMapping),
+    None,
 }
 
 /// Thread-safe in-memory index for plan segments and node->place mappings.
@@ -155,11 +171,14 @@ impl PlanIndex {
     }
 
     /// Apply an upstream event to the in-memory index.
-    pub fn apply_event(&self, event_type: &str, payload: &serde_json::Value) {
+    ///
+    /// Returns what changed so the caller can persist it.
+    pub fn apply_event(&self, event_type: &str, payload: &serde_json::Value) -> IndexMutation {
         match event_type {
             "ServicePlanPublished" | "ScheduledServiceCreated" => {
                 // Services don't directly affect segment lookup, but we track them
                 // for the scheduled_service_ref join.
+                IndexMutation::None
             }
             "ServicePlanChanged" | "ServiceSegmentCreated" => {
                 let seg = payload
@@ -192,15 +211,15 @@ impl PlanIndex {
                     .to_string();
 
                 if seg.is_empty() || origin.is_empty() || dest.is_empty() || dep_raw.is_empty() {
-                    return;
+                    return IndexMutation::None;
                 }
                 let Some(dep) = parse_datetime(dep_raw) else {
-                    return;
+                    return IndexMutation::None;
                 };
                 let arr = parse_datetime(arr_raw).unwrap_or(dep);
                 let date = dep.date_naive();
 
-                self.upsert_segment(SegmentEntry {
+                let entry = SegmentEntry {
                     segment_ref: seg,
                     scheduled_service_ref: service_ref,
                     origin_stop_ref: origin,
@@ -208,7 +227,9 @@ impl PlanIndex {
                     departure_time: dep,
                     departure_date: date,
                     arrival_time: arr,
-                });
+                };
+                self.upsert_segment(entry.clone());
+                IndexMutation::Segment(entry)
             }
             "TransportNodeRegistered" | "TransportNodeAdded" | "TransportNodeUpdated" => {
                 let node = payload
@@ -221,11 +242,16 @@ impl PlanIndex {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if !node.is_empty() && !place.is_empty() {
-                    self.upsert_node(node, place);
+                if node.is_empty() || place.is_empty() {
+                    return IndexMutation::None;
                 }
+                self.upsert_node(node.clone(), place.clone());
+                IndexMutation::Node(NodeMapping {
+                    node_id: node,
+                    place_id: place,
+                })
             }
-            _ => {}
+            _ => IndexMutation::None,
         }
     }
 
@@ -315,5 +341,65 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
         let results = index.candidates("X", "Y", date);
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn apply_event_reports_the_segment_to_persist() {
+        let index = PlanIndex::new();
+        let payload = serde_json::json!({
+            "segmentRef": "seg-3",
+            "originStopRef": "tnd-origin",
+            "destinationStopRef": "tnd-dest",
+            "departureTime": "2026-07-11T08:00:00Z",
+            "arrivalTime": "2026-07-11T09:00:00Z",
+            "scheduledServiceRef": "ss-3"
+        });
+
+        // service-plan publishes ServicePlanChanged when a segment is created.
+        let mutation = index.apply_event("ServicePlanChanged", &payload);
+
+        let IndexMutation::Segment(entry) = mutation else {
+            panic!("segment event must report a segment to persist, got {mutation:?}");
+        };
+        assert_eq!(entry.segment_ref, "seg-3");
+        assert_eq!(entry.scheduled_service_ref, "ss-3");
+        assert_eq!(entry.origin_stop_ref, "tnd-origin");
+        assert_eq!(entry.destination_stop_ref, "tnd-dest");
+        assert_eq!(
+            entry.departure_date,
+            NaiveDate::from_ymd_opt(2026, 7, 11).unwrap()
+        );
+    }
+
+    #[test]
+    fn apply_event_reports_the_node_to_persist() {
+        let index = PlanIndex::new();
+        let payload = serde_json::json!({
+            "nodeId": "tnd-1",
+            "placeId": "plc-1"
+        });
+
+        let mutation = index.apply_event("TransportNodeRegistered", &payload);
+
+        let IndexMutation::Node(mapping) = mutation else {
+            panic!("node event must report a node to persist, got {mutation:?}");
+        };
+        assert_eq!(mapping.node_id, "tnd-1");
+        assert_eq!(mapping.place_id, "plc-1");
+    }
+
+    #[test]
+    fn apply_event_reports_nothing_for_unrelated_and_incomplete_events() {
+        let index = PlanIndex::new();
+
+        assert!(matches!(
+            index.apply_event("CapacityHeld", &serde_json::json!({"holdId": "hold-1"})),
+            IndexMutation::None
+        ));
+        assert!(matches!(
+            index.apply_event("ServicePlanChanged", &serde_json::json!({"segmentRef": "seg-4"})),
+            IndexMutation::None
+        ));
+        assert_eq!(index.segment_count(), 0);
     }
 }

@@ -129,8 +129,13 @@ pub async fn build_runtime() -> Router {
                 Box::new(move |envelope| {
                     let state = handler_state.clone();
                     Box::pin(async move {
-                        state.handle_inbound_event(&envelope);
-                        Ok(())
+                        // A failed write must not be acknowledged: the index is
+                        // rebuilt from Postgres on restart, and the consumer
+                        // group starts at `$`, so a dropped write is a segment
+                        // that never becomes searchable again.
+                        state.handle_inbound_event(&envelope).await.map_err(|error| {
+                            rust_kit::messaging::HandlerError::Transient(error.to_string())
+                        })
                     })
                 }),
             )
