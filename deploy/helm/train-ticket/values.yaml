@@ -402,14 +402,35 @@ defaults:
   # Extra env injected into every service Deployment. Per-service
   # `services.<name>.env` wins on key collision.
   #
-  # Deliberately empty by default: the four Redis-consumer knobs
-  # (EVENT_STREAM_MAXLEN, MAX_REDELIVERY_ATTEMPTS, AUTOCLAIM_MIN_IDLE_MS,
-  # REDIS_LIVENESS_GRACE_MS) are NOT set here. Their in-code defaults (10000,
-  # 100, 300000, 300000) are the intended production values and are documented
-  # at their definitions in platform/java-kit and platform/ts-kit; pinning them
-  # here would create a second place to keep in sync that silently overrides
-  # the first, which is how the loadgen config drifted. Set one only when an
-  # environment genuinely needs a different value.
+  # Of the four Redis-consumer knobs (EVENT_STREAM_MAXLEN,
+  # MAX_REDELIVERY_ATTEMPTS, AUTOCLAIM_MIN_IDLE_MS, REDIS_LIVENESS_GRACE_MS),
+  # only the first is set here. The in-code defaults are documented at their
+  # definitions in platform/java-kit and platform/ts-kit, and pinning one here
+  # creates a second place to keep in sync that silently overrides the first,
+  # which is how the loadgen config drifted. So one is set only where this
+  # environment's throughput makes the default wrong, and this is that case.
+  #
+  # EVENT_STREAM_MAXLEN is a count of entries, and whether that count is
+  # enough is a question about arrival rate. Measured under the shaped
+  # profile: events:journey-order held its 10000-entry cap across a 370 second
+  # window, so an entry is trimmed roughly six minutes after it is published.
+  # AUTOCLAIM_MIN_IDLE_MS is 300000, so a message that a handler failed
+  # becomes reclaimable 5 minutes in and has 70 seconds of retention left. At
+  # that point booking-orchestration held 7800 pending messages on that
+  # stream, and 90% of the load generator's saga lookups answered 404 while
+  # only 246 of 16596 purchases completed.
+  #
+  # The two constants were sized against each other, both at 5 minutes, and
+  # neither against the offered rate. 30000 puts the measured window near 18
+  # minutes, so a message reclaimed at 5 minutes has 13 minutes of retention
+  # left rather than 70 seconds.
+  #
+  # Not higher, because the entries are resident in Redis and their size is
+  # measured, not assumed: events:journey-order holds 23.7MB for its 10000
+  # entries, which is 2368 bytes each, and all 38 streams together hold 349MB
+  # of the 3GB maxmemory that templates/redis.yaml sets. Tripling the cap puts
+  # that near 1.05GB. The same arithmetic rules out the two-hour window that
+  # the arrival rate alone would suggest: 200000 would need about 7GB.
   #
   # MaxRAMPercentage is the exception, and it belongs here rather than
   # per-service because the JVM's own container default is actively wrong: it
@@ -425,6 +446,7 @@ defaults:
   # JAVA_TOOL_OPTIONS.
   env:
     JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0"
+    EVENT_STREAM_MAXLEN: "30000"
   # Applied when a service sets no `resources` of its own. The floor a plain
   # HTTP-plus-Postgres service needs; anything CPU- or memory-hungry declares
   # its own block under `services.<name>.resources` below.
