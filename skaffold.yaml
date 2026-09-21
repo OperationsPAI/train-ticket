@@ -267,7 +267,7 @@ profiles:
               - deploy/helm/values-cluster.yaml
               - deploy/helm/values-case.yaml
               - deploy/helm/values-resident.yaml
-            setValueTemplates:
+            setValueTemplates: &images
               services.account.image: "{{.IMAGE_FULLY_QUALIFIED_account}}"
               services.admin-audit.image: "{{.IMAGE_FULLY_QUALIFIED_admin_audit}}"
               services.ancillary-service.image: "{{.IMAGE_FULLY_QUALIFIED_ancillary_service}}"
@@ -307,3 +307,40 @@ profiles:
               services.waitlist.image: "{{.IMAGE_FULLY_QUALIFIED_waitlist}}"
               services.wallet-promotion.image: "{{.IMAGE_FULLY_QUALIFIED_wallet_promotion}}"
               loadgen.image: "{{.IMAGE_FULLY_QUALIFIED_loadgen}}"
+
+  # One case: a release installed to be measured over one window and then
+  # thrown away.
+  #
+  #   skaffold run -p case -n tt-case-<id> -d mirrors.tencent.com/microservice
+  #
+  # The namespace comes from the flag and the release name does not, because the
+  # namespace is what tells two concurrent cases apart. Nothing else differs
+  # from a release installed by hand: same chart, same two values files, in the
+  # same order.
+  #
+  # values-resident.yaml is the one file left out, and that is the whole
+  # difference between the two profiles. It puts back nodeExporter and
+  # kubeStateMetrics, which are hostNetwork on a fixed port, so exactly one
+  # release per node may run them -- and that release is the resident one,
+  # which is always there. A case that started them would CrashLoop on the
+  # port.
+  #
+  # This profile exists so that a case deploys through the same builder the
+  # resident one does. inputDigest tags each artifact by its own inputs, so a
+  # history that changed one service rebuilds one image and rolls one pod, while
+  # the other 38 render byte-identically and are left alone. Building and
+  # retagging by hand outside skaffold gave up exactly that: every image carried
+  # the case's own tag, so nothing was ever reused between two cases built on
+  # the same base.
+  - name: case
+    deploy:
+      helm:
+        releases:
+          - name: train-ticket
+            chartPath: deploy/helm/train-ticket
+            createNamespace: true
+            wait: true
+            valuesFiles:
+              - deploy/helm/values-cluster.yaml
+              - deploy/helm/values-case.yaml
+            setValueTemplates: *images
