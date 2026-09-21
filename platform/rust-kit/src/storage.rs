@@ -356,7 +356,15 @@ impl Default for OutboxRelayConfig {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(50),
             ),
-            batch_size: 100,
+            // Readable from the environment, as the interval already was. The
+            // two together set the relay's ceiling, and only one of them being
+            // tunable meant a service whose batch had become the bound could
+            // not be given a larger one.
+            batch_size: std::env::var("OUTBOX_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(500),
         }
     }
 }
@@ -400,28 +408,56 @@ pub async fn relay_once(
     .fetch_all(pool)
     .await?;
 
-    let mut published = 0usize;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    // One connection for the whole batch, opened before the loop.
+    //
+    // It used to be opened per row. Measured on the deployed trip-planning:
+    // the relay published 106 events per second, which is 9.5ms per event
+    // against a batch of 100 every 50ms, so it was never interval-bound. The
+    // outbox held 29740 unpublished events whose oldest was 250 seconds old,
+    // growing in age while stable in depth, which is a relay draining at
+    // exactly the arrival rate.
+    //
+    // The consequence was client-visible rather than internal: offer-management
+    // refuses an offer whose ItineraryProposed it has not consumed, the load
+    // generator retries that for 17 seconds, and the event arrived four
+    // minutes later. Every purchase journey failed on
+    // `No consumed Trip Planning itinerary found`.
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+    // Published sequences accumulate and are marked in one statement after the
+    // loop. A per-row UPDATE is a second round trip per event, and the rows
+    // are already ordered by seq so a crash between the XADD and the UPDATE
+    // redelivers from the first unmarked one, which is the same at-least-once
+    // guarantee the per-row form gave.
+    let mut delivered: Vec<i64> = Vec::with_capacity(rows.len());
     for (seq, stream, envelope) in rows {
         let raw_envelope = serde_json::to_string(&envelope)?;
-        let mut connection = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|error| StorageError::Database(error.to_string()))?;
         crate::messaging::capped_xadd(&stream)
             .arg("envelope")
             .arg(&raw_envelope)
             .query_async::<_, String>(&mut connection)
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
+        delivered.push(seq);
+    }
+
+    if !delivered.is_empty() {
         sqlx::query(
-            "UPDATE outbox SET published_at = now() WHERE seq = $1 AND published_at IS NULL",
+            "UPDATE outbox SET published_at = now() \
+             WHERE seq = ANY($1) AND published_at IS NULL",
         )
-        .bind(seq)
+        .bind(&delivered)
         .execute(pool)
         .await?;
-        published += 1;
     }
-    Ok(published)
+    Ok(delivered.len())
 }
 
 /// Check-only sibling of [`mark_event_processing`]: true when the event was
