@@ -45,6 +45,10 @@ import (
 //                       has already travelled, rather than drawing a new one.
 //                       What makes business demand concentrated rather than
 //                       merely short.
+//   seat_classes        weight map over fare-pricing's seat classes. Read in
+//                       seat_class.go, sent on the fare quote where it
+//                       multiplies the base fare, and on the seat assignment
+//                       for the classes seat-assignment stocks seats for.
 
 // distanceBands are the named bands trip_distance_km weights over. Named
 // rather than numeric so a persona's configuration reads as a statement about
@@ -406,7 +410,7 @@ func PersonaDemandSummary(cfg *Config, name string) string {
 	}
 	var parts []string
 	for _, key := range []string{"trip_distance_km", "booking_lead_days",
-		"p_weekend_departure", "line_weights", "p_repeat_trip"} {
+		"p_weekend_departure", "line_weights", "p_repeat_trip", "seat_classes"} {
 		if v := get(key); v != nil {
 			parts = append(parts, key+"="+compactValue(v))
 		}

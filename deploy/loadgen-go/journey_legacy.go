@@ -41,8 +41,12 @@ func JourneyLegacy(ctx context.Context, p *Providers) (string, error) {
 		"X-Legacy-Reason":   "LOAD_TEST",
 	}
 
-	seatTypes := p.CtxMap("seat_types", map[string]float64{"SECOND": 0.8, "FIRST": 0.2})
-	seatType := WeightedChoice(p.Rng, seatTypes)
+	// legacy-acl discards this field: the only occurrence of seatType under
+	// services/legacy-acl/src/ is a comment. It is sent because the legacy
+	// request shape includes it, and it now carries the same vocabulary the
+	// rest of the generator uses so the value is at least not one no service
+	// would recognise.
+	seatType := p.SeatClassOrDefault()
 
 	// preserve
 	_, preserveData, err := p.API.Request(ctx, "POST", "legacy-acl", "/api/v1/legacy/preserve",

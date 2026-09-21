@@ -451,12 +451,20 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 // falls back to the flat base fare for a null distanceKm, which is the honest
 // answer when the length of the trip is genuinely unknown; sending a made-up
 // distance would price it wrongly instead.
+//
+// seatClass is the persona's drawn class and multiplies the base fare, so the
+// same trip quotes differently for a business traveller in first class and a
+// casual one in second. The caller passes the class it will also send to
+// seat-assignment, so one journey prices and seats the same class.
 func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel string,
-	segments []string, trip *SearchResult) (map[string]interface{}, error) {
+	segments []string, trip *SearchResult, seatClass string) (map[string]interface{}, error) {
 	body := map[string]interface{}{
 		"travelerRefs": travelers,
 		"channel":      channel,
 		"segmentRefs":  segments,
+	}
+	if seatClass != "" {
+		body["seatClass"] = seatClass
 	}
 	if trip != nil && trip.DistanceKM > 0 {
 		body["distanceKm"] = trip.DistanceKM
