@@ -39,6 +39,9 @@ pub fn metadata() -> ServiceProfile {
 pub fn runtime_config() -> RuntimeConfig {
     RuntimeConfig::from_metadata(metadata())
         .with_observer(OpenTelemetryObserver::from_env(profile().service_id))
+        .with_http_metrics(rust_kit::metrics::HttpServerMetrics::recorder_from_env(
+            profile().service_id,
+        ))
 }
 pub fn apply_service_runtime(router: Router) -> Router {
     apply_runtime(router, runtime_config())
@@ -52,7 +55,7 @@ pub async fn router() -> Router {
     router_with_postgres_state(service)
 }
 pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed> {
-    let _otel = rust_kit::otel::init_from_env(profile().service_id)
+    let _otel = rust_kit::metrics::init_telemetry_from_env(profile().service_id)
         .map_err(|e| SubscribeFailed(e.to_string()))?;
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let service = Arc::new(

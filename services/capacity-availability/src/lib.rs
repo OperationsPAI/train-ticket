@@ -60,6 +60,9 @@ pub fn metadata() -> ServiceProfile {
 pub fn runtime_config() -> RuntimeConfig {
     RuntimeConfig::from_metadata(metadata())
         .with_observer(OpenTelemetryObserver::from_env(profile().service_id))
+        .with_http_metrics(rust_kit::metrics::HttpServerMetrics::recorder_from_env(
+            profile().service_id,
+        ))
 }
 
 /// Construct the full router with API routes and standard runtime middleware.

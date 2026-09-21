@@ -13,7 +13,7 @@ axum = "0.8.9"
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 opentelemetry = "0.32.0"
-opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "tls-roots"] }
+opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "metrics", "tls-roots"] }
 opentelemetry_sdk = "0.32.0"
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"], optional = true }
 # Optional so the kit does not force an HTTP client on services that make no

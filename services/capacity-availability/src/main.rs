@@ -1,8 +1,9 @@
 #[cfg(feature = "redis-impl")]
 #[tokio::main]
 async fn main() {
-    let otel = rust_kit::otel::init_from_env(capacity_availability::profile().service_id)
-        .expect("failed to initialize OpenTelemetry");
+    let otel =
+        rust_kit::metrics::init_telemetry_from_env(capacity_availability::profile().service_id)
+            .expect("failed to initialize OpenTelemetry");
     let _otel_guard = otel;
     capacity_availability::init_logging();
     log::info!("capacity-availability runtime starting");

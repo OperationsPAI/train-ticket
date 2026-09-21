@@ -18,11 +18,11 @@ import (
 )
 
 func main() {
-	shutdownOTel, err := goruntime.InitOTelSDKFromEnv(context.Background(), "place-network")
+	shutdownTelemetry, err := goruntime.InitTelemetryFromEnv(context.Background(), "place-network")
 	if err != nil {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
-	defer func() { _ = shutdownOTel(context.Background()) }()
+	defer func() { _ = shutdownTelemetry(context.Background()) }()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -31,7 +31,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := storage.NewPool(ctx, os.Getenv("DATABASE_URL"))
+	// The metrics variant installs pool acquisition tracing, which pgxpool reads
+	// at construction and so cannot be attached afterwards.
+	pool, poolMetrics, err := storage.NewPoolWithMetrics(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,7 +77,14 @@ func main() {
 	// Redis Streams subscriptions to the place-network consumer group.
 
 	profile := domain.Profile()
-	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
+	httpMetrics, err := goruntime.HTTPMetricsFromEnv(profile.ServiceID)
+	if err != nil {
+		log.Fatalf("failed to build HTTP server metrics: %v", err)
+	}
+	if _, err := poolMetrics.RegisterPoolMetrics(goruntime.MeterFromEnv(profile.ServiceID)); err != nil {
+		log.Fatalf("failed to register pool metrics: %v", err)
+	}
+	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID), HTTPMetrics: httpMetrics})
 	apphttp.NewHandler(service, idempotencyStore).RegisterRoutes(router)
 
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + port, Handler: router})

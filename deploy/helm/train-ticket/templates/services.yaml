@@ -84,8 +84,34 @@ spec:
               value: {{ $name }}
             - name: OTEL_TRACES_EXPORTER
               value: otlp
+            {{- /*
+            Application metrics. The services' own runtime state -- connection
+            pools, heap, GC, HTTP server -- exists only inside the process, so
+            unlike logs and pod resource usage there is no receiver that can
+            observe it from outside. It goes over the same OTLP connection as the
+            spans, into the gateway's metrics pipeline.
+            */}}
             - name: OTEL_METRICS_EXPORTER
-              value: none
+              value: otlp
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: {{ $.Values.otelCollector.metricExportIntervalMillis | quote }}
+            {{- /*
+            Makes the Python services emit http.server.request.duration rather
+            than the older http.server.duration, which is what the Java and Go
+            instrumentation here produces.
+
+            Without it one query per language would be needed for the same
+            quantity, in different units -- the old name is milliseconds, the new
+            one seconds -- and the attributes differ too (http.target versus
+            http.route). "http" rather than "http/dup": emitting both doubles the
+            series for no additional information.
+
+            Read by the Python instrumentation when it instruments the app.
+            Harmless for the other languages, whose instrumentation here reports
+            the current names unconditionally.
+            */}}
+            - name: OTEL_SEMCONV_STABILITY_OPT_IN
+              value: http
             - name: OTEL_LOGS_EXPORTER
               value: none
             {{- /*
