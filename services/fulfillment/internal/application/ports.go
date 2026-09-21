@@ -16,6 +16,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
+	"github.com/trainticket/greenfield/services/fulfillment/internal/boarding"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
 
@@ -959,13 +960,13 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource reports whether a boarding fact arriving from this source is
+// evidence the release boards through.
+//
+// The estate is the deployment's rather than the reader's: a source the release
+// does not state is refused even though the code that names it knows the name.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
-	}
+	return boarding.Operates(source)
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {

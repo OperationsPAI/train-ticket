@@ -660,6 +660,13 @@ services:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
   fulfillment:
     db: fulfillment
+    env:
+      # The boarding estate this release boards through: the evidence a boarding
+      # fact is measured against. The service takes the readers this release
+      # names and keeps the vocabulary its image was built with only when the
+      # release names none, so retiring a reader is a release change rather than
+      # a new image.
+      FULFILLMENT_BOARDING_SOURCES: "GATE,STATION,PROVIDER"
   post-sales:
     db: post_sales
     env:
