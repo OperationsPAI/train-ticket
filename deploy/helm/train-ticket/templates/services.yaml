@@ -96,6 +96,24 @@ spec:
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: {{ $.Values.otelCollector.metricExportIntervalMillis | quote }}
             {{- /*
+            Set alongside the interval, never left to the SDK's own default.
+            That default is 30s against an interval default of 60s, so any
+            interval below 30s pairs a timeout longer than the period it runs
+            in. PeriodicExportingMetricReader refuses that pair outright, and
+            the Node SDK builds one from these two variables whatever the
+            application passes: measured, all seven TypeScript services
+            crash-looped on "exportIntervalMillis must be greater than or equal
+            to exportTimeoutMillis" under the 15s interval, while the Java and
+            Python readers accepted a timeout twice their period without
+            comment.
+
+            Derived from the interval rather than configured separately,
+            because an export allowed to outlive its own period has no meaning
+            in either direction.
+            */}}
+            - name: OTEL_METRIC_EXPORT_TIMEOUT
+              value: {{ $.Values.otelCollector.metricExportIntervalMillis | quote }}
+            {{- /*
             Makes the Python services emit http.server.request.duration rather
             than the older http.server.duration, which is what the Java and Go
             instrumentation here produces.

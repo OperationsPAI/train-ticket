@@ -6,7 +6,12 @@ import { InMemoryMetricExporter, PeriodicExportingMetricReader, type MetricReade
 import { AggregationTemporality } from "@opentelemetry/sdk-metrics";
 import type { Pool } from "pg";
 
-import { metricExportIntervalMillis, POOL_NAME, registerPoolMetrics } from "./metrics.js";
+import {
+  metricExportIntervalMillis,
+  metricExportTimeoutMillis,
+  POOL_NAME,
+  registerPoolMetrics,
+} from "./metrics.js";
 import { initOpenTelemetry } from "./observability.js";
 
 /**
@@ -75,6 +80,67 @@ describe("application metrics", () => {
       assert.equal(metricExportIntervalMillis(), 60_000);
       process.env.OTEL_METRIC_EXPORT_INTERVAL = "0";
       assert.equal(metricExportIntervalMillis(), 60_000);
+    } finally {
+      restore("OTEL_METRIC_EXPORT_INTERVAL", previous);
+    }
+  });
+
+  it("keeps the export timeout inside the interval the reader accepts", () => {
+    const previousInterval = process.env.OTEL_METRIC_EXPORT_INTERVAL;
+    const previousTimeout = process.env.OTEL_METRIC_EXPORT_TIMEOUT;
+    try {
+      // The deployed pair. PeriodicExportingMetricReader refuses a timeout
+      // above the interval, and the two SDK defaults are 30s and 60s, so a 15s
+      // interval left to the default timeout cannot be constructed at all.
+      process.env.OTEL_METRIC_EXPORT_INTERVAL = "15000";
+      delete process.env.OTEL_METRIC_EXPORT_TIMEOUT;
+      assert.equal(metricExportTimeoutMillis(), 15_000);
+
+      // An interval above the default leaves the default in place.
+      process.env.OTEL_METRIC_EXPORT_INTERVAL = "60000";
+      assert.equal(metricExportTimeoutMillis(), 30_000);
+
+      // A configured timeout is honoured up to the interval and no further.
+      process.env.OTEL_METRIC_EXPORT_TIMEOUT = "5000";
+      assert.equal(metricExportTimeoutMillis(), 5_000);
+      process.env.OTEL_METRIC_EXPORT_TIMEOUT = "90000";
+      assert.equal(metricExportTimeoutMillis(), 60_000);
+
+      // As with the interval, a value that is not a positive number governs
+      // only how long one export may take, so it falls back.
+      process.env.OTEL_METRIC_EXPORT_TIMEOUT = "not-a-number";
+      assert.equal(metricExportTimeoutMillis(), 30_000);
+      process.env.OTEL_METRIC_EXPORT_TIMEOUT = "0";
+      assert.equal(metricExportTimeoutMillis(), 30_000);
+    } finally {
+      restore("OTEL_METRIC_EXPORT_INTERVAL", previousInterval);
+      restore("OTEL_METRIC_EXPORT_TIMEOUT", previousTimeout);
+    }
+  });
+
+  it("builds a periodic reader the SDK accepts at the deployed interval", () => {
+    // The regression this pins. PeriodicExportingMetricReader throws from its
+    // own constructor when the timeout exceeds the interval, and the SDK
+    // defaults are 30s and 60s, so the deployment's 15s interval left the pair
+    // invalid and all seven TypeScript services crash-looped on
+    // "exportIntervalMillis must be greater than or equal to
+    // exportTimeoutMillis" before serving a request.
+    //
+    // The reader is constructed here rather than through initOpenTelemetry
+    // because the SDK is a module-global installed once per interpreter, and a
+    // second one started in this file would take the singleton away from the
+    // collection test below. What crashed is this constructor, and this is the
+    // call that reaches it.
+    const previous = process.env.OTEL_METRIC_EXPORT_INTERVAL;
+    try {
+      process.env.OTEL_METRIC_EXPORT_INTERVAL = "15000";
+      const periodic = new PeriodicExportingMetricReader({
+        exporter: new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE),
+        exportIntervalMillis: metricExportIntervalMillis(),
+        exportTimeoutMillis: metricExportTimeoutMillis(),
+      });
+      assert.notEqual(periodic, undefined);
+      void periodic.shutdown();
     } finally {
       restore("OTEL_METRIC_EXPORT_INTERVAL", previous);
     }
