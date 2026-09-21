@@ -207,20 +207,37 @@ ops:
 # ---------------------------------------------------------------------------
 bootstrap:
   enabled: true
-  # city pool drawn from in order; places/nodes are created only if a place
-  # with the same code is not already registered (discovered via list API).
-  cities:
-    - { name: Beijing,  code: BJS }
-    - { name: Shanghai, code: SHA }
-    - { name: Guangzhou, code: CAN }
-    - { name: Hangzhou, code: HGH }
+  # Which lines of the route topology to create inventory on. A place and a
+  # transport node are created per station of these lines, only if a place with
+  # the same code is not already registered (discovered via the list API).
+  #
+  # The stations themselves -- their order along each line and their real
+  # kilometre positions -- are a Go table in deploy/loadgen-go/topology.go, not
+  # config. They are consumed twice, by bootstrap to create inventory and by the
+  # persona demand model to pick trips, and a list duplicated across config and
+  # code would drift. Only the SELECTION is a deployment choice.
+  #
+  # All four: the lines intersect at Shanghai Hongqiao, Changsha South and
+  # Hangzhou East, and those shared stations are what make the corpus of
+  # plausible journeys a network rather than four separate corridors.
+  lines:
+    - beijing-shanghai      # 16 stops, 1318 km, via Tianjin/Jinan/Nanjing/Suzhou
+    - beijing-guangzhou     # 16 stops, 2298 km, via Shijiazhuang/Zhengzhou/Wuhan/Changsha
+    - shanghai-kunming      # 18 stops, 2252 km, via Hangzhou/Nanchang/Changsha/Guiyang
+    - hangzhou-shenzhen     # 15 stops, 1381 km, via Ningbo/Wenzhou/Fuzhou/Xiamen
   # Rolling departure window: services are ensured for each day in
   # [T+from_days, T+to_days] (computed at startup from today's date).
   # For backward compat, if departure_dates is present it takes precedence.
+  #
+  # This is now only the INVENTORY window and the fallback booking window. What
+  # each persona actually books is booking_lead_days below, which must stay
+  # inside this range or that persona finds no inventory on its dates.
   departure_window:
-    from_days: 7      # T+7
-    to_days: 21       # T+21  (2-week window)
-  services_per_date: 15
+    from_days: 1      # T+1  -- a business traveller books for tomorrow
+    to_days: 45       # T+45 -- a casual traveller books six weeks out
+  # Station pairs per date, divided across the active lines and spread over each
+  # line's distance spectrum, so every persona's distance band has inventory.
+  services_per_date: 24
   service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
 
 # ---------------------------------------------------------------------------
@@ -313,6 +330,10 @@ recording:
 personas:
   # Majority browser: high abandon rate, long think time, rarely buys. This is
   # what makes the read path dominate the write path, as it does in production.
+  #
+  # Travels long, books far ahead, and is the one persona that mostly travels at
+  # a weekend. A leisure trip: the whole Beijing-Shanghai run rather than a hop
+  # along it, planned weeks out, departing on a Saturday.
   casual:
     weight: 60
     journey_weights: {browse: 40, purchase: 30, refund: 8, support: 4, loyalty: 5, insurance: 3}
@@ -320,7 +341,22 @@ personas:
       p_new_account: 0.35
       p_abandon_after_search: 0.30
       think_time: {min: 2, max: 8}
+      trip_distance_km: {short: 0.05, medium: 0.20, long: 0.45, epic: 0.30}
+      booking_lead_days: {min: 14, max: 45}
+      p_weekend_departure: 0.65
+      p_repeat_trip: 0.02
+      # Spread over the whole network, with a lean towards the scenic
+      # north-south lines rather than the business trunk.
+      line_weights:
+        beijing-shanghai: 20
+        beijing-guangzhou: 25
+        shanghai-kunming: 30
+        hangzhou-shenzhen: 25
   # Buys with intent: short think time, low abandon, change-heavy.
+  #
+  # Short intercity hops on the trunk lines, repeatedly, booked close to
+  # departure and almost never at a weekend. Beijing to Tianjin on Tuesday
+  # morning, booked Monday night, and again next week.
   business:
     weight: 25
     journey_weights: {purchase: 50, change: 15, corporate: 10, loyalty: 10}
@@ -328,8 +364,23 @@ personas:
       p_new_account: 0.10
       p_abandon_after_search: 0.05
       think_time: {min: 0.5, max: 2}
+      trip_distance_km: {short: 0.60, medium: 0.32, long: 0.08, epic: 0.0}
+      booking_lead_days: {min: 1, max: 5}
+      p_weekend_departure: 0.05
+      # The knob that makes this persona's demand concentrated rather than
+      # merely short: most of its trips repeat a hop it has already taken.
+      p_repeat_trip: 0.55
+      # The two trunk lines, where the intercity hops are.
+      line_weights:
+        beijing-shanghai: 55
+        beijing-guangzhou: 35
+        shanghai-kunming: 7
+        hangzhou-shenzhen: 3
   # Never abandons and exercises the widest set of journeys, including the
   # post-purchase paths (fulfillment, ride) the other two rarely reach.
+  #
+  # Books across the whole distance and lead-time spectrum, so this persona is
+  # the one that keeps the middle of both ranges populated.
   power_user:
     weight: 15
     journey_weights: {purchase: 40, browse: 20, refund: 10, change: 10, fulfillment: 10, ride: 10}
@@ -337,3 +388,12 @@ personas:
       p_new_account: 0.05
       p_abandon_after_search: 0.0
       think_time: {min: 0.3, max: 1.5}
+      trip_distance_km: {short: 0.25, medium: 0.35, long: 0.25, epic: 0.15}
+      booking_lead_days: {min: 3, max: 30}
+      p_weekend_departure: 0.30
+      p_repeat_trip: 0.20
+      line_weights:
+        beijing-shanghai: 30
+        beijing-guangzhou: 25
+        shanghai-kunming: 25
+        hangzhou-shenzhen: 20
