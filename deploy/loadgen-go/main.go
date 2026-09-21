@@ -121,13 +121,40 @@ func main() {
 	// available-train, so it gets a record of its own: the run continues with
 	// whatever inventory exists, and that decision has to be visible in the
 	// same stream as its consequences.
+	//
+	// Gated on the services it writes through being ready first. Bootstrap runs
+	// once, so a service that is not up yet does not cost it a retry, it costs
+	// the whole run its inventory: measured, the loadgen started 4 seconds
+	// ahead of place-network, Bootstrap failed on its first request, and 78750
+	// journeys over the next 27 minutes failed on `available-train: no routes
+	// and fewer than 2 places`.
 	if cfg.Bootstrap.Enabled {
 		attempt := NewAttempt("bootstrap", "bootstrap_inventory", "")
+		waiting := AwaitServices(ctx, cfg.Target.BaseURLTemplate, bootstrapServices,
+			bootstrapWaitTimeout, bootstrapWaitInterval)
+		if len(waiting) > 0 {
+			// Recorded and then attempted anyway. The services may come up
+			// during the attempt, and inventory that partly exists is worth
+			// more to the run than none; what must not happen is the wait
+			// expiring silently.
+			fmt.Fprintf(os.Stderr,
+				"[bootstrap] %s still not ready after %s; attempting anyway\n",
+				describeWaiting(waiting), bootstrapWaitTimeout)
+		}
 		err := Bootstrap(WithAttempt(ctx, attempt), cfg, api, reg, rng, rec)
 		reg.mu.Lock()
 		routeCount := len(reg.Routes)
 		reg.mu.Unlock()
 		attempt.Record(rec, fmt.Sprintf("seeded_%d_routes", routeCount), err)
+		// Said on stdout as well as in the record. Every journey that reads
+		// this inventory reports its own failure, so a run with no routes
+		// produces tens of thousands of rows that each name a symptom, and one
+		// line here names the cause.
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[bootstrap] FAILED after %d routes: %v\n", routeCount, err)
+		} else {
+			fmt.Printf("[bootstrap] %d routes\n", routeCount)
+		}
 	}
 
 	var wg sync.WaitGroup
