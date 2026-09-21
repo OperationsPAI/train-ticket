@@ -69,7 +69,29 @@ behavior:
   waitlist_deadline_minutes: 30
   channels: { WEB: 1.0 }
   seat_types: { SECOND: 0.8, FIRST: 0.2 }
-  traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
+  # STUDENT and MILITARY are the types the eligibility-certificate branch
+  # registers a certificate for; enforced by traveler-profile's TravelerType.
+  traveler_types: { ADULT: 0.70, CHILD: 0.10, SENIOR: 0.05, STUDENT: 0.10, MILITARY: 0.05 }
+  # Sent as preferredChannel on the payment intent and as channelRef.channel on
+  # capture. Only ALIPAY_SIM, WECHAT_SIM and UNIONPAY_SIM exist; payment and
+  # payment-channel both reject anything else. Flat here so a local run
+  # exercises all three at equal rate rather than reproducing a population mix.
+  payment_channels: { ALIPAY_SIM: 0.34, WECHAT_SIM: 0.33, UNIONPAY_SIM: 0.33 }
+  # Read only where the generator posts to identity-verification, whose
+  # DocumentType enum has these five. traveler-profile accepts a different set
+  # (ID_CARD, PASSPORT, OTHER), which is why this is not one shared knob.
+  # Flatter than the deployed mix so the four non-ID_CARD branches are reached
+  # within a short local run.
+  identity_document_types:
+    ID_CARD: 0.40
+    PASSPORT: 0.20
+    HK_MACAU_PERMIT: 0.15
+    TW_PERMIT: 0.15
+    RESIDENCE_PERMIT: 0.10
+  # Share of purchases by an eligible traveler that register a certificate and
+  # quote under bootstrap.eligibility_fares.product_code. 1.0 locally: every
+  # eligible traveler takes the branch, so one short run covers it.
+  p_eligibility_certificate: 1.0
 
 staff:
   workers: 4
@@ -109,6 +131,31 @@ bootstrap:
     to_days: 21
   services_per_date: 3
   service_number_base: 5000
+
+  # The fare rule set an eligibility certificate discounts against. It exists
+  # because fare-pricing derives the eligibility types a quote may discount
+  # from the discount rules of the rule set its productCode resolves to, and
+  # the rail-standard set has none. Non-discount amounts match rail-standard so
+  # an eligible and an ineligible purchase differ by the discount alone. See
+  # deploy/helm/train-ticket/loadgen-config.yaml for the full commentary.
+  eligibility_fares:
+    enabled: true
+    product_code: rail-eligible
+    version_prefix: loadgen-local-eligible
+    supplier_id: supplier-loadgen-eligible
+    contract_id: contract-loadgen-eligible
+    base_fare_minor: 10000
+    tax_minor: 750
+    refund_fee_minor: 2000
+    change_fee_minor: 1500
+    discounts:
+      STUDENT: 2500
+      CHILD: 5000
+      MILITARY_DISABLED: 5000
+    annual_usage_limit: 1000
+    # Exceeds departure_window.to_days: the certificate is checked against the
+    # journey date, not against today.
+    validity_days: 365
 
 defaults:
   currency: "CNY"

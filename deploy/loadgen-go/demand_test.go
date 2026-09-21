@@ -556,7 +556,7 @@ func TestFareQuoteSendsTheTripDistance(t *testing.T) {
 
 	trip := &SearchResult{Segment: "seg-1", Date: "2026-10-15", DistanceKM: 1318, LeadDays: 24}
 	if _, err := p.FareQuote(context.Background(), []string{"tvl-1"}, "WEB",
-		[]string{"seg-1"}, trip); err != nil {
+		[]string{"seg-1"}, trip, ""); err != nil {
 		t.Fatalf("FareQuote: %v", err)
 	}
 	if len(bodies) != 1 {
@@ -583,7 +583,7 @@ func TestFareQuoteSendsTheTripDistance(t *testing.T) {
 	bodies = nil
 	unknown := &SearchResult{Segment: "seg-2", Date: "2026-10-15"}
 	if _, err := p.FareQuote(context.Background(), []string{"tvl-1"}, "WEB",
-		[]string{"seg-2"}, unknown); err != nil {
+		[]string{"seg-2"}, unknown, ""); err != nil {
 		t.Fatalf("FareQuote: %v", err)
 	}
 	if len(bodies) != 1 {

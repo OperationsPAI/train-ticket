@@ -8,7 +8,7 @@ func JourneyBrowse(ctx context.Context, p *Providers) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tvl, err := p.Traveler(ctx, entry, nil)
+	tvl, _, err := p.Traveler(ctx, entry, nil)
 	if err != nil {
 		return "", err
 	}
@@ -23,7 +23,9 @@ func JourneyBrowse(ctx context.Context, p *Providers) (string, error) {
 	if p.Chance("p_abandon_after_search") {
 		return "browsed", nil
 	}
-	quote, err := p.FareQuote(ctx, []string{tvl}, channel, []string{found.Segment}, found)
+	// Browsing quotes under the ordinary product: it registers no eligibility
+	// certificate, so there is none for a discount rule set to apply.
+	quote, err := p.FareQuote(ctx, []string{tvl}, channel, []string{found.Segment}, found, "")
 	if err != nil {
 		return "browsed", nil
 	}

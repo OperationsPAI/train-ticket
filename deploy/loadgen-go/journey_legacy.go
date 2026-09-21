@@ -12,7 +12,7 @@ func JourneyLegacy(ctx context.Context, p *Providers) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tvl, err := p.Traveler(ctx, entry, nil)
+	tvl, _, err := p.Traveler(ctx, entry, nil)
 	if err != nil {
 		return "", err
 	}

@@ -207,6 +207,53 @@ type BootstrapConfig struct {
 	ServicesPerDate int             `yaml:"services_per_date"`
 	ServiceNumBase  int             `yaml:"service_number_base"`
 	MinRoutes       int             `yaml:"min_routes"`
+
+	EligibilityFares EligibilityFaresConfig `yaml:"eligibility_fares"`
+}
+
+// EligibilityFaresConfig is the fare rule set the generator publishes so that
+// an eligibility certificate has something to discount.
+//
+// fare-pricing does not take an eligibility on a quote request. It derives the
+// eligibility types a quote may discount from the `discount` rules of the rule
+// set the request's productCode resolves to, and only then asks
+// identity-verification whether a traveler holds a matching certificate
+// (_active_discount_types and _discount_allowed in
+// services/fare-pricing/src/fare_pricing/application/service.py and domain.py).
+// The rule set published for rail-standard carries no discount rule at all, so
+// against it a certificate can never change a price.
+//
+// The non-discount amounts mirror the rail-standard rule set deliberately. An
+// eligible purchase must differ from an ordinary one by the discount and by
+// nothing else, otherwise the two prices are not comparable. refund_fee and
+// change_fee are carried for the same reason: post-sales prices a refund from
+// the rule set the ORIGINAL quote's productCode resolves to, and a product code
+// without a refund_fee rule yields a FAILED adjustment quote and a zero refund
+// (assess_refund in services/fare-pricing/src/fare_pricing/domain.py).
+type EligibilityFaresConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	ProductCode string `yaml:"product_code"`
+	// Version prefix of the published rule set; a UTC timestamp is appended so
+	// each run publishes its own version rather than colliding with the last.
+	VersionPrefix  string `yaml:"version_prefix"`
+	SupplierID     string `yaml:"supplier_id"`
+	ContractID     string `yaml:"contract_id"`
+	BaseFareMinor  int    `yaml:"base_fare_minor"`
+	TaxMinor       int    `yaml:"tax_minor"`
+	RefundFeeMinor int    `yaml:"refund_fee_minor"`
+	ChangeFeeMinor int    `yaml:"change_fee_minor"`
+	// Discounts maps an eligibility type to the amount it takes off the fare.
+	// Only STUDENT, CHILD and MILITARY_DISABLED are accepted, by both
+	// identity-verification (domain.py EligibilityCertificate.register) and
+	// fare-pricing (domain.py ELIGIBILITY_TYPES).
+	Discounts map[string]int `yaml:"discounts"`
+	// AnnualUsageLimit is the certificate's yearly cap. A certificate whose
+	// reserved plus confirmed usage reaches it stops being active.
+	AnnualUsageLimit int `yaml:"annual_usage_limit"`
+	// ValidityDays is how far ahead a registered certificate stays valid. It
+	// must cover the whole booking window, since fare-pricing checks the
+	// certificate against the journey date and not against today.
+	ValidityDays int `yaml:"validity_days"`
 }
 
 type DepartureWindow struct {
@@ -336,6 +383,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Bootstrap.DepartureWindow.FromDays == 0 && cfg.Bootstrap.DepartureWindow.ToDays == 0 {
 		cfg.Bootstrap.DepartureWindow = DepartureWindow{FromDays: 7, ToDays: 21}
 	}
+	applyEligibilityFareDefaults(&cfg.Bootstrap.EligibilityFares)
 	if cfg.Scalper.Workers == 0 {
 		cfg.Scalper.Workers = 3
 	}
@@ -370,6 +418,50 @@ func applyDefaults(cfg *Config) {
 			"disruption": 1, "transfer": 1, "loyalty": 8, "insurance": 6,
 			"group_booking": 5, "corporate": 5, "campaign": 4,
 		}
+	}
+}
+
+// applyEligibilityFareDefaults fills the eligibility rule set with values that
+// reproduce the rail-standard price exactly, so an ineligible purchase costs
+// the same under either product code and the discount is the only difference.
+//
+// A zero amount is not a usable setting for any of these: a rule set with a
+// zero base fare prices every trip at nothing, and a zero refund_fee is a rule
+// post-sales would read as a free refund. Absent therefore means the
+// rail-standard value rather than zero.
+func applyEligibilityFareDefaults(ef *EligibilityFaresConfig) {
+	if ef.ProductCode == "" {
+		ef.ProductCode = "rail-eligible"
+	}
+	if ef.VersionPrefix == "" {
+		ef.VersionPrefix = "loadgen-eligible"
+	}
+	if ef.SupplierID == "" {
+		ef.SupplierID = "supplier-loadgen-eligible"
+	}
+	if ef.ContractID == "" {
+		ef.ContractID = "contract-loadgen-eligible"
+	}
+	if ef.BaseFareMinor <= 0 {
+		ef.BaseFareMinor = 10000
+	}
+	if ef.TaxMinor <= 0 {
+		ef.TaxMinor = 750
+	}
+	if ef.RefundFeeMinor <= 0 {
+		ef.RefundFeeMinor = 2000
+	}
+	if ef.ChangeFeeMinor <= 0 {
+		ef.ChangeFeeMinor = 1500
+	}
+	if len(ef.Discounts) == 0 {
+		ef.Discounts = map[string]int{"STUDENT": 2500, "CHILD": 5000, "MILITARY_DISABLED": 5000}
+	}
+	if ef.AnnualUsageLimit <= 0 {
+		ef.AnnualUsageLimit = 1000
+	}
+	if ef.ValidityDays <= 0 {
+		ef.ValidityDays = 365
 	}
 }
 
