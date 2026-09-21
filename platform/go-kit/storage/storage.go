@@ -29,6 +29,13 @@ type DBTX interface {
 }
 
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	return newPool(ctx, databaseURL, nil)
+}
+
+// newPool holds the pool configuration both entry points share. customize runs
+// after the configuration is built and before the pool is created, which is the
+// only window in which pgxpool reads fields such as AcquireTracer.
+func newPool(ctx context.Context, databaseURL string, customize func(*pgxpool.Config)) (*pgxpool.Pool, error) {
 	databaseURL = strings.TrimSpace(databaseURL)
 	if databaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
@@ -45,6 +52,9 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg.MaxConnLifetime = 10 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
+	if customize != nil {
+		customize(cfg)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create postgres pool: %w", err)

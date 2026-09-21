@@ -71,6 +71,23 @@ class DatabasePool:
             self.config.url, min_size=min_size, max_size=pool_max, open=open,
             max_idle=300.0, max_lifetime=600.0, check=PsycopgConnectionPool.check_connection,
         )
+        # Here rather than in each service's startup: every Python service builds
+        # its pool through this class, so one call covers all of them. The
+        # registration is itself a no-op when metrics are disabled.
+        self._install_metrics()
+
+    def _install_metrics(self) -> None:
+        from .metrics import register_pool_metrics
+        from .observability import meter
+
+        pool_meter = meter()
+        if pool_meter is None:
+            return
+        register_pool_metrics(pool_meter, self)
+
+    def get_stats(self) -> dict[str, int]:
+        """psycopg_pool's own counters and levels, which the metrics read."""
+        return self._pool.get_stats()
 
     def connection(self) -> Any:
         return self._pool.connection()

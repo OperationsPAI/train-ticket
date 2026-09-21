@@ -3,7 +3,16 @@
 from .events import EventEnvelope, envelope_factory, new_prefixed_uuid7, new_uuid7
 from .http import ApiError, canonical_error_body, error_response, register_exception_handlers
 from .idempotency import BoundedInMemoryIdempotencyStore, IdempotencyMiddleware, IdempotencyRecord, configure_idempotency_middleware, require_uuid7_idempotency_key
-from .observability import init_opentelemetry, instrument_fastapi_app, otel_tracing_enabled
+from .observability import (
+    init_opentelemetry,
+    init_opentelemetry_metrics,
+    install_runtime_metrics,
+    instrument_fastapi_app,
+    meter,
+    otel_metrics_enabled,
+    otel_tracing_enabled,
+)
+from .metrics import POOL_NAME, metric_export_interval_millis, metrics_enabled, register_pool_metrics
 from .outbound import inject_trace_context, trace_context_headers, traced_httpx_client, traced_urllib_request
 from .trace_logging import SPAN_ID_FIELD, TRACE_ID_FIELD, current_trace_logging_ids, install_trace_logging, trace_logging_log_format
 from .messaging import (
@@ -30,13 +39,20 @@ __all__ = [
     "InMemoryEventSubscriber",
     "IdempotencyMiddleware",
     "IdempotencyRecord",
+    "POOL_NAME",
     "init_opentelemetry",
+    "init_opentelemetry_metrics",
+    "install_runtime_metrics",
     "install_trace_logging",
     "instrument_fastapi_app",
     "inject_trace_context",
+    "meter",
+    "metric_export_interval_millis",
+    "metrics_enabled",
     "PublishFailed",
     "RedisEventPublisher",
     "RedisEventSubscriber",
+    "register_pool_metrics",
     "SubscribeFailed",
     "TRACE_ID_FIELD",
     "SPAN_ID_FIELD",
@@ -48,6 +64,7 @@ __all__ = [
     "error_response",
     "new_prefixed_uuid7",
     "new_uuid7",
+    "otel_metrics_enabled",
     "otel_tracing_enabled",
     "register_exception_handlers",
     "require_uuid7_idempotency_key",
