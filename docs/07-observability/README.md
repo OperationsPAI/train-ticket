@@ -35,11 +35,11 @@ read node-local and cluster-scoped state that does not exist outside a cluster.
 
 ### Where logs come from, and why not the SDK
 
-The services set `OTEL_LOGS_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`, and
-the language kits install trace providers only. Logs are therefore collected by
-tailing the files the kubelet already writes, not over OTLP. This is deliberate:
-it makes every service's stdout queryable — including init containers, which
-have no SDK at all — without touching 38 services or the kit wiring.
+The services set `OTEL_LOGS_EXPORTER=none`, and the language kits install no log
+provider. Logs are therefore collected by tailing the files the kubelet already
+writes, not over OTLP. This is deliberate: it makes every service's stdout
+queryable — including init containers, which have no SDK at all — without
+touching 38 services or the kit wiring.
 
 The cost is that a log record's structure is whatever the service printed. The
 services log plain text, and trace correlation rides in a bracketed prefix —
@@ -49,6 +49,125 @@ operators parse the ids out of that prefix into `TraceId`/`SpanId`, which is wha
 makes the log-to-span join work. Records without the prefix — the Python
 services, init containers, Spring's startup banner — are kept with an empty
 `TraceId` rather than dropped.
+
+### Where application metrics come from, and why the SDK
+
+Metrics split by what a receiver can physically see. `kubeletstats`,
+`hostmetrics` and `k8s_cluster` report on the container and the cluster from
+outside the process: CPU, memory working set, restart counts, replica counts.
+Those are the numbers a pod has whether it is a train-ticket service or not.
+
+Everything inside the process is invisible to them. A connection pool's queue
+depth, a heap's occupancy, a GC pause, the duration of one HTTP route — no
+receiver outside the container can observe any of it, so the only path is the
+service's own SDK. `OTEL_METRICS_EXPORTER=otlp` is set on every service in the
+shared env block of `templates/services.yaml`, and the points go over the same
+OTLP connection as the spans, into the gateway's metrics pipeline.
+
+The case that settled it: a fault forced HikariCP's `minimumIdle` to 1 and cut
+`connectionTimeout` to 5s. It worked — 8858 purchase journeys timed out in 20
+minutes against zero in the reference — and the mechanism was unobservable.
+`hikaricp_connections_pending` did not exist, the pod's CPU and memory were
+unremarkable, and no service logged the pool exception (see
+[The pool timeout that logs nothing](#the-pool-timeout-that-logs-nothing)). Only
+the downstream effect on client latency could be seen, which says a request was
+slow without saying why.
+
+The names are each ecosystem's own rather than a scheme invented here, because
+the reader is someone querying for the name they already expect:
+
+| Language | Source | Names |
+| --- | --- | --- |
+| Java | Micrometer's HikariCP tracker and JVM binders, republished through the OpenTelemetry `MeterProvider` by the `opentelemetry-micrometer-1.5` bridge | `hikaricp.connections{,.active,.idle,.pending,.max,.min,.timeout,.acquire,.usage,.creation}`, `jvm.memory.{used,committed,max}`, `jvm.gc.pause`, `jvm.threads.live` |
+| Go | `database/sql`-equivalent `pgxpool.Stat` plus an `AcquireTracer`, and contrib's `instrumentation/runtime` | `db.client.connection.*`, `go.memory.used`, `go.goroutine.count`, `go.gc.duration` |
+| Python | `psycopg_pool.get_stats()` and `opentelemetry-instrumentation-system-metrics` | `db.client.connection.*`, `process.memory.usage`, `process.thread.count`, `cpython.gc.collections` |
+| TypeScript | `pg`'s own pool counters and `instrumentation-runtime-node` | `db.client.connection.*`, `v8js.memory.heap.used`, `v8js.gc.duration`, `nodejs.eventloop.{utilization,time,delay}` |
+| Rust | `sqlx::Pool` accessors | `db.client.connection.*` |
+
+HTTP server metrics are `http.server.request.duration` (seconds) and
+`http.server.active_requests` in every language, and outbound calls are
+`http.client.request.duration`. There is no separate request counter in any
+language: a histogram carries its own count, so a counter beside it would be a
+second series with the same information.
+
+`http.route` carries the **matched route pattern**, never the raw path. This is
+load-bearing rather than stylistic: a path holds ids, so `url.path` would
+produce one series per order id, and an unrouted path is chosen by whoever
+reached the ingress. A request that matched no route therefore carries no
+`http.route` attribute at all, which the convention permits for exactly this
+case.
+
+`OTEL_SEMCONV_STABILITY_OPT_IN=http` is set alongside. It makes the Python and
+Node HTTP instrumentation emit `http.server.request.duration` in seconds rather
+than the older `http.server.duration` in milliseconds, which is what the Java,
+Go and Rust instrumentation here reports. Without it the same quantity would
+need one query per language, in two different units, with two different
+attribute sets. Not `http/dup`: emitting both doubles the series for no
+additional information.
+
+Export period is `OTEL_METRIC_EXPORT_INTERVAL`, set to 15s by
+`otelCollector.metricExportIntervalMillis` rather than the SDK default of 60s. A
+connection pool saturates and recovers inside a minute, and the level being
+sampled is instantaneous rather than an average over the interval, so a 60s
+period can place a whole episode between two points — a missed sample is a
+missed event, not a smoothed one.
+
+Every kit gates its metrics on `OTEL_METRICS_EXPORTER` alone, independently of
+`OTEL_TRACES_EXPORTER`, so either signal can run without the other and a service
+started without a collector attempts no export and builds no instruments.
+
+### The pool timeout that logs nothing
+
+Worth stating separately, because it is a gap the metrics narrow but do not
+close, and it is not a logging misconfiguration: **no logger is turned off
+anywhere.** There is no `logging.level.com.zaxxer.hikari`, no root logger at
+`WARN`, and no exception-suppressing log pattern in java-kit or in any of the
+eight Java services. The silence is what the defaults produce, for four
+compounding reasons:
+
+- **HikariCP does not log a pool timeout; it throws one.** The string
+  `Connection is not available, request timed out after Nms` is built by
+  `HikariPool.createTimeoutException` into a `SQLTransientConnectionException`.
+  The accompanying `logPoolState` call is at DEBUG, and the effective root level
+  here is INFO. So the text exists only inside an exception object and is never
+  written to a log by the pool.
+- **The shared advice has no logger.**
+  `platform/java-kit/.../http/PlatformKitExceptionHandler.java` handles
+  `ApiException`, `IdempotencyKeyReusedException`,
+  `OptimisticConcurrencyException`, `IllegalArgumentException` and the
+  validation exceptions, and has no `Logger` field and no
+  `@ExceptionHandler(RuntimeException.class)`. Spring translates the pool
+  timeout to `CannotGetJdbcConnectionException`, which matches none of those, so
+  it reaches Spring's default resolver and becomes a 500 with no log line. Only
+  `post-sales` has a logging catch-all.
+- **The pool is acquired inside a servlet filter, outside any advice's reach.**
+  `IdempotencyFilter` queries `idempotency_records` on every
+  `POST /api/v1/*` before `DispatcherServlet` runs, so `@RestControllerAdvice` is
+  structurally unable to see the exception. The three filters that wrap it —
+  `OtelHttpServerFilter`, `OtelHttpServerMetricsFilter` and each service's
+  `RequestContextFilter` — record to a span event, to a metric attribute, and to
+  nothing respectively, and all re-throw without logging. This is why the
+  failure was visible in traces and absent from `kubectl logs`.
+- **The caller abandons the request before the server unblocks.** A mutating
+  request acquires the pool two or three times (the filter's read, the handler's
+  work, the filter's write). At a 5s `connectionTimeout` that is 10s or more,
+  against a 5s read timeout on `HttpOfferPriceAdapter` and the loadgen's 10s
+  ceiling. The Tomcat thread is still parked in `getConnection()` when the
+  client gives up, so no exception path is reached at all and the failure is
+  recorded client-side as a transport error with status 0.
+
+The readiness probes swallow the same exception: every `*Readiness.java` catches
+broadly and returns `false` with no log statement, and `getConnection()` there is
+bounded only by `connectionTimeout`, so the probe itself can block 5s.
+
+What the metrics change is that the mechanism is now visible even though the
+exception still is not: `hikaricp.connections.pending` rising while
+`hikaricp.connections.active` sits at `hikaricp.connections.max` is the pool
+exhausting, and `hikaricp.connections.timeout` counts the acquisitions that gave
+up. Making the exception itself appear in the logs would mean adding a logging
+catch-all to the shared advice and a catch to `IdempotencyFilter`, which is a
+behaviour change to the error path rather than instrumentation, so it is not done
+here.
 
 ## Local Runtime
 
@@ -256,8 +375,8 @@ ORDER BY Timestamp DESC;
 ```
 
 Metrics, by source. `k8s.pod.*` comes from `kubeletstats`, `k8s.deployment.*`
-from the `k8s_cluster` receiver, and `container_*` / `kube_*` / `node_*` from the
-Prometheus federation:
+from the `k8s_cluster` receiver, `container_*` / `kube_*` / `node_*` from the
+Prometheus federation, and everything else from the services' own SDKs:
 
 ```sql
 SELECT DISTINCT MetricName FROM otel_metrics_gauge ORDER BY MetricName;
@@ -269,6 +388,64 @@ WHERE MetricName = 'k8s.pod.cpu.utilization'
   AND TimeUnix >= now() - INTERVAL 15 MINUTE
 GROUP BY pod
 ORDER BY avg_cpu DESC
+LIMIT 20;
+```
+
+Separating the two by scope, which is the reliable discriminator: an application
+metric's `ScopeName` is a language SDK or instrumentation library, an
+infrastructure metric's is a collector receiver.
+
+```sql
+SELECT DISTINCT ScopeName, MetricName
+FROM otel_metrics_gauge
+WHERE TimeUnix >= now() - INTERVAL 15 MINUTE
+  AND ScopeName NOT LIKE '%opentelemetry-collector-contrib/receiver%'
+ORDER BY ScopeName, MetricName;
+```
+
+A saturated connection pool, which is the query the missing case needed. Java
+publishes HikariCP's names and the other four languages the database-client
+convention's, so the same question is two queries:
+
+```sql
+-- Java: callers queued, against the pool's ceiling
+SELECT ServiceName, TimeUnix, MetricName, Value
+FROM otel_metrics_gauge
+WHERE MetricName IN ('hikaricp.connections.pending',
+                     'hikaricp.connections.active',
+                     'hikaricp.connections.max')
+  AND TimeUnix >= now() - INTERVAL 30 MINUTE
+ORDER BY TimeUnix, ServiceName, MetricName;
+
+-- Go, Python, TypeScript, Rust: the same shape under the convention's names
+SELECT ServiceName,
+       Attributes['db.client.connection.state'] AS state,
+       max(Value) AS peak
+FROM otel_metrics_sum
+WHERE MetricName IN ('db.client.connection.count',
+                     'db.client.connection.pending_requests',
+                     'db.client.connection.max')
+  AND TimeUnix >= now() - INTERVAL 30 MINUTE
+GROUP BY ServiceName, state, MetricName
+ORDER BY peak DESC;
+```
+
+Note the table: pool levels are up-down counters, so they land in
+`otel_metrics_sum`, while `hikaricp_*` gauges land in `otel_metrics_gauge`. A
+query against the wrong one returns nothing rather than erroring.
+
+Per-route server latency, from the histogram every language reports:
+
+```sql
+SELECT ServiceName,
+       Attributes['http.route'] AS route,
+       sum(Count) AS requests,
+       sum(Sum) / sum(Count) AS mean_seconds
+FROM otel_metrics_histogram
+WHERE MetricName = 'http.server.request.duration'
+  AND TimeUnix >= now() - INTERVAL 15 MINUTE
+GROUP BY ServiceName, route
+ORDER BY requests DESC
 LIMIT 20;
 ```
 
@@ -444,20 +621,22 @@ docker volume rm train-ticket-clickhouse-data          # compose
 ## Service Contract
 
 Every service should use the same baseline environment shape when real
-OpenTelemetry SDK instrumentation is enabled. Only trace export is enabled: the
-services' metrics and logs reach the store without the SDK — logs by tailing pod
-stdout, metrics from the kubelet and Kubernetes API — so
-`OTEL_METRICS_EXPORTER=none` and `OTEL_LOGS_EXPORTER=none` are the intended
-steady state here, not a gap waiting to be closed. Turning them on would add a
-second path for signals already collected. See
-[Where logs come from](#where-logs-come-from-and-why-not-the-sdk).
+OpenTelemetry SDK instrumentation is enabled. Traces and metrics are exported by
+the SDK; logs are not. `OTEL_LOGS_EXPORTER=none` is the intended steady state
+rather than a gap waiting to be closed — a log record already reaches the store
+by tailing pod stdout, so turning the log exporter on would add a second path for
+a signal already collected. See
+[Where logs come from](#where-logs-come-from-and-why-not-the-sdk) and
+[Where application metrics come from](#where-application-metrics-come-from-and-why-the-sdk).
 
 ```bash
 OTEL_SERVICE_NAME=<service-id>
 OTEL_RESOURCE_ATTRIBUTES=service.namespace=train-ticket,deployment.environment=local
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 OTEL_TRACES_EXPORTER=otlp
-OTEL_METRICS_EXPORTER=none
+OTEL_METRICS_EXPORTER=otlp
+OTEL_METRIC_EXPORT_INTERVAL=15000
+OTEL_SEMCONV_STABILITY_OPT_IN=http
 OTEL_LOGS_EXPORTER=none
 ```
 
@@ -469,7 +648,9 @@ OpenTelemetry variables, set once in the shared env block of
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 OTEL_SERVICE_NAME=<service-name>
 OTEL_TRACES_EXPORTER=otlp
-OTEL_METRICS_EXPORTER=none
+OTEL_METRICS_EXPORTER=otlp
+OTEL_METRIC_EXPORT_INTERVAL=15000
+OTEL_SEMCONV_STABILITY_OPT_IN=http
 OTEL_LOGS_EXPORTER=none
 ```
 
@@ -515,12 +696,63 @@ as `service.name`, `http.request.method`, `url.path`,
 `http.response.status_code`, `http.request_id`, and `http.correlation_id` (with
 legacy `http.method` / `http.status_code` aliases during the baseline).
 
+### Where each kit installs its metrics
+
+Each kit registers at the one seam every service in that language already passes
+through, so no service needs an edit of its own:
+
+| Language | Seam | File |
+| --- | --- | --- |
+| Java | `PlatformOpenTelemetryMetricsConfiguration` auto-configuration; `HikariMetricsBinder` is a `BeanPostProcessor` that attaches HikariCP's Micrometer tracker to every `HikariDataSource` in the context | `platform/java-kit/src/main/java/com/trainticket/platformkit/observability/` |
+| Go | `goruntime.InitTelemetryFromEnv` in each `main`, `storage.NewPoolWithMetrics` for the pool, `GinConfig.HTTPMetrics` for the router | `platform/go-runtime/metrics.go`, `platform/go-runtime/otel_metrics_sdk.go`, `platform/go-kit/storage/metrics.go` |
+| Python | `init_opentelemetry` (which every service already calls at startup) and `DatabasePool.__init__` | `platform/python-kit/src/train_ticket_platform/metrics.py`, `observability.py` |
+| TypeScript | `initOpenTelemetry` and `createPostgresPool` | `platform/ts-kit/src/metrics.ts`, `observability.ts` |
+| Rust | `rust_kit::metrics::init_telemetry_from_env`, `Storage::new`, and `RuntimeConfig::with_http_metrics` | `platform/rust-kit/src/metrics.rs` |
+
+Two consequences of the Java shape are worth knowing. `HikariMetricsBinder` calls
+`setMetricsTrackerFactory` after construction, which HikariCP supports and which
+the live pool picks up without being rebuilt; a tracker can be installed only
+once per pool, so a pool that already carries one is left alone. And the
+Micrometer bridge is not in Prometheus mode, because that mode appends unit
+suffixes and would rename every meter HikariCP and the JVM binders register.
+
+The Rust pool is the one incomplete case.
+`db.client.connection.pending_requests` and `db.client.connection.timeouts` are
+not published from the pool itself: `sqlx::Pool` exposes `size()`, `num_idle()`
+and its configured maximum and nothing else, its waiters queue on a private
+semaphore inside `PoolInner`, and sqlx offers no acquire hook — there is no
+analogue of pgx's `AcquireTracer`. Saturation therefore reads on the four Rust
+services as `db.client.connection.count{state=used}` reaching
+`db.client.connection.max`, and `PoolMetrics::record_acquire` is what a call site
+uses to contribute the wait time and the timeout count it can observe itself.
+
+Rust also publishes no runtime group, and that is correct rather than missing:
+Rust has no managed runtime, so there is no heap occupancy, GC pause or thread
+pool to read. Those pods' process memory and CPU come from `kubeletstats`.
+Similarly, Go and Rust export no outbound-call metrics because neither kit wraps
+an HTTP or gRPC client — `platform/go-kit/httpkit` is a server-side error-writing
+helper, not a client.
+
 ## Rules
 
 - No service test may require a running collector.
 - Request and correlation IDs must be included in emitted trace attributes.
 - `/metadata` should disclose that tracing is opt-in and no-op by default until
   a runtime adapter is installed.
+- A metric must carry the name its own ecosystem publishes, or the name an
+  OpenTelemetry semantic convention defines where one exists. A name invented
+  here is a name nobody queries for, which makes the metric equivalent to not
+  having it.
+- `http.route` must carry the matched route pattern, and a request that matched
+  no route must carry no `http.route` attribute. The raw path holds ids and is
+  chosen by the caller, so recording it lets anyone reaching the ingress create
+  unbounded series.
+- A metric provider's `Resource` must be the same one the tracer provider uses.
+  Differing resource attributes on the two signals silently break every query
+  that joins them on `service.name`.
+- Each signal must be gated on its own `OTEL_*_EXPORTER` variable alone. Gating
+  metrics on tracing leaves a metrics-only service with no provider to publish
+  through, which is a failure with no error message.
 - Collector exporter changes must keep OTLP HTTP and gRPC receiver ports stable
   unless all service deployment templates are updated in the same change.
 - The telemetry-store StatefulSet must stay `replicas: 1`. ClickHouse holds an

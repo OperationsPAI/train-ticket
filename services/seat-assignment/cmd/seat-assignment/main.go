@@ -19,7 +19,7 @@ import (
 )
 
 func main() {
-	shutdown, err := goruntime.InitOTelSDKFromEnv(context.Background(), "seat-assignment")
+	shutdown, err := goruntime.InitTelemetryFromEnv(context.Background(), "seat-assignment")
 	if err != nil {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
@@ -30,7 +30,9 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	pool, err := kitstorage.NewPool(ctx, os.Getenv("DATABASE_URL"))
+	// The metrics variant installs pool acquisition tracing, which pgxpool reads
+	// at construction and so cannot be attached afterwards.
+	pool, poolMetrics, err := kitstorage.NewPoolWithMetrics(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,7 +76,14 @@ func main() {
 		log.Fatal(err)
 	}
 	profile := domain.Profile()
-	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: kitstorage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
+	httpMetrics, err := goruntime.HTTPMetricsFromEnv(profile.ServiceID)
+	if err != nil {
+		log.Fatalf("failed to build HTTP server metrics: %v", err)
+	}
+	if _, err := poolMetrics.RegisterPoolMetrics(goruntime.MeterFromEnv(profile.ServiceID)); err != nil {
+		log.Fatalf("failed to register pool metrics: %v", err)
+	}
+	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: kitstorage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID), HTTPMetrics: httpMetrics})
 	var store idempotency.Store = kitstorage.NewIdempotencyStore(pool)
 	api.NewHandler(svc, store).RegisterRoutes(router)
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + port, Handler: router})

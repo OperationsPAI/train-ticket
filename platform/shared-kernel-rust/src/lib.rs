@@ -277,10 +277,35 @@ impl Span for OpenTelemetrySpan {
     }
 }
 
+/// Records the HTTP server instruments for one request.
+///
+/// A seam rather than a direct dependency, for the same reason [`Observer`] is
+/// one: the instruments are built by `rust_kit::metrics`, which depends on this
+/// crate, so this crate cannot name the type. The runtime middleware calls
+/// whatever is installed here, and nothing when nothing is.
+pub trait HttpServerRecorder: Send + Sync + 'static {
+    fn request_started(&self, method: &str);
+
+    /// `route` is the matched route pattern, or `None` when the request matched
+    /// no route. The implementation must not substitute the raw path: a path
+    /// holds ids, so one series per id would grow without bound, and an unrouted
+    /// path is chosen by the caller.
+    fn request_finished(
+        &self,
+        method: &str,
+        route: Option<&str>,
+        status: u16,
+        elapsed: std::time::Duration,
+    );
+}
+
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub metadata: Value,
     pub observer: Arc<dyn Observer>,
+    /// `None` leaves the middleware recording nothing, so a service that has not
+    /// enabled metrics is unaffected.
+    pub http_metrics: Option<Arc<dyn HttpServerRecorder>>,
 }
 
 impl RuntimeConfig {
@@ -292,11 +317,17 @@ impl RuntimeConfig {
         Self {
             metadata: serde_json::to_value(metadata).unwrap_or_else(|_| json!({})),
             observer: Arc::new(NoopObserver),
+            http_metrics: None,
         }
     }
 
     pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
         self.observer = observer;
+        self
+    }
+
+    pub fn with_http_metrics(mut self, http_metrics: Option<Arc<dyn HttpServerRecorder>>) -> Self {
+        self.http_metrics = http_metrics;
         self
     }
 }
@@ -357,6 +388,18 @@ async fn runtime_middleware(
         header_value(&request, CORRELATION_ID_HEADER).unwrap_or_else(|| request_id.clone());
     let context = RequestContext::new(request_id.clone(), correlation_id.clone());
     let operation = request.uri().path().to_string();
+    let method = request.method().as_str().to_owned();
+    // The matched route pattern, read before the handler runs. Axum inserts it
+    // as a request extension while routing, so it is available here and is what
+    // the metric attribute must carry instead of the path.
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str().to_owned());
+    if let Some(metrics) = &config.http_metrics {
+        metrics.request_started(&method);
+    }
+    let started_at = std::time::Instant::now();
     let parent = extract_trace_context(request.headers());
     let mut span = config.observer.start(
         &context,
@@ -381,6 +424,14 @@ async fn runtime_middleware(
         CORRELATION_ID_HEADER,
         &correlation_id,
     );
+    if let Some(metrics) = &config.http_metrics {
+        metrics.request_finished(
+            &method,
+            route.as_deref(),
+            response.status().as_u16(),
+            started_at.elapsed(),
+        );
+    }
     span.end(response.status());
     response
 }

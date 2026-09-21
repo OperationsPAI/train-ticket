@@ -7,6 +7,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResult } from "pg";
 
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
 import { registerLivenessComponent, type Clock, type LivenessComponent } from "./liveness.js";
+import { registerPoolMetricsFromEnv } from "./metrics.js";
 import { configuredStreamMaxLen, type EventEnvelope, redisRetryStrategy, streamForProducer } from "./messaging.js";
 
 export type Database = Pool | PoolClient;
@@ -70,6 +71,10 @@ export function createPostgresPool(config: PoolConfig | string = databaseUrl()):
       waitingCount: pool.waitingCount,
     });
   });
+  // Here rather than in each service's bootstrap: every TypeScript service
+  // builds its pool through this function, so one call covers all of them. The
+  // registration is a no-op when metrics are disabled.
+  registerPoolMetricsFromEnv(pool);
   return pool;
 }
 

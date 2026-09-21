@@ -20,6 +20,11 @@
     <java.version>25</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <opentelemetry.version>1.46.0</opentelemetry.version>
+    <!-- Pinned to the release whose own opentelemetry-api dependency is exactly
+         ${opentelemetry.version}. The bridge reads the API's MeterProvider, so a
+         version pairing that disagrees resolves one API jar for the bridge and
+         another for everything else. -->
+    <opentelemetry-instrumentation.version>2.12.0-alpha</opentelemetry-instrumentation.version>
   </properties>
 
   <dependencyManagement>
@@ -87,6 +92,21 @@
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-exporter-otlp</artifactId>
       <version>${opentelemetry.version}</version>
+    </dependency>
+    <!-- Micrometer supplies the instrumentation (HikariCP's own tracker, the JVM
+         binders) and this bridge republishes every Micrometer meter through the
+         OpenTelemetry MeterProvider, so the metrics leave over the same OTLP
+         connection the spans already use. micrometer-registry-otlp was the
+         alternative and speaks OTLP/HTTP only, which would need a second
+         endpoint beside the gRPC one every service is given. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry.instrumentation</groupId>
+      <artifactId>opentelemetry-micrometer-1.5</artifactId>
+      <version>${opentelemetry-instrumentation.version}</version>
     </dependency>
 
     <dependency>

@@ -14,6 +14,7 @@ use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::idempotency::{IdempotencyRecord, IdempotencyStore};
 use crate::messaging::EventEnvelope;
+use crate::metrics::{self, POOL_NAME, PoolMetrics};
 
 pub type PgTransaction<'a> = Transaction<'a, Postgres>;
 
@@ -60,6 +61,10 @@ impl From<serde_json::Error> for StorageError {
 pub struct Storage {
     pool: PgPool,
     migrations_ready: Arc<AtomicBool>,
+    /// `None` when metrics export is disabled, which is what keeps a service
+    /// without a collector from building observable instruments nothing will
+    /// collect.
+    pool_metrics: Option<PoolMetrics>,
 }
 
 impl Storage {
@@ -83,21 +88,39 @@ impl Storage {
             .test_before_acquire(true)
             .connect_with(options)
             .await?;
-        Ok(Self {
-            pool,
-            migrations_ready: Arc::new(AtomicBool::new(false)),
-        })
+        Ok(Self::new(pool))
     }
 
+    /// Registers the pool's state instruments, so every Rust service is covered
+    /// by building its storage through this type rather than by an edit of its
+    /// own. The registration is skipped when metrics are disabled.
     pub fn new(pool: PgPool) -> Self {
+        let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_default();
+        let pool_metrics = if metrics::metrics_enabled() {
+            Some(PoolMetrics::register(
+                &metrics::meter(&service_name),
+                &pool,
+                POOL_NAME,
+            ))
+        } else {
+            None
+        };
         Self {
             pool,
             migrations_ready: Arc::new(AtomicBool::new(false)),
+            pool_metrics,
         }
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// The handle a call site records one acquisition through. `None` when
+    /// metrics are disabled. See [`PoolMetrics::record_acquire`] for why the
+    /// wait time cannot come from the pool itself.
+    pub fn pool_metrics(&self) -> Option<&PoolMetrics> {
+        self.pool_metrics.as_ref()
     }
 
     pub fn mark_migrations_ready(&self) {

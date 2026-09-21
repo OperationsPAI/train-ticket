@@ -1,7 +1,7 @@
 #[cfg(feature = "redis-impl")]
 #[tokio::main]
 async fn main() {
-    let otel = rust_kit::otel::init_from_env(trip_planning::profile().service_id)
+    let otel = rust_kit::metrics::init_telemetry_from_env(trip_planning::profile().service_id)
         .expect("failed to initialize OpenTelemetry");
     let _otel_guard = otel;
     trip_planning::init_logging();
