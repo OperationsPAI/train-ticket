@@ -8,56 +8,92 @@ import (
 	"time"
 )
 
-// Bootstrap ensures searchable inventory exists (ops-side, idempotent).
-func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, rng *rand.Rand) error {
+// Bootstrap ensures searchable inventory exists (ops-side, idempotent). rec is
+// nil-safe; it receives one record per route it probes.
+func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, rng *rand.Rand,
+	rec *Recorder) error {
 	if !cfg.Bootstrap.Enabled {
 		return nil
 	}
 
-	// List existing places
-	_, listing, err := api.Request(ctx, "GET", "place-network",
-		"/api/v1/places?limit=100&offset=0&status=ACTIVE",
-		nil, nil, []int{200}, "list-places")
-	if err != nil {
-		return err
+	// List existing places, ALL of them.
+	//
+	// Paginated, not a single limit=100 call: the topology alone is over 60
+	// stations, and the transfer journey and the e2e scripts create places
+	// too. place-network clamps limit to 100 (ListPlaces in
+	// services/place-network/internal/application/service.go) and puts no
+	// uniqueness constraint on `code`, so a station that exists beyond the
+	// first page would look absent and be created a second time -- silently,
+	// with the registry then pointing at the duplicate.
+	byCode := make(map[string]map[string]interface{})
+	var itemsRaw []interface{}
+	for offset := 0; ; {
+		_, listing, err := api.Request(ctx, "GET", "place-network",
+			fmt.Sprintf("/api/v1/places?limit=100&offset=%d&status=ACTIVE", offset),
+			nil, nil, []int{200}, "list-places")
+		if err != nil {
+			return err
+		}
+		page, _ := listing["items"].([]interface{})
+		if len(page) == 0 {
+			break
+		}
+		itemsRaw = append(itemsRaw, page...)
+		for _, raw := range page {
+			p, _ := raw.(map[string]interface{})
+			if code := getString(p, "code"); code != "" {
+				byCode[code] = p
+			}
+		}
+		offset += len(page)
+		// A short page is the last page. Checked before `total`, which falls
+		// back to -1 rather than 0 so a response that omits the field keeps
+		// paging until a short page instead of stopping after the first one.
+		if len(page) < 100 {
+			break
+		}
+		if total := getInt(listing, "total", -1); total >= 0 && offset >= total {
+			break
+		}
 	}
 
-	byCode := make(map[string]map[string]interface{})
-	itemsRaw, _ := listing["items"].([]interface{})
-	for _, raw := range itemsRaw {
-		p, _ := raw.(map[string]interface{})
-		if code := getString(p, "code"); code != "" {
-			byCode[code] = p
-		}
+	lines, err := ActiveLines(cfg.Bootstrap.Lines)
+	if err != nil {
+		return err
 	}
 
 	places := make(map[string]string)
 	nodes := make(map[string]string)
 
-	for _, city := range cfg.Bootstrap.Cities {
-		if existing, ok := byCode[city.Code]; ok {
-			places[city.Code] = getString(existing, "placeId")
+	// One place and one transport node per station of the active lines. These
+	// are STATION places, not CITY: they are real stations on a line, and
+	// place-network accepts CITY, STATION, AIRPORT and PORT
+	// (validPlaceTypeForAPI in services/place-network/internal/application/
+	// service.go).
+	for _, station := range Stations(lines) {
+		if existing, ok := byCode[station.Code]; ok {
+			places[station.Code] = getString(existing, "placeId")
 		} else {
 			_, created, err := api.Request(ctx, "POST", "place-network", "/api/v1/places",
 				map[string]interface{}{
-					"canonicalName": city.Name,
-					"placeType":    "CITY",
-					"code":         city.Code,
-					"timezone":     "Asia/Shanghai",
+					"canonicalName": station.Name,
+					"placeType":     "STATION",
+					"code":          station.Code,
+					"timezone":      "Asia/Shanghai",
 				}, nil, []int{200, 201}, "create-place")
 			if err != nil {
 				return err
 			}
-			places[city.Code] = getString(created, "placeId")
+			places[station.Code] = getString(created, "placeId")
 		}
 		reg.mu.Lock()
-		reg.Places[city.Code] = places[city.Code]
+		reg.Places[station.Code] = places[station.Code]
 		reg.mu.Unlock()
 
 		_, n, err := api.Request(ctx, "POST", "place-network", "/api/v1/transport-nodes",
 			map[string]interface{}{
-				"placeId":      places[city.Code],
-				"displayName":  city.Name + " Station",
+				"placeId":      places[station.Code],
+				"displayName":  station.Name,
 				"servingModes": []string{"RAIL"},
 			}, nil, []int{200, 201}, "create-node")
 		if err != nil {
@@ -67,7 +103,7 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 		if nodeID == "" {
 			nodeID = getString(n, "transportNodeId")
 		}
-		nodes[city.Code] = nodeID
+		nodes[station.Code] = nodeID
 	}
 
 	// Build known set
@@ -79,20 +115,22 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 	reg.mu.Unlock()
 
 	base := cfg.Bootstrap.ServiceNumBase
-	codes := make([]string, 0, len(places))
-	for k := range places {
-		codes = append(codes, k)
+	speedByLine := make(map[string]int, len(lines))
+	for _, line := range lines {
+		speedByLine[line.Name] = line.AvgSpeedKMH
 	}
 
 	seq := 0
 	dates := ComputeDepartureDates(cfg)
 	for _, date := range dates {
-		for i := 0; i < cfg.Bootstrap.ServicesPerDate; i++ {
-			if len(codes) < 2 {
-				break
+		// Station pairs spread across the distance spectrum of every active
+		// line, so each persona's preferred distance band has inventory. See
+		// InventoryPairs for why an even stride and not a uniform draw.
+		for _, pair := range InventoryPairs(lines, cfg.Bootstrap.ServicesPerDate, rng) {
+			a, b := pair.OriginCode, pair.DestCode
+			if nodes[a] == "" || nodes[b] == "" {
+				continue
 			}
-			idx := rng.Perm(len(codes))
-			a, b := codes[idx[0]], codes[idx[1]]
 			key := places[a] + "|" + places[b] + "|" + date
 			seq++
 			if known[key] {
@@ -103,18 +141,28 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 			number := fmt.Sprintf("G%d", base+len(reg.Routes)+seq)
 			reg.mu.Unlock()
 
-			depHour := rng.Intn(12) + 6
-			arrHour := rng.Intn(4) + 19
-			dep := fmt.Sprintf("%sT%02d:00:00Z", date, depHour)
-			arr := fmt.Sprintf("%sT%02d:30:00Z", date, arrHour)
+			// Departure and arrival follow the trip: a departure somewhere in
+			// the service day, plus the running time this distance takes at
+			// the line's speed and the dwell at each intermediate stop. The
+			// previous code drew an arrival hour at random, so a 131 km hop
+			// and the full 1318 km run were scheduled to take the same time
+			// and neither matched its distance.
+			depHour := rng.Intn(16) + 6
+			depMinute := rng.Intn(12) * 5
+			departure := mustDate(date).Add(
+				time.Duration(depHour)*time.Hour + time.Duration(depMinute)*time.Minute)
+			arrival := departure.Add(
+				time.Duration(pair.DurationMinutes(speedByLine[pair.Line])) * time.Minute)
+			dep := departure.Format("2006-01-02T15:04:05Z")
+			arr := arrival.Format("2006-01-02T15:04:05Z")
 
 			_, ss, err := api.Request(ctx, "POST", "service-plan", "/api/v1/scheduled-services",
 				map[string]interface{}{
-					"carrierId":       "car-" + UUID7(),
-					"serviceNumber":   number,
-					"departureTime":   dep,
-					"arrivalTime":     arr,
-					"originNodeId":    nodes[a],
+					"carrierId":         "car-" + UUID7(),
+					"serviceNumber":     number,
+					"departureTime":     dep,
+					"arrivalTime":       arr,
+					"originNodeId":      nodes[a],
 					"destinationNodeId": nodes[b],
 				}, nil, []int{200, 201}, "create-service")
 			if err != nil {
@@ -125,6 +173,12 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 				ssID = getString(ss, "scheduledServiceId")
 			}
 
+			// One segment, spanning the whole service. service-plan refuses any
+			// segment whose endpoints are not exactly its parent service's
+			// (serviceViewHasSegment), so the intermediate stops of this trip
+			// cannot be expressed as bookable sub-segments. They are real in
+			// the topology and they lengthen this service's journey time; they
+			// are not sent, because no field accepts them.
 			_, _, _ = api.Request(ctx, "POST", "service-plan", "/api/v1/service-segments",
 				map[string]interface{}{
 					"scheduledServiceRef": ssID,
@@ -140,6 +194,8 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 				DestPlace:     places[b],
 				Date:          date,
 				ServiceNumber: number,
+				Line:          pair.Line,
+				DistanceKM:    pair.DistanceKM,
 			})
 			reg.mu.Unlock()
 			known[key] = true
@@ -155,10 +211,21 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 	reg.mu.Unlock()
 
 	for _, route := range allRoutes {
+		// One attempt per route probe, nested under the bootstrap attempt.
+		// A dropped route is why later purchases fail on available-train, and
+		// which route was dropped is the fact that makes the drop actionable,
+		// so it belongs on a record and not in an aggregate count.
+		probe := NewAttempt("bootstrap", "bootstrap_verify_route", "")
+		probeCtx := WithAttempt(ctx, probe)
+
 		okRoute := false
+		// The last thing that went wrong across the three tries. A probe that
+		// exhausts its retries must record WHY, and each retry discards its
+		// own error to try again.
+		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			if probeTvl == "" {
-				_, t, err := api.Request(ctx, "POST", "traveler-profile", "/api/v1/travelers",
+				_, t, err := api.Request(probeCtx, "POST", "traveler-profile", "/api/v1/travelers",
 					map[string]interface{}{
 						"accountId":    "acc-" + UUID7(),
 						"travelerType": "ADULT",
@@ -167,6 +234,8 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 					}, nil, []int{200, 201}, "bootstrap-traveler")
 				if err == nil {
 					probeTvl = getString(t, "travelerId")
+				} else {
+					lastErr = err
 				}
 			}
 			if probeTvl == "" {
@@ -174,7 +243,7 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 				continue
 			}
 
-			_, res, err := api.Request(ctx, "POST", "trip-planning", "/api/v1/itineraries/search",
+			_, res, err := api.Request(probeCtx, "POST", "trip-planning", "/api/v1/itineraries/search",
 				map[string]interface{}{
 					"originRef":      route.OriginPlace,
 					"destinationRef": route.DestPlace,
@@ -183,6 +252,7 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 					"channel":        "WEB",
 				}, nil, []int{200}, "bootstrap-verify")
 			if err != nil {
+				lastErr = err
 				time.Sleep(5 * time.Second)
 				continue
 			}
@@ -196,14 +266,23 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 				okRoute = true
 				break
 			}
+			// The search answered 200 with nothing bookable. No error to
+			// propagate, and the most important outcome in this loop, so it is
+			// constructed rather than inferred.
+			lastErr = &StepError{
+				Step: "bootstrap-verify",
+				Detail: fmt.Sprintf("no bookable itinerary for route %s %s->%s %s",
+					route.ServiceNumber, truncate(route.OriginPlace, 16),
+					truncate(route.DestPlace, 16), route.Date),
+				Kind: FailureUnavailable,
+			}
 			time.Sleep(5 * time.Second)
 		}
 		if okRoute {
 			verified = append(verified, route)
+			probe.Record(rec, "bookable", nil)
 		} else {
-			fmt.Printf("[bootstrap] dropping unbookable route %s %s->%s %s\n",
-				route.ServiceNumber, truncate(route.OriginPlace, 16),
-				truncate(route.DestPlace, 16), route.Date)
+			probe.Record(rec, "", lastErr)
 		}
 	}
 
@@ -277,14 +356,15 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 		}
 	}
 
-	reg.mu.Lock()
-	fmt.Printf("[bootstrap] routes known (bookable): %d\n", len(reg.Routes))
-	reg.mu.Unlock()
+	// The bookable-route count is the caller's bootstrap_inventory record
+	// outcome, so it is not also printed here.
 	return nil
 }
 
-// SchedulePublisher periodically ensures services for the rolling window.
-func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, rng *rand.Rand) {
+// SchedulePublisher periodically ensures services for the rolling window. rec
+// is nil-safe; it receives one record per publishing round.
+func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry,
+	rng *rand.Rand, rec *Recorder) {
 	if !cfg.Bootstrap.Enabled {
 		return
 	}
@@ -295,12 +375,27 @@ func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Re
 		case <-time.After(time.Hour):
 		}
 
+		// One attempt per hourly round. What the printf carried was the route
+		// count after publishing, which is the outcome of this attempt, and a
+		// round that publishes nothing is the reason later searches find
+		// nothing.
+		attempt := NewAttempt("schedule", "schedule_publish", "")
+		roundCtx := WithAttempt(ctx, attempt)
+
+		lines, err := ActiveLines(cfg.Bootstrap.Lines)
+		if err != nil {
+			attempt.Record(rec, "", &StepError{
+				Step: "schedule-publish", Detail: err.Error(), Kind: FailureInternal,
+			})
+			continue
+		}
+		speedByLine := make(map[string]int, len(lines))
+		for _, line := range lines {
+			speedByLine[line.Name] = line.AvgSpeedKMH
+		}
+
 		dates := ComputeDepartureDates(cfg)
 		reg.mu.Lock()
-		codes := make([]string, 0, len(reg.Places))
-		for k := range reg.Places {
-			codes = append(codes, k)
-		}
 		places := make(map[string]string)
 		for k, v := range reg.Places {
 			places[k] = v
@@ -311,16 +406,31 @@ func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Re
 		}
 		reg.mu.Unlock()
 
-		if len(codes) < 2 {
+		if len(places) < 2 {
+			// Fewer than two places means no pair to schedule between, and
+			// every later search will fail on available-train. The round still
+			// records, so the cause is in the stream rather than absent.
+			attempt.Record(rec, "", &StepError{
+				Step:   "schedule-publish",
+				Detail: "fewer than 2 places in registry",
+				Kind:   FailureUnavailable,
+			})
 			continue
 		}
 
+		// Nodes for the stations of the active lines that this run has places
+		// for. The publisher runs hourly against a registry Bootstrap already
+		// populated, so a station missing here is one whose place creation
+		// failed and which therefore has nothing to schedule.
 		nodes := make(map[string]string)
-		for _, code := range codes {
-			_, n, err := api.Request(ctx, "POST", "place-network", "/api/v1/transport-nodes",
+		for _, station := range Stations(lines) {
+			if places[station.Code] == "" {
+				continue
+			}
+			_, n, err := api.Request(roundCtx, "POST", "place-network", "/api/v1/transport-nodes",
 				map[string]interface{}{
-					"placeId":      places[code],
-					"displayName":  code + " Station",
+					"placeId":      places[station.Code],
+					"displayName":  station.Name,
 					"servingModes": []string{"RAIL"},
 				}, nil, []int{200, 201}, "schedule-node")
 			if err != nil {
@@ -330,15 +440,17 @@ func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Re
 			if nodeID == "" {
 				nodeID = getString(n, "transportNodeId")
 			}
-			nodes[code] = nodeID
+			nodes[station.Code] = nodeID
 		}
 
 		base := cfg.Bootstrap.ServiceNumBase
 		seq := 0
 		for _, date := range dates {
-			for i := 0; i < cfg.Bootstrap.ServicesPerDate; i++ {
-				idx := rng.Perm(len(codes))
-				a, b := codes[idx[0]], codes[idx[1]]
+			for _, pair := range InventoryPairs(lines, cfg.Bootstrap.ServicesPerDate, rng) {
+				a, b := pair.OriginCode, pair.DestCode
+				if nodes[a] == "" || nodes[b] == "" {
+					continue
+				}
 				key := places[a] + "|" + places[b] + "|" + date
 				seq++
 				if known[key] {
@@ -348,12 +460,16 @@ func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Re
 				number := fmt.Sprintf("G%d", base+len(reg.Routes)+seq)
 				reg.mu.Unlock()
 
-				depHour := rng.Intn(12) + 6
-				arrHour := rng.Intn(4) + 19
-				dep := fmt.Sprintf("%sT%02d:00:00Z", date, depHour)
-				arr := fmt.Sprintf("%sT%02d:30:00Z", date, arrHour)
+				depHour := rng.Intn(16) + 6
+				depMinute := rng.Intn(12) * 5
+				departure := mustDate(date).Add(
+					time.Duration(depHour)*time.Hour + time.Duration(depMinute)*time.Minute)
+				arrival := departure.Add(
+					time.Duration(pair.DurationMinutes(speedByLine[pair.Line])) * time.Minute)
+				dep := departure.Format("2006-01-02T15:04:05Z")
+				arr := arrival.Format("2006-01-02T15:04:05Z")
 
-				_, ss, err := api.Request(ctx, "POST", "service-plan", "/api/v1/scheduled-services",
+				_, ss, err := api.Request(roundCtx, "POST", "service-plan", "/api/v1/scheduled-services",
 					map[string]interface{}{
 						"carrierId":         "car-" + UUID7(),
 						"serviceNumber":     number,
@@ -369,7 +485,7 @@ func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Re
 				if ssID == "" {
 					ssID = getString(ss, "scheduledServiceId")
 				}
-				api.Request(ctx, "POST", "service-plan", "/api/v1/service-segments",
+				api.Request(roundCtx, "POST", "service-plan", "/api/v1/service-segments",
 					map[string]interface{}{
 						"scheduledServiceRef": ssID,
 						"originStopRef":       nodes[a],
@@ -384,14 +500,17 @@ func SchedulePublisher(ctx context.Context, cfg *Config, api *ApiClient, reg *Re
 					DestPlace:     places[b],
 					Date:          date,
 					ServiceNumber: number,
+					Line:          pair.Line,
+					DistanceKM:    pair.DistanceKM,
 				})
 				reg.mu.Unlock()
 				known[key] = true
 			}
 		}
 		reg.mu.Lock()
-		fmt.Printf("[schedule-publisher] routes: %d\n", len(reg.Routes))
+		routeCount := len(reg.Routes)
 		reg.mu.Unlock()
+		attempt.Record(rec, fmt.Sprintf("published_%d_routes", routeCount), nil)
 	}
 }
 
@@ -432,8 +551,9 @@ func Think(ctx context.Context, p *Providers) {
 	}
 }
 
-// OpsWorker runs the low-frequency operations simulator.
-func OpsWorker(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng *rand.Rand) {
+// OpsWorker runs the low-frequency operations simulator. rec is nil-safe.
+func OpsWorker(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, stats *Stats,
+	rng *rand.Rand, rec *Recorder) {
 	if !cfg.Ops.Enabled {
 		return
 	}
@@ -446,9 +566,11 @@ func OpsWorker(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 		case <-time.After(d):
 		}
 
-		if err := opsSweep(ctx, cfg, api, reg, stats, rng); err != nil {
+		attempt := NewAttempt("ops", "ops_sweep", "")
+		err := opsSweep(WithAttempt(ctx, attempt), cfg, api, reg, stats, rng)
+		attempt.Record(rec, "swept", err)
+		if err != nil {
 			stats.RecordJourney("ops:failed")
-			fmt.Printf("[ops] failed - %v\n", err)
 		} else {
 			stats.RecordJourney("ops:sweep")
 		}

@@ -86,8 +86,19 @@ func TestDeployedConfigParses(t *testing.T) {
 
 	// bootstrap.* -- searches find nothing if inventory is not seeded
 	if cfg.Bootstrap.Enabled {
-		if len(cfg.Bootstrap.Cities) < 2 {
-			t.Errorf("bootstrap.cities = %d, want >= 2 for an origin/dest pair", len(cfg.Bootstrap.Cities))
+		// bootstrap.lines names lines of the route topology. An unknown name
+		// is fatal at startup, so a typo here is a deployment that will not
+		// boot rather than one that quietly loses a quarter of its demand.
+		lines, err := ActiveLines(cfg.Bootstrap.Lines)
+		if err != nil {
+			t.Errorf("bootstrap.lines: %v", err)
+		}
+		if len(lines) == 0 {
+			t.Error("bootstrap.lines resolves to no lines: there is nothing to book")
+		}
+		if len(Stations(lines)) < 2 {
+			t.Errorf("the active lines have %d stations, want >= 2 for an origin/dest pair",
+				len(Stations(lines)))
 		}
 		if cfg.Bootstrap.ServicesPerDate <= 0 || cfg.Bootstrap.ServiceNumBase <= 0 {
 			t.Error("bootstrap services_per_date / service_number_base did not decode")

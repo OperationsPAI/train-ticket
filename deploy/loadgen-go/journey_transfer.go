@@ -52,7 +52,8 @@ func transferStationNode(ctx context.Context, p *Providers) (string, error) {
 		nodeID = getString(node, "transportNodeId")
 	}
 	if nodeID == "" {
-		return "", &StepError{Step: "transfer-seed-node", Detail: "place-network returned no nodeId"}
+		return "", &StepError{Step: "transfer-seed-node",
+			Detail: "place-network returned no nodeId", Kind: FailureMalformed}
 	}
 
 	p.Reg.transferStationNode = nodeID

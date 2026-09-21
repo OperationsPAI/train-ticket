@@ -88,7 +88,11 @@ func TestProvidersApplyPersona(t *testing.T) {
 		JourneyWeights: map[string]float64{"purchase": 80},
 		Overrides:      map[string]interface{}{"p_new_account": 0.10},
 	}
-	p.ApplyPersona(persona)
+	p.ApplyPersona("business", persona)
+
+	if p.Persona != "business" {
+		t.Errorf("after persona: Persona = %q, want business", p.Persona)
+	}
 
 	if p.CtxFloat("p_new_account", 0) != 0.10 {
 		t.Errorf("after persona: unexpected p_new_account: %f", p.CtxFloat("p_new_account", 0))

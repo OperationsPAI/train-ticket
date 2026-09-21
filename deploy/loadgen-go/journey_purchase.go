@@ -51,7 +51,7 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		return "abandoned", nil
 	}
 
-	quote, err := p.FareQuote(ctx, travelers, channel, []string{found.Segment})
+	quote, err := p.FareQuote(ctx, travelers, channel, []string{found.Segment}, found)
 	if err != nil {
 		return "", err
 	}
@@ -193,7 +193,11 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		final = getString(orderData, "status")
 	}
 	if final == "CANCELLED" || final == "FAILED" {
-		return "", &StepError{Step: "confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
+		// Paid for, then the order came back cancelled. The system answered
+		// and the answer was no.
+		return "", &StepError{Step: "confirm",
+			Detail: fmt.Sprintf("order %s ended %s", orderID, final),
+			Kind:   FailureRejected}
 	}
 
 	purchase := &Purchase{
@@ -426,11 +430,20 @@ func waitForResult(ctx context.Context, item *WorkItem, key string, timeoutSec f
 	select {
 	case <-item.Done():
 		if item.Failed {
-			return &StepError{Step: item.Kind, Detail: item.ErrorMsg}
+			// Staff took the work and it broke. The customer is told their
+			// booking failed, without the reason staff saw.
+			return &StepError{Step: item.Kind, Detail: item.ErrorMsg,
+				Kind: FailureUnfulfilled}
 		}
 		return nil
 	case <-timer.C:
-		return &StepError{Step: item.Kind, Detail: fmt.Sprintf("timed out waiting for %s", key)}
+		// This is the failure the journey record exists for: no HTTP request
+		// failed, the wait on an in-process channel simply ran out. From the
+		// customer's side the booking never completed and nothing was ever
+		// displayed.
+		return &StepError{Step: item.Kind,
+			Detail: fmt.Sprintf("timed out waiting for %s", key),
+			Kind:   FailureTimeout}
 	case <-ctx.Done():
 		return ctx.Err()
 	}
