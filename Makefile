@@ -53,10 +53,34 @@ KUBENS := $(KUBECTL) -n $(NAMESPACE)
 # read from the same place, and it cannot drift from what was actually built.
 ROLLABLE := $(shell ls deploy/docker | tr '\n' '|' | sed 's/|$$//')
 
-.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict list-services observability-config observability-down observability-up observability-validate skeleton-check
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict go-modules list-services observability-config observability-down observability-up observability-validate skeleton-check
 .PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke push-images deploy-acr deploy-acr-apply
 
-check: skeleton-check contract-lint
+check: skeleton-check contract-lint go-modules
+
+# Every Go service module builds with the requirements it declares, which is the
+# configuration its image is built under and not the one this checkout runs in.
+#
+# go.work at the repository root puts all nine services and both platform
+# modules in one workspace, so a module that uses a package its own go.mod does
+# not require still resolves -- the workspace supplies it. The Dockerfiles set
+# GOWORK=off, so the image build is the first place that module is read alone,
+# and it fails there on "updates to go.mod needed".
+#
+# Measured: the metrics exporter in platform/go-runtime pulled in sdk/metric,
+# otlpmetricgrpc and contrib/instrumentation/runtime, all nine service modules
+# were missing all three, every local build passed, and all nine image builds
+# failed.
+#
+# -mod=readonly rather than a build that may edit go.mod: what is being checked
+# is whether the file is already complete.
+go-modules:
+	@for module in $$(ls -d services/*/ platform/go-*/ | sed 's|/$$||'); do \
+	  [ -f "$$module/go.mod" ] || continue; \
+	  printf '%-34s' "$$module"; \
+	  (cd "$$module" && GOWORK=off go build -mod=readonly ./... ) || exit 1; \
+	  echo ' OK'; \
+	done
 
 contract-lint:
 	python3 scripts/contract_lint.py
