@@ -112,9 +112,28 @@ func JourneyTransfer(ctx context.Context, p *Providers) (string, error) {
 	}
 	planID := getString(plan, "transferPlanId")
 
-	// Choose contract type
+	// Choose contract type. All four values of transfer-management's
+	// ContractType, weighted by which server behavior each one reaches.
+	//
+	// The behavioral split is binary, not four-way: application/service.go's
+	// PROTECTED_TYPES is {PROTECTED, SUPPLIER_PROTECTED}, and it is the only
+	// thing any of the four values changes. A connection in that set is
+	// `guaranteed` on registration, makes _carrier_responsible true (so a MISSED
+	// connection triggers auto-rebooking, or a RebookingFailed carrying
+	// refundOffered and refundScope REMAINING_LEGS), and sets recoveryRequired on
+	// the ConnectionMissed event, which opens a recovery case.
+	// PLATFORM_ASSISTED and SELF_TRANSFER take none of that: the connection is
+	// left MISSED with recoveryRequired false.
+	//
+	// So PLATFORM_ASSISTED differs from SELF_TRANSFER only as a stored label.
+	// Both reach journey-order's timeline, customer-service's MISSED_CONNECTION
+	// case facts and notification's template variable, where the value is carried
+	// verbatim and never compared. Their weights are therefore split between the
+	// two rather than concentrated: the value of adding them is that the
+	// unprotected half of the mix stops being one single string downstream.
 	contractMix := p.CtxMap("transfer_contract_mix", map[string]float64{
-		"PROTECTED": 0.55, "SELF_TRANSFER": 0.45,
+		"PROTECTED": 0.40, "SUPPLIER_PROTECTED": 0.20,
+		"SELF_TRANSFER": 0.25, "PLATFORM_ASSISTED": 0.15,
 	})
 	contractType := WeightedChoice(p.Rng, contractMix)
 

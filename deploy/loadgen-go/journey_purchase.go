@@ -39,7 +39,7 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		}
 	}
 
-	channels := p.CtxMap("channels", map[string]float64{"WEB": 1.0})
+	channels := p.CtxMap("channels", salesChannelsDefault)
 	channel := WeightedChoice(p.Rng, channels)
 
 	found, err := p.AvailableTrain(ctx, travelers, channel)

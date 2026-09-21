@@ -12,7 +12,7 @@ func JourneyBrowse(ctx context.Context, p *Providers) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	channels := p.CtxMap("channels", map[string]float64{"WEB": 1.0})
+	channels := p.CtxMap("channels", salesChannelsDefault)
 	channel := WeightedChoice(p.Rng, channels)
 
 	found, err := p.AvailableTrain(ctx, []string{tvl}, channel)

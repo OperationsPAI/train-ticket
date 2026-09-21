@@ -62,14 +62,17 @@ behavior:
   ride_branches: { complete: 0.75, driver_cancel_reassign: 0.10, user_cancel: 0.10, no_show: 0.05 }
   p_waitlist_on_no_capacity: 0.30
   p_waitlist_cancel: 0.05
-  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
-  transfer_contract_mix: { PROTECTED: 0.55, SELF_TRANSFER: 0.45 }
+  disruption_type_mix: { SERVICE_DELAY: 0.55, SERVICE_CANCELLED: 0.25, STOP_CHANGED: 0.15, WEATHER: 0.05 }
+  disruption_option_mix: { WAIT: 0.40, REFUND: 0.30, COMPENSATION: 0.20, MANUAL: 0.10 }
+  transfer_contract_mix: { PROTECTED: 0.40, SUPPLIER_PROTECTED: 0.20, SELF_TRANSFER: 0.25, PLATFORM_ASSISTED: 0.15 }
   p_transfer_delay: 0.35
   p_transfer_missed: 0.25
   waitlist_deadline_minutes: 30
-  channels: { WEB: 1.0 }
+  post_sales_case_mix: { REFUND: 0.62, CANCELLATION: 0.28, COMPENSATION: 0.10 }
+  channels: { WEB: 0.62, MOBILE: 0.30, COUNTER: 0.08 }
+  support_channels: { APP: 0.45, WEB: 0.25, PHONE: 0.12, IM: 0.10, EMAIL: 0.05, IN_APP_MESSAGE: 0.03 }
   seat_types: { SECOND: 0.8, FIRST: 0.2 }
-  traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
+  traveler_types: { ADULT: 0.62, STUDENT: 0.14, CHILD: 0.09, SENIOR: 0.09, INFANT: 0.03, MILITARY: 0.03 }
 
 staff:
   workers: 4

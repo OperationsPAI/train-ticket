@@ -222,8 +222,21 @@ func (p *Providers) Traveler(ctx context.Context, entry *AccountEntry, exclude [
 		}
 	}
 	given, family := RandName(p.Rng)
+	// All six values of traveler-profile's TravelerType. The enum is enforced on
+	// create and update, so an unlisted value would be a ValidationException; the
+	// three that were missing were simply never exercised.
+	//
+	// No service the loadgen drives branches on the traveler type. The one
+	// genuine branch is post-sales' STUDENT_GT_2D_FREE zero-fee refund tier
+	// (RefundPolicyEngine.isStudent), and it is unreachable from here because
+	// journey-order writes every TravelerRef as "ADULT"
+	// (OrderManagementService line 120) and that is what feeds the post-sales
+	// policy context. seat-assignment has no traveler-type concept at all, so an
+	// INFANT is seated and quoted exactly like an ADULT and a high INFANT share
+	// manufactures no refusals.
 	travelerTypes := p.CtxMap("traveler_types", map[string]float64{
-		"ADULT": 0.85, "CHILD": 0.10, "SENIOR": 0.05,
+		"ADULT": 0.62, "STUDENT": 0.14, "CHILD": 0.09,
+		"SENIOR": 0.09, "INFANT": 0.03, "MILITARY": 0.03,
 	})
 	_, data, err := p.API.Request(ctx, "POST", "traveler-profile", "/api/v1/travelers",
 		map[string]interface{}{
@@ -340,6 +353,25 @@ func (p *Providers) DepartureDate() string {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	offset := p.Rng.Intn(toDays-fromDays+1) + fromDays
 	return today.Add(time.Duration(offset) * 24 * time.Hour).Format("2006-01-02")
+}
+
+// salesChannelsDefault is the fallback for behavior.channels, the SALES channel
+// sent on the search, the fare quote and the offer.
+//
+// One shared variable because browse and purchase must draw from the same
+// distribution: the offer carries channelId and offer-management rejects an
+// order whose channel differs from the offer's (CHANNEL_MISMATCH in
+// domain.ts validateForOrder), so the two journeys disagreeing on the set would
+// be a real defect rather than a tuning difference.
+//
+// The constraint is data, not an enum: no service enumerates this string.
+// fare-pricing quotes only when a published rule set carries the same channel
+// (`rule_set.channel != channel`, domain.py), and api.py seeds sets for exactly
+// WEB, web, MOBILE and COUNTER. Verified against the resident deployment, all
+// three of these quote 201. "web" is omitted because it is a casing duplicate
+// of WEB rather than a distinct channel a customer could arrive through.
+var salesChannelsDefault = map[string]float64{
+	"WEB": 0.62, "MOBILE": 0.30, "COUNTER": 0.08,
 }
 
 // SearchResult holds the output of a trip search.
