@@ -29,6 +29,11 @@ type ScalperSim struct {
 	currentTarget  int
 	identityCache  map[string]map[string]string
 
+	// prov exists so the scalper reads the same behavior knobs the customer
+	// path does. No persona is applied: a scalper is not one of the modelled
+	// customer types, so it sees the global behavior block.
+	prov *Providers
+
 	burstGapSeconds    float64
 	slowdownProb       float64
 	slowdownMinSeconds float64
@@ -81,7 +86,17 @@ func NewScalperSim(cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng
 		ipCursor:           workerIdx,
 	}
 	sim.fingerprints = sim.buildFingerprints()
+	sim.prov = NewProviders(cfg, api, reg, stats, rng)
 	return sim
+}
+
+// providers exposes the knob reader. Separate from the field so a ScalperSim
+// built in a test without one still resolves the configured knobs.
+func (s *ScalperSim) providers() *Providers {
+	if s.prov == nil {
+		s.prov = NewProviders(s.cfg, s.api, s.reg, s.stats, s.rng)
+	}
+	return s.prov
 }
 
 func buildIPPool(cfg *Config, _ int) []string {
@@ -289,11 +304,16 @@ func diversifiedSegments(routes []*RouteEntry, target int) []*RouteEntry {
 	return result
 }
 
+// ensureIdentityVerified registers and verifies a credential for a scalper's
+// traveler. The document type is drawn from the same identity_document_types
+// knob the customer path uses; this site also posts to identity-verification,
+// so the same five values apply.
 func (s *ScalperSim) ensureIdentityVerified(ctx context.Context, travelerID string) (map[string]string, error) {
 	tail := fmt.Sprintf("%d", s.rng.Intn(6))
 	doc := fmt.Sprintf("loadgen-%s-%s", travelerID, tail)
 	documentHash := sha256Hex(doc) + tail
 	nameHash := sha256Hex("name-" + travelerID)
+	documentType := s.providers().IdentityDocumentType()
 	validUntil := time.Now().UTC().Add(365 * 24 * time.Hour).Truncate(time.Second)
 	validUntilStr := validUntil.Format(time.RFC3339)
 
@@ -302,7 +322,7 @@ func (s *ScalperSim) ensureIdentityVerified(ctx context.Context, travelerID stri
 		map[string]interface{}{
 			"travelerId":             travelerID,
 			"profileSnapshotVersion": "loadgen-v1",
-			"documentType":           "ID_CARD",
+			"documentType":           documentType,
 			"maskedDocumentNo":       fmt.Sprintf("LG***********%s", tail),
 			"documentHash":           documentHash,
 			"canonicalNameHash":      nameHash,
@@ -313,7 +333,7 @@ func (s *ScalperSim) ensureIdentityVerified(ctx context.Context, travelerID stri
 	}
 
 	credID := getString(cred, "credentialRecordId")
-	material := strings.Join([]string{nameHash, "ID_CARD", documentHash, "",
+	material := strings.Join([]string{nameHash, documentType, documentHash, "",
 		validUntilStr, "", "loadgen-v1"}, "|")
 	h := sha256.Sum256([]byte(material))
 	materialFp := hex.EncodeToString(h[:])
@@ -469,15 +489,18 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 		return "capacity_exhausted", nil
 	}
 
-	// Payment
+	// Payment. preferredChannel is sent so payment resolves the named channel
+	// and checks its own ceiling, instead of drawing one at random.
 	totalMinor := getNestedInt(offer, "total", "minorUnits", 10750)
 	currency := s.cfg.Currency()
+	paymentChannel := s.providers().PaymentChannel()
 	_, intent, err := s.api.Request(ctx, "POST", "payment", "/api/v1/payment-intents",
 		map[string]interface{}{
-			"businessRef": orderID,
-			"purpose":     "purchase",
-			"amount":      map[string]interface{}{"currency": currency, "minorUnits": totalMinor},
-			"payerRef":    acct.AccountID,
+			"businessRef":      orderID,
+			"purpose":          "purchase",
+			"amount":           map[string]interface{}{"currency": currency, "minorUnits": totalMinor},
+			"payerRef":         acct.AccountID,
+			"preferredChannel": paymentChannel,
 		}, headers, []int{200, 201}, "scalper-payment-intent")
 	if err != nil {
 		return "", err
@@ -488,7 +511,7 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 	intentID := getString(intent, "paymentIntentId")
 	_, _, err = s.api.Request(ctx, "POST", "payment",
 		"/api/v1/payment-intents/"+url.PathEscape(intentID)+"/capture",
-		map[string]interface{}{"channelRef": map[string]interface{}{"channel": "ALIPAY_SIM"}},
+		map[string]interface{}{"channelRef": map[string]interface{}{"channel": paymentChannel}},
 		headers, []int{200, 201, 202}, "scalper-payment-capture")
 	if err != nil {
 		return "", err

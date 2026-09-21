@@ -50,7 +50,7 @@ func TestFareQuoteSendsTheSeatClass(t *testing.T) {
 
 	trip := &SearchResult{Segment: "seg-1", Date: "2026-10-15", DistanceKM: 120}
 	if _, err := p.FareQuote(context.Background(), []string{"tvl-1"}, "WEB",
-		[]string{"seg-1"}, trip, "BUSINESS_CLASS"); err != nil {
+		[]string{"seg-1"}, trip, "BUSINESS_CLASS", ""); err != nil {
 		t.Fatalf("FareQuote: %v", err)
 	}
 

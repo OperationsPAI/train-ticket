@@ -12,7 +12,7 @@ func JourneyRide(ctx context.Context, p *Providers) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	traveler, err := p.Traveler(ctx, entry, nil)
+	traveler, _, err := p.Traveler(ctx, entry, nil)
 	if err != nil {
 		return "", err
 	}

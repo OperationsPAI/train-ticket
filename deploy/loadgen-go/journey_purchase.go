@@ -15,25 +15,31 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		return "", err
 	}
 	travelers := make([]string, 0, 2)
-	tvl, err := p.Traveler(ctx, entry, nil)
+	tvl, tvlType, err := p.Traveler(ctx, entry, nil)
 	if err != nil {
 		return "", err
 	}
 	travelers = append(travelers, tvl)
 
 	if p.Chance("p_second_traveler") {
-		tvl2, err := p.Traveler(ctx, entry, travelers)
+		tvl2, _, err := p.Traveler(ctx, entry, travelers)
 		if err == nil {
 			travelers = append(travelers, tvl2)
 		}
 	}
 
-	// Ensure identity verified for all travelers
+	// Ensure identity verified for all travelers. The lead traveler's
+	// credential id is kept because an eligibility certificate has to be
+	// registered against a verified credential.
+	leadCredential := ""
 	for _, t := range travelers {
 		if !isVerified(entry, t) {
-			_, err := p.Identity(ctx, t)
+			refs, err := p.Identity(ctx, t)
 			if err != nil {
 				return "", err
+			}
+			if t == travelers[0] {
+				leadCredential = refs["identity_credential"]
 			}
 			markVerified(entry, t, p.Reg)
 		}
@@ -41,6 +47,7 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 
 	channels := p.CtxMap("channels", map[string]float64{"WEB": 1.0})
 	channel := WeightedChoice(p.Rng, channels)
+	paymentChannel := p.PaymentChannel()
 
 	found, err := p.AvailableTrain(ctx, travelers, channel)
 	if err != nil {
@@ -56,7 +63,14 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	// customer be quoted business class and seated in second.
 	seatClass := p.SeatClassOrDefault()
 
-	quote, err := p.FareQuote(ctx, travelers, channel, []string{found.Segment}, found, seatClass)
+	// A discounted purchase quotes under its own product code, which is the
+	// only way an eligibility reaches the price. An empty result means this
+	// purchase carries no certificate and prices as any other.
+	productCode := MaybeRegisterEligibility(ctx, p, travelers[0], tvlType, leadCredential,
+		channel, found.Date)
+
+	quote, err := p.FareQuote(ctx, travelers, channel, []string{found.Segment}, found,
+		seatClass, productCode)
 	if err != nil {
 		return "", err
 	}
@@ -140,7 +154,7 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 
 	Think(ctx, p)
 	totalMinor := getNestedInt(offer, "total", "minorUnits", 10750)
-	intent, err := p.PaymentIntent(ctx, orderID, totalMinor, entry.AccountID)
+	intent, err := p.PaymentIntent(ctx, orderID, totalMinor, entry.AccountID, paymentChannel)
 	if err != nil {
 		return "", err
 	}
@@ -174,7 +188,7 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	if p.Chance("p_payment_channel_missed_seed") {
 		faultSeed = "MISSED_ORDER:loadgen"
 	}
-	if err := p.PaymentCapture(ctx, intentID, faultSeed); err != nil {
+	if err := p.PaymentCapture(ctx, intentID, paymentChannel, faultSeed); err != nil {
 		return "", err
 	}
 

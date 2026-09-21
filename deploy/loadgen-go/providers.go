@@ -179,6 +179,49 @@ func (p *Providers) Currency() string {
 	return p.Cfg.Currency()
 }
 
+// paymentChannelMix is the fallback split across the three settleable channels.
+// It matches the weights ChannelRouter uses when no preferredChannel is sent
+// (DEFAULT_CHANNELS in
+// services/payment/src/main/java/com/trainticket/payment/domain/ChannelRouter.java),
+// so an absent knob keeps the channel distribution the platform itself would
+// have produced.
+var paymentChannelMix = map[string]float64{
+	"ALIPAY_SIM": 0.45, "WECHAT_SIM": 0.40, "UNIONPAY_SIM": 0.15,
+}
+
+// PaymentChannel picks the channel this customer pays with.
+//
+// The three values are the only ones both services accept: payment-channel
+// gates on exactly these (ValidChannel in
+// services/payment-channel/internal/domain/types.go) and payment's
+// ChannelRouter.normalize maps each onto its internal id. Sending anything else
+// is a 400 from payment before a request ever reaches a channel.
+func (p *Providers) PaymentChannel() string {
+	return WeightedChoice(p.Rng, p.CtxMap("payment_channels", paymentChannelMix))
+}
+
+// identityDocumentMix is the fallback credential mix for identity-verification.
+// ID_CARD stays dominant because it is the document the great majority of
+// domestic travelers hold.
+var identityDocumentMix = map[string]float64{
+	"ID_CARD": 0.80, "PASSPORT": 0.08, "HK_MACAU_PERMIT": 0.05,
+	"TW_PERMIT": 0.04, "RESIDENCE_PERMIT": 0.03,
+}
+
+// IdentityDocumentType picks the document a traveler proves identity with at
+// identity-verification.
+//
+// This knob is separate from the traveler-profile document type on purpose.
+// The two services accept different sets and neither is a subset of the other:
+// identity-verification takes the five of DocumentType
+// (services/identity-verification/src/identity_verification/domain.py), while
+// traveler-profile takes only ID_CARD, PASSPORT and OTHER (ApiDocumentType).
+// Filtering one mix per destination would make the weight of a value depend on
+// which site read it, so each site reads the mix its own service accepts.
+func (p *Providers) IdentityDocumentType() string {
+	return WeightedChoice(p.Rng, p.CtxMap("identity_document_types", identityDocumentMix))
+}
+
 // DefaultAmount returns a default monetary amount.
 func (p *Providers) DefaultAmount(key string, fallback int) int {
 	return p.Cfg.DefaultInt(key, fallback)
@@ -209,31 +252,39 @@ func (p *Providers) Account(ctx context.Context) (*AccountEntry, error) {
 	return p.Reg.AddAccount(accountID), nil
 }
 
-// Traveler provides or creates a traveler for the given account.
-func (p *Providers) Traveler(ctx context.Context, entry *AccountEntry, exclude []string) (string, error) {
+// Traveler provides or creates a traveler for the given account, returning its
+// id and the traveler type traveler-profile holds for it.
+//
+// The type is returned because an eligibility certificate has to agree with it:
+// a STUDENT certificate for a traveler registered as an ADULT would be an
+// entitlement that traveler does not have. For a reused traveler it is read
+// back off the profile rather than remembered, since the profile is what any
+// service checking eligibility will consult.
+func (p *Providers) Traveler(ctx context.Context, entry *AccountEntry, exclude []string) (string, string, error) {
 	pNew := p.CtxFloat("p_new_traveler", 0.50)
 	pool := filterStrings(entry.Travelers, exclude)
 	if len(pool) > 0 && p.Rng.Float64() >= pNew {
 		tvl := pool[p.Rng.Intn(len(pool))]
-		code, _, _ := p.API.Request(ctx, "GET", "traveler-profile",
+		code, profile, _ := p.API.Request(ctx, "GET", "traveler-profile",
 			"/api/v1/travelers/"+url.PathEscape(tvl), nil, nil, nil, "get-traveler")
 		if code == 200 {
-			return tvl, nil
+			return tvl, getString(profile, "travelerType"), nil
 		}
 	}
 	given, family := RandName(p.Rng)
 	travelerTypes := p.CtxMap("traveler_types", map[string]float64{
 		"ADULT": 0.85, "CHILD": 0.10, "SENIOR": 0.05,
 	})
+	travelerType := WeightedChoice(p.Rng, travelerTypes)
 	_, data, err := p.API.Request(ctx, "POST", "traveler-profile", "/api/v1/travelers",
 		map[string]interface{}{
 			"accountId":    entry.AccountID,
-			"travelerType": WeightedChoice(p.Rng, travelerTypes),
+			"travelerType": travelerType,
 			"givenName":    given,
 			"familyName":   family,
 		}, nil, []int{200, 201}, "create-traveler")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	tvl := getString(data, "travelerId")
 	p.Reg.mu.Lock()
@@ -242,26 +293,34 @@ func (p *Providers) Traveler(ctx context.Context, entry *AccountEntry, exclude [
 		entry.Travelers = entry.Travelers[1:]
 	}
 	p.Reg.mu.Unlock()
-	return tvl, nil
+	return tvl, travelerType, nil
 }
 
 // Identity ensures a traveler has a verified identity credential.
+//
+// The credential's document type comes from the identity_document_types knob.
+// It is woven into the material fingerprint as well as the request body:
+// identity-verification derives the fingerprint from the same seven fields in
+// the same order and refuses a verification case whose fingerprint does not
+// match the credential's (_safe_hash and start_verification_case in
+// services/identity-verification/src/identity_verification/application/service.py).
 func (p *Providers) Identity(ctx context.Context, travelerID string) (map[string]string, error) {
 	tail := fmt.Sprintf("%d", p.Rng.Intn(6))
 	doc := fmt.Sprintf("loadgen-%s-%s", travelerID, tail)
 	documentHash := sha256Hex(doc) + tail
 	nameHash := sha256Hex("name-" + travelerID)
+	documentType := p.IdentityDocumentType()
 	validUntil := time.Now().UTC().Add(365 * 24 * time.Hour).Truncate(time.Second)
 	validUntilStr := validUntil.Format(time.RFC3339)
 
 	credBody := map[string]interface{}{
-		"travelerId":              travelerID,
-		"profileSnapshotVersion":  "loadgen-v1",
-		"documentType":            "ID_CARD",
-		"maskedDocumentNo":        fmt.Sprintf("LG***********%s", tail),
-		"documentHash":            documentHash,
-		"canonicalNameHash":       nameHash,
-		"validUntil":              validUntilStr,
+		"travelerId":             travelerID,
+		"profileSnapshotVersion": "loadgen-v1",
+		"documentType":           documentType,
+		"maskedDocumentNo":       fmt.Sprintf("LG***********%s", tail),
+		"documentHash":           documentHash,
+		"canonicalNameHash":      nameHash,
+		"validUntil":             validUntilStr,
 	}
 	_, cred, err := p.API.Request(ctx, "POST", "identity-verification",
 		"/api/v1/identity-verification/credentials",
@@ -271,7 +330,7 @@ func (p *Providers) Identity(ctx context.Context, travelerID string) (map[string
 	}
 
 	credID := getString(cred, "credentialRecordId")
-	material := strings.Join([]string{nameHash, "ID_CARD", documentHash, "",
+	material := strings.Join([]string{nameHash, documentType, documentHash, "",
 		validUntilStr, "", "loadgen-v1"}, "|")
 	materialFp := sha256Hex(material)
 
@@ -456,8 +515,20 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 // same trip quotes differently for a business traveller in first class and a
 // casual one in second. The caller passes the class it will also send to
 // seat-assignment, so one journey prices and seats the same class.
+//
+// productCode is how an eligibility reaches the price. fare-pricing takes no
+// eligibility on the request: it resolves a rule set from channel and
+// productCode, reads the eligibility types off that set's discount rules, and
+// only then asks identity-verification whether a traveler holds a matching
+// certificate (find_published_rule_set_id and _active_discount_types in
+// services/fare-pricing/src/fare_pricing/application/service.py). An empty
+// productCode leaves the request on fare-pricing's own rail-standard default.
+//
+// The two are independent: the class multiplies the base fare of whichever
+// rule set the product code resolves to, so an eligible traveller in first
+// class gets both the multiplier and the discount.
 func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel string,
-	segments []string, trip *SearchResult, seatClass string) (map[string]interface{}, error) {
+	segments []string, trip *SearchResult, seatClass, productCode string) (map[string]interface{}, error) {
 	body := map[string]interface{}{
 		"travelerRefs": travelers,
 		"channel":      channel,
@@ -465,6 +536,9 @@ func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel s
 	}
 	if seatClass != "" {
 		body["seatClass"] = seatClass
+	}
+	if productCode != "" {
+		body["productCode"] = productCode
 	}
 	if trip != nil && trip.DistanceKM > 0 {
 		body["distanceKm"] = trip.DistanceKM
@@ -537,8 +611,16 @@ func (p *Providers) Order(ctx context.Context, accountID string, offer map[strin
 	return o, err
 }
 
-// PaymentIntent creates a payment intent.
-func (p *Providers) PaymentIntent(ctx context.Context, orderID string, amountMinor int, payer string) (map[string]interface{}, error) {
+// PaymentIntent creates a payment intent on the channel the customer chose.
+//
+// preferredChannel is what makes payment take its channel-SELECTION branch
+// instead of its fallback: ChannelRouter.route resolves a named channel and
+// checks that channel's own enablement and per-channel amount ceiling, where an
+// absent preference instead draws a weighted random channel
+// (services/payment/src/main/java/com/trainticket/payment/domain/ChannelRouter.java).
+// The chosen channel is stored on the intent, so it also decides which provider
+// the capture hands off to when no channelRef overrides it.
+func (p *Providers) PaymentIntent(ctx context.Context, orderID string, amountMinor int, payer, channel string) (map[string]interface{}, error) {
 	_, intent, err := p.API.Request(ctx, "POST", "payment", "/api/v1/payment-intents",
 		map[string]interface{}{
 			"businessRef": orderID,
@@ -547,14 +629,15 @@ func (p *Providers) PaymentIntent(ctx context.Context, orderID string, amountMin
 				"currency":   p.Currency(),
 				"minorUnits": amountMinor,
 			},
-			"payerRef": payer,
+			"payerRef":         payer,
+			"preferredChannel": channel,
 		}, nil, []int{200, 201}, "payment-intent")
 	return intent, err
 }
 
-// PaymentCapture captures a payment intent.
-func (p *Providers) PaymentCapture(ctx context.Context, intentID string, faultSeed string) error {
-	channelRef := map[string]interface{}{"channel": "ALIPAY_SIM"}
+// PaymentCapture captures a payment intent through the given channel.
+func (p *Providers) PaymentCapture(ctx context.Context, intentID, channel, faultSeed string) error {
+	channelRef := map[string]interface{}{"channel": channel}
 	if faultSeed != "" {
 		channelRef["faultSeedRef"] = faultSeed
 	}

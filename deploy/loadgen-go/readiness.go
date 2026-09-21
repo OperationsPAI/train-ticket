@@ -100,11 +100,11 @@ func AwaitServices(ctx context.Context, template string, services []string,
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return sortedKeys(waiting)
+			return stillWaiting(waiting)
 		}
 		select {
 		case <-ctx.Done():
-			return sortedKeys(waiting)
+			return stillWaiting(waiting)
 		case <-time.After(interval):
 		}
 	}
@@ -133,9 +133,10 @@ func serviceReady(ctx context.Context, client *http.Client, template, service st
 	return response.StatusCode >= 200 && response.StatusCode < 300
 }
 
-// sortedKeys returns a map's keys in a stable order, so the services named in a
-// timeout message do not reorder between runs.
-func sortedKeys(set map[string]bool) []string {
+// stillWaiting returns the names a gate has not yet seen answer, in a stable
+// order, so the services named in a timeout message do not reorder between
+// runs.
+func stillWaiting(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for key := range set {
 		out = append(out, key)
