@@ -1,12 +1,16 @@
 import process from "node:process";
 import { context, createTraceState, isSpanContextValid, SpanKind, SpanStatusCode, trace, TraceFlags } from "@opentelemetry/api";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { FastifyInstrumentation } from "@opentelemetry/instrumentation-fastify";
+import { RuntimeNodeInstrumentation } from "@opentelemetry/instrumentation-runtime-node";
 import { Resource } from "@opentelemetry/resources";
+import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { metricExportIntervalMillis, otelMetricsEnabled } from "./metrics.js";
 import { installTraceLoggingConsole } from "./trace-logging.js";
 let sdk;
 export function otelTracingEnabled() {
@@ -21,15 +25,26 @@ export function otelTracingEnabled() {
  * the same move java-kit makes by supplying a log pattern instead of rewriting
  * log statements. It stays inside the tracing-enabled branch: with tracing off
  * there are no ids to add and logs stay byte-identical to before.
+ *
+ * Metrics are gated separately on OTEL_METRICS_EXPORTER, so either signal can be
+ * enabled alone. HttpInstrumentation produces both the HTTP server spans and
+ * http.server.request.duration, and RuntimeNodeInstrumentation publishes this
+ * process's own event-loop, heap and GC metrics; both are registered here
+ * because the NodeSDK hands its meter provider to the instrumentations it was
+ * constructed with, and an instrumentation registered afterwards would have none.
  */
 export function initOpenTelemetry(options = {}) {
-    if (!otelTracingEnabled() && !options.spanExporter) {
+    const tracesOn = otelTracingEnabled() || Boolean(options.spanExporter);
+    const metricsOn = otelMetricsEnabled() || Boolean(options.metricReader);
+    if (!tracesOn && !metricsOn) {
         return undefined;
     }
-    // Before the already-started short circuit: the console wrapper captures the
-    // console functions as they are at install time, so a second init call must
-    // still be able to re-establish it rather than assuming the first one holds.
-    installTraceLoggingConsole();
+    if (tracesOn) {
+        // Before the already-started short circuit: the console wrapper captures the
+        // console functions as they are at install time, so a second init call must
+        // still be able to re-establish it rather than assuming the first one holds.
+        installTraceLoggingConsole();
+    }
     if (sdk) {
         return sdk;
     }
@@ -37,14 +52,32 @@ export function initOpenTelemetry(options = {}) {
     // A custom exporter (tests) and the default OTLP exporter share one code
     // path: instrumentations must register either way, or HTTP spans exist
     // only in production and the in-memory assertion proves nothing.
+    //
+    // The metric reader is built here rather than left to the NodeSDK's own
+    // OTEL_METRICS_EXPORTER handling, which reads OTEL_EXPORTER_OTLP_PROTOCOL to
+    // choose a transport and falls back to http/protobuf when it is unset. The
+    // services are given a gRPC endpoint and no protocol variable, so that default
+    // would send OTLP/HTTP to port 4317 and every export would fail.
     sdk = new NodeSDK({
         resource: new Resource({ [ATTR_SERVICE_NAME]: serviceName }),
-        ...(options.spanExporter
-            ? { spanProcessors: [new SimpleSpanProcessor(options.spanExporter)] }
-            : { traceExporter: new OTLPTraceExporter() }),
+        ...(tracesOn
+            ? options.spanExporter
+                ? { spanProcessors: [new SimpleSpanProcessor(options.spanExporter)] }
+                : { traceExporter: new OTLPTraceExporter() }
+            : {}),
+        ...(metricsOn
+            ? {
+                metricReader: options.metricReader ??
+                    new PeriodicExportingMetricReader({
+                        exporter: new OTLPMetricExporter(),
+                        exportIntervalMillis: metricExportIntervalMillis(),
+                    }),
+            }
+            : {}),
         instrumentations: [
             new HttpInstrumentation(),
             new FastifyInstrumentation(),
+            ...(metricsOn ? [new RuntimeNodeInstrumentation()] : []),
         ],
     });
     sdk.start();

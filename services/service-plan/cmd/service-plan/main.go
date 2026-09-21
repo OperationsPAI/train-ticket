@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	shutdownOTel, err := goruntime.InitOTelSDKFromEnv(context.Background(), "service-plan")
+	shutdownOTel, err := goruntime.InitTelemetryFromEnv(context.Background(), "service-plan")
 	if err != nil {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
@@ -28,7 +28,9 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	pool, err := storage.NewPool(ctx, os.Getenv("DATABASE_URL"))
+	// The metrics variant installs pool acquisition tracing, which pgxpool reads
+	// at construction and so cannot be attached afterwards.
+	pool, poolMetrics, err := storage.NewPoolWithMetrics(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -58,7 +60,14 @@ func main() {
 	transactor := adapterpg.NewTransactor(pool)
 	service := application.NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).WithUnitOfWork(transactor.Within)
 	profile := domain.Profile()
-	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID)})
+	httpMetrics, err := goruntime.HTTPMetricsFromEnv(profile.ServiceID)
+	if err != nil {
+		log.Fatalf("failed to build HTTP server metrics: %v", err)
+	}
+	if _, err := poolMetrics.RegisterPoolMetrics(goruntime.MeterFromEnv(profile.ServiceID)); err != nil {
+		log.Fatalf("failed to register pool metrics: %v", err)
+	}
+	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID), HTTPMetrics: httpMetrics})
 	apphttp.RegisterRoutes(router, service, storage.NewIdempotencyStore(pool))
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + port, Handler: router})
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
