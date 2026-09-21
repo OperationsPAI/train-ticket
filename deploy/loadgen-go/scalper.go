@@ -353,15 +353,18 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 
 	acct := s.nextAccount()
 	if acct == nil {
-		return "", &StepError{Step: "scalper-grab", Detail: "no accounts in pool"}
+		return "", &StepError{Step: "scalper-grab", Detail: "no accounts in pool",
+			Kind: FailureUnavailable}
 	}
 	if len(acct.Travelers) == 0 {
-		return "", &StepError{Step: "scalper-grab", Detail: "account has no traveler"}
+		return "", &StepError{Step: "scalper-grab", Detail: "account has no traveler",
+			Kind: FailureUnavailable}
 	}
 	tvl := acct.Travelers[0]
 
 	if len(s.targetSegments) == 0 {
-		return "", &StepError{Step: "scalper-grab", Detail: "no target segments available"}
+		return "", &StepError{Step: "scalper-grab", Detail: "no target segments available",
+			Kind: FailureUnavailable}
 	}
 
 	segRoute := s.targetSegments[s.currentTarget%len(s.targetSegments)]
@@ -515,7 +518,9 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 		final = getString(orderCheck, "status")
 	}
 	if final == "CANCELLED" || final == "FAILED" {
-		return "", &StepError{Step: "scalper-confirm", Detail: fmt.Sprintf("order %s ended %s", orderID, final)}
+		return "", &StepError{Step: "scalper-confirm",
+			Detail: fmt.Sprintf("order %s ended %s", orderID, final),
+			Kind:   FailureRejected}
 	}
 
 	purchase := &Purchase{
@@ -586,7 +591,8 @@ func (s *ScalperSim) discoverBookingSaga(ctx context.Context, orderID string) (s
 		case <-time.After(interval):
 		}
 	}
-	return "", &StepError{Step: "scalper-reservation", Detail: "no saga for " + orderID}
+	return "", &StepError{Step: "scalper-reservation", Detail: "no saga for " + orderID,
+		Kind: FailureUnfulfilled}
 }
 
 func (s *ScalperSim) Close() {
@@ -596,9 +602,17 @@ func (s *ScalperSim) Close() {
 }
 
 // ScalperWorker runs one scalper in a tight loop.
-func ScalperWorker(ctx context.Context, idx int, cfg *Config, sim *ScalperSim, stats *Stats) {
-	if err := sim.Prepare(ctx); err != nil {
-		fmt.Printf("[scalper%d] prepare failed - %v\n", idx, err)
+//
+// It takes no worker index: the index labelled the log lines this now records,
+// and each attempt carries its own journey_id. rec is nil-safe.
+func ScalperWorker(ctx context.Context, cfg *Config, sim *ScalperSim, stats *Stats, rec *Recorder) {
+	// Preparing the account pool is itself an attempt that can fail, and when
+	// it does this worker makes no further attempt for the rest of the run.
+	// Without a record that is a silently absent actor.
+	prepare := NewAttempt("scalper", "scalper_prepare", "")
+	err := sim.Prepare(WithAttempt(ctx, prepare))
+	prepare.Record(rec, "prepared", err)
+	if err != nil {
 		return
 	}
 
@@ -622,13 +636,14 @@ func ScalperWorker(ctx context.Context, idx int, cfg *Config, sim *ScalperSim, s
 			default:
 			}
 
-			outcome, err := sim.GrabJourney(ctx)
+			attempt := NewAttempt("scalper", "scalper_grab", "")
+			outcome, err := sim.GrabJourney(WithAttempt(ctx, attempt))
+			attempt.Record(rec, outcome, err)
 			if err != nil {
 				stats.RecordJourney("scalper:failed")
 				if se, ok := err.(*StepError); ok {
 					stats.RecordError("scalper:" + se.Step)
 				}
-				fmt.Printf("[scalper%d] grab failed - %v\n", idx, err)
 				if sim.rng.Float64() >= retryProb {
 					break
 				}
@@ -636,14 +651,21 @@ func ScalperWorker(ctx context.Context, idx int, cfg *Config, sim *ScalperSim, s
 			}
 			stats.RecordJourney("scalper:" + outcome)
 			if outcome == "capacity_exhausted" && sim.currentTarget >= len(sim.targetSegments) {
-				fmt.Printf("[scalper%d] all target segments exhausted, idling\n", idx)
+				// Every target is sold out, so this worker idles for 30s and
+				// re-picks. Its own attempt: the fact the printf carried was
+				// not that a grab failed but that this actor stopped offering
+				// load for half a minute, and that is invisible in the grab
+				// records.
+				idle := NewAttempt("scalper", "scalper_retarget", "")
 				select {
 				case <-ctx.Done():
+					idle.Record(rec, "", context.Canceled)
 					return
 				case <-time.After(30 * time.Second):
 					routes := sim.reg.GetRoutes()
 					sim.targetSegments = diversifiedSegments(routes, cfg.Scalper.TargetSegments)
 					sim.currentTarget = 0
+					idle.Record(rec, "retargeted", nil)
 				}
 				break
 			}

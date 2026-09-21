@@ -23,6 +23,14 @@ type Providers struct {
 	// Active behavior context (global merged with persona)
 	Ctx        map[string]interface{}
 	JourneyMix map[string]float64
+
+	// Persona is the name of the persona currently applied, which the demand
+	// model needs in order to find that persona's recent trips.
+	Persona string
+
+	// Lines is the active route topology, resolved once at startup from
+	// bootstrap.lines. The demand model picks trips out of it.
+	Lines []Line
 }
 
 func NewProviders(cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng *rand.Rand) *Providers {
@@ -34,6 +42,16 @@ func NewProviders(cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng 
 	for k, v := range cfg.Journey {
 		jm[k] = v
 	}
+	// The active topology is derived from config here rather than passed in, so
+	// every Providers in the process agrees on it without threading a
+	// parameter through six call sites. An unknown line name is a startup
+	// error, already reported by ResolveLines in main; here it degrades to the
+	// whole network so a unit test that builds a Providers from a bare Config
+	// still gets a topology.
+	lines, err := ActiveLines(cfg.Bootstrap.Lines)
+	if err != nil {
+		lines = railNetwork
+	}
 	return &Providers{
 		Cfg:        cfg,
 		API:        api,
@@ -42,11 +60,17 @@ func NewProviders(cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng 
 		Rng:        rng,
 		Ctx:        ctx,
 		JourneyMix: jm,
+		Lines:      lines,
 	}
 }
 
 // ApplyPersona merges a persona's overrides on top of global behavior.
-func (p *Providers) ApplyPersona(persona *PersonaConfig) {
+//
+// name is the persona's configured key, or "" when no persona is applied. It
+// is kept because the demand model needs to find this persona's own recent
+// trips, and PersonaConfig carries no name of its own.
+func (p *Providers) ApplyPersona(name string, persona *PersonaConfig) {
+	p.Persona = name
 	p.Ctx = make(map[string]interface{})
 	for k, v := range p.Cfg.Behavior {
 		p.Ctx[k] = v
@@ -68,10 +92,14 @@ func (p *Providers) ApplyPersona(persona *PersonaConfig) {
 	}
 }
 
-// PickPersona selects a weighted persona or nil.
-func (p *Providers) PickPersona() *PersonaConfig {
+// PickPersona selects a weighted persona, returning its configured name
+// alongside it. The name is returned because it is the only identifier a
+// persona has -- PersonaConfig carries weights and overrides, not its own key
+// -- and the journey record has to say which kind of customer an attempt was.
+// Both results are zero when no personas are configured.
+func (p *Providers) PickPersona() (string, *PersonaConfig) {
 	if len(p.Cfg.Personas) == 0 {
-		return nil
+		return "", nil
 	}
 	weights := make(map[string]float64)
 	for name, pc := range p.Cfg.Personas {
@@ -83,7 +111,7 @@ func (p *Providers) PickPersona() *PersonaConfig {
 	}
 	chosen := WeightedChoice(p.Rng, weights)
 	pc := p.Cfg.Personas[chosen]
-	return &pc
+	return chosen, &pc
 }
 
 // CtxFloat reads a float from the active behavior context.
@@ -268,24 +296,31 @@ func (p *Providers) Identity(ctx context.Context, travelerID string) (map[string
 	}, nil
 }
 
-// CityPair picks a random origin/dest pair from known places.
+// CityPair picks an origin/destination pair the active persona would travel.
+//
+// Both stations are on a common line, in that line's own order, at a distance
+// the persona's trip_distance_km band allows. It is no longer a uniform draw
+// over every registered place: that made every pair equally likely, so no
+// origin/destination was more plausible than another and all three personas
+// travelled identically.
+//
+// See personaTrip for the demand model and for when it falls back to a uniform
+// pair.
 func (p *Providers) CityPair() (originCode, destCode, originPlace, destPlace string, err error) {
+	trip, ok := p.personaTrip()
+	if !ok {
+		return "", "", "", "", &StepError{Step: "city-pair",
+			Detail: "fewer than 2 places in registry", Kind: FailureUnavailable}
+	}
+	return trip.OriginCode, trip.DestCode, trip.originPlace, trip.destPlace, nil
+}
+
+// placeFor resolves a station code to the placeId Bootstrap created for it.
+func (p *Providers) placeFor(code string) (string, bool) {
 	p.Reg.mu.Lock()
-	places := p.Reg.Places
-	p.Reg.mu.Unlock()
-	if len(places) < 2 {
-		return "", "", "", "", &StepError{Step: "city-pair", Detail: "fewer than 2 places in registry"}
-	}
-	codes := make([]string, 0, len(places))
-	for k := range places {
-		codes = append(codes, k)
-	}
-	i := p.Rng.Intn(len(codes))
-	j := p.Rng.Intn(len(codes) - 1)
-	if j >= i {
-		j++
-	}
-	return codes[i], codes[j], places[codes[i]], places[codes[j]], nil
+	defer p.Reg.mu.Unlock()
+	id, ok := p.Reg.Places[code]
+	return id, ok && id != ""
 }
 
 // DepartureDate picks a date in the booking window.
@@ -317,6 +352,16 @@ type SearchResult struct {
 	Date        string
 	OriginPlace string
 	DestPlace   string
+
+	// DistanceKM is the real distance of the trip along its line, and
+	// LeadDays how far ahead of departure it was searched for. Both are sent
+	// on the fare quote, which is what makes the price follow the trip:
+	// fare-pricing's default rule set prices at 0.15/km with a 500 km discount
+	// threshold, and applies an advance-purchase multiplier from
+	// departureTime. 0 means the trip did not come from the topology, in which
+	// case neither is sent and the quote falls back to the flat base fare.
+	DistanceKM int
+	LeadDays   int
 }
 
 // AvailableTrain searches for bookable itineraries.
@@ -326,14 +371,12 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 	p.Reg.mu.Unlock()
 
 	if numPlaces >= 2 {
-		_, _, originPlace, destPlace, err := p.CityPair()
-		if err == nil {
-			date := p.DepartureDate()
+		if trip, ok := p.personaTrip(); ok {
 			_, data, err := p.API.Request(ctx, "POST", "trip-planning", "/api/v1/itineraries/search",
 				map[string]interface{}{
-					"originRef":      originPlace,
-					"destinationRef": destPlace,
-					"departureDate":  date,
+					"originRef":      trip.originPlace,
+					"destinationRef": trip.destPlace,
+					"departureDate":  trip.Date,
 					"travelerRefs":   travelers,
 					"channel":        channel,
 				}, nil, []int{200}, "search")
@@ -341,7 +384,10 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 				itins := getBookableItineraries(data)
 				if len(itins) > 0 {
 					itin := itins[p.Rng.Intn(len(itins))]
-					return extractSearchResult(itin, date, originPlace, destPlace), nil
+					result := extractSearchResult(itin, trip.Date, trip.originPlace, trip.destPlace)
+					result.DistanceKM = trip.DistanceKM
+					result.LeadDays = trip.LeadDays
+					return result, nil
 				}
 			}
 		}
@@ -350,7 +396,11 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 	// Fallback to known routes
 	routes := p.Reg.GetRoutes()
 	if len(routes) == 0 {
-		return nil, &StepError{Step: "available-train", Detail: "no routes and fewer than 2 places"}
+		// The failure behind the resident deployment's 100% purchase and browse
+		// failure rate. From the customer's side the search page showed
+		// nothing to book.
+		return nil, &StepError{Step: "available-train",
+			Detail: "no routes and fewer than 2 places", Kind: FailureUnavailable}
 	}
 	route := routes[p.Rng.Intn(len(routes))]
 	_, data, err := p.API.Request(ctx, "POST", "trip-planning", "/api/v1/itineraries/search",
@@ -366,10 +416,14 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 	}
 	itins := getBookableItineraries(data)
 	if len(itins) == 0 {
-		return nil, &StepError{Step: "search", Detail: fmt.Sprintf("no bookable itinerary for %s", route.Date)}
+		return nil, &StepError{Step: "search",
+			Detail: fmt.Sprintf("no bookable itinerary for %s", route.Date),
+			Kind:   FailureUnavailable}
 	}
 	itin := itins[p.Rng.Intn(len(itins))]
 	result := extractSearchResult(itin, route.Date, route.OriginPlace, route.DestPlace)
+	result.DistanceKM = route.DistanceKM
+	result.LeadDays = leadDaysUntil(route.Date)
 	if result.Service == "" {
 		result.Service = route.ScheduledService
 	}
@@ -382,14 +436,39 @@ func (p *Providers) AvailableTrain(ctx context.Context, travelers []string, chan
 	return result, nil
 }
 
-// FareQuote gets a fare quote.
-func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel string, segments []string) (map[string]interface{}, error) {
+// FareQuote gets a fare quote for a searched trip.
+//
+// The trip's distance and departure date are sent, which is what makes the
+// quoted price follow the trip instead of being one constant for every
+// journey: fare-pricing's default rule set prices the base fare at 0.15/km
+// with a 10% discount on distance beyond 500 km, and applies an
+// advance-purchase multiplier derived from `departureTime`
+// (_base_fare_for_distance and _advance_purchase_tier in
+// services/fare-pricing/src/fare_pricing/domain.py).
+//
+// Both fields are omitted when the trip carries no distance, e.g. a route the
+// bootstrap sweep discovered rather than created from a line. fare-pricing
+// falls back to the flat base fare for a null distanceKm, which is the honest
+// answer when the length of the trip is genuinely unknown; sending a made-up
+// distance would price it wrongly instead.
+func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel string,
+	segments []string, trip *SearchResult) (map[string]interface{}, error) {
+	body := map[string]interface{}{
+		"travelerRefs": travelers,
+		"channel":      channel,
+		"segmentRefs":  segments,
+	}
+	if trip != nil && trip.DistanceKM > 0 {
+		body["distanceKm"] = trip.DistanceKM
+		if departure, err := time.Parse("2006-01-02", trip.Date); err == nil {
+			// A date, not a timestamp: the only time information the topology
+			// fixes is the day. Midday UTC keeps the advance-purchase tier on
+			// the intended day in either direction of the timezone.
+			body["departureTime"] = departure.Add(12 * time.Hour).Format(time.RFC3339)
+		}
+	}
 	_, q, err := p.API.Request(ctx, "POST", "fare-pricing", "/api/v1/fare-quotes",
-		map[string]interface{}{
-			"travelerRefs": travelers,
-			"channel":      channel,
-			"segmentRefs":  segments,
-		}, nil, []int{200, 201}, "quote")
+		body, nil, []int{200, 201}, "quote")
 	return q, err
 }
 
@@ -429,7 +508,10 @@ func (p *Providers) Offer(ctx context.Context, accountID, channel, itinerary str
 		}
 		return nil, err
 	}
-	return nil, &StepError{Step: "offer", Detail: "exhausted retries"}
+	// Eight attempts, every one refused. The person was shown an error on the
+	// page that turns a search into a bookable offer.
+	return nil, &StepError{Step: "offer", Detail: "exhausted retries",
+		Kind: FailureRejected}
 }
 
 // Order creates a journey order.

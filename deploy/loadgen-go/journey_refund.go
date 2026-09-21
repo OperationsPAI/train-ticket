@@ -61,7 +61,10 @@ func postSalesCase(ctx context.Context, p *Providers, purchase *Purchase, caseTy
 		caseID = getString(caseData, "postSalesCaseId")
 	}
 	if caseID == "" {
-		return "", &StepError{Step: lower(caseType) + "-case", Detail: "no case id in response"}
+		// The request succeeded and the response was unusable. The person saw
+		// a confirmation for a case that has no id.
+		return "", &StepError{Step: lower(caseType) + "-case",
+			Detail: "no case id in response", Kind: FailureMalformed}
 	}
 
 	// Retry on 409 POLICY_CONTEXT_NOT_READY.

@@ -580,7 +580,7 @@ func TestPaymentChannelReadProbeHonoursPersonaOverride(t *testing.T) {
 		Behavior: map[string]interface{}{"p_payment_channel_read_probe": 1.0},
 		LongTail: map[string]interface{}{"p_read_probe_after_journey": 1.0},
 	})
-	p.ApplyPersona(&PersonaConfig{
+	p.ApplyPersona("casual", &PersonaConfig{
 		Overrides: map[string]interface{}{"p_payment_channel_read_probe": 0.0},
 	})
 	MaybeReadProbe(context.Background(), p, ProbeRefs{Order: "ord-1", Account: "acc-1"})

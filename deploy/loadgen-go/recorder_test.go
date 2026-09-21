@@ -39,7 +39,11 @@ func recordingConfig(t *testing.T, baseURL string) (*Config, string) {
 	return cfg, path
 }
 
-// readRecords parses the JSON Lines record file.
+// readRecords parses the REQUEST rows out of the JSON Lines record file.
+//
+// The file carries two record types, so this selects on `type` rather than
+// decoding every line as a request row -- which is precisely the reason that
+// field exists.
 func readRecords(t *testing.T, path string) []recordLine {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -51,9 +55,18 @@ func readRecords(t *testing.T, path string) []recordLine {
 		if line == "" {
 			continue
 		}
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(line), &probe); err != nil {
+			t.Fatalf("record line is not valid JSON (%q): %v", line, err)
+		}
+		if probe.Type != RecordTypeRequest {
+			continue
+		}
 		var rl recordLine
 		if err := json.Unmarshal([]byte(line), &rl); err != nil {
-			t.Fatalf("record line is not valid JSON (%q): %v", line, err)
+			t.Fatalf("request line is not valid JSON (%q): %v", line, err)
 		}
 		out = append(out, rl)
 	}
@@ -646,7 +659,8 @@ func TestRotationBoundsDiskUse(t *testing.T) {
 	// max_file_megabytes is an int, so drive rotation through the internal
 	// byte cap directly -- writing 1 MiB of records would make this slow.
 	r := &Recorder{
-		ch: make(chan ReqRecord, 1024), done: make(chan struct{}),
+		ch: make(chan ReqRecord, 1024), jch: make(chan JourneyRecord, 16),
+		quit: make(chan struct{}), done: make(chan struct{}),
 		path: path, maxBytes: 2048, flushEvery: time.Hour,
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)

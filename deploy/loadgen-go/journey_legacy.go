@@ -64,7 +64,10 @@ func JourneyLegacy(ctx context.Context, p *Providers) (string, error) {
 	}
 	status := getInt(preserveData, "status", 1)
 	if status != 1 {
-		return "", &StepError{Step: "legacy-preserve", Detail: fmt.Sprintf("status=%d", status)}
+		// The legacy facade answers 200 and carries its refusal in the body,
+		// so this is a displayed rejection rather than an HTTP error.
+		return "", &StepError{Step: "legacy-preserve",
+			Detail: fmt.Sprintf("status=%d", status), Kind: FailureRejected}
 	}
 	orderID := getString(legacyData, "orderId")
 	total := getNestedInt(legacyData, "total", "minorUnits", 10750)
@@ -81,7 +84,9 @@ func JourneyLegacy(ctx context.Context, p *Providers) (string, error) {
 		return "", err
 	}
 	if getInt(payData, "status", 0) != 1 {
-		return "", &StepError{Step: "legacy-pay", Detail: fmt.Sprintf("status=%d", getInt(payData, "status", 0))}
+		return "", &StepError{Step: "legacy-pay",
+			Detail: fmt.Sprintf("status=%d", getInt(payData, "status", 0)),
+			Kind:   FailureRejected}
 	}
 
 	time.Sleep(time.Duration(p.Cfg.Polling.IntervalSeconds*2) * time.Second)
@@ -93,7 +98,9 @@ func JourneyLegacy(ctx context.Context, p *Providers) (string, error) {
 		return "", err
 	}
 	if getInt(tickData, "status", 0) != 1 {
-		return "", &StepError{Step: "legacy-ticket", Detail: fmt.Sprintf("status=%d", getInt(tickData, "status", 0))}
+		return "", &StepError{Step: "legacy-ticket",
+			Detail: fmt.Sprintf("status=%d", getInt(tickData, "status", 0)),
+			Kind:   FailureRejected}
 	}
 
 	Think(ctx, p)

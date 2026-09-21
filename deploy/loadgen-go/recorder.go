@@ -18,13 +18,21 @@ import (
 	"time"
 )
 
-// Per-request outcome recording (issue #420).
+// Outcome recording: one JSON Lines stream carrying two record types.
 //
 // The aggregate Stats snapshot answers only the questions that were asked
 // before the run started: a rolling 5000-sample latency buffer and a
 // service:status counter cannot be re-sliced by endpoint, re-quantiled over a
-// sub-window, or joined to a trace. This writes one JSON Lines record per
-// client HTTP request so a completed run can be re-analysed offline.
+// sub-window, or joined to a trace. This writes one record per client HTTP
+// request (`type: "request"`) and one record per journey attempt
+// (`type: "journey"`) so a completed run can be re-analysed offline.
+//
+// The two types exist because a journey can fail without any HTTP request
+// failing. journey_purchase.go's waitForResult blocks on an in-process
+// channel and returns a timeout when staff never answer; every HTTP request
+// the journey made returned 200, so the request records show a 0% error rate
+// for a journey that never delivered a ticket. Only a per-attempt record can
+// say that.
 //
 // DESIGN CONSTRAINT: recording must not change the offered load.
 //
@@ -54,6 +62,7 @@ import (
 type ReqRecord struct {
 	StartUnixNano int64   // request start, from time.Time.UnixNano()
 	Chain         string  // journey / chain name (see WithChain)
+	JourneyID     string  // owning journey attempt; "" when there is none
 	Step          string  // call-site step label
 	Service       string  // target service
 	Method        string  // HTTP method
@@ -66,13 +75,30 @@ type ReqRecord struct {
 	Sampled       bool    // the traceparent sampled flag as sent
 }
 
-// recordLine is the on-disk JSON Lines schema. Field order here is the field
-// order in the file. Every field is always present (no omitempty) so the file
-// is a stable rectangle: it loads directly into pandas/DuckDB/jq without
-// per-row key checks, and an empty `error` is meaningful ("got a status").
+// Record type markers. The stream carries two shapes, and a reader must be
+// able to tell them apart by reading a field rather than by guessing which
+// keys are present: a `select(.type == "journey")` is unambiguous where a
+// `select(.outcome != null)` breaks the moment either schema grows a field.
+const (
+	RecordTypeRequest = "request"
+	RecordTypeJourney = "journey"
+)
+
+// recordLine is the on-disk JSON Lines schema for one HTTP request. Field
+// order here is the field order in the file. Every field is always present (no
+// omitempty) so the file is a stable rectangle: it loads directly into
+// pandas/DuckDB/jq without per-row key checks, and an empty `error` is
+// meaningful ("got a status").
 type recordLine struct {
-	TS        string  `json:"ts"`         // RFC3339 with nanoseconds, UTC
-	Chain     string  `json:"chain"`      // journey/chain that issued the request
+	Type  string `json:"type"`  // always "request"
+	TS    string `json:"ts"`    // RFC3339 with nanoseconds, UTC
+	Chain string `json:"chain"` // journey/chain that issued the request
+	// JourneyID is the id of the journey attempt this request was made under,
+	// "" for requests made outside one. It is what makes the two record types
+	// joinable exactly: a journey row names only the trace of the step where
+	// it stopped, and a complaint that needs every hop of a failed booking
+	// gets there by selecting the request rows with this id.
+	JourneyID string  `json:"journey_id"`
 	Step      string  `json:"step"`       // step label within the chain
 	Service   string  `json:"service"`    // target service
 	Method    string  `json:"method"`     // HTTP method
@@ -86,11 +112,86 @@ type recordLine struct {
 	Sampled   bool    `json:"sampled"`    // traceparent sampled flag as sent
 }
 
+// JourneyRecord is the in-flight form of one journey-attempt record. Built
+// once, on the goroutine that ran the attempt, at the moment the attempt ends.
+//
+// Unlike ReqRecord this is not on a hot path: one of these exists per journey
+// attempt, against tens of HTTP requests, and the goroutine that builds it has
+// just finished all its work. The same non-blocking hand-off still applies, so
+// a stalled disk cannot delay the next attempt.
+type JourneyRecord struct {
+	StartUnixNano int64   // attempt start, from time.Time.UnixNano()
+	Chain         string  // same vocabulary as ReqRecord.Chain, so the two join
+	Journey       string  // what was attempted, in the journey's own terms
+	Persona       string  // persona that was driving; "" for non-customer actors
+	Status        string  // completed / failed / abandoned / skipped
+	Outcome       string  // the journey's own outcome word
+	Step          string  // last step reached
+	Steps         int     // request steps that completed before it stopped
+	DurationMs    float64 // wall time of the whole attempt
+	Failure       string  // Failure* kind; "" when the attempt did not fail
+	ErrorShown    bool    // was anything displayed to the person
+	HTTPStatus    int     // the status they were shown; 0 when none was
+	Detail        string  // the message that came back, if any
+	JourneyID     string  // this attempt's own id
+	TraceID       string  // trace id of the step where it stopped
+}
+
+// journeyLine is the on-disk JSON Lines schema for one journey attempt. Same
+// discipline as recordLine: fixed order, every field always present.
+//
+// The field set is chosen for one consumer: a system that reads a single row
+// and writes what that person would have said to support. So each field
+// answers something a complaint states.
+type journeyLine struct {
+	Type       string  `json:"type"`        // always "journey"
+	TS         string  `json:"ts"`          // attempt START, RFC3339Nano UTC
+	Chain      string  `json:"chain"`       // same vocabulary as a request row's chain
+	Journey    string  `json:"journey"`     // "I was trying to buy a ticket"
+	Persona    string  `json:"persona"`     // which kind of customer said it
+	Status     string  `json:"status"`      // did it work, fail, or was it given up on
+	Outcome    string  `json:"outcome"`     // the journey's own word for how it ended
+	Step       string  `json:"step"`        // "it failed at payment"
+	Steps      int     `json:"steps"`       // how far through it got
+	DurationMs float64 `json:"duration_ms"` // "I waited four minutes"
+	Failure    string  `json:"failure"`     // what kind of failure it was
+	ErrorShown bool    `json:"error_shown"` // "it said card declined" vs "it just spun"
+	HTTPStatus int     `json:"http_status"` // the status shown; 0 when none was
+	Detail     string  `json:"detail"`      // "it said: payment refused"
+	JourneyID  string  `json:"journey_id"`  // the id to quote back to support
+	TraceID    string  `json:"trace_id"`    // joins to the server spans in Jaeger
+}
+
+// detailLimit bounds journeyLine.Detail. A StepError.Detail already carries up
+// to 150 bytes of response body, and concatenating a few of those into one
+// field would put an unbounded blob in a column that is read as a sentence.
+const detailLimit = 200
+
 // Recorder owns the record file and its writer goroutine. All methods are
 // safe on a nil *Recorder, which is the "recording disabled" state, so
 // callers never need a nil check.
 type Recorder struct {
-	ch   chan ReqRecord
+	ch chan ReqRecord
+	// jch is separate from ch rather than a single channel of a sum type: a
+	// shared channel would need an interface or a tagged union, and either
+	// puts an allocation or a 200-byte copy on the per-request hand-off that
+	// the whole design exists to keep free. Journey records are ~1/30th as
+	// frequent, so a dedicated smaller buffer costs nothing.
+	jch chan JourneyRecord
+	// quit tells the writer goroutine to drain and stop. Shutdown closes THIS
+	// and never ch or jch.
+	//
+	// Closing a data channel to signal shutdown is a crash: the open-loop
+	// scheduler starts one goroutine per arrival and does not track them on the
+	// WaitGroup (RunOpenLoop in scheduler.go), so journeys are still issuing
+	// requests when main calls Close. A send on a closed channel panics, and
+	// the non-blocking select in Record does not protect against it -- the
+	// `default` arm is only taken when the channel is FULL, not when it is
+	// closed. Closing a separate channel instead means a late Record is an
+	// ordinary send into a buffer nobody is draining: it fills, and from then
+	// on records are dropped and counted, which is the behaviour this design
+	// already specifies for a full buffer.
+	quit chan struct{}
 	done chan struct{}
 
 	path         string
@@ -133,8 +234,19 @@ func NewRecorder(cfg *Config) (*Recorder, error) {
 		return nil, fmt.Errorf("recording: open %s: %w", rc.Path, err)
 	}
 
+	// A journey makes tens of requests, so a journey-record buffer sized like
+	// the request buffer would be dead memory. An eighth of it, with a floor,
+	// holds every attempt in flight across any worker count this generator
+	// runs.
+	journeyBuffer := rc.BufferRecords / 8
+	if journeyBuffer < 1024 {
+		journeyBuffer = 1024
+	}
+
 	r := &Recorder{
 		ch:           make(chan ReqRecord, rc.BufferRecords),
+		jch:          make(chan JourneyRecord, journeyBuffer),
+		quit:         make(chan struct{}),
 		done:         make(chan struct{}),
 		path:         rc.Path,
 		maxBytes:     int64(rc.MaxFileMegabytes) * 1024 * 1024,
@@ -174,6 +286,25 @@ func (r *Recorder) Record(rec ReqRecord) {
 	}
 }
 
+// RecordJourneyAttempt hands one journey-attempt record to the writer
+// goroutine.
+//
+// Non-blocking for the same reason Record is: a journey goroutine that waited
+// on the disk here would delay its next attempt, and in closed-loop mode that
+// is a reduction in offered load. Drops are counted in the same counter as
+// request drops, so the reported total is "records that did not reach the
+// file" for both types.
+func (r *Recorder) RecordJourneyAttempt(rec JourneyRecord) {
+	if r == nil {
+		return
+	}
+	select {
+	case r.jch <- rec:
+	default:
+		r.dropped.Add(1)
+	}
+}
+
 // TraceSampled returns the sampled flag to put on the next traceparent.
 // Cheap enough (one PRNG draw, and none at all in the default all-sampled
 // case) to sit on the request path.
@@ -204,7 +335,7 @@ func (r *Recorder) Close() {
 		return
 	}
 	r.closeOnce.Do(func() {
-		close(r.ch)
+		close(r.quit)
 		<-r.done
 	})
 }
@@ -230,26 +361,10 @@ func (r *Recorder) writeLoop(f *os.File) {
 	ticker := time.NewTicker(flushEvery)
 	defer ticker.Stop()
 
-	emit := func(rec ReqRecord) {
-		buf.Reset()
-		line := recordLine{
-			TS:        time.Unix(0, rec.StartUnixNano).UTC().Format(time.RFC3339Nano),
-			Chain:     rec.Chain,
-			Step:      rec.Step,
-			Service:   rec.Service,
-			Method:    rec.Method,
-			Route:     RouteTemplate(rec.Path),
-			Path:      rec.Path,
-			Status:    rec.Status,
-			LatencyMs: roundTo(rec.LatencyMs, 3),
-			Error:     rec.TransportErr,
-			TraceID:   rec.TraceID,
-			SpanID:    rec.SpanID,
-			Sampled:   rec.Sampled,
-		}
-		if err := enc.Encode(&line); err != nil {
-			return
-		}
+	// emit writes whatever enc has just encoded into buf. Both record types
+	// share it, so they cannot diverge on stdout duplication, rotation
+	// accounting or the written counter.
+	emit := func() {
 		// Stdout first, and never gated on the file write succeeding: the two
 		// are separate destinations for the same record, and a full disk must
 		// not also cost the copy that reaches the collector.
@@ -282,19 +397,85 @@ func (r *Recorder) writeLoop(f *os.File) {
 		}
 	}
 
+	emitRequest := func(rec ReqRecord) {
+		buf.Reset()
+		line := recordLine{
+			Type:      RecordTypeRequest,
+			TS:        time.Unix(0, rec.StartUnixNano).UTC().Format(time.RFC3339Nano),
+			Chain:     rec.Chain,
+			JourneyID: rec.JourneyID,
+			Step:      rec.Step,
+			Service:   rec.Service,
+			Method:    rec.Method,
+			Route:     RouteTemplate(rec.Path),
+			Path:      rec.Path,
+			Status:    rec.Status,
+			LatencyMs: roundTo(rec.LatencyMs, 3),
+			Error:     rec.TransportErr,
+			TraceID:   rec.TraceID,
+			SpanID:    rec.SpanID,
+			Sampled:   rec.Sampled,
+		}
+		if err := enc.Encode(&line); err != nil {
+			return
+		}
+		emit()
+	}
+
+	emitJourney := func(rec JourneyRecord) {
+		buf.Reset()
+		line := journeyLine{
+			Type:       RecordTypeJourney,
+			TS:         time.Unix(0, rec.StartUnixNano).UTC().Format(time.RFC3339Nano),
+			Chain:      rec.Chain,
+			Journey:    rec.Journey,
+			Persona:    rec.Persona,
+			Status:     rec.Status,
+			Outcome:    rec.Outcome,
+			Step:       rec.Step,
+			Steps:      rec.Steps,
+			DurationMs: roundTo(rec.DurationMs, 3),
+			Failure:    rec.Failure,
+			ErrorShown: rec.ErrorShown,
+			HTTPStatus: rec.HTTPStatus,
+			Detail:     truncate(rec.Detail, detailLimit),
+			JourneyID:  rec.JourneyID,
+			TraceID:    rec.TraceID,
+		}
+		if err := enc.Encode(&line); err != nil {
+			return
+		}
+		emit()
+	}
+
 	for {
 		select {
-		case rec, ok := <-r.ch:
-			if !ok {
-				_ = bw.Flush()
-				_ = bw.Close()
-				return
-			}
-			emit(rec)
+		case rec := <-r.ch:
+			emitRequest(rec)
+		case rec := <-r.jch:
+			emitJourney(rec)
 		case <-ticker.C:
 			// Periodic flush is what makes the file readable *during* a run
 			// and survivable across a SIGKILL, not just at clean shutdown.
 			_ = bw.Flush()
+		case <-r.quit:
+			// Drain what is already buffered, then stop. Both channels, and
+			// the request one first, because a journey record is written after
+			// the requests it describes.
+			//
+			// This drains the BUFFER, not the producers: goroutines still
+			// running past shutdown keep filling it and would keep this loop
+			// alive indefinitely. Bounded by what is queued when quit is seen,
+			// which is what makes Close terminate.
+			for n := len(r.ch); n > 0; n-- {
+				emitRequest(<-r.ch)
+			}
+			for n := len(r.jch); n > 0; n-- {
+				emitJourney(<-r.jch)
+			}
+			_ = bw.Flush()
+			_ = bw.Close()
+			return
 		}
 	}
 }

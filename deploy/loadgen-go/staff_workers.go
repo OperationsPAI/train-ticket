@@ -19,9 +19,19 @@ type StaffSim struct {
 	stats *Stats
 	rng   *rand.Rand
 	redis *redis.Client
+	// rec is nil when recording is disabled; every Recorder method is
+	// nil-safe.
+	rec *Recorder
 }
 
 func NewStaffSim(cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng *rand.Rand) *StaffSim {
+	return NewStaffSimWithRecorder(cfg, api, reg, stats, rng, nil)
+}
+
+// NewStaffSimWithRecorder builds a StaffSim that also writes one journey
+// record per work item it processes. Pass nil to disable recording.
+func NewStaffSimWithRecorder(cfg *Config, api *ApiClient, reg *Registry, stats *Stats,
+	rng *rand.Rand, rec *Recorder) *StaffSim {
 	opts, err := redis.ParseURL(cfg.Target.RedisURL)
 	var rdb *redis.Client
 	if err == nil && cfg.Target.RedisURL != "" {
@@ -34,6 +44,7 @@ func NewStaffSim(cfg *Config, api *ApiClient, reg *Registry, stats *Stats, rng *
 		stats: stats,
 		rng:   rng,
 		redis: rdb,
+		rec:   rec,
 	}
 }
 
@@ -47,7 +58,12 @@ func (s *StaffSim) think(ctx context.Context) {
 }
 
 // Worker runs a staff worker that fairly drains all queues.
-func (s *StaffSim) Worker(ctx context.Context, idx int) {
+//
+// It takes no worker index: the index existed only to label the log line this
+// now records, and a record identifies an attempt by its own journey_id. Which
+// goroutine in the pool happened to serve a queue is not something any
+// complaint refers to.
+func (s *StaffSim) Worker(ctx context.Context) {
 	pollDuration := time.Duration(s.cfg.Staff.QueuePollSeconds * float64(time.Second))
 	for {
 		select {
@@ -72,25 +88,41 @@ func (s *StaffSim) Worker(ctx context.Context, idx int) {
 			}
 		}
 
-		s.think(ctx)
+		// One attempt per work item. A staff action is the back office half of
+		// a customer journey -- the customer's purchase is blocked on this
+		// reservation -- so it gets the same record shape, with no persona
+		// because no customer is driving it.
+		attempt := NewAttempt("staff", "staff_"+item.Kind, "")
+		itemCtx := WithAttempt(ctx, attempt)
+
+		s.think(itemCtx)
 		var err error
 		switch item.Kind {
 		case "reservation":
-			err = s.doReservation(ctx, item)
+			err = s.doReservation(itemCtx, item)
 		case "ticketing":
-			err = s.doTicketing(ctx, item)
+			err = s.doTicketing(itemCtx, item)
 		case "risk":
-			err = s.doRisk(ctx, item)
+			err = s.doRisk(itemCtx, item)
 		case "support":
-			err = s.doSupport(ctx, item)
+			err = s.doSupport(itemCtx, item)
 		case "dispatch":
-			err = s.doDispatch(ctx, item)
+			err = s.doDispatch(itemCtx, item)
 		}
+
+		outcome := ""
+		if err == nil {
+			// The staff outcome the customer is waiting on, when the action
+			// produced one: "lifted" or "rejected" from a risk review,
+			// "completed" or "no_show" from a dispatch. Empty for actions
+			// whose only result is the id they set.
+			outcome = getResultString(item, item.Kind)
+		}
+		attempt.Record(s.rec, outcome, err)
 
 		if err != nil {
 			item.SetFailed(fmt.Sprintf("%T: %v", err, err))
 			s.stats.RecordStaff(item.Kind + ":failed")
-			fmt.Printf("[staff%d] %s failed - %v\n", idx, item.Kind, err)
 		} else {
 			item.Complete()
 			s.stats.RecordStaff(item.Kind)
@@ -131,7 +163,9 @@ func (s *StaffSim) doReservation(ctx context.Context, item *WorkItem) error {
 	}
 
 	if saga == "" {
-		return &StepError{Step: "reservation", Detail: "no BookingSagaStarted for " + item.Order}
+		return &StepError{Step: "reservation",
+			Detail: "no BookingSagaStarted for " + item.Order,
+			Kind:   FailureUnfulfilled}
 	}
 
 	sb := "sb-" + UUID7()

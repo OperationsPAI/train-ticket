@@ -40,9 +40,9 @@ staff:
 
 bootstrap:
   enabled: true
-  cities:
-    - { name: Beijing, code: BJS }
-    - { name: Shanghai, code: SHA }
+  lines:
+    - beijing-shanghai
+    - hangzhou-shenzhen
   departure_window:
     from_days: 7
     to_days: 14
@@ -118,8 +118,11 @@ ops:
 	if cfg.Staff.PRiskApprove != 0.60 {
 		t.Errorf("unexpected p_risk_approve: %f", cfg.Staff.PRiskApprove)
 	}
-	if len(cfg.Bootstrap.Cities) != 2 {
-		t.Errorf("unexpected cities count: %d", len(cfg.Bootstrap.Cities))
+	if len(cfg.Bootstrap.Lines) != 2 {
+		t.Errorf("unexpected lines count: %d", len(cfg.Bootstrap.Lines))
+	}
+	if cfg.Bootstrap.Lines[0] != "beijing-shanghai" {
+		t.Errorf("unexpected first line: %s", cfg.Bootstrap.Lines[0])
 	}
 	if cfg.Bootstrap.DepartureWindow.FromDays != 7 {
 		t.Errorf("unexpected from_days: %d", cfg.Bootstrap.DepartureWindow.FromDays)

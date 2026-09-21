@@ -75,6 +75,14 @@ type RouteEntry struct {
 	ScheduledService string `json:"scheduled_service,omitempty"`
 	OriginNode       string `json:"origin_node,omitempty"`
 	DestNode         string `json:"dest_node,omitempty"`
+
+	// Line and DistanceKM come from the route topology this route was created
+	// from. DistanceKM is sent as `distanceKm` on the fare quote, which is what
+	// makes the price of a route follow its length. 0 means the route predates
+	// the topology or was discovered by the bootstrap sweep rather than
+	// created from a line, in which case no distance is claimed.
+	Line       string `json:"line,omitempty"`
+	DistanceKM int    `json:"distance_km,omitempty"`
 }
 
 // Registry is the shared state: accounts, purchases, work queues.
@@ -97,12 +105,58 @@ type Registry struct {
 	transferStationMu   sync.Mutex
 	transferStationNode string
 
+	// recentTrips is the per-persona memory the p_repeat_trip knob draws on, so
+	// a business traveller takes the same hop repeatedly. It lives here rather
+	// than on a Providers because the deployed profile is open-loop, and there
+	// the scheduler builds a fresh Providers per arrival: a per-Providers
+	// memory would be empty on every journey.
+	//
+	// Bounded and runtime-only. It is a sample of what the population recently
+	// travelled, not a record of it, and persisting it would pin a restarted
+	// run to the station pairs of the previous one.
+	recentTripsMu sync.Mutex
+	recentTrips   map[string][]TripChoice
+
 	// Staff work queues (runtime only, not persisted)
 	QReservation chan *WorkItem
 	QTicketing   chan *WorkItem
 	QRisk        chan *WorkItem
 	QSupport     chan *WorkItem
 	QDispatch    chan *WorkItem
+}
+
+// recentTripsPerPersona bounds the per-persona trip memory. Large enough that
+// a repeat draw has a realistic set of the persona's own recent trips to hit,
+// small enough that the memory stays a rolling sample of current demand rather
+// than the whole history of the run.
+const recentTripsPerPersona = 64
+
+// RememberTrip records a trip as one this persona travelled. Keeps the most
+// recent recentTripsPerPersona entries.
+func (r *Registry) RememberTrip(persona string, trip TripChoice) {
+	r.recentTripsMu.Lock()
+	defer r.recentTripsMu.Unlock()
+	if r.recentTrips == nil {
+		r.recentTrips = make(map[string][]TripChoice)
+	}
+	trips := append(r.recentTrips[persona], trip)
+	if len(trips) > recentTripsPerPersona {
+		trips = trips[len(trips)-recentTripsPerPersona:]
+	}
+	r.recentTrips[persona] = trips
+}
+
+// RecentTrip returns one of the persona's recent trips, or false when it has
+// none yet. The returned Date and LeadDays are the ones that trip was booked
+// with; a caller repeating the trip redraws them.
+func (r *Registry) RecentTrip(persona string, rng *rand.Rand) (TripChoice, bool) {
+	r.recentTripsMu.Lock()
+	defer r.recentTripsMu.Unlock()
+	trips := r.recentTrips[persona]
+	if len(trips) == 0 {
+		return TripChoice{}, false
+	}
+	return trips[rng.Intn(len(trips))], true
 }
 
 // WorkItem represents a staff work queue item.
@@ -179,6 +233,7 @@ func NewRegistry() *Registry {
 		Places:        make(map[string]string),
 		OpsEntities:   map[string][]string{"suppliers": {}, "carriers": {}, "contracts": {}},
 		InvoiceTitles: make(map[string]string),
+		recentTrips:   make(map[string][]TripChoice),
 		QReservation:  make(chan *WorkItem, 1000),
 		QTicketing:    make(chan *WorkItem, 1000),
 		QRisk:         make(chan *WorkItem, 1000),

@@ -43,10 +43,62 @@ func NewApiClientWithRecorder(cfg *Config, stats *Stats, rec *Recorder) *ApiClie
 	}
 }
 
+// Failure kinds for StepError.Kind.
+//
+// These answer the one question a journey record cannot answer from a step
+// name and a detail string: what did the person in front of the screen
+// actually see. A timeout shows a spinner and no message; an error status
+// shows an error page; a refusal shows a reason. Those are three different
+// complaints about the same failed booking, so the distinction has to be
+// carried structurally rather than recovered by matching substrings of
+// Detail.
+const (
+	// FailureHTTPStatus -- the service answered, with a status the caller did
+	// not accept. An error was displayed.
+	FailureHTTPStatus = "http_status"
+	// FailureTransport -- no response at all: the connection failed, was
+	// refused or was reset. The page did not load.
+	FailureTransport = "transport"
+	// FailureTimeout -- nothing came back before the wait ran out. Nothing was
+	// displayed; it simply never finished.
+	FailureTimeout = "timeout"
+	// FailureRejected -- the system answered and said no: the order ended
+	// CANCELLED, the legacy facade returned a non-success status, the offer
+	// was refused for every attempt.
+	FailureRejected = "rejected"
+	// FailureUnfulfilled -- the request was accepted and then never completed,
+	// with no reason given to the person waiting.
+	FailureUnfulfilled = "unfulfilled"
+	// FailureUnavailable -- there was nothing to act on: no trains, no places,
+	// no order to refund.
+	FailureUnavailable = "unavailable"
+	// FailureMalformed -- the service answered successfully but the answer was
+	// unusable, e.g. a created resource came back with no id.
+	FailureMalformed = "malformed"
+	// FailureInternal -- the generator itself could not issue the call. Not
+	// something a person could have seen.
+	FailureInternal = "internal"
+	// FailureShutdown -- the run was cancelled under the journey. Set by the
+	// journey runner, never by a StepError.
+	FailureShutdown = "shutdown"
+)
+
 // StepError is returned when an API call fails expectations.
 type StepError struct {
 	Step   string
 	Detail string
+	// Kind is one of the Failure* constants above. Every construction site
+	// sets it: it is the only field that says what the failure looked like
+	// from the user's side, and a journey record with an empty Kind is a
+	// failure nobody can write a complaint about.
+	Kind string
+	// Status is the HTTP status the person was shown, 0 when they were shown
+	// none. Set only where a status was actually received.
+	Status int
+	// TraceID is the trace of the request that failed. The journey record
+	// prefers this over the last request it saw, because the failing request
+	// is the one an engineer reading the complaint needs to open.
+	TraceID string
 }
 
 func (e *StepError) Error() string {
@@ -87,14 +139,16 @@ func (a *ApiClient) request(ctx context.Context, method, service, path string,
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("marshal: %v", err)}
+			return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("marshal: %v", err),
+				Kind: FailureInternal}
 		}
 		bodyReader = bytes.NewReader(b)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
-		return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("build request: %v", err)}
+		return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("build request: %v", err),
+			Kind: FailureInternal}
 	}
 
 	if body != nil {
@@ -121,9 +175,16 @@ func (a *ApiClient) request(ctx context.Context, method, service, path string,
 		req.Header.Set("traceparent", tc.Header)
 	}
 
+	// The journey attempt that owns this request, if any. Reported to on every
+	// path below: the last request an attempt made is the step it stopped at,
+	// even when that request itself succeeded.
+	attempt := AttemptFromContext(ctx)
+
 	t0 := time.Now()
 	resp, err := a.client.Do(req)
 	elapsed := time.Since(t0).Seconds() * 1000
+
+	attempt.observe(step, tc.TraceID)
 
 	if err != nil {
 		a.stats.RecordError(fmt.Sprintf("%s:transport", service))
@@ -131,6 +192,7 @@ func (a *ApiClient) request(ctx context.Context, method, service, path string,
 		a.rec.Record(ReqRecord{
 			StartUnixNano: t0.UnixNano(),
 			Chain:         ChainFromContext(ctx),
+			JourneyID:     attempt.id(),
 			Step:          step,
 			Service:       service,
 			Method:        method,
@@ -142,7 +204,15 @@ func (a *ApiClient) request(ctx context.Context, method, service, path string,
 			SpanID:        tc.SpanID,
 			Sampled:       tc.Sampled,
 		})
-		return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("transport: %v", err)}
+		// A client timeout and a refused connection are different experiences
+		// -- a spinner that never resolves against a page that fails to load
+		// -- so the transport classifier decides the kind here too.
+		kind := FailureTransport
+		if classifyTransportError(err) == "timeout" {
+			kind = FailureTimeout
+		}
+		return 0, nil, &StepError{Step: step, Detail: fmt.Sprintf("transport: %v", err),
+			Kind: kind, TraceID: tc.TraceID}
 	}
 	defer resp.Body.Close()
 
@@ -150,6 +220,7 @@ func (a *ApiClient) request(ctx context.Context, method, service, path string,
 	a.rec.Record(ReqRecord{
 		StartUnixNano: t0.UnixNano(),
 		Chain:         ChainFromContext(ctx),
+		JourneyID:     attempt.id(),
 		Step:          step,
 		Service:       service,
 		Method:        method,
@@ -199,7 +270,8 @@ func (a *ApiClient) request(ctx context.Context, method, service, path string,
 				}
 				detail += " " + snippet
 			}
-			return resp.StatusCode, data, &StepError{Step: step, Detail: detail}
+			return resp.StatusCode, data, &StepError{Step: step, Detail: detail,
+				Kind: FailureHTTPStatus, Status: resp.StatusCode, TraceID: tc.TraceID}
 		}
 	}
 

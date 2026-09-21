@@ -195,18 +195,18 @@ type OpsConfig struct {
 }
 
 type BootstrapConfig struct {
-	Enabled          bool             `yaml:"enabled"`
-	Cities           []CityConfig     `yaml:"cities"`
-	DepartureWindow  DepartureWindow  `yaml:"departure_window"`
-	DepartureDates   []string         `yaml:"departure_dates"`
-	ServicesPerDate  int              `yaml:"services_per_date"`
-	ServiceNumBase   int              `yaml:"service_number_base"`
-	MinRoutes        int              `yaml:"min_routes"`
-}
-
-type CityConfig struct {
-	Name string `yaml:"name"`
-	Code string `yaml:"code"`
+	Enabled bool `yaml:"enabled"`
+	// Lines selects which lines of the route topology this run creates
+	// inventory on, by name. Empty means the whole network. The stations
+	// themselves are a Go table (topology.go): they are consumed both by
+	// Bootstrap and by the persona demand model, and a list duplicated in
+	// config and code would drift.
+	Lines           []string        `yaml:"lines"`
+	DepartureWindow DepartureWindow `yaml:"departure_window"`
+	DepartureDates  []string        `yaml:"departure_dates"`
+	ServicesPerDate int             `yaml:"services_per_date"`
+	ServiceNumBase  int             `yaml:"service_number_base"`
+	MinRoutes       int             `yaml:"min_routes"`
 }
 
 type DepartureWindow struct {

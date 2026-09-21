@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,25 @@ func main() {
 	// Convert the config's {service} placeholder to Go's %s
 	cfg.Target.BaseURLTemplate = ConvertTemplate(cfg.Target.BaseURLTemplate)
 
+	// Resolve the route topology before anything runs. A bootstrap.lines entry
+	// naming no line is fatal rather than skipped: it would silently remove a
+	// share of the offered demand while the run looked healthy.
+	lines, err := ActiveLines(cfg.Bootstrap.Lines)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("[topology] %d lines, %d stations: %s\n",
+		len(lines), len(Stations(lines)), lineNames(lines))
+	// The per-persona demand model, on stdout at startup. An operator has to be
+	// able to see that the personas differ in WHERE and WHEN they travel, not
+	// only that the config file says so.
+	for _, name := range sortedPersonaNames(cfg) {
+		if summary := PersonaDemandSummary(cfg, name); summary != "" {
+			fmt.Printf("[demand] %s\n", summary)
+		}
+	}
+
 	var seed int64
 	if cfg.Run.Seed != nil {
 		seed = *cfg.Run.Seed
@@ -57,9 +77,10 @@ func main() {
 
 	stats := NewStats()
 
-	// Per-request outcome recording (issue #420). nil when disabled; every
-	// Recorder method is nil-safe. Opened before any request is made so no
-	// request escapes unrecorded, and closed last so the buffer drains.
+	// Outcome recording: one record per HTTP request and one per journey
+	// attempt. nil when disabled; every Recorder method is nil-safe. Opened
+	// before any request is made so nothing escapes unrecorded, and closed
+	// last so the buffer drains.
 	rec, err := NewRecorder(cfg)
 	if err != nil {
 		// A misconfigured record path is a measurement bug, not a reason to
@@ -67,7 +88,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[recorder] disabled: %v\n", err)
 	}
 	if rec.Enabled() {
-		fmt.Printf("[recorder] per-request records -> %s (buffer %d, flush %.1fs, sampled_ratio %.3g)\n",
+		fmt.Printf("[recorder] request + journey records -> %s (buffer %d, flush %.1fs, sampled_ratio %.3g)\n",
 			rec.Path(), cfg.Recording.BufferRecords,
 			cfg.Recording.FlushIntervalSeconds, cfg.Recording.SampledRatio())
 	}
@@ -96,27 +117,30 @@ func main() {
 		}()
 	}
 
-	// Bootstrap
+	// Bootstrap. A failure here is why every later purchase fails on
+	// available-train, so it gets a record of its own: the run continues with
+	// whatever inventory exists, and that decision has to be visible in the
+	// same stream as its consequences.
 	if cfg.Bootstrap.Enabled {
-		if err := Bootstrap(WithChain(ctx, "bootstrap"), cfg, api, reg, rng); err != nil {
-			reg.mu.Lock()
-			routeCount := len(reg.Routes)
-			reg.mu.Unlock()
-			fmt.Printf("[bootstrap] failed (continuing with %d known routes): %v\n", routeCount, err)
-		}
+		attempt := NewAttempt("bootstrap", "bootstrap_inventory", "")
+		err := Bootstrap(WithAttempt(ctx, attempt), cfg, api, reg, rng, rec)
+		reg.mu.Lock()
+		routeCount := len(reg.Routes)
+		reg.mu.Unlock()
+		attempt.Record(rec, fmt.Sprintf("seeded_%d_routes", routeCount), err)
 	}
 
 	var wg sync.WaitGroup
 
 	// Staff workers
-	staffSim := NewStaffSim(cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())))
+	staffSim := NewStaffSimWithRecorder(cfg, api, reg, stats,
+		rand.New(rand.NewSource(rng.Int63())), rec)
 	staffCtx := WithChain(ctx, "staff")
 	for i := 0; i < cfg.Staff.Workers; i++ {
 		wg.Add(1)
-		staffIdx := i
 		go func() {
 			defer wg.Done()
-			staffSim.Worker(staffCtx, staffIdx)
+			staffSim.Worker(staffCtx)
 		}()
 	}
 
@@ -125,7 +149,8 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			OpsWorker(WithChain(ctx, "ops"), cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())))
+			OpsWorker(WithChain(ctx, "ops"), cfg, api, reg, stats,
+				rand.New(rand.NewSource(rng.Int63())), rec)
 		}()
 	}
 
@@ -133,7 +158,8 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		SchedulePublisher(WithChain(ctx, "schedule"), cfg, api, reg, rand.New(rand.NewSource(rng.Int63())))
+		SchedulePublisher(WithChain(ctx, "schedule"), cfg, api, reg,
+			rand.New(rand.NewSource(rng.Int63())), rec)
 	}()
 
 	// Scalper workers
@@ -145,19 +171,24 @@ func main() {
 			scalperSim := NewScalperSim(cfg, api, reg, stats, rand.New(rand.NewSource(rng.Int63())), scalperIdx)
 			go func() {
 				defer wg.Done()
-				ScalperWorker(scalperCtx, scalperIdx, cfg, scalperSim, stats)
+				ScalperWorker(scalperCtx, cfg, scalperSim, stats, rec)
 				scalperSim.Close()
 			}()
 		}
 	}
 
-	// Customer workers via scheduler
+	// Customer workers via scheduler. The recorder is bound in here rather
+	// than reached through the Providers, which has no field for it: a journey
+	// record is written by the runner around the journey, not by the journey.
+	customerRunner := func(jctx context.Context, p *Providers) {
+		runJourney(jctx, p, rec)
+	}
 	scheduler := NewScheduler(cfg, api, reg, stats, rng)
 	mode := strings.ToLower(cfg.Run.Mode)
 	if mode == "open-loop" {
-		scheduler.RunOpenLoop(&wg, runJourney)
+		scheduler.RunOpenLoop(&wg, customerRunner)
 	} else {
-		scheduler.RunClosedLoop(&wg, runJourney)
+		scheduler.RunClosedLoop(&wg, customerRunner)
 	}
 
 	// Stats reporter
@@ -194,30 +225,36 @@ func main() {
 	staffSim.Close()
 }
 
-// runJourney executes one customer journey iteration.
-func runJourney(ctx context.Context, p *Providers) {
-	// Pick persona
-	persona := p.PickPersona()
-	p.ApplyPersona(persona)
+// runJourney executes one customer journey iteration and records its outcome.
+//
+// The record is written on EVERY path, including the ones that used to return
+// early: a journey that fails, crashes or is cut off by shutdown is exactly
+// the journey a complaint would be written about, and the printf that used to
+// stand in for it carried no timestamp, no duration, no step and no trace id.
+func runJourney(ctx context.Context, p *Providers, rec *Recorder) {
+	personaName, persona := p.PickPersona()
+	p.ApplyPersona(personaName, persona)
 
 	name := WeightedChoice(p.Rng, p.JourneyMix)
 
-	// Tag every request this journey makes with the journey name, so the
-	// per-request record file can be split by journey. The ApiClient is a
-	// single shared object, so the label rides the context instead.
-	ctx = WithChain(ctx, name)
+	// Tag every request this journey makes with the journey name and the
+	// attempt that owns it, so the per-request record file can be split by
+	// journey and each request can report progress back to the attempt. The
+	// ApiClient is a single shared object, so both ride the context instead.
+	attempt := NewAttempt(name, name, personaName)
+	ctx = WithAttempt(ctx, attempt)
 
 	outcome, err := executeJourney(ctx, p, name)
+	attempt.Record(rec, outcome, err)
+
 	if err != nil {
 		if se, ok := err.(*StepError); ok {
 			p.Stats.RecordJourney(name + ":failed")
 			p.Stats.RecordError("journey:" + name + ":" + se.Step)
-			fmt.Printf("[cust] %s failed - %v\n", name, err)
 		} else if err == context.Canceled {
 			return
 		} else {
 			p.Stats.RecordJourney(name + ":crashed")
-			fmt.Printf("[cust] %s crashed - %v\n", name, err)
 		}
 		return
 	}
@@ -226,6 +263,26 @@ func runJourney(ctx context.Context, p *Providers) {
 	} else {
 		p.Stats.RecordJourney(name + ":" + outcome)
 	}
+}
+
+// lineNames renders the active line names for the startup banner.
+func lineNames(lines []Line) string {
+	names := make([]string, 0, len(lines))
+	for _, line := range lines {
+		names = append(names, line.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// sortedPersonaNames returns the configured persona names in a stable order,
+// so the startup banner does not reshuffle between restarts.
+func sortedPersonaNames(cfg *Config) []string {
+	names := make([]string, 0, len(cfg.Personas))
+	for name := range cfg.Personas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func executeJourney(ctx context.Context, p *Providers, name string) (string, error) {
