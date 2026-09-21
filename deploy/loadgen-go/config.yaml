@@ -71,21 +71,30 @@ behavior:
   ride_branches: { complete: 0.75, driver_cancel_reassign: 0.10, user_cancel: 0.10, no_show: 0.05 }
   p_waitlist_on_no_capacity: 0.30
   p_waitlist_cancel: 0.05
-  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
-  transfer_contract_mix: { PROTECTED: 0.55, SELF_TRANSFER: 0.45 }
+  disruption_type_mix: { SERVICE_DELAY: 0.55, SERVICE_CANCELLED: 0.25, STOP_CHANGED: 0.15, WEATHER: 0.05 }
+  disruption_option_mix: { WAIT: 0.40, REFUND: 0.30, COMPENSATION: 0.20, MANUAL: 0.10 }
+  transfer_contract_mix: { PROTECTED: 0.40, SUPPLIER_PROTECTED: 0.20, SELF_TRANSFER: 0.25, PLATFORM_ASSISTED: 0.15 }
   p_transfer_delay: 0.35
   p_transfer_missed: 0.25
   waitlist_deadline_minutes: 30
-  channels: { WEB: 1.0 }
+  post_sales_case_mix: { REFUND: 0.62, CANCELLATION: 0.28, COMPENSATION: 0.10 }
+  # The sales channel, on the search, quote and offer path. Only these three
+  # have a seeded fare rule set, and fare-pricing quotes only on an exact
+  # channel match.
+  channels: { WEB: 0.62, MOBILE: 0.30, COUNTER: 0.08 }
+  # customer-service's own channel enum, which is a different enumeration:
+  # MOBILE and COUNTER are rejected there, and WEB is the only member of both.
+  support_channels: { APP: 0.45, WEB: 0.25, PHONE: 0.12, IM: 0.10, EMAIL: 0.05, IN_APP_MESSAGE: 0.03 }
   # Seat class, in fare-pricing's vocabulary. Sent on the fare quote, where it
   # multiplies the base fare, and on the seat assignment for the three classes
   # seat-assignment stocks. This local profile keeps every class represented so
   # a single run exercises both the priced-and-seated and the priced-but-no-seat
   # paths.
   seat_classes: { SECOND_CLASS: 0.55, FIRST_CLASS: 0.20, BUSINESS_CLASS: 0.10, STANDING: 0.05, SLEEPER_HARD: 0.07, SLEEPER_SOFT: 0.03 }
-  # STUDENT and MILITARY are the types the eligibility-certificate branch
-  # registers a certificate for; enforced by traveler-profile's TravelerType.
-  traveler_types: { ADULT: 0.70, CHILD: 0.10, SENIOR: 0.05, STUDENT: 0.10, MILITARY: 0.05 }
+  # All six values of traveler-profile's TravelerType. STUDENT and MILITARY are
+  # also the types the eligibility-certificate branch registers a certificate
+  # for, so this knob feeds both.
+  traveler_types: { ADULT: 0.62, STUDENT: 0.14, CHILD: 0.09, SENIOR: 0.09, INFANT: 0.03, MILITARY: 0.03 }
   # Sent as preferredChannel on the payment intent and as channelRef.channel on
   # capture. Only ALIPAY_SIM, WECHAT_SIM and UNIONPAY_SIM exist; payment and
   # payment-channel both reject anything else. Flat here so a local run

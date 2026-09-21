@@ -7,14 +7,88 @@ import (
 	"time"
 )
 
-// JourneyRefund takes a completed purchase and opens a post-sales refund case.
+// postSalesCaseMixDefault is the fallback for behavior.post_sales_case_mix.
+//
+// Three of post-sales' five PostSalesCaseType values. CHANGE is absent because
+// it is the change journey's own case type, and REBOOK is absent because
+// post-sales cannot currently accept one: decisionFor maps caseType REBOOK to
+// DecisionKind.REFUND (PostSalesApplicationService line 177) while
+// recordDecision requires the decision kind to equal the case type name and
+// exempts only CANCELLATION (PostSalesCase line 159), so every REBOOK case
+// throws DomainRuleViolation and evaluate answers 422. That refusal is
+// unconditional rather than a state precondition the generator could satisfy,
+// and closing it means editing post-sales.
+//
+// What the three that remain actually do differently:
+//
+//   - REFUND and CANCELLATION share DecisionKind.REFUND, so both price through
+//     RefundPolicyEngine and both run the void-entitlement / cancel-segment /
+//     release-capacity / request-refund execution plan. CANCELLATION differs in
+//     one observable way: PostSalesMapper.requestType reports it as
+//     "CANCELLATION" where REFUND reports "REFUND_BY_RULE".
+//   - COMPENSATION takes DecisionKind.COMPENSATION, which returns its decision
+//     before the refund assessment is built. It therefore never consults the
+//     policy context, so it cannot 409 on POLICY_CONTEXT_NOT_READY, and it
+//     charges no penalty tier.
+//
+// Weighted so the ordinary voluntary refund stays dominant.
+var postSalesCaseMixDefault = map[string]float64{
+	"REFUND": 0.62, "CANCELLATION": 0.28, "COMPENSATION": 0.10,
+}
+
+// postSalesReasonCodes is the reason string sent per case type.
+//
+// reasonCode is @NotBlank and otherwise unvalidated, but it is not inert for the
+// two refund-kind types: PostSalesApplicationService.classify reads it for the
+// substrings CARRIER, TRAIN_CANCEL, DELAY, FORCE, MAJEURE, PLATFORM and ERROR,
+// and any hit makes the refund INVOLUNTARY, which
+// RefundPolicyEngine.INVOLUNTARY_OVERRIDE prices at a zero penalty. All three
+// strings below are deliberately free of those substrings, so the generated
+// traffic exercises the ordinary penalty tiers instead of collapsing onto the
+// override. They are also what the downstream complaint generator reads, so
+// each states the customer's own reason.
+var postSalesReasonCodes = map[string]string{
+	"REFUND":       "CUSTOMER_REQUEST",
+	"CANCELLATION": "CUSTOMER_CANCELLED_TRIP",
+	"COMPENSATION": "SERVICE_QUALITY_COMPLAINT",
+}
+
+// postSalesOutcome is both the journey's outcome word and the registry status
+// the purchase is released to, keyed by case type.
+//
+// Each of the three is terminal for this purchase and distinct from
+// "confirmed", which is what establishes the precondition rather than provoking
+// its refusal. post-sales holds one exclusive active-refund slot per order
+// across REFUND, CANCELLATION, REBOOK and CHANGE
+// (requiresExclusiveRefundSlot, and the post_sales_active_refunds unique index
+// behind reserveActiveRefundSlot), so a second case of any of those types on the
+// same order is a 409 REFUND_ALREADY_IN_PROGRESS. TakePurchase already claims
+// the purchase exclusively within the process; releasing it to a status other
+// than "confirmed" keeps a later refund, change or disruption journey from
+// picking the same order up and asking for that second case.
+//
+// classifyOutcome files all three as completed, which is correct: the customer
+// asked the system to end their booking and it answered in full.
+// "order_cancelled" rather than a bare "cancelled" keeps it out of the
+// journey record's abandoned vocabulary, where every word for a customer
+// walking away mid-funnel already ends in "cancelled".
+var postSalesOutcome = map[string]string{
+	"REFUND":       "refunded",
+	"CANCELLATION": "order_cancelled",
+	"COMPENSATION": "compensated",
+}
+
+// JourneyRefund takes a completed purchase and opens a post-sales case against
+// it: a refund, a cancellation or a compensation claim.
 func JourneyRefund(ctx context.Context, p *Providers) (string, error) {
 	purchase := p.Reg.TakePurchase(p.Rng, "confirmed")
 	if purchase == nil {
 		return "no_purchase_to_refund", nil
 	}
 
-	caseID, err := postSalesCase(ctx, p, purchase, "REFUND", "CUSTOMER_REQUEST")
+	caseType := WeightedChoice(p.Rng,
+		p.CtxMap("post_sales_case_mix", postSalesCaseMixDefault))
+	caseID, err := postSalesCase(ctx, p, purchase, caseType, postSalesReasonCodes[caseType])
 	if err != nil {
 		p.Reg.ReleasePurchase(purchase, "confirmed")
 		return "", err
@@ -29,13 +103,13 @@ func JourneyRefund(ctx context.Context, p *Providers) (string, error) {
 		}
 	}
 
-	p.Reg.ReleasePurchase(purchase, "refunded")
+	p.Reg.ReleasePurchase(purchase, postSalesOutcome[caseType])
 	MaybeReadProbe(ctx, p, ProbeRefs{
 		PostSalesCase: caseID,
 		Order:         purchase.Order,
 		Account:       purchase.Account,
 	})
-	return "refunded", nil
+	return postSalesOutcome[caseType], nil
 }
 
 func postSalesCase(ctx context.Context, p *Providers, purchase *Purchase, caseType, reason string) (string, error) {

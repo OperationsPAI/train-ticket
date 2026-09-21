@@ -153,16 +153,54 @@ behavior:
   # Conservative defaults: convert only some sold-out traffic and cancel rarely.
   p_waitlist_on_no_capacity: 0.30
   p_waitlist_cancel: 0.05
-  disruption_option_mix: { WAIT: 0.50, REFUND: 0.35, COMPENSATION: 0.15 }
-  transfer_contract_mix: { PROTECTED: 0.55, SELF_TRANSFER: 0.45 }
+  # Which disruption a drill reports. These are raw disruptionType strings from
+  # disruption-recovery's DISRUPTION_TYPES set; normalize_disruption_type maps
+  # each onto one of the four canonical types, one per key here:
+  # SERVICE_DELAY -> DELAY, SERVICE_CANCELLED -> CANCELLATION,
+  # STOP_CHANGED -> PARTIAL, WEATHER -> FORCE_MAJEURE. The last two of those
+  # canonical types also run the mass-disruption batch path unconditionally, so
+  # their share sets how often that path is exercised.
+  disruption_type_mix: { SERVICE_DELAY: 0.55, SERVICE_CANCELLED: 0.25, STOP_CHANGED: 0.15, WEATHER: 0.05 }
+
+  # Which recovery option the customer picks. These four are exactly the option
+  # set the server builds for every case this drill gets a choice on, for all
+  # four canonical disruption types alike, so one flat mix is right rather than a
+  # per-type mix. MANUAL is offered on every such case. REACCOMMODATION must NOT
+  # be added: build_option_set offers it only for a MISSED_CONNECTION reported by
+  # TRANSFER_MANAGEMENT as a SYSTEM actor, which this drill is not, and a
+  # configured option the server cannot offer now fails the journey loudly rather
+  # than silently substituting another.
+  disruption_option_mix: { WAIT: 0.40, REFUND: 0.30, COMPENSATION: 0.20, MANUAL: 0.10 }
+
+  # All four of transfer-management's ContractType values. The behavior they
+  # change is binary: PROTECTED and SUPPLIER_PROTECTED are the service's
+  # PROTECTED_TYPES, so a missed connection auto-rebooks and opens a recovery
+  # case, while SELF_TRANSFER and PLATFORM_ASSISTED do neither and differ from
+  # each other only as a stored label.
+  transfer_contract_mix: { PROTECTED: 0.40, SUPPLIER_PROTECTED: 0.20, SELF_TRANSFER: 0.25, PLATFORM_ASSISTED: 0.15 }
   p_transfer_delay: 0.35
   p_transfer_missed: 0.25
   waitlist_deadline_minutes: 30
 
-  # sales channel weights. NOTE: fare rule sets are published per channel;
-  # out of the box only WEB has published rules, so other channels will get
-  # quote failures unless you publish rule sets for them first.
-  channels: { WEB: 1.0 }
+  # What the refund journey asks post-sales for. CHANGE is the change journey's
+  # own type. REBOOK is absent deliberately: post-sales maps a REBOOK case to a
+  # REFUND decision kind and then requires the kind to match the case type, so
+  # every REBOOK evaluates to a 422 no request shape can avoid.
+  post_sales_case_mix: { REFUND: 0.62, CANCELLATION: 0.28, COMPENSATION: 0.10 }
+
+  # Sales channel weights, sent on the search, the fare quote and the offer.
+  # No service enumerates this string; the constraint is that fare-pricing
+  # quotes only for a channel with a published rule set, and api.py seeds
+  # WEB / web / MOBILE / COUNTER. Verified on the resident deployment: all three
+  # below quote 201. "web" is omitted as a casing duplicate of WEB.
+  channels: { WEB: 0.62, MOBILE: 0.30, COUNTER: 0.08 }
+
+  # Support-case channel, a DIFFERENT enumeration from channels above and
+  # therefore its own knob. customer-service enforces a closed code-level enum
+  # (APP, WEB, PHONE, IM, EMAIL, IN_APP_MESSAGE, BOT, OPERATOR_CONSOLE) in which
+  # WEB is the only member shared with the sales channels; MOBILE and COUNTER
+  # return 400 there.
+  support_channels: { APP: 0.45, WEB: 0.25, PHONE: 0.12, IM: 0.10, EMAIL: 0.05, IN_APP_MESSAGE: 0.03 }
 
   # Seat class. The keys are fare-pricing's own vocabulary (the six values of
   # SeatClassMultiplier in services/fare-pricing/src/fare_pricing/domain.py),
@@ -178,11 +216,17 @@ behavior:
   # ticket, not a failure. Personas override this per traveller type below.
   seat_classes: { SECOND_CLASS: 0.70, FIRST_CLASS: 0.18, BUSINESS_CLASS: 0.05, STANDING: 0.04, SLEEPER_HARD: 0.02, SLEEPER_SOFT: 0.01 }
 
-  # traveler identity pools used when creating (mock) travelers.
-  # STUDENT and MILITARY are what give the eligibility-certificate branch below
-  # travelers to register a certificate for; the set is enforced by
-  # services/traveler-profile/.../application/TravelerType.java.
-  traveler_types: { ADULT: 0.72, CHILD: 0.10, SENIOR: 0.05, STUDENT: 0.10, MILITARY: 0.03 }
+  # traveler identity pools used when creating (mock) travelers. All six values
+  # of traveler-profile's TravelerType, which is enforced on create and update.
+  #
+  # STUDENT and MILITARY are also what give the eligibility-certificate branch
+  # below travelers to register a certificate for, so this one knob feeds both.
+  #
+  # No service the loadgen drives branches on the type. post-sales' student
+  # refund tier reads the journey-order traveler ref, which journey-order writes
+  # as ADULT for every traveler, so INFANT is seated and quoted like an ADULT
+  # and its share manufactures no refusals.
+  traveler_types: { ADULT: 0.62, STUDENT: 0.14, CHILD: 0.09, SENIOR: 0.09, INFANT: 0.03, MILITARY: 0.03 }
 
   # How the customer pays. Sent BOTH as preferredChannel when the payment
   # intent is created and as channelRef.channel on capture, so payment's
