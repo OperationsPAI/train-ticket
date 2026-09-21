@@ -25,6 +25,16 @@ run:
   target_rps: 500
   ramp_duration_seconds: 30
 
+# Relative weights of what a virtual customer does next.
+#
+# This local profile declares no personas, so this map is what the run uses.
+# Under the deployed profile every persona declares its own `journey_weights`
+# and ApplyPersona replaces this map, so a journey named here and in no persona
+# never runs. See the same block in
+# deploy/helm/train-ticket/loadgen-config.yaml.
+#
+# `campaign` is not here: drafting a marketing campaign is ops-side work and
+# runs on the ops sweep under `ops.p_campaign_draft`.
 journey_mix:
   browse: 30
   purchase: 40
@@ -40,7 +50,6 @@ journey_mix:
   insurance: 6
   group_booking: 5
   corporate: 5
-  campaign: 4
 
 behavior:
   p_new_account: 0.35
@@ -100,6 +109,7 @@ ops:
   p_supplier_catalog_write: 0.25
   p_wallet_manual_issue: 0.20
   wallet_manual_issue_minor_units: 100
+  p_campaign_draft: 0.30
 
 bootstrap:
   enabled: true

@@ -192,6 +192,10 @@ type OpsConfig struct {
 	PSupplierCatalogWrite       float64      `yaml:"p_supplier_catalog_write"`
 	PWalletManualIssue          float64      `yaml:"p_wallet_manual_issue"`
 	WalletManualIssueMinorUnits int          `yaml:"wallet_manual_issue_minor_units"`
+	// PCampaignDraft is the chance one sweep drafts a marketing campaign.
+	// Ops-side rather than a persona weight: no customer drafts a campaign,
+	// and a customer weight would tie its rate to target_rps.
+	PCampaignDraft float64 `yaml:"p_campaign_draft"`
 }
 
 type BootstrapConfig struct {

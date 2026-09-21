@@ -312,6 +312,33 @@ func sortedPersonaNames(cfg *Config) []string {
 	return names
 }
 
+// dispatchableJourneys names every journey executeJourney has a case for.
+//
+// Beside the switch so the two are read and edited together. What it exists
+// for is a test that asks whether a journey the configuration weights can
+// actually be dispatched, and that question cannot be asked by calling
+// executeJourney, which would run the journey against a cluster.
+//
+// `campaign` is deliberately absent. Drafting a marketing campaign is ops-side
+// work and runs on the ops sweep under `ops.p_campaign_draft`, so no customer
+// draw should select it.
+var dispatchableJourneys = map[string]bool{
+	"browse":        true,
+	"purchase":      true,
+	"refund":        true,
+	"change":        true,
+	"fulfillment":   true,
+	"support":       true,
+	"legacy":        true,
+	"ride":          true,
+	"disruption":    true,
+	"transfer":      true,
+	"loyalty":       true,
+	"insurance":     true,
+	"group_booking": true,
+	"corporate":     true,
+}
+
 func executeJourney(ctx context.Context, p *Providers, name string) (string, error) {
 	switch name {
 	case "browse":
@@ -342,8 +369,6 @@ func executeJourney(ctx context.Context, p *Providers, name string) (string, err
 		return JourneyGroupBooking(ctx, p)
 	case "corporate":
 		return JourneyCorporate(ctx, p)
-	case "campaign":
-		return JourneyCampaign(ctx, p)
 	default:
 		return "unknown_journey", nil
 	}

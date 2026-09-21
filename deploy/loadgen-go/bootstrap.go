@@ -710,5 +710,34 @@ func opsSweep(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, s
 			}
 		}
 	}
+
+	// Drafting a campaign is ops-side work, so it runs on this sweep and not
+	// as a customer journey.
+	//
+	// It was in `journey_mix` before, which the personas replace, so it had
+	// weight zero and marketing-campaign received nothing at all. A persona
+	// weight would have been the wrong repair: no customer drafts a campaign,
+	// and putting it in the customer mix would have made its rate follow
+	// target_rps.
+	if rng.Float64() < cfg.Ops.PCampaignDraft {
+		if _, err := JourneyCampaign(ctx, opsProviders(cfg, api, reg, stats, rng)); err == nil {
+			stats.RecordJourney("ops:campaign:draft")
+		} else {
+			stats.RecordJourney("ops:campaign:failed")
+		}
+	}
 	return nil
+}
+
+// opsProviders builds the Providers a journey needs, for the ops sweep to
+// reuse a journey written against that type.
+//
+// The behavior context is the config's own `behavior` block with no persona
+// merged in: an ops action has no persona, and ApplyPersona would replace the
+// journey mix this sweep does not use anyway.
+func opsProviders(cfg *Config, api *ApiClient, reg *Registry, stats *Stats,
+	rng *rand.Rand) *Providers {
+	p := NewProviders(cfg, api, reg, stats, rng)
+	p.ApplyPersona("", nil)
+	return p
 }
