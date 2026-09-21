@@ -44,6 +44,23 @@ const (
 	// StatusCancelled -- the run stopped underneath the attempt. An artefact of
 	// the generator shutting down, not an experience.
 	StatusCancelled = "cancelled"
+	// StatusRefused -- the system considered the request and said no, for a
+	// reason it owns. A risk review that declined, a refund inside the
+	// non-refundable window, a train with no seat left in the class asked for.
+	//
+	// Its own status and not StatusFailed, because these two answer different
+	// questions about a deployment. "Did anything break" has to be able to read
+	// zero on a healthy stack, and a stack where half of all high-risk
+	// purchases are declined is healthy: p_risk_approve is 0.50 by
+	// configuration, and a refund of a departure inside 48 hours is refused by
+	// the fare rules on purpose. Counting those as failures makes the failure
+	// rate a measure of how much deliberate refusal the configuration asks
+	// for.
+	//
+	// Its own status and not StatusCompleted either, because the person was
+	// told no and that is what a complaint would be about. The two are
+	// distinguishable in the record and both are visible.
+	StatusRefused = "refused"
 )
 
 // Attempt accumulates, over the life of one journey attempt, the facts the
@@ -185,7 +202,12 @@ func (a *Attempt) Record(rec *Recorder, outcome string, err error) {
 		}
 	}
 
-	jr.ErrorShown = failureWasVisible(jr.Failure)
+	// A refusal is shown by definition. It reaches here with no failure kind,
+	// because nothing went wrong on the way: the journey ran to a service that
+	// answered no, and the person read that answer. The downstream generator
+	// that writes a complaint from this row needs the same "what were they
+	// told" signal it gets from a failure.
+	jr.ErrorShown = failureWasVisible(jr.Failure) || jr.Status == StatusRefused
 	rec.RecordJourneyAttempt(jr)
 }
 
@@ -250,12 +272,48 @@ var abandonedOutcomes = map[string]struct{}{
 	"legacy_cancelled":         {},
 }
 
+// refusedOutcomes are the words for the system having considered the request
+// and said no.
+//
+// Listed rather than derived from a suffix, because the suffix rules cannot
+// tell a refusal from a breakage: `risk_rejected` is a review that declined
+// and `group_failed` is a group booking that did not come back, and both end
+// in a word a suffix rule reads the same way.
+//
+// `rejected` bare is the staff risk action's own result word
+// (staff_workers.go's doRisk sets it), reaching classification through the
+// staff attempt rather than through a journey. Both spellings are here so the
+// same decision is recorded the same way whichever side saw it.
+var refusedOutcomes = map[string]struct{}{
+	"risk_rejected": {},
+	"rejected":      {},
+	"declined":      {},
+	// The capacity answers. A search that found no seat and a train with none
+	// left in the class asked for are answers the system gave, and the person
+	// was shown them.
+	"no_available_capacity": {},
+	"waitlist_conflict":     {},
+}
+
+// failedOutcomes are the words that mean the journey broke, where a suffix
+// rule would read them as an ordinary end.
+//
+// Both arrive as a lowercased service status. disruption-recovery's
+// RecoveryCaseStatus includes FAILED and DECLINED, and transfer-management's
+// ConnectionStatus includes MISSED and INVALIDATED, so the journey returns
+// `failed`, `missed` and `invalidated` with no suffix for the rules below to
+// match. A recovery that failed was being recorded as a completed journey.
+var failedOutcomes = map[string]struct{}{
+	"failed":      {},
+	"invalidated": {},
+}
+
 // classifyOutcome maps a journey's own outcome word to the coarse status.
 //
 // The outcome vocabulary is partly generated -- waitlist_<terminal state>,
 // lowercased service statuses from disruption and transfer -- so this cannot
-// be a closed set. The two named sets above cover the words that a suffix rule
-// would get wrong; everything else falls to two documented rules.
+// be a closed set. The named sets above cover the words the suffix rules would
+// get wrong; everything else falls to the documented rules.
 func classifyOutcome(outcome string) string {
 	if outcome == "" {
 		// A journey that returned no outcome and no error ran to its end
@@ -268,11 +326,29 @@ func classifyOutcome(outcome string) string {
 	if _, ok := abandonedOutcomes[outcome]; ok {
 		return StatusAbandoned
 	}
-	// The services' own vocabulary for a refused or failed end state:
-	// loyalty_enroll_failed, group_failed, campaign_draft_failed,
-	// insurance_policy_failed, corporate_agreement_failed, risk_rejected.
-	if strings.HasSuffix(outcome, "_failed") || strings.HasSuffix(outcome, "_rejected") {
+	if _, ok := refusedOutcomes[outcome]; ok {
+		return StatusRefused
+	}
+	if _, ok := failedOutcomes[outcome]; ok {
 		return StatusFailed
+	}
+	// A refusal the service named for itself. transfer-management answers
+	// `missed` for a connection the traveller did not make, which the
+	// generator drives on purpose through p_transfer_missed, so it is the
+	// system's own answer rather than a fault.
+	if outcome == "missed" {
+		return StatusRefused
+	}
+	// The services' own vocabulary for a failed end state: loyalty_enroll_failed,
+	// group_failed, campaign_draft_failed, insurance_policy_failed,
+	// corporate_agreement_failed.
+	if strings.HasSuffix(outcome, "_failed") {
+		return StatusFailed
+	}
+	// A refusal with its own subject: any `<something>_rejected` the services
+	// produce is a decision, not a breakage.
+	if strings.HasSuffix(outcome, "_rejected") || strings.HasSuffix(outcome, "_declined") {
+		return StatusRefused
 	}
 	return StatusCompleted
 }

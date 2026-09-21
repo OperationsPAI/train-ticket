@@ -522,9 +522,12 @@ func TestOutcomeVocabularyIsCollectedNotInvented(t *testing.T) {
 		{"abandoned_before_payment", StatusAbandoned},
 		{"cancelled_payment_intent", StatusAbandoned},
 		{"cancelled_before_payment", StatusAbandoned},
-		{"risk_rejected", StatusFailed},
-		{"no_available_capacity", StatusCompleted},
-		{"waitlist_conflict", StatusCompleted},
+		// The system considered these and said no. p_risk_approve is 0.50 by
+		// configuration, so half of all reviewed purchases are declined on
+		// purpose, and a sold-out train is an answer rather than a fault.
+		{"risk_rejected", StatusRefused},
+		{"no_available_capacity", StatusRefused},
+		{"waitlist_conflict", StatusRefused},
 		{"waitlist_queued", StatusCompleted},
 		{"waitlist_cancelled", StatusAbandoned},
 		// journey_browse.go
@@ -547,12 +550,25 @@ func TestOutcomeVocabularyIsCollectedNotInvented(t *testing.T) {
 		{"legacy_completed", StatusCompleted},
 		{"legacy_cancelled", StatusAbandoned},
 		{"no_legacy_route", StatusSkipped},
-		// the services' own "it refused" words
+		// the services' own "it did not come back" words
 		{"loyalty_enroll_failed", StatusFailed},
 		{"group_failed", StatusFailed},
 		{"campaign_draft_failed", StatusFailed},
 		{"insurance_policy_failed", StatusFailed},
 		{"corporate_agreement_failed", StatusFailed},
+		// journey_disruption.go and journey_transfer.go return a lowercased
+		// service status, so these three arrive with no suffix for the rules to
+		// match. A recovery case that reached FAILED was being recorded as a
+		// completed journey.
+		{"failed", StatusFailed},
+		{"invalidated", StatusFailed},
+		{"declined", StatusRefused},
+		// A connection the traveller did not make, which p_transfer_missed
+		// drives on purpose.
+		{"missed", StatusRefused},
+		// The staff risk action's own result word, reaching classification
+		// through the staff attempt rather than a journey.
+		{"rejected", StatusRefused},
 		// main.go's default arm
 		{"unknown_journey", StatusSkipped},
 		// a journey that named no outcome still ran to its end
@@ -595,6 +611,58 @@ func TestAbandonmentIsNotRecordedAsAFailure(t *testing.T) {
 	}
 	if j.ErrorShown {
 		t.Error("error_shown = true for an abandonment")
+	}
+}
+
+// TestRefusalIsNotRecordedAsAFailure: a decision the system made on purpose is
+// not a fault, and counting it as one makes the failure rate a measure of how
+// much deliberate refusal the configuration asks for.
+//
+// p_risk_approve is 0.50 on the deployed profile, so half of every reviewed
+// purchase is declined by design. A deployment gate that reads "no journey
+// failed" cannot exist while those rows say failed.
+func TestRefusalIsNotRecordedAsAFailure(t *testing.T) {
+	_, path := recordingConfig(t, "http://unused/%s")
+	rec, err := NewRecorder(&Config{Recording: RecordingConfig{
+		Enabled: true, Path: path, FlushIntervalSeconds: 3600, BufferRecords: 1024,
+	}})
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	NewAttempt("purchase", "purchase", "business").Record(rec, "risk_rejected", nil)
+	rec.Close()
+
+	jrecs := readJourneyRecords(t, path)
+	if len(jrecs) != 1 {
+		t.Fatalf("got %d journey records, want 1", len(jrecs))
+	}
+	j := jrecs[0]
+	if j.Status != StatusRefused {
+		t.Errorf("status = %q, want %q", j.Status, StatusRefused)
+	}
+	if j.Outcome != "risk_rejected" {
+		t.Errorf("outcome = %q, want the journey's own word unchanged", j.Outcome)
+	}
+	if j.Failure != "" {
+		t.Errorf("failure = %q, want empty: the request was answered", j.Failure)
+	}
+	// The one thing a refusal shares with a failure. The person was told no,
+	// and that is what a complaint written from this row would be about.
+	if !j.ErrorShown {
+		t.Error("error_shown = false for a refusal the person was shown")
+	}
+}
+
+// TestAFailedRecoveryIsNotRecordedAsCompleted: disruption-recovery and
+// transfer-management answer with a bare lowercased status, so `failed` and
+// `invalidated` carry no suffix for the classification rules to match and were
+// landing in completed. A recovery case that failed is the exact row a
+// deployment gate has to see.
+func TestAFailedRecoveryIsNotRecordedAsCompleted(t *testing.T) {
+	for _, outcome := range []string{"failed", "invalidated"} {
+		if got := classifyOutcome(outcome); got != StatusFailed {
+			t.Errorf("classifyOutcome(%q) = %q, want %q", outcome, got, StatusFailed)
+		}
 	}
 }
 
