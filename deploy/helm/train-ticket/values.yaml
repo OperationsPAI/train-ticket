@@ -217,6 +217,16 @@ otelCollector:
   sendingQueue:
     numConsumers: 4
     queueSize: 4000
+  # OTEL_METRIC_EXPORT_INTERVAL on every service, in milliseconds. 15s rather
+  # than the SDK default of 60s: a connection pool saturates and recovers inside
+  # a minute, and a 60s period can place a whole episode between two points --
+  # the level being sampled is instantaneous, not an average over the interval,
+  # so a missed sample is a missed event rather than a smoothed one.
+  #
+  # The cost is four times the metric points. They are the smallest of the three
+  # signals by disk (see docs/07-observability/README.md) and the series count is
+  # what dominates, not the period.
+  metricExportIntervalMillis: 15000
   resources:
     requests: { cpu: 50m, memory: 256Mi }
     limits: { cpu: '1', memory: 1Gi }
