@@ -114,13 +114,34 @@ func (r *SnapshotRepository) Get(ctx context.Context, id string) (Snapshot, bool
 	return snap, true, nil
 }
 
+// Insert creates a snapshot, reporting ErrConflict when one already exists.
+//
+// ON CONFLICT DO NOTHING rather than letting the unique violation be raised
+// and classified. Inside a transaction the two are not equivalent: a raised
+// violation aborts the transaction, so a caller that treats ErrConflict as an
+// expected outcome and carries on gets pgx.ErrTxCommitRollback from the commit
+// and loses the work that came after.
+//
+// Measured on provider-integration, which does exactly that: its
+// RequestReservation returns nil on ErrConflict because a re-delivered
+// SegmentReservationRequested is an ordinary event, and every one of those
+// commits failed with "commit unexpectedly resulted in rollback". 9063
+// messages sat pending on events:journey-order with 140 in the dead-letter
+// queue, the reservation was never confirmed, and 873 purchase journeys timed
+// out waiting for it.
+//
+// The conflict is still reported, from the row count rather than from the
+// error, so a caller that treats it as a failure is unaffected.
 func (r *SnapshotRepository) Insert(ctx context.Context, id string, data []byte) error {
-	_, err := r.db.Exec(ctx, fmt.Sprintf("INSERT INTO %s (id, version, data) VALUES ($1, 1, $2)", r.table), id, json.RawMessage(data))
+	tag, err := r.db.Exec(ctx, fmt.Sprintf("INSERT INTO %s (id, version, data) VALUES ($1, 1, $2) ON CONFLICT (id) DO NOTHING", r.table), id, json.RawMessage(data))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrConflict
 		}
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
 	}
 	return nil
 }
