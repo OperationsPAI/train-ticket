@@ -19,6 +19,7 @@ import type { Pool } from "pg";
 export const POOL_NAME = "platform-ts-kit-postgres";
 
 const DEFAULT_METRIC_EXPORT_INTERVAL_MILLIS = 60_000;
+const DEFAULT_METRIC_EXPORT_TIMEOUT_MILLIS = 30_000;
 
 export function otelMetricsEnabled(): boolean {
   const exporter = process.env.OTEL_METRICS_EXPORTER?.trim().toLowerCase();
@@ -38,6 +39,31 @@ export function metricExportIntervalMillis(): number {
   }
   const millis = Number.parseInt(configured, 10);
   return Number.isFinite(millis) && millis > 0 ? millis : DEFAULT_METRIC_EXPORT_INTERVAL_MILLIS;
+}
+
+/**
+ * The periodic reader's per-export timeout, from the standard SDK variable.
+ *
+ * Read here rather than left to the SDK because PeriodicExportingMetricReader
+ * throws when the timeout exceeds the interval, and the two defaults are 30
+ * seconds and 60 seconds, so any interval below 30 seconds is a combination the
+ * reader refuses to construct. Measured: the deployment sets a 15 second
+ * interval, and all seven TypeScript services died at startup on
+ * "exportIntervalMillis must be greater than or equal to exportTimeoutMillis"
+ * while the Java and Python services, whose readers do not validate the pair,
+ * ran with a timeout twice their interval.
+ *
+ * Bounded by the interval for that reason. An export given longer than the
+ * interval can still be running when the next one is due, so a timeout above it
+ * is not a configuration worth honouring in any language.
+ */
+export function metricExportTimeoutMillis(): number {
+  const interval = metricExportIntervalMillis();
+  const configured = process.env.OTEL_METRIC_EXPORT_TIMEOUT?.trim();
+  const millis = configured ? Number.parseInt(configured, 10) : DEFAULT_METRIC_EXPORT_TIMEOUT_MILLIS;
+  const valid =
+    Number.isFinite(millis) && millis > 0 ? millis : DEFAULT_METRIC_EXPORT_TIMEOUT_MILLIS;
+  return Math.min(valid, interval);
 }
 
 /**

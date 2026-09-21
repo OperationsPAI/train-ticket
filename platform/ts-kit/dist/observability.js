@@ -10,7 +10,7 @@ import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
-import { metricExportIntervalMillis, otelMetricsEnabled } from "./metrics.js";
+import { metricExportIntervalMillis, metricExportTimeoutMillis, otelMetricsEnabled, } from "./metrics.js";
 import { installTraceLoggingConsole } from "./trace-logging.js";
 let sdk;
 export function otelTracingEnabled() {
@@ -71,6 +71,7 @@ export function initOpenTelemetry(options = {}) {
                     new PeriodicExportingMetricReader({
                         exporter: new OTLPMetricExporter(),
                         exportIntervalMillis: metricExportIntervalMillis(),
+                        exportTimeoutMillis: metricExportTimeoutMillis(),
                     }),
             }
             : {}),
