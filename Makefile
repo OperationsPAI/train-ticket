@@ -53,10 +53,16 @@ KUBENS := $(KUBECTL) -n $(NAMESPACE)
 # read from the same place, and it cannot drift from what was actually built.
 ROLLABLE := $(shell ls deploy/docker | tr '\n' '|' | sed 's/|$$//')
 
-.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict go-modules list-services observability-config observability-down observability-up observability-validate skeleton-check
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict go-modules node-locks list-services observability-config observability-down observability-up observability-validate skeleton-check
 .PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke push-images deploy-acr deploy-acr-apply
 
-check: skeleton-check contract-lint go-modules
+check: skeleton-check contract-lint go-modules node-locks
+
+# Every TypeScript service's lock carries the packages platform/ts-kit imports.
+# See scripts/check_node_locks.py for what the two halves of that check are and
+# why neither `npm ci --dry-run` nor `npm ls` answers the question.
+node-locks:
+	python3 scripts/check_node_locks.py
 
 # Every Go service module builds with the requirements it declares, which is the
 # configuration its image is built under and not the one this checkout runs in.
