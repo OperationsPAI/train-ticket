@@ -178,8 +178,42 @@ behavior:
   # ticket, not a failure. Personas override this per traveller type below.
   seat_classes: { SECOND_CLASS: 0.70, FIRST_CLASS: 0.18, BUSINESS_CLASS: 0.05, STANDING: 0.04, SLEEPER_HARD: 0.02, SLEEPER_SOFT: 0.01 }
 
-  # traveler identity pools used when creating (mock) travelers
-  traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
+  # traveler identity pools used when creating (mock) travelers.
+  # STUDENT and MILITARY are what give the eligibility-certificate branch below
+  # travelers to register a certificate for; the set is enforced by
+  # services/traveler-profile/.../application/TravelerType.java.
+  traveler_types: { ADULT: 0.72, CHILD: 0.10, SENIOR: 0.05, STUDENT: 0.10, MILITARY: 0.03 }
+
+  # How the customer pays. Sent BOTH as preferredChannel when the payment
+  # intent is created and as channelRef.channel on capture, so payment's
+  # channel-selection branch runs on a named channel instead of its weighted
+  # fallback. Only these three values exist: payment-channel gates on exactly
+  # them (ValidChannel in services/payment-channel/internal/domain/types.go)
+  # and payment's ChannelRouter.normalize maps each onto an internal channel.
+  # Personas override this below; these weights are the population average and
+  # mirror ChannelRouter's own DEFAULT_CHANNELS split.
+  payment_channels: { ALIPAY_SIM: 0.45, WECHAT_SIM: 0.40, UNIONPAY_SIM: 0.15 }
+
+  # Which document a traveler proves identity with at identity-verification.
+  # The five values of its DocumentType enum
+  # (services/identity-verification/src/identity_verification/domain.py); this
+  # knob is read only at the sites that post there. traveler-profile accepts a
+  # different and smaller set (ID_CARD, PASSPORT, OTHER), so a single shared
+  # mix would either be rejected at one service or truncated at the other.
+  identity_document_types:
+    ID_CARD: 0.80
+    PASSPORT: 0.08
+    HK_MACAU_PERMIT: 0.05
+    TW_PERMIT: 0.04
+    RESIDENCE_PERMIT: 0.03
+
+  # Fraction of purchases by an eligible traveler that register an eligibility
+  # certificate and quote under the discounted product code. Applies only to a
+  # traveler whose type warrants one (STUDENT, CHILD, MILITARY), so the
+  # effective share of ALL purchases is this times the eligible share of
+  # traveler_types. See bootstrap.eligibility_fares for the rule set that gives
+  # the certificate something to discount.
+  p_eligibility_certificate: 0.60
 
 # ---------------------------------------------------------------------------
 # Staff simulator — the platform/agent actor pool (simulated like customers).
@@ -264,6 +298,46 @@ bootstrap:
   # line's distance spectrum, so every persona's distance band has inventory.
   services_per_date: 24
   service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
+
+  # The fare rule set an eligibility certificate discounts against.
+  #
+  # WHY THIS EXISTS: fare-pricing takes no eligibility on a quote request. It
+  # resolves a rule set from (channel, productCode), reads the eligibility
+  # types off that set's `discount` rules, and only then asks
+  # identity-verification whether a traveler holds a matching certificate
+  # (_active_discount_types in fare-pricing/application/service.py). The
+  # rail-standard set every other quote uses carries no discount rule at all,
+  # so against it a certificate can never move a price. The generator publishes
+  # this set once per run and quotes eligible purchases under its product code.
+  #
+  # The non-discount amounts equal rail-standard's on purpose: an eligible and
+  # an ineligible purchase must then differ by the discount and nothing else.
+  # refund_fee and change_fee are carried because post-sales prices an
+  # adjustment from the rule set the ORIGINAL quote's productCode resolves to,
+  # and a product code lacking refund_fee yields a FAILED adjustment quote and
+  # a zero refund.
+  eligibility_fares:
+    enabled: true
+    product_code: rail-eligible
+    version_prefix: loadgen-eligible
+    supplier_id: supplier-loadgen-eligible
+    contract_id: contract-loadgen-eligible
+    base_fare_minor: 10000
+    tax_minor: 750
+    refund_fee_minor: 2000
+    change_fee_minor: 1500
+    # Eligibility type -> discount. Exactly these three exist, in both
+    # identity-verification (EligibilityCertificate.register) and fare-pricing
+    # (ELIGIBILITY_TYPES). A certificate is registered only for the type its
+    # traveler's traveler_type warrants.
+    discounts:
+      STUDENT: 2500
+      CHILD: 5000
+      MILITARY_DISABLED: 5000
+    annual_usage_limit: 1000
+    # Must exceed departure_window.to_days: the certificate is checked against
+    # the journey date, not against today.
+    validity_days: 365
 
 # ---------------------------------------------------------------------------
 # Default monetary / domain values — read by journey providers so nothing
@@ -388,6 +462,12 @@ personas:
         STANDING: 0.06
         SLEEPER_HARD: 0.08
         SLEEPER_SOFT: 0.03
+      # Pays from a phone wallet: leisure booking on a consumer device is
+      # where the two wallet apps dominate and a bank card barely appears.
+      payment_channels: { ALIPAY_SIM: 0.55, WECHAT_SIM: 0.40, UNIONPAY_SIM: 0.05 }
+      # The persona most likely to be a student travelling home, and the one
+      # that books for children. Highest certificate rate of the three.
+      p_eligibility_certificate: 0.75
       # Spread over the whole network, with a lean towards the scenic
       # north-south lines rather than the business trunk.
       line_weights:
@@ -430,6 +510,13 @@ personas:
       # The knob that makes this persona's demand concentrated rather than
       # merely short: most of its trips repeat a hop it has already taken.
       p_repeat_trip: 0.55
+      # Pays on a corporate card, so UNIONPAY carries most of it. This is the
+      # persona that exercises the UNIONPAY branch at all: it is 15% of the
+      # population average and would otherwise stay a rounding error.
+      payment_channels: { ALIPAY_SIM: 0.25, WECHAT_SIM: 0.15, UNIONPAY_SIM: 0.60 }
+      # A business traveller travels as an adult on their employer's account,
+      # so almost none of these purchases carry a concession.
+      p_eligibility_certificate: 0.05
       # The two trunk lines, where the intercity hops are.
       line_weights:
         beijing-shanghai: 55
@@ -470,6 +557,10 @@ personas:
         STANDING: 0.08
         SLEEPER_HARD: 0.10
         SLEEPER_SOFT: 0.05
+      # Spread evenly across the three channels, which is what keeps every
+      # channel populated regardless of how the other two personas are tuned.
+      payment_channels: { ALIPAY_SIM: 0.34, WECHAT_SIM: 0.33, UNIONPAY_SIM: 0.33 }
+      p_eligibility_certificate: 0.40
       line_weights:
         beijing-shanghai: 30
         beijing-guangzhou: 25
