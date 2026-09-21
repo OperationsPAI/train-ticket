@@ -13,3 +13,4 @@ coverage
 *.log
 .agentm/
 .scratch/
+.run/

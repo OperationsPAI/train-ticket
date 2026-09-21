@@ -154,8 +154,19 @@ behavior:
   # quote failures unless you publish rule sets for them first.
   channels: { WEB: 1.0 }
 
-  # legacy seat types
-  seat_types: { SECOND: 0.8, FIRST: 0.2 }
+  # Seat class. The keys are fare-pricing's own vocabulary (the six values of
+  # SeatClassMultiplier in services/fare-pricing/src/fare_pricing/domain.py),
+  # because that service rejects anything outside it rather than defaulting.
+  # The class is sent on the fare quote, where it multiplies the base fare
+  # (SECOND_CLASS 1.0, FIRST_CLASS 1.6, BUSINESS_CLASS 2.8, STANDING 0.7,
+  # SLEEPER_HARD 1.8, SLEEPER_SOFT 2.5), and on the seat assignment for the
+  # three classes seat-assignment stocks seats for.
+  #
+  # STANDING and the two sleeper classes are priced but carry no seat: this
+  # seat map has only business/first/second coaches. A journey drawing one of
+  # them buys a ticket without a seat, which is the real outcome for a standing
+  # ticket, not a failure. Personas override this per traveller type below.
+  seat_classes: { SECOND_CLASS: 0.70, FIRST_CLASS: 0.18, BUSINESS_CLASS: 0.05, STANDING: 0.04, SLEEPER_HARD: 0.02, SLEEPER_SOFT: 0.01 }
 
   # traveler identity pools used when creating (mock) travelers
   traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
@@ -345,6 +356,18 @@ personas:
       booking_lead_days: {min: 14, max: 45}
       p_weekend_departure: 0.65
       p_repeat_trip: 0.02
+      # Price-led, and travelling far. Mostly second class, and the only
+      # persona with real sleeper demand: 75% of its trips are long or epic,
+      # which are the overnight runs a berth is bought for. The standing share
+      # is the largest of the three because this is the leisure traveller who
+      # takes the cheap ticket when the seated classes are gone.
+      seat_classes:
+        SECOND_CLASS: 0.72
+        FIRST_CLASS: 0.10
+        BUSINESS_CLASS: 0.01
+        STANDING: 0.06
+        SLEEPER_HARD: 0.08
+        SLEEPER_SOFT: 0.03
       # Spread over the whole network, with a lean towards the scenic
       # north-south lines rather than the business trunk.
       line_weights:
@@ -367,6 +390,20 @@ personas:
       trip_distance_km: {short: 0.60, medium: 0.32, long: 0.08, epic: 0.0}
       booking_lead_days: {min: 1, max: 5}
       p_weekend_departure: 0.05
+      # Premium and seated. 92% of this persona's trips are short or medium
+      # daytime hops, so a berth is never bought and standing is not an option
+      # a company traveller takes. First and business class together are the
+      # majority, which is what makes the same Beijing-Tianjin segment quote
+      # well above the casual persona's second-class fare on a longer run.
+      # Every class here is one seat-assignment stocks, so this persona is also
+      # the one that puts real load on the seat map.
+      seat_classes:
+        SECOND_CLASS: 0.30
+        FIRST_CLASS: 0.48
+        BUSINESS_CLASS: 0.22
+        STANDING: 0.0
+        SLEEPER_HARD: 0.0
+        SLEEPER_SOFT: 0.0
       # The knob that makes this persona's demand concentrated rather than
       # merely short: most of its trips repeat a hop it has already taken.
       p_repeat_trip: 0.55
@@ -392,6 +429,17 @@ personas:
       booking_lead_days: {min: 3, max: 30}
       p_weekend_departure: 0.30
       p_repeat_trip: 0.20
+      # Spread across all six, matching this persona's role of keeping the
+      # middle of every range populated. It is the only persona that reaches
+      # every class, so it is the one whose records cover the whole multiplier
+      # range from 0.7 to 2.8 and both seat outcomes.
+      seat_classes:
+        SECOND_CLASS: 0.40
+        FIRST_CLASS: 0.25
+        BUSINESS_CLASS: 0.12
+        STANDING: 0.08
+        SLEEPER_HARD: 0.10
+        SLEEPER_SOFT: 0.05
       line_weights:
         beijing-shanghai: 30
         beijing-guangzhou: 25
