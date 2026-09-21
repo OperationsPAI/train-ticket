@@ -180,6 +180,10 @@ type GinConfig struct {
 	ReadyCheck      Check
 	Observer        Observer
 	RequestIDSource IDGenerator
+	// HTTPMetrics records the HTTP server instruments. A nil value installs a
+	// pass-through middleware, so a service that has not enabled metrics is
+	// unaffected.
+	HTTPMetrics *HTTPServerMetrics
 }
 
 // NewGinRouter creates a gin.Engine with runtime middleware and standard operational endpoints.
@@ -188,6 +192,9 @@ func NewGinRouter(config GinConfig) *gin.Engine {
 	router := gin.New()
 	router.Use(RequestContextMiddleware(config.RequestIDSource))
 	router.Use(TracingMiddleware(config.Observer))
+	// After the tracing middleware, so a recorded request is one that also
+	// produced a span and the two signals cover the same set.
+	router.Use(config.HTTPMetrics.MetricsMiddleware())
 	RegisterStandardEndpoints(router, config)
 	return router
 }

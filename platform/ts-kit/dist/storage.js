@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { registerLivenessComponent } from "./liveness.js";
+import { registerPoolMetricsFromEnv } from "./metrics.js";
 import { configuredStreamMaxLen, redisRetryStrategy, streamForProducer } from "./messaging.js";
 export class OptimisticConcurrencyConflict extends Error {
     constructor(message = "Snapshot was modified by another writer") {
@@ -54,6 +55,10 @@ export function createPostgresPool(config = databaseUrl()) {
             waitingCount: pool.waitingCount,
         });
     });
+    // Here rather than in each service's bootstrap: every TypeScript service
+    // builds its pool through this function, so one call covers all of them. The
+    // registration is a no-op when metrics are disabled.
+    registerPoolMetricsFromEnv(pool);
     return pool;
 }
 export async function withTransaction(pool, operation) {
