@@ -46,6 +46,12 @@ type Purchase struct {
 	Service     string `json:"service,omitempty"`
 	OriginPlace string `json:"origin_place,omitempty"`
 	OriginNode  string `json:"origin_node,omitempty"`
+
+	// The class this purchase was quoted at, and the seat it obtained.
+	// SeatAssignment is empty when the class carries no seat or the class was
+	// sold out, so the pair records which of the two happened.
+	SeatClass      string `json:"seat_class,omitempty"`
+	SeatAssignment string `json:"seat_assignment,omitempty"`
 }
 
 // WaitlistRef tracks a waitlist request.

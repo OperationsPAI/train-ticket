@@ -68,7 +68,12 @@ behavior:
   p_transfer_missed: 0.25
   waitlist_deadline_minutes: 30
   channels: { WEB: 1.0 }
-  seat_types: { SECOND: 0.8, FIRST: 0.2 }
+  # Seat class, in fare-pricing's vocabulary. Sent on the fare quote, where it
+  # multiplies the base fare, and on the seat assignment for the three classes
+  # seat-assignment stocks. This local profile keeps every class represented so
+  # a single run exercises both the priced-and-seated and the priced-but-no-seat
+  # paths.
+  seat_classes: { SECOND_CLASS: 0.55, FIRST_CLASS: 0.20, BUSINESS_CLASS: 0.10, STANDING: 0.05, SLEEPER_HARD: 0.07, SLEEPER_SOFT: 0.03 }
   traveler_types: { ADULT: 0.85, CHILD: 0.10, SENIOR: 0.05 }
 
 staff:

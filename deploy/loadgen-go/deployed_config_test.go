@@ -156,7 +156,7 @@ func TestDeployedConfigParses(t *testing.T) {
 
 	// behavior.* maps must decode as maps, not scalars
 	for _, k := range []string{
-		"channels", "seat_types", "traveler_types",
+		"channels", "seat_classes", "traveler_types",
 		"ride_branches", "disruption_option_mix", "transfer_contract_mix",
 	} {
 		if len(cfg.BehaviorMap(k, nil)) == 0 {

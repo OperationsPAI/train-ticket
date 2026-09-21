@@ -23,7 +23,8 @@ func JourneyBrowse(ctx context.Context, p *Providers) (string, error) {
 	if p.Chance("p_abandon_after_search") {
 		return "browsed", nil
 	}
-	quote, err := p.FareQuote(ctx, []string{tvl}, channel, []string{found.Segment}, found)
+	quote, err := p.FareQuote(ctx, []string{tvl}, channel, []string{found.Segment}, found,
+		p.SeatClassOrDefault())
 	if err != nil {
 		return "browsed", nil
 	}

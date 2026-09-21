@@ -51,7 +51,12 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		return "abandoned", nil
 	}
 
-	quote, err := p.FareQuote(ctx, travelers, channel, []string{found.Segment}, found)
+	// One class for the whole journey: the same value prices the fare and, when
+	// seat-assignment stocks it, reserves the seat. Drawing it twice would let a
+	// customer be quoted business class and seated in second.
+	seatClass := p.SeatClassOrDefault()
+
+	quote, err := p.FareQuote(ctx, travelers, channel, []string{found.Segment}, found, seatClass)
 	if err != nil {
 		return "", err
 	}
@@ -125,6 +130,13 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	}
 	sbVal, _ := resv.GetResult("sb")
 	sb, _ := sbVal.(string)
+
+	// The seat for the class that was just priced. Empty is a real user
+	// outcome, not an error: either the class carries no seat by definition
+	// (standing, and the two sleeper classes this seat map does not stock) or
+	// every seat of it is taken. The journey continues to payment either way,
+	// which is what a standing-ticket purchase looks like.
+	seatAssignment := p.AssignSeat(ctx, found.Segment, found.Date, travelers, seatClass)
 
 	Think(ctx, p)
 	totalMinor := getNestedInt(offer, "total", "minorUnits", 10750)
@@ -222,6 +234,9 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		Service:            found.Service,
 		OriginPlace:        found.OriginPlace,
 		OriginNode:         found.OriginNode,
+
+		SeatClass:      seatClass,
+		SeatAssignment: seatAssignment,
 	}
 
 	// Post-purchase branches. Both are recorded on the Purchase so later
