@@ -1,9 +1,16 @@
 import { type Context, type Span, type Tracer } from "@opentelemetry/api";
+import { type MetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { type SpanExporter } from "@opentelemetry/sdk-trace-base";
 export type InitOpenTelemetryOptions = Readonly<{
     serviceName?: string;
     spanExporter?: SpanExporter;
+    /**
+     * Replaces the periodic reader built from the OTLP metric exporter. A test
+     * supplies an in-memory reader so collection happens when it asks rather than
+     * on a timer.
+     */
+    metricReader?: MetricReader;
 }>;
 export declare function otelTracingEnabled(): boolean;
 /**
@@ -14,6 +21,13 @@ export declare function otelTracingEnabled(): boolean;
  * the same move java-kit makes by supplying a log pattern instead of rewriting
  * log statements. It stays inside the tracing-enabled branch: with tracing off
  * there are no ids to add and logs stay byte-identical to before.
+ *
+ * Metrics are gated separately on OTEL_METRICS_EXPORTER, so either signal can be
+ * enabled alone. HttpInstrumentation produces both the HTTP server spans and
+ * http.server.request.duration, and RuntimeNodeInstrumentation publishes this
+ * process's own event-loop, heap and GC metrics; both are registered here
+ * because the NodeSDK hands its meter provider to the instrumentations it was
+ * constructed with, and an instrumentation registered afterwards would have none.
  */
 export declare function initOpenTelemetry(options?: InitOpenTelemetryOptions): NodeSDK | undefined;
 export declare function getOpenTelemetryTracer(serviceName?: string): Tracer | undefined;
