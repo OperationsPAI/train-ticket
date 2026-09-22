@@ -401,7 +401,7 @@ class PostgresFarePricingStore:
             yield state.connection
             return
         with self._pool.connection() as conn:
-            with conn.transaction():
+            with conn.pipeline(), conn.transaction():
                 token = _UNIT_OF_WORK.set(_UnitOfWorkState(connection=conn))
                 try:
                     yield conn
@@ -539,14 +539,15 @@ class PostgresFarePricingStore:
         return self._with_conn(read)
 
     def link_fare_quote_to_segments(self, quote_id: str, segment_refs: Iterable[str]) -> None:
-        refs = tuple(sorted(ref.strip() for ref in segment_refs if ref.strip()))
+        refs = tuple(sorted({ref.strip() for ref in segment_refs if ref.strip()}))
         if not refs:
             return
 
         def write(conn: Any) -> None:
-            conn.execute("DELETE FROM fare_quote_segment_links WHERE quote_id = %s", (quote_id,))
-            for ref in refs:
-                conn.execute("INSERT INTO fare_quote_segment_links(quote_id, segment_ref) VALUES (%s, %s)", (quote_id, ref))
+            conn.execute(
+                "WITH removed AS (DELETE FROM fare_quote_segment_links WHERE quote_id=%s AND NOT (segment_ref = ANY(%s))) "
+                "INSERT INTO fare_quote_segment_links(quote_id,segment_ref) SELECT %s, unnest(%s::text[]) "
+                "ON CONFLICT (quote_id,segment_ref) DO NOTHING", (quote_id, list(refs), quote_id, list(refs)))
 
         self._with_conn(write)
 
@@ -605,11 +606,7 @@ class PostgresFarePricingStore:
         return self._with_conn(read)
 
     def append_outbox(self, envelopes: Iterable[EventEnvelope]) -> None:
-        def write(conn: Any) -> None:
-            for envelope in envelopes:
-                self._outbox.append(conn, envelope)
-
-        self._with_conn(write)
+        self._with_conn(lambda conn: self._outbox.append_many(conn, envelopes))
 
     def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
         return bool(self._with_conn(lambda conn: self._processed.try_mark_processed(conn, event_id, stream)))
