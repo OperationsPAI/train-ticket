@@ -827,6 +827,14 @@ export class AncillaryApplicationService {
       const item=await this.requireOrderItem(ref);
       if(item.paymentIntentId!==envelope.payload.paymentIntentId)throw new DomainError("PAYMENT_MISMATCH","Capture references a different ancillary payment");
       if(item.status==="CANCELLED")await this.suggestRefund(ref,{reasonCode:"CANCELLED_BEFORE_CAPTURE"},envelope.correlationId);
+      if(["SELECTED","PENDING_CONFIRMATION"].includes(item.status)) {
+        try { await this.confirmOrderItem(ref,{},envelope.correlationId); }
+        catch(error) {
+          if(error instanceof DomainError && ["TICKET_NOT_ISSUED","ORDER_NOT_CONFIRMED","TICKET_VOIDED"].includes(error.code)) {
+            await this.cancelOrderItem(ref,{reasonCode:error.code,source:"SYSTEM"},envelope.correlationId);
+          } else { throw error; }
+        }
+      }
       return "ack";
     }
     if (envelope.eventType === "EntitlementVoided") {
