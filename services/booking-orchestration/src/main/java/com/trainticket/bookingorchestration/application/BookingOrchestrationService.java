@@ -97,6 +97,11 @@ public class BookingOrchestrationService {
         BookingSaga saga = sagas.findById(sagaId)
             .orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
 
+        if (saga.status() == BookingSagaStatus.FAILED || saga.status() == BookingSagaStatus.COMPLETED
+            || saga.status() == BookingSagaStatus.MANUAL_REVIEW || saga.status() == BookingSagaStatus.COMPENSATING) {
+            throw new PreconditionFailedException("Booking saga cannot accept reservations in " + saga.status(), null);
+        }
+
         SegmentBooking booking = SegmentBooking.requestReservation(
             command.segmentBookingId(), saga.journeyOrderId(), command.segmentRef(), command.segmentRef(),
             command.travelerRef(), "purchase", clock);
