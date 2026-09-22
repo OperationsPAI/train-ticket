@@ -138,10 +138,6 @@ build:
       context: .
       docker:
         dockerfile: deploy/docker/journey-order/Dockerfile
-    - image: legacy-acl
-      context: .
-      docker:
-        dockerfile: deploy/docker/legacy-acl/Dockerfile
     - image: loadgen
       context: .
       docker:
@@ -285,7 +281,6 @@ profiles:
               services.identity-verification.image: "{{.IMAGE_FULLY_QUALIFIED_identity_verification}}"
               services.invoicing.image: "{{.IMAGE_FULLY_QUALIFIED_invoicing}}"
               services.journey-order.image: "{{.IMAGE_FULLY_QUALIFIED_journey_order}}"
-              services.legacy-acl.image: "{{.IMAGE_FULLY_QUALIFIED_legacy_acl}}"
               services.loyalty-membership.image: "{{.IMAGE_FULLY_QUALIFIED_loyalty_membership}}"
               services.marketing-campaign.image: "{{.IMAGE_FULLY_QUALIFIED_marketing_campaign}}"
               services.notification.image: "{{.IMAGE_FULLY_QUALIFIED_notification}}"
