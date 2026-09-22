@@ -220,10 +220,13 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         if (amount.isZero()) {
             return;
         }
-        String intentId = paymentCommands.findIntentIdByBusinessRef(payload.requiredText("journeyOrderId")).orElse(null);
-        if (intentId == null) {
-            throw new AckSkipEventException("no payment intent found for ancillary refund request");
+        String intentId = payload.requiredText("paymentIntentId");
+        var intent = paymentCommands.getIntent(intentId);
+        if (!intent.businessRef().equals(payload.requiredText("ancillaryOrderItemId")) || !"ancillary".equals(intent.purpose())) {
+            throw new IllegalArgumentException("Ancillary refund must reference its own ancillary payment intent");
         }
+        if (!intent.amount().currency().equals(amount.currency()) || amount.isGreaterThan(intent.capturedAmount()))
+            throw new IllegalArgumentException("Ancillary refund amount exceeds its captured payment");
         requestRefund(
             intentId,
             amount,
