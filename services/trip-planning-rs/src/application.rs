@@ -17,7 +17,7 @@ pub struct AppState {
     pub plan_index: Arc<PlanIndex>,
     pool: Option<PgPool>,
     snapshots: Option<SnapshotRepository>,
-    /// Fallback in-memory cache when Postgres is unavailable.
+    /// Storage for deployments configured without PostgreSQL.
     mem_snapshots: RwLock<HashMap<String, Value>>,
 }
 
@@ -34,53 +34,22 @@ impl AppState {
         }
     }
 
-    pub async fn save_itinerary(&self, itinerary_ref: &str, data: Value) {
-        // Best-effort save to memory always
-        self.mem_snapshots
-            .write()
-            .await
-            .insert(itinerary_ref.to_string(), data.clone());
-
-        // Try Postgres if available
-        if let (Some(pool), Some(repo)) = (&self.pool, &self.snapshots) {
-            let result: Result<(), StorageError> = async {
-                let mut tx = pool.begin().await?;
-                // Try insert, ignore conflict (idempotent)
-                let _ = repo.save(&mut tx, itinerary_ref, None, &data).await;
-                tx.commit().await?;
-                Ok(())
-            }
-            .await;
-            if let Err(e) = result {
-                log::warn!("failed to persist itinerary snapshot: {}", e);
-            }
+    pub async fn save_itinerary(&self, itinerary_ref: &str, data: Value) -> Result<(), StorageError> {
+        if let Some(pool) = &self.pool {
+            sqlx::query("INSERT INTO itinerary_snapshots (id, version, data) VALUES ($1, 1, $2) ON CONFLICT (id) DO NOTHING")
+                .bind(itinerary_ref).bind(data).execute(pool).await?;
+        } else {
+            self.mem_snapshots.write().await.insert(itinerary_ref.to_string(), data);
         }
+        Ok(())
     }
 
-    pub async fn get_itinerary(&self, itinerary_ref: &str) -> Option<Value> {
-        // Check memory first
-        if let Some(val) = self.mem_snapshots.read().await.get(itinerary_ref) {
-            return Some(val.clone());
-        }
-
-        // Try Postgres
+    pub async fn get_itinerary(&self, itinerary_ref: &str) -> Result<Option<Value>, StorageError> {
         if let (Some(pool), Some(repo)) = (&self.pool, &self.snapshots) {
-            let result: Result<Option<Value>, StorageError> = async {
-                let snap = repo.get::<Value>(pool, itinerary_ref).await?;
-                Ok(snap.map(|s| s.data))
-            }
-            .await;
-            match result {
-                Ok(Some(val)) => return Some(val),
-                Ok(None) => return None,
-                Err(e) => {
-                    log::warn!("failed to read itinerary snapshot: {}", e);
-                    return None;
-                }
-            }
+            let snap = repo.get::<Value>(pool, itinerary_ref).await?;
+            return Ok(snap.map(|s| s.data));
         }
-
-        None
+        Ok(self.mem_snapshots.read().await.get(itinerary_ref).cloned())
     }
 
     pub async fn publish_itinerary_proposed(
@@ -200,6 +169,26 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::plan_index::PlanIndex;
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at a disposable Postgres database"]
+    async fn persisted_itineraries_do_not_accumulate_in_memory() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&std::env::var("TEST_DATABASE_URL").unwrap()).await.unwrap();
+        rust_kit::storage::Storage::new(pool.clone())
+            .migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .await.unwrap();
+        let state = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        let id = format!("itin-{}", uuid::Uuid::now_v7());
+        let data = serde_json::json!({"itineraryRef": id});
+        state.save_itinerary(&id, data.clone()).await.unwrap();
+        state.save_itinerary(&id, data.clone()).await.unwrap();
+        assert!(state.mem_snapshots.read().await.is_empty());
+        let restarted = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        assert_eq!(restarted.get_itinerary(&id).await.unwrap(), Some(data));
+        sqlx::query("DELETE FROM itinerary_snapshots WHERE id = $1")
+            .bind(id).execute(&pool).await.unwrap();
+    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL pointing at a disposable Postgres database"]
