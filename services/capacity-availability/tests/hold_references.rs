@@ -15,6 +15,7 @@ async fn persisted_hold_keeps_service_segment_and_booking_references_distinct() 
     let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/008_pending_booking_releases.sql")).execute(&pool).await.unwrap();
     let service = PostgresCapacityService::new(pool.clone()).unwrap();
     let request = HoldCapacityRequest {
         segment_ref: booking["segmentRef"].as_str().unwrap().to_string(),
@@ -60,6 +61,7 @@ async fn confirmation_is_durable_and_applied_when_the_hold_arrives() {
     let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/008_pending_booking_releases.sql")).execute(&pool).await.unwrap();
     let service = PostgresCapacityService::new(pool.clone()).unwrap();
     let initial = service.handle_inbound_event(event.clone()).await;
     assert_eq!(initial, HandlerResult::Success);
@@ -124,6 +126,7 @@ async fn reservation_and_confirmation_events_converge_in_both_orders_and_concurr
         let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
         sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
         sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/008_pending_booking_releases.sql")).execute(&pool).await.unwrap();
         let service = PostgresCapacityService::new(pool.clone()).unwrap();
         if ordering == 0 {
             assert_eq!(service.handle_inbound_event(confirmation.clone()).await, HandlerResult::Success);
@@ -176,6 +179,7 @@ async fn no_capacity_result_remains_failed_after_replay_and_available_capacity()
     let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/008_pending_booking_releases.sql")).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO inventory_pool_snapshots(id,version,data) VALUES ($1,$2,$3)")
         .bind(source["pool"]["id"].as_str().unwrap()).bind(source["pool"]["version"].as_i64().unwrap()).bind(&source["pool"]["data"]).execute(&pool).await.unwrap();
     let service = PostgresCapacityService::new(pool.clone()).unwrap();
