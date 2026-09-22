@@ -52,6 +52,11 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
 
     @Override
     public PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId) {
+        return preOrderCheck(request,orderIntentId,idempotencyKey,correlationId,Instant.now());
+    }
+
+    @Override
+    public PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId, Instant requestedAt) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("orderIntentId", orderIntentId);
         body.put("accountId", request.accountId());
@@ -63,7 +68,7 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
         body.put("productCode", request.productCode() == null || request.productCode().isBlank() ? "TRAIN" : request.productCode());
         body.put("requestedEligibilityTypes", List.of());
         body.put("limitPolicyVersion", System.getenv().getOrDefault("IDENTITY_LIMIT_POLICY_VERSION", "limit-v1"));
-        body.put("requestedAt", Instant.now().toString());
+        body.put("requestedAt", requestedAt.toString());
 
         Exchanged exchanged = exchange("/api/v1/identity-verification/pre-order-checks", idempotencyKey, correlationId, body);
         JsonNode json = exchanged.json();

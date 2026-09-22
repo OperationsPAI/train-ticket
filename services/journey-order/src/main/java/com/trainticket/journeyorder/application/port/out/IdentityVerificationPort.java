@@ -4,6 +4,9 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
 
 public interface IdentityVerificationPort {
     PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId);
+    default PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId, java.time.Instant requestedAt) {
+        return preOrderCheck(request,orderIntentId,idempotencyKey,correlationId);
+    }
     default void confirmPreOrderCheck(String preOrderCheckId, String journeyOrderId, String idempotencyKey, String correlationId) {}
     default void releasePreOrderCheck(String preOrderCheckId, String releaseReason, String idempotencyKey, String correlationId) {}
 
