@@ -237,6 +237,7 @@ class PostSalesCaseDomainTest {
     private static PostSalesDecision refundDecision(String caseId, boolean eligible) {
         return PostSalesDecision.refund(caseId, eligible, eligible ? "REFUNDABLE" : "RULE_BLOCKED", ruleSnapshot(),
             AmountDecisionSnapshot.refund(Money.of("5.00", "USD"), Money.of("45.00", "USD"), "Fare & Pricing refund rule result"),
+            new RefundPolicyEngine().evaluateRefund(Money.of("50.00", "USD"), NOW, NOW.plusSeconds(10 * 86400), false, "ADULT", 1),
             NOW.plusSeconds(2), NOW.plusSeconds(600));
     }
 
@@ -244,6 +245,7 @@ class PostSalesCaseDomainTest {
         return PostSalesDecision.change(caseId, true, "CHANGE_ALLOWED", ruleSnapshot(),
             AmountDecisionSnapshot.extraCharge(Money.of("0.00", "USD"), Money.of("10.00", "USD"), "Fare & Pricing change difference result"),
             new ChangeFlowSnapshot("change-offer-1", "hold-new-seat-1", financialAction, "void-old-ticket-1", "issue-new-ticket-1", "release-old-seat-1"),
+            new ChangePolicyEngine().evaluateChange(Money.of("50.00", "USD"), Money.of("60.00", "USD"), NOW, NOW.plusSeconds(10 * 86400), 0),
             NOW.plusSeconds(2), NOW.plusSeconds(600));
     }
 
