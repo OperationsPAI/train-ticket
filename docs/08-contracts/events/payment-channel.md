@@ -68,7 +68,7 @@ stored directly; internal commands fold canonical material as documented in
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `seedVersion` | string | yes | Stable seed version. |
-| `scenarioCode` | enum | yes | `NORMAL`, `MISSED_ORDER`, `MISSED_REFUND`, `AMOUNT_MISMATCH`, `STATUS_MISMATCH`, `DUPLICATE_LINE`, `REFUND_LAG`, or `STATEMENT_DELAY`. |
+| `scenarioCode` | enum | yes | `NORMAL`, `DECLINED_ORDER`, `DECLINED_REFUND`, `MISSED_ORDER`, `MISSED_REFUND`, `AMOUNT_MISMATCH`, `STATUS_MISMATCH`, `DUPLICATE_LINE`, `REFUND_LAG`, or `STATEMENT_DELAY`. |
 | `seedMaterialHash` | string | yes | Hash of normalized seed material; no PII or credentials. |
 
 `attemptSnapshot` fields:
