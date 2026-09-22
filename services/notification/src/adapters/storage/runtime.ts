@@ -19,9 +19,9 @@ import {
 } from "@trainticket/ts-kit";
 
 import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
-import { NotificationAggregator, RateLimitExceeded, type NotificationTask } from "../../domain.js";
+import { RateLimitExceeded, type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
-import { PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
+import { PostgresNotificationAggregator, PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
 
 export type NotificationStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
@@ -56,7 +56,14 @@ export async function startNotificationStorage(channelGateway: NotificationChann
   });
   relay.start();
 
-  const aggregator = new NotificationAggregator();
+  let retrying: Promise<void> | undefined;
+  const retryTimer = setInterval(() => {
+    if (retrying) return;
+    retrying = retryDeferredNotifications(pool, channelGateway)
+      .catch((error) => console.error(sanitizedErrorForLog(error)))
+      .finally(() => { retrying = undefined; });
+  }, 1000);
+  retryTimer.unref();
 
   return {
     ready: migrationsAwareReadiness(migrations, pool),
@@ -87,41 +94,12 @@ export async function startNotificationStorage(channelGateway: NotificationChann
         return "ack";
       }
 
-      for (const recipient of [...recipientRefsFor(envelope.payload)].sort()) {
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [recipient]);
-      }
-      if (await sameBusinessTaskExists(client, envelope)) return "ack";
-
-      const appender = new OutboxAppender(client);
-      const publisher = new TransactionalOutboxPublisher(appender);
-      const application = new NotificationApplicationService(
-        publisher,
-        new PostgresUserPreferenceRepository(client),
-        channelGateway,
-        new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
-        new PostgresRecipientContactRepository(client),
-        new PostgresRateLimitRepository(client),
-        aggregator,
-      );
-
-      try {
-        await application.handleExternalTrigger(envelope);
-        return "ack";
-      } catch (error) {
-        if (error instanceof NonConformantNotificationTrigger) {
-          return "dlq";
-        }
-        if (error instanceof RateLimitExceeded) {
-          throw error;
-        }
-        if (error instanceof OptimisticConcurrencyConflict && await sameBusinessTaskExists(client, envelope)) {
-          return "ack";
-        }
-        throw error;
-      }
+      return deliverOrDefer(client, envelope, stream, channelGateway);
       });
     },
     stop: async () => {
+      clearInterval(retryTimer);
+      await retrying;
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
       // pool that is being torn down.
@@ -131,6 +109,55 @@ export async function startNotificationStorage(channelGateway: NotificationChann
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };
+}
+
+export async function deliverOrDefer(client: import("pg").PoolClient, envelope: EventEnvelope, stream: string | undefined, channelGateway: NotificationChannelGateway): Promise<"ack" | "dlq"> {
+  await client.query("SAVEPOINT notification_delivery");
+  try {
+    for (const recipient of [...recipientRefsFor(envelope.payload)].sort()) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [recipient]);
+    }
+    if (!await sameBusinessTaskExists(client, envelope)) {
+      const application = new NotificationApplicationService(
+        new TransactionalOutboxPublisher(new OutboxAppender(client)),
+        new PostgresUserPreferenceRepository(client), channelGateway,
+        new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
+        new PostgresRecipientContactRepository(client), new PostgresRateLimitRepository(client),
+        new PostgresNotificationAggregator(client),
+      );
+      await application.handleExternalTrigger(envelope);
+    }
+    await client.query("DELETE FROM notification_deferred WHERE event_id=$1", [envelope.eventId]);
+    await client.query("RELEASE SAVEPOINT notification_delivery");
+    return "ack";
+  } catch (error) {
+    await client.query("ROLLBACK TO SAVEPOINT notification_delivery");
+    await client.query("RELEASE SAVEPOINT notification_delivery");
+    if (error instanceof RateLimitExceeded) {
+      await client.query(
+        "INSERT INTO notification_deferred(event_id,stream,envelope,retry_at) VALUES($1,$2,$3,$4) ON CONFLICT(event_id) DO UPDATE SET retry_at=EXCLUDED.retry_at,updated_at=now()",
+        [envelope.eventId, stream, JSON.stringify(envelope), error.retryAfter],
+      );
+      return "ack";
+    }
+    if (error instanceof NonConformantNotificationTrigger) return "dlq";
+    if (error instanceof OptimisticConcurrencyConflict && await sameBusinessTaskExists(client, envelope)) return "ack";
+    throw error;
+  }
+}
+
+export async function retryDeferredNotifications(pool: import("pg").Pool, channelGateway: NotificationChannelGateway): Promise<void> {
+  for (let index = 0; index < 8; index++) {
+    const found = await withTransaction(pool, async (client) => {
+      const result = await client.query("SELECT envelope,stream FROM notification_deferred WHERE retry_at <= now() ORDER BY retry_at LIMIT 1 FOR UPDATE SKIP LOCKED");
+      if (!result.rows[0]) return false;
+      const envelope = result.rows[0].envelope as EventEnvelope;
+      const status = await deliverOrDefer(client, envelope, result.rows[0].stream, channelGateway);
+      if (status === "dlq") throw new NonConformantNotificationTrigger("Deferred notification is no longer valid");
+      return true;
+    });
+    if (!found) break;
+  }
 }
 
 export async function resolveRecipient(pool: import("pg").Pool, envelope: EventEnvelope): Promise<EventEnvelope> {

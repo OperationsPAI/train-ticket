@@ -959,7 +959,7 @@ function renderTemplate(template: string, variables: Readonly<Record<string, str
   return template.replace(/\{([A-Za-z0-9_]+)\}/g, (_placeholder, key: string) => variables[key] ?? "");
 }
 
-function isAggregatableTemplate(type: NotificationTemplateType): boolean {
+export function isAggregatableTemplate(type: NotificationTemplateType): boolean {
   return !type.startsWith("RECOVERY_")
     && !type.startsWith("CONNECTION_")
     && !type.startsWith("ANCILLARY_")

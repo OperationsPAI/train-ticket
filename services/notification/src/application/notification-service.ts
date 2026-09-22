@@ -3,6 +3,7 @@ import {
   type ChannelType,
   type NotificationChannel,
   NotificationAggregator,
+  type AggregatableNotification,
   type NotificationTask,
   NotificationTask as NotificationTaskAggregate,
   type NotificationTemplateType,
@@ -119,11 +120,11 @@ export class NotificationApplicationService {
     private readonly taskStore?: NotificationTaskStore,
     private readonly contacts: RecipientContactRepository = new DefaultContactRepository(),
     private readonly rateLimits: RateLimitStore = new InMemoryRateLimitStore(),
-    private readonly aggregator: NotificationAggregator = new NotificationAggregator(),
+    private readonly aggregator: NotificationAggregationStore = new NotificationAggregator(),
   ) {}
 
   async handleExternalTrigger(envelope: EventEnvelope): Promise<ExternalTriggerResult> {
-    const commands = scheduleCommandsFromEnvelope(envelope, this.aggregator);
+    const commands = await scheduleCommandsFromEnvelope(envelope, this.aggregator);
     if (commands === undefined) {
       if (mappingFor(envelope.eventType) === undefined) {
         console.info(`Ignoring unsupported notification trigger ${envelope.eventType} (${envelope.eventId})`);
@@ -255,7 +256,11 @@ function resolveIntent(mapping: TriggerMapping, payload: Record<string, unknown>
   return typeof mapping.intent === "function" ? mapping.intent(payload) : mapping.intent;
 }
 
-function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregator): readonly ScheduleNotification[] | undefined {
+export interface NotificationAggregationStore {
+  shouldSuppress(candidate: AggregatableNotification): boolean | Promise<boolean>;
+}
+
+async function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregationStore): Promise<readonly ScheduleNotification[] | undefined> {
   const mapping = mappingFor(envelope.eventType);
   if (mapping === undefined) {
     return undefined;
@@ -276,7 +281,7 @@ function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: Noti
   const templateCode = resolveTemplateCode(mapping, templateType);
   const commands: ScheduleNotification[] = [];
   for (const recipientRef of recipientRefs) {
-    if (aggregator && templateType && aggregationRef && aggregator.shouldSuppress({
+    if (aggregator && templateType && aggregationRef && await aggregator.shouldSuppress({
       recipientRef,
       orderRef: aggregationRef,
       templateType,
