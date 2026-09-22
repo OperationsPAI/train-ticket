@@ -42,6 +42,7 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
         return amount.movePointRight(currency.getDefaultFractionDigits()).longValue();
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
     public boolean isZero() {
         return amount.signum() == 0;
     }
