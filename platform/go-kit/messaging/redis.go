@@ -96,7 +96,7 @@ func NewRedisEventBusWithClient(client *redis.Client, cfg RedisConfig) *RedisEve
 		cfg.ReadBlock = 2 * time.Second
 	}
 	if cfg.RecoveryEvery == 0 {
-		cfg.RecoveryEvery = 60 * time.Second
+		cfg.RecoveryEvery = time.Second
 	}
 	if cfg.RecoveryMinIdle == 0 {
 		cfg.RecoveryMinIdle = 60 * time.Second
@@ -230,6 +230,10 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 	}
 	ticker := time.NewTicker(b.cfg.RecoveryEvery)
 	defer ticker.Stop()
+	recoveryCursors := make(map[string]string, len(streams))
+	for _, stream := range streams {
+		recoveryCursors[stream] = "0-0"
+	}
 	ids := make([]string, len(streams))
 	for i := range ids {
 		ids[i] = ">"
@@ -241,7 +245,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			return
 		case <-ticker.C:
 			for _, s := range streams {
-				b.recoverPending(ctx, s, group, consumer, handler, filter)
+				recoveryCursors[s] = b.recoverPending(ctx, s, group, consumer, handler, filter, recoveryCursors[s])
 			}
 		default:
 		}
@@ -275,25 +279,16 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 		}
 	}
 }
-func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consumer string, handler Handler, filter func(EventEnvelope) bool) {
-	start := "0-0"
-	for {
-		messages, next, err := b.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{Stream: stream, Group: group, Consumer: consumer, MinIdle: b.cfg.RecoveryMinIdle, Start: start, Count: 100}).Result()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d recovery failed: %T: %v", goruntime.TraceLogFields(ctx), group, stream, "unknown", int64(0), err, err)
-			}
-			return
+func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consumer string, handler Handler, filter func(EventEnvelope) bool, start string) string {
+	messages, next, err := b.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{Stream: stream, Group: group, Consumer: consumer, MinIdle: b.cfg.RecoveryMinIdle, Start: start, Count: 100}).Result()
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d recovery failed: %T: %v", goruntime.TraceLogFields(ctx), group, stream, "unknown", int64(0), err, err)
 		}
-		if len(messages) == 0 {
-			return
-		}
-		b.processBatch(ctx, stream, group, consumer, messages, handler, filter)
-		if next == "0-0" || next == start {
-			return
-		}
-		start = next
+		return start
 	}
+	b.processBatch(ctx, stream, group, consumer, messages, handler, filter)
+	return next
 }
 func (b *RedisEventBus) processBatch(ctx context.Context, stream, group, consumer string, messages []redis.XMessage, handler Handler, filter func(EventEnvelope) bool) {
 	ignored := make([]string, 0, len(messages))
