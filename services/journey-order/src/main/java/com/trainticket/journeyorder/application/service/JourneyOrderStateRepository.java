@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Optional;
 
 public interface JourneyOrderStateRepository {
+    default void lockOrderCreation(String idempotencyKey) {}
     Optional<OrderManagementService.StoredOrder> findOrder(String orderId);
     List<OrderManagementService.StoredOrder> findOrdersByTraveler(String travelerId);
     List<OrderManagementService.StoredOrder> listOrders(String accountId, String status, int limit, int offset);
