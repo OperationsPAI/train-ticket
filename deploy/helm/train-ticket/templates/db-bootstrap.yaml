@@ -60,7 +60,7 @@ spec:
       containers:
         - name: bootstrap
           image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" $.Values.postgres.image.repository "tag" $.Values.postgres.image.tag) }}
-          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          imagePullPolicy: {{ $.Values.postgres.bootstrapImagePullPolicy | default "IfNotPresent" }}
           env:
             - name: PGHOST
               value: postgres-{{ $name }}
