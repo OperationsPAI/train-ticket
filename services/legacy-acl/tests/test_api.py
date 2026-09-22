@@ -379,3 +379,46 @@ def test_preserve_does_not_retry_non_projection_errors(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == 0
     assert len([c for c in fake.calls if c[1] == "offer-management"]) == 1
+
+
+def test_probes_do_not_queue_behind_the_legacy_operations() -> None:
+    # The regression this pins, and the mechanism is the thread pool rather
+    # than the event loop.
+    #
+    # FastAPI runs a `def` endpoint in anyio's shared pool, which holds 40
+    # threads for the whole process. Every legacy operation is a `def` path
+    # doing a chain of blocking HTTP calls, so under load the operations own
+    # all 40 and a `def` probe waits for one to finish. An `async def` probe
+    # runs on the event loop and cannot be starved by a saturated pool.
+    #
+    # Measured: POST /api/v1/legacy/preserve averaged 18236ms waiting on
+    # offer-management's projection, and the pod restarted 78 times in 9 hours
+    # on "Liveness probe failed: context deadline exceeded" while its CPU
+    # peaked at 9% of its limit.
+    #
+    # Asserted as a property of the route rather than by saturating a real
+    # pool: filling 40 threads takes 40 concurrent blocking requests, and a
+    # test that does that is slow and timing-dependent. What has to hold is
+    # that the probe never enters the pool at all.
+    import asyncio
+    import inspect
+
+    from fastapi.routing import APIRoute
+
+    app = create_app(client=FakeDownstream(), event_publisher=InMemoryEventPublisher())
+    probes = {"/healthz", "/readyz", "/health", "/live"}
+    seen = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or route.path not in probes:
+            continue
+        seen.add(route.path)
+        assert asyncio.iscoroutinefunction(route.endpoint), (
+            f"{route.path} is a plain def, so FastAPI serves it from the shared "
+            f"40-thread pool that the legacy operations occupy for the length "
+            f"of their downstream chain, and kubelet restarts the pod"
+        )
+        assert inspect.signature(route.endpoint).parameters == {}, (
+            f"{route.path} takes a dependency, which may reintroduce blocking "
+            f"work onto the event loop"
+        )
+    assert seen == probes, f"probe routes missing from the app: {probes - seen}"

@@ -115,20 +115,35 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
             _emit_trace(tracer, "http.request.complete", {**attrs, "status_code": response.status_code})
             return response
 
+    # Coroutines, not plain functions, so the probes never queue behind the
+    # legacy operations.
+    #
+    # FastAPI runs a `def` endpoint in anyio's shared thread pool, which holds
+    # 40 threads for the whole process. Every legacy operation is also a `def`
+    # path doing a chain of blocking HTTP calls to other services, so under
+    # load the operations own all 40 and a probe waits for one to finish.
+    #
+    # Measured: POST /api/v1/legacy/preserve averaged 18236ms waiting on
+    # offer-management's projection, and the pod restarted 78 times in 9 hours
+    # on "Liveness probe failed: context deadline exceeded" while its CPU
+    # peaked at 9% of its limit. Not compute-bound and not crashing.
+    #
+    # These four do no blocking work at all, so on the event loop they cost
+    # nothing and cannot be starved by a saturated pool.
     @app.get("/healthz")
-    def healthz_endpoint() -> dict[str, str]:
+    async def healthz_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/readyz")
-    def readyz_endpoint() -> dict[str, str]:
+    async def readyz_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/health")
-    def health_endpoint() -> dict[str, object]:
+    async def health_endpoint() -> dict[str, object]:
         return {"status": health(), "service": profile()}
 
     @app.get("/live")
-    def live_endpoint() -> dict[str, str]:
+    async def live_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/ready")
