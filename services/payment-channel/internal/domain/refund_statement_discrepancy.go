@@ -83,12 +83,12 @@ func (r *ChannelRefund) Submit(expected int64, requestFingerprint string, now ti
 		r.addEvent("ChannelRefundMissed", map[string]any{"channelRefundId": r.ChannelRefundID, "refundId": r.RefundID, "paymentIntentId": r.PaymentIntentID, "channelOrderId": r.ChannelOrderID, "channel": r.Channel, "amount": r.Amount, "missWindowStartAt": now.UTC(), "missWindowEndAt": now.Add(5 * time.Minute).UTC(), "faultSeed": r.FaultSeed, "status": StatusMissed, "missedAt": now.UTC(), "aggregateVersion": r.Version}, now, r.SourceCommandID, r.CorrelationID)
 		return nil
 	}
-	if r.Amount.MinorUnits%10 == 8 {
+	if scenario == "DECLINED_REFUND" {
 		r.Status = StatusFailed
 		t := now.UTC()
 		r.CompletedAt = &t
 		r.bump(now)
-		r.addEvent("ChannelRefundFailed", map[string]any{"channelRefundId": r.ChannelRefundID, "refundId": r.RefundID, "paymentIntentId": r.PaymentIntentID, "channelOrderId": r.ChannelOrderID, "channel": r.Channel, "amount": r.Amount, "providerErrorCode": "SIM_REFUND_DECLINED", "terminalReason": "AMOUNT_TAIL_FAILURE", "retryable": false, "status": StatusFailed, "failedAt": now.UTC(), "aggregateVersion": r.Version}, now, r.SourceCommandID, r.CorrelationID)
+		r.addEvent("ChannelRefundFailed", map[string]any{"channelRefundId": r.ChannelRefundID, "refundId": r.RefundID, "paymentIntentId": r.PaymentIntentID, "channelOrderId": r.ChannelOrderID, "channel": r.Channel, "amount": r.Amount, "providerErrorCode": "SIM_REFUND_DECLINED", "terminalReason": "SEEDED_DECLINE", "faultSeed": r.FaultSeed, "retryable": false, "status": StatusFailed, "failedAt": now.UTC(), "aggregateVersion": r.Version}, now, r.SourceCommandID, r.CorrelationID)
 		return nil
 	}
 	r.Status = StatusSucceeded

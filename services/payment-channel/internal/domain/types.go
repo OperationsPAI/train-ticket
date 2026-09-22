@@ -97,7 +97,7 @@ func ValidChannel(c string) bool {
 }
 func validScenario(c string) bool {
 	switch c {
-	case "NORMAL", "MISSED_ORDER", "MISSED_REFUND", "AMOUNT_MISMATCH", "STATUS_MISMATCH", "DUPLICATE_LINE", "REFUND_LAG", "STATEMENT_DELAY":
+	case "NORMAL", "DECLINED_ORDER", "DECLINED_REFUND", "MISSED_ORDER", "MISSED_REFUND", "AMOUNT_MISMATCH", "STATUS_MISMATCH", "DUPLICATE_LINE", "REFUND_LAG", "STATEMENT_DELAY":
 		return true
 	}
 	return false
