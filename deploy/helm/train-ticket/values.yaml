@@ -423,6 +423,10 @@ loadgen:
   # misconfigured recording.max_file_megabytes becoming node disk pressure, not
   # a reservation.
   stateSizeLimit: 2Gi
+  statePersistence:
+    enabled: false
+    storageClass: ""
+    claimName: loadgen-state
 
 # -- Defaults applied to every service ---------------------------------------
 

@@ -25,6 +25,8 @@ spec:
         app.kubernetes.io/name: loadgen
         app.kubernetes.io/part-of: train-ticket
     spec:
+      securityContext:
+        fsGroup: 101
       initContainers:
         - name: wait-infra
           image: {{ include "train-ticket.infraImage" (dict "global" .Values.global "repo" "busybox" "tag" "1.37") }}
@@ -94,11 +96,16 @@ spec:
               - key: loadgen-config.yaml
                 path: config.yaml
         - name: state
+          {{- if .Values.loadgen.statePersistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.loadgen.statePersistence.claimName }}
+          {{- else }}
           # Survives container restarts, not pod deletion; copy the record file
           # out before deleting the pod:
           #   kubectl -n <ns> cp <pod>:/data/requests.jsonl ./requests.jsonl
           emptyDir:
             sizeLimit: {{ .Values.loadgen.stateSizeLimit }}
+          {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -109,4 +116,19 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
 data:
   {{- (.Files.Glob "loadgen-config.yaml").AsConfig | nindent 2 }}
+{{- if .Values.loadgen.statePersistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.loadgen.statePersistence.claimName }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.loadgen.statePersistence.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.loadgen.stateSizeLimit }}
+{{- end }}
 {{- end }}
