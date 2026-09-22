@@ -25,7 +25,8 @@ from .application.service import FarePricingService, InMemoryStore
 from .identity import HttpEligibilityCertificateAdapter
 from .adapters.storage import PostgresFarePricingStore
 from .adapters.messaging.publisher import RedisEventPublisher
-from train_ticket_platform.messaging import RedisEventSubscriber, default_consumer_name
+from train_ticket_platform.messaging import default_consumer_name
+from .adapters.messaging.subscriber import RedisEventSubscriber
 from .ports.messaging import EventPublisher
 from .handlers import CAPACITY_STREAM, IDENTITY_VERIFICATION_STREAM, handle_capacity_snapshot_updated, handle_identity_verification_event
 from .web.errors import register_exception_handlers
