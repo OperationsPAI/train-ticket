@@ -408,7 +408,7 @@ def create_app(
         if subscriber_config is not None:
             if getattr(app.state, "database_pool", None) is not None:
                 await asyncio.to_thread(app.state.risk_service.recover_booking_results)
-            app.state.subscriber.start_in_background(
+            app.state.subscriber.start_independent_streams(
                 subscriber_config["subscriptions"],
                 subscriber_config["consumer_group"],
                 app.state.handle_risk_event,

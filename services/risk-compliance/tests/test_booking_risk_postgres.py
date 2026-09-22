@@ -1,17 +1,20 @@
 import concurrent.futures
 import json
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 import psycopg
 import pytest
+import redis
 
 from risk_compliance.application import RiskComplianceService
 from risk_compliance.adapters.storage.postgres import PostgresAssessmentRepository, TransactionalOutboxPublisher, _assessment_from_json
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.storage import DatabasePool, run_migrations
+from risk_compliance.adapters.messaging.redis_streams import RedisEventSubscriber
 
 pytestmark = pytest.mark.skipif(not os.environ.get("TEST_RISK_BOOKING_SAMPLES"), reason="requires real risk and booking events and TEST_DATABASE_URL")
 
@@ -145,3 +148,50 @@ def test_restart_completes_saved_requests_with_existing_assessments(database):
     assert event["payload"]["verdict"] == "BLOCK"
     assert event["payload"]["assessmentId"] == result.assessmentId
     assert restarted.repository.recoverable_booking_orders() == ()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_REDIS_URL"), reason="requires Redis")
+def test_blocked_order_stream_does_not_delay_unrelated_booking_result(database):
+    service = service_for(database)
+    blocked = EventEnvelope.from_json_dict(samples()["ALLOW"]["created"])
+    request = EventEnvelope.from_json_dict(samples()["DENY"]["request"])
+    assessment = _assessment_from_json(samples()["DENY"]["assessment"])
+    assert blocked.payload["orderId"] != request.payload["journeyOrderId"]
+    with service.repository.transaction():
+        service.repository.save(assessment)
+        service.repository.remember_order_account(assessment.subjectRef, request.payload["accountId"])
+        service.repository.save_order_assessment(assessment, request.payload["accountId"])
+    client = redis.Redis.from_url(os.environ["TEST_REDIS_URL"], decode_responses=True)
+    streams = ("test:risk-orders:" + uuid4().hex, "test:risk-booking:" + uuid4().hex)
+    group, consumer = "risk-independent", "reader-" + uuid4().hex
+    subscriber = RedisEventSubscriber(redis_client=client)
+
+    def await_condition(condition):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            time.sleep(.02)
+        raise AssertionError("condition did not complete within ten seconds")
+
+    try:
+        for stream in streams:
+            client.xgroup_create(stream, group, "0", mkstream=True)
+        with database.connection() as blocker:
+            blocker.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("risk-order:" + blocked.payload["orderId"],))
+            try:
+                subscriber.start_independent_streams(streams, group, service.handle_event, consumer_name=consumer)
+                client.xadd(streams[0], {"envelope": json.dumps(blocked.to_json_dict())})
+                await_condition(lambda: client.xpending(streams[0], group)["pending"] == 1)
+                client.xadd(streams[1], {"envelope": json.dumps(request.to_json_dict())})
+                await_condition(lambda: len(completion(database)) == 1)
+                assert completion(database)[0]["payload"]["journeyOrderId"] == request.payload["journeyOrderId"]
+                assert service.repository.order_assessment(blocked.payload["orderId"]) is None
+            finally:
+                blocker.rollback()
+        await_condition(lambda: service.repository.order_assessment(blocked.payload["orderId"]) is not None)
+        await_condition(lambda: all(client.xpending(stream, group)["pending"] == 0 for stream in streams))
+    finally:
+        subscriber.stop()
+        client.delete(*streams)
+        client.close()
