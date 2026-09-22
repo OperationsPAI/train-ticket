@@ -387,12 +387,101 @@ pub fn spawn_outbox_relay(pool: PgPool, redis_url: String) -> tokio::task::JoinH
 pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: OutboxRelayConfig) {
     let interval = config.poll_interval.min(Duration::from_millis(500));
     let mut tick = tokio::time::interval(interval);
+    let mut polls: u64 = 0;
     loop {
         tick.tick().await;
         if let Err(error) = relay_once(&pool, &client, config.batch_size).await {
             log::error!("outbox relay failed: {error}");
         }
+        polls = polls.wrapping_add(1);
+        if polls % CLEANUP_EVERY_N == 0 {
+            cleanup(&pool).await;
+        }
     }
+}
+
+/// Polls between retention sweeps, matching the other kits.
+const CLEANUP_EVERY_N: u64 = 20;
+
+/// Rows per retention DELETE.
+const CLEANUP_BATCH_SIZE: i64 = 5_000;
+
+/// Batches per table per sweep. Bounds one pass; the next pass resumes.
+const CLEANUP_MAX_BATCHES: usize = 20;
+
+/// Retention sweep for the three platform tables.
+///
+/// The other three kits each run this from their relay loop and this one did
+/// not, so the tables grew for as long as the service ran. Measured on the
+/// deployed cluster: capacity_availability held 857929 idempotency_records of
+/// which 853203 were past the ten minute retention, the oldest 3 days 18 hours
+/// old, and entitlement_ticketing held 716682 rows in 696 MB on the same
+/// profile. `n_tup_del` for both tables was 0, so nothing had ever swept them.
+///
+/// The cost lands on the hot path: every consumed event checks
+/// processed_events for deduplication, and every idempotent request checks
+/// idempotency_records by key.
+#[cfg(feature = "redis-impl")]
+async fn cleanup(pool: &PgPool) {
+    for (table, batched_delete) in RETENTION_SWEEPS {
+        sweep(pool, table, batched_delete).await;
+    }
+}
+
+/// The tables the sweep covers, paired with the statement that drains each.
+pub(crate) const RETENTION_SWEEPS: [(&str, &str); 3] = [
+    (
+        "outbox",
+        "DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox \
+         WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' \
+         LIMIT $1)",
+    ),
+    (
+        "processed_events",
+        "DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events \
+         WHERE processed_at < now() - interval '5 minutes' \
+         LIMIT $1)",
+    ),
+    (
+        "idempotency_records",
+        "DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records \
+         WHERE created_at < now() - interval '10 minutes' \
+         LIMIT $1)",
+    ),
+];
+
+/// Runs one batched retention sweep.
+///
+/// Uses `ctid IN (SELECT ... LIMIT n)` because a plain `DELETE ... LIMIT` is
+/// not valid in Postgres, and the subquery keeps the row set bounded.
+#[cfg(feature = "redis-impl")]
+async fn sweep(pool: &PgPool, table: &str, batched_delete: &str) {
+    let mut removed: u64 = 0;
+    for _ in 0..CLEANUP_MAX_BATCHES {
+        match sqlx::query(batched_delete)
+            .bind(CLEANUP_BATCH_SIZE)
+            .execute(pool)
+            .await
+        {
+            Ok(result) => {
+                let affected = result.rows_affected();
+                removed += affected;
+                if affected < CLEANUP_BATCH_SIZE as u64 {
+                    return;
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    "retention sweep for {table} failed after removing {removed} rows: {error}"
+                );
+                return;
+            }
+        }
+    }
+    log::warn!(
+        "retention sweep for {table} removed {removed} rows and hit its batch budget; \
+         the table is still above retention"
+    );
 }
 
 #[cfg(feature = "redis-impl")]
@@ -723,6 +812,30 @@ mod tests {
             .collect();
         assert_eq!(versions, vec!["001", "002"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // This kit had no retention sweep at all, while the other three ran one
+    // from their relay loop. The tables therefore grew for as long as the
+    // service ran: on the deployed cluster capacity_availability held 857929
+    // idempotency_records of which 853203 were past the ten minute retention,
+    // the oldest 3 days 18 hours old, and `n_tup_del` on the table was 0.
+    #[test]
+    fn the_sweep_covers_every_platform_table() {
+        let tables: Vec<&str> = RETENTION_SWEEPS.iter().map(|(table, _)| *table).collect();
+        assert_eq!(
+            tables,
+            vec!["outbox", "processed_events", "idempotency_records"]
+        );
+    }
+
+    #[test]
+    fn every_sweep_is_bounded() {
+        for (table, statement) in RETENTION_SWEEPS {
+            assert!(
+                statement.contains("LIMIT $1"),
+                "an unbounded sweep deletes the whole backlog in one transaction: {table}"
+            );
+        }
     }
 
     #[test]
