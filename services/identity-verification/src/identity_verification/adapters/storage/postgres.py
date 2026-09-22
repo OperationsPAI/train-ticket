@@ -385,9 +385,7 @@ class PostgresIdentityVerificationStore(InMemoryStore):
         return self._with_conn(read)
 
     def append_outbox(self, envelopes: Iterable[Any]) -> None:
-        def write(conn: Any) -> None:
-            for envelope in envelopes: self._outbox.append(conn, envelope)
-        self._with_conn(write)
+        self._with_conn(lambda conn: self._outbox.append_many(conn, envelopes))
 
     def mark_processed(self, event_id: str, stream: str | None = None) -> bool:
         return bool(self._with_conn(lambda conn: self._processed.try_mark_processed(conn, event_id, stream)))

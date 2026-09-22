@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
@@ -188,6 +188,19 @@ class SnapshotRepository:
 
 
 class OutboxAppender:
+    def append_many(self, conn: Any, envelopes: Iterable[EventEnvelope]) -> None:
+        records = [{"event_id": envelope.eventId, "stream": stream_for_producer(envelope.producer),
+                    "envelope": envelope.to_json_dict()} for envelope in envelopes]
+        if not records:
+            return
+        conn.execute(
+            "INSERT INTO outbox(event_id, stream, envelope) "
+            "SELECT item->>'event_id', item->>'stream', item->'envelope' "
+            "FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS batch(item, position) "
+            "ORDER BY position ON CONFLICT (event_id) DO NOTHING",
+            (_jsonb_payload(records),),
+        )
+
     def append(self, conn: Any, envelope: EventEnvelope, *, stream: str | None = None) -> None:
         envelope_json = envelope.to_json_dict()
         stream_name = stream or stream_for_producer(envelope.producer)
