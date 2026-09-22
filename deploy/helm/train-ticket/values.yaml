@@ -581,6 +581,16 @@ services:
       limits: { cpu: '2', memory: 256Mi }
   ancillary-service:
     db: ancillary_service
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
   offer-management:
     db: offer_management
     # Three pods. Two was not enough once trip-planning stopped inventing
