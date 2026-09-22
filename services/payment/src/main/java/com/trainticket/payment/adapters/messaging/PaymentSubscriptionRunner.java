@@ -39,7 +39,7 @@ public class PaymentSubscriptionRunner implements CommandLineRunner {
             ),
             RedisStreamNames.PAYMENT_GROUP,
             consumerName,
-            handler
+            new PaymentEventFilter(handler)
         );
     }
 }
