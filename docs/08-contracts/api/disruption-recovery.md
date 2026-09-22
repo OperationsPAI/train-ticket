@@ -33,10 +33,7 @@ Activation-wave rulings:
   report.
 - `RecoveryOptionSet` supports five option types in this wave: `WAIT`, `REFUND`,
   `COMPENSATION`, `MANUAL`, and a narrowly-scoped `REACCOMMODATION`.
-  RULING (2026-07-09): `REACCOMMODATION` may be generated only when
-  `disruptionType=MISSED_CONNECTION`, `reportedBy.actorType=SYSTEM`, and
-  `evidence.sourceSystem=TRANSFER_MANAGEMENT`; all other disruption types and
-  case sources still defer `REACCOMMODATION` to a later wave.
+  `REACCOMMODATION` requires `disruptionType=PARTIAL`, an explicit `connectionId`, `reportedBy.actorType=SYSTEM`, and `evidence.sourceSystem=TRANSFER_MANAGEMENT`.
 - Automatic selection rules may select `WAIT` only when the generated option set
   contains no other user-choice option. If a Transfer Management missed-connection
   case generates both `WAIT` and `REACCOMMODATION`, it MUST move to
@@ -55,16 +52,14 @@ camelCase and enum values are SCREAMING_SNAKE_CASE.
 
 | Enum | Values |
 |---|---|
-| `disruptionType` | `SERVICE_DELAY`, `SERVICE_CANCELLED`, `SERVICE_SUSPENDED`, `SAILING_SUSPENDED`, `ROAD_CLOSED`, `WEATHER`, `OPERATION_RESTRICTION`, `SUPPLIER_FAILURE`, `DRIVER_CANCELLED`, `DISPATCH_FAILED`, `STOP_CHANGED`, `PORT_CALL_CHANGED`, `BATCH_SYSTEM_EVENT`, `CONNECTION_MISSED`, `MISSED_CONNECTION`, `DELAY`, `CANCELLATION`, `PARTIAL`, `FORCE_MAJEURE` |
+| `disruptionType` | `DELAY`, `CANCELLATION`, `PARTIAL`, `FORCE_MAJEURE` |
 | `incidentStatus` | `DETECTED`, `CONFIRMED`, `BATCH_PROCESSING`, `MONITORING`, `RESOLVED`, `CLOSED` |
 | `recoveryCaseStatus` | `OPENED`, `ASSESSING_IMPACT`, `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`, `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED` |
 | `recoveryOptionType` | `WAIT`, `REFUND`, `COMPENSATION`, `REACCOMMODATION`, `MANUAL` |
 | `actorType` | `USER`, `CUSTOMER_SERVICE`, `OPERATIONS`, `SYSTEM` |
 | `executionTarget` | `NONE`, `POST_SALES`, `WALLET_PROMOTION`, `TRANSFER_MANAGEMENT`, `MANUAL_QUEUE` |
 
-`REACCOMMODATION` is active only for Transfer Management system-originated
-`MISSED_CONNECTION` cases. It remains absent from generated option sets for every
-other disruption type or source until a later wave.
+`REACCOMMODATION` is available for Transfer Management system reports with `disruptionType=PARTIAL` and an explicit `connectionId`.
 
 
 ## Downstream execution idempotency
@@ -329,10 +324,8 @@ incident is opened, `RecoveryCaseOpened` for each affected order, optionally
 `RecoveryOptionsGenerated`, and `ServiceAlertPublished` for the incident alert
 fact. A repeated report for an already known `(scheduledServiceRef, serviceDate)`
 merges into the existing incident and does not duplicate active cases for the
-same `(incidentId, journeyOrderId)`. Wave-18 implementation MUST update the
-Disruption Recovery code enum/validation allowlists for
-`reportedBy.actorType=SYSTEM`, `disruptionType=MISSED_CONNECTION`, and
-`evidence.sourceSystem=TRANSFER_MANAGEMENT`; this is not a docs-only increment.
+same `(incidentId, journeyOrderId)`.
+Transfer Management reports use `reportedBy.actorType=SYSTEM`, `disruptionType=PARTIAL`, an explicit `connectionId`, and `evidence.sourceSystem=TRANSFER_MANAGEMENT`.
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
