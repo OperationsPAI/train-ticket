@@ -21,6 +21,10 @@ type SegmentReservationRequestedPayload struct {
 	IdempotencyKey   string `json:"idempotencyKey"`
 }
 
+func HandlesInboundEvent(eventType string) bool {
+	return eventType == segmentReservationRequested || eventType == segmentBookingCancelled
+}
+
 func NewInboundEventHandler(reservations ProviderReservationService) EventHandler {
 	return func(ctx context.Context, envelope EventEnvelope) error {
 		switch envelope.EventType {
