@@ -195,6 +195,7 @@ class FarePricingApiTest(unittest.TestCase):
             "/api/v1/adjustment-quotes",
             json={
                 "purpose": "REFUND",
+                "originalQuoteId": quote_resp.json()["quoteId"],
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
                 "segmentRefs": ["seg-456"],
@@ -248,6 +249,7 @@ class FarePricingApiTest(unittest.TestCase):
                 "purpose": "REFUND",
                 "entitlementIds": ["ent-business"],
                 "journeyOrderId": "ord-business",
+                "originalQuoteId": business_quote.json()["quoteId"],
                 "segmentRefs": ["seg-business"],
             },
             headers={"Idempotency-Key": uuid7_key(913)},
@@ -512,6 +514,7 @@ class FarePricingApiTest(unittest.TestCase):
             "/api/v1/adjustment-quotes",
             json={
                 "purpose": "REFUND",
+                "originalQuoteId": create_resp.json()["quoteId"],
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
                 "segmentRefs": ["seg-456"],
@@ -578,7 +581,7 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(create_resp.status_code, 201)
         quote_id = create_resp.json()["quoteId"]
 
-        # Add refund fee rule; request segmentRefs resolve to the quoted segment seg-456.
+        # The adjustment retains the purchased quote reference.
         self.store.fare_rule_sets[self.rs.rule_set_id] = published_rule_set(
             rule("refund", RuleKind.REFUND_FEE, "20.00"),
         )
@@ -586,6 +589,7 @@ class FarePricingApiTest(unittest.TestCase):
             "/api/v1/adjustment-quotes",
             json={
                 "purpose": "REFUND",
+                "originalQuoteId": quote_id,
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
                 "segmentRefs": ["seg-456"],
@@ -607,11 +611,12 @@ class FarePricingApiTest(unittest.TestCase):
         self.assertEqual(adjustment_events[0].payload["segmentRefs"], ["seg-456"])
 
     def test_adjustment_quote_not_found(self) -> None:
-        """No segment-matching original quote fails the precondition."""
+        """An unknown original quote fails the precondition."""
         resp = self.client.post(
             "/api/v1/adjustment-quotes",
             json={
                 "purpose": "REFUND",
+                "originalQuoteId": "fq-missing",
                 "entitlementIds": ["ent-456"],
                 "journeyOrderId": "ord-456",
                 "segmentRefs": ["seg-456"],
