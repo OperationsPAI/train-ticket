@@ -58,10 +58,16 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
+  let evaluation: Promise<number> | undefined;
+  const runScheduledEvaluation = (): Promise<number> => {
+    if (evaluation) return evaluation;
+    evaluation = withCustomerServiceTransaction(pool, async (application) =>
+      (await application.evaluateOpenTickets()).length,
+    ).finally(() => { evaluation = undefined; });
+    return evaluation;
+  };
   const slaScheduler = setInterval(() => {
-    withCustomerServiceTransaction(pool, async (application) => {
-      await application.evaluateOpenTickets();
-    }).catch((error) => console.error(sanitizedErrorForLog(error)));
+    runScheduledEvaluation().catch((error) => console.error(sanitizedErrorForLog(error)));
   }, 5_000);
   slaScheduler.unref?.();
 
@@ -70,10 +76,7 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
     schema: () => migrations.detail(),
     idempotencyStore: new PostgresIdempotencyStore(pool),
     runCommand: (operation) => withCustomerServiceTransaction(pool, operation),
-    runScheduledEvaluation: async () => {
-      const evaluated = await withCustomerServiceTransaction(pool, (application) => application.evaluateOpenTickets());
-      return evaluated.length;
-    },
+    runScheduledEvaluation,
     handleIntegrationEvent: (envelope, stream) => withTransaction(pool, async (client): Promise<"ack" | "retry" | "dlq"> => {
       const guard = new ProcessedEventsGuard(client);
       if (!await guard.tryStart(envelope.eventId, stream)) {
@@ -86,6 +89,7 @@ export async function startCustomerServiceStorage(): Promise<CustomerServiceStor
     }),
     stop: async () => {
       clearInterval(slaScheduler);
+      if (evaluation) await evaluation;
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
       // pool that is being torn down.
