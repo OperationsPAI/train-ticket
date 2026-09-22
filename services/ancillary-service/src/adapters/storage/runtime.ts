@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OutboxAppender, OutboxRelay, PostgresIdempotencyStore, ProcessedEventsGuard, connectRedisWithRetry, createPostgresPool, createRedisClient, migrationsAwareReadiness, redisClientLiveness, startMigrations, streamForProducer, withTransaction, type EventEnvelope, type SchemaDetail } from "@trainticket/ts-kit";
 import { type Pool } from "pg";
+import { HandlerError, OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
 import { AncillaryApplicationService } from "../../application.js";
 import { HttpFarePricingGateway, type AncillaryPricingGateway } from "../../pricing.js";
 import { PostgresAncillaryRepository } from "./repository.js";
@@ -26,7 +27,10 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
       const guard = new ProcessedEventsGuard(client);
       if (!await guard.tryStart(envelope.eventId, stream)) return "ack";
       return application.handleJourneyOrderCancelled(envelope);
-    }, pricingGateway),
+    }, pricingGateway).catch((error: unknown) => {
+      if (error instanceof OptimisticConcurrencyConflict) throw new HandlerError("transient", error.message, { cause: error });
+      throw error;
+    }),
     // Stop the migration retry first: otherwise a shutdown during the retry window leaves a backoff timer running and can issue queries against a pool that is being torn down.
     stop: async () => { await migrations.stop(); await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
