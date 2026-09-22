@@ -24,6 +24,9 @@ func (t *Transactor) DBFor(ctx context.Context) kitstorage.DBTX {
 	return t.pool
 }
 func (t *Transactor) Within(ctx context.Context, fn func(context.Context) error) error {
+	if _, ok := ctx.Value(txKey{}).(kitstorage.DBTX); ok {
+		return fn(ctx)
+	}
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {
 		return err
