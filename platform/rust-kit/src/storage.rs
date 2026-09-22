@@ -421,6 +421,28 @@ const CLEANUP_MAX_BATCHES: usize = 20;
 /// The cost lands on the hot path: every consumed event checks
 /// processed_events for deduplication, and every idempotent request checks
 /// idempotency_records by key.
+/// The tables the sweep covers, paired with the statement that drains each.
+pub(crate) const RETENTION_SWEEPS: [(&str, &str); 3] = [
+    (
+        "outbox",
+        "DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox \
+         WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' \
+         LIMIT $1 FOR UPDATE SKIP LOCKED)",
+    ),
+    (
+        "processed_events",
+        "DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events \
+         WHERE processed_at < now() - interval '5 minutes' \
+         LIMIT $1 FOR UPDATE SKIP LOCKED)",
+    ),
+    (
+        "idempotency_records",
+        "DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records \
+         WHERE created_at < now() - interval '10 minutes' \
+         LIMIT $1 FOR UPDATE SKIP LOCKED)",
+    ),
+];
+
 #[cfg(feature = "redis-impl")]
 async fn cleanup(pool: &PgPool) {
     for (table, batched_delete) in RETENTION_SWEEPS {
@@ -428,32 +450,13 @@ async fn cleanup(pool: &PgPool) {
     }
 }
 
-/// The tables the sweep covers, paired with the statement that drains each.
-pub(crate) const RETENTION_SWEEPS: [(&str, &str); 3] = [
-    (
-        "outbox",
-        "DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox \
-         WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' \
-         LIMIT $1)",
-    ),
-    (
-        "processed_events",
-        "DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events \
-         WHERE processed_at < now() - interval '5 minutes' \
-         LIMIT $1)",
-    ),
-    (
-        "idempotency_records",
-        "DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records \
-         WHERE created_at < now() - interval '10 minutes' \
-         LIMIT $1)",
-    ),
-];
-
 /// Runs one batched retention sweep.
 ///
 /// Uses `ctid IN (SELECT ... LIMIT n)` because a plain `DELETE ... LIMIT` is
 /// not valid in Postgres, and the subquery keeps the row set bounded.
+///
+/// The subquery takes `FOR UPDATE SKIP LOCKED` so that concurrent sweepers
+/// claim disjoint rows rather than locking the same ones in opposite orders.
 #[cfg(feature = "redis-impl")]
 async fn sweep(pool: &PgPool, table: &str, batched_delete: &str) {
     let mut removed: u64 = 0;
@@ -829,11 +832,15 @@ mod tests {
     }
 
     #[test]
-    fn every_sweep_is_bounded() {
+    fn every_sweep_is_bounded_and_claims_its_rows_with_skip_locked() {
         for (table, statement) in RETENTION_SWEEPS {
             assert!(
                 statement.contains("LIMIT $1"),
                 "an unbounded sweep deletes the whole backlog in one transaction: {table}"
+            );
+            assert!(
+                statement.contains("FOR UPDATE SKIP LOCKED"),
+                "concurrent sweepers would contend for the same rows: {table}"
             );
         }
     }
